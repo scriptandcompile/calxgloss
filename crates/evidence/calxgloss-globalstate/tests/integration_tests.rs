@@ -5,9 +5,7 @@ use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     Result, ScanSource, StringLiteral, StructLayout, Symbol, Xref,
 };
-use calxgloss_globalstate::{
-    AccessKind, GlobalStateEngine, GlobalStateFinding, GlobalStatePersistor,
-};
+use calxgloss_globalstate::{AccessKind, GlobalStateEngine, GlobalStatePersistor};
 use std::collections::HashMap;
 
 struct CannedProgram {
@@ -134,15 +132,70 @@ async fn a_scan_persists_and_reads_back_the_same_document() {
     );
 
     // The reading itself, as a consumer sees it after the round trip.
-    let kinds: Vec<AccessKind> = loaded
+    let kinds: Vec<Option<AccessKind>> = loaded
         .for_function("FUN_18003ab00")
         .map(|finding| finding.access_kind())
         .collect();
-    assert_eq!(kinds, vec![AccessKind::Write, AccessKind::Read]);
-    assert!(loaded.findings.iter().all(|finding| matches!(
-        finding,
-        GlobalStateFinding::GlobalRead(_) | GlobalStateFinding::GlobalWrite(_)
-    )));
+    assert_eq!(
+        kinds,
+        vec![Some(AccessKind::Write), Some(AccessKind::Read)],
+        "the by-function lookup answers only the function's own accesses"
+    );
+    let entry = loaded
+        .findings
+        .last()
+        .and_then(|finding| finding.shared_global())
+        .expect("the rollup entry lands last");
+    assert_eq!(entry.global, "DAT_180064e80");
+    assert_eq!(entry.writers, vec!["FUN_18003ab00"]);
+    assert_eq!(entry.readers, vec!["FUN_18003ab00"]);
     assert_eq!(loaded.purity.len(), 2);
     assert!(loaded.purity[1].is_pure, "the plain function reads as pure");
+}
+
+#[tokio::test]
+async fn the_shared_globals_index_names_the_functions_sharing_a_global() {
+    // The end-to-end rollup contract: two units touching one global
+    // land one index entry naming its writer and its reader, and the
+    // entry survives the document round trip.
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        "FUN_18003ab00".into(),
+        function("FUN_18003ab00", "  DAT_180064e80 = param_1;\n"),
+    );
+    bodies.insert(
+        "FUN_18003e750".into(),
+        function("FUN_18003e750", "  uVar1 = DAT_180064e80;\n  return;\n"),
+    );
+    let program = CannedProgram {
+        listing: vec![
+            summary("FUN_18003ab00", 0x1800_3ab00),
+            summary("FUN_18003e750", 0x1800_3e750),
+        ],
+        bodies,
+    };
+
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let result = GlobalStateEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let persistor = GlobalStatePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+    let loaded = persistor.load("eqmain.dll").expect("load");
+
+    let entry = loaded
+        .findings
+        .last()
+        .and_then(|finding| finding.shared_global())
+        .expect("the rollup entry lands last");
+    assert_eq!(entry.global, "DAT_180064e80");
+    assert_eq!(entry.writers, vec!["FUN_18003ab00"]);
+    assert_eq!(entry.readers, vec!["FUN_18003e750"]);
+    assert_eq!(
+        entry.confidence.value(),
+        85,
+        "the exact DAT_* spellings behind the entry score the entry"
+    );
 }

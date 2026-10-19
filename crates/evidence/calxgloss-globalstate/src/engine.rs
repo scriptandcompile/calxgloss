@@ -3,7 +3,9 @@
 //! [`GlobalStateEngine`] decompiles every function of one open program
 //! and reads each body with the [`GlobalStateDetector`], assembling the
 //! access records into a single [`GlobalStateResult`] with its scan
-//! provenance and the derived per-function [`FunctionPurity`] summary.
+//! provenance, the derived per-function [`FunctionPurity`] summary, and
+//! the shared-globals index the [`rollup`](crate::rollup) pass derives
+//! from the records once the walk ends.
 //!
 //! The detector is pure text analysis over one decompiled body, so the
 //! engine fetches each function's pseudo-C exactly once and keeps the
@@ -78,10 +80,11 @@ impl<S> GlobalStateEngine<S> {
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — grouped by function in
-    /// listing order, and within one function in body order — and the
-    /// purity summary covers every function whose body the scan kept,
-    /// also in listing order. So two scans of the same program diff
-    /// cleanly.
+    /// listing order, and within one function in body order — with
+    /// the shared-globals index records appended after them, in
+    /// first-sighting order. The purity summary covers every function
+    /// whose body the scan kept, also in listing order. So two scans
+    /// of the same program diff cleanly.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a
     /// bad entry point) is skipped with a warning and claims no purity
@@ -160,6 +163,21 @@ impl<S> GlobalStateEngine<S> {
         }
 
         let mut metadata = ScanMetadata::new(binary);
+        // The cross-function rollup (the ADR-0027 precedent): the
+        // shared-globals index is derived from the per-function
+        // records the walk just made — the same kept bodies, no new
+        // engine reads — and lands after them in the persisted list,
+        // so the scan-order contract holds unchanged: per-function
+        // findings grouped by function in listing order, rollup
+        // records last, and two scans of one program diff cleanly.
+        let index = crate::rollup::shared_globals(&findings);
+        let shared_globals = index.len();
+        findings.extend(
+            index
+                .into_iter()
+                .map(crate::GlobalStateFinding::SharedGlobal),
+        );
+
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
@@ -167,6 +185,7 @@ impl<S> GlobalStateEngine<S> {
             binary = %metadata.binary,
             functions = functions.len(),
             findings = findings.len(),
+            shared_globals,
             skipped,
             duration_secs = metadata.duration_secs,
             "Detected global-state accesses"
@@ -389,7 +408,8 @@ mod tests {
     async fn scan_groups_findings_by_function_in_listing_order() {
         // The scan-order contract: both functions carry accesses, so
         // the persisted list must group their records by function in
-        // listing order — never interleaved.
+        // listing order — never interleaved — and the rollup entries
+        // land after the whole per-function group, never among it.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -414,7 +434,45 @@ mod tests {
                 ("FUN_18003e750", "global_read"),
                 ("FUN_18003ab00", "global_write"),
                 ("FUN_18003ab00", "global_read"),
-            ]
+                ("", "shared_global"),
+                ("", "shared_global"),
+            ],
+            "per-function findings grouped by function in listing order, rollup records last"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_shared_globals_index_lands_after_the_per_function_findings() {
+        // Two functions touch one global — one stores, one loads —
+        // and the entry naming both lands last in scan order, readers
+        // and writers separated by kind.
+        let mut program = program();
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function("FUN_18003e750", "  uVar1 = DAT_180064e80;\n  return;\n"),
+        );
+        let result = scan(program).await;
+
+        let entry = result
+            .findings
+            .last()
+            .and_then(|finding| finding.shared_global())
+            .expect("the scan's last finding is the rollup entry");
+        assert_eq!(entry.global, "DAT_180064e80");
+        assert_eq!(entry.writers, vec!["FUN_18003ab00"]);
+        assert_eq!(
+            entry.readers,
+            vec!["FUN_18003ab00", "FUN_18003e750"],
+            "both functions that load the global, in listing order"
+        );
+        assert_eq!(
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.shared_global().is_some())
+                .count(),
+            1,
+            "no index record among the per-function findings"
         );
     }
 

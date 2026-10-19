@@ -140,7 +140,7 @@ impl GlobalStatePersistor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FunctionPurity, GlobalAccess, GlobalStateFinding};
+    use crate::types::{FunctionPurity, GlobalAccess, GlobalStateFinding, SharedGlobalRecord};
     use calxgloss_types::persist::PersistError;
 
     fn sample_result(binary: &str) -> GlobalStateResult {
@@ -200,6 +200,38 @@ mod tests {
                 reads: 0,
                 writes: 1,
             }]
+        );
+    }
+
+    #[test]
+    fn the_shared_globals_index_survives_the_round_trip() {
+        // The rollup rides the same document as the access records:
+        // one entry per global, readers and writers intact.
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = GlobalStatePersistor::new(dir.path());
+        let mut result = sample_result("eqmain.dll");
+        result
+            .findings
+            .push(GlobalStateFinding::SharedGlobal(SharedGlobalRecord {
+                global: "DAT_180064e80".to_string(),
+                readers: vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()],
+                writers: vec!["FUN_18003ab00".to_string()],
+                confidence: 85.into(),
+            }));
+
+        persistor.save(&result).unwrap();
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded, result, "the index reads back exactly as saved");
+        let entry = loaded.findings[1]
+            .shared_global()
+            .expect("the rollup entry is the second record");
+        assert_eq!(entry.readers, vec!["FUN_18003ab00", "FUN_18003e750"]);
+        assert_eq!(entry.writers, vec!["FUN_18003ab00"]);
+
+        let raw = std::fs::read_to_string(persistor.path_for("eqmain.dll")).unwrap();
+        assert!(
+            raw.contains("\"shared_global\""),
+            "the rollup tag is spelled in the document"
         );
     }
 
