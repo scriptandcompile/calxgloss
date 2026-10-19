@@ -238,6 +238,75 @@ mod tests {
     }
 
     #[test]
+    fn test_side_effect_global_kinds_serialization() {
+        // The typed global kinds serialize as plain unit-variant names;
+        // the global itself rides the side effect's detail string.
+        for kind in [SideEffectKind::GlobalRead, SideEffectKind::GlobalWrite] {
+            let json = serde_json::to_string(&kind).unwrap();
+            let expected = match kind {
+                SideEffectKind::GlobalRead => "\"GlobalRead\"",
+                _ => "\"GlobalWrite\"",
+            };
+            assert_eq!(json, expected);
+            let deserialized: SideEffectKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, kind);
+        }
+
+        let effect = SideEffect {
+            kind: SideEffectKind::GlobalWrite,
+            detail: "DAT_180064e80".to_string(),
+        };
+        let json = serde_json::to_string(&effect).unwrap();
+        let deserialized: SideEffect = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.kind, SideEffectKind::GlobalWrite);
+        assert_eq!(deserialized.detail, "DAT_180064e80");
+    }
+
+    #[test]
+    fn test_old_side_effect_documents_still_deserialize() {
+        // Test documents persisted before the global kinds existed —
+        // unit-variant kinds and the Other escape hatch — must keep
+        // loading, so the vocabulary extension never strands an
+        // existing baseline.
+        let json = r#"[
+            {"kind": "FileWrite", "detail": "wrote config.dat"},
+            {"kind": {"Other": "touched DAT_180064e80"}, "detail": "touched DAT_180064e80"}
+        ]"#;
+        let effects: Vec<SideEffect> = serde_json::from_str(json).unwrap();
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].kind, SideEffectKind::FileWrite);
+        assert!(
+            matches!(&effects[1].kind, SideEffectKind::Other(s) if s == "touched DAT_180064e80")
+        );
+    }
+
+    #[test]
+    fn test_failed_test_carries_typed_side_effects() {
+        // A verification failure names the expected side effects as
+        // typed kinds, and a failure record persisted before the
+        // field existed still loads — the serde default keeps old
+        // verification results readable.
+        let failed = FailedTest {
+            test_index: 0,
+            inputs: serde_json::json!({"x": 1}),
+            expected: serde_json::json!(42),
+            actual: serde_json::json!(43),
+            error: "expected 42, got 43".to_string(),
+            expected_side_effects: vec![SideEffect {
+                kind: SideEffectKind::GlobalWrite,
+                detail: "DAT_180064e80".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&failed).unwrap();
+        let deserialized: FailedTest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, failed);
+
+        let old = r#"{"test_index": 0, "inputs": null, "expected": 1, "actual": 2, "error": "off by one"}"#;
+        let deserialized: FailedTest = serde_json::from_str(old).unwrap();
+        assert!(deserialized.expected_side_effects.is_empty());
+    }
+
+    #[test]
     fn test_translation_result_serialization() {
         let result = TranslationResult {
             rust_code: "fn hello() {}".to_string(),

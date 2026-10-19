@@ -51,6 +51,25 @@ pub enum SideEffectKind {
     /// Audio playback was stopped.
     AudioStop,
 
+    /// A program global's value was read.
+    ///
+    /// The global's name, spelled exactly as the decompiler names it,
+    /// rides in the [`SideEffect`] detail string — the kind names the
+    /// effect, the detail names which global. The expectation comes
+    /// from the global-state reference sets, not from observing the
+    /// original binary: the baseline harness does not capture global
+    /// reads.
+    GlobalRead,
+
+    /// A program global was stored through.
+    ///
+    /// The global's name rides in the [`SideEffect`] detail string,
+    /// same as [`SideEffectKind::GlobalRead`]. A typed global write
+    /// is what stops a global side effect from being a free-form
+    /// [`SideEffectKind::Other`] string: consumers can key on the
+    /// kind instead of parsing prose.
+    GlobalWrite,
+
     /// A side effect not covered by the predefined kinds.
     Other(String),
 }
@@ -60,7 +79,7 @@ pub enum SideEffectKind {
 /// Side effects accompany a test case and its return value, capturing
 /// file I/O, window updates, registry changes, and other observable
 /// behaviors of the original function.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SideEffect {
     /// The type of side effect.
     pub kind: SideEffectKind,
