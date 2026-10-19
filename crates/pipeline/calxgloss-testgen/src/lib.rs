@@ -21,6 +21,12 @@
 //! harness per function, cross-compiles it for the DLL's own architecture, and
 //! runs it under Wine. See the `run` module for the details.
 //!
+//! Global side-effect expectations are not captured from the Wine run — the
+//! harness reports return values only. They are supplied by the global-state
+//! reference sets: [`global_state_expectations`] turns the function's access
+//! records in the persisted artifact into typed `GlobalRead`/`GlobalWrite`
+//! expectations naming each global.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -40,6 +46,7 @@
 //! ).unwrap();
 //! ```
 
+mod expectations;
 mod ffi;
 mod generator;
 mod inputs;
@@ -47,6 +54,7 @@ mod pe;
 mod run;
 mod wine;
 
+pub use expectations::global_state_expectations;
 pub use ffi::{
     FfiBinding, FfiBindingBuilder, ParameterTypeInfo, ParsedSignature, decompiler_type_to_rust,
     generate_ffi_binding, parse_signature,

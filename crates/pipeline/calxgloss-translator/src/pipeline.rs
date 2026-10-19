@@ -1610,8 +1610,29 @@ impl TranslationPipeline {
         let signature = self.signature_for(function_info);
 
         // Generate test inputs from signature and disassembly
-        let tests = calxgloss_testgen::generate_test_inputs(&signature, &function_info.disassembly)
-            .map_err(TranslatorError::TestGen)?;
+        let mut tests =
+            calxgloss_testgen::generate_test_inputs(&signature, &function_info.disassembly)
+                .map_err(TranslatorError::TestGen)?;
+
+        // The global-state artifact supplies the typed side-effect
+        // expectations: when a persisted global-state document names
+        // globals for this function, every test case carries them as
+        // GlobalRead/GlobalWrite expectations naming each global — a
+        // global side effect is a named kind, never an Other string.
+        // No document (the scan has not run) or a corrupt one leaves
+        // the expectations empty, exactly as before.
+        if let Some(workspace) = self.workspace.as_deref() {
+            let expectations = calxgloss_testgen::global_state_expectations(
+                workspace,
+                &function_info.binary,
+                &function_info.name,
+            );
+            if !expectations.is_empty() {
+                for test in &mut tests {
+                    test.expected_side_effects.clone_from(&expectations);
+                }
+            }
+        }
 
         Ok(tests)
     }
@@ -3569,7 +3590,7 @@ mod tests {
     use calxgloss_controlflow::persist::ControlFlowPersistor;
     use calxgloss_controlflow::types::ControlFlowResult;
     use calxgloss_globalstate::persist::GlobalStatePersistor;
-    use calxgloss_globalstate::types::GlobalStateResult;
+    use calxgloss_globalstate::types::{GlobalAccess, GlobalStateFinding, GlobalStateResult};
     use calxgloss_memory::persist::MemoryPersistor;
     use calxgloss_memory::types::MemoryResult;
     use calxgloss_serialize::persist::SerializePersistor;
@@ -4618,6 +4639,104 @@ mod tests {
             std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
             saved,
             "a cached document must not be rewritten by a rescan"
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_test_expectations_name_globals_with_the_typed_kinds() {
+        // The global-state artifact supplies the side-effect
+        // expectations (issue #257): a function with persisted access
+        // records gets its generated test cases carrying
+        // GlobalRead/GlobalWrite expectations naming each global in
+        // the detail — never an Other(...) string — while a function
+        // the document says nothing about keeps empty expectations.
+        let dir = TempDir::new().unwrap();
+        let persistor = GlobalStatePersistor::new(dir.path());
+        let mut result = GlobalStateResult::new(ScanMetadata::new("game_logic.dll"));
+        result
+            .findings
+            .push(GlobalStateFinding::GlobalWrite(GlobalAccess {
+                function: "DrawPrimitive".to_string(),
+                global: "DAT_180064e80".to_string(),
+                evidence: "DAT_180064e80 = uVar2;".to_string(),
+                confidence: 85.into(),
+                suggestion: "hold the global in shared state".to_string(),
+            }));
+        result
+            .findings
+            .push(GlobalStateFinding::GlobalRead(GlobalAccess {
+                function: "DrawPrimitive".to_string(),
+                global: "g_frame_count".to_string(),
+                evidence: "uVar1 = g_frame_count;".to_string(),
+                confidence: 60.into(),
+                suggestion: "read the program global through shared state".to_string(),
+            }));
+        // Another function's record must not leak into this unit's
+        // expectations.
+        result
+            .findings
+            .push(GlobalStateFinding::GlobalRead(GlobalAccess {
+                function: "UpdateScene".to_string(),
+                global: "DAT_other".to_string(),
+                evidence: "uVar3 = DAT_other;".to_string(),
+                confidence: 85.into(),
+                suggestion: "read the program global through shared state".to_string(),
+            }));
+        persistor.save(&result).unwrap();
+
+        let pipeline = pipeline_over(Some(dir.path()));
+        let function_info = FunctionInfo {
+            name: "DrawPrimitive".to_string(),
+            address: 0x1000,
+            binary: "game_logic.dll".to_string().into(),
+            disassembly: "cmp eax, 0\nje 0x1010".to_string(),
+            decompiler_output: "void DrawPrimitive(void) { DAT_180064e80 = 2; }".to_string(),
+            windows_apis: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+        };
+
+        let tests = pipeline
+            .generate_baseline_tests(&function_info, &[])
+            .await
+            .expect("test inputs generate");
+        assert!(!tests.is_empty(), "test cases are still generated");
+        for test in &tests {
+            assert_eq!(
+                test.expected_side_effects,
+                vec![
+                    calxgloss_types::SideEffect {
+                        kind: calxgloss_types::SideEffectKind::GlobalWrite,
+                        detail: "DAT_180064e80".to_string(),
+                    },
+                    calxgloss_types::SideEffect {
+                        kind: calxgloss_types::SideEffectKind::GlobalRead,
+                        detail: "g_frame_count".to_string(),
+                    },
+                ],
+                "expectations name the function's globals with the typed kinds"
+            );
+        }
+
+        // A binary the document was never written for degrades to
+        // today's behavior: generated cases with no expectations.
+        let other = FunctionInfo {
+            name: "NeverScanned".to_string(),
+            address: 0x2000,
+            binary: "other.dll".to_string().into(),
+            disassembly: String::new(),
+            decompiler_output: "int NeverScanned(void) { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+        };
+        let tests = pipeline
+            .generate_baseline_tests(&other, &[])
+            .await
+            .expect("test inputs generate");
+        assert!(
+            tests.iter().all(|t| t.expected_side_effects.is_empty()),
+            "no document, no expectations"
         );
     }
 

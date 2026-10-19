@@ -734,6 +734,7 @@ name = "calxgloss-testgen"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "calxgloss-globalstate",
  "calxgloss-types",
  "goblin",
  "regex",
