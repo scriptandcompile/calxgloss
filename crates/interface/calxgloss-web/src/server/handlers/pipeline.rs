@@ -209,14 +209,30 @@ pub async fn api_get_pipeline(
     let total_dlls = dll_names.len();
     let dll_names_vec: Vec<BinaryIdentity> = {
         let mut v: Vec<BinaryIdentity> = dll_names.into_iter().collect();
-        // Rows follow the run's queue plan — the order the live loop
-        // will process them — with unplanned binaries after, alphabetical.
+        // Three-tier order (issue #242): queue-planned non-PAL rows in
+        // queue-plan order — the order the live loop will process them —
+        // then unplanned non-PAL rows alphabetical, then PAL-mapped rows
+        // alphabetical. A PAL binary the plan happens to name still sorts
+        // last: display order reflects translation intent, not a queue
+        // accident. Read from the merged live-over-disk classifications —
+        // exactly the classification the row renders — and recomputed per
+        // poll, so a classification change relocates the row for free.
+        let is_pal = |d: &BinaryIdentity| {
+            classifications
+                .get(d)
+                .is_some_and(|c| is_pal_strategy(&c.strategy))
+        };
         let pos = |d: &BinaryIdentity| queue.iter().position(|q| q == d.as_str());
-        v.sort_by(|a, b| match (pos(a), pos(b)) {
-            (Some(i), Some(j)) => i.cmp(&j),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.cmp(b),
+        v.sort_by(|a, b| match (is_pal(a), is_pal(b)) {
+            (true, true) => a.cmp(b),
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => match (pos(a), pos(b)) {
+                (Some(i), Some(j)) => i.cmp(&j),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.cmp(b),
+            },
         });
         v
     };
@@ -412,6 +428,8 @@ fn furthest_phase(entry: &ProgressEntry) -> TranslationPhase {
 
 /// Whether a classification strategy string names the PAL mapping strategy.
 /// Events carry the strategy as a `{:?}`-formatted string (e.g. "PalMapping").
+/// One match rule, shared by the phase counts and the row sort (issue #242) —
+/// the same containment the frontend's "PAL trait" state cell uses.
 fn is_pal_strategy(strategy: &str) -> bool {
     strategy.contains("PalMapping")
 }
@@ -576,7 +594,8 @@ fn derive_phases(
         .collect()
 }
 
-/// Derive per-binary progress records, sorted by name. Batch summaries are
+/// Derive per-binary progress records in the order `dll_names` gives them
+/// (the handler's three-tier display order, issue #242). Batch summaries are
 /// the authoritative function counts when present; otherwise the counts come
 /// from per-unit terminal events, and unknown totals stay `None`.
 fn derive_binaries(

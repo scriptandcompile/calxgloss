@@ -3972,17 +3972,17 @@ async fn test_pipeline_phases_from_canned_events() {
     let p = phase("documentation");
     assert_eq!(p["state"], "no_data_source");
 
-    // ── Per-binary progress (sorted by name) ─────────────────────────
+    // ── Per-binary progress (PAL row pinned last, issue #242) ────────
     let binaries = body["binaries"].as_array().unwrap();
     assert_eq!(binaries.len(), 3);
     let names: Vec<&str> = binaries
         .iter()
         .map(|b| b["binary"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["d3d9.dll", "dinput8.dll", "game_logic.dll"]);
+    assert_eq!(names, ["dinput8.dll", "game_logic.dll", "d3d9.dll"]);
 
     // d3d9: classified via PAL, batch pass in flight — no fabricated totals.
-    let b = &binaries[0];
+    let b = &binaries[2];
     assert_eq!(b["strategy"], "PalMapping");
     assert_eq!(
         b["processing"], true,
@@ -4000,7 +4000,7 @@ async fn test_pipeline_phases_from_canned_events() {
     );
 
     // dinput8: one unit in flight after test generation.
-    let b = &binaries[1];
+    let b = &binaries[0];
     assert_eq!(b["category"], "WindowsOs");
     assert_eq!(
         b["processing"], false,
@@ -4013,7 +4013,7 @@ async fn test_pipeline_phases_from_canned_events() {
     assert!(b.get("tokens_used").is_none());
 
     // game_logic: batch summary is the authoritative source.
-    let b = &binaries[2];
+    let b = &binaries[1];
     assert_eq!(b["functions_total"], 5);
     assert_eq!(b["functions_translated"], 2);
     assert_eq!(b["functions_failed"], 1);
@@ -4230,6 +4230,159 @@ async fn test_pipeline_queue_plan_drives_row_order() {
         names,
         ["LaunchPad.exe", "eqgame.exe", "eqmain.dll", "zzz.dll"],
         "queue order first (the plan alone makes rows), unplanned after alphabetical"
+    );
+}
+
+/// GET /api/pipeline's `binaries` array as the row-name sequence it serves.
+async fn pipeline_row_names(port: u16) -> Vec<String> {
+    let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/pipeline"))
+        .await
+        .expect("pipeline request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    body["binaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["binary"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// Issue #242: PAL-mapped binaries pin to the bottom of the pipeline table.
+/// The order is three-tier — queue-planned non-PAL rows in queue-plan order,
+/// unplanned non-PAL rows alphabetical, then PalMapping rows alphabetical —
+/// and a PAL binary the queue plan names still sorts after every non-PAL
+/// row: display order reflects translation intent, not a queue accident.
+#[tokio::test]
+async fn test_pipeline_pal_binaries_sort_last() {
+    let fixture = TestFixture::new();
+    // Disk-classified, unplanned: one PAL binary and one reverse-engineered
+    // one, named so plain alphabetical order would interleave them.
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("create classify dir");
+    std::fs::write(
+        classify.join("aaa_pal.dll.json"),
+        r#"{"binary":"aaa_pal.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write PAL classification artifact");
+    std::fs::write(
+        classify.join("zzz.dll.json"),
+        r#"{"binary":"zzz.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write RE classification artifact");
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Live-classified, both named in the queue plan: one PAL, one crate
+    // replacement — the mix the acceptance criteria ask for.
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "d3d9.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "PalMapping".into(),
+        crate_replacement: None,
+        exported_symbols: 25,
+        imported_symbols: 6,
+    });
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "dinput8.dll".into(),
+        category: "MicrosoftSdk".into(),
+        strategy: "CrateReplacement".into(),
+        crate_replacement: Some("dinput8-rs".into()),
+        exported_symbols: 10,
+        imported_symbols: 2,
+    });
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec![
+            "LaunchPad.exe".into(),
+            "d3d9.dll".into(),
+            "eqmain.dll".into(),
+            "dinput8.dll".into(),
+        ],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        pipeline_row_names(fixture.port()).await,
+        [
+            "LaunchPad.exe", // planned non-PAL, in plan order…
+            "eqmain.dll",
+            "dinput8.dll", // …the planned crate-replacement row stays with them
+            "zzz.dll",     // unplanned non-PAL, alphabetical
+            "aaa_pal.dll", // PAL rows last, alphabetical among themselves…
+            "d3d9.dll",    // …even when the plan names them mid-list
+        ],
+        "PAL rows pin to the bottom; non-PAL order is queue-plan then alphabetical"
+    );
+}
+
+/// Issue #242: classification changes move rows for free. The order is
+/// recomputed per poll from the merged live-over-disk classifications, so a
+/// re-classification into PAL mapping sinks the row and one out of PAL
+/// mapping lifts it back — on the very next request, with no restart.
+#[tokio::test]
+async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
+    let fixture = TestFixture::new();
+    // Disk records start the pair the "wrong" way round for alphabetical
+    // order: fmod.dll reverse-engineered, d3d9.dll PAL-mapped.
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("create classify dir");
+    std::fs::write(
+        classify.join("fmod.dll.json"),
+        r#"{"binary":"fmod.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write RE classification artifact");
+    std::fs::write(
+        classify.join("d3d9.dll.json"),
+        r#"{"binary":"d3d9.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write PAL classification artifact");
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        pipeline_row_names(fixture.port()).await,
+        ["fmod.dll", "d3d9.dll"],
+        "non-PAL row first, PAL row pinned last"
+    );
+
+    // The operator corrects both classifications — live events supersede
+    // the disk records, exactly as the row's rendered strategy does.
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "fmod.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "PalMapping".into(),
+        crate_replacement: None,
+        exported_symbols: 0,
+        imported_symbols: 1,
+    });
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "d3d9.dll".into(),
+        category: "ProjectSpecific".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 0,
+        imported_symbols: 1,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        pipeline_row_names(fixture.port()).await,
+        ["d3d9.dll", "fmod.dll"],
+        "both rows relocate on the next poll — into and out of the PAL tier"
     );
 }
 

@@ -1678,7 +1678,11 @@ pub struct PipelineProgressResponse {
     /// Phases 1–7 with Phase 2.5 (PAL Design) between 2 and 3. Phases with
     /// no backing data source report `NoDataSource`, never fabricated counts.
     pub phases: Vec<PhaseProgress>,
-    /// Per-binary progress through the pipeline, sorted by name.
+    /// Per-binary progress through the pipeline, in served display order
+    /// (issue #242): queue-planned non-PAL rows in queue-plan order, then
+    /// unplanned non-PAL rows alphabetical, then PAL-mapped (PalMapping)
+    /// rows alphabetical — PAL rows pin to the bottom even when the run's
+    /// queue plan names them.
     pub binaries: Vec<BinaryProgress>,
     /// Time remaining estimate (issue #64), `None` when no attempt has a
     /// recorded duration or no work remains.
