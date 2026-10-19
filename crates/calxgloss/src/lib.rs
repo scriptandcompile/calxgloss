@@ -119,7 +119,7 @@ pub use calxgloss_callgraph::leaf_detector::{
 };
 pub use calxgloss_callgraph::models::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph};
 pub use calxgloss_callgraph::ordering::{
-    FunctionTranslationPlan, TranslationOrderer, TranslationPriority,
+    FunctionTranslationPlan, StateSharingEdges, TranslationOrderer, TranslationPriority,
 };
 pub use calxgloss_callgraph::persist::CallGraphPersistor;
 pub use calxgloss_callgraph::root_detector::{

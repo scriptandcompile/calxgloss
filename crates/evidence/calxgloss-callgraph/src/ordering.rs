@@ -15,6 +15,12 @@
 //!      handled last so that context enrichment is complete.
 //! 2. Within each tier, perform a topological sort based on call graph edges.
 //!    Functions with no internal callees within the tier come first.
+//! 3. When the orderer is given a state-sharing edge set — derived from the
+//!    persisted shared-globals index, never from a scan — each global's
+//!    first definer is placed before the other functions that touch it,
+//!    within the same tier. The set extends the call-graph edges rather
+//!    than replacing them: an empty set leaves the order exactly as step 2
+//!    produces it.
 //!
 //! # Example
 //!
@@ -60,6 +66,38 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::debug;
 
 use crate::{CallGraph, NodeCategory};
+
+/// State-sharing edges between units that touch the same program global
+/// (issue #256, part of #225).
+///
+/// For each global the shared-globals index names, the first function that
+/// writes it — the definer — must enter the translation queue before every
+/// other function that touches the global, so the unit establishing the
+/// global's representation is translated before the units that reuse it.
+/// `calxgloss_globalstate::rollup::state_sharing_pairs` derives the pairs
+/// from the persisted index records; a consumer that has no global-state
+/// document supplies an empty set.
+///
+/// The set is an extension of the call-graph edges, not a replacement: an
+/// empty set reproduces today's dependency order exactly. The orderer only
+/// ever reads the persisted artifact behind the pairs — it never runs the
+/// global-state scan itself.
+#[derive(Debug, Clone, Default)]
+pub struct StateSharingEdges {
+    /// `(definer, reuser)` function-name pairs, in the index's own order.
+    pairs: Vec<(String, String)>,
+}
+
+impl StateSharingEdges {
+    /// Builds the edge set from `(definer, reuser)` function-name pairs —
+    /// the shape `calxgloss_globalstate::rollup::state_sharing_pairs`
+    /// answers from the shared-globals index.
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self {
+            pairs: pairs.into_iter().collect(),
+        }
+    }
+}
 
 /// Priority tier for a function in the translation pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -128,7 +166,8 @@ pub struct FunctionTranslationPlan {
 /// 2. Assign each function a [`TranslationPriority`] based on its
 ///    [`NodeCategory`].
 /// 3. Within each priority tier, perform a topological sort using the
-///    call graph edges restricted to that tier.
+///    call graph edges restricted to that tier, extended by any
+///    [`StateSharingEdges`] supplied via [`Self::with_state_sharing`].
 /// 4. Functions that form cycles or reference addresses outside the graph
 ///    are placed at the end of their tier.
 ///
@@ -141,21 +180,42 @@ pub struct FunctionTranslationPlan {
 /// - All middle functions appear before all leaf functions.
 /// - Within each tier, a function appears after all of its internal callers
 ///   (i.e., callees before callers within the same tier).
+/// - When state-sharing edges are supplied, within each tier a global's
+///   first definer appears before the other functions that touch it.
 pub struct TranslationOrderer {
     /// Maximum number of functions to order per DLL. Zero means unlimited.
     max_functions: usize,
+    /// State-sharing edges from the persisted shared-globals index, empty
+    /// when none were supplied (issue #256).
+    state_sharing: StateSharingEdges,
 }
 
 impl TranslationOrderer {
     /// Creates a new `TranslationOrderer` with unlimited ordering.
     pub fn new() -> Self {
-        Self { max_functions: 0 }
+        Self {
+            max_functions: 0,
+            state_sharing: StateSharingEdges::default(),
+        }
     }
 
     /// Creates a new `TranslationOrderer` that limits ordering to
     /// at most `max_functions` per DLL.
     pub fn with_max_functions(mut self, max_functions: usize) -> Self {
         self.max_functions = max_functions;
+        self
+    }
+
+    /// Extends the ordering input with state-sharing edges derived from the
+    /// persisted shared-globals index (issue #256, part of #225). The edges
+    /// ride the same per-tier topological sort as the call-graph edges:
+    /// within a tier, a global's first definer precedes the other functions
+    /// that touch it. Cycles among state-sharing units fall back to the
+    /// existing tie-break — they are appended at the end of their tier in
+    /// address order, never dropped. An empty set leaves today's dependency
+    /// order exactly in force.
+    pub fn with_state_sharing(mut self, edges: StateSharingEdges) -> Self {
+        self.state_sharing = edges;
         self
     }
 
@@ -216,7 +276,12 @@ impl TranslationOrderer {
                 "Sorting tier"
             );
 
-            let sorted = self.topological_sort_tier(tier_indices, &addr_to_index, graph);
+            let sorted = self.topological_sort_tier(
+                tier_indices,
+                &addr_to_index,
+                &self.state_sharing,
+                graph,
+            );
             for &idx in &sorted {
                 let func = &graph.functions[idx];
                 let caller_names = func
@@ -271,12 +336,15 @@ impl TranslationOrderer {
     /// Performs a topological sort on the given tier of function indices.
     ///
     /// Uses Kahn's algorithm.  Edges only consider callees that are
-    /// within the same tier.  Functions that form cycles or reference
-    /// unknown addresses are placed at the end of the sorted list.
+    /// within the same tier, extended by the state-sharing edges whose
+    /// definer and reuser both resolve to this tier.  Functions that form
+    /// cycles or reference unknown addresses are placed at the end of the
+    /// sorted list.
     fn topological_sort_tier(
         &self,
         tier_indices: &[usize],
         addr_to_index: &HashMap<u64, usize>,
+        state_sharing: &StateSharingEdges,
         graph: &CallGraph,
     ) -> Vec<usize> {
         let tier_set: HashSet<usize> = tier_indices.iter().copied().collect();
@@ -299,6 +367,31 @@ impl TranslationOrderer {
                     adj.entry(callee_idx).or_default().push(idx);
                     *in_degree.entry(idx).or_insert(0) += 1;
                 }
+            }
+        }
+
+        // State-sharing edges ride the same sort (issue #256): the definer
+        // must be placed before each function that reuses its global.  The
+        // index names functions by name, so resolve names to this tier's
+        // nodes — a name outside the tier (or outside the graph) simply
+        // contributes nothing here.
+        let mut name_to_index: HashMap<&str, usize> = HashMap::new();
+        for &idx in tier_indices {
+            name_to_index
+                .entry(graph.functions[idx].name.as_str())
+                .or_insert(idx);
+        }
+        for (definer, reuser) in &state_sharing.pairs {
+            let (Some(from), Some(to)) = (
+                name_to_index.get(definer.as_str()).copied(),
+                name_to_index.get(reuser.as_str()).copied(),
+            ) else {
+                continue;
+            };
+            if from != to {
+                // Edge: from → to (definer must be placed before reuser)
+                adj.entry(from).or_default().push(to);
+                *in_degree.entry(to).or_insert(0) += 1;
             }
         }
 
@@ -829,5 +922,297 @@ mod tests {
         // func_a and func_b are in a cycle; order among them is by address
         assert_eq!(plan[1].name, "func_b");
         assert_eq!(plan[2].name, "func_a");
+    }
+
+    // ─── State-sharing edge tests (issue #256) ───
+
+    use calxgloss_globalstate::persist::GlobalStatePersistor;
+    use calxgloss_globalstate::rollup::state_sharing_pairs;
+    use calxgloss_globalstate::types::{GlobalStateFinding, GlobalStateResult, SharedGlobalRecord};
+    use calxgloss_types::ScanMetadata;
+
+    fn shared_index_entry(global: &str, writers: &[&str], readers: &[&str]) -> SharedGlobalRecord {
+        SharedGlobalRecord {
+            global: global.to_string(),
+            writers: writers.iter().map(|f| f.to_string()).collect(),
+            readers: readers.iter().map(|f| f.to_string()).collect(),
+            confidence: 85.into(),
+        }
+    }
+
+    /// The edges the real index-to-pairs seam derives from the given
+    /// entries — the same path the pipeline consumer takes.
+    fn edges_from(entries: &[SharedGlobalRecord]) -> StateSharingEdges {
+        StateSharingEdges::from_pairs(state_sharing_pairs(entries))
+    }
+
+    fn plan_names(plan: &VecDeque<FunctionTranslationPlan>) -> Vec<&str> {
+        plan.iter().map(|f| f.name.as_str()).collect()
+    }
+
+    #[test]
+    fn test_empty_state_sharing_reproduces_dependency_order() {
+        // The same graph ordered with and without an empty edge set must
+        // come out identical — the set extends the ordering input, it
+        // never rewrites it.
+        let graph = CallGraph {
+            binary: "sharing.dll".to_string(),
+            functions: vec![
+                make_func(
+                    "WinMain",
+                    0x401000,
+                    vec![],
+                    vec![make_edge(0x401000, 0x402000, "app_init")],
+                    NodeCategory::Root,
+                ),
+                make_func(
+                    "app_init",
+                    0x402000,
+                    vec![0x401000],
+                    vec![make_edge(0x402000, 0x403000, "game_loop")],
+                    NodeCategory::Middle,
+                ),
+                make_func(
+                    "game_loop",
+                    0x403000,
+                    vec![0x402000],
+                    vec![make_edge(0x403000, 0x404000, "render_frame")],
+                    NodeCategory::Middle,
+                ),
+                make_func(
+                    "render_frame",
+                    0x404000,
+                    vec![0x403000],
+                    vec![make_edge(0x404000, 0x500000, "Direct3DCreate9")],
+                    NodeCategory::Leaf,
+                ),
+            ],
+        };
+
+        let plain = TranslationOrderer::new().order(&graph).unwrap();
+        let empty = TranslationOrderer::new()
+            .with_state_sharing(StateSharingEdges::default())
+            .order(&graph)
+            .unwrap();
+        assert_eq!(plan_names(&plain), plan_names(&empty));
+        assert_eq!(
+            plan_names(&empty),
+            vec!["WinMain", "game_loop", "app_init", "render_frame"]
+        );
+    }
+
+    #[test]
+    fn test_first_definer_precedes_reusers_within_tier() {
+        // Three middle functions with no call edges between them: address
+        // order alone queues the lower-addressed reader first. The index
+        // names one writer and two readers — the writer defines the
+        // global's representation, and it must lead.
+        let graph = CallGraph {
+            binary: "shared.dll".to_string(),
+            functions: vec![
+                make_func("reader_a", 0x401000, vec![], vec![], NodeCategory::Middle),
+                make_func("writer_b", 0x402000, vec![], vec![], NodeCategory::Middle),
+                make_func("reader_c", 0x403000, vec![], vec![], NodeCategory::Middle),
+            ],
+        };
+
+        let plain = TranslationOrderer::new().order(&graph).unwrap();
+        assert_eq!(plan_names(&plain), vec!["reader_a", "writer_b", "reader_c"]);
+
+        let edges = edges_from(&[shared_index_entry(
+            "DAT_180064e80",
+            &["writer_b"],
+            &["reader_a", "reader_c"],
+        )]);
+        let ordered = TranslationOrderer::new()
+            .with_state_sharing(edges)
+            .order(&graph)
+            .unwrap();
+        assert_eq!(
+            plan_names(&ordered),
+            vec!["writer_b", "reader_a", "reader_c"]
+        );
+    }
+
+    #[test]
+    fn test_first_writer_in_listing_order_is_the_definer() {
+        // Two writers of one global: the index lists the first-sighting
+        // writer first, and that one — not the lower-addressed second —
+        // establishes the representation and goes first.
+        let graph = CallGraph {
+            binary: "twowriters.dll".to_string(),
+            functions: vec![
+                make_func(
+                    "second_writer",
+                    0x401000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Middle,
+                ),
+                make_func(
+                    "first_writer",
+                    0x402000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Middle,
+                ),
+            ],
+        };
+
+        let edges = edges_from(&[shared_index_entry(
+            "g_counter",
+            &["first_writer", "second_writer"],
+            &[],
+        )]);
+        let ordered = TranslationOrderer::new()
+            .with_state_sharing(edges)
+            .order(&graph)
+            .unwrap();
+        assert_eq!(plan_names(&ordered), vec!["first_writer", "second_writer"]);
+    }
+
+    #[test]
+    fn test_readers_only_global_adds_no_edges() {
+        // A global no function writes establishes no representation — the
+        // degenerate index entry contributes nothing, and the tier keeps
+        // today's address order.
+        let graph = CallGraph {
+            binary: "readonly.dll".to_string(),
+            functions: vec![
+                make_func("reader_a", 0x401000, vec![], vec![], NodeCategory::Middle),
+                make_func("reader_b", 0x402000, vec![], vec![], NodeCategory::Middle),
+            ],
+        };
+
+        let edges = edges_from(&[shared_index_entry(
+            "DAT_readonly",
+            &[],
+            &["reader_a", "reader_b"],
+        )]);
+        let ordered = TranslationOrderer::new()
+            .with_state_sharing(edges)
+            .order(&graph)
+            .unwrap();
+        assert_eq!(plan_names(&ordered), vec!["reader_a", "reader_b"]);
+    }
+
+    #[test]
+    fn test_state_sharing_cycles_fall_back_to_tie_break() {
+        // Two globals, each function defining the one the other reuses —
+        // the state-sharing edges form a cycle. Kahn's drain stops; the
+        // cycle pair falls to the existing tie-break: appended at the end
+        // of the tier in address order, no hang, no dropped unit.
+        let graph = CallGraph {
+            binary: "sharing_cycle.dll".to_string(),
+            functions: vec![
+                make_func("func_a", 0x401000, vec![], vec![], NodeCategory::Middle),
+                make_func("func_b", 0x402000, vec![], vec![], NodeCategory::Middle),
+                make_func(
+                    "independent",
+                    0x403000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Middle,
+                ),
+            ],
+        };
+
+        let edges = edges_from(&[
+            shared_index_entry("DAT_one", &["func_b"], &["func_a"]),
+            shared_index_entry("DAT_two", &["func_a"], &["func_b"]),
+        ]);
+        let ordered = TranslationOrderer::new()
+            .with_state_sharing(edges)
+            .order(&graph)
+            .unwrap();
+        assert_eq!(ordered.len(), 3, "no unit dropped");
+        assert_eq!(
+            plan_names(&ordered),
+            vec!["independent", "func_a", "func_b"]
+        );
+    }
+
+    #[test]
+    fn test_state_sharing_edges_stay_within_tier() {
+        // A definer in the middle tier and a reuser in the leaf tier:
+        // tiers are sorted independently, so the cross-tier pair
+        // contributes nothing — the middle tier keeps its own order and
+        // the leaf unit is neither moved nor dropped.
+        let graph = CallGraph {
+            binary: "crosstown.dll".to_string(),
+            functions: vec![
+                make_func("leaf_reuser", 0x401000, vec![], vec![], NodeCategory::Leaf),
+                make_func(
+                    "middle_other",
+                    0x402000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Middle,
+                ),
+                make_func(
+                    "middle_definer",
+                    0x403000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Middle,
+                ),
+            ],
+        };
+
+        let edges = edges_from(&[shared_index_entry(
+            "DAT_x",
+            &["middle_definer"],
+            &["leaf_reuser"],
+        )]);
+        let ordered = TranslationOrderer::new()
+            .with_state_sharing(edges)
+            .order(&graph)
+            .unwrap();
+        assert_eq!(
+            plan_names(&ordered),
+            vec!["middle_other", "middle_definer", "leaf_reuser"]
+        );
+    }
+
+    #[test]
+    fn test_edges_come_from_the_persisted_index_without_a_scan() {
+        // The orderer consumes the artifact the global-state scan wrote:
+        // this document was hand-written and saved through the persistor
+        // — no engine, no scan — and loading it yields the edges that put
+        // the definer first.
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let persistor = GlobalStatePersistor::new(dir.path());
+        let mut result = GlobalStateResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(GlobalStateFinding::SharedGlobal(shared_index_entry(
+                "DAT_180064e80",
+                &["writer_b"],
+                &["reader_a"],
+            )));
+        persistor.save(&result).expect("the document saves");
+
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("the document loads back");
+        let edges = StateSharingEdges::from_pairs(state_sharing_pairs(
+            loaded
+                .findings
+                .iter()
+                .filter_map(GlobalStateFinding::shared_global),
+        ));
+
+        let graph = CallGraph {
+            binary: "eqmain.dll".to_string(),
+            functions: vec![
+                make_func("reader_a", 0x401000, vec![], vec![], NodeCategory::Middle),
+                make_func("writer_b", 0x402000, vec![], vec![], NodeCategory::Middle),
+            ],
+        };
+        let ordered = TranslationOrderer::new()
+            .with_state_sharing(edges)
+            .order(&graph)
+            .unwrap();
+        assert_eq!(plan_names(&ordered), vec!["writer_b", "reader_a"]);
     }
 }

@@ -68,7 +68,9 @@ pub use context::{
 };
 pub use leaf_detector::{ApiSignature, LeafCategory, LeafDetector, TransitiveLeafContext};
 pub use models::*;
-pub use ordering::{FunctionTranslationPlan, TranslationOrderer, TranslationPriority};
+pub use ordering::{
+    FunctionTranslationPlan, StateSharingEdges, TranslationOrderer, TranslationPriority,
+};
 pub use persist::CallGraphPersistor;
 pub use root_detector::{
     ConfigurableRootDetector, RootAction, RootDetector, RootDetectorConfig, RootPattern,

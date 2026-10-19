@@ -23,3 +23,11 @@ calxgloss-analysis = { path = "../calxgloss-analysis" }
 # reads the seam's Kuna path with no engine special case (issue #207).
 calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
+# The orderer tests pin the state-sharing rule end to end against the
+# real shared-globals index records and the persisted document — a
+# dev-only edge, since globalstate reaches callgraph through prompts
+# (issue #256).
+calxgloss-globalstate = { path = "../calxgloss-globalstate" }
+# A temp workspace holding a hand-written global-state document, for the
+# orderer test that consumes the persisted index (issue #256).
+tempfile = "3"
