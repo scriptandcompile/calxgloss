@@ -32,5 +32,7 @@
 //! * [`error`] — [`GlobalStateError`], the crate's error type.
 
 pub mod error;
+pub mod types;
 
 pub use error::{GlobalStateError, Result};
+pub use types::{AccessKind, FunctionPurity, GlobalAccess, GlobalStateFinding, GlobalStateResult};
