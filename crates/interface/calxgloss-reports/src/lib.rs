@@ -207,6 +207,25 @@ fn print_failed_test_detail(failed: &FailedTest) {
         expected_str,
         actual_str
     );
+
+    // A failure whose test case expected global side effects names
+    // them by their typed kinds — the divergence on global handling
+    // reads as `GlobalWrite DAT_...`, not as prose to be parsed.
+    if !failed.expected_side_effects.is_empty() {
+        let named: Vec<String> = failed
+            .expected_side_effects
+            .iter()
+            .map(|effect| match &effect.kind {
+                calxgloss_types::SideEffectKind::Other(note) => format!("Other {note}"),
+                kind => format!("{kind:?} {}", effect.detail),
+            })
+            .collect();
+        println!(
+            "    {}{}",
+            dim("expected side effects: "),
+            dim(&named.join(", "))
+        );
+    }
 }
 
 // ============================================================
@@ -661,6 +680,7 @@ mod tests {
             expected: serde_json::json!(6),
             actual: serde_json::json!(7),
             error: "expected 6, got 7".to_string(),
+            expected_side_effects: vec![],
         };
         assert_eq!(failed.test_index, 0);
         assert_eq!(failed.error, "expected 6, got 7");

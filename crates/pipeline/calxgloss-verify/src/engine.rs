@@ -833,6 +833,39 @@ error[E0308]: mismatched types
     }
 
     #[test]
+    fn test_parse_test_results_reports_global_divergences_by_typed_kind() {
+        // A failing test whose case expects global side effects
+        // surfaces them on the FailedTest as named kinds — the
+        // divergence on global handling is machine-comparable data,
+        // not prose the consumer has to parse.
+        let json =
+            r#"[{"expected": 42, "actual": 7, "passed": false, "error": "expected 42, got 7"}]"#;
+
+        let baseline = vec![TestCase {
+            inputs: serde_json::json!({"x": 10}),
+            expected_return: serde_json::json!(42),
+            expected_side_effects: vec![
+                calxgloss_types::SideEffect {
+                    kind: calxgloss_types::SideEffectKind::GlobalWrite,
+                    detail: "DAT_180064e80".to_string(),
+                },
+                calxgloss_types::SideEffect {
+                    kind: calxgloss_types::SideEffectKind::GlobalRead,
+                    detail: "g_counter".to_string(),
+                },
+            ],
+        }];
+
+        let (passed, _total, failed) = parse_test_results(json, &baseline);
+        assert_eq!(passed, 0);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0].expected_side_effects, baseline[0].expected_side_effects,
+            "the failure carries the typed expectations through"
+        );
+    }
+
+    #[test]
     fn test_stubs_all_produces_valid_rust() {
         let stubs = Stubs::all();
         assert!(!stubs.is_empty());

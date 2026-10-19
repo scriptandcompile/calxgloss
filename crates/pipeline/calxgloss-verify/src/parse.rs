@@ -77,6 +77,14 @@ pub fn parse_test_results(
                             .unwrap_or_default(),
                         actual: result.get("actual").cloned().unwrap_or_default(),
                         error: error_msg.to_string(),
+                        // The expected side effects ride the failure as
+                        // typed kinds, so a divergence on global handling
+                        // is reported by name — machine-comparable — and
+                        // not only inside the prose error string.
+                        expected_side_effects: baseline_tests
+                            .get(i)
+                            .map(|t| t.expected_side_effects.clone())
+                            .unwrap_or_default(),
                     });
                 }
             }
@@ -163,6 +171,7 @@ pub fn parse_shim_test_results(
                         expected: serde_json::json!(true),
                         actual: serde_json::json!(false),
                         error,
+                        expected_side_effects: Vec::new(),
                     });
                 }
             } else {
@@ -179,6 +188,7 @@ pub fn parse_shim_test_results(
                         expected: serde_json::json!(true),
                         actual: serde_json::json!(false),
                         error,
+                        expected_side_effects: Vec::new(),
                     });
                 }
             }
