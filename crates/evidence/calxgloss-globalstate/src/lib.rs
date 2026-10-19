@@ -4,11 +4,11 @@
 //! so the question "what global state does this function touch?" cannot be
 //! answered from the listing alone. This crate answers it: it walks the
 //! decompiled body of every function in a binary and records each global
-//! access — reads and writes, with the evidence line and a confidence band —
-//! as a finding document that downstream tickets consume: #253 rolls the
-//! records up into a shared-globals index, #254 injects them into the
-//! translation prompt, and #255 has the sync engine consume them instead of
-//! re-deriving the same reading itself.
+//! access — reads and writes, with the evidence line and a confidence
+//! band — as a finding document, rolled up across functions into a
+//! shared-globals index, that downstream tickets consume: #254 injects
+//! the records into the translation prompt, and #255 has the sync engine
+//! consume them instead of re-deriving the same reading itself.
 //!
 //! # Architecture
 //!
@@ -22,11 +22,14 @@
 //!   Ghidra spelling is positive evidence of a data reference, while a bare
 //!   name could still be a macro or a missed local.
 //! * [`types`] — the document model: [`GlobalStateFinding`] (a read or a
-//!   write of one global by one function) and [`FunctionPurity`], aggregated
-//!   into [`GlobalStateResult`].
+//!   write of one global by one function, or one shared-globals index
+//!   record) and [`FunctionPurity`], aggregated into [`GlobalStateResult`].
+//! * [`rollup`] — the cross-function pass: [`shared_globals`] groups the
+//!   per-function records into the shared-globals index, one entry per
+//!   global naming its readers and writers.
 //! * [`engine`] — [`GlobalStateEngine`], the scan entry point: decompiles
 //!   every function through a [`calxgloss_types::scan::ScanSource`] and
-//!   runs the detector over each body.
+//!   runs the detector over each body, then the rollup over the records.
 //! * [`persist`] — [`GlobalStatePersistor`], the JSON document store, one
 //!   file per binary under `re/analysis/globalstate/`.
 //! * [`error`] — [`GlobalStateError`], the crate's error type.
@@ -35,10 +38,15 @@ pub mod detector;
 pub mod engine;
 pub mod error;
 pub mod persist;
+pub mod rollup;
 pub mod types;
 
 pub use detector::{EXACT_SPELLING_CONFIDENCE, GlobalStateDetector, SHAPE_ONLY_CONFIDENCE};
 pub use engine::GlobalStateEngine;
 pub use error::{GlobalStateError, Result};
 pub use persist::GlobalStatePersistor;
-pub use types::{AccessKind, FunctionPurity, GlobalAccess, GlobalStateFinding, GlobalStateResult};
+pub use rollup::shared_globals;
+pub use types::{
+    AccessKind, FunctionPurity, GlobalAccess, GlobalStateFinding, GlobalStateResult,
+    SharedGlobalRecord,
+};
