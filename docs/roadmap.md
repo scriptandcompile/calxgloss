@@ -31,7 +31,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X6 | Per-binary pause — hold one target binary out of the queue and move on to the next | shared (`calxgloss-types` scope) + pipeline + interface (`calxgloss-cli`, `calxgloss-web`) | — | ✅ done | — | [#217](https://github.com/scriptandcompile/calxgloss/issues/217) |
 | X7 | Parallel pre-batch evidence scans — run the eleven scan passes concurrently over the shared read cache so a cold scan phase costs roughly the engine's time, not engine + Σ parse | pipeline (`calxgloss-translator`) + integrations (`calxgloss-kuna`, `calxgloss-decomp`) | — | 🔶 in progress | #237 next | [#234](https://github.com/scriptandcompile/calxgloss/issues/234) |
 | P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | `/to-tickets` from #224 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
 | P12.6 | Calling-convention detection — classify cdecl/stdcall/fastcall/thiscall/x64 per function so the FFI binding and the ground truth behind it are right | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-decomp`, `calxgloss-kuna`, `calxgloss-prompts`) + pipeline (`calxgloss-translator`, `calxgloss-testgen`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #226 | [#226](https://github.com/scriptandcompile/calxgloss/issues/226) |
@@ -45,23 +44,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## X6 — Per-binary pause (shared + pipeline + interface)
-
-**Pause becomes a property of a target binary, not of the run.** The row's
-Pause button currently drives the global lifecycle endpoints — pausing one
-binary stalls the whole effort. The paused set joins the existing translation
-scope record (`paused: Vec<BinaryIdentity>` beside skip/priority), so it
-survives restarts and there is one operator-steering document; the run-level
-`PipelineControl` machine is untouched — pause-one-binary is steering, not
-lifecycle. The auto run's binary queue becomes a worklist: pausing the binary
-in flight ends its pass at the next unit boundary (the in-flight unit commits,
-no LLM call wasted) and pushes it to the back marked incomplete; a paused
-binary reached again is held out. Web: per-binary pause/resume endpoints, a
-pause-changed progress event, `paused` on the row data, and real Pause/Resume
-buttons on the dashboard rows. Spec: #217. Tickets: #218 (scope record),
-#219 (batch unit boundary), #220 (auto-run worklist), #221 (endpoints,
-event, row data), and #222 (dashboard rows) — all landed; the spec closed.
 
 ## X7 — Parallel pre-batch evidence scans (pipeline + integrations)
 
