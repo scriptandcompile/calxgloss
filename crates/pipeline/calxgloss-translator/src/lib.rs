@@ -208,6 +208,344 @@ mod tests {
         );
     }
 
+    // --- Signature synthesis meets the detected convention (issue #251) ---
+
+    /// A function standing in for the synthesis tests: only the name and the
+    /// decompiler line vary; everything else stays empty.
+    fn synthesis_function(name: &str, binary: &str, decompiler_output: &str) -> FunctionInfo {
+        FunctionInfo {
+            name: name.to_string(),
+            address: 0x1000,
+            binary: binary.to_string().into(),
+            disassembly: String::new(),
+            decompiler_output: decompiler_output.to_string(),
+            windows_apis: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+        }
+    }
+
+    /// One persisted convention record, shaped like the scan's own.
+    fn convention_inference(
+        function: &str,
+        callee: Option<&str>,
+        convention: calxgloss_typeinfer::types::CallingConvention,
+        method: calxgloss_typeinfer::types::InferenceMethod,
+        confidence: u8,
+        evidence: &str,
+    ) -> calxgloss_typeinfer::types::InferredType {
+        calxgloss_typeinfer::types::InferredType::Convention(
+            calxgloss_typeinfer::types::InferredConvention {
+                function: function.to_string(),
+                callee: callee.map(str::to_string),
+                convention,
+                method,
+                confidence: calxgloss_typeinfer::types::Confidence::new(confidence),
+                evidence: evidence.to_string(),
+            },
+        )
+    }
+
+    /// File the per-binary type-inference artifact the synthesis reads,
+    /// holding exactly `inferences` for `binary`.
+    fn persist_typeinfer_artifact(
+        workspace: &std::path::Path,
+        binary: &str,
+        inferences: Vec<calxgloss_typeinfer::types::InferredType>,
+    ) {
+        let mut result = calxgloss_typeinfer::types::TypeInferenceResult::new(
+            calxgloss_typeinfer::types::ScanMetadata::new(binary),
+        );
+        result.inferences = inferences;
+        calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace)
+            .save(&result)
+            .expect("the artifact should save");
+    }
+
+    #[tokio::test]
+    async fn test_detected_convention_is_spelled_when_the_decompiler_line_names_none() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        persist_typeinfer_artifact(
+            dir.path(),
+            "game_logic.dll",
+            vec![convention_inference(
+                "DrawSprite",
+                None,
+                calxgloss_typeinfer::types::CallingConvention::Cdecl,
+                calxgloss_typeinfer::types::InferenceMethod::CallerCleanup,
+                70,
+                "00401103  ADD ESP, 0x10",
+            )],
+        );
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let func_info = synthesis_function(
+            "DrawSprite",
+            "game_logic.dll",
+            "int DrawSprite(int x, int y, unsigned int texture_index) {\n    return x + y;\n}",
+        );
+
+        // The line names no convention, so the detected cdecl is spelled
+        // into the slot the signature parser reads — the blanket __stdcall
+        // default no longer stands for a function the scan read as cdecl.
+        let signature = pipeline.signature_for(&func_info);
+        assert_eq!(
+            signature,
+            "int __cdecl DrawSprite(int x, int y, unsigned int texture_index)"
+        );
+
+        // The spelling parses back out as a convention on the parsed
+        // signature the binding builder is handed.
+        assert_eq!(
+            calxgloss_testgen::parse_signature(&signature)
+                .unwrap()
+                .calling_convention
+                .as_deref(),
+            Some("__cdecl")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_decompiler_named_convention_wins_over_the_detected_record() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        persist_typeinfer_artifact(
+            dir.path(),
+            "game_logic.dll",
+            vec![convention_inference(
+                "DrawSprite",
+                None,
+                calxgloss_typeinfer::types::CallingConvention::Stdcall,
+                calxgloss_typeinfer::types::InferenceMethod::CalleeEpilogue,
+                80,
+                "00401007  RET 0xC",
+            )],
+        );
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let func_info = synthesis_function(
+            "DrawSprite",
+            "game_logic.dll",
+            "int __cdecl DrawSprite(int x, int y) {\n    return x + y;\n}",
+        );
+
+        // The decompiler line names cdecl itself — the line is the better
+        // witness of the function, so the stdcall record never overwrites it.
+        assert_eq!(
+            pipeline.signature_for(&func_info),
+            "int __cdecl DrawSprite(int x, int y)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_the_fallback_spells_the_detected_convention() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        persist_typeinfer_artifact(
+            dir.path(),
+            "test.dll",
+            vec![convention_inference(
+                "SomeFunc",
+                None,
+                calxgloss_typeinfer::types::CallingConvention::Fastcall,
+                calxgloss_typeinfer::types::InferenceMethod::MangledConvention,
+                90,
+                "?SomeFunc@@YIHH@Z",
+            )],
+        );
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let func_info = synthesis_function("SomeFunc", "test.dll", "");
+
+        // With no decompiler line at all, the placeholder spells the detected
+        // fastcall instead of the blanket __stdcall.
+        assert_eq!(
+            pipeline.signature_for(&func_info),
+            "int __fastcall SomeFunc()"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_the_spelled_convention_reaches_the_ffi_binding() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        persist_typeinfer_artifact(
+            dir.path(),
+            "game_logic.dll",
+            vec![convention_inference(
+                "DrawSprite",
+                None,
+                calxgloss_typeinfer::types::CallingConvention::Thiscall,
+                calxgloss_typeinfer::types::InferenceMethod::MangledConvention,
+                90,
+                "?draw@Sprite@@IAEXXZ",
+            )],
+        );
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let func_info = synthesis_function(
+            "DrawSprite",
+            "game_logic.dll",
+            "int DrawSprite(int x, int y) {\n    return x + y;\n}",
+        );
+        let signature = pipeline.signature_for(&func_info);
+
+        // The binding built from the refined signature carries the detected
+        // thiscall rather than a default — the parser and the binding
+        // builder already carry the field, so the spelling flows through
+        // them unchanged, and shim signatures rendered from the same
+        // refined string carry it the same way.
+        let binding =
+            calxgloss_testgen::generate_ffi_binding("game_logic.dll", "DrawSprite", &signature)
+                .expect("the refined signature should still parse into a binding");
+        assert_eq!(
+            binding.signature.calling_convention.as_deref(),
+            Some("__thiscall")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_convention_record_leaves_todays_spellings_untouched() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        // An artifact that exists but read no convention for this function —
+        // a parameter record only — changes nothing.
+        persist_typeinfer_artifact(
+            dir.path(),
+            "test.dll",
+            vec![calxgloss_typeinfer::types::InferredType::Param(
+                calxgloss_typeinfer::types::InferredParamType {
+                    function: "SomeFunc".to_string(),
+                    param_index: 0,
+                    param_name: Some("param_1".to_string()),
+                    inferred_type: "int".to_string(),
+                    method: calxgloss_typeinfer::types::InferenceMethod::KnownSignature,
+                    scope: calxgloss_typeinfer::types::InferenceScope::Function,
+                    confidence: calxgloss_typeinfer::types::Confidence::new(80),
+                    evidence: "SomeFunc(param_1)".to_string(),
+                },
+            )],
+        );
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let fallback = synthesis_function("SomeFunc", "test.dll", "");
+        assert_eq!(
+            pipeline.signature_for(&fallback),
+            "int __stdcall SomeFunc()"
+        );
+
+        let line = synthesis_function(
+            "DrawSprite",
+            "test.dll",
+            "int DrawSprite(int x, int y) {\n    return x + y;\n}",
+        );
+        assert_eq!(
+            pipeline.signature_for(&line),
+            "int DrawSprite(int x, int y)",
+            "with no convention record the decompiler line is used exactly as it is today"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_missing_artifact_leaves_todays_spellings_untouched() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        // A workspace with no type-inference artifact at all — the scan has
+        // not run — behaves exactly as it did before the feature.
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let fallback = synthesis_function("SomeFunc", "test.dll", "");
+        assert_eq!(
+            pipeline.signature_for(&fallback),
+            "int __stdcall SomeFunc()"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_call_site_record_never_spells_the_callers_signature() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        // The caller's artifact holds only its view of its callee's
+        // convention — the caller itself was never read. That record keys
+        // beside the caller's own and must not be mistaken for it.
+        persist_typeinfer_artifact(
+            dir.path(),
+            "game_logic.dll",
+            vec![convention_inference(
+                "DrawSprite",
+                Some("BlitToScreen"),
+                calxgloss_typeinfer::types::CallingConvention::Stdcall,
+                calxgloss_typeinfer::types::InferenceMethod::CallSiteConvention,
+                80,
+                "00401103  CALL BlitToScreen",
+            )],
+        );
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let func_info = synthesis_function(
+            "DrawSprite",
+            "game_logic.dll",
+            "int DrawSprite(int x, int y) {\n    return x + y;\n}",
+        );
+        assert_eq!(
+            pipeline.signature_for(&func_info),
+            "int DrawSprite(int x, int y)",
+            "the callee's convention belongs to the callee's binding, not the caller's signature"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_microsoft_x64_record_spells_no_convention_word() {
+        let dir = tempfile::TempDir::new().expect("temp workspace should be created");
+        persist_typeinfer_artifact(
+            dir.path(),
+            "eqmain.dll",
+            vec![convention_inference(
+                "FUN_18003e750",
+                None,
+                calxgloss_typeinfer::types::CallingConvention::MicrosoftX64,
+                calxgloss_typeinfer::types::InferenceMethod::X64Shape,
+                65,
+                "140001000  SUB RSP, 0x28",
+            )],
+        );
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        // Microsoft x64 has no C word — the parser's default already is the
+        // x64 ABI — so the placeholder leaves the convention slot empty
+        // rather than inventing a spelling, and a usable line is untouched.
+        let fallback = synthesis_function("FUN_18003e750", "eqmain.dll", "");
+        assert_eq!(pipeline.signature_for(&fallback), "int FUN_18003e750()");
+
+        let line = synthesis_function(
+            "FUN_18003e750",
+            "eqmain.dll",
+            "\nlonglong FUN_18003e750(longlong param_1,int param_2)\n\n{\n  return param_1 + param_2;\n}\n",
+        );
+        assert_eq!(
+            pipeline.signature_for(&line),
+            "longlong FUN_18003e750(longlong param_1,int param_2)"
+        );
+    }
+
     #[test]
     fn test_build_minimal_prompt() {
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();

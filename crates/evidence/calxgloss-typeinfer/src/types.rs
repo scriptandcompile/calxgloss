@@ -230,6 +230,21 @@ impl CallingConvention {
             CallingConvention::MicrosoftX64 => "microsoft_x64",
         }
     }
+
+    /// The MSVC C spelling a synthesized signature carries so the signature
+    /// parser reads the convention back out of it (issue #251, part of #226).
+    /// Microsoft x64 spells nothing: it is the default ABI of a PE32+
+    /// binary, so an undecorated signature already calls with it and adding
+    /// a word would only invent one the dialect does not have.
+    pub const fn c_spelling(&self) -> Option<&'static str> {
+        match self {
+            CallingConvention::Cdecl => Some("__cdecl"),
+            CallingConvention::Stdcall => Some("__stdcall"),
+            CallingConvention::Fastcall => Some("__fastcall"),
+            CallingConvention::Thiscall => Some("__thiscall"),
+            CallingConvention::MicrosoftX64 => None,
+        }
+    }
 }
 
 /// One function's inferred calling convention, with the evidence behind it.
@@ -677,6 +692,19 @@ mod tests {
             assert_eq!(convention.to_string(), label.as_str().unwrap());
             assert_eq!(convention.label(), label.as_str().unwrap());
         }
+    }
+
+    #[test]
+    fn the_x86_conventions_spell_their_c_words_and_x64_spells_none() {
+        // The words a synthesized signature carries so the signature parser
+        // reads the convention back; Microsoft x64 is the default ABI of its
+        // class of binaries and the dialect has no word for it, so it spells
+        // nothing rather than inventing one.
+        assert_eq!(CallingConvention::Cdecl.c_spelling(), Some("__cdecl"));
+        assert_eq!(CallingConvention::Stdcall.c_spelling(), Some("__stdcall"));
+        assert_eq!(CallingConvention::Fastcall.c_spelling(), Some("__fastcall"));
+        assert_eq!(CallingConvention::Thiscall.c_spelling(), Some("__thiscall"));
+        assert_eq!(CallingConvention::MicrosoftX64.c_spelling(), None);
     }
 
     fn param_record() -> InferredParamType {

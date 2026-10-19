@@ -1667,11 +1667,33 @@ impl TranslationPipeline {
     /// decompilation failed, or the text is not pseudo-C — does this fall back
     /// to a placeholder, which yields boundary-value tests for the wrong
     /// parameter count rather than no tests at all.
+    ///
+    /// A signature that names no calling convention — a usable line without a
+    /// convention word, or the placeholder — gets the convention the scan
+    /// detected for this function spelled in, so the FFI binding built from
+    /// the same string calls the original with the right convention instead
+    /// of the blanket `__stdcall` (issue #251, part of #226). A decompiler
+    /// line that names one still wins: the line is the better witness of the
+    /// function itself. Microsoft x64 has no C word to spell — the default
+    /// ABI already is the x64 convention — so it leaves the convention slot
+    /// empty rather than inventing a spelling. With no convention record, or
+    /// no artifact to hold one, today's default spelling stands untouched.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn signature_for(&self, function_info: &FunctionInfo) -> String {
+        let detected = self.detected_convention(&function_info.binary, &function_info.name);
+
         if let Some(parsed) =
             calxgloss_decomp::parse::parse_decompiled(&function_info.decompiler_output)
         {
+            // Spell the detected convention only where the line named none,
+            // and only when the convention has a C spelling at all.
+            if let Some(spelling) = detected
+                .and_then(|convention| convention.c_spelling())
+                .filter(|_| !names_convention(&parsed.signature))
+                && let Some(refined) = spell_convention(&parsed.signature, spelling)
+            {
+                return refined;
+            }
             return parsed.signature;
         }
 
@@ -1679,7 +1701,55 @@ impl TranslationPipeline {
             function = %function_info.name,
             "No signature in the decompiled output; falling back to a parameter-less one"
         );
-        format!("int __stdcall {}()", function_info.name)
+        // The default `__stdcall` stands only when no record read a
+        // convention; a record that did spells its own word, and the x64
+        // record spells none because the parser's default already fits.
+        let convention = match detected {
+            Some(convention) => convention.c_spelling().unwrap_or_default(),
+            None => "__stdcall",
+        };
+        if convention.is_empty() {
+            format!("int {}()", function_info.name)
+        } else {
+            format!("int {convention} {}()", function_info.name)
+        }
+    }
+
+    /// The convention the persisted type-inference record detected for this
+    /// function (issue #251, part of #226). Only the function's own record
+    /// spells its signature: a call-site view of a callee's convention keys
+    /// beside the caller's records and must never be mistaken for the
+    /// caller's own. A missing workspace, a missing or corrupt artifact, or
+    /// no convention record yields none, leaving the existing default
+    /// spelling in force.
+    fn detected_convention(
+        &self,
+        binary: &str,
+        function: &str,
+    ) -> Option<calxgloss_typeinfer::types::CallingConvention> {
+        let workspace = self.workspace.as_deref()?;
+        let result = match TypeInferPersistor::new(workspace).load(binary) {
+            Ok(result) => result,
+            Err(error) => {
+                debug!(
+                    binary,
+                    error = %error,
+                    "No usable type inference result; synthesizing the signature without a detected convention"
+                );
+                return None;
+            }
+        };
+        result.for_function(function).find_map(|inference| {
+            match inference {
+                // The engine resolves to one convention per function, so the
+                // first own-convention record is the whole answer; call-site
+                // views (callee spelled) stay out.
+                InferredType::Convention(record) if record.callee.is_none() => {
+                    Some(record.convention)
+                }
+                _ => None,
+            }
+        })
     }
 
     /// Build a [`TranslationRequest`] with all gathered context.
@@ -3209,6 +3279,53 @@ impl TranslationPipeline {
 
         Ok(batch_result)
     }
+}
+
+// ============================================================
+// Signature synthesis helpers
+// ============================================================
+
+/// The calling-convention words the testgen signature parser extracts from a
+/// signature — the same closed set, so a decompiler line the parser would
+/// read as convention-bearing is never re-spelled over (issue #251, part of
+/// #226).
+const CONVENTION_SPELLINGS: [&str; 6] = [
+    "__stdcall",
+    "__cdecl",
+    "__fastcall",
+    "__thiscall",
+    "__naked",
+    "__retpoline",
+];
+
+/// Whether `signature` already names a calling convention in the slot the
+/// parser reads — between the return type and the parameter list. A
+/// parameter list cannot carry these words, so only the part before the
+/// opening parenthesis is checked.
+fn names_convention(signature: &str) -> bool {
+    let before_paren = signature.split('(').next().unwrap_or(signature);
+    CONVENTION_SPELLINGS
+        .iter()
+        .any(|spelling| before_paren.contains(spelling))
+}
+
+/// Spell `convention` into `signature` between the return type and the
+/// declarator's name — the slot the parser reads — leaving the parameter
+/// list untouched. None when there is no name slot to spell before (no
+/// whitespace separating a return type from the name), which leaves the
+/// signature exactly as the decompiler wrote it.
+fn spell_convention(signature: &str, convention: &str) -> Option<String> {
+    let open = signature.find('(')?;
+    let before = signature[..open].trim_end();
+    let name_start = before.rfind(|c: char| c.is_whitespace())? + 1;
+    if name_start == 0 {
+        return None;
+    }
+    let mut refined = signature[..name_start].to_string();
+    refined.push_str(convention);
+    refined.push(' ');
+    refined.push_str(&signature[name_start..]);
+    Some(refined)
 }
 
 // ============================================================

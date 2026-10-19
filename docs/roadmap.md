@@ -160,9 +160,17 @@ reading, raises an x64 shape corroborated by clean call sites in
 callee's final convention in each caller whose listing calls it, keyed
 by the caller and naming the callee so the caller's extern spelling
 matches the callee's record; disagreement leaves the higher-confidence
-reading standing, and a function keeps exactly one convention record.
-Spec: #226. Tickets: #245–#251
-(native blocking links; frontier: #251).
+reading standing, and a function keeps exactly one convention record; #250
+rendered the records in the module-context and escalate prompts, and #251
+closed the loop on the consumer side: signature synthesis consults the
+persisted record and spells the detected convention's C word — the enum
+owning its spellings, Microsoft x64 spelling none because the parser's
+default already fits it — wherever the decompiler line named none, a named
+line still winning and a call-site view never spelling its caller's
+signature, so the refined string flows through the existing parser into
+the FFI binding and shim signatures carrying the detected convention
+instead of the `__stdcall` default.
+Spec: #226. Tickets: #245–#251 (all landed).
 
 ## P13 — Global-state reference sets (evidence + pipeline + shared + interface)
 
