@@ -562,6 +562,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-globalstate"
+version = "0.3.0"
+dependencies = [
+ "calxgloss-decomp",
+ "calxgloss-kuna",
+ "calxgloss-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calxgloss-kuna"
 version = "0.3.0"
 dependencies = [

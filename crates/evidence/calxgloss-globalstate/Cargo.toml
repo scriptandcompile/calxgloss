@@ -1,0 +1,21 @@
+[package]
+name = "calxgloss-globalstate"
+version.workspace = true
+edition.workspace = true
+description = "Global-state reference sets: per-function program-global read/write records with Evidence-scale confidence and a derived purity summary"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
