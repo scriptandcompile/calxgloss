@@ -528,6 +528,7 @@ async fn convention_records_survive_the_persistence_round_trip() {
         record,
         &InferredConvention {
             function: "CreateFileA@28".into(),
+            callee: None,
             convention: CallingConvention::Stdcall,
             method: InferenceMethod::ImportDecoration,
             confidence: Confidence::new(85),
@@ -610,6 +611,7 @@ async fn x86_stack_discipline_records_survive_the_persistence_round_trip() {
         record,
         &InferredConvention {
             function: "FUN_18003e750".into(),
+            callee: None,
             convention: CallingConvention::Stdcall,
             method: InferenceMethod::CalleeEpilogue,
             confidence: Confidence::new(80),
@@ -631,6 +633,7 @@ async fn x86_stack_discipline_records_survive_the_persistence_round_trip() {
         record,
         &InferredConvention {
             function: "MessageBoxA".into(),
+            callee: None,
             convention: CallingConvention::Cdecl,
             method: InferenceMethod::CallerCleanup,
             confidence: Confidence::new(70),
@@ -706,6 +709,7 @@ async fn the_scan_reports_a_microsoft_x64_convention_end_to_end() {
         record,
         &InferredConvention {
             function: "FUN_18003ab00".into(),
+            callee: None,
             convention: CallingConvention::MicrosoftX64,
             method: InferenceMethod::X64Shape,
             confidence: Confidence::new(65),
@@ -727,6 +731,7 @@ async fn the_scan_reports_a_microsoft_x64_convention_end_to_end() {
         record,
         &InferredConvention {
             function: "FUN_18003e750".into(),
+            callee: None,
             convention: CallingConvention::MicrosoftX64,
             method: InferenceMethod::X64Shape,
             confidence: Confidence::new(65),
@@ -743,6 +748,123 @@ async fn the_scan_reports_a_microsoft_x64_convention_end_to_end() {
             .iter()
             .all(|inference| inference.function() != "CloseHandle"),
         "an x64 listing never yields a 32-bit reading for its callee"
+    );
+}
+
+#[tokio::test]
+async fn corroborated_and_call_site_conventions_survive_the_persistence_round_trip() {
+    // The cross-function pass (issue #249): the corroborated bump lands
+    // in place of the single reading it agrees with, and the caller
+    // carries a call-site view of its callee — both must reach disk
+    // under the convention tag, with the callee field spelled, and read
+    // back like any other record.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("paint@12"), summary("FUN_caller")];
+    program.bodies.insert(
+        "paint@12".into(),
+        function("paint@12", "undefined paint@12(void)", "  return;\n"),
+    );
+    program.bodies.insert(
+        "FUN_caller".into(),
+        function(
+            "FUN_caller",
+            "undefined FUN_caller(void)",
+            "  paint@12();\n",
+        ),
+    );
+    program.listings.insert(
+        "paint@12".into(),
+        "00401000  PUSH EBP\n\
+         00401001  MOV EBP, ESP\n\
+         00401007  POP EBP\n\
+         00401008  RET 0xC"
+            .into(),
+    );
+    program.listings.insert(
+        "FUN_caller".into(),
+        "00401100  PUSH EBP\n\
+         00401103  CALL paint@12\n\
+         00401108  POP EBP\n\
+         0040110c  RET"
+            .into(),
+    );
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+
+    // The callee's own reading, bumped by the agreement across
+    // functions: one record, the corroborated one, at the top band.
+    let own: Vec<&InferredConvention> = loaded
+        .for_function("paint@12")
+        .filter_map(|inference| match inference {
+            InferredType::Convention(record) if record.callee.is_none() => Some(record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        own.len(),
+        1,
+        "a function keeps exactly one convention record"
+    );
+    assert_eq!(
+        own[0],
+        &InferredConvention {
+            function: "paint@12".into(),
+            callee: None,
+            convention: CallingConvention::Stdcall,
+            method: InferenceMethod::CorroboratedConvention,
+            confidence: Confidence::new(92),
+            evidence:
+                "00401008  RET 0xC; no caller cleanup at FUN_caller; declared bytes @12 agrees"
+                    .into(),
+        }
+    );
+
+    // The caller's view of its callee: keyed by the caller, naming the
+    // callee, carrying the callee's bumped convention and confidence.
+    let view: Vec<&InferredConvention> = loaded
+        .for_function("FUN_caller")
+        .filter_map(|inference| match inference {
+            InferredType::Convention(record) if record.callee.is_some() => Some(record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(view.len(), 1, "one view per caller and callee");
+    assert_eq!(
+        view[0],
+        &InferredConvention {
+            function: "FUN_caller".into(),
+            callee: Some("paint@12".into()),
+            convention: CallingConvention::Stdcall,
+            method: InferenceMethod::CallSiteConvention,
+            confidence: Confidence::new(92),
+            evidence: "00401103  CALL paint@12".into(),
+        }
+    );
+
+    // The view renders into the prompt type-info section naming the
+    // callee it describes, so a caller's extern spelling can be checked
+    // against it.
+    let rendered = TypeInfo::from(
+        loaded
+            .for_function("FUN_caller")
+            .find(|inference| {
+                matches!(inference, InferredType::Convention(record)
+                    if record.callee.is_some())
+            })
+            .expect("the caller's call-site view"),
+    );
+    assert_eq!(rendered.name, "paint@12 convention");
+    assert_eq!(
+        rendered.description,
+        "stdcall (via call_site_convention, confidence 92)"
     );
 }
 

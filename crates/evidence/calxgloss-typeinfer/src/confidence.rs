@@ -29,8 +29,9 @@ use crate::types::InferredType;
 /// The five record kinds identify their targets differently — a
 /// parameter by position, a local by its decompiled name, a call-site
 /// argument by the callee and position, a return and a convention by the
-/// function alone — so one key shape names all five and records of
-/// different kinds never collide.
+/// function alone (a call-site convention view by the caller-and-callee
+/// pair) — so one key shape names all five and records of different
+/// kinds never collide.
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Target {
     /// One parameter of one function, by position.
@@ -53,8 +54,13 @@ enum Target {
     /// function has exactly one return type.
     Return { function: String },
     /// One function's calling convention — the function alone, since a
-    /// function is called one way.
-    Convention { function: String },
+    /// function is called one way; a caller's call-site view of its
+    /// callee keys on the pair, so it stands beside the caller's own
+    /// convention without colliding with it (issue #249).
+    Convention {
+        function: String,
+        callee: Option<String>,
+    },
 }
 
 impl Target {
@@ -79,6 +85,7 @@ impl Target {
             },
             InferredType::Convention(record) => Target::Convention {
                 function: record.function.clone(),
+                callee: record.callee.clone(),
             },
         }
     }
@@ -188,6 +195,7 @@ mod tests {
     fn convention(function: &str, convention: CallingConvention, confidence: u8) -> InferredType {
         InferredType::Convention(InferredConvention {
             function: function.into(),
+            callee: None,
             convention,
             method: InferenceMethod::MangledConvention,
             confidence: Confidence::new(confidence),
@@ -407,6 +415,35 @@ mod tests {
             convention("CreateFileA@28", CallingConvention::Stdcall, 85),
         ]);
         assert_eq!(winners.len(), 2);
+    }
+
+    #[test]
+    fn a_caller_s_own_convention_and_its_view_of_a_callee_stand_apart() {
+        // The call-site view keys on the (caller, callee) pair: the
+        // caller keeps its own convention record beside its view of the
+        // callee, and two views of one callee inside one caller — the
+        // same pair — resolve to the first seen.
+        let site = |confidence: u8| {
+            InferredType::Convention(InferredConvention {
+                function: "FUN_18003ab00".into(),
+                callee: Some("FUN_1800412a0".into()),
+                convention: CallingConvention::Stdcall,
+                method: InferenceMethod::CallSiteConvention,
+                confidence: Confidence::new(confidence),
+                evidence: "00401107  CALL FUN_1800412a0".into(),
+            })
+        };
+        let winners = resolve_conflicts(vec![
+            convention("FUN_18003ab00", CallingConvention::Cdecl, 70),
+            site(80),
+            site(80),
+            convention("FUN_1800412a0", CallingConvention::Stdcall, 80),
+        ]);
+        assert_eq!(winners.len(), 3, "one view of the callee survives");
+        let InferredType::Convention(record) = &winners[1] else {
+            unreachable!("the call-site view is a convention record");
+        };
+        assert_eq!(record.callee.as_deref(), Some("FUN_1800412a0"));
     }
 
     #[test]

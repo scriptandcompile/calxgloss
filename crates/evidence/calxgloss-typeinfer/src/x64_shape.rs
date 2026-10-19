@@ -72,10 +72,17 @@ const ARGUMENT_REGISTERS: &[&str] = &["rcx", "rdx", "r8", "r9"];
 /// frame Microsoft x64 demands. A `sub rsp` after the first call is
 /// mid-body frame bookkeeping, not a prologue. Returns the row itself,
 /// which is the reading's evidence, with the byte count it subtracts.
-fn shadow_space<'a>(rows: &[&'a str]) -> Option<(&'a str, u64)> {
+/// Shared with the cross-function corroboration pass of
+/// [`crate::corroboration`], which needs the same count to tell a
+/// caller's frame teardown from a caller-side cleanup at a call site.
+pub(crate) fn shadow_space<'a>(rows: &[&'a str]) -> Option<(&'a str, u64)> {
     let prologue_end = rows
         .iter()
-        .position(|row| split_instruction(instruction(row)).0.eq_ignore_ascii_case("call"))
+        .position(|row| {
+            split_instruction(instruction(row))
+                .0
+                .eq_ignore_ascii_case("call")
+        })
         .unwrap_or(rows.len());
     rows[..prologue_end].iter().find_map(|row| {
         let (mnemonic, operand_text) = split_instruction(instruction(row));
@@ -111,7 +118,10 @@ fn spells_cleanup(rows: &[&str], prologue_bytes: u64) -> bool {
         }
     }
     for (call, next) in rows.iter().zip(rows.iter().skip(1)) {
-        if !split_instruction(instruction(call)).0.eq_ignore_ascii_case("call") {
+        if !split_instruction(instruction(call))
+            .0
+            .eq_ignore_ascii_case("call")
+        {
             continue;
         }
         let (mnemonic, operand_text) = split_instruction(instruction(next));
@@ -248,8 +258,7 @@ mod tests {
         // region, the listing spells the argument registers, and no
         // cleanup stands anywhere — the function reads Microsoft x64 at
         // the shape-only band, with the prologue line as the evidence.
-        let readings =
-            X64ShapeDetector::new().from_listing("FUN_18003e750", &shape_listing());
+        let readings = X64ShapeDetector::new().from_listing("FUN_18003e750", &shape_listing());
         assert_eq!(readings.len(), 1);
         let record = convention(&readings[0]);
         assert_eq!(record.function, "FUN_18003e750");
@@ -270,7 +279,10 @@ mod tests {
                        14000100c  RET";
         let readings = X64ShapeDetector::new().from_listing("FUN_x", listing);
         assert_eq!(readings.len(), 1);
-        assert_eq!(convention(&readings[0]).evidence, "140001000  SUB RSP, 0x20");
+        assert_eq!(
+            convention(&readings[0]).evidence,
+            "140001000  SUB RSP, 0x20"
+        );
     }
 
     // ---- the guards ----
@@ -301,9 +313,11 @@ mod tests {
                        140001007  CALL FUN_1800412a0\n\
                        14000100c  SUB RSP, 0x28\n\
                        140001010  RET";
-        assert!(X64ShapeDetector::new()
-            .from_listing("FUN_x", listing)
-            .is_empty());
+        assert!(
+            X64ShapeDetector::new()
+                .from_listing("FUN_x", listing)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -316,9 +330,11 @@ mod tests {
                        140001007  CALL FUN_1800412a0\n\
                        14000100c  ADD RSP, 0x40\n\
                        140001010  RET";
-        assert!(X64ShapeDetector::new()
-            .from_listing("FUN_x", listing)
-            .is_empty());
+        assert!(
+            X64ShapeDetector::new()
+                .from_listing("FUN_x", listing)
+                .is_empty()
+        );
     }
 
     // ---- the cleanup contradiction ----
@@ -332,9 +348,11 @@ mod tests {
         let listing = "140001000  SUB RSP, 0x28\n\
                        140001007  MOV [RSP+0x8], RCX\n\
                        14000100c  RET 0x20";
-        assert!(X64ShapeDetector::new()
-            .from_listing("FUN_x", listing)
-            .is_empty());
+        assert!(
+            X64ShapeDetector::new()
+                .from_listing("FUN_x", listing)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -348,9 +366,11 @@ mod tests {
                        14000100a  CALL FUN_1800412a0\n\
                        14000100f  ADD RSP, 0x20\n\
                        140001013  RET";
-        assert!(X64ShapeDetector::new()
-            .from_listing("FUN_x", listing)
-            .is_empty());
+        assert!(
+            X64ShapeDetector::new()
+                .from_listing("FUN_x", listing)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -362,7 +382,10 @@ mod tests {
         // call.
         let readings = X64ShapeDetector::new().from_listing("FUN_x", &shape_listing());
         assert_eq!(readings.len(), 1);
-        assert_eq!(convention(&readings[0]).convention, CallingConvention::MicrosoftX64);
+        assert_eq!(
+            convention(&readings[0]).convention,
+            CallingConvention::MicrosoftX64
+        );
     }
 
     #[test]

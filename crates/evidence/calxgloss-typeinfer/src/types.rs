@@ -96,6 +96,16 @@ pub enum InferenceMethod {
     /// callee or caller stack cleanup the convention ever leaves behind —
     /// so the function is called through the 64-bit Windows convention.
     X64Shape,
+    /// Readings from separate functions agree on one convention: the
+    /// callee's epilogue, the absence of caller-side cleanup at its call
+    /// sites, and the declared argument bytes all say the same thing, so
+    /// the agreement ranks above any single body's reading (the
+    /// flag-family precedent).
+    CorroboratedConvention,
+    /// The callee's detected convention projected onto one of its call
+    /// sites: the record is keyed by the caller and names the callee, so
+    /// the caller's view of its callee matches the callee's own record.
+    CallSiteConvention,
 }
 
 impl InferenceMethod {
@@ -128,6 +138,8 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     CalleeEpilogue => "callee_epilogue",
     CallerCleanup => "caller_cleanup",
     X64Shape => "x64_shape",
+    CorroboratedConvention => "corroborated_convention",
+    CallSiteConvention => "call_site_convention",
 });
 
 // ============================================================
@@ -226,11 +238,20 @@ impl CallingConvention {
 /// it rides its own record — the function, the convention, the channel that
 /// read it, its confidence, and the name text that carried the reading.
 /// Like the return record it is keyed by function, so one function never
-/// shows two conventions.
+/// shows two conventions — except the call-site view the cross-function
+/// pass lands in a caller for its callee (issue #249): that record names
+/// the callee in `callee`, so it keys beside the caller's own convention
+/// without colliding with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferredConvention {
-    /// The function whose convention is read, e.g. `CreateFileA@28`.
+    /// The function whose convention is read, e.g. `CreateFileA@28`. For
+    /// a call-site record this is the caller holding the site.
     pub function: String,
+    /// The callee whose convention this record reads, when the record is
+    /// a caller's view of its callee rather than the function's own
+    /// reading; `None` for every per-function reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee: Option<String>,
     /// The convention the name declares.
     pub convention: CallingConvention,
     /// The channel that produced the reading.
@@ -461,7 +482,10 @@ impl From<&InferredType> for calxgloss_prompts::TypeInfo {
                 None => format!("{} arg {}", record.callee, record.arg_index + 1),
             },
             InferredType::Return(_) => "return".to_string(),
-            InferredType::Convention(_) => "convention".to_string(),
+            InferredType::Convention(record) => match record.callee.as_deref() {
+                Some(callee) => format!("{callee} convention"),
+                None => "convention".to_string(),
+            },
         };
         let (method, confidence) = match inference {
             InferredType::Param(record) => (record.method, record.confidence),
@@ -690,6 +714,7 @@ mod tests {
     fn convention_record() -> InferredConvention {
         InferredConvention {
             function: "?paint@Widget@@QAEXXZ".into(),
+            callee: None,
             convention: CallingConvention::Thiscall,
             method: InferenceMethod::MangledConvention,
             confidence: Confidence::new(90),
@@ -903,6 +928,42 @@ mod tests {
             info.description,
             "thiscall (via mangled_convention, confidence 90)"
         );
+    }
+
+    #[test]
+    fn a_call_site_convention_record_names_its_callee_and_omits_nothing_else() {
+        // The caller's view of its callee: the callee rides as an
+        // optional field, a document written before it existed reads
+        // back with `callee: None`, and the prompt names the site.
+        let record = InferredConvention {
+            callee: Some("FUN_1800412a0".into()),
+            ..convention_record()
+        };
+        let json = serde_json::to_string(&InferredType::Convention(record.clone())).unwrap();
+        assert!(json.contains("\"callee\":\"FUN_1800412a0\""));
+        let back: InferredType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, InferredType::Convention(record));
+
+        let without = r#"{
+            "kind": "convention",
+            "function": "?paint@Widget@@QAEXXZ",
+            "convention": "thiscall",
+            "method": "mangled_convention",
+            "confidence": 90,
+            "evidence": "?paint@Widget@@QAEXXZ"
+        }"#;
+        let back: InferredType = serde_json::from_str(without).unwrap();
+        let InferredType::Convention(back) = back else {
+            unreachable!("the document carries a convention record");
+        };
+        assert_eq!(back.callee, None);
+
+        let info =
+            calxgloss_prompts::TypeInfo::from(&InferredType::Convention(InferredConvention {
+                callee: Some("FUN_1800412a0".into()),
+                ..convention_record()
+            }));
+        assert_eq!(info.name, "FUN_1800412a0 convention");
     }
 
     #[test]

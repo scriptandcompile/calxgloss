@@ -150,9 +150,19 @@ convention ever leaves behind — the post-call `add rsp` that merely
 frees the prologue's own allocation being the frame teardown, not a
 cleanup — one shape-only reading at the modest band of 65, evidenced by
 the prologue line, keyed on the listing's own register spelling so the
-64-bit family never fires on a 32-bit listing either.
+64-bit family never fires on a 32-bit listing either, and #249 made the
+readings corroborate each other across functions: a post-inline pass
+over the resolved records and the kept listings — no extra reads —
+raises a callee epilogue whose declared `@N` bytes, epilogue count, and
+absence of caller cleanup at every site agree to 92, above every single
+reading, raises an x64 shape corroborated by clean call sites in
+`rsp`-spelled callers to 75, and lands a call-site record of the
+callee's final convention in each caller whose listing calls it, keyed
+by the caller and naming the callee so the caller's extern spelling
+matches the callee's record; disagreement leaves the higher-confidence
+reading standing, and a function keeps exactly one convention record.
 Spec: #226. Tickets: #245–#251
-(native blocking links; frontier: #249).
+(native blocking links; frontier: #250).
 
 ## P13 — Global-state reference sets (evidence + pipeline + shared + interface)
 

@@ -1003,6 +1003,7 @@ mod tests {
     fn convention(function: &str, convention: CallingConvention, confidence: u8) -> InferredType {
         InferredType::Convention(InferredConvention {
             function: function.to_string(),
+            callee: None,
             convention,
             method: crate::types::InferenceMethod::ImportDecoration,
             confidence: Confidence::new(confidence),

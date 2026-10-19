@@ -34,7 +34,8 @@
 //! engine's own spelling) or an indirect register or memory operand
 //! names no callee to key a record by, and yields no reading; landing
 //! a detected callee convention at its call sites is the
-//! cross-function pass's job (issue #249).
+//! cross-function corroboration pass's job, in [`crate::corroboration`]
+//! (issue #249).
 
 use crate::convention::convention_record;
 use crate::types::{CallingConvention, InferenceMethod, InferredType};
@@ -101,9 +102,7 @@ pub(crate) fn spells_register(listing: &str, register: &str) -> bool {
 /// letters, not an address.) Shared with [`crate::x64_shape`].
 pub(crate) fn instruction(row: &str) -> &str {
     match row.split_once("  ") {
-        Some((head, rest))
-            if head.len() >= 6 && head.bytes().all(|b| b.is_ascii_hexdigit()) =>
-        {
+        Some((head, rest)) if head.len() >= 6 && head.bytes().all(|b| b.is_ascii_hexdigit()) => {
             rest.trim()
         }
         _ => row.trim(),
@@ -137,10 +136,7 @@ pub(crate) fn operands(operand_text: &str) -> Vec<&str> {
 /// and a register or memory operand spells no count. Shared with
 /// [`crate::x64_shape`].
 pub(crate) fn declared_count(text: &str) -> Option<u64> {
-    let (digits, radix) = match text
-        .strip_prefix("0x")
-        .or_else(|| text.strip_prefix("0X"))
-    {
+    let (digits, radix) = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
         Some(hex) => (hex, 16),
         None => (text, 10),
     };
@@ -156,8 +152,9 @@ pub(crate) fn declared_count(text: &str) -> Option<u64> {
 /// that is not an address and not a register. The engine's own rows
 /// call through an address (`CALL 0x140002490`) — that names nothing a
 /// record can be keyed by — and an indirect call through a register or
-/// a memory operand names nothing either.
-fn called_name(operand_text: &str) -> Option<&str> {
+/// a memory operand names nothing either. Shared with
+/// [`crate::corroboration`].
+pub(crate) fn called_name(operand_text: &str) -> Option<&str> {
     let target = operand_text.trim();
     let names_a_callee = !target.is_empty()
         && target
@@ -394,13 +391,17 @@ mod tests {
         // pops the arguments it pushed, so the callee named at that
         // site is called cdecl — keyed by the callee, evidenced by the
         // cleanup line.
-        let readings = StackDisciplineDetector::new().from_listing("FUN_18003ab00", &caller_listing());
+        let readings =
+            StackDisciplineDetector::new().from_listing("FUN_18003ab00", &caller_listing());
         assert_eq!(readings.len(), 1);
         let record = convention(&readings[0]);
         assert_eq!(record.function, "FUN_1800412a0");
         assert_eq!(record.convention, CallingConvention::Cdecl);
         assert_eq!(record.method, InferenceMethod::CallerCleanup);
-        assert_eq!(record.confidence, Confidence::new(CALLER_CLEANUP_CONFIDENCE));
+        assert_eq!(
+            record.confidence,
+            Confidence::new(CALLER_CLEANUP_CONFIDENCE)
+        );
         assert_eq!(record.evidence, "0040110c  ADD ESP, 0x8");
     }
 
@@ -416,19 +417,23 @@ mod tests {
                          00401103  ADD ESP, 0x8\n\
                          00401107  CALL FUN_1800412a0\n\
                          0040110c  RET";
-        assert!(detector
-            .from_listing("FUN_x", reordered)
-            .iter()
-            .all(|reading| convention(reading).method != InferenceMethod::CallerCleanup));
+        assert!(
+            detector
+                .from_listing("FUN_x", reordered)
+                .iter()
+                .all(|reading| convention(reading).method != InferenceMethod::CallerCleanup)
+        );
         let not_adjacent = "00401100  MOV EBP, ESP\n\
                             00401103  CALL FUN_1800412a0\n\
                             00401108  NOP\n\
                             00401109  ADD ESP, 0x8\n\
                             0040110c  RET";
-        assert!(detector
-            .from_listing("FUN_x", not_adjacent)
-            .iter()
-            .all(|reading| convention(reading).method != InferenceMethod::CallerCleanup));
+        assert!(
+            detector
+                .from_listing("FUN_x", not_adjacent)
+                .iter()
+                .all(|reading| convention(reading).method != InferenceMethod::CallerCleanup)
+        );
     }
 
     #[test]
@@ -473,9 +478,11 @@ mod tests {
                        140001007  CALL FUN_1800412a0\n\
                        14000100c  ADD RSP, 0x20\n\
                        140001010  RET 0x20";
-        assert!(StackDisciplineDetector::new()
-            .from_listing("FUN_x", listing)
-            .is_empty());
+        assert!(
+            StackDisciplineDetector::new()
+                .from_listing("FUN_x", listing)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -489,9 +496,11 @@ mod tests {
                        00401007  MOV [ESP], RCX\n\
                        0040100a  CALL FUN_1800412a0\n\
                        0040100f  RET";
-        assert!(StackDisciplineDetector::new()
-            .from_listing("FUN_x", listing)
-            .is_empty());
+        assert!(
+            StackDisciplineDetector::new()
+                .from_listing("FUN_x", listing)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -508,7 +517,10 @@ mod tests {
             convention(&readings[0]).convention,
             CallingConvention::MicrosoftX64
         );
-        assert_eq!(convention(&readings[0]).evidence, "140001000  SUB RSP, 0x28");
+        assert_eq!(
+            convention(&readings[0]).evidence,
+            "140001000  SUB RSP, 0x28"
+        );
     }
 
     #[test]
@@ -517,9 +529,11 @@ mod tests {
         // even a `ret N` stands unclassified, and the detector yields
         // no reading rather than guessing the machine.
         let listing = "00401000  XOR EAX, EAX\n00401002  RET 0xC";
-        assert!(StackDisciplineDetector::new()
-            .from_listing("FUN_x", listing)
-            .is_empty());
+        assert!(
+            StackDisciplineDetector::new()
+                .from_listing("FUN_x", listing)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -527,8 +541,10 @@ mod tests {
         // The seam's default answers empty for a source that has not
         // opted in, and a function with nothing listed simply goes
         // unrecorded.
-        assert!(StackDisciplineDetector::new()
-            .from_listing("FUN_x", "")
-            .is_empty());
+        assert!(
+            StackDisciplineDetector::new()
+                .from_listing("FUN_x", "")
+                .is_empty()
+        );
     }
 }

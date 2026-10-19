@@ -57,6 +57,7 @@ pub(crate) fn convention_record(
 ) -> InferredType {
     InferredType::Convention(InferredConvention {
         function: function.to_string(),
+        callee: None,
         convention,
         method,
         confidence: confidence.into(),
@@ -69,8 +70,9 @@ pub(crate) fn convention_record(
 /// run of digits. `CreateFileA@28` spells 28; a plain `CloseHandle`, an
 /// ordinal placeholder, and a mangled name's trailing `@Z` spell nothing
 /// — the digit guard is what keeps decorated imports apart from the
-/// `@`-separated segments of a mangled symbol.
-fn declared_argument_bytes(name: &str) -> Option<&str> {
+/// `@`-separated segments of a mangled symbol. Shared with the
+/// cross-function corroboration pass of [`crate::corroboration`].
+pub(crate) fn declared_argument_bytes(name: &str) -> Option<&str> {
     let (base, digits) = name.rsplit_once('@')?;
     (!base.is_empty() && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
         .then_some(digits)

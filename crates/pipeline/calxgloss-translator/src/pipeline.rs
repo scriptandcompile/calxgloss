@@ -5674,7 +5674,10 @@ mod tests {
         println!("  wall time:          {wall:?}");
         println!("  engine round trips: {}", kuna.decompile_calls().len());
         println!("  documents filed:    {filed} of 11");
-        println!("  window high water:  {}", pipeline.scan_window_high_water());
+        println!(
+            "  window high water:  {}",
+            pipeline.scan_window_high_water()
+        );
         println!("  peak RSS before:    {rss_before} MiB");
         println!("  peak RSS across:    {rss_after} MiB");
     }

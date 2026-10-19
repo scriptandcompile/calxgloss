@@ -11,8 +11,12 @@
 //! function's locals from its surviving parameter readings and known
 //! contracts, the cross-function passes carry readings across function
 //! boundaries in both directions, the return-usage pass types each
-//! function's return from how its callers use the value, and everything
-//! assembles into one [`TypeInferenceResult`] with its scan provenance.
+//! function's return from how its callers use the value, and the
+//! convention corroborator raises readings the rest of the program's
+//! listings corroborate and lands call-site views of each detected
+//! callee in its callers — over exactly the kept bodies and listings,
+//! no extra reads — and everything assembles into one
+//! [`TypeInferenceResult`] with its scan provenance.
 //!
 //! The inline detectors are pure text analysis over one decompiled body,
 //! so the engine fetches each function's pseudo-C exactly once and reads
@@ -32,6 +36,7 @@ use std::collections::HashMap;
 
 use crate::confidence::resolve_conflicts;
 use crate::convention::ConventionDetector;
+use crate::corroboration::ConventionCorroborator;
 use crate::cross_function::{CalleeParams, CrossFunctionPropagator};
 use crate::error::Result;
 use crate::known_type::KnownTypePropagationEngine;
@@ -76,6 +81,7 @@ pub struct TypeInferEngine<S = KunaSource> {
     mangling: ManglingDetector,
     convention: ConventionDetector,
     stack_discipline: StackDisciplineDetector,
+    corroborator: ConventionCorroborator,
 }
 
 impl TypeInferEngine<KunaSource> {
@@ -92,6 +98,7 @@ impl TypeInferEngine<KunaSource> {
             mangling: ManglingDetector::new(),
             convention: ConventionDetector::new(),
             stack_discipline: StackDisciplineDetector::new(),
+            corroborator: ConventionCorroborator::new(),
         }
     }
 }
@@ -110,6 +117,7 @@ impl<S> TypeInferEngine<S> {
             mangling: ManglingDetector::new(),
             convention: ConventionDetector::new(),
             stack_discipline: StackDisciplineDetector::new(),
+            corroborator: ConventionCorroborator::new(),
         }
     }
 
@@ -131,7 +139,11 @@ impl<S> TypeInferEngine<S> {
     /// names' `@N` convention readings
     /// after the listing, and the local records and the
     /// cross-function records appended after the inline ones, in listing
-    /// order, so two scans of the same program diff cleanly.
+    /// order, so two scans of the same program diff cleanly. The
+    /// convention corroborator (issue #249) runs last, over the resolved
+    /// records and the kept listings: a corroborated reading replaces its
+    /// own record in place, and the call-site records it lands in the
+    /// callers append at the end, again in listing order.
     ///
     /// The caller→callee direction fetches each analyzed function's
     /// callers; a caller whose body the listing pass did not already
@@ -176,6 +188,11 @@ impl<S> TypeInferEngine<S> {
         // The bodies stay in hand after the inline pass so the
         // cross-function pass can re-read them without a second decompile.
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
+        // The kept machine listings, in listing order: the cross-function
+        // convention corroborator (issue #249) re-reads exactly these
+        // bodies for callee epilogues and caller cleanup, so it costs no
+        // read of its own.
+        let mut listings: Vec<(String, String)> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -253,10 +270,10 @@ impl<S> TypeInferEngine<S> {
             // these readings: the read is not a decompile work item, so
             // the skip-rate breaker's counts never move on it.
             match self.source.disassembly(&function.name).await {
-                Ok(listing) => inferences.extend(
-                    self.stack_discipline
-                        .from_listing(&function.name, &listing),
-                ),
+                Ok(listing) => {
+                    inferences.extend(self.stack_discipline.from_listing(&function.name, &listing));
+                    listings.push((function.name.clone(), listing));
+                }
                 Err(error) => {
                     warn!(
                         function = %function.name,
@@ -422,7 +439,7 @@ impl<S> TypeInferEngine<S> {
         // inference per target. The inline chain is first, so an inline
         // reading wins every tie against a propagated one.
         collected += locals.len() + propagated.len() + to_callee.len() + to_return.len();
-        let inferences = resolve_conflicts(
+        let resolved = resolve_conflicts(
             inline
                 .into_iter()
                 .chain(locals)
@@ -432,6 +449,31 @@ impl<S> TypeInferEngine<S> {
                 .collect(),
         );
 
+        // Cross-function convention corroboration (issue #249): a resolved
+        // convention reading that the rest of the program's listings
+        // corroborate — a `@N`-decorated function whose epilogue really
+        // pops the `N` bytes its name declares, with no caller cleaning
+        // up after any site — stands higher than it did alone, and every
+        // caller whose listing holds a call site to a detected callee
+        // carries a call-site record of that callee's convention. The
+        // pass reads only the listings the scan already took and the
+        // records already resolved: no extra decompiles, no second
+        // listing read. Its output competes once more in the same
+        // resolution: a corroborated reading outscores the single reading
+        // it agrees with and replaces it where that record first
+        // appeared, so a function keeps exactly one convention record;
+        // the call-site records key on the (caller, callee) pair no
+        // inline reading spells and land after the resolved records, in
+        // listing order.
+        let kept: Vec<(&str, &str)> = listings
+            .iter()
+            .map(|(name, text)| (name.as_str(), text.as_str()))
+            .collect();
+        let corroborated = self.corroborator.corroborate(&resolved, &kept);
+        collected += corroborated.len();
+        let inferences = resolve_conflicts(resolved.into_iter().chain(corroborated).collect());
+        let conflicts_resolved = collected - inferences.len();
+
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
@@ -440,7 +482,7 @@ impl<S> TypeInferEngine<S> {
             binary = %metadata.binary,
             functions = functions.len(),
             inferences = inferences.len(),
-            conflicts_resolved = collected - inferences.len(),
+            conflicts_resolved,
             skipped,
             duration_secs = metadata.duration_secs,
             "Inferred types"
@@ -593,7 +635,11 @@ mod tests {
         }
 
         async fn disassembly(&self, name: &str) -> Result<String> {
-            self.stats.disassemblies.lock().unwrap().push(name.to_string());
+            self.stats
+                .disassemblies
+                .lock()
+                .unwrap()
+                .push(name.to_string());
             if self.fail_disassembly.iter().any(|f| f == name) {
                 return Err(EngineError::Reported {
                     message: format!("the engine cannot disassemble {name}"),
@@ -1919,7 +1965,10 @@ mod tests {
             "one listing read per listed function, in listing order"
         );
         assert!(
-            program.decompiled().iter().any(|name| name == "FUN_off_listing"),
+            program
+                .decompiled()
+                .iter()
+                .any(|name| name == "FUN_off_listing"),
             "the off-listing caller's body was fetched — and only its body"
         );
         assert!(
@@ -1992,15 +2041,31 @@ mod tests {
         assert_eq!(record.evidence, "00401108  ADD ESP, 0x8");
 
         // The caller pops for its callee but cleans nothing of its own:
-        // a bare `ret` is no epilogue reading.
-        assert!(
-            result
-                .inferences
-                .iter()
-                .all(|inference| inference.function() != "FUN_18003ab00"
-                    || !matches!(inference, InferredType::Convention(_))),
+        // a bare `ret` is no epilogue reading — the only convention
+        // record naming the caller is the corroborator's call-site view
+        // of the callee, keyed by the caller and naming the callee with
+        // the callee's own convention and confidence.
+        let caller_records: Vec<&InferredConvention> = result
+            .inferences
+            .iter()
+            .filter_map(|inference| match inference {
+                InferredType::Convention(record) if record.function == "FUN_18003ab00" => {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            caller_records.len(),
+            1,
             "a bare ret reads no convention for the caller itself"
         );
+        let view = caller_records[0];
+        assert_eq!(view.callee.as_deref(), Some("FUN_1800412a0"));
+        assert_eq!(view.convention, CallingConvention::Cdecl);
+        assert_eq!(view.method, InferenceMethod::CallSiteConvention);
+        assert_eq!(view.confidence, Confidence::new(70));
+        assert_eq!(view.evidence, "00401103  CALL FUN_1800412a0");
     }
 
     #[tokio::test]
@@ -2094,6 +2159,267 @@ mod tests {
         );
     }
 
+    // ---- cross-function convention corroboration (issue #249) ----
+
+    /// A canned program: a `@12`-decorated function whose epilogue pops
+    /// the twelve bytes its name declares, and one esp-spelled caller
+    /// that calls it and cleans up after the site however the test asks.
+    fn corroborated_program(caller_cleanup: bool) -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("paint@12"), summary("FUN_caller")];
+        program.bodies.insert(
+            "paint@12".into(),
+            function("paint@12", "undefined paint@12(void)", "  return;\n"),
+        );
+        program.bodies.insert(
+            "FUN_caller".into(),
+            function(
+                "FUN_caller",
+                "undefined FUN_caller(void)",
+                "  paint@12();\n",
+            ),
+        );
+        program.listings.insert(
+            "paint@12".into(),
+            "00401000  PUSH EBP\n\
+             00401001  MOV EBP, ESP\n\
+             00401007  POP EBP\n\
+             00401008  RET 0xC"
+                .into(),
+        );
+        program.listings.insert(
+            "FUN_caller".into(),
+            if caller_cleanup {
+                "00401100  PUSH EBP\n\
+                 00401103  CALL paint@12\n\
+                 00401108  ADD ESP, 0xC\n\
+                 0040110b  POP EBP\n\
+                 0040110c  RET"
+            } else {
+                "00401100  PUSH EBP\n\
+                 00401103  CALL paint@12\n\
+                 00401108  POP EBP\n\
+                 0040110c  RET"
+            }
+            .into(),
+        );
+        program
+    }
+
+    /// The per-function convention records naming one function — the
+    /// records keyed by it with no callee — for counting that exactly
+    /// one stands.
+    fn own_convention_records(result: &TypeInferenceResult, function: &str) -> usize {
+        result
+            .inferences
+            .iter()
+            .filter(|inference| {
+                matches!(inference, InferredType::Convention(record)
+                    if record.function == function && record.callee.is_none())
+            })
+            .count()
+    }
+
+    /// The call-site view one caller carries of one callee.
+    fn call_site_view<'a>(
+        result: &'a TypeInferenceResult,
+        caller: &str,
+        callee: &str,
+    ) -> Option<&'a InferredConvention> {
+        result
+            .inferences
+            .iter()
+            .find_map(|inference| match inference {
+                InferredType::Convention(record)
+                    if record.function == caller && record.callee.as_deref() == Some(callee) =>
+                {
+                    Some(record)
+                }
+                _ => None,
+            })
+    }
+
+    #[tokio::test]
+    async fn agreement_across_functions_resolves_above_the_strongest_single_reading() {
+        // `paint@12` declares twelve argument bytes, its epilogue pops
+        // exactly those, and its one caller cleans up after no site:
+        // three spellings across functions agree, so the reading lands
+        // above every single one — and the persisted record shows the
+        // bump. The scan still reads each listing exactly once.
+        let program = corroborated_program(false);
+        let result = scan(program.clone()).await;
+
+        let record = convention_finding(&result, "paint@12");
+        assert_eq!(record.convention, CallingConvention::Stdcall);
+        assert_eq!(record.method, InferenceMethod::CorroboratedConvention);
+        assert_eq!(
+            record.confidence,
+            Confidence::new(92),
+            "the agreement outranks the epilogue band and every single reading"
+        );
+        assert_eq!(
+            record.evidence,
+            "00401008  RET 0xC; no caller cleanup at FUN_caller; declared bytes @12 agrees"
+        );
+        assert_eq!(
+            own_convention_records(&result, "paint@12"),
+            1,
+            "the corroborated reading replaces the single reading it agrees with, it does not join it"
+        );
+
+        // The caller's view of its callee matches the callee's surviving
+        // record: same convention, same bumped confidence, keyed by the
+        // caller and naming the callee, evidenced by the call row.
+        let view = call_site_view(&result, "FUN_caller", "paint@12")
+            .expect("a call-site convention record in the caller");
+        assert_eq!(view.convention, CallingConvention::Stdcall);
+        assert_eq!(view.method, InferenceMethod::CallSiteConvention);
+        assert_eq!(view.confidence, Confidence::new(92));
+        assert_eq!(view.evidence, "00401103  CALL paint@12");
+
+        // No extra reads: the corroborator works over the listings the
+        // walk already kept — one decompile and one listing read per
+        // listed function, in listing order, and nothing more.
+        assert_eq!(program.decompiled(), ["paint@12", "FUN_caller"]);
+        assert_eq!(program.disassembled(), ["paint@12", "FUN_caller"]);
+    }
+
+    #[tokio::test]
+    async fn a_disagreeing_caller_leaves_the_higher_reading_standing_alone() {
+        // The same decorated callee, but its caller pops after the site:
+        // the caller-cleanup reading (cdecl, 70) competes with the
+        // epilogue reading (stdcall, 80) for the same function, nothing
+        // is corroborated, and resolution leaves exactly one record —
+        // the higher one. The caller's view matches that survivor.
+        let program = corroborated_program(true);
+        let result = scan(program.clone()).await;
+
+        let record = convention_finding(&result, "paint@12");
+        assert_eq!(record.convention, CallingConvention::Stdcall);
+        assert_eq!(record.method, InferenceMethod::CalleeEpilogue);
+        assert_eq!(record.confidence, Confidence::new(80));
+        assert_eq!(
+            own_convention_records(&result, "paint@12"),
+            1,
+            "a function keeps exactly one convention record"
+        );
+
+        let view = call_site_view(&result, "FUN_caller", "paint@12")
+            .expect("the caller still carries its callee's surviving convention");
+        assert_eq!(view.convention, CallingConvention::Stdcall);
+        assert_eq!(view.confidence, Confidence::new(80));
+    }
+
+    #[tokio::test]
+    async fn a_detected_convention_lands_a_view_in_every_caller_in_listing_order() {
+        // One epilogue-read callee, two callers: each caller's listing
+        // carries the view, keyed by the caller and naming the callee,
+        // and the records follow listing order — twice over, the same
+        // scan of the same program diffs cleanly.
+        let mut program = corroborated_program(false);
+        program.listing.push(summary("FUN_second"));
+        program.bodies.insert(
+            "FUN_second".into(),
+            function(
+                "FUN_second",
+                "undefined FUN_second(void)",
+                "  paint@12();\n",
+            ),
+        );
+        program.listings.insert(
+            "FUN_second".into(),
+            "00401200  CALL paint@12\n00401205  RET".into(),
+        );
+
+        let one = scan(program.clone()).await;
+        let two = scan(program).await;
+        let views = |result: &TypeInferenceResult| -> Vec<(String, Option<String>)> {
+            result
+                .inferences
+                .iter()
+                .filter_map(|inference| match inference {
+                    InferredType::Convention(record)
+                        if record.method == InferenceMethod::CallSiteConvention =>
+                    {
+                        Some((record.function.clone(), record.callee.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            views(&one),
+            [
+                ("FUN_caller".to_string(), Some("paint@12".to_string())),
+                ("FUN_second".to_string(), Some("paint@12".to_string())),
+            ],
+            "one view per caller, in listing order, identical across scans"
+        );
+        assert_eq!(
+            views(&one),
+            views(&two),
+            "two scans of one program diff cleanly"
+        );
+    }
+
+    #[tokio::test]
+    async fn corroborated_x64_shape_lands_above_its_tier_at_the_clean_sites() {
+        // A callee's Microsoft-x64 shape reading, corroborated by a call
+        // site in an rsp-spelled caller that pops nothing — its `add rsp`
+        // frees exactly its own prologue allocation, the frame teardown
+        // the convention itself emits — climbs above the shape-only tier.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  FUN_18003e750();\n",
+            ),
+        );
+        program.listings.insert(
+            "FUN_18003e750".into(),
+            "140001000  SUB RSP, 0x28\n\
+             140001007  MOV [RSP+0x8], RCX\n\
+             14000100c  RET"
+                .into(),
+        );
+        program.listings.insert(
+            "FUN_18003ab00".into(),
+            "140002000  SUB RSP, 0x28\n\
+             140002007  MOV [RSP+0x8], RCX\n\
+             14000200c  CALL FUN_18003e750\n\
+             140002011  ADD RSP, 0x28\n\
+             140002015  RET"
+                .into(),
+        );
+        let result = scan(program).await;
+
+        let record = convention_finding(&result, "FUN_18003e750");
+        assert_eq!(record.convention, CallingConvention::MicrosoftX64);
+        assert_eq!(record.method, InferenceMethod::CorroboratedConvention);
+        assert_eq!(record.confidence, Confidence::new(75));
+        assert_eq!(
+            record.evidence,
+            "140001000  SUB RSP, 0x28; no caller cleanup at FUN_18003ab00"
+        );
+        assert_eq!(own_convention_records(&result, "FUN_18003e750"), 1);
+
+        let view = call_site_view(&result, "FUN_18003ab00", "FUN_18003e750")
+            .expect("a call-site convention record in the caller");
+        assert_eq!(view.convention, CallingConvention::MicrosoftX64);
+        assert_eq!(view.confidence, Confidence::new(75));
+    }
+
     #[tokio::test]
     async fn a_failing_listing_read_goes_unrecorded_and_never_moves_the_breaker() {
         // A listing read that fails, and one that answers empty, simply
@@ -2105,7 +2431,11 @@ mod tests {
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
             "FUN_1800412a0".into(),
-            function("FUN_1800412a0", "undefined FUN_1800412a0(void)", "  return;\n"),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  return;\n",
+            ),
         );
         program.fail_disassembly = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         // FUN_1800412a0 has no canned listing: its read answers empty.

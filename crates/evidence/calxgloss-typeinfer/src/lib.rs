@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into seventeen modules:
+//! The crate is organized into eighteen modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
@@ -79,6 +79,14 @@
 //!   stack cleanup the convention ever leaves behind — one shape-only
 //!   reading at the modest band, routed by the same machine-class
 //!   dispatch as the 32-bit family.
+//! - [`corroboration`] - Calling-convention detection across functions:
+//!   `ConventionCorroborator` is the post-inline pass that trusts
+//!   agreement above any single reading — a callee epilogue, clean call
+//!   sites in other listings, and the declared `@N` bytes all agreeing
+//!   raise the reading, and every detected callee convention lands a
+//!   call-site record in each caller whose listing calls it, keyed by
+//!   the caller and naming the callee, over exactly the listings the
+//!   scan already read.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
@@ -98,6 +106,7 @@
 
 pub mod confidence;
 pub mod convention;
+pub mod corroboration;
 pub mod cross_function;
 pub mod engine;
 pub mod error;

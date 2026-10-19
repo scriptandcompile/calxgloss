@@ -352,6 +352,8 @@ fn method_breakdown(result: &TypeInferenceResult) -> Vec<String> {
         InferenceMethod::CalleeEpilogue,
         InferenceMethod::CallerCleanup,
         InferenceMethod::X64Shape,
+        InferenceMethod::CorroboratedConvention,
+        InferenceMethod::CallSiteConvention,
     ]
     .into_iter()
     .map(|method| {
@@ -397,7 +399,12 @@ fn inference_target(inference: &InferredType) -> String {
             None => format!("{} arg {}", record.callee, record.arg_index + 1),
         },
         InferredType::Return(_) => "return".to_string(),
-        InferredType::Convention(_) => "convention".to_string(),
+        // A call-site view names the callee it spells, so it stands
+        // beside the caller's own convention rather than on top of it.
+        InferredType::Convention(record) => match record.callee.as_deref() {
+            Some(callee) => format!("{callee} convention"),
+            None => "convention".to_string(),
+        },
     }
 }
 
@@ -489,6 +496,7 @@ mod tests {
             }),
             InferredType::Convention(InferredConvention {
                 function: "?paint@Widget@@QAEXXZ".into(),
+                callee: None,
                 convention: CallingConvention::Thiscall,
                 method: InferenceMethod::MangledConvention,
                 confidence: Confidence::new(90),
@@ -541,6 +549,7 @@ mod tests {
             param("FUN_11", InferenceMethod::Mangling),
             InferredType::Convention(InferredConvention {
                 function: "?paint@Widget@@QAEXXZ".into(),
+                callee: None,
                 convention: CallingConvention::Thiscall,
                 method: InferenceMethod::MangledConvention,
                 confidence: Confidence::new(90),
@@ -548,6 +557,7 @@ mod tests {
             }),
             InferredType::Convention(InferredConvention {
                 function: "CreateFileA@28".into(),
+                callee: None,
                 convention: CallingConvention::Stdcall,
                 method: InferenceMethod::ImportDecoration,
                 confidence: Confidence::new(85),
@@ -555,6 +565,7 @@ mod tests {
             }),
             InferredType::Convention(InferredConvention {
                 function: "FUN_18003e750".into(),
+                callee: None,
                 convention: CallingConvention::Stdcall,
                 method: InferenceMethod::CalleeEpilogue,
                 confidence: Confidence::new(80),
@@ -562,6 +573,7 @@ mod tests {
             }),
             InferredType::Convention(InferredConvention {
                 function: "FUN_1800412a0".into(),
+                callee: None,
                 convention: CallingConvention::Cdecl,
                 method: InferenceMethod::CallerCleanup,
                 confidence: Confidence::new(70),
@@ -569,10 +581,27 @@ mod tests {
             }),
             InferredType::Convention(InferredConvention {
                 function: "FUN_18003e750".into(),
+                callee: None,
                 convention: CallingConvention::MicrosoftX64,
                 method: InferenceMethod::X64Shape,
                 confidence: Confidence::new(65),
                 evidence: "140001000  SUB RSP, 0x28".into(),
+            }),
+            InferredType::Convention(InferredConvention {
+                function: "paint@12".into(),
+                callee: None,
+                convention: CallingConvention::Stdcall,
+                method: InferenceMethod::CorroboratedConvention,
+                confidence: Confidence::new(92),
+                evidence: "00401008  RET 0xC; no caller cleanup at FUN_caller".into(),
+            }),
+            InferredType::Convention(InferredConvention {
+                function: "FUN_caller".into(),
+                callee: Some("paint@12".into()),
+                convention: CallingConvention::Stdcall,
+                method: InferenceMethod::CallSiteConvention,
+                confidence: Confidence::new(92),
+                evidence: "00401103  CALL paint@12".into(),
             }),
         ]);
         let breakdown = method_breakdown(&result);
@@ -593,6 +622,8 @@ mod tests {
             InferenceMethod::CalleeEpilogue,
             InferenceMethod::CallerCleanup,
             InferenceMethod::X64Shape,
+            InferenceMethod::CorroboratedConvention,
+            InferenceMethod::CallSiteConvention,
         ] {
             assert!(
                 breakdown.contains(&format!("{method} 1")),
@@ -605,6 +636,7 @@ mod tests {
     fn a_convention_record_reports_as_convention() {
         let record = InferredType::Convention(InferredConvention {
             function: "CreateFileA@28".into(),
+            callee: None,
             convention: CallingConvention::Stdcall,
             method: InferenceMethod::ImportDecoration,
             confidence: Confidence::new(85),
