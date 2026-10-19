@@ -31,10 +31,8 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X7 | Parallel pre-batch evidence scans — run the eleven scan passes concurrently over the shared read cache so a cold scan phase costs roughly the engine's time, not engine + Σ parse | pipeline (`calxgloss-translator`) + integrations (`calxgloss-kuna`, `calxgloss-decomp`) | — | ✅ done | — | [#234](https://github.com/scriptandcompile/calxgloss/issues/234) |
 | P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | `/to-tickets` from #224 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
-| P12.6 | Calling-convention detection — classify cdecl/stdcall/fastcall/thiscall/x64 per function so the FFI binding and the ground truth behind it are right | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-decomp`, `calxgloss-kuna`, `calxgloss-prompts`) + pipeline (`calxgloss-translator`, `calxgloss-testgen`) + interface (`calxgloss-cli`) | — | ✅ done | — | [#226](https://github.com/scriptandcompile/calxgloss/issues/226) |
-| P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #225 | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
+| P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | ⬜ not started | Work frontier: #252 (tickets #252–#257 filed) | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #227 | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
@@ -44,40 +42,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## X7 — Parallel pre-batch evidence scans (pipeline + integrations)
-
-**Cold scan-phase wall time is full decompile time plus every scan's parse
-time, because the eleven pre-batch scans run strictly one after another and
-the engine thread idles while each later scan parses.** The scan read cache
-(ADR-0043) already makes the engine cost once-per-binary via its per-key
-`OnceCell` dedup, so the scans can run concurrently — a bounded window of
-four at a time — and engine time and parse CPU overlap for free. One
-ordering edge survives the fan-out: callback detection awaits type
-inference's completion latch before deepening its findings. The per-pass
-heartbeat becomes one phase-level heartbeat so the dashboard's "n of m" row
-stays honest while passes interleave. Persisted documents stay
-byte-identical to a sequential run. Spec: #234. Tickets: #236 (one shared
-preamble for both batch entry points — landed), #237 (each scan becomes an
-owned job — landed), #238 (the completion latch — landed), #239 (the
-phase-scoped heartbeat — landed), #240 (four scans at a time — landed), and #241
-(measure on a real target and close the track — landed).
-
-**Closed (issue #241).** Measured on eqmain.dll (4,076 functions, 16 cores):
-the cold scan phase went **142.7 s sequential → 113.9 s fan-out** (1.25×), and
-a parse-only decomposition (warm cache, zero engine round trips) went
-**99.5 s → 56.6 s** — the engine's ~43 s overlaps the parse as the spec's
-`max(engine, Σ parse) + tail` claim predicts, with a ~14 s tail. The gap the
-claim understates: cold fan-out (113.9 s) sits well above `max(E, Σ parse)`,
-because concurrent cold scans bunch on the same listing region and advance in
-lockstep behind shared per-key cells — the engine is busy only ~38% of the
-phase. That triggers the spec's out-of-scope note (revisit standalone prefetch
-if measurement shows engine idling); recorded on #234, not implemented. The
-window stays at **four**, now measured: widening to eleven cost both paths
-(parse-only 57.3 s, cold 153.8 s) while adding kept-body copies, and a test
-pins the cap (`the_scan_phase_window_never_runs_more_than_the_named_cap_at_a_time`).
-Peak RSS across the phase is ~12.6 GiB either way — dominated by the
-once-per-binary engine and memo cost, not the window, which adds ~60 MiB.
 
 ## P12.5 — Branch-targeted baseline tests (evidence + pipeline)
 
@@ -107,71 +71,6 @@ second load. Ground-truth capture is untouched: the cases flow through the
 existing Wine baseline run, and the shared test-case schema does not change.
 Spec: #224. Tickets: not yet filed (`/to-tickets`).
 
-## P12.6 — Calling-convention detection (evidence + integrations + pipeline + interface)
-
-**A wrong calling convention corrupts the FFI binding, and with it the
-baseline ground truth itself.** Today the translator spells `__stdcall` into
-every synthesized signature when the decompiler line names none, testgen's
-binding builder only echoes whatever the signature string says, and the
-pseudo-C hides stack discipline entirely — so a mismatched cleanup poisons
-ground truth and every later attempt chases a phantom divergence. The reading
-lives in `calxgloss-typeinfer` as a new domain detector: per-function readings
-over the kept bodies plus a new per-function disassembly read classify the
-convention (cdecl, stdcall, fastcall, thiscall, Microsoft x64) with evidence
-lines and Evidence-scale confidence, and a cross-function pass over the same
-bodies corroborates callee `ret N` against caller stack cleanup and declared
-argument bytes — agreement scoring above any single reading, the flag-family
-precedent. The single engine seam gains exactly one read: `ScanSource` grows a
-disassembly-text method with a default-empty impl (the `engine_provenance`
-precedent), implemented in-process by the Kuna source and cached under the
-scan-cache convention (ADR-0043); x86 and x64 evidence families key on the
-listing's own register spellings and never cross-fire. Records join the
-existing type-inference artifact as a fifth tagged union variant — old
-documents still load — and resolution keeps one convention per function
-(highest wins, tie keeps first seen); nothing is written back to the program
-(ADR-0020). Consumers: a CALLING CONVENTION findings section on the
-module-context and escalate prompts (the control-flow-findings pattern), the
-translator's signature synthesis spelling the detected convention instead of
-the `__stdcall` default — flowing into testgen FFI bindings and shim
-signatures through the existing parser — and the CLI inference listing. The
-cheapest first wins have landed: #245 grew the seam's disassembly read,
-#246 turned the convention letter the mangling decoder already reads — and
-the `@N` import decoration — into persisted, resolved convention records,
-and #247 read the 32-bit stack discipline off the listing itself: one
-disassembly read per listed function riding the breaker-gated window, the
-first callee epilogue `ret N` a stdcall reading at the exact-epilogue band,
-a caller `add esp, N` right after a call a cdecl reading keyed by the named
-callee at the solid band — keyed on the stack register the listing spells,
-so an rsp listing never yields a 32-bit reading and a failed read never
-moves the decompile breaker's counts, and #248 read the Microsoft-x64
-shape off the same listing through the same dispatch: a shadow-space
-`sub rsp` prologue, the argument registers spelled, and no cleanup the
-convention ever leaves behind — the post-call `add rsp` that merely
-frees the prologue's own allocation being the frame teardown, not a
-cleanup — one shape-only reading at the modest band of 65, evidenced by
-the prologue line, keyed on the listing's own register spelling so the
-64-bit family never fires on a 32-bit listing either, and #249 made the
-readings corroborate each other across functions: a post-inline pass
-over the resolved records and the kept listings — no extra reads —
-raises a callee epilogue whose declared `@N` bytes, epilogue count, and
-absence of caller cleanup at every site agree to 92, above every single
-reading, raises an x64 shape corroborated by clean call sites in
-`rsp`-spelled callers to 75, and lands a call-site record of the
-callee's final convention in each caller whose listing calls it, keyed
-by the caller and naming the callee so the caller's extern spelling
-matches the callee's record; disagreement leaves the higher-confidence
-reading standing, and a function keeps exactly one convention record; #250
-rendered the records in the module-context and escalate prompts, and #251
-closed the loop on the consumer side: signature synthesis consults the
-persisted record and spells the detected convention's C word — the enum
-owning its spellings, Microsoft x64 spelling none because the parser's
-default already fits it — wherever the decompiler line named none, a named
-line still winning and a call-site view never spelling its caller's
-signature, so the refined string flows through the existing parser into
-the FFI binding and shim signatures carrying the detected convention
-instead of the `__stdcall` default.
-Spec: #226. Tickets: #245–#251 (all landed).
-
 ## P13 — Global-state reference sets (evidence + pipeline + shared + interface)
 
 **No pass computes per-function read/write sets of program globals, yet four
@@ -194,7 +93,7 @@ escalate prompts carrying a per-function purity flag (struct state, not a Rust
 = today's order exactly); `SideEffectKind` gains `GlobalRead`/`GlobalWrite`
 naming the global, with `Other(String)` still the escape hatch; and the
 shared-globals index lands as a typed artifact for reviewers and later
-analyses. Spec: #225. Tickets: not yet filed (`/to-tickets`).
+analyses. Spec: #225. Tickets: filed — [#252](https://github.com/scriptandcompile/calxgloss/issues/252)–[#257](https://github.com/scriptandcompile/calxgloss/issues/257) (frontier: #252).
 
 ## P13.5 — Float/SIMD usage flagging (evidence + integrations + pipeline + interface)
 
