@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-14
 - **Deciders:** Arthur (solo project)
+- **Amended:** 2026-10-19 (issue #255) — the global-identification rule is no longer restated inside the sync crate: the data-race pass consumes the `calxgloss-globalstate` crate's pure access-site reading and keeps only its lock-span attribution on top, so the restated-rule caveat below is retired in favor of one implementation.
 
 ## Context
 
@@ -25,17 +26,20 @@ the lock-order pairing, over the same kept bodies:
 
 - A **global** is a plain identifier the decompiler did not name as
   one of its own locals — not `param_*`, not `local_*`, not a
-  `*Var<digits>` family. That is the memory crate's existing
-  `is_decompiler_local` rule, restated here so the two crates cannot
-  disagree about what a program symbol is.
+  `*Var<digits>` family. Since the 2026-10-19 amendment this rule
+  lives once, in the `calxgloss-globalstate` crate: the sync pass
+  consumes that crate's pure access-site reading instead of restating
+  the rule, so no two crates can disagree about the same identifier.
 - An access **site** is an identifier outside string and char
   literals, outside a call — the whole call including its arguments is
   skipped, so a lock object or an operation constant passed to a
   callee names nothing this reading can key on — and not a qualified
   or member name, a cast-position type word, a declaration's type, or
-  a control keyword. The type words come from the mutex detector's
-  own `is_type_word` (made `pub(crate)`), so the two readings cannot
-  disagree about what a type word is. Control keywords keep their
+  a control keyword. The site rule, its type-word vocabulary
+  included, is likewise the global-state crate's single shared rule
+  the sync pass reads through (amended); it used to reuse the mutex
+  detector's `is_type_word` so the two in-sync readings could not
+  disagree. Control keywords keep their
   parens scanned: `if (DAT_flag)` still names an access.
 - A **protected span** is a recognized acquire→release pairing,
   paired by the mutex detector's own rule — a release closes the most
@@ -85,3 +89,12 @@ the lock-order pairing, over the same kept bodies:
   floor is what keeps that noise cheap to read past.
 - The engine keeps every body for the scan's duration, the ADR-0033
   consequence, now carrying two readings instead of one.
+- Since the 2026-10-19 amendment (issue #255) the global and site
+  rules are `calxgloss-globalstate`'s single implementation and the
+  sync pass consumes its sites — name, position, kind — keeping only
+  its lock-span attribution: race findings and the global-state
+  artifact name the same accesses by construction, and the
+  restated-rule risk this ADR originally accepted is gone. The sync
+  scan still runs with no global-state document in the workspace —
+  the reading is consumed in-process, not from the persisted
+  artifact.

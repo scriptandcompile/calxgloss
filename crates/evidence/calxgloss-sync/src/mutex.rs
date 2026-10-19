@@ -287,11 +287,11 @@ fn plain_variable(arg: &str) -> Option<&str> {
 /// names the decompiler writes when the program carries pthread debug
 /// info.
 ///
-/// The cross-function data-race reading reuses this vocabulary so the
-/// two readings cannot disagree about what a type word is — a word the
-/// pairing strips out of a cast is a word the race reading never reads
-/// as a global.
-pub(crate) fn is_type_word(word: &str) -> bool {
+/// The cross-function data-race reading no longer restates this
+/// vocabulary: which identifiers name program globals — type words
+/// included — is the global-state crate's single shared rule, read
+/// through its reading (issue #255).
+fn is_type_word(word: &str) -> bool {
     matches!(
         word,
         "undefined"

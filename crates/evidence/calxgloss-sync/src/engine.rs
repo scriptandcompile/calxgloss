@@ -990,6 +990,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_race_reading_runs_without_a_global_state_document() {
+        // The pairing consumes the global-state crate's reading in
+        // process, not its persisted artifact: this scan has no
+        // global-state document behind it — the global-state engine
+        // never ran — and the race finding still lands, so the two
+        // engines stay independently runnable in either order.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  DAT_counter = iVar1 + 1;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  uVar1 = DAT_counter;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.kind() == "data_race"),
+            "no global-state scan ran, no document exists, the race finding still lands"
+        );
+    }
+
+    #[tokio::test]
     async fn data_race_findings_append_after_the_per_function_findings() {
         // One function carries an in-body lock pair and an unprotected
         // store the other function reads: the pairings ride the

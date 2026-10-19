@@ -21,10 +21,13 @@
 //! [`SyncFinding::LockOrder`] per conflicting lock pair, naming both
 //! functions and both lock objects, with the two acquire orders as
 //! evidence. The same kept bodies then carry the data-race reading:
-//! shared variables are the globals named in the bodies — plain
-//! identifiers that are not the decompiler's own local spellings —
-//! and an access inside a recognized acquire→release span counts as
-//! protected by that span's lock object. Two functions naming one
+//! which identifiers name program globals is the global-state
+//! crate's shared rule, consumed through its pure reading
+//! ([`calxgloss_globalstate::global_sites`]) so a race finding and a
+//! global-state record can never name different accesses for the
+//! same identifier. This crate keeps only its lock-span attribution
+//! on top: an access inside a recognized acquire→release span counts
+//! as protected by that span's lock object. Two functions naming one
 //! global land one [`SyncFinding::DataRace`] per pair unless one lock
 //! object covers every access on both sides — the same-lock rule is
 //! the false-positive gate, so properly locked data claims nothing.
@@ -32,11 +35,9 @@
 use crate::mutex::{MutexDetector, lock_object};
 use crate::types::{DataRace, LockOrder, SyncFinding};
 use calxgloss_decomp::DecompiledFunction;
+use calxgloss_globalstate::{AccessKind, global_sites, statement_at};
 
-use calxgloss_types::{
-    NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, closing_paren, is_ident_byte,
-    skip_char, skip_string, skip_ws,
-};
+use calxgloss_types::{NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites};
 
 /// The scan: plain-identifier callees, member accesses skipped, and C
 /// keywords not calls — the same configuration the mutex pairing walk
@@ -215,62 +216,17 @@ fn lock_sequence(func: &DecompiledFunction, mutex: &MutexDetector) -> Vec<String
 // The data-race reading
 // ============================================================
 
-/// One access to a global in a body: where the name sits, whether the
-/// body stores through it or reads it, and the lock objects whose
-/// recognized acquire→release spans cover the site. An empty `locks`
-/// means the access stands outside every pairing — unprotected as far
-/// as this reading can see.
+/// One global access site as the data-race reading keeps it: the
+/// name, position, and kind the global-state crate's shared reading
+/// produced ([`calxgloss_globalstate::GlobalSite`]), annotated with
+/// the lock objects whose recognized acquire→release spans cover the
+/// site. An empty `locks` means the access stands outside every
+/// pairing — unprotected as far as this reading can see.
 struct GlobalAccess {
     name: String,
     offset: usize,
     kind: AccessKind,
     locks: Vec<String>,
-}
-
-/// Whether an access stores the global or reads it. A race pair only
-/// counts when both show up across the two functions: two functions
-/// that each only overwrite the same slot lose updates, but neither
-/// observes a half-written value, and the classic read/write race is
-/// what this detector reports.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AccessKind {
-    /// The body reads the global's value — a test, a return, a copy.
-    Read,
-    /// The body stores through the global — an assignment, a compound
-    /// `+=`-style store, or an `++`/`--` bump.
-    Write,
-}
-
-/// Whether the global whose name starts at `offset` and ends at
-/// `name_end` is being stored to: the next non-space bytes open an
-/// assignment (`=`, never an `==` comparison, or a compound `+=`-style
-/// store), or the name sits right next to an `++`/`--` bump on either
-/// side. Everything else — a test, a return, a plain copy — reads.
-fn access_kind(body: &str, offset: usize, name_end: usize) -> AccessKind {
-    let bytes = body.as_bytes();
-    let bumps = bytes[name_end..].starts_with(b"++")
-        || bytes[name_end..].starts_with(b"--")
-        || offset >= 2 && matches!(&bytes[offset - 2..offset], [b'+', b'+'] | [b'-', b'-']);
-    if bumps {
-        return AccessKind::Write;
-    }
-    let Some(skip) = bytes[name_end..]
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-    else {
-        return AccessKind::Read;
-    };
-    let rest = &bytes[name_end + skip..];
-    let assigns = match rest.first() {
-        Some(b'=') => !rest.starts_with(b"=="),
-        Some(b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^') => rest.get(1) == Some(&b'='),
-        _ => false,
-    };
-    if assigns {
-        AccessKind::Write
-    } else {
-        AccessKind::Read
-    }
 }
 
 /// One recognized acquire→release span: the lock object the pairing
@@ -282,27 +238,26 @@ struct LockSpan {
     end: usize,
 }
 
-/// The global accesses one body makes, in body order: every plain
-/// identifier naming program data, annotated with the lock objects
-/// whose spans cover it. An access inside a span is protected by that
-/// span's lock; one inside nested spans is protected by each of them.
+/// The global accesses one body makes, in body order: every site the
+/// shared global-identification reading produces, annotated with the
+/// lock objects whose spans cover it. An access inside a span is
+/// protected by that span's lock; one inside nested spans is
+/// protected by each of them.
 fn global_accesses(func: &DecompiledFunction, mutex: &MutexDetector) -> Vec<GlobalAccess> {
     let spans = lock_spans(&func.body, mutex);
-    let mut accesses = Vec::new();
-    for (offset, name) in global_name_sites(&func.body) {
-        let locks = spans
-            .iter()
-            .filter(|span| span.start < offset && offset < span.end)
-            .map(|span| span.lock.clone())
-            .collect();
-        accesses.push(GlobalAccess {
-            kind: access_kind(&func.body, offset, offset + name.len()),
-            name: name.to_string(),
-            offset,
-            locks,
-        });
-    }
-    accesses
+    global_sites(&func.body)
+        .into_iter()
+        .map(|site| GlobalAccess {
+            locks: spans
+                .iter()
+                .filter(|span| span.start < site.offset && site.offset < span.end)
+                .map(|span| span.lock.clone())
+                .collect(),
+            name: site.name,
+            offset: site.offset,
+            kind: site.kind,
+        })
+        .collect()
 }
 
 /// The recognized acquire→release spans in a body: every direct call
@@ -419,163 +374,6 @@ fn access_statement(body: &str, accesses: &[GlobalAccess], name: &str) -> String
     // The name is shared, so a side always has an access; the
     // fallback only guards the type.
     statement_at(body, first.unwrap_or(0))
-}
-
-/// The one statement of the body around `offset`, trimmed and without
-/// its closing `;`: from the terminator that opens it (a `;`, `{`, or
-/// `}`) to the `;` that closes it, or the end of the line if the
-/// decompiler left the statement open.
-fn statement_at(body: &str, offset: usize) -> String {
-    let bytes = body.as_bytes();
-    let start = (0..offset)
-        .rev()
-        .find(|at| matches!(bytes[*at], b';' | b'{' | b'}'))
-        .map_or(0, |at| at + 1);
-    let end = bytes[offset..]
-        .iter()
-        .position(|b| *b == b';' || *b == b'\n')
-        .map_or(body.len(), |at| offset + at);
-    body[start..end].trim().trim_end_matches(';').to_string()
-}
-
-/// Every plain-identifier site in a body that could name program
-/// data, in body order: outside string and char literals, not the
-/// tail of a member or qualified name, not the head of a qualified
-/// name, and not a callee — a call's whole argument list is skipped,
-/// so a lock object or an operation constant passed to a call names
-/// no shared data this reading can see. Control keywords keep their
-/// parens scanned — `if (DAT_flag)` still names an access — while
-/// type words in cast position (`(HANDLE)x`) or in front of a
-/// declared name (`HANDLE handle;`) name nothing. Whether the
-/// surviving name is a global rather than a local is decided by
-/// [`is_decompiler_local`].
-fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
-    let bytes = body.as_bytes();
-    let mut sites = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b'\'' => i = skip_char(bytes, i + 1),
-            b if b.is_ascii_alphabetic() || b == b'_' => {
-                // A name preceded by an identifier byte or `.`, `>`,
-                // or `:` is the tail of a longer name — a member
-                // access or a qualified name — and names nothing.
-                if i > 0 && (is_ident_byte(bytes[i - 1]) || b".>:".contains(&bytes[i - 1])) {
-                    i += 1;
-                    continue;
-                }
-                let end = name_end(bytes, i);
-                let name = &body[i..end];
-                if bytes.get(end) == Some(&b':') {
-                    // The head of a qualified name — `eqmain::counter`
-                    // — and its tail is rejected above, so the whole
-                    // spelling names nothing this reading keys on.
-                    i = end;
-                    continue;
-                }
-                let open = skip_ws(bytes, end);
-                if bytes.get(open) == Some(&b'(') {
-                    if NON_CALL_KEYWORDS.contains(&name) {
-                        // A control header — `if (DAT_flag)` — is not
-                        // a call: only the keyword passes unrecorded,
-                        // and the condition still names its accesses.
-                        i = end;
-                    } else {
-                        // A callee: the whole call is skipped,
-                        // arguments included.
-                        i = closing_paren(body, open).map_or(end, |close| close + 1);
-                    }
-                    continue;
-                }
-                if is_cast_word(bytes, i, end) || declares_a_name(bytes, open) {
-                    i = end;
-                    continue;
-                }
-                if !is_body_noise(name) && !is_decompiler_local(name) {
-                    sites.push((i, name));
-                }
-                i = end;
-            }
-            _ => i += 1,
-        }
-    }
-    sites
-}
-
-/// The end of the plain identifier run starting at `start` — letters,
-/// digits, and underscores only, so a qualified or demangled
-/// spelling is never one name this reading keys on.
-fn name_end(bytes: &[u8], start: usize) -> usize {
-    let mut end = start;
-    while end < bytes.len() && is_ident_byte(bytes[end]) {
-        end += 1;
-    }
-    end
-}
-
-/// Whether the name sits in cast position — `(TYPE)expr` or
-/// `(TYPE *)expr` — where the decompiler writes a type, not data.
-fn is_cast_word(bytes: &[u8], start: usize, end: usize) -> bool {
-    if start == 0 || bytes[start - 1] != b'(' {
-        return false;
-    }
-    let mut at = skip_ws(bytes, end);
-    while bytes.get(at) == Some(&b'*') {
-        at = skip_ws(bytes, at + 1);
-    }
-    bytes.get(at) == Some(&b')')
-}
-
-/// Whether the name is followed by another name — a declaration's
-/// `TYPE name;` or a compound type spelling — where the first word
-/// is a type and the second is what it names. The declared name never
-/// enters the sites on its own: it is preceded by an identifier byte.
-fn declares_a_name(bytes: &[u8], open: usize) -> bool {
-    bytes
-        .get(open)
-        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-}
-
-/// Words a body carries that name no program data: the C control
-/// keywords and the decompiler's own literal and label spellings,
-/// plus the type words the pairing detector already strips — reused
-/// so the two readings cannot disagree about what a type word is.
-fn is_body_noise(word: &str) -> bool {
-    matches!(
-        word,
-        "if" | "else"
-            | "while"
-            | "do"
-            | "for"
-            | "switch"
-            | "case"
-            | "default"
-            | "break"
-            | "continue"
-            | "return"
-            | "goto"
-            | "sizeof"
-            | "true"
-            | "false"
-            | "NULL"
-    ) || word.starts_with("LAB_")
-        || crate::mutex::is_type_word(word)
-}
-
-/// Whether a name is one of the decompiler's own local spellings: a
-/// parameter, a stack slot, or one of the typed-variable families
-/// (`iVar1`, `uVar2`, `pcVar3`, …) — a `Var` followed by digits and
-/// nothing else. Anything else a body names is a program symbol,
-/// which is what makes it a global — the same rule the memory crate's
-/// cross-function pass reads globals by.
-fn is_decompiler_local(name: &str) -> bool {
-    name.starts_with("param_")
-        || name.starts_with("local_")
-        || name.find("Var").is_some_and(|at| {
-            let suffix = &name[at + 3..];
-            !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
-        })
 }
 
 // ============================================================
@@ -1072,15 +870,6 @@ mod tests {
     }
 
     #[test]
-    fn a_decompiler_local_named_in_both_bodies_is_not_a_global() {
-        let findings = analyze(&[
-            ("FUN_18003ab00", "local_20 = 5;"),
-            ("FUN_18003e750", "iVar1 = local_20;"),
-        ]);
-        assert!(findings.is_empty(), "a stack slot is not shared data");
-    }
-
-    #[test]
     fn a_global_one_function_names_claims_nothing() {
         let findings = analyze(&[
             ("FUN_18003ab00", "DAT_counter = 5;"),
@@ -1113,88 +902,11 @@ mod tests {
     }
 
     #[test]
-    fn a_compound_or_bumping_store_counts_as_a_write() {
-        // `+=` and `++` store through the global, so a body that bumps
-        // one pairs with a body that merely reads it.
-        let findings = analyze(&[
-            ("FUN_18003ab00", "DAT_counter += 1;"),
-            ("FUN_18003e750", "uVar1 = DAT_counter;"),
-        ]);
-        assert_eq!(findings.len(), 1, "the bump is the write half");
-        let findings = analyze(&[
-            ("FUN_18003ab00", "DAT_counter++;"),
-            ("FUN_18003e750", "if (DAT_counter == 0) { return; }"),
-        ]);
-        assert_eq!(findings.len(), 1, "the post-bump is the write half");
-    }
-
-    #[test]
     fn a_body_that_never_arrived_names_no_global() {
         // The engine hands the pass only the bodies that survived the
         // decompile: a missing body forms no access and no race.
         let findings = analyze(&[("FUN_18003ab00", "DAT_g = 1;")]);
         assert!(findings.is_empty());
-    }
-
-    #[test]
-    fn a_name_inside_a_string_literal_names_no_access() {
-        let findings = analyze(&[
-            ("FUN_18003ab00", "pcVar1 = \"DAT_counter\";"),
-            ("FUN_18003e750", "uVar1 = DAT_counter;"),
-        ]);
-        assert!(findings.is_empty(), "a literal names no data");
-    }
-
-    #[test]
-    fn a_call_argument_names_no_shared_access() {
-        // The reading stays blind inside a call: a global passed to a
-        // callee — like a lock object or an operation constant — names
-        // no shared data this pass can key on.
-        let findings = analyze(&[
-            ("FUN_18003ab00", "process(DAT_counter);"),
-            ("FUN_18003e750", "uVar1 = DAT_counter;"),
-        ]);
-        assert!(findings.is_empty(), "the argument belongs to the callee");
-    }
-
-    #[test]
-    fn a_qualified_or_member_name_names_no_access() {
-        let findings = analyze(&[
-            ("FUN_18003ab00", "eqmain::counter = 5;"),
-            ("FUN_18003e750", "iVar1 = eqmain::counter;"),
-        ]);
-        assert!(findings.is_empty(), "a qualified name is not one key");
-    }
-
-    #[test]
-    fn a_type_word_or_declaration_names_no_global() {
-        // Cast position and declaration position name types, not
-        // data — and the shared global behind the cast still races.
-        let findings = analyze(&[
-            (
-                "FUN_18003ab00",
-                "undefined8 uVar1;\n  uVar1 = (HANDLE)DAT_x;",
-            ),
-            ("FUN_18003e750", "undefined8 uVar2;\n  DAT_x = (int)uVar2;"),
-        ]);
-        assert_eq!(findings.len(), 1);
-        let SyncFinding::DataRace(record) = &findings[0] else {
-            unreachable!("the shared global reads as a data race");
-        };
-        assert_eq!(record.variable, "DAT_x");
-    }
-
-    #[test]
-    fn a_control_keyword_names_nothing_but_its_condition_still_reads() {
-        let findings = analyze(&[
-            ("FUN_18003ab00", "if (DAT_flag != 0) { DAT_flag = 0; }"),
-            ("FUN_18003e750", "uVar1 = DAT_flag;"),
-        ]);
-        assert_eq!(
-            findings.len(),
-            1,
-            "the keyword names nothing, the condition names the global"
-        );
     }
 
     #[test]
