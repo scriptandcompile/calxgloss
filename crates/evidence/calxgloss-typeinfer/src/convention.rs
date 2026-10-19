@@ -26,7 +26,7 @@
 //! and `operator` members all yield no reading rather than a guess. The
 //! body-evidence channels (epilogue `ret N`, caller stack cleanup, x64
 //! shape) read the conventions no name spells; they are separate passes
-//! over the disassembly, not this module's evidence.
+//! over the disassembly, in [`crate::stack_discipline`].
 
 use crate::mangling::{is_namespace_noise, parse_msvc};
 use crate::types::{CallingConvention, InferenceMethod, InferredConvention, InferredType};
@@ -44,10 +44,11 @@ const MANGLED_LETTER_CONFIDENCE: u8 = 90;
 /// letter and beside the vtable/COM dispatch band.
 const IMPORT_DECORATION_CONFIDENCE: u8 = 85;
 
-/// Assemble one name-borne convention reading into its record: the
-/// channel's method and confidence, the function keyed by the name as
-/// spelled, and the name itself as evidence.
-fn convention_record(
+/// Assemble one convention reading into its record: the channel's method
+/// and confidence, the function keyed by the name or listing evidence,
+/// and the evidence text itself. Shared by the name-borne channels
+/// below and by the listing-borne channels of [`crate::stack_discipline`].
+pub(crate) fn convention_record(
     function: &str,
     convention: CallingConvention,
     method: InferenceMethod,

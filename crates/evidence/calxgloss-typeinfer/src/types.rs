@@ -83,6 +83,14 @@ pub enum InferenceMethod {
     /// called stdcall: the callee pops its own arguments, which is what
     /// the decoration can only mean for a Windows API import.
     ImportDecoration,
+    /// The function's own epilogue pops its arguments — a `ret N` in an
+    /// `esp`-spelled machine listing — so the callee cleans up its own
+    /// stack, which is what a callee-pops convention leaves behind.
+    CalleeEpilogue,
+    /// The caller cleans the stack after the call — an `add esp, N` right
+    /// after a call site naming the callee in an `esp`-spelled machine
+    /// listing — so the callee is called cdecl: the caller pops.
+    CallerCleanup,
 }
 
 impl InferenceMethod {
@@ -112,6 +120,8 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     Mangling => "mangling",
     MangledConvention => "mangled_convention",
     ImportDecoration => "import_decoration",
+    CalleeEpilogue => "callee_epilogue",
+    CallerCleanup => "caller_cleanup",
 });
 
 // ============================================================

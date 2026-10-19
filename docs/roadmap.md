@@ -134,11 +134,18 @@ module-context and escalate prompts (the control-flow-findings pattern), the
 translator's signature synthesis spelling the detected convention instead of
 the `__stdcall` default — flowing into testgen FFI bindings and shim
 signatures through the existing parser — and the CLI inference listing. The
-cheapest first wins have landed: #245 grew the seam's disassembly read and
+cheapest first wins have landed: #245 grew the seam's disassembly read,
 #246 turned the convention letter the mangling decoder already reads — and
-the `@N` import decoration — into persisted, resolved convention records.
+the `@N` import decoration — into persisted, resolved convention records,
+and #247 read the 32-bit stack discipline off the listing itself: one
+disassembly read per listed function riding the breaker-gated window, the
+first callee epilogue `ret N` a stdcall reading at the exact-epilogue band,
+a caller `add esp, N` right after a call a cdecl reading keyed by the named
+callee at the solid band — keyed on the stack register the listing spells,
+so an rsp listing never yields a 32-bit reading and a failed read never
+moves the decompile breaker's counts.
 Spec: #226. Tickets: #245–#251
-(native blocking links; frontier: #247).
+(native blocking links; frontier: #248).
 
 ## P13 — Global-state reference sets (evidence + pipeline + shared + interface)
 

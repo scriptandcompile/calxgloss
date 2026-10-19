@@ -73,6 +73,9 @@ struct FakeProgram {
     /// The import names the program answers with — what the `@N`
     /// convention reading runs over.
     imports: Vec<Symbol>,
+    /// The canned SLEIGH-style disassembly text per function — what
+    /// the stack-discipline detector reads (issue #247).
+    listings: HashMap<String, String>,
 }
 
 impl FakeProgram {
@@ -94,6 +97,10 @@ impl ScanSource for FakeProgram {
                 kind: "function",
                 query: name.to_string(),
             })
+    }
+
+    async fn disassembly(&self, name: &str) -> Result<String> {
+        Ok(self.listings.get(name).cloned().unwrap_or_default())
     }
 
     // The rest of the shared trait's reads: these tests never make
@@ -534,6 +541,101 @@ async fn convention_records_survive_the_persistence_round_trip() {
     assert_eq!(
         rendered.description,
         "stdcall (via import_decoration, confidence 85)"
+    );
+}
+
+#[tokio::test]
+async fn x86_stack_discipline_records_survive_the_persistence_round_trip() {
+    // Both listing-borne convention channels — the callee epilogue
+    // popping its own arguments and the caller popping after a call
+    // site naming its callee — must reach disk under the convention
+    // tag and read back like any other record (issue #247).
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  MessageBoxA();\n  return;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  return;\n",
+        ),
+    );
+    program.listings.insert(
+        "FUN_18003ab00".into(),
+        "00401100  PUSH EBP\n\
+         00401101  MOV EBP, ESP\n\
+         00401103  CALL MessageBoxA\n\
+         00401108  ADD ESP, 0x8\n\
+         0040110b  POP EBP\n\
+         0040110c  RET"
+            .into(),
+    );
+    program.listings.insert(
+        "FUN_18003e750".into(),
+        "00401000  PUSH EBP\n\
+         00401001  MOV EBP, ESP\n\
+         00401003  POP EBP\n\
+         00401004  RET 0xC"
+            .into(),
+    );
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+
+    // The callee's own epilogue: stdcall, keyed by the function whose
+    // listing carried it, evidenced by the epilogue line.
+    let epilogue = loaded
+        .for_function("FUN_18003e750")
+        .find(|inference| matches!(inference, InferredType::Convention(_)))
+        .expect("the callee's epilogue reading");
+    let InferredType::Convention(record) = epilogue else {
+        unreachable!("the epilogue reading is a convention record");
+    };
+    assert_eq!(
+        record,
+        &InferredConvention {
+            function: "FUN_18003e750".into(),
+            convention: CallingConvention::Stdcall,
+            method: InferenceMethod::CalleeEpilogue,
+            confidence: Confidence::new(80),
+            evidence: "00401004  RET 0xC".into(),
+        }
+    );
+
+    // The caller-side cleanup: cdecl, keyed by the callee named at the
+    // cleaned-up call site, evidenced by the cleanup line.
+    let cleanup = loaded
+        .inferences
+        .iter()
+        .find(|inference| inference.function() == "MessageBoxA")
+        .expect("the caller-cleanup reading for the named callee");
+    let InferredType::Convention(record) = cleanup else {
+        unreachable!("the caller-cleanup reading is a convention record");
+    };
+    assert_eq!(
+        record,
+        &InferredConvention {
+            function: "MessageBoxA".into(),
+            convention: CallingConvention::Cdecl,
+            method: InferenceMethod::CallerCleanup,
+            confidence: Confidence::new(70),
+            evidence: "00401108  ADD ESP, 0x8".into(),
+        }
     );
 }
 

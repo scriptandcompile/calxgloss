@@ -349,6 +349,8 @@ fn method_breakdown(result: &TypeInferenceResult) -> Vec<String> {
         InferenceMethod::Mangling,
         InferenceMethod::MangledConvention,
         InferenceMethod::ImportDecoration,
+        InferenceMethod::CalleeEpilogue,
+        InferenceMethod::CallerCleanup,
     ]
     .into_iter()
     .map(|method| {
@@ -550,6 +552,20 @@ mod tests {
                 confidence: Confidence::new(85),
                 evidence: "CreateFileA@28".into(),
             }),
+            InferredType::Convention(InferredConvention {
+                function: "FUN_18003e750".into(),
+                convention: CallingConvention::Stdcall,
+                method: InferenceMethod::CalleeEpilogue,
+                confidence: Confidence::new(80),
+                evidence: "00401004  RET 0xC".into(),
+            }),
+            InferredType::Convention(InferredConvention {
+                function: "FUN_1800412a0".into(),
+                convention: CallingConvention::Cdecl,
+                method: InferenceMethod::CallerCleanup,
+                confidence: Confidence::new(70),
+                evidence: "00401108  ADD ESP, 0x8".into(),
+            }),
         ]);
         let breakdown = method_breakdown(&result);
         for method in [
@@ -566,6 +582,8 @@ mod tests {
             InferenceMethod::Mangling,
             InferenceMethod::MangledConvention,
             InferenceMethod::ImportDecoration,
+            InferenceMethod::CalleeEpilogue,
+            InferenceMethod::CallerCleanup,
         ] {
             assert!(
                 breakdown.contains(&format!("{method} 1")),

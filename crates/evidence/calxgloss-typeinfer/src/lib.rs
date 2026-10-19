@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into fifteen modules:
+//! The crate is organized into sixteen modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
@@ -21,7 +21,8 @@
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
 //!   function of a program exactly once, reads it with the inline
 //!   detectors, reads its listing name with the mangling and convention
-//!   detectors and its import names with the convention detector, and
+//!   detectors, reads its machine listing once with the stack-discipline
+//!   detector, reads its import names with the convention detector, and
 //!   propagates the surviving readings across function boundaries, and
 //!   assembles everything into one `TypeInferenceResult`;
 //!   the shared `ScanSource` trait abstracts the decompiler reads so tests
@@ -60,6 +61,13 @@
 //!   of an MSVC-mangled listing symbol and the `@N` decoration of an
 //!   import — each in its own confidence band, as the convention record
 //!   kind.
+//! - [`stack_discipline`] - Calling-convention detection off the machine
+//!   listing: `StackDisciplineDetector` reads the 32-bit stack discipline
+//!   an `esp`-spelled disassembly spells — a callee epilogue popping its
+//!   own arguments (`ret N`, stdcall) and a caller popping after a call
+//!   site naming its callee (`add esp, N`, cdecl) — each in its own
+//!   confidence band, keyed on the stack register the listing itself
+//!   names so the 32-bit and 64-bit families never cross-fire.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
@@ -89,6 +97,7 @@ pub mod param_size;
 pub mod persist;
 pub(crate) mod reading;
 pub mod return_usage;
+pub mod stack_discipline;
 pub mod this_ptr;
 pub mod types;
 pub mod write_back;

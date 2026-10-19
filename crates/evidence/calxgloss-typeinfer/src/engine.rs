@@ -4,8 +4,9 @@
 //! detection, parameter-size detection, known-type propagation, the
 //! name-borne readings of the mangling detector, and the convention
 //! readings of the convention detector — over every function of
-//! one loaded program, then runs the post-inline passes over the
-//! same bodies: the assignment-chain pass types each
+//! one loaded program, reads each listed function's machine listing
+//! once with the stack-discipline detector, then runs the post-inline
+//! passes over the same bodies: the assignment-chain pass types each
 //! function's locals from its surviving parameter readings and known
 //! contracts, the cross-function passes carry readings across function
 //! boundaries in both directions, the return-usage pass types each
@@ -17,7 +18,10 @@
 //! it with all of them, rather than having each detector pull its own copy
 //! — and the cross-function passes re-read those same bodies, fetching a
 //! caller outside the listing at most once, keeping the scan at one
-//! decompile per function. The inline pass is then one
+//! decompile per function. The listing-borne stack-discipline readings
+//! ride the same window: the engine takes exactly one disassembly read
+//! per listed function, beside the body it pairs with, and none for a
+//! function the listing never shows. The inline pass is then one
 //! sequential pass over the function listing: there are no disjoint
 //! endpoint sets to overlap the way the type-database scans have, and
 //! keeping the pass sequential keeps the persisted inference list in a
@@ -34,6 +38,7 @@ use crate::local_chain::LocalChainDetector;
 use crate::mangling::ManglingDetector;
 use crate::param_size::ParameterSizeDetector;
 use crate::return_usage::{LocalReadings, ReturnUsageDetector};
+use crate::stack_discipline::StackDisciplineDetector;
 use crate::this_ptr::ThisPointerDetector;
 use crate::types::{InferredType, ScanMetadata, TypeInferenceResult};
 use calxgloss_decomp::DecompiledFunction;
@@ -69,6 +74,7 @@ pub struct TypeInferEngine<S = KunaSource> {
     return_usage: ReturnUsageDetector,
     mangling: ManglingDetector,
     convention: ConventionDetector,
+    stack_discipline: StackDisciplineDetector,
 }
 
 impl TypeInferEngine<KunaSource> {
@@ -84,6 +90,7 @@ impl TypeInferEngine<KunaSource> {
             return_usage: ReturnUsageDetector::new(),
             mangling: ManglingDetector::new(),
             convention: ConventionDetector::new(),
+            stack_discipline: StackDisciplineDetector::new(),
         }
     }
 }
@@ -101,6 +108,7 @@ impl<S> TypeInferEngine<S> {
             return_usage: ReturnUsageDetector::new(),
             mangling: ManglingDetector::new(),
             convention: ConventionDetector::new(),
+            stack_discipline: StackDisciplineDetector::new(),
         }
     }
 
@@ -116,7 +124,8 @@ impl<S> TypeInferEngine<S> {
     /// mangling contract, then the convention its letter spells), then
     /// the this-pointer readings, then the size readings, then
     /// the known-signature readings, then the readings carried in names
-    /// inside the body — with the import names' `@N` convention readings
+    /// inside the body, then the stack-discipline readings off its
+    /// machine listing — with the import names' `@N` convention readings
     /// after the listing, and the local records and the
     /// cross-function records appended after the inline ones, in listing
     /// order, so two scans of the same program diff cleanly.
@@ -128,6 +137,14 @@ impl<S> TypeInferEngine<S> {
     /// The return-usage pass reads the same fetched caller bodies — how
     /// a caller uses the returned value types the callee's return — so
     /// one caller lookup per function serves both passes.
+    ///
+    /// Each listed function's machine listing is read exactly once, in
+    /// listing order, inside the same breaker-gated window beside the
+    /// body it pairs with; a function the listing never shows (a caller
+    /// fetched by the caller→callee pass) never has its listing read.
+    /// A failed or empty listing read costs only the stack-discipline
+    /// readings of that function: the read is not a decompile work
+    /// item, so the skip-rate breaker's counts never move on it.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning; only a failure of the listing
@@ -220,6 +237,29 @@ impl<S> TypeInferEngine<S> {
             // list, and qualified calls whose callee spells one.
             inferences.extend(self.mangling.detect_from_body(&decompiled));
             bodies.push(decompiled);
+
+            // The machine listing beside the body: one disassembly read
+            // per listed function, in listing order, inside the same
+            // breaker-gated window. Its stack-discipline readings — a
+            // callee epilogue that pops its own arguments, a caller
+            // that pops after a call site naming its callee — key on
+            // the stack register the listing itself spells (issue #247).
+            // A failed or empty read costs only these readings: the
+            // read is not a decompile work item, so the skip-rate
+            // breaker's counts never move on it.
+            match self.source.disassembly(&function.name).await {
+                Ok(listing) => inferences.extend(
+                    self.stack_discipline
+                        .from_listing(&function.name, &listing),
+                ),
+                Err(error) => {
+                    warn!(
+                        function = %function.name,
+                        error = %error,
+                        "Skipping stack-discipline readings: disassembly read failed"
+                    );
+                }
+            }
         }
 
         // The convention an import name's `@N` decoration spells. Import
@@ -471,6 +511,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct Stats {
         decompiles: Mutex<Vec<String>>,
+        disassemblies: Mutex<Vec<String>>,
     }
 
     /// A canned program implementing [`ScanSource`], so the whole
@@ -485,7 +526,12 @@ mod tests {
         /// The import names the program answers with — what the `@N`
         /// convention reading runs over.
         imports: Vec<Symbol>,
+        /// The canned SLEIGH-style disassembly text per function — what
+        /// the stack-discipline detector reads (issue #247). A listed
+        /// function absent from the map answers with an empty listing.
+        listings: HashMap<String, String>,
         fail_decompiles: Vec<String>,
+        fail_disassembly: Vec<String>,
         fail_listing: bool,
         stats: Arc<Stats>,
     }
@@ -497,7 +543,9 @@ mod tests {
                 bodies: HashMap::new(),
                 callers: HashMap::new(),
                 imports: Vec::new(),
+                listings: HashMap::new(),
                 fail_decompiles: Vec::new(),
+                fail_disassembly: Vec::new(),
                 fail_listing: false,
                 stats: Arc::new(Stats::default()),
             }
@@ -505,6 +553,10 @@ mod tests {
 
         fn decompiled(&self) -> Vec<String> {
             self.stats.decompiles.lock().unwrap().clone()
+        }
+
+        fn disassembled(&self) -> Vec<String> {
+            self.stats.disassemblies.lock().unwrap().clone()
         }
     }
 
@@ -533,6 +585,16 @@ mod tests {
                     kind: "function",
                     query: name.to_string(),
                 })
+        }
+
+        async fn disassembly(&self, name: &str) -> Result<String> {
+            self.stats.disassemblies.lock().unwrap().push(name.to_string());
+            if self.fail_disassembly.iter().any(|f| f == name) {
+                return Err(EngineError::Reported {
+                    message: format!("the engine cannot disassemble {name}"),
+                });
+            }
+            Ok(self.listings.get(name).cloned().unwrap_or_default())
         }
 
         // The rest of the shared trait's reads: this engine never makes
@@ -1820,6 +1882,184 @@ mod tests {
                 .iter()
                 .all(|inference| inference.function() != "CloseHandle"),
             "an undecorated import carries no convention reading"
+        );
+    }
+
+    // ---- stack-discipline readings off the machine listing ----
+
+    #[tokio::test]
+    async fn the_scan_reads_each_listed_function_s_listing_exactly_once() {
+        // The listing read rides the breaker-gated window: exactly one
+        // read per listed function, in listing order, and none for a
+        // function the listing never shows — the off-listing caller
+        // the caller→callee pass fetches gets a body, never a
+        // listing read.
+        let mut program = program();
+        program
+            .callers
+            .insert(addr("FUN_18003e750"), vec!["FUN_off_listing".into()]);
+        program.bodies.insert(
+            "FUN_off_listing".into(),
+            function(
+                "FUN_off_listing",
+                "undefined FUN_off_listing(void)",
+                "  FUN_18003e750();\n",
+            ),
+        );
+        let result = scan(program.clone()).await;
+
+        assert_eq!(
+            program.disassembled(),
+            ["FUN_18003ab00", "FUN_18003e750"],
+            "one listing read per listed function, in listing order"
+        );
+        assert!(
+            program.decompiled().iter().any(|name| name == "FUN_off_listing"),
+            "the off-listing caller's body was fetched — and only its body"
+        );
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| !matches!(inference, InferredType::Convention(_))),
+            "no canned listing, no stack-discipline reading"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_epilogue_that_cleans_up_its_arguments_reads_stdcall() {
+        // A canned esp-spelled listing whose epilogue pops twelve
+        // argument bytes: the callee cleans up its own stack, so the
+        // function reads stdcall — the exact-epilogue band, with the
+        // epilogue line itself as the evidence.
+        let mut program = program();
+        program.listings.insert(
+            "FUN_18003e750".into(),
+            "00401000  PUSH EBP\n\
+             00401001  MOV EBP, ESP\n\
+             00401003  POP EBP\n\
+             00401004  RET 0xC"
+                .into(),
+        );
+        let result = scan(program).await;
+
+        let record = convention_finding(&result, "FUN_18003e750");
+        assert_eq!(record.convention, CallingConvention::Stdcall);
+        assert_eq!(record.method, InferenceMethod::CalleeEpilogue);
+        assert_eq!(record.confidence, Confidence::new(80));
+        assert_eq!(record.evidence, "00401004  RET 0xC");
+
+        // The other function, whose listing read answered empty, goes
+        // unrecorded.
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| inference.function() != "FUN_18003ab00"
+                    || !matches!(inference, InferredType::Convention(_))),
+            "an empty listing yields no convention reading"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_cleans_up_after_a_call_reads_cdecl_for_the_callee() {
+        // A canned esp-spelled caller listing: a direct call naming its
+        // callee, then the caller popping the arguments it pushed. The
+        // record lands on the callee named at that site — cdecl, the
+        // caller-cleanup band, evidenced by the cleanup line.
+        let mut program = program();
+        program.listings.insert(
+            "FUN_18003ab00".into(),
+            "00401100  PUSH EBP\n\
+             00401101  MOV EBP, ESP\n\
+             00401103  CALL FUN_1800412a0\n\
+             00401108  ADD ESP, 0x8\n\
+             0040110b  POP EBP\n\
+             0040110c  RET"
+                .into(),
+        );
+        let result = scan(program).await;
+
+        let record = convention_finding(&result, "FUN_1800412a0");
+        assert_eq!(record.convention, CallingConvention::Cdecl);
+        assert_eq!(record.method, InferenceMethod::CallerCleanup);
+        assert_eq!(record.confidence, Confidence::new(70));
+        assert_eq!(record.evidence, "00401108  ADD ESP, 0x8");
+
+        // The caller pops for its callee but cleans nothing of its own:
+        // a bare `ret` is no epilogue reading.
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| inference.function() != "FUN_18003ab00"
+                    || !matches!(inference, InferredType::Convention(_))),
+            "a bare ret reads no convention for the caller itself"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_rsp_spelled_listing_yields_no_32_bit_reading() {
+        // The whole family keys on the stack register spelled in the
+        // listing itself: the same cleanup shapes spelled with the
+        // 64-bit register — even a `ret N` — produce no 32-bit
+        // reading, so the families never cross-fire.
+        let mut program = program();
+        program.listings.insert(
+            "FUN_18003e750".into(),
+            "140001000  SUB RSP, 0x28\n\
+             140001007  CALL FUN_18003ab00\n\
+             14000100c  ADD RSP, 0x20\n\
+             140001010  RET 0x20"
+                .into(),
+        );
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| !matches!(inference, InferredType::Convention(_))),
+            "a 64-bit-spelled listing never yields a 32-bit reading"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_listing_read_goes_unrecorded_and_never_moves_the_breaker() {
+        // A listing read that fails, and one that answers empty, simply
+        // leave their function unrecorded: the scan completes, the
+        // failing function's body readings stand, and — the read is
+        // not a decompile work item — two listing failures out of three
+        // functions never move the skip-rate breaker's counts.
+        let mut program = program();
+        program.listing.push(summary("FUN_1800412a0"));
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function("FUN_1800412a0", "undefined FUN_1800412a0(void)", "  return;\n"),
+        );
+        program.fail_disassembly = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
+        // FUN_1800412a0 has no canned listing: its read answers empty.
+        let result = scan(program.clone()).await;
+
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| !matches!(inference, InferredType::Convention(_))),
+            "failed and empty listing reads leave nothing recorded"
+        );
+        // The failing function's body readings are untouched.
+        let this_ptr = finding(&result, "FUN_18003ab00", InferenceMethod::VtableCall, 0);
+        assert!(matches!(this_ptr, InferredType::Param(_)));
+        assert_eq!(
+            program.disassembled(),
+            ["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"],
+            "every listed function still gets its one read"
+        );
+        assert_eq!(
+            program.decompiled(),
+            ["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"],
+            "listing failures never move the decompile breaker's counts"
         );
     }
 }
