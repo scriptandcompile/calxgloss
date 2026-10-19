@@ -3,6 +3,8 @@
 //! Handles classification, batch translation, and the interactive
 //! file-selection flow.
 
+use std::collections::{HashSet, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -32,6 +34,28 @@ use crate::commands::classify::handle_classify;
 use crate::commands::{classification_record_exists, scan_targets};
 use crate::utils::*;
 
+/// What one binary pass did against what it set out to do (issue #220).
+///
+/// "Incomplete" is derived, never stored: a binary is incomplete when its
+/// last pass attempted fewer units than it planned — it ended early at a
+/// pause boundary — or when it never ran at all. The queue loop reads this
+/// to decide whether a paused binary goes back on the worklist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassOutcome {
+    /// Units the pass enumerated and set out to translate.
+    pub planned: usize,
+    /// Units the batch actually attempted before the pass ended.
+    pub attempted: usize,
+}
+
+impl PassOutcome {
+    /// The pass ended before finishing its plan — a binary pause (or a
+    /// run-level stop) cut it short at a unit boundary.
+    pub fn ended_early(&self) -> bool {
+        self.attempted < self.planned
+    }
+}
+
 /// Run batch translation for a single DLL.
 ///
 /// This function encapsulates all the plumbing needed to translate one DLL:
@@ -45,6 +69,10 @@ use crate::utils::*;
 /// `scope` restricts which functions re-enter the translation queue based on
 /// the recorded attempt history (see [`scope_functions`]);
 /// [`RunScope::AllFunctions`] keeps the plain behaviour.
+///
+/// The return reports the pass as [`PassOutcome`] — units attempted against
+/// units planned — so the queue loop can derive whether it ended early
+/// (issue #220).
 // The per-binary plumbing (engine, LLM, git, live hooks) is one coherent
 // pass — bundling it into a struct would scatter the call site for no gain.
 #[allow(clippy::too_many_arguments)]
@@ -65,7 +93,7 @@ pub async fn run_translation_for_dll(
     scope: RunScope,
     scope_control: Option<&ScopeControl>,
     override_control: Option<&OverrideControl>,
-) -> Result<()> {
+) -> Result<PassOutcome> {
     // The workspace — git, src/, scratch all live here.
 
     // Announce the per-binary pass so the dashboard can mark this binary as
@@ -91,7 +119,10 @@ pub async fn run_translation_for_dll(
     if summaries.is_empty() {
         warn!("the engine listed no functions");
         println_content("No functions found in the loaded program.");
-        return Ok(());
+        return Ok(PassOutcome {
+            planned: 0,
+            attempted: 0,
+        });
     }
 
     let function_names: Vec<String> = summaries.into_iter().map(|s| s.name).collect();
@@ -117,7 +148,10 @@ pub async fn run_translation_for_dll(
             });
         }
         info!("Skipping translation for {binary}: no functions match scope {scope}");
-        return Ok(());
+        return Ok(PassOutcome {
+            planned: 0,
+            attempted: 0,
+        });
     }
 
     // Get LLM settings
@@ -367,7 +401,12 @@ pub async fn run_translation_for_dll(
     );
     println!();
 
-    Ok(())
+    // The queue loop derives "incomplete" from this: a batch that attempted
+    // fewer units than the pass planned ended early (issue #220).
+    Ok(PassOutcome {
+        planned: function_names.len(),
+        attempted: batch_result.results.len(),
+    })
 }
 
 /// Handle the `auto` subcommand: detects project state and runs classification
@@ -597,58 +636,36 @@ pub async fn handle_auto(
         );
         println!();
 
-        // Publish the plan before the first pass starts so the dashboard
-        // can show the whole queue — in this exact order — not just the
-        // binary currently in flight.
-        if let Some(ev) = events {
-            ev.emit(ProgressEvent::QueuePlanned {
-                binaries: classified.clone(),
-            });
-        }
-
-        for binary in &classified {
-            if stop.is_some_and(|s| s.is_stopped()) {
-                println!();
-                println_content("Stop requested — skipping remaining binaries.");
-                println_content("Work completed so far is saved; restart to continue.");
-                break;
+        // Issue #220: the queue is a worklist — a paused binary is held out,
+        // a binary paused mid-pass is re-queued once, and every order change
+        // re-publishes the queue plan.
+        run_binary_worklist(classified, events, stop, control, scope_control, |binary| {
+            let target_dir = target_dir.clone();
+            let workspace = workspace.clone();
+            let callgraph_cache = callgraph_cache.clone();
+            async move {
+                run_translation_for_dll(
+                    &binary,
+                    &target_dir.join(&binary),
+                    &workspace,
+                    skip_git,
+                    settings,
+                    events,
+                    no_callgraph,
+                    callgraph_cache,
+                    callgraph_verbose,
+                    refresh_cache,
+                    stop,
+                    control,
+                    cancellation,
+                    run.map(|r| r.scope).unwrap_or_default(),
+                    scope_control,
+                    override_control,
+                )
+                .await
             }
-            // Issue #90: a stop requested through the pipeline control (or a
-            // run that already reached a terminal state) also ends the queue
-            // between binaries — the pipeline itself halts at unit
-            // boundaries, this keeps us from starting the next pass.
-            if control.is_some_and(|c| c.state().is_halted()) {
-                println!();
-                println_content("Pipeline stop requested — skipping remaining binaries.");
-                println_content("Work completed so far is saved; restart to continue.");
-                break;
-            }
-            println!(
-                "  {} Translating functions from {}…",
-                cyan_bold("→"),
-                bold(binary)
-            );
-            println!();
-            run_translation_for_dll(
-                binary,
-                &target_dir.join(binary),
-                &workspace,
-                skip_git,
-                settings,
-                events,
-                no_callgraph,
-                callgraph_cache.clone(),
-                callgraph_verbose,
-                refresh_cache,
-                stop,
-                control,
-                cancellation,
-                run.map(|r| r.scope).unwrap_or_default(),
-                scope_control,
-                override_control,
-            )
-            .await?;
-        }
+        })
+        .await?;
     } else {
         // Ask which file to translate (interactive mode).
         println!();
@@ -704,6 +721,134 @@ pub async fn handle_auto(
     }
 
     // Release the server if we spawned it; an attached one is left running.
+
+    Ok(())
+}
+
+/// The auto run's binary queue as a worklist (issue #220).
+///
+/// A binary the operator has paused is **held out** when the queue reaches
+/// it: no scan, no pass, no `BatchStarted` — it goes to the back of the
+/// worklist and the run moves to the next entry. A binary paused while in
+/// flight finishes its pass early (the batch ends at the unit boundary, per
+/// issue #219) and is re-queued the same way. Each binary comes back around
+/// exactly once: translated if it has been resumed, left incomplete if it is
+/// still paused — one retry per pass, never a spin. Whenever the order
+/// changes the loop re-publishes [`ProgressEvent::QueuePlanned`] so the
+/// dashboard shows the run's real remaining order, not the plan from the
+/// first pass.
+///
+/// `run_pass` runs one binary's translation pass and reports its
+/// [`PassOutcome`]; `handle_auto` supplies the real one and tests supply a
+/// fake that records which binaries were ever started.
+async fn run_binary_worklist<P, Fut>(
+    queue: Vec<String>,
+    events: Option<&TranslationEvents>,
+    stop: Option<&StopSignal>,
+    control: Option<&PipelineControl>,
+    scope_control: Option<&ScopeControl>,
+    run_pass: P,
+) -> Result<()>
+where
+    P: Fn(String) -> Fut,
+    Fut: Future<Output = Result<PassOutcome>>,
+{
+    let mut queue: VecDeque<String> = queue.into();
+    // Binaries already re-queued once — a second visit while still paused
+    // ends that binary's part in the run, so a paused binary can never spin
+    // the loop. Keyed lower-case: binary names match case-insensitively
+    // (issue #107).
+    let mut requeued: HashSet<String> = HashSet::new();
+
+    // Publish the plan before the first pass starts so the dashboard can
+    // show the whole queue — in this exact order — not just the binary
+    // currently in flight.
+    if let Some(ev) = events {
+        ev.emit(ProgressEvent::QueuePlanned {
+            binaries: queue.iter().cloned().collect(),
+        });
+    }
+
+    while let Some(binary) = queue.pop_front() {
+        if stop.is_some_and(|s| s.is_stopped()) {
+            println!();
+            println_content("Stop requested — skipping remaining binaries.");
+            println_content("Work completed so far is saved; restart to continue.");
+            break;
+        }
+        // Issue #90: a stop requested through the pipeline control (or a
+        // run that already reached a terminal state) also ends the queue
+        // between binaries — the pipeline itself halts at unit
+        // boundaries, this keeps us from starting the next pass.
+        if control.is_some_and(|c| c.state().is_halted()) {
+            println!();
+            println_content("Pipeline stop requested — skipping remaining binaries.");
+            println_content("Work completed so far is saved; restart to continue.");
+            break;
+        }
+
+        // Issue #220: a paused binary is held out of the pass — no scan, no
+        // units, no BatchStarted — and comes back around exactly once.
+        if scope_control.is_some_and(|sc| sc.is_paused(&binary)) {
+            let key = binary.to_lowercase();
+            if requeued.contains(&key) {
+                println_content(format!(
+                    "  {} {} is still paused — left incomplete.",
+                    yellow_bold("!"),
+                    bold(&binary)
+                ));
+                continue;
+            }
+            println_content(format!(
+                "  {} {} is paused — held out of the queue.",
+                yellow_bold("!"),
+                bold(&binary)
+            ));
+            requeued.insert(key);
+            queue.push_back(binary);
+            if let Some(ev) = events {
+                ev.emit(ProgressEvent::QueuePlanned {
+                    binaries: queue.iter().cloned().collect(),
+                });
+            }
+            continue;
+        }
+
+        println!(
+            "  {} Translating functions from {}…",
+            cyan_bold("→"),
+            bold(&binary)
+        );
+        println!();
+        let outcome = run_pass(binary.clone()).await?;
+
+        // A pass that ended early because its binary was paused mid-flight
+        // goes to the back of the worklist, marked incomplete; the pass that
+        // comes back around translates it if it has been resumed.
+        if outcome.ended_early() && scope_control.is_some_and(|sc| sc.is_paused(&binary)) {
+            let key = binary.to_lowercase();
+            if requeued.contains(&key) {
+                println_content(format!(
+                    "  {} {} is still paused — left incomplete.",
+                    yellow_bold("!"),
+                    bold(&binary)
+                ));
+            } else {
+                println_content(format!(
+                    "  {} {} was paused mid-pass — re-queued, incomplete.",
+                    yellow_bold("!"),
+                    bold(&binary)
+                ));
+                requeued.insert(key);
+                queue.push_back(binary);
+                if let Some(ev) = events {
+                    ev.emit(ProgressEvent::QueuePlanned {
+                        binaries: queue.iter().cloned().collect(),
+                    });
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -929,5 +1074,206 @@ mod tests {
         )
         .expect("scope filter should succeed");
         assert_eq!(queued, sample_functions());
+    }
+
+    // --- the auto run's binary worklist (issue #220) ---------------------
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A fake pass's recorder: the binaries it was ever started for. The
+    /// scan and the `BatchStarted` event live inside the real pass, so a
+    /// binary the fake never saw was never started at all.
+    fn started_recorder() -> Rc<RefCell<Vec<String>>> {
+        Rc::new(RefCell::new(Vec::new()))
+    }
+
+    /// Drain the event channel, collecting every published queue plan.
+    fn queue_plans(rx: &mut tokio::sync::broadcast::Receiver<ProgressEvent>) -> Vec<Vec<String>> {
+        let mut plans = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(ProgressEvent::QueuePlanned { binaries }) => plans.push(binaries),
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => return plans,
+                Err(e) => panic!("event channel closed: {e}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn paused_binary_is_held_out_and_never_started() {
+        let scope = ScopeControl::new();
+        scope.pause_binary("b.dll").expect("pause b.dll");
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string()],
+            Some(&events),
+            None,
+            None,
+            Some(&scope),
+            |binary| {
+                let started = started.clone();
+                async move {
+                    started.borrow_mut().push(binary);
+                    Ok(PassOutcome {
+                        planned: 3,
+                        attempted: 3,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes with a paused binary in the queue");
+
+        // b.dll was held out at the first visit and left incomplete at the
+        // second — its pass never ran, so no scan and no BatchStarted.
+        assert_eq!(*started.borrow(), ["a.dll"]);
+        // The hold-out re-published the plan as the run's real remaining
+        // order.
+        assert_eq!(
+            queue_plans(&mut rx),
+            vec![vec!["a.dll", "b.dll"], vec!["b.dll"]]
+        );
+    }
+
+    #[tokio::test]
+    async fn held_out_binary_is_translated_when_resumed_before_its_pass_comes_back() {
+        let scope = ScopeControl::new();
+        scope.pause_binary("b.dll").expect("pause b.dll");
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string()],
+            None,
+            None,
+            None,
+            Some(&scope),
+            |binary| {
+                let started = started.clone();
+                let scope = scope.clone();
+                async move {
+                    if binary == "a.dll" {
+                        // The operator resumes b.dll while a.dll's pass runs.
+                        scope.resume_binary("b.dll").expect("resume b.dll");
+                    }
+                    started.borrow_mut().push(binary);
+                    Ok(PassOutcome {
+                        planned: 3,
+                        attempted: 3,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes");
+
+        // b.dll was held out once, then translated when the pass came back
+        // around — resuming admitted it again.
+        assert_eq!(*started.borrow(), ["a.dll", "b.dll"]);
+    }
+
+    #[tokio::test]
+    async fn in_flight_paused_binary_is_requeued_once_and_translated_after_resume() {
+        let scope = ScopeControl::new();
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string()],
+            Some(&events),
+            None,
+            None,
+            Some(&scope),
+            |binary| {
+                let started = started.clone();
+                let scope = scope.clone();
+                async move {
+                    let first_visit = !started.borrow().iter().any(|b| b == &binary);
+                    started.borrow_mut().push(binary.clone());
+                    if binary == "a.dll" && first_visit {
+                        // The operator pauses a.dll while its pass is in
+                        // flight: the batch ends at the unit boundary with
+                        // units still unattempted (issue #219).
+                        scope.pause_binary("a.dll").expect("pause a.dll mid-pass");
+                        return Ok(PassOutcome {
+                            planned: 5,
+                            attempted: 2,
+                        });
+                    }
+                    if binary == "b.dll" {
+                        // The operator resumes a.dll while b.dll's pass runs.
+                        scope.resume_binary("a.dll").expect("resume a.dll");
+                    }
+                    Ok(PassOutcome {
+                        planned: 5,
+                        attempted: 5,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes");
+
+        // a.dll ended early, was re-queued once, and translated when the
+        // pass came back around after the resume.
+        assert_eq!(*started.borrow(), ["a.dll", "b.dll", "a.dll"]);
+        // The re-queue re-published the plan in the run's real remaining
+        // order.
+        assert_eq!(
+            queue_plans(&mut rx),
+            vec![vec!["a.dll", "b.dll"], vec!["b.dll", "a.dll"]]
+        );
+    }
+
+    #[tokio::test]
+    async fn still_paused_binary_is_left_incomplete_on_its_second_visit() {
+        let scope = ScopeControl::new();
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string()],
+            Some(&events),
+            None,
+            None,
+            Some(&scope),
+            |binary| {
+                let started = started.clone();
+                let scope = scope.clone();
+                async move {
+                    if binary == "a.dll" && !started.borrow().iter().any(|b| b == "a.dll") {
+                        // Paused mid-pass and never resumed: the pass ends
+                        // early and the binary is re-queued once.
+                        scope.pause_binary("a.dll").expect("pause a.dll mid-pass");
+                        started.borrow_mut().push(binary);
+                        return Ok(PassOutcome {
+                            planned: 5,
+                            attempted: 2,
+                        });
+                    }
+                    started.borrow_mut().push(binary);
+                    Ok(PassOutcome {
+                        planned: 5,
+                        attempted: 5,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes while a.dll stays paused");
+
+        // a.dll's second visit found it still paused: left incomplete, never
+        // started again, while b.dll's pass and the run itself completed.
+        assert_eq!(*started.borrow(), ["a.dll", "b.dll"]);
+        assert_eq!(
+            queue_plans(&mut rx),
+            vec![vec!["a.dll", "b.dll"], vec!["b.dll", "a.dll"]]
+        );
     }
 }

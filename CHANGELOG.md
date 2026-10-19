@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-binary pause: the auto run's binary queue becomes a worklist (issue #220, part of #217).**
+  In a headless `auto` run, a target binary the operator has paused is held out of the queue when
+  the queue reaches it — no scan, no translation pass — and the run moves straight to the next
+  binary. A binary paused while its pass is in flight finishes the unit it is on, ends its pass at
+  the next unit boundary, and goes to the back of the queue marked incomplete; when the pass comes
+  back around it is translated if it has been resumed, and left incomplete if it is still paused —
+  one retry per pass, never a spin. *Incomplete* is derived, never stored: a binary is incomplete
+  when its last pass attempted fewer units than it planned, or never ran. The console prints a line
+  when a binary is held out of the queue, when it is re-queued, and when it is left incomplete, and
+  every queue-order change re-publishes the run's queue plan so the dashboard shows the run's real
+  remaining order. The paused set rides the translation scope record (issue #218) and ends
+  in-flight batches at unit boundaries (issue #219); the run-level pause/resume/stop controls are
+  untouched.
 - **Kuna engine progress heartbeats and per-function decompile budgets (issue #211, epic X5/#203).**
   A `kuna` run beats like a Ghidra pass: `KunaSource::begin_pass`/`end_pass` bracket the pass, the
   work list it notes sizes each beat, and every completed decompile inside the pass emits one
