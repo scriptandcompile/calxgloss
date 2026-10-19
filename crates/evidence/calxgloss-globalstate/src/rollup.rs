@@ -14,6 +14,10 @@
 //! listing order and then body order — with readers and writers in
 //! that same order and each function named once. So two scans of one
 //! program produce the same index and diff cleanly.
+//!
+//! [`state_sharing_pairs`] reads that index back for the translation
+//! orderer: each entry's first writer defines the global's
+//! representation and every other function the entry names reuses it.
 
 use std::collections::HashMap;
 
@@ -70,6 +74,40 @@ pub fn shared_globals(findings: &[GlobalStateFinding]) -> Vec<SharedGlobalRecord
         }
     }
     index
+}
+
+/// The state-sharing pairs the index names for the translation orderer
+/// (issue #256, part of #225).
+///
+/// For each entry with writers, the first writer in listing order defines
+/// the global's representation and every other function the entry names —
+/// writer or reader — reuses it, so each pair runs definer → reuser and
+/// the orderer can queue the definer first. An entry no function writes
+/// establishes no representation and contributes no pairs, and a definer
+/// that also reads its own global is not its own reuser.
+///
+/// The pairs ride the index's own order: first-sighting order over
+/// entries, listing order within one — so two scans of one program feed
+/// the orderer the same pairs.
+pub fn state_sharing_pairs(
+    index: impl IntoIterator<Item = impl std::borrow::Borrow<SharedGlobalRecord>>,
+) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for entry in index {
+        let record = entry.borrow();
+        // The definer is the first writer in listing order; a global
+        // only ever read has no unit that establishes its
+        // representation, so it shares no pairs.
+        let Some((definer, other_writers)) = record.writers.split_first() else {
+            continue;
+        };
+        for reuser in other_writers.iter().chain(record.readers.iter()) {
+            if reuser != definer {
+                pairs.push((definer.clone(), reuser.clone()));
+            }
+        }
+    }
+    pairs
 }
 
 // ============================================================
@@ -199,5 +237,43 @@ mod tests {
                 .map(GlobalStateFinding::SharedGlobal),
         );
         assert_eq!(shared_globals(&rolled), shared_globals(&findings));
+    }
+
+    #[test]
+    fn the_state_sharing_pairs_run_from_the_first_writer_to_every_reuser() {
+        // The DAG consumer's reading of the index (issue #256): the first
+        // writer in listing order defines, the other writers and the
+        // readers reuse — and a definer that also reads its own global
+        // is not its own reuser. A global one function alone writes
+        // contributes nothing.
+        let findings = vec![
+            access("FUN_writer_two", "DAT_flag", true, 85),
+            access("FUN_writer_one", "DAT_flag", true, 85),
+            access("FUN_reader", "DAT_flag", false, 85),
+            access("FUN_writer_two", "DAT_flag", false, 85),
+            access("FUN_writer_one", "DAT_alone", true, 85),
+        ];
+        let index = shared_globals(&findings);
+        let pairs = state_sharing_pairs(&index);
+        assert_eq!(
+            pairs,
+            vec![
+                ("FUN_writer_two".to_string(), "FUN_writer_one".to_string()),
+                ("FUN_writer_two".to_string(), "FUN_reader".to_string()),
+            ],
+            "DAT_flag pairs the first definer with each reuser; DAT_alone has none"
+        );
+    }
+
+    #[test]
+    fn a_readers_only_entry_shares_no_pairs() {
+        // No writer means no unit establishes the representation — the
+        // degenerate entry contributes no ordering constraint.
+        let findings = vec![
+            access("FUN_a", "DAT_readonly", false, 85),
+            access("FUN_b", "DAT_readonly", false, 85),
+        ];
+        let index = shared_globals(&findings);
+        assert!(state_sharing_pairs(&index).is_empty());
     }
 }
