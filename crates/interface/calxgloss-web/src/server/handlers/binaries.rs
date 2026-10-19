@@ -553,8 +553,9 @@ fn pal_trait_for_category(category: &str) -> Option<&'static str> {
 /// trait name with each trait's verbatim categories sorted — the
 /// deterministic order the exact-JSON contract pins. Categories that map
 /// to no trait are dropped, so the trait list is never fabricated from
-/// them.
-fn needed_pal_traits(categories: &[String]) -> Vec<PalTraitStatus> {
+/// them. Also drives the pipeline poll's PAL-readiness summary
+/// (issue #243) — the same derivation, not a second implementation.
+pub(crate) fn needed_pal_traits(categories: &[String]) -> Vec<PalTraitStatus> {
     let mut by_trait: std::collections::BTreeMap<&'static str, Vec<String>> =
         std::collections::BTreeMap::new();
     for category in categories {
@@ -594,7 +595,9 @@ fn analysis_artifact_dir(repo_path: &Path, name: &str) -> Option<PathBuf> {
 /// derivation. A missing or unreadable directory is no categories; a
 /// corrupt function artifact is no artifact, contributing nothing while
 /// the readable ones still answer. Sorted and deduplicated verbatim.
-fn recorded_api_categories(repo_path: &Path, name: &str) -> Vec<String> {
+/// Read per binary only by the binaries tracker and by the pipeline
+/// poll's PalMapping rows (issue #243) — never for non-PAL rows.
+pub(crate) fn recorded_api_categories(repo_path: &Path, name: &str) -> Vec<String> {
     // The shape the analysis pipeline persists per function — only the
     // API-call categories matter here; everything else is ignored.
     #[derive(serde::Deserialize)]
@@ -636,8 +639,10 @@ fn recorded_api_categories(repo_path: &Path, name: &str) -> Vec<String> {
 /// every binary's generated shim source (`re/shims/{binary}/shim.rs`,
 /// the layout `shim_pipeline` persists — test sources reference traits
 /// without defining them, so only `shim.rs` counts). Unreadable files
-/// are skipped; no sources is the honest empty answer.
-fn generated_pal_source_texts(repo_path: &Path) -> Vec<String> {
+/// are skipped; no sources is the honest empty answer. The pipeline poll
+/// scans once per request and shares the result across all PAL rows
+/// (issue #243) — the scan never runs per row.
+pub(crate) fn generated_pal_source_texts(repo_path: &Path) -> Vec<String> {
     let mut pal_files: Vec<PathBuf> =
         std::fs::read_dir(repo_path.join("scratch").join("pal").join("src"))
             .ok()
@@ -672,7 +677,7 @@ fn generated_pal_source_texts(repo_path: &Path) -> Vec<String> {
 /// immediately followed by the exact trait name, both sides bounded so
 /// `trait GraphicsDevice2` never marks `GraphicsDevice` and a stray
 /// mention naming the trait in another position never counts.
-fn defines_trait(source: &str, name: &str) -> bool {
+pub(crate) fn defines_trait(source: &str, name: &str) -> bool {
     let needle = format!("trait {name}");
     let ident_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     source.match_indices(&needle).any(|(start, matched)| {

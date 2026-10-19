@@ -120,7 +120,8 @@ pub use overrides::{
 };
 pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
 pub use pipeline_phase::{
-    BinaryActivity, BinaryProgress, PhaseProgress, PhaseState, PipelinePhase,
+    BinaryActivity, BinaryProgress, PalReadiness, PalTraitReadiness, PhaseProgress, PhaseState,
+    PipelinePhase,
 };
 pub use progress::{
     NoUnitInFlight, PhaseRecord, PipelineControl, PipelineRunRequest, PipelineState,

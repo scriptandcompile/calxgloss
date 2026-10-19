@@ -192,6 +192,39 @@ pub struct BinaryProgress {
     /// without waiting for a `BinaryPauseChanged` event.
     #[serde(default)]
     pub paused: bool,
+    /// PAL trait-readiness summary (issue #243) — present only on
+    /// PalMapping rows: the traits the binary's recorded API-call
+    /// categories demand, each marked defined or missing against the
+    /// workspace's generated PAL/shim sources. Omitted — never an empty
+    /// structure — on every other row and on a PAL row whose artifacts
+    /// record no API-call categories.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pal: Option<PalReadiness>,
+}
+
+/// The PAL trait-readiness summary a PalMapping binary row carries
+/// (issue #243) — how far trait design has covered what the binary
+/// needs. Derived per poll from the binary's persisted artifacts, so
+/// trait progress and classification overrides show up on the next
+/// refresh with no special handling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PalReadiness {
+    /// The traits the binary needs, sorted by trait name — the same
+    /// category→trait derivation the binaries view's PAL tracker
+    /// performs, reused rather than reimplemented.
+    pub traits: Vec<PalTraitReadiness>,
+}
+
+/// One needed PAL trait and whether the generated layer defines it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PalTraitReadiness {
+    /// Trait name the binary's recorded API-call categories demand
+    /// (e.g. "GraphicsDevice").
+    pub name: String,
+    /// True when one of the workspace's generated PAL/shim sources
+    /// defines a trait by this name; false means trait design has not
+    /// produced it yet.
+    pub defined: bool,
 }
 
 // ============================================================
@@ -305,6 +338,18 @@ mod tests {
                 total: Some(22143),
             }),
             paused: true,
+            pal: Some(PalReadiness {
+                traits: vec![
+                    PalTraitReadiness {
+                        name: "GraphicsDevice".into(),
+                        defined: true,
+                    },
+                    PalTraitReadiness {
+                        name: "PlatformCore".into(),
+                        defined: false,
+                    },
+                ],
+            }),
         };
         let json = serde_json::to_value(&full).expect("serializes");
         assert_eq!(json["binary"], "game_logic.dll");
@@ -317,6 +362,10 @@ mod tests {
         assert_eq!(json["activity"]["index"], 1);
         assert_eq!(json["activity"]["total"], 22143);
         assert_eq!(json["paused"], true);
+        assert_eq!(json["pal"]["traits"][0]["name"], "GraphicsDevice");
+        assert_eq!(json["pal"]["traits"][0]["defined"], true);
+        assert_eq!(json["pal"]["traits"][1]["name"], "PlatformCore");
+        assert_eq!(json["pal"]["traits"][1]["defined"], false);
         let back: BinaryProgress = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, full);
 
@@ -337,6 +386,7 @@ mod tests {
             processing: false,
             activity: None,
             paused: false,
+            pal: None,
         };
         let json = serde_json::to_value(&bare).expect("serializes");
         assert_eq!(

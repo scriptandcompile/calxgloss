@@ -4248,6 +4248,23 @@ async fn pipeline_row_names(port: u16) -> Vec<String> {
         .collect()
 }
 
+/// GET /api/pipeline's `binaries` array as the full JSON records it serves.
+async fn pipeline_binary_rows(port: u16) -> Vec<serde_json::Value> {
+    let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/pipeline"))
+        .await
+        .expect("pipeline request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    body["binaries"].as_array().unwrap().clone()
+}
+
+/// The `binaries` row for one binary, by name.
+fn binary_row<'a>(rows: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
+    rows.iter()
+        .find(|r| r["binary"] == name)
+        .unwrap_or_else(|| panic!("{name} row present in {rows:?}"))
+}
+
 /// Issue #242: PAL-mapped binaries pin to the bottom of the pipeline table.
 /// The order is three-tier — queue-planned non-PAL rows in queue-plan order,
 /// unplanned non-PAL rows alphabetical, then PalMapping rows alphabetical —
@@ -4383,6 +4400,196 @@ async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
         pipeline_row_names(fixture.port()).await,
         ["d3d9.dll", "fmod.dll"],
         "both rows relocate on the next poll — into and out of the PAL tier"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Pipeline PAL-readiness summary (issue #243, part of #223)
+// ─────────────────────────────────────────────────────────────
+
+/// Seed the artifacts the pipeline PAL-readiness tests pin: disk
+/// classification records routing d3d9.dll to PalMapping and game_logic.dll
+/// to ReverseEngineer, per-function analysis artifacts under
+/// `re/analysis/d3d9.dll/` recording DirectX and Win32Core API-call
+/// categories, and a generated shared PAL crate under `scratch/pal/src/`
+/// defining GraphicsDevice but not PlatformCore — the partially defined
+/// trait set the summary must report honestly.
+fn write_pipeline_pal_readiness_fixtures(fixture: &TestFixture) {
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("classify dir");
+    std::fs::write(
+        classify.join("d3d9.dll.json"),
+        r#"{"binary":"d3d9.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write PAL classification artifact");
+    std::fs::write(
+        classify.join("game_logic.dll.json"),
+        r#"{"binary":"game_logic.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write RE classification artifact");
+
+    let analysis = fixture
+        .repo_path()
+        .join("re")
+        .join("analysis")
+        .join("d3d9.dll");
+    std::fs::create_dir_all(&analysis).expect("d3d9 analysis dir");
+    std::fs::write(
+        analysis.join("CreateDevice.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "function_name": "CreateDevice",
+            "windows_apis": [
+                { "name": "Direct3DCreate9", "category": "DirectX" },
+                { "name": "CreateFileA", "category": "Win32Core" }
+            ]
+        }))
+        .unwrap(),
+    )
+    .expect("CreateDevice artifact written");
+    std::fs::write(
+        analysis.join("Present.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "function_name": "Present",
+            "windows_apis": [
+                { "name": "IDXGISwapChain::Present", "category": "DirectX11" }
+            ]
+        }))
+        .unwrap(),
+    )
+    .expect("Present artifact written");
+
+    let pal_src = fixture.repo_path().join("scratch").join("pal").join("src");
+    std::fs::create_dir_all(&pal_src).expect("scratch pal src dir");
+    std::fs::write(
+        pal_src.join("stub_content.rs"),
+        "pub trait GraphicsDevice {\n    fn create_device(width: u32, height: u32) -> Self;\n}\n",
+    )
+    .expect("pal stub content written");
+}
+
+/// Issue #243: a PalMapping row carries the PAL-readiness summary — the
+/// traits its recorded API-call categories demand (DirectX and DirectX11
+/// grouping into GraphicsDevice, Win32Core into PlatformCore), sorted by
+/// trait name, each flagged defined or missing against the workspace's
+/// generated PAL/shim sources. Non-PAL rows carry no `pal` field at all.
+#[tokio::test]
+async fn test_pipeline_pal_row_carries_trait_readiness_summary() {
+    let fixture = TestFixture::new();
+    write_pipeline_pal_readiness_fixtures(&fixture);
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let rows = pipeline_binary_rows(fixture.port()).await;
+    assert_eq!(
+        binary_row(&rows, "d3d9.dll")["pal"]["traits"],
+        serde_json::json!([
+            { "name": "GraphicsDevice", "defined": true },
+            { "name": "PlatformCore", "defined": false },
+        ]),
+        "the PAL row reports the demanded traits with their defined/missing flags"
+    );
+    assert!(
+        binary_row(&rows, "game_logic.dll").get("pal").is_none(),
+        "a ReverseEngineer row has no PAL summary field at all"
+    );
+}
+
+/// Issue #243: a PAL binary whose artifacts record no API-call categories
+/// honestly reports no summary — the field is omitted, never an empty
+/// structure fabricated in its place.
+#[tokio::test]
+async fn test_pipeline_pal_binary_without_categories_reports_no_summary() {
+    let fixture = TestFixture::new();
+    // The classification routes it to PAL mapping, but no analysis
+    // artifacts exist to derive traits from.
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("classify dir");
+    std::fs::write(
+        classify.join("d3d9.dll.json"),
+        r#"{"binary":"d3d9.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write PAL classification artifact");
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let rows = pipeline_binary_rows(fixture.port()).await;
+    assert!(
+        binary_row(&rows, "d3d9.dll").get("pal").is_none(),
+        "no recorded categories means no summary, not an empty one"
+    );
+}
+
+/// Issue #243: the summary recomputes per poll. A newly defined trait in
+/// the generated PAL sources flips its flag to defined on the next refresh,
+/// and a classification override out of PAL mapping drops the summary
+/// entirely — both with no restart and no special handling.
+#[tokio::test]
+async fn test_pipeline_pal_readiness_recomputes_per_poll() {
+    let fixture = TestFixture::new();
+    write_pipeline_pal_readiness_fixtures(&fixture);
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let rows = pipeline_binary_rows(fixture.port()).await;
+    assert_eq!(
+        binary_row(&rows, "d3d9.dll")["pal"]["traits"][1]["defined"],
+        false,
+        "PlatformCore is missing on the first poll"
+    );
+
+    // Trait design advances: the generated PAL crate now defines
+    // PlatformCore too.
+    let pal_src = fixture.repo_path().join("scratch").join("pal").join("src");
+    std::fs::write(
+        pal_src.join("platform_core.rs"),
+        "pub trait PlatformCore {\n    fn open(path: &str) -> Self;\n}\n",
+    )
+    .expect("platform core trait written");
+
+    let rows = pipeline_binary_rows(fixture.port()).await;
+    assert_eq!(
+        binary_row(&rows, "d3d9.dll")["pal"]["traits"][1]["defined"],
+        true,
+        "the next poll reflects the newly defined trait"
+    );
+
+    // The operator reclassifies the binary out of PAL mapping — the live
+    // event supersedes the disk record and the summary disappears.
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "d3d9.dll".into(),
+        category: "ProjectSpecific".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 0,
+        imported_symbols: 1,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let rows = pipeline_binary_rows(fixture.port()).await;
+    assert!(
+        binary_row(&rows, "d3d9.dll").get("pal").is_none(),
+        "reclassified out of PAL mapping: no summary on the next poll"
     );
 }
 

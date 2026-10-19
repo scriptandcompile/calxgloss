@@ -14,9 +14,9 @@ use axum::{
     extract::{Path as PathExtractor, State},
 };
 use calxgloss_types::{
-    BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PassStatus,
-    PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest, RunRequestSignal, ScopeControl,
-    TokenUsageLog, TranslationPhase, derive_unit_confidence,
+    BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PalReadiness,
+    PalTraitReadiness, PassStatus, PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest,
+    RunRequestSignal, ScopeControl, TokenUsageLog, TranslationPhase, derive_unit_confidence,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -279,7 +279,22 @@ pub async fn api_get_pipeline(
         });
     }
 
-    let binaries = derive_binaries(
+    // PAL trait-readiness summary (issue #243): it rides this single
+    // bulk poll, so the frontend never fetches per row. The generated
+    // PAL/shim source scan runs once per poll and is shared across all
+    // PAL rows; when no row is PAL-mapped the scan never happens and no
+    // per-binary artifact reads follow. Recomputed per poll, so trait
+    // design progress and classification overrides land on the next
+    // refresh with no special handling.
+    let has_pal_row = dll_names_vec.iter().any(|d| {
+        classifications
+            .get(d)
+            .is_some_and(|c| is_pal_strategy(&c.strategy))
+    });
+    let pal_sources = has_pal_row
+        .then(|| super::binaries::generated_pal_source_texts(combined.server.repo_path()));
+
+    let mut binaries = derive_binaries(
         &dll_names_vec,
         &classifications,
         &batch_summaries,
@@ -288,6 +303,33 @@ pub async fn api_get_pipeline(
         activity.as_ref(),
         combined.server.scope_control().as_ref(),
     );
+    if let Some(sources) = pal_sources {
+        for row in &mut binaries {
+            // The summary rides only PalMapping rows; the per-binary
+            // artifact reads stay bounded to those rows. No derived
+            // trait means no summary — never a fabricated empty one.
+            if row.strategy.as_deref().is_some_and(is_pal_strategy) {
+                let categories = super::binaries::recorded_api_categories(
+                    combined.server.repo_path(),
+                    row.binary.as_str(),
+                );
+                let traits: Vec<PalTraitReadiness> =
+                    super::binaries::needed_pal_traits(&categories)
+                        .into_iter()
+                        .map(|t| {
+                            let defined = sources
+                                .iter()
+                                .any(|s| super::binaries::defines_trait(s, &t.name));
+                            PalTraitReadiness {
+                                name: t.name,
+                                defined,
+                            }
+                        })
+                        .collect();
+                row.pal = (!traits.is_empty()).then_some(PalReadiness { traits });
+            }
+        }
+    }
     let phases = derive_phases(
         total_dlls,
         &classifications,
@@ -597,7 +639,9 @@ fn derive_phases(
 /// Derive per-binary progress records in the order `dll_names` gives them
 /// (the handler's three-tier display order, issue #242). Batch summaries are
 /// the authoritative function counts when present; otherwise the counts come
-/// from per-unit terminal events, and unknown totals stay `None`.
+/// from per-unit terminal events, and unknown totals stay `None`. The
+/// PAL-readiness summary (issue #243) is attached by the handler after this,
+/// where the poll's one shared generated-source scan lives.
 fn derive_binaries(
     dll_names: &[BinaryIdentity],
     classifications: &HashMap<BinaryIdentity, ClassificationInfo>,
@@ -651,6 +695,9 @@ fn derive_binaries(
                 // the row reads it directly and a plain GET is honest
                 // without waiting for a BinaryPauseChanged event (issue #221).
                 paused: scope.is_some_and(|s| s.is_paused(binary.as_str())),
+                // Attached per poll by the handler for PalMapping rows
+                // (issue #243) — no scan exists at this point to check against.
+                pal: None,
             }
         })
         .collect()

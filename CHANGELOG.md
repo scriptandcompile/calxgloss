@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PAL trait-readiness summary on the pipeline's PAL rows** — every poll of the pipeline progress endpoint (`GET /api/pipeline`) now answers, on each binary row routed to PAL mapping (classification strategy `PalMapping`), which PAL traits that binary needs and how far trait design has covered them: the traits come from the API-call categories recorded on the binary's function artifacts — the same category→trait derivation the binaries review tab's PAL tracker performs, reused rather than reimplemented — and each is marked **defined** when one of the workspace's generated PAL/shim sources defines a trait by that name, **missing** otherwise. The summary rides the existing single bulk poll: no per-row fetches, the generated-source scan runs once per poll and is shared across all PAL rows, and per-binary artifact reads stay bounded to the PAL rows. It appears only on PalMapping rows and is omitted everywhere else — a PAL binary with no recorded categories honestly reports no summary rather than a fabricated one — and it recomputes on every poll, so trait design progress and classification overrides show up on the next refresh (issue #243, part of #223).
 - **Per-binary pause: the dashboard rows get real per-binary Pause/Resume (issue #222, part of #217).**
   The pipeline row's Pause button now steers just that binary: the row's delegated click handler calls
   `POST /api/pipeline/binaries/{binary}/pause` instead of the run-wide `POST /api/pipeline/pause` —
