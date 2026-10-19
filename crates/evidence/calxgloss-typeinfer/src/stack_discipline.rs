@@ -22,9 +22,13 @@
 //! 32-bit class and an `rsp`-spelled one the 64-bit class, and the two
 //! families never cross-fire — a 64-bit listing never produces a
 //! 32-bit reading, and a listing that spells no stack register keys no
-//! family and yields no reading rather than a guess. The x64 shape
-//! family (shadow-space prologue, register-first arguments) rides the
-//! same dispatch in issue #248.
+//! family and yields no reading rather than a guess. This module's
+//! [`machine_class`] pass is the single dispatch both listing-borne
+//! families ride: the x64 shape family (shadow-space prologue,
+//! register-first arguments, no cleanup) lives in [`crate::x64_shape`]
+//! and is routed from [`StackDisciplineDetector::from_listing`] (issue
+//! #248). The row-shape helpers below are `pub(crate)` so that family
+//! parses the same listing shape.
 //!
 //! A call site whose operand is an address (`CALL 0x140002490`, the
 //! engine's own spelling) or an indirect register or memory operand
@@ -60,8 +64,8 @@ const REGISTERS: &[&str] = &[
 
 /// Which machine class a listing spells, keyed on the stack register the
 /// listing itself names. The x86 family reads only the 32-bit class;
-/// the x64 family (issue #248) will read only the 64-bit one; a listing
-/// spelling neither stack register keys no family at all.
+/// the x64 shape family in [`crate::x64_shape`] reads only the 64-bit
+/// one; a listing spelling neither stack register keys no family at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MachineClass {
     X86,
@@ -81,8 +85,8 @@ fn machine_class(listing: &str) -> MachineClass {
 
 /// Whether any token of the listing spells `register`: tokens split on
 /// everything that is not alphanumeric, so `[ESP+0x4]` spells `ESP`
-/// while `RSI` never spells `RSP`.
-fn spells_register(listing: &str, register: &str) -> bool {
+/// while `RSI` never spells `RSP`. Shared with [`crate::x64_shape`].
+pub(crate) fn spells_register(listing: &str, register: &str) -> bool {
     listing
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|token| token.eq_ignore_ascii_case(register))
@@ -94,8 +98,8 @@ fn spells_register(listing: &str, register: &str) -> bool {
 /// opens with a hex run of address length, and a row without one is
 /// already just the instruction. (Address-length, so an `ADD` row with
 /// no column is not mistaken for one: `ADD` is three hex-looking
-/// letters, not an address.)
-fn instruction(row: &str) -> &str {
+/// letters, not an address.) Shared with [`crate::x64_shape`].
+pub(crate) fn instruction(row: &str) -> &str {
     match row.split_once("  ") {
         Some((head, rest))
             if head.len() >= 6 && head.bytes().all(|b| b.is_ascii_hexdigit()) =>
@@ -107,8 +111,9 @@ fn instruction(row: &str) -> &str {
 }
 
 /// `MNEMONIC operands` split the way the engine spells them: the first
-/// token is the mnemonic, the rest the operand text.
-fn split_instruction(text: &str) -> (&str, &str) {
+/// token is the mnemonic, the rest the operand text. Shared with
+/// [`crate::x64_shape`].
+pub(crate) fn split_instruction(text: &str) -> (&str, &str) {
     let mut words = text.splitn(2, char::is_whitespace);
     (
         words.next().unwrap_or(""),
@@ -118,8 +123,8 @@ fn split_instruction(text: &str) -> (&str, &str) {
 
 /// The operands of one instruction as the lifter spells them,
 /// comma-separated; a canned listing that separates with plain spaces
-/// reads the same.
-fn operands(operand_text: &str) -> Vec<&str> {
+/// reads the same. Shared with [`crate::x64_shape`].
+pub(crate) fn operands(operand_text: &str) -> Vec<&str> {
     if operand_text.contains(',') {
         operand_text.split(',').map(str::trim).collect()
     } else {
@@ -129,8 +134,9 @@ fn operands(operand_text: &str) -> Vec<&str> {
 
 /// The byte count a numeric operand declares — `0xC` hex or plain
 /// decimal — and only when it is positive: a `ret 0` cleans nothing,
-/// and a register or memory operand spells no count.
-fn declared_count(text: &str) -> Option<u64> {
+/// and a register or memory operand spells no count. Shared with
+/// [`crate::x64_shape`].
+pub(crate) fn declared_count(text: &str) -> Option<u64> {
     let (digits, radix) = match text
         .strip_prefix("0x")
         .or_else(|| text.strip_prefix("0X"))
@@ -182,10 +188,12 @@ impl StackDisciplineDetector {
         Self
     }
 
-    /// The convention readings one function's machine listing carries,
-    /// keyed by the function whose listing it is — except a
-    /// caller-cleanup reading, which is keyed by the callee named at
-    /// the cleaned-up call site.
+    /// The convention readings one function's machine listing carries —
+    /// whichever family the listing's own stack register keys. The
+    /// 32-bit readings are keyed by the function whose listing it is,
+    /// except a caller-cleanup reading, which is keyed by the callee
+    /// named at the cleaned-up call site; the x64 shape reading is keyed
+    /// by the function whose listing it is.
     ///
     /// The evidence of every reading is the listing line that carries
     /// it, address column and all, so the claim can be checked against
@@ -194,11 +202,15 @@ impl StackDisciplineDetector {
     pub fn from_listing(&self, function: &str, listing: &str) -> Vec<InferredType> {
         match machine_class(listing) {
             MachineClass::X86 => self.x86_readings(function, listing),
-            // The x64 shape family reads an rsp-spelled listing (issue
-            // #248); the x86 family never fires on one, and a listing
-            // that spells no stack register at all yields no reading
-            // rather than a guess about which machine it is.
-            MachineClass::X64 | MachineClass::Unknown => Vec::new(),
+            // The x64 shape family reads the same listing read: an
+            // rsp-spelled listing goes to the 64-bit shapes and never
+            // to the x86 channels, and a listing that spells no stack
+            // register keys no family at all — no reading rather than
+            // a guess about which machine it is.
+            MachineClass::X64 => {
+                crate::x64_shape::X64ShapeDetector::new().from_listing(function, listing)
+            }
+            MachineClass::Unknown => Vec::new(),
         }
     }
 
@@ -453,7 +465,10 @@ mod tests {
         // The same cleanup shapes spelled with the 64-bit stack
         // register — and even a `ret N` — produce no 32-bit reading:
         // the family keys on the register the listing itself spells,
-        // so the two families never cross-fire.
+        // so the two families never cross-fire. The x64 family stays
+        // silent on this listing too: the cleanup contradicts its
+        // shape and no argument register is spelled, so the dispatch
+        // records nothing at all.
         let listing = "140001000  SUB RSP, 0x28\n\
                        140001007  CALL FUN_1800412a0\n\
                        14000100c  ADD RSP, 0x20\n\
@@ -461,6 +476,39 @@ mod tests {
         assert!(StackDisciplineDetector::new()
             .from_listing("FUN_x", listing)
             .is_empty());
+    }
+
+    #[test]
+    fn an_esp_spelled_listing_yields_no_x64_reading() {
+        // The dispatch keys the families from both sides: a 32-bit
+        // listing spelling the x64 shape's features — a 0x28 sub, an
+        // argument register, no cleanup — still keys the x86 family,
+        // which reads no discipline in it, and the x64 family never
+        // fires on an esp-spelled listing.
+        let listing = "00401000  SUB ESP, 0x28\n\
+                       00401007  MOV [ESP], RCX\n\
+                       0040100a  CALL FUN_1800412a0\n\
+                       0040100f  RET";
+        assert!(StackDisciplineDetector::new()
+            .from_listing("FUN_x", listing)
+            .is_empty());
+    }
+
+    #[test]
+    fn the_dispatch_routes_an_rsp_spelled_listing_to_the_x64_family() {
+        // The x64 shape family rides this dispatch: an rsp-spelled
+        // listing showing the full shape lands its Microsoft-x64
+        // reading through the same entry point as the 32-bit channels.
+        let listing = "140001000  SUB RSP, 0x28\n\
+                       140001007  MOV [RSP+0x8], RCX\n\
+                       14000100c  RET";
+        let readings = StackDisciplineDetector::new().from_listing("FUN_x", listing);
+        assert_eq!(readings.len(), 1);
+        assert_eq!(
+            convention(&readings[0]).convention,
+            CallingConvention::MicrosoftX64
+        );
+        assert_eq!(convention(&readings[0]).evidence, "140001000  SUB RSP, 0x28");
     }
 
     #[test]

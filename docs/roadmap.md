@@ -143,9 +143,16 @@ first callee epilogue `ret N` a stdcall reading at the exact-epilogue band,
 a caller `add esp, N` right after a call a cdecl reading keyed by the named
 callee at the solid band — keyed on the stack register the listing spells,
 so an rsp listing never yields a 32-bit reading and a failed read never
-moves the decompile breaker's counts.
+moves the decompile breaker's counts, and #248 read the Microsoft-x64
+shape off the same listing through the same dispatch: a shadow-space
+`sub rsp` prologue, the argument registers spelled, and no cleanup the
+convention ever leaves behind — the post-call `add rsp` that merely
+frees the prologue's own allocation being the frame teardown, not a
+cleanup — one shape-only reading at the modest band of 65, evidenced by
+the prologue line, keyed on the listing's own register spelling so the
+64-bit family never fires on a 32-bit listing either.
 Spec: #226. Tickets: #245–#251
-(native blocking links; frontier: #248).
+(native blocking links; frontier: #249).
 
 ## P13 — Global-state reference sets (evidence + pipeline + shared + interface)
 

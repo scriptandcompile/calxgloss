@@ -5,7 +5,8 @@
 //! name-borne readings of the mangling detector, and the convention
 //! readings of the convention detector — over every function of
 //! one loaded program, reads each listed function's machine listing
-//! once with the stack-discipline detector, then runs the post-inline
+//! once with the listing-borne convention detectors — the 32-bit
+//! stack discipline and the Microsoft-x64 shape — then runs the post-inline
 //! passes over the same bodies: the assignment-chain pass types each
 //! function's locals from its surviving parameter readings and known
 //! contracts, the cross-function passes carry readings across function
@@ -18,7 +19,7 @@
 //! it with all of them, rather than having each detector pull its own copy
 //! — and the cross-function passes re-read those same bodies, fetching a
 //! caller outside the listing at most once, keeping the scan at one
-//! decompile per function. The listing-borne stack-discipline readings
+//! decompile per function. The listing-borne convention readings
 //! ride the same window: the engine takes exactly one disassembly read
 //! per listed function, beside the body it pairs with, and none for a
 //! function the listing never shows. The inline pass is then one
@@ -124,8 +125,10 @@ impl<S> TypeInferEngine<S> {
     /// mangling contract, then the convention its letter spells), then
     /// the this-pointer readings, then the size readings, then
     /// the known-signature readings, then the readings carried in names
-    /// inside the body, then the stack-discipline readings off its
-    /// machine listing — with the import names' `@N` convention readings
+    /// inside the body, then the convention readings off its machine
+    /// listing — the 32-bit stack discipline or the Microsoft-x64 shape
+    /// the listing's own register spelling keys — with the import
+    /// names' `@N` convention readings
     /// after the listing, and the local records and the
     /// cross-function records appended after the inline ones, in listing
     /// order, so two scans of the same program diff cleanly.
@@ -142,9 +145,9 @@ impl<S> TypeInferEngine<S> {
     /// listing order, inside the same breaker-gated window beside the
     /// body it pairs with; a function the listing never shows (a caller
     /// fetched by the caller→callee pass) never has its listing read.
-    /// A failed or empty listing read costs only the stack-discipline
-    /// readings of that function: the read is not a decompile work
-    /// item, so the skip-rate breaker's counts never move on it.
+    /// A failed or empty listing read costs only the listing-borne
+    /// convention readings of that function: the read is not a decompile
+    /// work item, so the skip-rate breaker's counts never move on it.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning; only a failure of the listing
@@ -240,13 +243,15 @@ impl<S> TypeInferEngine<S> {
 
             // The machine listing beside the body: one disassembly read
             // per listed function, in listing order, inside the same
-            // breaker-gated window. Its stack-discipline readings — a
-            // callee epilogue that pops its own arguments, a caller
-            // that pops after a call site naming its callee — key on
-            // the stack register the listing itself spells (issue #247).
-            // A failed or empty read costs only these readings: the
-            // read is not a decompile work item, so the skip-rate
-            // breaker's counts never move on it.
+            // breaker-gated window. Its listing-borne convention
+            // readings — the 32-bit stack discipline (a callee epilogue
+            // that pops its own arguments, a caller that pops after a
+            // call site naming its callee) and the Microsoft-x64 shape
+            // (shadow-space prologue, register arguments, no cleanup) —
+            // key on the stack register the listing itself spells
+            // (issues #247, #248). A failed or empty read costs only
+            // these readings: the read is not a decompile work item, so
+            // the skip-rate breaker's counts never move on it.
             match self.source.disassembly(&function.name).await {
                 Ok(listing) => inferences.extend(
                     self.stack_discipline
@@ -256,7 +261,7 @@ impl<S> TypeInferEngine<S> {
                     warn!(
                         function = %function.name,
                         error = %error,
-                        "Skipping stack-discipline readings: disassembly read failed"
+                        "Skipping listing-borne convention readings: disassembly read failed"
                     );
                 }
             }
@@ -1885,7 +1890,7 @@ mod tests {
         );
     }
 
-    // ---- stack-discipline readings off the machine listing ----
+    // ---- convention readings off the machine listing ----
 
     #[tokio::test]
     async fn the_scan_reads_each_listed_function_s_listing_exactly_once() {
@@ -2021,6 +2026,71 @@ mod tests {
                 .iter()
                 .all(|inference| !matches!(inference, InferredType::Convention(_))),
             "a 64-bit-spelled listing never yields a 32-bit reading"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shadow_space_prologue_reads_microsoft_x64() {
+        // A canned rsp-spelled listing showing the whole 64-bit shape:
+        // the prologue allocates the 32-byte shadow space, the argument
+        // registers are spelled, and the only add frees exactly the
+        // prologue's allocation before a bare ret — the frame teardown,
+        // not a cleanup. The function reads Microsoft x64 at the
+        // shape-only band, with the prologue line as the evidence.
+        let mut program = program();
+        program.listings.insert(
+            "FUN_18003e750".into(),
+            "140001000  SUB RSP, 0x28\n\
+             140001007  MOV [RSP+0x8], RCX\n\
+             14000100c  MOV [RSP+0x10], RDX\n\
+             140001011  CALL FUN_18003ab00\n\
+             140001016  ADD RSP, 0x28\n\
+             14000101a  RET"
+                .into(),
+        );
+        let result = scan(program).await;
+
+        let record = convention_finding(&result, "FUN_18003e750");
+        assert_eq!(record.convention, CallingConvention::MicrosoftX64);
+        assert_eq!(record.method, InferenceMethod::X64Shape);
+        assert_eq!(record.confidence, Confidence::new(65));
+        assert_eq!(record.evidence, "140001000  SUB RSP, 0x28");
+
+        // The other function, whose listing read answered empty, goes
+        // unrecorded.
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| inference.function() != "FUN_18003ab00"
+                    || !matches!(inference, InferredType::Convention(_))),
+            "an empty listing yields no convention reading"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_esp_spelled_listing_yields_no_x64_reading() {
+        // The families never cross-fire from either side: a 32-bit
+        // listing spelling the x64 shape's features — a 0x28 sub, an
+        // argument register, no cleanup — keys the x86 family, which
+        // reads no discipline in it, and the x64 family never fires.
+        let mut program = program();
+        program.listings.insert(
+            "FUN_18003e750".into(),
+            "00401000  SUB ESP, 0x28\n\
+             00401007  MOV [ESP], RCX\n\
+             0040100a  CALL FUN_18003ab00\n\
+             0040100f  RET"
+                .into(),
+        );
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| !matches!(inference, InferredType::Convention(_))),
+            "a 32-bit-spelled listing never yields a 64-bit reading"
         );
     }
 

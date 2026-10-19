@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into sixteen modules:
+//! The crate is organized into seventeen modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
@@ -21,9 +21,11 @@
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
 //!   function of a program exactly once, reads it with the inline
 //!   detectors, reads its listing name with the mangling and convention
-//!   detectors, reads its machine listing once with the stack-discipline
-//!   detector, reads its import names with the convention detector, and
-//!   propagates the surviving readings across function boundaries, and
+//!   detectors, reads its machine listing once with the listing-borne
+//!   convention detectors — the 32-bit stack discipline and the
+//!   Microsoft-x64 shape — reads its import names with the convention
+//!   detector, and propagates the surviving readings across function
+//!   boundaries, and
 //!   assembles everything into one `TypeInferenceResult`;
 //!   the shared `ScanSource` trait abstracts the decompiler reads so tests
 //!   run the orchestration over canned bodies.
@@ -66,8 +68,17 @@
 //!   an `esp`-spelled disassembly spells — a callee epilogue popping its
 //!   own arguments (`ret N`, stdcall) and a caller popping after a call
 //!   site naming its callee (`add esp, N`, cdecl) — each in its own
-//!   confidence band, keyed on the stack register the listing itself
-//!   names so the 32-bit and 64-bit families never cross-fire.
+//!   confidence band, and its machine-class pass is the single dispatch
+//!   both listing-borne families ride, keyed on the stack register the
+//!   listing itself names so the 32-bit and 64-bit families never
+//!   cross-fire.
+//! - [`x64_shape`] - Calling-convention detection off the machine
+//!   listing: `X64ShapeDetector` reads the Microsoft-x64 call shape an
+//!   `rsp`-spelled disassembly spells — shadow-space allocation in the
+//!   prologue, the argument registers spelled, and no callee or caller
+//!   stack cleanup the convention ever leaves behind — one shape-only
+//!   reading at the modest band, routed by the same machine-class
+//!   dispatch as the 32-bit family.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
@@ -101,5 +112,6 @@ pub mod stack_discipline;
 pub mod this_ptr;
 pub mod types;
 pub mod write_back;
+pub mod x64_shape;
 
 pub use error::{Result, TypeInferError};

@@ -91,6 +91,11 @@ pub enum InferenceMethod {
     /// after a call site naming the callee in an `esp`-spelled machine
     /// listing — so the callee is called cdecl: the caller pops.
     CallerCleanup,
+    /// The listing shows the Microsoft-x64 call shape — a shadow-space
+    /// `sub rsp, N` prologue, the argument registers spelled, and no
+    /// callee or caller stack cleanup the convention ever leaves behind —
+    /// so the function is called through the 64-bit Windows convention.
+    X64Shape,
 }
 
 impl InferenceMethod {
@@ -122,6 +127,7 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     ImportDecoration => "import_decoration",
     CalleeEpilogue => "callee_epilogue",
     CallerCleanup => "caller_cleanup",
+    X64Shape => "x64_shape",
 });
 
 // ============================================================

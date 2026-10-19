@@ -351,6 +351,7 @@ fn method_breakdown(result: &TypeInferenceResult) -> Vec<String> {
         InferenceMethod::ImportDecoration,
         InferenceMethod::CalleeEpilogue,
         InferenceMethod::CallerCleanup,
+        InferenceMethod::X64Shape,
     ]
     .into_iter()
     .map(|method| {
@@ -566,6 +567,13 @@ mod tests {
                 confidence: Confidence::new(70),
                 evidence: "00401108  ADD ESP, 0x8".into(),
             }),
+            InferredType::Convention(InferredConvention {
+                function: "FUN_18003e750".into(),
+                convention: CallingConvention::MicrosoftX64,
+                method: InferenceMethod::X64Shape,
+                confidence: Confidence::new(65),
+                evidence: "140001000  SUB RSP, 0x28".into(),
+            }),
         ]);
         let breakdown = method_breakdown(&result);
         for method in [
@@ -584,6 +592,7 @@ mod tests {
             InferenceMethod::ImportDecoration,
             InferenceMethod::CalleeEpilogue,
             InferenceMethod::CallerCleanup,
+            InferenceMethod::X64Shape,
         ] {
             assert!(
                 breakdown.contains(&format!("{method} 1")),

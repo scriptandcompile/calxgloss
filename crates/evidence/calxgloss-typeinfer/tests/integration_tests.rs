@@ -640,6 +640,113 @@ async fn x86_stack_discipline_records_survive_the_persistence_round_trip() {
 }
 
 #[tokio::test]
+async fn the_scan_reports_a_microsoft_x64_convention_end_to_end() {
+    // The canned fixture program lists rsp-spelled functions — the
+    // fixture targets are x64 — so the x64 shape channel is what the
+    // fixture proves end to end: scan, persist, load, and the
+    // Microsoft-x64 readings stand with their band and their prologue
+    // evidence (issue #248).
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined8 FUN_18003ab00(undefined8 param_1)",
+            "  CloseHandle(param_1);\n  return 0;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(undefined8 param_1)",
+            "  return;\n",
+        ),
+    );
+    program.listings.insert(
+        "FUN_18003ab00".into(),
+        "140001000  SUB RSP, 0x28\n\
+         140001007  MOV RCX, RDX\n\
+         14000100a  CALL CloseHandle\n\
+         14000100f  ADD RSP, 0x28\n\
+         140001013  RET"
+            .into(),
+    );
+    program.listings.insert(
+        "FUN_18003e750".into(),
+        "140001000  SUB RSP, 0x20\n\
+         140001007  MOV [RSP+0x8], RCX\n\
+         14000100c  RET"
+            .into(),
+    );
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+
+    // The caller: a shadow-space prologue, the argument registers
+    // spelled, and the add right after the call freeing exactly the
+    // prologue's allocation — the frame teardown the convention emits,
+    // not a cleanup.
+    let caller = loaded
+        .for_function("FUN_18003ab00")
+        .find(|inference| matches!(inference, InferredType::Convention(_)))
+        .expect("the caller's x64 shape reading");
+    let InferredType::Convention(record) = caller else {
+        unreachable!("the shape reading is a convention record");
+    };
+    assert_eq!(
+        record,
+        &InferredConvention {
+            function: "FUN_18003ab00".into(),
+            convention: CallingConvention::MicrosoftX64,
+            method: InferenceMethod::X64Shape,
+            confidence: Confidence::new(65),
+            evidence: "140001000  SUB RSP, 0x28".into(),
+        }
+    );
+
+    // The leaf: home region allocated, its register argument homed
+    // into it, a bare ret — the same reading, evidenced by its own
+    // prologue line.
+    let leaf = loaded
+        .for_function("FUN_18003e750")
+        .find(|inference| matches!(inference, InferredType::Convention(_)))
+        .expect("the leaf's x64 shape reading");
+    let InferredType::Convention(record) = leaf else {
+        unreachable!("the shape reading is a convention record");
+    };
+    assert_eq!(
+        record,
+        &InferredConvention {
+            function: "FUN_18003e750".into(),
+            convention: CallingConvention::MicrosoftX64,
+            method: InferenceMethod::X64Shape,
+            confidence: Confidence::new(65),
+            evidence: "140001000  SUB RSP, 0x20".into(),
+        }
+    );
+
+    // The x64 family keys its reading by the function whose listing it
+    // is and never spells a 32-bit convention for a callee it calls:
+    // CloseHandle stands unrecorded.
+    assert!(
+        loaded
+            .inferences
+            .iter()
+            .all(|inference| inference.function() != "CloseHandle"),
+        "an x64 listing never yields a 32-bit reading for its callee"
+    );
+}
+
+#[tokio::test]
 async fn a_loaded_result_answers_the_pipeline_lookups() {
     let workspace = TempDir::new().unwrap();
     let result = TypeInferEngine::with_source(program())
