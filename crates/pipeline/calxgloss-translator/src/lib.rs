@@ -759,6 +759,105 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_from_callgraph_orders_shared_globals_behind_the_persisted_index() {
+        // The plan consumes the persisted shared-globals index: the
+        // document was hand-written into the workspace through the
+        // persistor — no global-state scan runs, plan_from_callgraph
+        // never touches the engine — and its index entry puts the
+        // definer ahead of the reuser within the tier (issue #256).
+        use calxgloss_callgraph::FunctionCallGraph;
+        use calxgloss_globalstate::persist::GlobalStatePersistor;
+        use calxgloss_globalstate::types::{
+            GlobalStateFinding, GlobalStateResult, SharedGlobalRecord,
+        };
+        use calxgloss_types::ScanMetadata;
+
+        let dir = tempfile::TempDir::new().expect("temp workspace");
+        let mut result = GlobalStateResult::new(ScanMetadata::new("shared.dll"));
+        result
+            .findings
+            .push(GlobalStateFinding::SharedGlobal(SharedGlobalRecord {
+                global: "DAT_180064e80".to_string(),
+                readers: vec!["reader_a".to_string()],
+                writers: vec!["writer_b".to_string()],
+                confidence: 85.into(),
+            }));
+        GlobalStatePersistor::new(dir.path())
+            .save(&result)
+            .expect("the document saves");
+
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let graph = CallGraph {
+            binary: "shared.dll".to_string(),
+            functions: vec![
+                FunctionCallGraph {
+                    name: "reader_a".to_string(),
+                    address: 0x401000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Middle,
+                },
+                FunctionCallGraph {
+                    name: "writer_b".to_string(),
+                    address: 0x402000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Middle,
+                },
+            ],
+        };
+
+        let plan = pipeline.plan_from_callgraph(&graph, None).unwrap();
+        assert_eq!(
+            plan[0].name, "writer_b",
+            "the first definer precedes the reuser"
+        );
+        assert_eq!(plan[1].name, "reader_a");
+    }
+
+    #[test]
+    fn test_plan_from_callgraph_without_a_globalstate_document_keeps_dependency_order() {
+        // Same graph, no document in the workspace: the edge set is empty
+        // and today's dependency order stands exactly — address order
+        // within the tier (issue #256).
+        use calxgloss_callgraph::FunctionCallGraph;
+
+        let dir = tempfile::TempDir::new().expect("temp workspace");
+        let kuna = fixture_kuna();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline =
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_workspace(dir.path());
+
+        let graph = CallGraph {
+            binary: "shared.dll".to_string(),
+            functions: vec![
+                FunctionCallGraph {
+                    name: "reader_a".to_string(),
+                    address: 0x401000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Middle,
+                },
+                FunctionCallGraph {
+                    name: "writer_b".to_string(),
+                    address: 0x402000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Middle,
+                },
+            ],
+        };
+
+        let plan = pipeline.plan_from_callgraph(&graph, None).unwrap();
+        assert_eq!(plan[0].name, "reader_a", "no document, no reordering");
+        assert_eq!(plan[1].name, "writer_b");
+    }
+
+    #[test]
     fn test_generate_stub_main() {
         let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();

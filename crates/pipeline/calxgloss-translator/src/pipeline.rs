@@ -2698,6 +2698,10 @@ impl TranslationPipeline {
     /// transform a [`CallGraph`] into an ordered list of
     /// [`FunctionTranslationPlan`] instances, each annotated with its
     /// priority tier (root / middle / leaf) and topological position.
+    /// When the workspace holds a persisted global-state document for the
+    /// graph's binary, the ordering is further extended by state-sharing
+    /// edges: within a tier, a global's first definer precedes the units
+    /// that reuse it (issue #256). No document leaves today's order intact.
     ///
     /// # Arguments
     ///
@@ -2738,10 +2742,44 @@ impl TranslationPipeline {
         if let Some(max) = max_functions {
             orderer = orderer.with_max_functions(max);
         }
+        // State-sharing edges from the persisted shared-globals index
+        // extend the ordering when the global-state scan has run for this
+        // binary (issue #256); the plan reads the artifact, it never runs
+        // the scan.
+        orderer = orderer.with_state_sharing(self.state_sharing_edges(&graph.binary));
         let plan = orderer
             .order(graph)
             .map_err(|e| TranslatorError::CallGraph(e.to_string()))?;
         Ok(plan.into_iter().collect())
+    }
+
+    /// The state-sharing edges the persisted shared-globals index names for
+    /// this binary (issue #256, part of #225). The orderer consumes the
+    /// artifact the global-state scan wrote; it never runs the scan itself.
+    /// A missing workspace, a missing or corrupt document yields an empty
+    /// set, leaving today's dependency order exactly in force.
+    fn state_sharing_edges(&self, binary: &str) -> calxgloss_callgraph::StateSharingEdges {
+        let Some(workspace) = self.workspace.as_deref() else {
+            return calxgloss_callgraph::StateSharingEdges::default();
+        };
+        let persistor = calxgloss_globalstate::persist::GlobalStatePersistor::new(workspace);
+        match persistor.load(binary) {
+            Ok(result) => calxgloss_callgraph::StateSharingEdges::from_pairs(
+                calxgloss_globalstate::rollup::state_sharing_pairs(
+                    result.findings.iter().filter_map(
+                        calxgloss_globalstate::types::GlobalStateFinding::shared_global,
+                    ),
+                ),
+            ),
+            Err(error) => {
+                debug!(
+                    binary,
+                    error = %error,
+                    "No usable global-state result; ordering without state-sharing edges"
+                );
+                calxgloss_callgraph::StateSharingEdges::default()
+            }
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -3099,8 +3137,11 @@ impl TranslationPipeline {
 
         self.run_prebatch_scans(&graph.binary).await;
 
-        // Build a priority-ordered plan
-        let orderer = calxgloss_callgraph::TranslationOrderer::new();
+        // Build a priority-ordered plan, extended by the persisted
+        // shared-globals index when the global-state scan has run for
+        // this binary (issue #256) — a read of the artifact, never a scan.
+        let orderer = calxgloss_callgraph::TranslationOrderer::new()
+            .with_state_sharing(self.state_sharing_edges(&graph.binary));
         let plan = orderer
             .order(graph)
             .map_err(|e| TranslatorError::CallGraph(e.to_string()))?;
