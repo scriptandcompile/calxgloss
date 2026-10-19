@@ -569,6 +569,7 @@ version = "0.3.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
+ "calxgloss-prompts",
  "calxgloss-types",
  "serde",
  "serde_json",

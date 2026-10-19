@@ -236,6 +236,28 @@ impl GlobalStateFinding {
     }
 }
 
+/// Render an access record as prompt data: the function that made the
+/// access, the access kind, the global it touched, the Rust pattern the
+/// access steers a translation toward, and the confidence and evidence
+/// behind the claim — so the module-context and escalate prompts show
+/// the shared state a function touches and how strongly each reading
+/// was made, and the translator stops inventing locals for globals.
+/// A rollup record renders through the same accessors; its empty
+/// function name keeps it out of every by-function lookup, so it never
+/// reaches a prompt.
+impl From<&GlobalStateFinding> for calxgloss_prompts::GlobalStateInfo {
+    fn from(finding: &GlobalStateFinding) -> Self {
+        Self {
+            function: finding.function().to_string(),
+            kind: finding.kind().to_string(),
+            global: finding.global().to_string(),
+            suggestion: finding.suggestion().to_string(),
+            confidence: finding.confidence().value(),
+            evidence: finding.evidence().to_string(),
+        }
+    }
+}
+
 // ============================================================
 // The derived purity summary
 // ============================================================
@@ -429,6 +451,25 @@ mod tests {
                 .shared_global()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_access_record_renders_into_prompt_data() {
+        // The prompt seam: an access record carries its whole claim
+        // into `GlobalStateInfo` — function, kind tag, global, the
+        // steering suggestion the detector wrote, and the confidence
+        // and evidence behind it.
+        let write = GlobalStateFinding::GlobalWrite(access("FUN_18003ab00", "DAT_180064e80"));
+        let info = calxgloss_prompts::GlobalStateInfo::from(&write);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "global_write");
+        assert_eq!(info.global, "DAT_180064e80");
+        assert_eq!(
+            info.suggestion,
+            "model the global as shared struct state, not a Rust static"
+        );
+        assert_eq!(info.confidence, 85);
+        assert_eq!(info.evidence, "DAT_180064e80 = param_1");
     }
 
     #[test]

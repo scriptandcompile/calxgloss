@@ -56,10 +56,10 @@ pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ConstInfo, ControlFlowInfo, ConventionInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    FixTemplate, FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate,
-    ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod, SerializationInfo,
-    ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData, TestCaseFormatted,
-    TranslateTemplate, TypeInfo, WithTestsTemplate,
+    FixTemplate, FormattedTestResult, FullModuleTemplate, GlobalStateInfo, MemoryInfo,
+    MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod,
+    SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData,
+    TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors

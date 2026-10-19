@@ -249,6 +249,32 @@ pub struct ControlFlowInfo {
     pub evidence: String,
 }
 
+/// A global-state access record about one function, made by the
+/// `calxgloss-globalstate` detector.
+///
+/// The module-context and escalate prompts show these so the LLM models
+/// the program globals a function reads and writes as shared state with
+/// a home in a struct threaded through the translation, instead of
+/// inventing a local or reaching for a Rust `static`. The kind names the
+/// access direction — `global_read` or `global_write` — and the record
+/// names the global it touched.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GlobalStateInfo {
+    /// The function that made the access, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of access, e.g. `global_read`, `global_write`.
+    pub kind: String,
+    /// The global accessed, spelled as the decompiler names it, e.g.
+    /// `DAT_180064e80`.
+    pub global: String,
+    /// The Rust pattern the access steers the translation toward.
+    pub suggestion: String,
+    /// Confidence that the reading is right, 0–100.
+    pub confidence: u8,
+    /// The access statement quoted from the body.
+    pub evidence: String,
+}
+
 /// A string-context finding about one function, made by the
 /// `calxgloss-stringctx` engines.
 ///
