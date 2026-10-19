@@ -1054,6 +1054,7 @@ pub async fn build_escalated_prompt<S: ScanSource>(
                 translation.call_graph_context.clone(),
                 control_flow_findings,
                 convention_findings,
+                Vec::new(),
             );
             calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
         }

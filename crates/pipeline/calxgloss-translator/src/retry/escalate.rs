@@ -128,6 +128,7 @@ async fn build_escalate_prompt_inner(
         callback_findings,
         control_flow_findings,
         convention_findings,
+        Vec::new(),
         string_findings,
         api_findings,
         const_findings,

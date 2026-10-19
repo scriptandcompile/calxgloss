@@ -139,6 +139,7 @@ pub fn build_escalate_prompt(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         failure_history,
         Vec::new(),
     )
@@ -151,8 +152,8 @@ pub fn build_escalate_prompt(
 /// Adds call graph neighbors, neighboring functions, data structures,
 /// type information, recognized algorithms, memory lifecycle findings,
 /// concurrency findings, callback findings, control-flow findings,
-/// calling-convention readings, string context findings, library/API
-/// findings, constant/enum findings,
+/// calling-convention readings, global-state access records, string
+/// context findings, library/API findings, constant/enum findings,
 /// serialization findings, and enriched call graph context (caller/callee
 /// details and leaf API suggestions) to help the LLM understand the
 /// broader context.
@@ -172,6 +173,7 @@ pub fn build_escalate_prompt_with_context(
     callback_findings: Vec<super::templates::CallbackInfo>,
     control_flow_findings: Vec<super::templates::ControlFlowInfo>,
     convention_findings: Vec<super::templates::ConventionInfo>,
+    global_state_findings: Vec<super::templates::GlobalStateInfo>,
     string_findings: Vec<super::templates::StringContextInfo>,
     api_findings: Vec<super::templates::ApiInfo>,
     const_findings: Vec<super::templates::ConstInfo>,
@@ -194,6 +196,7 @@ pub fn build_escalate_prompt_with_context(
         callback_findings,
         control_flow_findings,
         convention_findings,
+        global_state_findings,
         string_findings,
         api_findings,
         const_findings,

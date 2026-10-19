@@ -672,6 +672,9 @@ pub struct EscalateTemplate {
     /// Calling-convention readings about this function and its callees
     /// made by the type-inference engine.
     pub convention_findings: Vec<ConventionInfo>,
+    /// Global-state access records about this function made by the
+    /// global-state scan.
+    pub global_state_findings: Vec<GlobalStateInfo>,
     /// String-context findings about this function made by the analysis
     /// pipeline.
     pub string_findings: Vec<StringContextInfo>,
@@ -708,6 +711,7 @@ impl EscalateTemplate {
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
         convention_findings: Vec<ConventionInfo>,
+        global_state_findings: Vec<GlobalStateInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
@@ -728,6 +732,7 @@ impl EscalateTemplate {
             callback_findings,
             control_flow_findings,
             convention_findings,
+            global_state_findings,
             string_findings,
             api_findings,
             const_findings,
@@ -754,6 +759,7 @@ impl EscalateTemplate {
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
         convention_findings: Vec<ConventionInfo>,
+        global_state_findings: Vec<GlobalStateInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
@@ -775,6 +781,7 @@ impl EscalateTemplate {
             callback_findings,
             control_flow_findings,
             convention_findings,
+            global_state_findings,
             string_findings,
             api_findings,
             const_findings,
@@ -801,6 +808,7 @@ impl EscalateTemplate {
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
         convention_findings: Vec<ConventionInfo>,
+        global_state_findings: Vec<GlobalStateInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
@@ -823,6 +831,7 @@ impl EscalateTemplate {
             callback_findings,
             control_flow_findings,
             convention_findings,
+            global_state_findings,
             string_findings,
             api_findings,
             const_findings,
@@ -1166,6 +1175,9 @@ pub struct ModuleContextTemplate {
     /// Calling-convention readings about this function and its callees
     /// made by the type-inference engine.
     pub convention_findings: Vec<ConventionInfo>,
+    /// Global-state access records about this function made by the
+    /// global-state scan.
+    pub global_state_findings: Vec<GlobalStateInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -1186,6 +1198,7 @@ impl ModuleContextTemplate {
             call_graph_context: data.call_graph_context.clone(),
             control_flow_findings: data.control_flow_findings.clone(),
             convention_findings: data.convention_findings.clone(),
+            global_state_findings: data.global_state_findings.clone(),
         }
     }
 }

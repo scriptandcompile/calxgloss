@@ -1090,6 +1090,7 @@ impl TranslationPipeline {
                     enriched_context.clone(),
                     control_flow_findings,
                     convention_findings,
+                    Vec::new(),
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }

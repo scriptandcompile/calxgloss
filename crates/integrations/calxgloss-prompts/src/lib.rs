@@ -649,6 +649,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -699,6 +700,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -767,6 +769,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -801,6 +804,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -878,6 +882,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -909,6 +914,77 @@ mod tests {
         assert!(!prompt.contains("CALLING CONVENTION"));
     }
 
+    fn global_state_fixture() -> GlobalStateInfo {
+        GlobalStateInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "global_write".to_string(),
+            global: "DAT_180064e80".to_string(),
+            suggestion: "model the program global as shared struct state, not a Rust static"
+                .to_string(),
+            confidence: 85,
+            evidence: "DAT_180064e80 = param_1".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_escalate_template_with_global_state_findings() {
+        let findings = vec![global_state_fixture()];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00(param_1: i32) { /* DAT store */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("GLOBAL STATE"));
+        assert!(
+            prompt.contains("model the program global as shared struct state, not a Rust static")
+        );
+        assert!(prompt.contains("global_write of `DAT_180064e80`"));
+        assert!(prompt.contains("confidence 85"));
+        assert!(prompt.contains("DAT_180064e80 = param_1"));
+        // The purity flag renders as the steering: a function with
+        // global accesses is pushed to struct state, never a static.
+        assert!(prompt.contains("rather than in a Rust `static`"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_global_state_findings_omits_the_section() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(!prompt.contains("GLOBAL STATE"));
+    }
+
     #[test]
     fn test_escalate_template_with_string_findings() {
         let findings = vec![
@@ -933,6 +1009,7 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* raw literals */ }".to_string(),
             "Wrong result".to_string(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -989,6 +1066,7 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* raw imports */ }".to_string(),
             "Wrong result".to_string(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1079,6 +1157,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             findings,
             Vec::new(),
             Vec::new(),
@@ -1155,6 +1234,7 @@ mod tests {
             Vec::new(),
             vec![control_flow_fixture()],
             Vec::new(),
+            Vec::new(),
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1198,6 +1278,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![convention_fixture()],
+            Vec::new(),
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1224,6 +1305,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![finding],
+            Vec::new(),
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1242,6 +1324,44 @@ mod tests {
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
 
         assert!(!prompt.contains("CALLING CONVENTION"));
+    }
+
+    #[test]
+    fn test_module_context_template_renders_global_state_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![global_state_fixture()],
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("GLOBAL STATE"));
+        assert!(
+            prompt.contains("model the program global as shared struct state, not a Rust static")
+        );
+        assert!(prompt.contains("global_write of `DAT_180064e80`"));
+        assert!(prompt.contains("confidence 85"));
+        assert!(prompt.contains("DAT_180064e80 = param_1"));
+        // The purity flag renders as the steering: a function with
+        // global accesses is pushed to struct state, never a static.
+        assert!(prompt.contains("rather than in a Rust `static`"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_global_state_findings_omits_the_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(!prompt.contains("GLOBAL STATE"));
     }
 
     #[test]
