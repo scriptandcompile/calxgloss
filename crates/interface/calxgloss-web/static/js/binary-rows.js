@@ -17,6 +17,12 @@
    selected as the target, Classify opens the classification-override panel
    (issue #97). The server's own reason surfaces on rejection —
    a stale click is never a silent no-op.
+
+   PAL-mapped binaries render a compact variant of the row (issue #244):
+   trait names with defined/missing markers in the state cell, an
+   "N/M defined" readiness count, and Classify only — the translation
+   counts, cost cell, activity line, and translation controls are
+   suppressed because a PAL binary is never a translation target.
    ========================================================================== */
 
 import { escapeHtml } from "./utils.js";
@@ -74,6 +80,42 @@ function shimStatus(b) {
     const match = matchStrategy(b.strategy);
     if (match) return match.shim(b);
     return { kind: "unknown", text: b.strategy || "Unclassified" };
+}
+
+// The compact PAL row (issue #244) branches on the same PalMapping
+// containment match the state cell already uses — one rule decides both.
+// A PAL binary is never a translation target, so its row tracks
+// classification and trait readiness instead of translation progress.
+function isPalRow(b) {
+    return matchStrategy(b.strategy)?.key === "PalMapping";
+}
+
+// The compact row's state cell reads like a crate-replacement row's
+// "Shim → mlua" cell: PAL → the traits the poll's summary names, each
+// marked defined or missing. No summary means the plain "PAL trait"
+// text — there is nothing to list, and none is invented.
+function palStateCell(b) {
+    const traits = b.pal?.traits;
+    if (!traits || traits.length === 0) return escapeHtml(shimStatus(b).text);
+    const listed = traits
+        .map(
+            (t) =>
+                `<span class="pal-trait" data-state="${t.defined ? "defined" : "missing"}" title="${
+                    t.defined ? "Defined in the generated PAL layer" : "Not yet defined in the generated PAL layer"
+                }">${escapeHtml(t.name)}</span>`
+        )
+        .join(", ");
+    return `PAL → ${listed}`;
+}
+
+// "N/M defined" in the counts area — an em-dash when the poll carried no
+// summary, never a fabricated 0/0 for a binary whose artifacts name no
+// API-call categories.
+function palReadiness(b) {
+    const traits = b.pal?.traits;
+    if (!traits || traits.length === 0) return "—";
+    const defined = traits.filter((t) => t.defined).length;
+    return `${defined}/${traits.length} defined`;
 }
 
 // No badge beside the name: the state lives in the Success column
@@ -145,10 +187,20 @@ function renderHeader() {
 
 function renderRow(b) {
     const status = statusBadge(b);
+    const dll = escapeHtml(b.binary || "unknown");
+    const head = `
+            <div class="pipeline-binary-head">
+                <span class="pipeline-binary-name" title="${dll}">${dll}</span>
+            </div>`;
+
+    // PAL rows render the compact variant (issue #244); every other row
+    // renders exactly as before — the variant tracks classification, not
+    // position in the table.
+    if (isPalRow(b)) return renderPalRow(b, status, dll, head);
+
     const shim = shimStatus(b);
     const queued = queuedCount(b);
     const rate = successRate(b);
-    const dll = escapeHtml(b.binary || "unknown");
     // The pause slot follows the row's paused flag (issue #222): an unpaused
     // row offers Pause, a paused one offers Resume — never both.
     const actions = Object.entries(ACTION_LABELS).filter(([action]) =>
@@ -157,9 +209,7 @@ function renderRow(b) {
 
     return `
         <div class="pipeline-binary-row" data-binary="${dll}" data-status="${status.cls}">
-            <div class="pipeline-binary-head">
-                <span class="pipeline-binary-name" title="${dll}">${dll}</span>
-            </div>
+            ${head}
             <div class="pipeline-binary-counts">
                 <span class="pb-count" data-count="total" title="Total functions">${fmtCount(b.functions_total)} total</span>
                 <span class="pb-count ok" data-count="translated" title="Functions translated">${b.functions_translated || 0} translated</span>
@@ -184,6 +234,32 @@ function renderRow(b) {
                     .join("")}
             </div>
             ${activityLine(b)}
+        </div>
+    `;
+}
+
+// The compact PAL row (issue #244): the binary name, the state cell
+// enriched with the traits it maps to, a trait readiness count in the
+// counts area, and Classify alone in the actions cell. The translation
+// counts, the tokens/success cell, and the activity line are suppressed
+// — a PAL binary has no translation pass to count, spend, or heartbeat —
+// but the counts and cost cells stay as placeholder cells so the fixed
+// grid tracks keep the row aligned with full rows. Classify stays as the
+// correction path for a binary wrongly routed to PAL mapping; Start
+// Translation, Pause, and Configure are never rendered, so the delegated
+// listener's branches cannot fire for them.
+function renderPalRow(b, status, dll, head) {
+    return `
+        <div class="pipeline-binary-row pipeline-binary-row-pal" data-binary="${dll}" data-status="${status.cls}">
+            ${head}
+            <div class="pipeline-binary-counts">
+                <span class="pb-pal-readiness" data-count="pal-readiness" title="PAL traits the generated layer defines">${palReadiness(b)}</span>
+            </div>
+            <div class="pipeline-binary-cost" aria-hidden="true"></div>
+            <div class="pipeline-binary-state" data-shim="pal" title="Classification state — PAL traits the binary maps to, defined or missing">${palStateCell(b)}</div>
+            <div class="pipeline-binary-actions">
+                <button class="pipeline-action-btn" data-action="classify" data-binary="${dll}" title="${ACTION_TITLES.classify}">${ACTION_LABELS.classify}</button>
+            </div>
         </div>
     `;
 }

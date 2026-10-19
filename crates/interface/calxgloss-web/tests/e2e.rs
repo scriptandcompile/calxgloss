@@ -11563,10 +11563,15 @@ async fn test_headless_pipeline_binary_rows() {
         ),
         "no status badge next to the binary name"
     );
+    // d3d9 is PAL-mapped — its compact row (issue #244) suppresses the
+    // tokens/success cell and the translation counts entirely.
     assert!(
-        cell_text("d3d9.dll", "[data-metric=\"success-rate\"]").contains("In pipeline"),
-        "a binary with no terminal outcomes shows its status in the Success column, got: {}",
-        cell_text("d3d9.dll", "[data-metric=\"success-rate\"]")
+        eval_bool(
+            &tab,
+            "!document.querySelector('#pipeline-binaries [data-binary=\"d3d9.dll\"] [data-metric=\"success-rate\"]') \
+                 && !document.querySelector('#pipeline-binaries [data-binary=\"d3d9.dll\"] [data-count=\"total\"]')"
+        ),
+        "a PAL row renders no tokens/success cell and no translation counts"
     );
     assert!(
         cell_text("dinput8.dll", "[data-metric=\"success-rate\"]").contains("Translating"),
@@ -11665,11 +11670,12 @@ async fn test_headless_pipeline_binary_rows() {
     );
 
     // ── Honesty: unknown totals and tokens are em-dashes ──────────────
-    // (success-rate is absent here: with no terminal outcomes the cell
+    // (engine.dll: classified and working, but no batch summary has landed.
+    // success-rate is absent here too: with no terminal outcomes the cell
     // shows the status placeholder instead of a rate, never a zero)
     for (binary, selector) in [
-        ("d3d9.dll", "[data-metric=\"tokens\"]"),
-        ("d3d9.dll", "[data-count=\"total\"]"),
+        ("engine.dll", "[data-metric=\"tokens\"]"),
+        ("engine.dll", "[data-count=\"total\"]"),
     ] {
         let text = cell_text(binary, selector);
         assert!(
@@ -11740,6 +11746,241 @@ async fn test_headless_pipeline_binary_rows() {
             &tab,
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the compact PAL row (issue #244, part of #223):
+/// a PAL-classified binary renders the compact variant — trait names with
+/// defined/missing markers in the state cell, an "N/M defined" readiness
+/// count in the counts area, an empty cost placeholder keeping the grid
+/// aligned, and Classify alone in the actions cell. A PAL row whose poll
+/// carried no summary shows an em-dash, never a fabricated 0/0. A non-PAL
+/// neighbour keeps its counts, its success-column placeholder, and all four
+/// buttons. A live reclassification to a translation strategy restores the
+/// full row and moves it up into table order on the next refresh.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_pipeline_pal_rows_compact() {
+    let fixture = TestFixture::new();
+    // d3d9.dll: classified PalMapping on disk, with function artifacts
+    // recording DirectX/Win32Core API-call categories and a generated PAL
+    // crate defining GraphicsDevice but not PlatformCore. game_logic.dll:
+    // ReverseEngineer — the full-row neighbour.
+    write_pipeline_pal_readiness_fixtures(&fixture);
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A second PAL binary classified live with no analysis artifacts — the
+    // poll carries no summary for it, and the row must answer honestly.
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "audio.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "PalMapping".into(),
+        crate_replacement: None,
+        exported_symbols: 3,
+        imported_symbols: 2,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    // game_logic.dll (full row) plus audio.dll and d3d9.dll (compact —
+    // PAL rows sort last, issue #242); poll until all three appear.
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]').length",
+        ) == 3
+        {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "one full row and two compact PAL rows should render"
+    );
+
+    let cell_text = |binary: &str, selector: &str| -> String {
+        eval_text(
+            &tab,
+            &format!(
+                "document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"] {selector}')?.textContent || ''"
+            ),
+        )
+    };
+
+    // ── State cell: PAL → the summary's trait names ─────────────────────
+    let state_cell = cell_text("d3d9.dll", ".pipeline-binary-state");
+    assert!(
+        state_cell.contains("PAL →")
+            && state_cell.contains("GraphicsDevice")
+            && state_cell.contains("PlatformCore"),
+        "the state cell lists the traits the poll's summary names, got: {state_cell}"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            r#"(() => {
+                const row = document.querySelector('#pipeline-binaries [data-binary="d3d9.dll"]');
+                const defined = row?.querySelector('.pal-trait[data-state="defined"]');
+                const missing = row?.querySelector('.pal-trait[data-state="missing"]');
+                return defined?.textContent === 'GraphicsDevice'
+                    && missing?.textContent === 'PlatformCore';
+            })()"#
+        ),
+        "defined and missing traits carry distinguishable markers"
+    );
+
+    // ── Readiness count in the counts area, never a fabricated 0/0 ──────
+    assert_eq!(
+        cell_text("d3d9.dll", "[data-count=\"pal-readiness\"]").trim(),
+        "1/2 defined",
+        "the counts area shows the trait readiness count"
+    );
+    let audio_readiness = cell_text("audio.dll", "[data-count=\"pal-readiness\"]");
+    assert_eq!(
+        audio_readiness.trim(),
+        "—",
+        "a PAL row whose poll carried no summary shows an em-dash, got: {audio_readiness}"
+    );
+    assert!(
+        !audio_readiness.contains('0'),
+        "no fabricated zero for a summary-less PAL row, got: {audio_readiness}"
+    );
+    assert!(
+        cell_text("audio.dll", ".pipeline-binary-state").contains("PAL trait"),
+        "a summary-less PAL row keeps the plain PAL trait state text"
+    );
+
+    // ── Suppressed cells and controls on both compact rows ──────────────
+    for binary in ["d3d9.dll", "audio.dll"] {
+        assert!(
+            eval_bool(
+                &tab,
+                &format!(
+                    r#"(() => {{
+                        const row = document.querySelector('#pipeline-binaries [data-binary="{binary}"]');
+                        if (!row) return false;
+                        const btns = [...row.querySelectorAll('.pipeline-action-btn')];
+                        return row.querySelector('[data-count="total"]') === null
+                            && row.querySelector('[data-metric="tokens"]') === null
+                            && row.querySelector('[data-metric="success-rate"]') === null
+                            && row.querySelector('.pipeline-binary-activity') === null
+                            && !!row.querySelector('.pipeline-binary-cost')
+                            && row.querySelector('.pipeline-binary-cost').childElementCount === 0
+                            && btns.length === 1
+                            && btns[0].dataset.action === 'classify';
+                    }})()"#
+                )
+            ),
+            "{binary} renders no counts, no cost content, no activity line, and Classify only"
+        );
+    }
+
+    // ── The non-PAL neighbour keeps its full row ─────────────────────────
+    assert!(
+        eval_bool(
+            &tab,
+            r#"(() => {
+                const row = document.querySelector('#pipeline-binaries [data-binary="game_logic.dll"]');
+                if (!row) return false;
+                return row.querySelectorAll('.pipeline-action-btn').length === 4
+                    && !!row.querySelector('[data-count="total"]')
+                    && !!row.querySelector('[data-metric="tokens"]');
+            })()"#
+        ),
+        "the non-PAL neighbour keeps its counts and all four buttons"
+    );
+    assert!(
+        cell_text("game_logic.dll", "[data-metric=\"success-rate\"]").contains("In pipeline"),
+        "the full neighbour still shows its status placeholder in the Success column, got: {}",
+        cell_text("game_logic.dll", "[data-metric=\"success-rate\"]")
+    );
+
+    // Switch to the Pipeline view so the cells have real layout boxes —
+    // hidden elements report zero rects and would pass vacuously.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click()",
+        false,
+    )
+    .expect("switch to pipeline view");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // The empty cost placeholder keeps the compact row's grid aligned
+    // with the header's cost column.
+    assert!(
+        eval_bool(
+            &tab,
+            r#"(() => {
+                const h = document.querySelector('#pipeline-binaries .pipeline-binary-header .pipeline-binary-cost');
+                const r = document.querySelector('#pipeline-binaries [data-binary="d3d9.dll"] .pipeline-binary-cost');
+                if (!h || !r) return false;
+                const hb = h.getBoundingClientRect(), rb = r.getBoundingClientRect();
+                return hb.width >= 100 && rb.width >= 100
+                    && Math.abs(hb.left - rb.left) <= 2 && Math.abs(hb.width - rb.width) <= 2;
+            })()"#
+        ),
+        "the compact row's placeholder cells keep the grid aligned with the header"
+    );
+
+    // ── Overriding to a translation strategy restores the full row ───────
+    // The classification-override panel's live event is what re-renders
+    // rows (app.js reloads the pipeline on classification_complete) —
+    // emitting it here is the same path the panel's success takes.
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "d3d9.dll".into(),
+        category: "ProjectSpecific".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 25,
+        imported_symbols: 6,
+    });
+    let mut restored = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"d3d9.dll\"] [data-action=\"start\"]')",
+        ) {
+            restored = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        restored,
+        "overriding a PAL-classified binary to a translation strategy restores its full row on the next refresh"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            r#"(() => {
+                const rows = [...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')];
+                const row = rows.find(r => r.dataset.binary === 'd3d9.dll');
+                if (!row) return false;
+                const palIdx = rows.findIndex(r => r.dataset.binary === 'audio.dll');
+                return row.querySelectorAll('.pipeline-action-btn').length === 4
+                    && !!row.querySelector('[data-count="total"]')
+                    && row.querySelector('[data-count="pal-readiness"]') === null
+                    && rows.indexOf(row) < palIdx;
+            })()"#
+        ),
+        "the restored row has full counts and buttons, no readiness span, and has moved up out of the PAL tail"
     );
 
     tab.close_target().ok();

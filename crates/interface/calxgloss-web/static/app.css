@@ -2460,6 +2460,31 @@ svg {
     color: var(--accent-orange);
 }
 
+/* Compact PAL row (issue #244): the counts area carries one trait
+   readiness span instead of five count columns — the outer grid tracks
+   are fixed, so the row still lines up with full rows. The cost cell
+   stays as an empty placeholder for the same reason. */
+.pipeline-binary-row-pal .pipeline-binary-counts {
+    grid-template-columns: 1fr;
+}
+
+.pb-pal-readiness {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Trait names in the state cell read like a crate-replacement row's
+   "Shim → crate" cell; missing traits are red so the gap in trait
+   design is visible at a glance, defined ones keep the cell's own
+   PAL purple. */
+.pipeline-binary-state .pal-trait {
+    white-space: nowrap;
+}
+
+.pipeline-binary-state .pal-trait[data-state="missing"] {
+    color: var(--accent-red);
+}
+
 .pipeline-binary-actions {
     display: flex;
     gap: 4px;
