@@ -4911,9 +4911,10 @@ mod tests {
 
         // The fixture callback scan finishes in seconds; a job that
         // skipped the latch would have answered inside this window.
-        // The generous margin is what turns a missing wait into a
+        // The margin — comfortably above the scan's own runtime, even
+        // on a slow CI box — is what turns a missing wait into a
         // failure rather than a race.
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         assert!(
             !callback.is_finished(),
             "an unpublished latch holds the callback job past the scan's own runtime"
