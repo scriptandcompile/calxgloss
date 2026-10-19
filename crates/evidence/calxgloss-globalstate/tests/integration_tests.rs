@@ -1,0 +1,148 @@
+//! End-to-end contract: scan a canned program, persist the document,
+//! and read it back — the whole artifact path without a server.
+
+use calxgloss_decomp::{
+    DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
+    Result, ScanSource, StringLiteral, StructLayout, Symbol, Xref,
+};
+use calxgloss_globalstate::{
+    AccessKind, GlobalStateEngine, GlobalStateFinding, GlobalStatePersistor,
+};
+use std::collections::HashMap;
+
+struct CannedProgram {
+    listing: Vec<FunctionSummary>,
+    bodies: HashMap<String, DecompiledFunction>,
+}
+
+impl ScanSource for CannedProgram {
+    async fn functions(&self) -> Result<Vec<FunctionSummary>> {
+        Ok(self.listing.clone())
+    }
+
+    async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
+        self.bodies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| EngineError::NotFound {
+                kind: "function",
+                query: name.to_string(),
+            })
+    }
+
+    async fn strings(&self) -> Result<Vec<StringLiteral>> {
+        Ok(Vec::new())
+    }
+
+    async fn callers(&self, _address: u64) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
+        Ok(Vec::new())
+    }
+
+    async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        Ok(Vec::new())
+    }
+
+    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        Err(EngineError::NotFound {
+            kind: "struct",
+            query: name.to_string(),
+        })
+    }
+
+    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        Err(EngineError::NotFound {
+            kind: "enum",
+            query: name.to_string(),
+        })
+    }
+
+    async fn data_items(&self) -> Result<Vec<DataItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn imports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn exports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn image_base(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+}
+
+fn function(name: &str, body: &str) -> DecompiledFunction {
+    DecompiledFunction {
+        name: name.to_string(),
+        signature: format!("undefined {name}(void)"),
+        body: format!("undefined {name}(void)\n\n{{\n{body}}}\n"),
+    }
+}
+
+/// A function-list entry for the canned listing.
+fn summary(name: &str, address: u64) -> FunctionSummary {
+    FunctionSummary {
+        name: name.into(),
+        address,
+    }
+}
+
+#[tokio::test]
+async fn a_scan_persists_and_reads_back_the_same_document() {
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "  DAT_180064e80 = param_1;\n  uVar1 = DAT_180064e80;\n",
+        ),
+    );
+    bodies.insert(
+        "FUN_18003e750".into(),
+        function("FUN_18003e750", "  return;\n"),
+    );
+    let program = CannedProgram {
+        listing: vec![
+            summary("FUN_18003ab00", 0x1800_3ab00),
+            summary("FUN_18003e750", 0x1800_3e750),
+        ],
+        bodies,
+    };
+
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let result = GlobalStateEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let persistor = GlobalStatePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    assert_eq!(
+        loaded, result,
+        "the document reads back exactly as the scan made it"
+    );
+
+    // The reading itself, as a consumer sees it after the round trip.
+    let kinds: Vec<AccessKind> = loaded
+        .for_function("FUN_18003ab00")
+        .map(|finding| finding.access_kind())
+        .collect();
+    assert_eq!(kinds, vec![AccessKind::Write, AccessKind::Read]);
+    assert!(loaded.findings.iter().all(|finding| matches!(
+        finding,
+        GlobalStateFinding::GlobalRead(_) | GlobalStateFinding::GlobalWrite(_)
+    )));
+    assert_eq!(loaded.purity.len(), 2);
+    assert!(loaded.purity[1].is_pure, "the plain function reads as pure");
+}

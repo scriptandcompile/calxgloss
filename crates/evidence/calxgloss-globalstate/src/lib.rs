@@ -34,9 +34,11 @@
 pub mod detector;
 pub mod engine;
 pub mod error;
+pub mod persist;
 pub mod types;
 
 pub use detector::{EXACT_SPELLING_CONFIDENCE, GlobalStateDetector, SHAPE_ONLY_CONFIDENCE};
 pub use engine::GlobalStateEngine;
 pub use error::{GlobalStateError, Result};
+pub use persist::GlobalStatePersistor;
 pub use types::{AccessKind, FunctionPurity, GlobalAccess, GlobalStateFinding, GlobalStateResult};
