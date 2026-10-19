@@ -388,9 +388,11 @@ impl TranslationPipeline {
     ///
     /// The web server's scope endpoints drive it; the batch loops consult
     /// it at **queue selection** — a skipped function never enters the plan,
-    /// a priority function sorts ahead of the rest of the queue — and its
-    /// constraints bound the retry config, tier escalation, and the run's
-    /// token budget.
+    /// a priority function sorts ahead of the rest of the queue — and at each
+    /// **unit boundary** for the per-binary pause (issue #219, part of #217):
+    /// a binary the operator has paused ends its batch there rather than
+    /// parking it. Its constraints bound the retry config, tier escalation,
+    /// and the run's token budget.
     pub fn with_scope(mut self, scope: ScopeControl) -> Self {
         self.scope = Some(scope);
         self
@@ -436,6 +438,22 @@ impl TranslationPipeline {
                 _ => return true,
             }
         }
+    }
+
+    /// Whether the operator has paused the batch's target binary (issue #219,
+    /// part of #217).
+    ///
+    /// Unlike a run-level pause, which parks the loop at a unit boundary until
+    /// the operator resumes, a paused binary **ends** the batch at the next
+    /// boundary — the batch returns rather than waits, so the run can move on
+    /// to another binary. The batch loops consult this just before
+    /// [`control_allows_next_unit`](Self::control_allows_next_unit), so the
+    /// pause is honored at the boundary even while the run itself is parked.
+    /// With no scope handle attached, no binary is ever paused.
+    fn binary_paused(&self, binary: &str) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|scope| scope.is_paused(binary))
     }
 
     /// Resolves once a cancellation has landed on the named unit (issue #91,
@@ -2868,6 +2886,17 @@ impl TranslationPipeline {
                 break;
             }
 
+            // A paused binary ends this batch — unlike a run-level pause it
+            // never parks the loop (issue #219, part of #217).
+            if self.binary_paused(binary) {
+                info!(
+                    binary,
+                    remaining = functions.len() - idx,
+                    "Binary paused — ending batch at unit boundary"
+                );
+                break;
+            }
+
             if !self.control_allows_next_unit().await {
                 info!(
                     binary,
@@ -3218,6 +3247,17 @@ impl TranslationPipeline {
                     binary,
                     remaining = plan.len() - idx,
                     "Token budget exhausted — ending call-graph batch at unit boundary"
+                );
+                break;
+            }
+
+            // A paused binary ends this batch — unlike a run-level pause it
+            // never parks the loop (issue #219, part of #217).
+            if self.binary_paused(binary) {
+                info!(
+                    binary,
+                    remaining = plan.len() - idx,
+                    "Binary paused — ending call-graph batch at unit boundary"
                 );
                 break;
             }
@@ -4155,6 +4195,94 @@ mod tests {
             result.results.len(),
             1,
             "the parked loop ended at the boundary on the stop signal"
+        );
+    }
+
+    /// A paused target binary ends `batch_translate` at the next unit
+    /// boundary, mirroring the run-level stop test: the unit in flight
+    /// completes and is counted, the remaining units never start — and,
+    /// unlike a run-level pause, the batch **returns** rather than parking
+    /// for a resume (issue #219, part of #217). The scope handle is the
+    /// in-memory one with no server, the same handle the web endpoints drive.
+    #[tokio::test]
+    async fn batch_translate_ends_at_unit_boundary_when_its_binary_is_paused() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let scope = ScopeControl::new();
+        let scope_cb = scope.clone();
+        let pipeline = pipeline_over(Some(dir.path())).with_scope(scope);
+
+        let mut completed = 0;
+        // The timeout is the "never parks" assertion: a run-level pause
+        // would hold here until a resume that never arrives, while a binary
+        // pause ends the batch on its own. The bound is generous because the
+        // twelve pre-analysis scans over the fixture run inside it.
+        let batch = tokio::time::timeout(
+            std::time::Duration::from_secs(300),
+            pipeline.batch_translate(
+                "game_logic.dll",
+                &[
+                    "DrawPrimitive".to_string(),
+                    "UpdateScene".to_string(),
+                    "SpawnEntity".to_string(),
+                ],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, _function, _func_result| {
+                    completed += 1;
+                    // Pause requested right after the first unit completes.
+                    scope_cb
+                        .pause_binary("game_logic.dll")
+                        .expect("pause persists");
+                    true
+                }),
+            ),
+        )
+        .await
+        .expect("a paused binary ends the batch — it never parks waiting for a resume");
+
+        let result = batch
+            .expect("batch over functions the fixture lacks still reports per-function failures");
+        assert_eq!(completed, 1, "the in-flight unit completed first");
+        assert_eq!(
+            result.results.len(),
+            1,
+            "the second unit must not start after the binary pause"
+        );
+    }
+
+    /// A binary paused before its batch starts attempts zero units: the
+    /// boundary check fires before the first unit and the batch returns an
+    /// empty result — and the differently-cased pause still matches, the one
+    /// match rule from #107 (issue #219, part of #217).
+    #[tokio::test]
+    async fn batch_translate_attempts_no_units_when_its_binary_is_paused_before_start() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let scope = ScopeControl::new();
+        scope
+            .pause_binary("GAME_LOGIC.DLL")
+            .expect("pause persists before the batch starts");
+
+        let result = pipeline_over(Some(dir.path()))
+            .with_scope(scope)
+            .batch_translate(
+                "game_logic.dll",
+                &["DrawPrimitive".to_string(), "UpdateScene".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, function, _func_result| {
+                    panic!("no unit may start for a binary paused before its batch: {function}");
+                }),
+            )
+            .await
+            .expect("batch over functions the fixture lacks still reports per-function failures");
+
+        assert!(
+            result.results.is_empty(),
+            "a binary paused before its batch starts attempts zero units"
         );
     }
 
