@@ -68,7 +68,7 @@ use crate::retry;
 use crate::scan_job::{ScanJob, TypeInferenceLatch};
 
 /// The pass name the scan phase's heartbeat carries: one honest
-/// "n of m functions consumed" row for the whole group of eleven
+/// "n of m functions consumed" row for the whole group of twelve
 /// pre-batch evidence scans, instead of one row per scan that restarts
 /// with each scan (issue #239).
 const SCAN_PHASE: &str = "evidence scans";
@@ -96,12 +96,12 @@ const SCAN_PHASE: &str = "evidence scans";
 const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 
 /// One evidence scan as the fan-out's unit of work: takes its owned
-/// [`ScanJob`] and hands back the boxed scan future. The eleven scans'
-/// futures are eleven distinct types, so the window boxes them to move
+/// [`ScanJob`] and hands back the boxed scan future. The twelve scans'
+/// futures are twelve distinct types, so the window boxes them to move
 /// them onto tasks (issue #240).
 type EvidenceScanTask = fn(ScanJob) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
-// The eleven scans as task-ready async fns. Their futures are boxed at
+// The twelve scans as task-ready async fns. Their futures are boxed at
 // spawn time rather than in closure position — the compiler cannot prove
 // a boxed `async` block inside a closure is `'static` (rust#100013),
 // while a named async fn's future is `'static` by signature.
@@ -119,6 +119,9 @@ async fn scan_memory_detection(job: ScanJob) {
 }
 async fn scan_sync_detection(job: ScanJob) {
     job.sync_detection().await;
+}
+async fn scan_global_state_detection(job: ScanJob) {
+    job.global_state_detection().await;
 }
 async fn scan_callback_detection(job: ScanJob) {
     job.callback_detection().await;
@@ -156,13 +159,13 @@ async fn run_scan_in_window(
     in_flight.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// The eleven evidence scans in today's spawn order — type database, type
-/// inference, algorithm recognition, memory, sync, callback, control
-/// flow, string context, api, const, serialize. The order is only the
-/// order they enter the window: the scans no longer run in a fixed order,
-/// and the one real ordering edge — callback detection awaiting type
-/// inference's completion latch — rides the latch itself, not this list
-/// (issue #238, fan-out issue #240).
+/// The twelve evidence scans in today's spawn order — type database, type
+/// inference, algorithm recognition, memory, sync, global state,
+/// callback, control flow, string context, api, const, serialize. The
+/// order is only the order they enter the window: the scans no longer run
+/// in a fixed order, and the one real ordering edge — callback detection
+/// awaiting type inference's completion latch — rides the latch itself,
+/// not this list (issue #238, fan-out issue #240).
 fn evidence_scan_tasks() -> Vec<EvidenceScanTask> {
     vec![
         |job| Box::pin(scan_type_database(job)),
@@ -170,6 +173,7 @@ fn evidence_scan_tasks() -> Vec<EvidenceScanTask> {
         |job| Box::pin(scan_algorithm_recognition(job)),
         |job| Box::pin(scan_memory_detection(job)),
         |job| Box::pin(scan_sync_detection(job)),
+        |job| Box::pin(scan_global_state_detection(job)),
         |job| Box::pin(scan_callback_detection(job)),
         |job| Box::pin(scan_controlflow_detection(job)),
         |job| Box::pin(scan_string_context(job)),
@@ -2090,7 +2094,7 @@ impl TranslationPipeline {
         }
     }
 
-    /// The read source every batch consumer — the [`ScanJob`]s the eleven
+    /// The read source every batch consumer — the [`ScanJob`]s the twelve
     /// `ensure_*` scans build, the call-graph build, and the
     /// retry/escalation helpers — pulls program facts through: the batch's
     /// [`CachedScanSource`] once armed by
@@ -2157,7 +2161,7 @@ impl TranslationPipeline {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TypeInferenceLatch::new());
     }
 
-    /// Run the eleven pre-batch evidence scans, the shared scan-phase
+    /// Run the twelve pre-batch evidence scans, the shared scan-phase
     /// preamble both batch entry points drive — the function-list path
     /// ([`batch_translate`](Self::batch_translate)) and the call-graph path
     /// ([`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph))
@@ -2180,7 +2184,7 @@ impl TranslationPipeline {
     /// Each scan keeps its own shape: a cached document short-circuits it
     /// before any engine read, and a failed scan or save only warns and
     /// continues — one detector's failure never takes down the batch. The
-    /// group joins all eleven and never cancels its siblings.
+    /// group joins all twelve and never cancels its siblings.
     ///
     /// The phase arms a fresh type-inference completion latch first:
     /// the inference scan publishes it on every exit and callback
@@ -2191,7 +2195,7 @@ impl TranslationPipeline {
     /// The phase also arms the engine heartbeat once around the whole
     /// group, under the phase name, and disarms it when the group ends:
     /// the dashboard shows one honest "n of m functions consumed" row
-    /// for the scan phase instead of eleven that restart with each
+    /// for the scan phase instead of twelve that restart with each
     /// scan. Beats count unique functions consumed — a body pulled cold
     /// from the engine and replayed warm by the read cache counts once —
     /// so a warm run still shows life and the row stays honest while the
@@ -2221,7 +2225,7 @@ impl TranslationPipeline {
             ));
         }
         // Sliding window: every completion frees a permit for the next
-        // scan, and the group joins all eleven — a failing or panicking
+        // scan, and the group joins all twelve — a failing or panicking
         // scan never cancels its siblings (issue #240).
         while let Some(outcome) = set.join_next().await {
             if let Err(e) = outcome {
@@ -2395,6 +2399,35 @@ impl TranslationPipeline {
             return false;
         };
         job.sync_detection().await
+    }
+
+    /// Detect the global-state reference sets across the binary before
+    /// a batch starts, unless a detection result is already cached.
+    ///
+    /// The scan's records — which program globals each function reads
+    /// and writes, each with its evidence statement and confidence
+    /// band, plus the derived per-function purity summary — are filed
+    /// at `re/analysis/globalstate/{binary}.json` for the prompt path
+    /// to read (issue #254); running the detection scan once up front
+    /// means every function in the batch can see global-state context
+    /// instead of none. The persisted file is the cache: when a result
+    /// is already saved for `binary`, the scan is skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing
+    /// workspace, a failed scan, or a failed save only log a warning
+    /// and return `false` — prompts without global-state context are
+    /// degraded, not fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
+    pub async fn ensure_global_state_detection(&self, binary: &str) -> bool {
+        let Some(job) = self.scan_job(binary) else {
+            debug!(
+                binary,
+                "No workspace configured; skipping global-state detection"
+            );
+            return false;
+        };
+        job.global_state_detection().await
     }
 
     /// Detect constant structures across the binary before a batch
@@ -2589,7 +2622,7 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the eleven evidence scans run through
+    /// memory, and concurrency context — the twelve evidence scans run through
     /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
@@ -2971,7 +3004,7 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the eleven evidence scans run through
+    /// memory, and concurrency context — the twelve evidence scans run through
     /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
@@ -3488,6 +3521,8 @@ mod tests {
     use calxgloss_consts::types::ConstResult;
     use calxgloss_controlflow::persist::ControlFlowPersistor;
     use calxgloss_controlflow::types::ControlFlowResult;
+    use calxgloss_globalstate::persist::GlobalStatePersistor;
+    use calxgloss_globalstate::types::GlobalStateResult;
     use calxgloss_memory::persist::MemoryPersistor;
     use calxgloss_memory::types::MemoryResult;
     use calxgloss_serialize::persist::SerializePersistor;
@@ -4519,6 +4554,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cached_global_state_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        let persistor = GlobalStatePersistor::new(dir.path());
+        persistor
+            .save(&GlobalStateResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
+
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_global_state_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_global_state_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(pipeline.ensure_global_state_detection("eqmain.dll").await);
+
+        let persistor = GlobalStatePersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("globalstate")
+                .join("eqmain.dll.json"),
+            "the document should be filed under re/analysis/globalstate"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_global_state_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_global_state_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_global_state_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_global_state_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
     async fn a_cached_serialization_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
         let persistor = SerializePersistor::new(dir.path());
@@ -5168,7 +5266,7 @@ mod tests {
         let (pipeline, _) = cached_pipeline(dir.path());
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
-        // Batch 1, cold: the eleven scans read live through the engine and
+        // Batch 1, cold: the twelve scans read live through the engine and
         // write every answer through to the scan cache.
         pipeline
             .batch_translate(
@@ -5192,7 +5290,7 @@ mod tests {
         );
 
         // Wipe the engine-result documents so the second batch re-runs all
-        // eleven scans — only the scan cache may answer them.
+        // twelve scans — only the scan cache may answer them.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
             .expect("clear engine-result documents");
 
@@ -5371,7 +5469,7 @@ mod tests {
         assert_phase_beats(&cold);
 
         // Wipe the engine-result documents so the second batch re-runs
-        // all eleven scans — every body now arrives warm from the read
+        // all twelve scans — every body now arrives warm from the read
         // cache, and a warm replay of an already-counted function counts
         // once in the fresh phase's count.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
@@ -5459,7 +5557,7 @@ mod tests {
     }
 
     /// The fan-out keeps the engine the serial resource it has always
-    /// been: across a cold phase's eleven concurrent scans the engine
+    /// been: across a cold phase's twelve concurrent scans the engine
     /// call log shows every function of the listing exactly once — the
     /// read cache's per-key cell collapses concurrent misses of one
     /// body into a single round trip (issue #240).
@@ -5481,13 +5579,13 @@ mod tests {
         assert_eq!(
             sorted.len(),
             calls.len(),
-            "no function reached the engine twice across the eleven scans: {calls:?}"
+            "no function reached the engine twice across the twelve scans: {calls:?}"
         );
     }
 
     /// The fan-out's marquee: given the same cached reads, the
     /// concurrent phase and the sequential preamble persist the same
-    /// eleven documents — findings, order, and callback enrichment
+    /// twelve documents — findings, order, and callback enrichment
     /// alike (issue #240).
     ///
     /// Both compared runs replay one read cache, warmed by a cold
@@ -5526,6 +5624,7 @@ mod tests {
             filed!(AlgorithmPersistor),
             filed!(MemoryPersistor),
             filed!(SyncPersistor),
+            filed!(GlobalStatePersistor),
             filed!(CallbackPersistor),
             filed!(ControlFlowPersistor),
             filed!(StringContextPersistor),
@@ -5534,7 +5633,7 @@ mod tests {
             filed!(SerializePersistor),
         ];
 
-        // The sequential preamble: the same eleven scans one after the
+        // The sequential preamble: the same twelve scans one after the
         // other, in the order they used to run — the inference scan
         // before callback detection, so the enrichment rides in on the
         // workspace document exactly as it did when the scans shared a
@@ -5546,6 +5645,7 @@ mod tests {
         assert!(pipeline.ensure_algorithm_recognition(PROGRAM).await);
         assert!(pipeline.ensure_memory_detection(PROGRAM).await);
         assert!(pipeline.ensure_sync_detection(PROGRAM).await);
+        assert!(pipeline.ensure_global_state_detection(PROGRAM).await);
         assert!(pipeline.ensure_callback_detection(PROGRAM).await);
         assert!(pipeline.ensure_controlflow_detection(PROGRAM).await);
         assert!(pipeline.ensure_string_context(PROGRAM).await);
@@ -5558,6 +5658,7 @@ mod tests {
             filed!(AlgorithmPersistor),
             filed!(MemoryPersistor),
             filed!(SyncPersistor),
+            filed!(GlobalStatePersistor),
             filed!(CallbackPersistor),
             filed!(ControlFlowPersistor),
             filed!(StringContextPersistor),
@@ -5572,6 +5673,7 @@ mod tests {
             "algorithm recognition",
             "memory lifecycle",
             "sync detection",
+            "global state",
             "callback detection",
             "control flow",
             "string context",
@@ -5600,11 +5702,11 @@ mod tests {
 
     /// One scan's failure stays its own: with the memory document's
     /// directory sabotaged, the memory scan degrades at its save while
-    /// the other ten documents are still filed and the phase still
-    /// ends — the group joins all eleven and never cancels a sibling
+    /// the other eleven documents are still filed and the phase still
+    /// ends — the group joins all twelve and never cancels a sibling
     /// (issue #240).
     #[tokio::test]
-    async fn one_failing_scan_leaves_the_other_ten_persisted() {
+    async fn one_failing_scan_leaves_the_other_eleven_persisted() {
         let dir = TempDir::new().expect("temp workspace");
         let (pipeline, _) = cached_pipeline(dir.path());
         // `re/analysis/memory` as a plain file makes the memory
@@ -5641,6 +5743,10 @@ mod tests {
             (
                 "sync detection",
                 SyncPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "global state",
+                GlobalStatePersistor::new(workspace).exists(PROGRAM),
             ),
             (
                 "callback detection",

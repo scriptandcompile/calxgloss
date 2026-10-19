@@ -8,11 +8,11 @@
 //! xrefs-to, the Type Manager reads (data types, struct layouts, enum values,
 //! data items), the import and export listings, and the raw reads the vtable
 //! scan makes (image base, memory bytes) — defined once so the read cache
-//! implements it once instead of eleven times. All eleven scan-based
+//! implements it once instead of twelve times. All twelve scan-based
 //! evidence engines — algorithm, callback, consts, control-flow, memory,
-//! serialization, string-context, concurrency, types-database,
-//! type-inference, and API-detection — re-export this trait in place of
-//! their own.
+//! serialization, string-context, concurrency, global-state,
+//! types-database, type-inference, and API-detection — re-export this
+//! trait in place of their own.
 //!
 //! Kuna is the only analysis engine (issue #214, ADR-0041): the seam answers
 //! through [`KunaSource`] directly or through

@@ -1,6 +1,6 @@
 //! One pre-batch evidence scan as an owned job (issue #237).
 //!
-//! The eleven `ensure_*` entry points on [`TranslationPipeline`](crate::TranslationPipeline)
+//! The twelve `ensure_*` entry points on [`TranslationPipeline`](crate::TranslationPipeline)
 //! keep their signatures and their cached-document short-circuits, but the
 //! scan itself — the engine call, the document
 //! persist, and the warn-and-continue degradation — runs through [`ScanJob`],
@@ -31,6 +31,8 @@ use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_decomp::PipelineSource;
+use calxgloss_globalstate::engine::GlobalStateEngine;
+use calxgloss_globalstate::persist::GlobalStatePersistor;
 use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_serialize::engine::SerializeEngine;
@@ -376,6 +378,37 @@ impl ScanJob {
                     binary = %self.binary,
                     findings = result.findings.len(),
                     "Concurrency detection complete"
+                );
+            },
+        )
+        .await
+    }
+
+    /// The global-state reference-set scan, unless its document is
+    /// already filed.
+    pub(crate) async fn global_state_detection(&self) -> bool {
+        let persistor = GlobalStatePersistor::new(&self.workspace);
+        if persistor.exists(&self.binary) {
+            debug!(
+                binary = %self.binary,
+                path = %persistor.path_for(&self.binary).display(),
+                "Global-state result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(binary = %self.binary, "Detecting global-state accesses before batch translation");
+        let engine = GlobalStateEngine::with_source(self.source.clone());
+        self.run_scan(
+            engine.scan(self.binary.as_str()),
+            |result| persistor.save(result),
+            "Global-state detection failed; continuing without global-state context",
+            "Failed to persist global-state result; continuing without global-state context",
+            |result| {
+                info!(
+                    binary = %self.binary,
+                    findings = result.findings.len(),
+                    "Global-state detection complete"
                 );
             },
         )

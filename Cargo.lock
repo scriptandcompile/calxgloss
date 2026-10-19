@@ -752,6 +752,7 @@ dependencies = [
  "calxgloss-consts",
  "calxgloss-controlflow",
  "calxgloss-decomp",
+ "calxgloss-globalstate",
  "calxgloss-kuna",
  "calxgloss-llm",
  "calxgloss-memory",
