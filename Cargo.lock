@@ -337,7 +337,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "calxgloss"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-algorithm",
  "calxgloss-analysis",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-algorithm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-analysis"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "calxgloss-callgraph",
@@ -409,7 +409,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-apidetect"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-callgraph",
  "calxgloss-decomp",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-callback"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-callgraph"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "calxgloss-analysis",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "calxgloss",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serial_test",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-consts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-controlflow"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-decomp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-kuna",
  "calxgloss-testfixtures",
@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-git"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-types",
  "chrono",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-globalstate"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-kuna"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-testfixtures",
  "calxgloss-types",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-llm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-types",
  "futures",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-memory"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-pal"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-types",
  "indexmap",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-prompts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "askama",
  "calxgloss-callgraph",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-reports"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "calxgloss-analysis",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-serialize"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-stringctx"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-globalstate",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-testfixtures"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "goblin",
  "thiserror 2.0.21",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-testgen"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "calxgloss-globalstate",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-translator"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "askama",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-typeinfer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-types"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-typesdb"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-verify"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "calxgloss-types",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "calxgloss-web"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
