@@ -351,10 +351,7 @@ pub fn generate_test_inputs(
     // suite already holds never consumes cap room — and when the cap
     // bites the lowest-confidence branch cases drop first.
     if !branch_inventory.is_empty() {
-        let existing: HashSet<String> = test_cases
-            .iter()
-            .map(|t| t.inputs.to_string())
-            .collect();
+        let existing: HashSet<String> = test_cases.iter().map(|t| t.inputs.to_string()).collect();
         let mut branch: Vec<BranchCase> = generate_branch_tests(parsed.as_ref(), branch_inventory)
             .into_iter()
             .filter(|case| !existing.contains(&case.test.inputs.to_string()))
@@ -630,11 +627,12 @@ fn branch_probes(site: &BranchSite) -> Vec<Probe> {
     if site.guards == GuardedTarget::SwitchArm {
         // A case arm probes its own case value; a named constant that is
         // not a literal probes null/zero rather than fabricating a value.
-        return vec![site
-            .immediate
-            .as_deref()
-            .and_then(parse_probe)
-            .unwrap_or(Probe::Zero)];
+        return vec![
+            site.immediate
+                .as_deref()
+                .and_then(parse_probe)
+                .unwrap_or(Probe::Zero),
+        ];
     }
     match (site.operator.as_deref(), site.immediate.as_deref()) {
         (Some("==" | "!="), Some(imm)) => match parse_probe(imm) {
@@ -687,10 +685,7 @@ fn parse_probe(text: &str) -> Option<Probe> {
 /// spelling — `param_1` names the first parameter. Locals (`local_4`,
 /// `DAT_...`) name no parameter.
 fn param_index(params: &[ParameterTypeInfo], name: &str) -> Option<usize> {
-    if let Some(i) = params
-        .iter()
-        .position(|p| p.name.as_deref() == Some(name))
-    {
+    if let Some(i) = params.iter().position(|p| p.name.as_deref() == Some(name)) {
         return Some(i);
     }
     let n: usize = name.strip_prefix("param_")?.parse().ok()?;
@@ -723,9 +718,7 @@ fn branch_case_for_signature(
     let mut inputs = serde_json::Map::new();
     for (i, param) in params.iter().enumerate() {
         let value = match probe {
-            Probe::Zero if involved.contains(&i) || involved.is_empty() => {
-                param_zero_value(param)
-            }
+            Probe::Zero if involved.contains(&i) || involved.is_empty() => param_zero_value(param),
             _ if i == target && !matches!(probe, Probe::Zero) => encode_probe(param, probe)?,
             _ => param_typical_value(param),
         };
@@ -1206,7 +1199,10 @@ mod tests {
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
         let probed = probed_values(&tests, "param_0");
-        assert!(probed.contains(&json!(9)), "the keep-looping side is probed");
+        assert!(
+            probed.contains(&json!(9)),
+            "the keep-looping side is probed"
+        );
         assert!(probed.contains(&json!(11)), "the loop-exit side is probed");
     }
 
@@ -1273,8 +1269,22 @@ mod tests {
     fn a_switch_yields_one_case_value_per_arm() {
         let sig = "int __stdcall Dispatch(int op)";
         let inventory = [
-            sample_branch_site("case 1:", &[], None, Some("1"), GuardedTarget::SwitchArm, 80),
-            sample_branch_site("case 2:", &[], None, Some("2"), GuardedTarget::SwitchArm, 80),
+            sample_branch_site(
+                "case 1:",
+                &[],
+                None,
+                Some("1"),
+                GuardedTarget::SwitchArm,
+                80,
+            ),
+            sample_branch_site(
+                "case 2:",
+                &[],
+                None,
+                Some("2"),
+                GuardedTarget::SwitchArm,
+                80,
+            ),
         ];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
         let probed = probed_values(&tests, "param_0");
@@ -1314,9 +1324,11 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(tests
-            .iter()
-            .any(|t| t.inputs == json!({"param_0": 7, "param_1": 42})));
+        assert!(
+            tests
+                .iter()
+                .any(|t| t.inputs == json!({"param_0": 7, "param_1": 42}))
+        );
     }
 
     #[test]
@@ -1331,9 +1343,11 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(tests
-            .iter()
-            .any(|t| t.inputs == json!({"param_0": 42, "param_1": 0})));
+        assert!(
+            tests
+                .iter()
+                .any(|t| t.inputs == json!({"param_0": 42, "param_1": 0}))
+        );
     }
 
     #[test]
@@ -1393,9 +1407,11 @@ mod tests {
         );
         let probed = probed_values(&tests, "param_0");
         // The shape-only probe ({0, 42}) is gone...
-        assert!(!tests
-            .iter()
-            .any(|t| t.inputs == json!({"param_0": 0, "param_1": 42})));
+        assert!(
+            !tests
+                .iter()
+                .any(|t| t.inputs == json!({"param_0": 0, "param_1": 42}))
+        );
         // ...and among the exact readings the later sites dropped first:
         // every probe up to the boundary survives, every probe past it
         // does not.
@@ -1466,9 +1482,11 @@ mod tests {
             70,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(tests
-            .iter()
-            .any(|t| t.inputs == json!({"param_0": 0, "param_1": 42})));
+        assert!(
+            tests
+                .iter()
+                .any(|t| t.inputs == json!({"param_0": 0, "param_1": 42}))
+        );
     }
 
     #[test]
@@ -1499,8 +1517,10 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs("", "", &inventory).unwrap();
-        assert!(tests
-            .iter()
-            .any(|t| t.inputs == json!({"param_0": 7, "param_1": 0, "param_2": 0})));
+        assert!(
+            tests
+                .iter()
+                .any(|t| t.inputs == json!({"param_0": 7, "param_1": 0, "param_2": 0}))
+        );
     }
 }
