@@ -527,6 +527,82 @@ pub fn extract_callback_hints(
         .collect()
 }
 
+/// Load the persisted control-flow document for a binary.
+///
+/// Reads the per-binary result produced by the `calxgloss-controlflow`
+/// engine from `re/analysis/controlflow/{binary}.json`. Returns `None`
+/// when no workspace is configured, no result is persisted for `binary`
+/// (the scan has not run), or the document is corrupt: consumers degrade
+/// to no control-flow context rather than failing.
+///
+/// Inside `translate`, one load per unit serves both consumers — the
+/// prompt's CONTROL FLOW section and the branch inventory that targets
+/// baseline test generation — so the LLM's context and its test oracle
+/// come from the same findings (issue #261). The retry and escalate
+/// prompt paths build their prompts outside `translate` and load on
+/// their own through [`extract_control_flow_hints`].
+pub fn load_control_flow_result(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+) -> Option<calxgloss_controlflow::types::ControlFlowResult> {
+    let workspace = workspace?;
+
+    let persistor = calxgloss_controlflow::persist::ControlFlowPersistor::new(workspace);
+    match persistor.load(binary) {
+        Ok(result) => Some(result),
+        Err(e) => {
+            debug!(
+                binary,
+                error = %e,
+                "No usable control-flow result; continuing without control-flow context"
+            );
+            None
+        }
+    }
+}
+
+/// The prompt-shaped control-flow findings for a function, taken from an
+/// already-loaded document — the switch-shaped if-else chains,
+/// self-recursion, state-machine patterns, and branch-site records whose
+/// code lives in `function`'s decompiled body. `None` (no usable
+/// document) yields an empty vector.
+pub fn control_flow_hints_from(
+    result: Option<&calxgloss_controlflow::types::ControlFlowResult>,
+    function: &str,
+) -> Vec<calxgloss_prompts::ControlFlowInfo> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::ControlFlowInfo::from)
+        .collect()
+}
+
+/// The branch-inventory records an already-loaded document carries for a
+/// function, in document order: the `branch_site` findings, kept in their
+/// record shape because baseline test generation consumes them directly
+/// (issue #261). Other finding kinds and other functions contribute
+/// nothing; `None` (no usable document) yields an empty vector, which
+/// leaves generation at exactly today's suite.
+pub fn branch_inventory_of(
+    result: Option<&calxgloss_controlflow::types::ControlFlowResult>,
+    function: &str,
+) -> Vec<calxgloss_controlflow::types::BranchSite> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+    result
+        .for_function(function)
+        .filter_map(|finding| match finding {
+            calxgloss_controlflow::types::ControlFlowFinding::BranchSite(record) => {
+                Some(record.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Extract control-flow findings for a function from the cached control-flow
 /// detection result.
 ///
@@ -545,27 +621,10 @@ pub fn extract_control_flow_hints(
     binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::ControlFlowInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_controlflow::persist::ControlFlowPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable control-flow result; continuing without control-flow context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::ControlFlowInfo::from)
-        .collect()
+    control_flow_hints_from(
+        load_control_flow_result(workspace, binary).as_ref(),
+        function,
+    )
 }
 
 /// Extract calling-convention findings for a function from the persisted
@@ -2571,6 +2630,56 @@ mod tests {
         );
         assert_eq!(found[3].confidence, 80);
         assert_eq!(found[3].evidence, "if (param_1 == 0) {");
+    }
+
+    #[test]
+    fn the_loaded_findings_carry_the_function_s_branch_inventory() {
+        // One load feeds the prompt context and the branch inventory that
+        // targets baseline test generation (issue #261): the target
+        // function's branch_site records in document order, and nothing
+        // else — other finding kinds and other functions contribute no
+        // records.
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_controlflow_findings(
+            &dir,
+            vec![
+                switch_hint("FUN_18003ab00"),
+                branch_site_hint("FUN_18003ab00"),
+                branch_site_hint("FUN_zzz"),
+            ],
+        );
+
+        let loaded = load_control_flow_result(Some(dir.path()), "eqmain.dll")
+            .expect("the persisted document loads");
+        let inventory = branch_inventory_of(Some(&loaded), "FUN_18003ab00");
+
+        assert_eq!(inventory.len(), 1, "only the branch_site records");
+        assert_eq!(inventory[0].function, "FUN_18003ab00");
+        assert_eq!(inventory[0].condition, "param_1 == 0");
+        assert_eq!(inventory[0].params, ["param_1"]);
+        assert_eq!(inventory[0].operator.as_deref(), Some("=="));
+        assert_eq!(inventory[0].immediate.as_deref(), Some("0"));
+        assert_eq!(
+            inventory[0].guards,
+            calxgloss_controlflow::types::GuardedTarget::EarlyReturn
+        );
+        assert_eq!(u8::from(inventory[0].confidence), 80);
+    }
+
+    #[test]
+    fn no_usable_document_yields_no_branch_inventory() {
+        // No workspace, a missing document, or a corrupt one all load as
+        // nothing: the inventory is empty and generation stays exactly
+        // today's suite.
+        assert!(
+            branch_inventory_of(None, "FUN_18003ab00").is_empty(),
+            "no loaded document means no inventory"
+        );
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            load_control_flow_result(Some(dir.path()), "eqmain.dll").is_none(),
+            "a missing document loads as nothing"
+        );
     }
 
     // ---- global-state hint extraction ---------------------------------

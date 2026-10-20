@@ -909,9 +909,19 @@ impl TranslationPipeline {
             tagged_apis: tagged_apis.len(),
         });
 
-        // Step 3: Generate baseline test inputs
+        // Step 3: Generate baseline test inputs. The control-flow
+        // document loads once here and serves both consumers: its
+        // branch-site records target the baseline suite, and its
+        // findings ride into the prompt's CONTROL FLOW section below —
+        // one source of truth for the LLM's context and its test
+        // oracle (issue #261). A missing or corrupt document loads as
+        // nothing, leaving generation at exactly today's suite.
+        let control_flow =
+            crate::retry::helpers::load_control_flow_result(self.workspace.as_deref(), binary);
+        let branch_inventory =
+            crate::retry::helpers::branch_inventory_of(control_flow.as_ref(), function);
         let baseline_tests = self
-            .generate_baseline_tests(&function_info, &imports)
+            .generate_baseline_tests(&function_info, &imports, &branch_inventory)
             .await?;
         info!(
             binary,
@@ -1072,11 +1082,8 @@ impl TranslationPipeline {
                     &function_info.binary,
                     function,
                 );
-                let control_flow_findings = crate::retry::helpers::extract_control_flow_hints(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                );
+                let control_flow_findings =
+                    crate::retry::helpers::control_flow_hints_from(control_flow.as_ref(), function);
                 let convention_findings = crate::retry::helpers::extract_convention_hints(
                     self.workspace.as_deref(),
                     &function_info.binary,
@@ -1127,11 +1134,8 @@ impl TranslationPipeline {
                 let pal_traits =
                     crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
 
-                let control_flow_findings = crate::retry::helpers::extract_control_flow_hints(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                );
+                let control_flow_findings =
+                    crate::retry::helpers::control_flow_hints_from(control_flow.as_ref(), function);
                 let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
                     &request,
                     call_graph_neighbors,
@@ -1599,24 +1603,29 @@ impl TranslationPipeline {
         Ok(tagged)
     }
 
-    /// Generate baseline test inputs for a function.
+    /// Generate baseline test inputs for a function, targeted at the
+    /// branch sites the loaded control-flow findings inventoried for it
+    /// (issue #261). An empty inventory — no records, or no usable
+    /// document — is today's suite exactly.
     async fn generate_baseline_tests(
         &self,
         function_info: &FunctionInfo,
         _imports: &[String],
+        branch_inventory: &[calxgloss_controlflow::types::BranchSite],
     ) -> Result<Vec<TestCase>> {
         // The signature the decompiler inferred, used to derive the
         // parameters the test cases feed in.
         let signature = self.signature_for(function_info);
 
-        // Generate test inputs from signature and disassembly. The
-        // branch inventory arrives with the pipeline wiring (#261),
-        // which hands the records from the already-loaded control-flow
-        // findings; today the seam takes an empty inventory, which is
-        // today's suite exactly.
-        let mut tests =
-            calxgloss_testgen::generate_test_inputs(&signature, &function_info.disassembly, &[])
-                .map_err(TranslatorError::TestGen)?;
+        // Generate test inputs from signature, disassembly, and the
+        // branch inventory: one case per branch target, deduplicated
+        // against the boundary cases and capped per function.
+        let mut tests = calxgloss_testgen::generate_test_inputs(
+            &signature,
+            &function_info.disassembly,
+            branch_inventory,
+        )
+        .map_err(TranslatorError::TestGen)?;
 
         // The global-state artifact supplies the typed side-effect
         // expectations: when a persisted global-state document names
@@ -2531,9 +2540,11 @@ impl TranslationPipeline {
     /// starts, unless a detection result is already cached.
     ///
     /// The scan's findings — switch-shaped if-else chains, self-recursion,
-    /// and state-machine patterns — are filed at
+    /// state-machine patterns, and branch-site records — are filed at
     /// `re/analysis/controlflow/{binary}.json` for the prompt path to read (see
     /// [`extract_control_flow_hints`](crate::retry::helpers::extract_control_flow_hints));
+    /// the same loaded findings also carry the branch inventory that targets
+    /// baseline test generation (issue #261).
     /// running the detection scan once up front means every function in
     /// the batch can see control-flow context instead of none. The persisted
     /// file is the cache: when a result is already saved for `binary`, the scan
@@ -4701,7 +4712,7 @@ mod tests {
         };
 
         let tests = pipeline
-            .generate_baseline_tests(&function_info, &[])
+            .generate_baseline_tests(&function_info, &[], &[])
             .await
             .expect("test inputs generate");
         assert!(!tests.is_empty(), "test cases are still generated");
@@ -4735,12 +4746,176 @@ mod tests {
             disassembly_hints: Vec::new(),
         };
         let tests = pipeline
-            .generate_baseline_tests(&other, &[])
+            .generate_baseline_tests(&other, &[], &[])
             .await
             .expect("test inputs generate");
         assert!(
             tests.iter().all(|t| t.expected_side_effects.is_empty()),
             "no document, no expectations"
+        );
+    }
+
+    /// Run `translate` far enough to watch the suite it generates and
+    /// report the count the `TestsGenerated` event carries. The LLM step
+    /// is unreachable offline, so each run ends in failure at the call —
+    /// the proof is the event the unit emits before it. The LLM URL
+    /// points at a closed port so the run fails fast however the dev
+    /// box is configured.
+    async fn tests_generated_through_translate(
+        workspace: Option<&std::path::Path>,
+        binary: &str,
+        function: &str,
+    ) -> usize {
+        let llm = LlmClient::from_url("http://127.0.0.1:1/v1", "qwen3").expect("llm config");
+        let pipeline = TranslationPipeline::new(fixture_kuna(), llm, ApiMappings::default());
+        let pipeline = match workspace {
+            Some(dir) => pipeline.with_workspace(dir.to_path_buf()),
+            None => pipeline,
+        };
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let pipeline = pipeline.with_events(events);
+
+        let _ = pipeline.translate(binary, function).await;
+
+        while let Ok(event) = rx.try_recv() {
+            if let ProgressEvent::TestsGenerated { test_count, .. } = event {
+                return test_count;
+            }
+        }
+        panic!("translate emitted no TestsGenerated event before failing");
+    }
+
+    /// A branch-site finding for the unit under translation, keyed to
+    /// the name the engine listing reports.
+    fn branch_site_finding_for(
+        function: &str,
+        condition: &str,
+        immediate: &str,
+    ) -> calxgloss_controlflow::types::ControlFlowFinding {
+        calxgloss_controlflow::types::ControlFlowFinding::BranchSite(
+            calxgloss_controlflow::types::BranchSite {
+                function: function.to_string(),
+                condition: condition.to_string(),
+                params: vec!["code".to_string()],
+                operator: Some("==".to_string()),
+                immediate: Some(immediate.to_string()),
+                guards: calxgloss_controlflow::types::GuardedTarget::SwitchArm,
+                suggestion: format!("cover the {condition} arm"),
+                confidence: Confidence::new(80),
+                evidence: condition.to_string(),
+            },
+        )
+    }
+
+    /// A switch finding for the unit — a finding the load keeps, but no
+    /// branch inventory record.
+    fn switch_finding_for(function: &str) -> calxgloss_controlflow::types::ControlFlowFinding {
+        calxgloss_controlflow::types::ControlFlowFinding::Switch(
+            calxgloss_controlflow::types::SwitchChain {
+                function: function.to_string(),
+                variable: "code".to_string(),
+                cases: vec!["0".to_string(), "1".to_string()],
+                has_default: true,
+                suggestion: "match code { /* 2 arms */ } + _".to_string(),
+                confidence: Confidence::new(70),
+                evidence: "switch (code)".to_string(),
+            },
+        )
+    }
+
+    /// The marquee for issue #261: the control-flow document the
+    /// translator already loads for prompt context is the one source
+    /// that feeds baseline test generation. Over the fixture harness,
+    /// a persisted document carrying branch_site records for the unit
+    /// grows the suite the `TestsGenerated` event reports — and the
+    /// added cases probe the records' immediates — while no document, a
+    /// document with findings but no records, and a corrupt document
+    /// each keep exactly the plain suite.
+    #[tokio::test]
+    async fn persisted_branch_inventory_reaches_baseline_generation_through_translate() {
+        let binary = calxgloss_testfixtures::TARGET_FILE_NAME;
+        // Kuna lists MinGW exports with the leading underscore; the
+        // document's records must key to the name translate resolves.
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let status = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists its status entry point")
+            .name
+            .clone();
+
+        // The plain suite: no workspace, so no document to load.
+        let plain = tests_generated_through_translate(None, binary, &status).await;
+
+        let dir = TempDir::new().expect("temp workspace");
+        let persistor = ControlFlowPersistor::new(dir.path());
+
+        // Findings but no branch_site records: exactly today's suite.
+        let mut result = ControlFlowResult::new(ScanMetadata::new(binary));
+        result.findings.push(switch_finding_for(&status));
+        persistor.save(&result).expect("document saved");
+        let no_records = tests_generated_through_translate(Some(dir.path()), binary, &status).await;
+        assert_eq!(
+            no_records, plain,
+            "a document with no branch_site records keeps today's suite"
+        );
+
+        // A corrupt document: also exactly today's suite.
+        std::fs::write(persistor.path_for(binary), "{ not json").expect("corrupt document written");
+        let corrupt = tests_generated_through_translate(Some(dir.path()), binary, &status).await;
+        assert_eq!(corrupt, plain, "a corrupt document keeps today's suite");
+
+        // Records for the unit: the branch-targeted cases reach the
+        // suite through the same load the prompt reads.
+        let mut result = ControlFlowResult::new(ScanMetadata::new(binary));
+        result
+            .findings
+            .push(branch_site_finding_for(&status, "code == 3", "3"));
+        result
+            .findings
+            .push(branch_site_finding_for(&status, "code == 12", "12"));
+        persistor.save(&result).expect("document saved");
+        let targeted = tests_generated_through_translate(Some(dir.path()), binary, &status).await;
+        assert!(
+            targeted > plain,
+            "the loaded inventory reaches generation: {plain} -> {targeted} cases"
+        );
+
+        // And the cases the growth adds are the branch-targeted ones:
+        // the records read back through the same load make generation
+        // probe the recorded immediates on the unit's parameter.
+        let loaded = crate::retry::helpers::load_control_flow_result(Some(dir.path()), binary)
+            .expect("the persisted document loads");
+        let inventory = crate::retry::helpers::branch_inventory_of(Some(&loaded), &status);
+        assert_eq!(inventory.len(), 2, "the document's records for the unit");
+        let function_info = FunctionInfo {
+            name: status.clone(),
+            address: 0x1000,
+            binary: binary.to_string().into(),
+            disassembly: String::new(),
+            decompiler_output: format!("int {status}(int code) {{ return code; }}"),
+            windows_apis: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+        };
+        let tests = pipeline_over(Some(dir.path()))
+            .generate_baseline_tests(&function_info, &[], &inventory)
+            .await
+            .expect("test inputs generate");
+        let probes = |value: i64| {
+            tests.iter().any(|t| {
+                t.inputs
+                    .as_object()
+                    .is_some_and(|values| values.values().any(|v| *v == serde_json::json!(value)))
+            })
+        };
+        assert!(
+            probes(3) && probes(12),
+            "the suite probes the recorded immediates: {:?}",
+            tests.iter().map(|t| &t.inputs).collect::<Vec<_>>()
         );
     }
 
