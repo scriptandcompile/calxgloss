@@ -10,7 +10,10 @@
 //!    function as [`Root`](calxgloss_types::NodeCategory::Root),
 //!    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
 //!    [`Middle`](calxgloss_types::NodeCategory::Middle), and persists it to
-//!    JSON.
+//!    JSON. A known-library match from the persisted `libmatch` document at
+//!    or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`] becomes
+//!    [`Skip`](calxgloss_types::NodeCategory::Skip) ahead of that cascade; a
+//!    missing or corrupt document degrades to the cascade alone.
 //!
 //! 3. **Dependency graph construction** — converts the persisted call graph
 //!    into a [`DependencyGraph`](calxgloss_types::DependencyGraph) for the
@@ -41,11 +44,12 @@ use calxgloss_callgraph::{
     CallGraphBuilder, CallGraphPersistor, CallType, LeafDetector, RootDetector,
 };
 use calxgloss_decomp::ScanSource;
+use calxgloss_libmatch::{persist::LibmatchPersistor, types::LibmatchResult};
 use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, NodeCategory, ReviewStatus,
     dashboard::WorkLevel,
 };
-use tracing::info;
+use tracing::{debug, info};
 
 // ============================================================
 // Call graph statistics
@@ -183,13 +187,95 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 // Call graph enrichment
 // ============================================================
 
+/// The confidence floor at which a known-library match becomes a `Skip`.
+///
+/// A libmatch finding is an observation; `Skip` is an instruction to the
+/// translator, and this floor is the point where one becomes the other: a
+/// function whose best finding on the 0–100 evidence-confidence scale
+/// reaches it is stubbed rather than translated. Below the floor the
+/// structural Root/Leaf/Middle cascade decides alone. The finding itself
+/// persists with its own confidence regardless of the floor — the
+/// observation and the instruction stay separate, per the binary-analysis
+/// record model (issue #265).
+pub const LIBMATCH_SKIP_CONFIDENCE_FLOOR: u8 = 80;
+
+/// Loads the persisted libmatch document for a binary.
+///
+/// Returns `None` when the document is missing or corrupt — exactly as
+/// the translator tolerates a missing control-flow cache — so a stale or
+/// absent known-library artifact never fails a call-graph build; it just
+/// degrades classification to today's structural behavior.
+fn load_libmatch_result(workspace: &std::path::Path, dll_name: &str) -> Option<LibmatchResult> {
+    let persistor = LibmatchPersistor::new(workspace);
+    match persistor.load(dll_name) {
+        Ok(result) => Some(result),
+        Err(e) => {
+            debug!(
+                %dll_name,
+                error = %e,
+                "No usable libmatch result; classifying without known-library Skip"
+            );
+            None
+        }
+    }
+}
+
+/// Whether any of the function's libmatch findings meets the Skip
+/// confidence floor.
+///
+/// Findings for one function are read as a set: the best of them decides,
+/// and one finding at or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`] is
+/// enough — a weak propagated claim never cancels a strong direct match.
+fn meets_libmatch_floor(libmatch: Option<&LibmatchResult>, function: &str) -> bool {
+    libmatch.is_some_and(|result| {
+        result.for_function(function).any(|finding| {
+            finding
+                .confidence()
+                .at_least(LIBMATCH_SKIP_CONFIDENCE_FLOOR)
+        })
+    })
+}
+
+/// Classifies every function in the graph.
+///
+/// A function whose best libmatch finding meets
+/// [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`] becomes
+/// [`Skip`](NodeCategory::Skip) ahead of the structural cascade — a known
+/// library body is never a root, leaf, or middle no matter how it sits in
+/// the call graph. Every other function takes the existing
+/// [`RootDetector`]/[`LeafDetector`] decision unchanged, and with no
+/// document (`None`) the cascade alone decides — today's behavior exactly.
+fn classify_call_graph(
+    graph: &mut calxgloss_callgraph::CallGraph,
+    libmatch: Option<&LibmatchResult>,
+) {
+    let root_detector = RootDetector::new();
+    let leaf_detector = LeafDetector::new();
+
+    for func in &mut graph.functions {
+        func.node_category = if meets_libmatch_floor(libmatch, &func.name) {
+            NodeCategory::Skip
+        } else if root_detector.is_root(func) {
+            NodeCategory::Root
+        } else if leaf_detector.has_leaf_call(func) {
+            NodeCategory::Leaf
+        } else {
+            NodeCategory::Middle
+        };
+    }
+}
+
 /// Builds, classifies, and persists a call graph for a single DLL.
 ///
 /// This is the primary integration point between the call graph analysis
 /// pipeline and the rest of the system. It:
 ///
 /// 1. Fetches all function metadata from the scan source via [`CallGraphBuilder`].
-/// 2. Classifies each function using [`RootDetector`] and [`LeafDetector`].
+/// 2. Loads the persisted libmatch document for the binary, if any, and
+///    classifies each function through [`classify_call_graph`]: a
+///    known-library match at or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`]
+///    becomes [`Skip`](calxgloss_types::NodeCategory::Skip) ahead of the
+///    structural [`RootDetector`] / [`LeafDetector`] cascade.
 /// 3. Updates each function's [`NodeCategory`].
 /// 4. Persists the enriched graph to the cache directory.
 ///
@@ -211,7 +297,10 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 ///
 /// If a single function's decompilation fails, it is included with an empty
 /// callee list. If all decompilations fail, the graph still completes with
-/// empty callee lists for every function.
+/// empty callee lists for every function. A missing or corrupt libmatch
+/// document degrades to classification without known-library `Skip` — the
+/// behavior before the pass existed — just as the translator tolerates a
+/// missing control-flow cache.
 ///
 /// # TODOs
 ///
@@ -234,19 +323,12 @@ pub async fn build_enriched_call_graph<S: ScanSource + Clone + Sync>(
     let builder = CallGraphBuilder::with_source(source.clone(), dll_name);
     let mut graph = builder.build().await?;
 
-    // 2. Classify each function.
-    let root_detector = RootDetector::new();
-    let leaf_detector = LeafDetector::new();
-
-    for func in &mut graph.functions {
-        func.node_category = if root_detector.is_root(func) {
-            NodeCategory::Root
-        } else if leaf_detector.has_leaf_call(func) {
-            NodeCategory::Leaf
-        } else {
-            NodeCategory::Middle
-        };
-    }
+    // 2. Classify each function: a known-library match at or above the
+    //    confidence floor marks the node Skip ahead of the structural
+    //    cascade; a missing or corrupt libmatch document degrades to the
+    //    cascade alone.
+    let libmatch = load_libmatch_result(workspace, dll_name);
+    classify_call_graph(&mut graph, libmatch.as_ref());
 
     let func_count = graph.functions.len();
     let root_count = graph
@@ -259,13 +341,19 @@ pub async fn build_enriched_call_graph<S: ScanSource + Clone + Sync>(
         .iter()
         .filter(|f| matches!(f.node_category, NodeCategory::Leaf))
         .count();
+    let skip_count = graph
+        .functions
+        .iter()
+        .filter(|f| matches!(f.node_category, NodeCategory::Skip))
+        .count();
 
     info!(
         %dll_name,
         func_count,
         root_count,
         leaf_count,
-        middle_count = func_count - root_count - leaf_count,
+        skip_count,
+        middle_count = func_count - root_count - leaf_count - skip_count,
         "Classified call graph"
     );
 
@@ -515,7 +603,11 @@ mod helpers {
 mod tests {
     use super::*;
     use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
-    use calxgloss_types::DllCategory;
+    use calxgloss_libmatch::persist::LibmatchPersistor;
+    use calxgloss_libmatch::types::{
+        LibmatchFinding, LibmatchMatch, LibmatchResult, LibraryFamily,
+    };
+    use calxgloss_types::{Confidence, DllCategory, ScanMetadata};
 
     use crate::{DllClassification, Strategy};
 
@@ -550,6 +642,99 @@ mod tests {
             binary: binary.to_string(),
             functions,
         }
+    }
+
+    /// A `memcpy` match record for one function at `confidence`, shaped as
+    /// the `libmatch` scan writes it.
+    fn libmatch_match(function: &str, confidence: u8) -> LibmatchMatch {
+        LibmatchMatch {
+            function: function.to_string(),
+            symbol: "memcpy".to_string(),
+            family: LibraryFamily::Crt,
+            suggestion: "slice copy — `copy_nonoverlapping`".to_string(),
+            confidence: Confidence::new(confidence),
+            evidence: "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
+                .to_string(),
+        }
+    }
+
+    /// A body-signature finding for one function at `confidence`.
+    fn libmatch_finding(function: &str, confidence: u8) -> LibmatchFinding {
+        LibmatchFinding::BodySignature(libmatch_match(function, confidence))
+    }
+
+    /// The persisted libmatch document shape for one binary.
+    fn libmatch_doc(binary: &str, findings: Vec<LibmatchFinding>) -> LibmatchResult {
+        LibmatchResult {
+            metadata: ScanMetadata::new(binary),
+            findings,
+        }
+    }
+
+    /// Saves a libmatch document where the classification pass reads it:
+    /// the workspace's `re/analysis/libmatch/` document directory.
+    fn persist_libmatch_doc(workspace: &std::path::Path, doc: &LibmatchResult) {
+        LibmatchPersistor::new(workspace)
+            .save(doc)
+            .expect("libmatch document should save");
+    }
+
+    /// A three-function fixture covering the whole structural cascade:
+    /// `WinMain` matches a root name pattern, `load_config` calls a known
+    /// Windows API (leaf), and `FUN_18003ab00` is neither (middle).
+    fn cascade_fixture() -> calxgloss_callgraph::CallGraph {
+        make_call_graph(
+            "eqmain.dll",
+            vec![
+                FunctionCallGraph {
+                    name: "WinMain".to_string(),
+                    address: 0x401000,
+                    callers: vec![],
+                    callees: vec![CallGraphEdge {
+                        source: 0x401000,
+                        target: 0x402000,
+                        call_site: 0,
+                        call_type: CallType::Direct,
+                        callee_name: "FUN_18003ab00".to_string(),
+                    }],
+                    node_category: NodeCategory::Middle,
+                },
+                FunctionCallGraph {
+                    name: "FUN_18003ab00".to_string(),
+                    address: 0x402000,
+                    callers: vec![0x401000],
+                    callees: vec![],
+                    node_category: NodeCategory::Middle,
+                },
+                FunctionCallGraph {
+                    name: "load_config".to_string(),
+                    address: 0x403000,
+                    callers: vec![],
+                    callees: vec![CallGraphEdge {
+                        source: 0x403000,
+                        target: 0x78000000,
+                        call_site: 0,
+                        call_type: CallType::Direct,
+                        callee_name: "CreateFile".to_string(),
+                    }],
+                    node_category: NodeCategory::Middle,
+                },
+            ],
+        )
+    }
+
+    /// Asserts the named fixture function holds the expected category in a
+    /// classified graph.
+    fn assert_category(graph: &calxgloss_callgraph::CallGraph, name: &str, expected: NodeCategory) {
+        let found = graph
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .expect("fixture function should exist");
+        assert_eq!(
+            found.node_category, expected,
+            "{name} should be {expected:?}"
+        );
     }
 
     // ── Dependency graph construction tests ──
@@ -837,6 +1022,175 @@ mod tests {
             dll_idx < a_idx,
             "DLL classification should come before functions"
         );
+    }
+
+    // ── Known-library Skip classification tests (issue #265) ──
+
+    #[test]
+    fn persisted_finding_at_the_floor_marks_node_skip() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        persist_libmatch_doc(
+            ws.path(),
+            &libmatch_doc(
+                "eqmain.dll",
+                vec![libmatch_finding(
+                    "FUN_18003ab00",
+                    LIBMATCH_SKIP_CONFIDENCE_FLOOR,
+                )],
+            ),
+        );
+
+        let libmatch = load_libmatch_result(ws.path(), "eqmain.dll");
+        assert!(libmatch.is_some(), "the persisted document should load");
+
+        let mut graph = cascade_fixture();
+        classify_call_graph(&mut graph, libmatch.as_ref());
+
+        assert_category(&graph, "FUN_18003ab00", NodeCategory::Skip);
+        // The floor marks only the matched function; the rest of the
+        // cascade stands.
+        assert_category(&graph, "WinMain", NodeCategory::Root);
+        assert_category(&graph, "load_config", NodeCategory::Leaf);
+    }
+
+    #[test]
+    fn finding_below_the_floor_leaves_classification_untouched() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        persist_libmatch_doc(
+            ws.path(),
+            &libmatch_doc(
+                "eqmain.dll",
+                vec![libmatch_finding(
+                    "FUN_18003ab00",
+                    LIBMATCH_SKIP_CONFIDENCE_FLOOR - 1,
+                )],
+            ),
+        );
+
+        let libmatch = load_libmatch_result(ws.path(), "eqmain.dll");
+        assert!(libmatch.is_some(), "the persisted document should load");
+
+        let mut graph = cascade_fixture();
+        classify_call_graph(&mut graph, libmatch.as_ref());
+
+        // The floor is inclusive; one point below it changes nothing.
+        assert_category(&graph, "FUN_18003ab00", NodeCategory::Middle);
+        assert_category(&graph, "WinMain", NodeCategory::Root);
+        assert_category(&graph, "load_config", NodeCategory::Leaf);
+    }
+
+    #[test]
+    fn missing_libmatch_document_degrades_to_structural_classification() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+
+        let libmatch = load_libmatch_result(ws.path(), "eqmain.dll");
+        assert!(
+            libmatch.is_none(),
+            "a scan that has not run yet just means no known-library claims"
+        );
+
+        let mut graph = cascade_fixture();
+        classify_call_graph(&mut graph, libmatch.as_ref());
+
+        assert_category(&graph, "FUN_18003ab00", NodeCategory::Middle);
+        assert_category(&graph, "WinMain", NodeCategory::Root);
+        assert_category(&graph, "load_config", NodeCategory::Leaf);
+    }
+
+    #[test]
+    fn corrupt_libmatch_document_degrades_to_structural_classification() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let doc_dir = ws.path().join("re").join("analysis").join("libmatch");
+        std::fs::create_dir_all(&doc_dir).expect("document directory should be created");
+        std::fs::write(doc_dir.join("eqmain.dll.json"), "{ this is not json")
+            .expect("garbage document should write");
+
+        let libmatch = load_libmatch_result(ws.path(), "eqmain.dll");
+        assert!(
+            libmatch.is_none(),
+            "a corrupt document degrades to no document, never a failure"
+        );
+
+        let mut graph = cascade_fixture();
+        classify_call_graph(&mut graph, libmatch.as_ref());
+
+        assert_category(&graph, "FUN_18003ab00", NodeCategory::Middle);
+        assert_category(&graph, "WinMain", NodeCategory::Root);
+        assert_category(&graph, "load_config", NodeCategory::Leaf);
+    }
+
+    #[test]
+    fn skip_marking_precedes_the_structural_cascade() {
+        // WinMain is a name-pattern root; a known-library match at the
+        // floor still marks it Skip — a matched library body is never a
+        // root, leaf, or middle however it sits in the call graph.
+        let doc = libmatch_doc(
+            "eqmain.dll",
+            vec![libmatch_finding("WinMain", LIBMATCH_SKIP_CONFIDENCE_FLOOR)],
+        );
+
+        let mut graph = cascade_fixture();
+        classify_call_graph(&mut graph, Some(&doc));
+
+        assert_category(&graph, "WinMain", NodeCategory::Skip);
+        assert_category(&graph, "FUN_18003ab00", NodeCategory::Middle);
+        assert_category(&graph, "load_config", NodeCategory::Leaf);
+    }
+
+    #[test]
+    fn the_best_finding_for_a_function_decides_the_floor() {
+        // A penalized thunk claim below the floor beside a strong direct
+        // match above it: the strong claim marks the node. A function with
+        // only the weak claim stands unmarked.
+        let doc = libmatch_doc(
+            "eqmain.dll",
+            vec![
+                LibmatchFinding::TailCallThunk(libmatch_match("FUN_18003ab00", 50)),
+                libmatch_finding("FUN_18003ab00", LIBMATCH_SKIP_CONFIDENCE_FLOOR + 5),
+                LibmatchFinding::IdenticalBody(libmatch_match(
+                    "load_config",
+                    LIBMATCH_SKIP_CONFIDENCE_FLOOR - 1,
+                )),
+            ],
+        );
+
+        let mut graph = cascade_fixture();
+        classify_call_graph(&mut graph, Some(&doc));
+
+        assert_category(&graph, "FUN_18003ab00", NodeCategory::Skip);
+        assert_category(&graph, "load_config", NodeCategory::Leaf);
+        assert_category(&graph, "WinMain", NodeCategory::Root);
+    }
+
+    #[test]
+    fn skip_node_still_appears_in_the_dependency_graph() {
+        // A wrong match hides nothing: the matched function's record keeps
+        // its place in the dependency graph, labeled Skip.
+        let classifications = vec![test_classification(
+            "eqmain.dll",
+            DllCategory::ProjectSpecific,
+            None,
+        )];
+
+        let call_graph = make_call_graph(
+            "eqmain.dll",
+            vec![FunctionCallGraph {
+                name: "FUN_18003ab00".to_string(),
+                address: 0x402000,
+                callers: vec![],
+                callees: vec![],
+                node_category: NodeCategory::Skip,
+            }],
+        );
+
+        let graph = build_dependency_graph_from_call_graph(&classifications, &call_graph);
+
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| n.unit_id == "func_FUN_18003ab00")
+            .expect("matched function should keep its dependency node");
+        assert!(node.name.contains("Skip"));
     }
 
     // ── Node ID helper tests ──

@@ -395,6 +395,7 @@ dependencies = [
  "calxgloss-decomp",
  "calxgloss-git",
  "calxgloss-kuna",
+ "calxgloss-libmatch",
  "calxgloss-llm",
  "calxgloss-pal",
  "calxgloss-testfixtures",
