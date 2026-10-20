@@ -182,6 +182,7 @@ out:
 | `calxgloss-stringctx` | Nine-category string classification, per-function string maps, format-string inference |
 | `calxgloss-apidetect` | Import-table extraction, library-to-Rust-crate mapping, per-function API summaries |
 | `calxgloss-serialize` | Byte-swap call matching, bit-packing pattern recognition, magic-byte format sniffing |
+| `calxgloss-libmatch` | Known-library function identification: body-signature matching of statically linked CRT/STL code |
 | `calxgloss-testgen` | FFI bindings, test inputs, baseline execution |
 | `calxgloss-translator` | Engine scan → LLM → Rust pipeline |
 | `calxgloss-verify` | Compile and test verification |

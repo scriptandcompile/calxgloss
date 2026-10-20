@@ -74,6 +74,7 @@ use commands::doctor::handle_doctor;
 use commands::gc::handle_gc;
 use commands::globalstate::handle_global_state;
 use commands::init::handle_init;
+use commands::libmatch::handle_libmatch;
 use commands::live::handle_live;
 use commands::memory::handle_memory;
 use commands::serialize::handle_serialize;
@@ -292,6 +293,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_memory(&binary, &workspace, show, &settings))
+        }
+        Command::Libmatch { binary, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_libmatch(&binary, &workspace, show, &settings))
         }
         Command::Sync { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);

@@ -393,6 +393,35 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Identify known-library functions (statically linked CRT/STL code)
+    /// for a binary by matching normalized decompiled bodies against a
+    /// signature set.
+    ///
+    /// The identification findings are persisted per binary to
+    /// `re/analysis/libmatch/<binary>.json` in the workspace. `--show`
+    /// prints a cached result without running the scan.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss libmatch --binary eqmain.dll --show
+    /// ```
+    Libmatch {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Detect concurrency constructs (mutex/lock pairings, atomic
     /// operations, thread spawns) for a binary.
     ///

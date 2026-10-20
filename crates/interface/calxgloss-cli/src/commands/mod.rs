@@ -14,6 +14,7 @@ pub mod doctor;
 pub mod gc;
 pub mod globalstate;
 pub mod init;
+pub mod libmatch;
 pub mod live;
 pub mod memory;
 pub mod serialize;

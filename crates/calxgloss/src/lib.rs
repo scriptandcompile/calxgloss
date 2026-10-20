@@ -254,6 +254,20 @@ pub use calxgloss_controlflow::types::{
 };
 
 // ============================================================
+// calxgloss-libmatch — known-library function identification
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `LibmatchResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already
+// named here.
+pub use calxgloss_libmatch::LibmatchError;
+pub use calxgloss_libmatch::types::{
+    LibmatchFinding, LibmatchMatch, LibmatchResult, LibraryFamily,
+};
+
+// ============================================================
 // calxgloss-serialize — endianness & serialization detection
 // ============================================================
 

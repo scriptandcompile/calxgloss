@@ -1,0 +1,23 @@
+[package]
+name = "calxgloss-libmatch"
+version.workspace = true
+edition.workspace = true
+description = "Known-library function identification: body-signature matching of statically linked CRT/STL code against decompiled bodies"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
+
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

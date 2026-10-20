@@ -892,6 +892,7 @@ Cargo.toml's words:
 | `calxgloss-stringctx` | What do the strings mean? (nine-category classification, format strings) |
 | `calxgloss-apidetect` | Which third-party library is this? (import-table fingerprinting → crate mapping) |
 | `calxgloss-serialize` | Where is endianness/serialization logic? (byte swaps, magic bytes) |
+| `calxgloss-libmatch` | Which functions are statically linked library code? (body-shape signatures → CRT/STL symbols) |
 
 They share two pieces of plumbing from `calxgloss-types`: `ScanMetadata` —
 the provenance header stamped on every cached scan JSON (`scan.rs:L19-L48`) —
