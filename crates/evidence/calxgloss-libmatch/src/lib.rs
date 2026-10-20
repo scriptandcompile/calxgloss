@@ -31,7 +31,7 @@
 //!   bundle of normalized-line regexes with an exclusion bundle, a
 //!   line-count floor, and an optional per-entry confidence;
 //!   `default_signatures` is the built-in starter set carrying the
-//!   highest-frequency MSVC CRT shapes.
+//!   highest-frequency MSVC CRT and STL shapes.
 //! - [`signature_db`] - The operator-supplied signature database:
 //!   `SignatureDatabase`, one strict JSON document carrying the
 //!   signature set whole, per ADR-0023's pattern-database contract; a

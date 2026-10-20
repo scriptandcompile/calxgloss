@@ -119,6 +119,21 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_set_round_trips_through_the_document_format() {
+        // Every built-in entry survives the document format whole: the
+        // starter set serialized as a database file reads back
+        // identical, so an operator can start from the built-ins and
+        // retire or tune any entry in the file.
+        let db = SignatureDatabase {
+            signatures: crate::signature::default_signatures(),
+        };
+        let json = serde_json::to_string(&db).expect("the built-in set serializes");
+        let back: SignatureDatabase =
+            serde_json::from_str(&json).expect("the built-in document reads back");
+        assert_eq!(back, db);
+    }
+
+    #[test]
     fn the_document_key_names_the_signature_section() {
         // The file format is pinned: one `signatures` section, and the
         // entries carry exactly the signature type's serde shape.

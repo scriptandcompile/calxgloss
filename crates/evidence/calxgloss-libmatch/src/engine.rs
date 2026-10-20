@@ -386,6 +386,131 @@ mod tests {
   return puVar1;
 ";
 
+    /// The MSVC CRT byte-fill loop: the copy loop's countdown and loop
+    /// test, but the store carries a cast byte instead of a source read.
+    const MEMSET_BODY: &str = "\
+  puVar1 = (byte *)param_1;
+  do {
+    param_3 = param_3 + -1;
+    *puVar1 = (char)param_2;
+    puVar1 = puVar1 + 1;
+  } while (param_3 != 0);
+  return param_1;
+";
+
+    /// The MSVC CRT byte-compare loop: unsigned byte loads from two
+    /// pointers, a difference on mismatch, and the copy loop's
+    /// countdown — with no store line.
+    const MEMCMP_BODY: &str = "\
+  do {
+    cVar1 = *(uchar *)param_1;
+    cVar2 = *(uchar *)param_2;
+    if (cVar1 != cVar2) {
+      uVar4 = (uint)cVar1 - (uint)cVar2;
+      goto joined_r0x180045a68;
+    }
+    param_1 = param_1 + 1;
+    param_2 = param_2 + 1;
+    param_3 = param_3 + -1;
+  } while (param_3 != 0);
+  uVar4 = 0;
+  return (int)uVar4;
+";
+
+    /// The MSVC CRT string-length scan: walk the pointer itself until
+    /// the NUL byte, counting as you go.
+    const STRLEN_BODY: &str = "\
+  sVar1 = 0;
+  while (*param_1 != '\\0') {
+    param_1 = param_1 + 1;
+    sVar1 = sVar1 + 1;
+  }
+  return sVar1;
+";
+
+    /// The MSVC CRT string compare: byte loads from both strings, an
+    /// equality carry line, and the loop test that stops on the NUL
+    /// byte.
+    const STRCMP_BODY: &str = "\
+  do {
+    cVar1 = *param_1;
+    cVar2 = *param_2;
+    bVar3 = cVar1 == cVar2;
+    param_1 = param_1 + 1;
+    param_2 = param_2 + 1;
+  } while (bVar3 && (cVar1 != '\\0'));
+  iVar4 = (int)(uint)(byte)cVar1 - (int)(uint)(byte)cVar2;
+  return iVar4;
+";
+
+    /// The MSVC CRT string copy: a byte load, a bare byte store, and
+    /// the NUL-terminated loop — the copy that carries the terminator.
+    const STRCPY_BODY: &str = "\
+  puVar2 = param_1;
+  do {
+    cVar1 = *param_2;
+    param_2 = param_2 + 1;
+    *puVar2 = cVar1;
+    puVar2 = puVar2 + 1;
+  } while (cVar1 != '\\0');
+  return param_1;
+";
+
+    /// The MSVC CRT `operator new` wrapper: a `malloc` call with a null
+    /// test and a new-handler retry.
+    const OPERATOR_NEW_BODY: &str = "\
+  pvVar1 = malloc(param_1);
+  if (pvVar1 == (void *)0x0) {
+    FUN_180045e00();
+    pvVar1 = malloc(param_1);
+  }
+  return pvVar1;
+";
+
+    /// The MSVC CRT `operator delete` wrapper: a guarded `free`.
+    const OPERATOR_DELETE_BODY: &str = "\
+  if (param_1 != (void *)0x0) {
+    free(param_1);
+  }
+  return;
+";
+
+    /// The STL associative-container red-black rotation: the three-line
+    /// child rehang spelled by the MSVC node fields, with the parent
+    /// rewire around it.
+    const TREE_ROTATE_BODY: &str = "\
+  pVar1 = param_1->_Right;
+  param_1->_Right = pVar1->_Left;
+  pVar1->_Left = param_1;
+  pVar2 = param_1->_Parent;
+  if (param_1 == pVar2->_Right) {
+    pVar2->_Right = pVar1;
+  }
+  else {
+    pVar2->_Left = pVar1;
+  }
+  pVar1->_Parent = pVar2;
+  param_1->_Parent = pVar1;
+  return;
+";
+
+    /// The STL associative-container search descent: walk
+    /// `_Left`/`_Right` by key comparison while testing `_Isnil`.
+    const TREE_SEARCH_BODY: &str = "\
+  pVar2 = param_1;
+  cVar1 = pVar2->_Isnil;
+  while (cVar1 == '\\0') {
+    if (*(long *)param_2 < *(long *)&pVar2->_Left) {
+      pVar2 = pVar2->_Left;
+    }
+    else {
+      pVar2 = pVar2->_Right;
+    }
+    cVar1 = pVar2->_Isnil;
+  }
+  return pVar2;
+";
+
     /// The canned program: one function whose body is the memcpy idiom,
     /// one plain function that matches nothing, and one guarded copy
     /// the starter set vetoes.
@@ -503,6 +628,139 @@ mod tests {
             assert_eq!(findings.len(), 1, "{name} must match the memcpy signature");
             assert_eq!(findings[0].target(), "memcpy");
             assert_eq!(findings[0].family(), LibraryFamily::Crt);
+        }
+    }
+
+    /// A program carrying one representative body per built-in starter-set
+    /// shape the tracer bullet's set did not yet cover: the grown CRT
+    /// memory/string set, the allocator wrappers, and the STL tree
+    /// idioms.
+    fn starter_set_program() -> FakeProgram {
+        let mut program = FakeProgram::default();
+        for (name, signature, body) in [
+            (
+                "FUN_18003ac00",
+                "void * __fastcall FUN_18003ac00(void *param_1,int param_2,size_t param_3)",
+                MEMSET_BODY,
+            ),
+            (
+                "FUN_18003ad00",
+                "int __fastcall FUN_18003ad00(long param_1,long param_2,size_t param_3)",
+                MEMCMP_BODY,
+            ),
+            (
+                "FUN_18003ae00",
+                "size_t __fastcall FUN_18003ae00(long param_1)",
+                STRLEN_BODY,
+            ),
+            (
+                "FUN_18003af00",
+                "int __fastcall FUN_18003af00(char *param_1,char *param_2)",
+                STRCMP_BODY,
+            ),
+            (
+                "FUN_18003b000",
+                "char * __fastcall FUN_18003b000(char *param_1,char *param_2)",
+                STRCPY_BODY,
+            ),
+            (
+                "FUN_180045f00",
+                "void * __fastcall FUN_180045f00(size_t param_1)",
+                OPERATOR_NEW_BODY,
+            ),
+            (
+                "FUN_180045f40",
+                "void __fastcall FUN_180045f40(void *param_1)",
+                OPERATOR_DELETE_BODY,
+            ),
+            (
+                "FUN_18004abcd",
+                "void __fastcall FUN_18004abcd(std::_Tree_node *param_1)",
+                TREE_ROTATE_BODY,
+            ),
+            (
+                "FUN_18004d120",
+                "std::_Tree_node * __fastcall FUN_18004d120(std::_Tree_node *param_1,long param_2)",
+                TREE_SEARCH_BODY,
+            ),
+        ] {
+            program.listing.push(summary(name));
+            program
+                .bodies
+                .insert(name.into(), function(name, signature, body));
+        }
+        program
+    }
+
+    #[tokio::test]
+    async fn crt_memory_and_string_bodies_land_their_own_symbols() {
+        // Each representative MSVC CRT memory/string body lands exactly
+        // one finding, naming its own symbol and the CRT family at the
+        // standard score: the grown starter set's entries must not
+        // cross-claim each other's shapes.
+        let result = scan(starter_set_program()).await;
+        for (name, symbol) in [
+            ("FUN_18003ac00", "memset"),
+            ("FUN_18003ad00", "memcmp"),
+            ("FUN_18003ae00", "strlen"),
+            ("FUN_18003af00", "strcmp"),
+            ("FUN_18003b000", "strcpy"),
+        ] {
+            let findings: Vec<&LibmatchFinding> = result.for_function(name).collect();
+            assert_eq!(findings.len(), 1, "{name} lands exactly one claim");
+            assert_eq!(findings[0].target(), symbol);
+            assert_eq!(findings[0].family(), LibraryFamily::Crt);
+            assert_eq!(
+                findings[0].confidence().value(),
+                crate::confidence::BODY_MATCH_CONFIDENCE
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn allocator_wrapper_bodies_land_crt_findings_at_their_sloppier_score() {
+        // The `operator new`/`operator delete` wrappers: a `malloc`/`free`
+        // call plus a null test is thin evidence — any allocation helper
+        // reads alike — so these entries deliberately claim a sloppier
+        // score than the standard body-evidence one, through the
+        // per-entry override.
+        let result = scan(starter_set_program()).await;
+        for (name, symbol) in [
+            ("FUN_180045f00", "operator new"),
+            ("FUN_180045f40", "operator delete"),
+        ] {
+            let findings: Vec<&LibmatchFinding> = result.for_function(name).collect();
+            assert_eq!(findings.len(), 1, "{name} lands exactly one claim");
+            assert_eq!(findings[0].target(), symbol);
+            assert_eq!(findings[0].family(), LibraryFamily::Crt);
+            assert_eq!(
+                findings[0].confidence().value(),
+                50,
+                "the wrapper entries score below the standard body-evidence score"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stl_tree_idiom_bodies_land_findings_naming_the_stl_family() {
+        // The associative-container red-black-tree idioms: the rotation
+        // the rebalancing pass compiles to and the search descent that
+        // walks `_Left`/`_Right` while testing `_Isnil`. The MSVC node
+        // fields survive normalization, and both bodies land the tree
+        // entries naming the STL family at the standard score.
+        let result = scan(starter_set_program()).await;
+        for (name, symbol) in [
+            ("FUN_18004abcd", "std::_Tree::_Rotate_left"),
+            ("FUN_18004d120", "std::_Tree::_Lower_bound"),
+        ] {
+            let findings: Vec<&LibmatchFinding> = result.for_function(name).collect();
+            assert_eq!(findings.len(), 1, "{name} lands exactly one claim");
+            assert_eq!(findings[0].target(), symbol);
+            assert_eq!(findings[0].family(), LibraryFamily::Stl);
+            assert_eq!(
+                findings[0].confidence().value(),
+                crate::confidence::BODY_MATCH_CONFIDENCE
+            );
         }
     }
 

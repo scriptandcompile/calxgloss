@@ -12,7 +12,7 @@
 //! without a format change.
 //!
 //! [`default_signatures`] is the built-in starter set — the
-//! highest-frequency MSVC CRT shapes, hand-authored against the
+//! highest-frequency MSVC CRT and STL shapes, hand-authored against the
 //! [normalize](crate::normalize) contract. The set is deliberately
 //! small: every entry trades a false-positive risk against a missed
 //! library function, and the operator-supplied
@@ -98,15 +98,21 @@ impl LibmatchSignature {
     }
 }
 
-/// The built-in starter set: the highest-frequency MSVC CRT shapes,
-/// hand-authored against the [normalize](crate::normalize) contract.
+/// The built-in starter set: the highest-frequency MSVC CRT and STL
+/// shapes, hand-authored against the [normalize](crate::normalize)
+/// contract.
 ///
 /// The set is kept small on purpose — every entry is a standing
 /// false-positive risk against the program's own routines — and covers
-/// the routines a statically linked CRT puts in nearly every binary.
-/// The exclusion bundles are what separate look-alike loop shapes: the
-/// copy loop without a guard is `memcpy`, the one with an overlap
-/// branch is not.
+/// the routines a statically linked CRT puts in nearly every binary
+/// plus the associative-container tree idioms the STL compiles to. The
+/// exclusion bundles are what separate look-alike loop shapes: the copy
+/// loop without a guard is `memcpy`, the fill loop that stores a cast
+/// byte instead of a source read is `memset`, the one with an overlap
+/// branch is neither. The allocator wrappers are the set's deliberately
+/// sloppier entries: a `malloc`/`free` call with a null test is a thin
+/// shape any allocation helper reads alike, so they claim a lower score
+/// through the per-entry override.
 pub fn default_signatures() -> Vec<LibmatchSignature> {
     vec![
         // The CRT byte/word copy loop: a countdown, a dereference
@@ -124,15 +130,116 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
             "slice copy — `copy_nonoverlapping` / `clone_from_slice`",
         )
         .with_exclusions([r"\bif \(", r"\bmalloc\b", r"\bfree\b"]),
-        // The CRT string-length scan: walk until the NUL byte, count as
-        // you go, return the count.
+        // The CRT byte-fill loop: the same countdown and loop test as
+        // the copy loop, but the store carries a cast byte instead of a
+        // source read — no `*(...) = *(...)` line fits the copy shape.
+        LibmatchSignature::new(
+            "memset",
+            LibraryFamily::Crt,
+            [
+                r"\*VAR = \([a-z]+\)VAR",
+                r"VAR = VAR \+ -1",
+                r"while \(VAR != 0\)",
+            ],
+            "`[0u8; N]` fill / `slice::fill`",
+        )
+        .with_exclusions([r"\bif \(", r"\bmalloc\b", r"\bfree\b"]),
+        // The CRT byte-compare loop: unsigned byte loads from two
+        // pointers, the same countdown as the copy loop, and no store
+        // line — the loads are `(uchar *)`-cast because the comparison
+        // is unsigned.
+        LibmatchSignature::new(
+            "memcmp",
+            LibraryFamily::Crt,
+            [
+                r"VAR = \*\(uchar \*\)VAR",
+                r"VAR = VAR \+ -1",
+                r"while \(VAR != 0\)",
+            ],
+            "slice compare — `slice::eq` / `Ord` on byte slices",
+        )
+        .with_exclusions([r"\bmalloc\b", r"\bfree\b"]),
+        // The CRT string-length scan: walk the pointer itself until the
+        // NUL byte, count as you go, return the count. The
+        // `while (*VAR != '\0')` spelling is what separates the scan
+        // from the compare and copy loops, which test a loaded byte
+        // variable instead of the dereferenced pointer.
         LibmatchSignature::new(
             "strlen",
             LibraryFamily::Crt,
-            [r"while \(", r"!= '\\0'", r"VAR = VAR \+ 1"],
+            [r"while \(\*VAR != '\\0'", r"VAR = VAR \+ 1"],
             "`str::len` / `CStr` count",
         )
         .with_exclusions([r"\bmalloc\b", r"\bfree\b"]),
+        // The CRT string compare: byte loads from both strings, an
+        // equality carry line, and the loop test that keeps going while
+        // the bytes match and stop on the NUL byte.
+        LibmatchSignature::new(
+            "strcmp",
+            LibraryFamily::Crt,
+            [
+                r"VAR = \*VAR;",
+                r"VAR = VAR == VAR;",
+                r"while \(VAR && \(VAR != '\\0'\)",
+            ],
+            "string compare — `str::cmp` / `Ord` on `CStr`",
+        )
+        .with_exclusions([r"\bmalloc\b", r"\bfree\b"]),
+        // The CRT string copy: a byte load, a bare byte store, and the
+        // NUL-terminated loop — the copy that carries the terminator,
+        // with no guard branch.
+        LibmatchSignature::new(
+            "strcpy",
+            LibraryFamily::Crt,
+            [r"VAR = \*VAR;", r"\*VAR = VAR;", r"while \(VAR != '\\0'\)"],
+            "string copy — `CStr` to `String` / `str` copy",
+        )
+        .with_exclusions([r"\bif \(", r"\bmalloc\b", r"\bfree\b"]),
+        // The CRT allocator wrappers: `operator new` is a `malloc` call
+        // with a null test, `operator delete` a guarded `free`. The
+        // shapes are thin — any allocation helper reads alike — so both
+        // entries deliberately claim a sloppier score than the standard
+        // body-evidence one.
+        LibmatchSignature::new(
+            "operator new",
+            LibraryFamily::Crt,
+            [r"VAR = malloc\(VAR\)", r"if \(VAR == \(void \*\)0x0\)"],
+            "heap allocation — `Box::new` / `Vec` growth",
+        )
+        .with_confidence(50),
+        LibmatchSignature::new(
+            "operator delete",
+            LibraryFamily::Crt,
+            [r"free\(VAR\);", r"if \(VAR != \(void \*\)0x0\)"],
+            "heap deallocation — `drop` / `Box::from_raw`",
+        )
+        .with_confidence(50),
+        // The STL associative-container tree idioms, spelled by the
+        // MSVC node fields (`_Left`, `_Right`, `_Parent`, `_Isnil`) that
+        // survive normalization: the red-black rotation the rebalancing
+        // pass compiles to — the three-line child rehang — and the
+        // search descent that walks `_Left`/`_Right` while testing
+        // `_Isnil`.
+        LibmatchSignature::new(
+            "std::_Tree::_Rotate_left",
+            LibraryFamily::Stl,
+            [
+                r"VAR = VAR->_Right;",
+                r"VAR->_Right = VAR->_Left;",
+                r"VAR->_Left = VAR;",
+            ],
+            "red-black tree rebalancing — `BTreeMap` internals",
+        ),
+        LibmatchSignature::new(
+            "std::_Tree::_Lower_bound",
+            LibraryFamily::Stl,
+            [
+                r"VAR = VAR->_Left;",
+                r"VAR = VAR->_Right;",
+                r"VAR = VAR->_Isnil;",
+            ],
+            "associative-container lookup — `BTreeMap` / `BTreeSet` search",
+        ),
     ]
 }
 
@@ -216,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_set_names_crt_symbols_with_suggestions() {
+    fn the_built_in_set_names_crt_and_stl_symbols_with_suggestions() {
         // The starter set is pinned at this level; what it finds is
         // pinned through scan findings, not here.
         let signatures = default_signatures();
@@ -236,12 +343,50 @@ mod tests {
                     .unwrap_or_else(|e| panic!("built-in regex {source} must compile: {e}"));
             }
         }
+        // The set covers the CRT memory/string routines and allocator
+        // wrappers and the STL tree idioms, each under its family.
+        for (symbol, family) in [
+            ("memcpy", LibraryFamily::Crt),
+            ("memset", LibraryFamily::Crt),
+            ("memcmp", LibraryFamily::Crt),
+            ("strlen", LibraryFamily::Crt),
+            ("strcmp", LibraryFamily::Crt),
+            ("strcpy", LibraryFamily::Crt),
+            ("operator new", LibraryFamily::Crt),
+            ("operator delete", LibraryFamily::Crt),
+            ("std::_Tree::_Rotate_left", LibraryFamily::Stl),
+            ("std::_Tree::_Lower_bound", LibraryFamily::Stl),
+        ] {
+            assert!(
+                signatures
+                    .iter()
+                    .any(|signature| signature.symbol == symbol && signature.family == family),
+                "the starter set must carry {symbol} in {family:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn built_in_entries_score_at_the_standard_confidence_unless_deliberately_sloppier() {
+        // An entry that overrides the standard score is one the set
+        // deliberately reads sloppier — the thin allocator-wrapper
+        // shapes — and it claims less trust than the standard
+        // body-evidence score, never more.
+        let signatures = default_signatures();
+        let mut overridden = 0;
+        for signature in &signatures {
+            if let Some(confidence) = signature.confidence {
+                overridden += 1;
+                assert!(
+                    confidence < crate::confidence::BODY_MATCH_CONFIDENCE,
+                    "built-in entry {} overrides at {confidence}, below the standard score",
+                    signature.symbol
+                );
+            }
+        }
         assert!(
-            signatures
-                .iter()
-                .any(|signature| signature.symbol == "memcpy"
-                    && signature.family == LibraryFamily::Crt),
-            "the starter set must carry the memcpy idiom"
+            overridden > 0,
+            "the deliberately sloppier entries must carry their own override"
         );
     }
 }
