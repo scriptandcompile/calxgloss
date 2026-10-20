@@ -1,7 +1,9 @@
 //! The [`Analyzer`] struct, [`Strategy`] enum, [`DllClassification`],
 //! and [`FunctionAnalysis`] — the core analysis types.
 
-use crate::classify::{classification_reason, classify_dll_name, crate_replacement_for};
+use crate::classify::{
+    classification_reason, classify_dll_name, crate_replacement_for, pe_is_managed,
+};
 use crate::error::AnalysisError as Error;
 use crate::error::Result;
 use calxgloss_decomp::{PipelineSource, ScanSource};
@@ -36,6 +38,12 @@ pub enum Strategy {
 
     /// Reverse engineer from disassembly — no crate equivalent exists.
     ReverseEngineer,
+
+    /// Parked: the binary is a .NET managed assembly and the pipeline has
+    /// nothing to translate from disassembly — we do not yet decompile
+    /// managed code (issue #235). Adding a managed decompiler later is a
+    /// one-branch change here, at this single dispatch point.
+    DoNotTranslate,
 }
 
 /// The strategy a category routes to — the single dispatch every
@@ -50,6 +58,7 @@ fn strategy_for_category(category: &DllCategory, crate_replacement: Option<&str>
         DllCategory::ProjectSpecific
         | DllCategory::UnknownThirdParty
         | DllCategory::RuntimeLibrary => Strategy::ReverseEngineer,
+        DllCategory::DotNetManaged => Strategy::DoNotTranslate,
     }
 }
 
@@ -229,17 +238,22 @@ impl Analyzer {
             Vec::new()
         });
 
-        Ok(self.build_classification(binary, exports.len(), imports.len()))
+        Ok(self.build_classification(binary, exports.len(), imports.len(), false))
     }
 
-    /// Build a classification from filename and symbol counts.
+    /// Build a classification from filename, symbol counts, and the PE
+    /// managed marker. `is_managed` is the COM-descriptor fact from the
+    /// binary's PE headers (issue #235); callers without a file to parse
+    /// pass `false` and get the name-only heuristics.
     fn build_classification(
         &self,
         binary: &str,
         exports_count: usize,
         imports_count: usize,
+        is_managed: bool,
     ) -> DllClassification {
-        let (category, crate_replacement, known_runtime, reason) = self.classify_decision(binary);
+        let (category, crate_replacement, known_runtime, reason) =
+            self.classify_decision(binary, is_managed);
 
         let strategy = strategy_for_category(&category, crate_replacement.as_deref());
 
@@ -267,15 +281,26 @@ impl Analyzer {
     }
 
     /// The classification decision for one binary: the operator's override
-    /// if one is recorded (issue #97, W2.8), otherwise the filename
-    /// heuristics. Both the category and the `known_runtime` flag come out
-    /// of this one decision — per the Evidence glossary rule a
-    /// runtime-library classification is never a translation target, so an
-    /// override to `RuntimeLibrary` always carries the flag, and overriding
-    /// a runtime-named binary to another category clears it.
+    /// if one is recorded (issue #97, W2.8), then the PE managed fact
+    /// (issue #235), then the filename heuristics. Both the category and
+    /// the `known_runtime` flag come out of this one decision — per the
+    /// Evidence glossary rule a runtime-library classification is never a
+    /// translation target, so an override to `RuntimeLibrary` always
+    /// carries the flag, and overriding a runtime-named binary to another
+    /// category clears it. A managed assembly is a parked target, not a
+    /// runtime library, so `DotNetManaged` keeps the flag false.
+    ///
+    /// Precedence: operator override > PE .NET check > name-table
+    /// heuristics — a managed binary whose name happens to match a known
+    /// table is still parked honestly, and the operator's word outranks
+    /// the PE fact.
     ///
     /// Returns `(category, crate_replacement, known_runtime, reason)`.
-    fn classify_decision(&self, binary: &str) -> (DllCategory, Option<String>, bool, String) {
+    fn classify_decision(
+        &self,
+        binary: &str,
+        is_managed: bool,
+    ) -> (DllCategory, Option<String>, bool, String) {
         if let Some(override_record) = self
             .classification_overrides
             .as_ref()
@@ -292,6 +317,14 @@ impl Analyzer {
                 _ => None,
             };
             return (category, crate_replacement, known_runtime, reason);
+        }
+
+        if is_managed {
+            // The PE fact outranks the name tables (issue #235): a managed
+            // binary whose name matches a known table is still parked.
+            let category = DllCategory::DotNetManaged;
+            let reason = classification_reason(binary, &category);
+            return (category, None, false, reason);
         }
 
         let category = classify_dll_name(binary);
@@ -368,8 +401,16 @@ impl Analyzer {
 
         let exports_count = pe.exports.len();
         let imports_count = pe.imports.len();
+        // The managed marker rides on the same PE parse the counts come
+        // from — no extra file read (issue #235).
+        let is_managed = pe_is_managed(&pe);
 
-        Ok(self.build_classification(binary, exports_count, imports_count))
+        Ok(self.build_classification(
+            binary,
+            exports_count,
+            imports_count,
+            is_managed,
+        ))
     }
 
     /// Performs complete analysis on a single function.
@@ -584,7 +625,7 @@ impl Analyzer {
     /// * `dll_info` — The DLL metadata to classify.
     pub fn classify_dll_info(&self, dll_info: &DllInfo) -> DllClassification {
         let (category, crate_replacement, known_runtime, reason) =
-            self.classify_decision(&dll_info.name);
+            self.classify_decision(&dll_info.name, false);
 
         let strategy = strategy_for_category(&category, crate_replacement.as_deref());
 
@@ -1436,5 +1477,150 @@ mod tests {
         let runtime = analyzer.classify_dll_info(&dll_info("msvbvm60.dll"));
         assert!(runtime.known_runtime);
         assert!(runtime.reason.contains("runtime-library"));
+    }
+
+    // ── .NET managed assembly detection (issue #235) ──
+
+    /// A minimal PE32+ image, byte-assembled: DOS header → PE signature →
+    /// COFF header → optional header with 16 data directories → one section.
+    /// `managed` fills the COM descriptor directory (#14) and backs it with
+    /// the full chain goblin walks for a real .NET binary — a section mapping
+    /// the directory's RVA, a COR20 header, and a metadata root carrying the
+    /// `BSJB` signature; a native image leaves every directory zero (goblin
+    /// reads those as absent).
+    fn minimal_pe_bytes(managed: bool) -> Vec<u8> {
+        let mut pe = vec![0u8; 0x400];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes()); // e_lfanew
+        pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let coff = 0x44;
+        pe[coff..coff + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // AMD64
+        pe[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes()); // one section
+        pe[coff + 16..coff + 18].copy_from_slice(&240u16.to_le_bytes()); // opt header size
+        pe[coff + 18..coff + 20].copy_from_slice(&0x2002u16.to_le_bytes()); // DLL, executable
+        let opt = coff + 20;
+        pe[opt..opt + 2].copy_from_slice(&0x20Bu16.to_le_bytes()); // PE32+ magic
+        pe[opt + 32..opt + 36].copy_from_slice(&0x1000u32.to_le_bytes()); // section alignment
+        pe[opt + 36..opt + 40].copy_from_slice(&0x200u32.to_le_bytes()); // file alignment
+        pe[opt + 56..opt + 60].copy_from_slice(&0x1200u32.to_le_bytes()); // size of image
+        pe[opt + 60..opt + 64].copy_from_slice(&0x200u32.to_le_bytes()); // size of headers
+        pe[opt + 68..opt + 70].copy_from_slice(&3u16.to_le_bytes()); // subsystem: console
+        pe[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes()); // data directory count
+        // The section table follows the 240-byte optional header: one .text
+        // section mapping RVA 0x1000 to file offset 0x300.
+        let sec = opt + 240;
+        pe[sec..sec + 5].copy_from_slice(b".text");
+        pe[sec + 8..sec + 12].copy_from_slice(&0x100u32.to_le_bytes()); // virtual size
+        pe[sec + 12..sec + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // virtual address
+        pe[sec + 16..sec + 20].copy_from_slice(&0x100u32.to_le_bytes()); // raw data size
+        pe[sec + 20..sec + 24].copy_from_slice(&0x300u32.to_le_bytes()); // raw data pointer
+        pe[sec + 36..sec + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes()); // characteristics
+        if managed {
+            let dd14 = opt + 112 + 14 * 8;
+            pe[dd14..dd14 + 4].copy_from_slice(&0x1000u32.to_le_bytes()); // COM descriptor RVA
+            pe[dd14 + 4..dd14 + 8].copy_from_slice(&0x48u32.to_le_bytes()); // and size
+            // The COR20 header at file 0x300 (RVA 0x1000), pointing at metadata.
+            pe[0x300..0x304].copy_from_slice(&0x48u32.to_le_bytes()); // size of this header
+            pe[0x304..0x306].copy_from_slice(&2u16.to_le_bytes()); // major runtime version
+            pe[0x306..0x308].copy_from_slice(&5u16.to_le_bytes()); // minor runtime version
+            pe[0x308..0x30C].copy_from_slice(&0x1048u32.to_le_bytes()); // metadata RVA
+            pe[0x30C..0x310].copy_from_slice(&0x40u32.to_le_bytes()); // metadata size
+            // The metadata root at file 0x348 (RVA 0x1048).
+            pe[0x348..0x34C].copy_from_slice(b"BSJB");
+            pe[0x34C..0x350].copy_from_slice(&1u32.to_le_bytes()); // major=1, minor=0
+            pe[0x354..0x358].copy_from_slice(&4u32.to_le_bytes()); // version string length
+            pe[0x358..0x35C].copy_from_slice(b"v4.0");
+        }
+        pe
+    }
+
+    /// Classifies fixture PEs written into a temp target dir through the
+    /// analyzer's classification seam — the same seam the `classify`
+    /// command drives.
+    async fn classify_fixtures(
+        analyzer: &Analyzer,
+        fixtures: &[(&str, Vec<u8>)],
+    ) -> Result<Vec<DllClassification>> {
+        let dir = tempfile::tempdir().expect("temp target dir");
+        let mut names = Vec::new();
+        for (name, bytes) in fixtures {
+            std::fs::write(dir.path().join(name), bytes).expect("write fixture PE");
+            names.push(name.to_string());
+        }
+        analyzer.classify_dlls(&names, dir.path()).await
+    }
+
+    #[tokio::test]
+    async fn classify_dlls_detects_managed_pe_and_parks_it() {
+        let analyzer = test_analyzer();
+        let classifications =
+            classify_fixtures(&analyzer, &[("managed_app.dll", minimal_pe_bytes(true))])
+                .await
+                .expect("fixture PE classifies");
+        let c = &classifications[0];
+        assert_eq!(c.category, DllCategory::DotNetManaged);
+        assert_eq!(c.strategy, Strategy::DoNotTranslate);
+        assert!(
+            c.reason.contains("we do not yet decompile .NET programs"),
+            "the record documents the gap, got: {}",
+            c.reason
+        );
+        assert!(
+            !c.known_runtime,
+            "a parked managed assembly is not a runtime library — the flag stays false"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_pe_fact_outranks_the_name_tables() {
+        // fmod.dll heuristically reads as known third-party; a managed
+        // fmod.dll is still parked honestly (story 25).
+        let analyzer = test_analyzer();
+        let classifications =
+            classify_fixtures(&analyzer, &[("fmod.dll", minimal_pe_bytes(true))])
+                .await
+                .expect("fixture PE classifies");
+        assert_eq!(classifications[0].category, DllCategory::DotNetManaged);
+        assert_eq!(classifications[0].strategy, Strategy::DoNotTranslate);
+    }
+
+    #[tokio::test]
+    async fn native_pe_classifies_by_name_exactly_as_before() {
+        let analyzer = test_analyzer();
+        let classifications =
+            classify_fixtures(&analyzer, &[("game_logic.dll", minimal_pe_bytes(false))])
+                .await
+                .expect("fixture PE classifies");
+        let c = &classifications[0];
+        assert_eq!(c.category, DllCategory::ProjectSpecific);
+        assert_eq!(c.strategy, Strategy::ReverseEngineer);
+    }
+
+    #[tokio::test]
+    async fn operator_override_wins_over_managed_detection() {
+        // The escape hatch is real: overriding a managed-detected binary
+        // to a normal strategy routes it back to translation (story 21).
+        let analyzer = analyzer_with_override(
+            "managed_app.dll",
+            override_record(DllCategory::ProjectSpecific, None, false),
+        );
+        let classifications =
+            classify_fixtures(&analyzer, &[("managed_app.dll", minimal_pe_bytes(true))])
+                .await
+                .expect("fixture PE classifies");
+        let c = &classifications[0];
+        assert_eq!(c.category, DllCategory::ProjectSpecific);
+        assert_eq!(c.strategy, Strategy::ReverseEngineer);
+        assert!(c.reason.contains("operator override"));
+    }
+
+    #[tokio::test]
+    async fn corrupt_pe_fails_classification_exactly_as_today() {
+        // The .NET check rides the existing parse — it does not change
+        // what a corrupt binary does (story 26).
+        let analyzer = test_analyzer();
+        let result = classify_fixtures(&analyzer, &[("broken.dll", b"MZnot-a-real-pe".to_vec())])
+            .await;
+        assert!(result.is_err(), "a corrupt PE still fails classification");
     }
 }

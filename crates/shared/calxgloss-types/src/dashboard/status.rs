@@ -14,6 +14,8 @@ pub struct StatusCounts {
     pub patch_requested: usize,
     pub blocked: usize,
     pub skipped: usize,
+    #[serde(default)]
+    pub do_not_translate: usize,
 }
 
 impl StatusCounts {
@@ -27,6 +29,7 @@ impl StatusCounts {
             + self.patch_requested
             + self.blocked
             + self.skipped
+            + self.do_not_translate
     }
 
     /// The tally for one status. The single status→field mapping shared by
@@ -42,6 +45,7 @@ impl StatusCounts {
             ReviewStatus::PatchRequested => &mut self.patch_requested,
             ReviewStatus::Blocked => &mut self.blocked,
             ReviewStatus::Skipped => &mut self.skipped,
+            ReviewStatus::DoNotTranslate => &mut self.do_not_translate,
         }
     }
 }
@@ -50,7 +54,7 @@ impl std::fmt::Display for StatusCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "queued: {}, pending: {}, in_progress: {}, accepted: {}, send_back: {}, patch: {}, blocked: {}, skipped: {}",
+            "queued: {}, pending: {}, in_progress: {}, accepted: {}, send_back: {}, patch: {}, blocked: {}, skipped: {}, do_not_translate: {}",
             self.queued,
             self.pending_review,
             self.in_progress,
@@ -59,6 +63,7 @@ impl std::fmt::Display for StatusCounts {
             self.patch_requested,
             self.blocked,
             self.skipped,
+            self.do_not_translate,
         )
     }
 }

@@ -87,6 +87,7 @@ export function renderStatusCards(dashboard) {
         { cls: "sendback", label: "Send Back", value: counts.send_back },
         { cls: "blocked", label: "Blocked", value: counts.blocked },
         { cls: "skipped", label: "Skipped", value: counts.skipped },
+        { cls: "donottranslate", label: "Parked", value: counts.do_not_translate },
     ];
     const visible = cards.filter(c => c.value > 0);
 
@@ -427,9 +428,12 @@ export function renderQueueList(dashboard, selectedId = null) {
     const count = document.getElementById("queue-count");
     if (!list || !empty || !count) return;
 
-    // Skipped units (issue #75) are not part of the active queue the
-    // sidebar shows — they stay visible only in the full queue view.
-    const active = dashboard.review_queue.filter(u => !u.accepted && u.status !== "Skipped");
+    // Skipped units (issue #75) and parked do-not-translate units (issue
+    // #235) are not part of the active queue the sidebar shows — they stay
+    // visible only in the full queue view.
+    const active = dashboard.review_queue.filter(
+        u => !u.accepted && u.status !== "Skipped" && u.status !== "DoNotTranslate"
+    );
 
     count.textContent = active.length;
 

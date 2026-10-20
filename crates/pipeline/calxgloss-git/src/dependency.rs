@@ -211,11 +211,14 @@ impl DependencyChecker {
                 // If both shim_branch_name and crate_replacement are available,
                 // prefer the DLL-name lookup (it's more authoritative).
             }
-            // WindowsOs, ProjectSpecific, UnknownThirdParty, RuntimeLibrary — no shim deps
+            // WindowsOs, ProjectSpecific, UnknownThirdParty, RuntimeLibrary,
+            // DotNetManaged — no shim deps (a parked managed assembly needs
+            // no branch to translate on top of, issue #235)
             DllCategory::WindowsOs
             | DllCategory::ProjectSpecific
             | DllCategory::UnknownThirdParty
-            | DllCategory::RuntimeLibrary => {}
+            | DllCategory::RuntimeLibrary
+            | DllCategory::DotNetManaged => {}
         }
 
         DependencyCheckResult {

@@ -9,6 +9,8 @@ repository.workspace = true
 [dev-dependencies]
 chrono = { workspace = true }
 calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
+tempfile = "3"
+tokio = { workspace = true }
 
 [dependencies]
 calxgloss-callgraph = { path = "../calxgloss-callgraph" }

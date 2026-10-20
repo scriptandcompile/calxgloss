@@ -78,6 +78,7 @@ impl BinaryClassificationOverride {
             DllCategory::ProjectSpecific
             | DllCategory::UnknownThirdParty
             | DllCategory::RuntimeLibrary => "ReverseEngineer",
+            DllCategory::DotNetManaged => "DoNotTranslate",
         }
     }
 
@@ -316,6 +317,7 @@ mod tests {
         assert_eq!(label(DllCategory::ProjectSpecific), "ReverseEngineer");
         assert_eq!(label(DllCategory::UnknownThirdParty), "ReverseEngineer");
         assert_eq!(label(DllCategory::RuntimeLibrary), "ReverseEngineer");
+        assert_eq!(label(DllCategory::DotNetManaged), "DoNotTranslate");
     }
 
     #[test]

@@ -12,6 +12,11 @@ export const STATUS_COLORS = {
     patch_requested: "#fb923c",
     blocked: "#fb923c",
     skipped: "#9ca3af",
+    // Parked (.NET managed, issue #235) — dimmer than skipped: a system
+    // fact, not reviewer intent. The graph view looks statuses up by their
+    // snake_case key; the queue view by the raw serde variant name.
+    do_not_translate: "#6b7280",
+    DoNotTranslate: "#6b7280",
 };
 
 export const STATUS_LABELS = {
@@ -24,6 +29,10 @@ export const STATUS_LABELS = {
     patch_requested: "Patch Requested",
     blocked: "Blocked",
     skipped: "⊘ Skipped",
+    // The graph view looks statuses up by their snake_case key; the queue
+    // view by the raw serde variant name (issue #235).
+    do_not_translate: "⊗ Do Not Translate",
+    DoNotTranslate: "⊗ Do Not Translate",
 };
 
 export const KIND_LABELS = {
@@ -57,6 +66,7 @@ export const CATEGORY_LABELS = {
     ProjectSpecific: "Project Specific",
     UnknownThirdParty: "Unknown 3rd Party",
     RuntimeLibrary: "Runtime Library",
+    DotNetManaged: ".NET Managed",
 };
 
 /**

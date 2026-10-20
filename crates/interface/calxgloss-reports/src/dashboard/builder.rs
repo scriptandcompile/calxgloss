@@ -23,7 +23,7 @@ use calxgloss_types::DllCategory;
 use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewSkips, ReviewStatus, Staleness, UnitOfWork, WorkKind,
 };
-use calxgloss_types::{BinaryIdentity, work_kind_for_prefix};
+use calxgloss_types::{BinaryIdentity, ClassificationOverrides, classification_override_records_path, work_kind_for_prefix};
 use chrono::Utc;
 
 /// Parses a git branch name like `re/game_logic.dll/DrawSpritev1` or
@@ -131,6 +131,34 @@ impl<'a> DashboardBuilder<'a> {
         // 2c. Read the reviewer's skip set (issue #75)
         let skipped_keys = self.read_skips();
 
+        // 2d. Read the classification records and the operator's
+        // classification overrides, and fold them into the set of *parked*
+        // binaries — those whose in-force category is `DotNetManaged`
+        // (issue #235). The override layer wins over the record, matching
+        // the precedence every other consumer applies. A parked binary's
+        // units of work take the derived `DoNotTranslate` status; the
+        // record's reason rides along in `known_gaps` so the queue view
+        // can explain the parking.
+        let classified = self.read_classification_records();
+        let overrides = self.read_classification_overrides();
+        let parked: HashMap<String, Option<String>> = classified
+            .iter()
+            .filter_map(|c| {
+                let r#override = overrides.overrides.get(&c.binary);
+                let category = r#override
+                    .map(|o| o.category.clone())
+                    .or_else(|| c.category.clone())?;
+                if category != DllCategory::DotNetManaged {
+                    return None;
+                }
+                let reason = match r#override {
+                    Some(o) => Some(o.override_reason()),
+                    None => c.reason.clone(),
+                };
+                Some((c.binary.clone(), reason))
+            })
+            .collect();
+
         // 3. Read baseline data
         let baselines = self.read_all_baselines()?;
 
@@ -166,6 +194,16 @@ impl<'a> DashboardBuilder<'a> {
             // derived failing/pending states — unskipping restores them.
             unit.status = if merged {
                 ReviewStatus::Accepted
+            } else if let Some(reason) = parked.get(unit.binary.as_str()) {
+                // Parked (issue #235): the binary's in-force classification
+                // is DotNetManaged — a system fact that outranks reviewer
+                // skips and artifact-derived verdicts, and changes only
+                // when the record or an override changes. The documented
+                // reason rides in known_gaps for the queue view.
+                if let Some(reason) = reason {
+                    unit.known_gaps.push(reason.clone());
+                }
+                ReviewStatus::DoNotTranslate
             } else if skipped_keys.contains(key.as_str()) {
                 ReviewStatus::Skipped
             } else if sent_back {
@@ -181,11 +219,19 @@ impl<'a> DashboardBuilder<'a> {
             units_by_key.entry(unit.id.clone()).or_default().push(unit);
         }
 
-        // 5. Also check for classified DLLs not covered by translation branches
-        let classified = self.read_classification_records();
+        // 5. Also check for classified DLLs not covered by translation
+        // branches. A parked (.NET managed) binary's synthetic classify
+        // unit is *not* auto-accepted — it carries the derived
+        // do-not-translate status so the parking is visible (issue #235).
         for cls in &classified {
             let key = format!("classify/{}", cls.binary);
             if !seen_keys.contains_key(&key) {
+                let parked_unit = parked.contains_key(&cls.binary);
+                let known_gaps = parked
+                    .get(&cls.binary)
+                    .and_then(|reason| reason.clone())
+                    .map(|reason| vec![reason])
+                    .unwrap_or_default();
                 let unit = UnitOfWork {
                     id: key.clone(),
                     name: format!("Classify {}", cls.binary),
@@ -193,8 +239,12 @@ impl<'a> DashboardBuilder<'a> {
                     binary: cls.binary.clone().into(),
                     function: None,
                     attempt: 1,
-                    status: ReviewStatus::Accepted,
-                    accepted: true,
+                    status: if parked_unit {
+                        ReviewStatus::DoNotTranslate
+                    } else {
+                        ReviewStatus::Accepted
+                    },
+                    accepted: !parked_unit,
                     unit_confidence: Some(0.95),
                     baseline_tests_passed: None,
                     baseline_tests_total: None,
@@ -205,7 +255,7 @@ impl<'a> DashboardBuilder<'a> {
                     dependencies: vec![],
                     created_at: cls.classified_at,
                     updated_at: cls.classified_at,
-                    known_gaps: vec![],
+                    known_gaps,
                     stale: Staleness::Fresh,
                 };
                 units_by_key.entry(key).or_default().push(unit);
@@ -442,18 +492,32 @@ impl<'a> DashboardBuilder<'a> {
                         binary: dll_name,
                         category: p.category,
                         crate_replacement: p.crate_replacement,
+                        reason: p.reason,
                         classified_at,
                     },
                     None => ClassifiedDll {
                         binary: dll_name,
                         category: None,
                         crate_replacement: None,
+                        reason: None,
                         classified_at,
                     },
                 });
             }
         }
         dlls
+    }
+
+    /// Reads the operator's classification overrides from
+    /// `re/analysis/classification_overrides.json` (written by the web
+    /// classification endpoints). A missing or corrupt file degrades to an
+    /// empty map — no overrides, the records answer verbatim.
+    fn read_classification_overrides(&self) -> ClassificationOverrides {
+        let path = classification_override_records_path(&self.repo_path);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => ClassificationOverrides::default(),
+        }
     }
 
     fn is_branch_merged(&self, key: &str) -> bool {
@@ -743,16 +807,20 @@ struct ClassificationFile {
     category: Option<DllCategory>,
     #[serde(default)]
     crate_replacement: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// A DLL with a classification record on disk. `binary` is the record file name
 /// minus `.json` (the `classify` command keeps the `.dll` extension in it);
-/// the category and crate replacement drive the shim dependency edge.
+/// the category and crate replacement drive the shim dependency edge, and
+/// the reason explains a parked (`DotNetManaged`) classification.
 #[derive(Debug)]
 struct ClassifiedDll {
     binary: String,
     category: Option<DllCategory>,
     crate_replacement: Option<String>,
+    reason: Option<String>,
     /// When the record was written (its file mtime).
     classified_at: chrono::DateTime<chrono::Utc>,
 }
@@ -963,5 +1031,206 @@ mod tests {
             .chain(dashboard.recent_activity.iter())
             .find(|u| u.id == id)
             .unwrap_or_else(|| panic!("unit {id} present in dashboard"))
+    }
+
+    // ── .NET managed parking (issue #235) ──
+
+    /// Creates an unmerged translation branch: one commit on the branch so
+    /// it is genuinely ahead of `main` and the builder treats it as
+    /// unmerged work.
+    fn start_unmerged_branch(git: &GitManager, binary: &str, function: &str) {
+        let branch = git
+            .create_branch(binary, function, 1, None)
+            .expect("translation branch")
+            .branch;
+        let file = git
+            .repo_path()
+            .join("src")
+            .join(format!("{}_{}.rs", binary.replace('.', "_"), function));
+        std::fs::create_dir_all(file.parent().expect("src dir")).expect("src dir");
+        std::fs::write(&file, "// translated").expect("write source");
+        git.commit(&branch, &format!("re: translate {function}"), &[])
+            .expect("commit on branch");
+    }
+
+    /// Writes a `re/classify/{binary}.json` record with the given category
+    /// (variant name verbatim) and reason.
+    fn write_classification(git: &GitManager, binary: &str, category: &str, reason: &str) {
+        let dir = git.repo_path().join("re").join("classify");
+        std::fs::create_dir_all(&dir).expect("classify dir");
+        let record = serde_json::json!({ "category": category, "reason": reason });
+        std::fs::write(
+            dir.join(format!("{binary}.json")),
+            serde_json::to_string(&record).expect("serialize classification"),
+        )
+        .expect("write classification");
+    }
+
+    /// Writes a `re/analysis/classification_overrides.json` map steering
+    /// `binary` to the given category.
+    fn write_classification_override(git: &GitManager, binary: &str, category: &str) {
+        let dir = git.repo_path().join("re").join("analysis");
+        std::fs::create_dir_all(&dir).expect("analysis dir");
+        let overrides = serde_json::json!({
+            "overrides": {
+                binary: { "category": category, "crate_replacement": null, "known_runtime": false }
+            }
+        });
+        std::fs::write(
+            dir.join("classification_overrides.json"),
+            serde_json::to_string(&overrides).expect("serialize overrides"),
+        )
+        .expect("write overrides");
+    }
+
+    #[test]
+    fn parked_managed_units_park_with_reason_and_sort_after_skipped() {
+        // A DotNetManaged classification record parks the binary's units at
+        // the queue end with the record's reason in known_gaps; a skipped
+        // native unit still sorts before them (stories 5, 10, 12, 27).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        start_unmerged_branch(&git, "game_logic.dll", "DrawPrimitive");
+        start_unmerged_branch(&git, "managed_app.dll", "Main");
+        write_classification(
+            &git,
+            "managed_app.dll",
+            "DotNetManaged",
+            "we do not yet decompile .NET programs",
+        );
+        write_classification(&git, "game_logic.dll", "ProjectSpecific", "project binary");
+        write_skips(&git, &["game_logic.dll/DrawPrimitive/v1"]);
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        let parked = find_unit(&dashboard, "managed_app.dll/Main/v1");
+        assert_eq!(parked.status, ReviewStatus::DoNotTranslate);
+        assert!(
+            parked
+                .known_gaps
+                .iter()
+                .any(|g| g.contains("we do not yet decompile .NET programs")),
+            "the record's reason rides along for the queue view, got: {:?}",
+            parked.known_gaps
+        );
+
+        let skipped = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+        assert_eq!(skipped.status, ReviewStatus::Skipped);
+
+        // Both stay visible in the full queue view, parked units last.
+        let ids: Vec<&str> = dashboard.review_queue.iter().map(|u| u.id.as_str()).collect();
+        let skipped_at = ids
+            .iter()
+            .position(|id| *id == "game_logic.dll/DrawPrimitive/v1")
+            .expect("skipped unit in queue view");
+        let parked_at = ids
+            .iter()
+            .position(|id| *id == "managed_app.dll/Main/v1")
+            .expect("parked unit in queue view");
+        assert!(
+            parked_at > skipped_at,
+            "parked units sort after skipped, queue order: {ids:?}"
+        );
+
+        // The synthetic classify unit is parked too — not auto-accepted.
+        let classify = find_unit(&dashboard, "classify/managed_app.dll");
+        assert_eq!(classify.status, ReviewStatus::DoNotTranslate);
+        assert!(!classify.accepted, "a parked classification is not accepted");
+        assert_eq!(
+            find_unit(&dashboard, "classify/game_logic.dll").status,
+            ReviewStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn parked_units_are_exempt_from_the_auto_block_cascade() {
+        // A parked function unit depends on its parked classify unit — an
+        // unaccepted dependency the cascade would normally block; the
+        // derived status outranks it (story 13).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        start_unmerged_branch(&git, "managed_app.dll", "Main");
+        write_classification(
+            &git,
+            "managed_app.dll",
+            "DotNetManaged",
+            "we do not yet decompile .NET programs",
+        );
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        let unit = find_unit(&dashboard, "managed_app.dll/Main/v1");
+        assert!(
+            unit.dependencies.iter().any(|d| d == "classify/managed_app.dll"),
+            "the branch-model edge is wired, got: {:?}",
+            unit.dependencies
+        );
+        assert_eq!(unit.status, ReviewStatus::DoNotTranslate);
+    }
+
+    #[test]
+    fn parked_status_survives_rebuilds() {
+        // Parking comes from the durable record, not session state — a
+        // rebuild re-derives the same status (story 11).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        start_unmerged_branch(&git, "managed_app.dll", "Main");
+        write_classification(
+            &git,
+            "managed_app.dll",
+            "DotNetManaged",
+            "we do not yet decompile .NET programs",
+        );
+
+        for round in 1..=2 {
+            let dashboard = DashboardBuilder::new(&git)
+                .build()
+                .unwrap_or_else(|_| panic!("dashboard builds (round {round})"));
+            assert_eq!(
+                find_unit(&dashboard, "managed_app.dll/Main/v1").status,
+                ReviewStatus::DoNotTranslate,
+                "parking survives rebuild round {round}"
+            );
+        }
+    }
+
+    #[test]
+    fn override_away_from_managed_releases_the_units() {
+        // The escape hatch works at the dashboard layer too: an operator
+        // override away from DotNetManaged un-parks the units, and the
+        // parked reason no longer shows in known_gaps (stories 21, 22).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        start_unmerged_branch(&git, "managed_app.dll", "Main");
+        write_classification(
+            &git,
+            "managed_app.dll",
+            "DotNetManaged",
+            "we do not yet decompile .NET programs",
+        );
+        write_classification_override(&git, "managed_app.dll", "ProjectSpecific");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        let unit = find_unit(&dashboard, "managed_app.dll/Main/v1");
+        assert_eq!(unit.status, ReviewStatus::Queued);
+        assert!(
+            !unit
+                .known_gaps
+                .iter()
+                .any(|g| g.contains("we do not yet decompile")),
+            "the parked reason is gone once the override releases the binary, got: {:?}",
+            unit.known_gaps
+        );
     }
 }

@@ -49,20 +49,29 @@ export function renderFullQueue(dashboard, selectedId = null) {
 
         // Skip checkbox (issue #75): checked when the unit is skipped —
         // the builder reports that status, so the box reflects persisted
-        // state across reloads.
+        // state across reloads. A parked unit (issue #235) is not reviewer
+        // intent: its box is checked and disabled, and the parking reason
+        // (carried in known_gaps) explains it on hover.
         const isSkipped = u.status === "Skipped";
+        const isParked = u.status === "DoNotTranslate";
+        const parkNote = isParked
+            ? (u.known_gaps && u.known_gaps.length
+                ? u.known_gaps[0]
+                : "Parked — .NET managed binary") + " — set a classification override to release it"
+            : "";
 
         return `
             <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}" draggable="true">
                 <div class="queue-item-icon ${iconClass}"></div>
                 <input type="checkbox" class="qi-select" ${State.queueSelected.has(u.id) ? "checked" : ""}
                     title="Select for batch actions" aria-label="Select ${u.id} for batch actions">
-                <input type="checkbox" class="qi-skip-check" ${isSkipped ? "checked" : ""}
-                    title="${isSkipped ? "Unskip this unit" : "Skip this unit"}"
-                    aria-label="${isSkipped ? "Unskip" : "Skip"} ${u.id}">
+                <input type="checkbox" class="qi-skip-check" ${isSkipped || isParked ? "checked" : ""}
+                    ${isParked ? "disabled" : ""}
+                    title="${isParked ? escapeHtml(parkNote) : isSkipped ? "Unskip this unit" : "Skip this unit"}"
+                    aria-label="${isParked ? "Parked (do not translate)" : isSkipped ? "Unskip" : "Skip"} ${u.id}">
                 <div class="qi-name" title="${u.id}">${name}</div>
                 <div class="qi-priority prio-${priority}" title="Priority: ${priority.toUpperCase()} — click to change">${priority.toUpperCase()}</div>
-                <div class="qi-status ${iconClass}">${STATUS_LABELS[u.status] || u.status}</div>
+                <div class="qi-status ${iconClass}"${isParked ? ` title="${escapeHtml(parkNote)}"` : ""}>${STATUS_LABELS[u.status] || u.status}</div>
                 <div class="qi-attempt">v${u.attempt}</div>
                 <div class="qi-effort" title="Estimated time per attempt">${effortText}</div>
             </div>
@@ -87,6 +96,7 @@ function visibleQueueUnits(dashboard) {
             in_progress: "in_progress",
             blocked: "blocked",
             skipped: "skipped",
+            donottranslate: "donottranslate",
         };
         units = units.filter(u => u.status.toLowerCase().replace(/\s+/g, "_") === statusMap[filter]);
     }

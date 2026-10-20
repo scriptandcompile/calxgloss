@@ -152,6 +152,13 @@ pub enum ReviewStatus {
     /// it can be unskipped; the skip is a reviewer decision, not a pipeline
     /// verdict, so it survives rebuilds from the persisted skip record.
     Skipped,
+    /// The unit belongs to a binary classified `DoNotTranslate` — a .NET
+    /// managed assembly the pipeline cannot decompile (issue #235). Unlike
+    /// [`Skipped`](Self::Skipped) this is a pipeline verdict derived from the
+    /// classification record, not a reviewer choice: it cannot be unskipped,
+    /// is never overwritten by the auto-blocking cascade, and sorts after
+    /// every other status at the end of the queue view.
+    DoNotTranslate,
 }
 
 impl std::fmt::Display for ReviewStatus {
@@ -165,6 +172,7 @@ impl std::fmt::Display for ReviewStatus {
             ReviewStatus::PatchRequested => write!(f, "patch_requested"),
             ReviewStatus::Blocked => write!(f, "blocked"),
             ReviewStatus::Skipped => write!(f, "skipped"),
+            ReviewStatus::DoNotTranslate => write!(f, "do_not_translate"),
         }
     }
 }

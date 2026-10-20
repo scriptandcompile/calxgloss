@@ -605,6 +605,15 @@ pub async fn handle_auto(
         return Ok(());
     }
 
+    // Refuse parked (.NET managed) binaries before any translation engine
+    // load or LLM client (issue #235). Classification above has already
+    // recorded the fact; the guard reads the in-force decision — override,
+    // then the PE marker, then the record — for every binary about to be
+    // translated.
+    for binary in &classified {
+        guard_managed_binary(&workspace, binary, &target_dir.join(binary))?;
+    }
+
     if continue_mode {
         // W2.5: the operator's binary scope filters the queue before the
         // plan is published — an excluded binary never enters the queue,

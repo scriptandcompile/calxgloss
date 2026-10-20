@@ -39,6 +39,7 @@
     --status-sendback: var(--accent-red);
     --status-blocked: var(--accent-orange);
     --status-skipped: #9ca3af;
+    --status-donottranslate: #6b7280;
 
     --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
     --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -268,6 +269,7 @@ svg {
 .status-card.sendback .status-card-value { color: var(--status-sendback); }
 .status-card.blocked .status-card-value { color: var(--status-blocked); }
 .status-card.skipped .status-card-value { color: var(--status-skipped); }
+.status-card.donottranslate .status-card-value { color: var(--status-donottranslate); }
 
 /* ─── Dashboard summary sections (issue #66) ──────────────────────────── */
 .panel {
@@ -569,6 +571,7 @@ svg {
 .queue-item-icon.sendback { background: var(--status-sendback); }
 .queue-item-icon.accepted { background: var(--status-accepted); }
 .queue-item-icon.skipped { background: var(--status-skipped); }
+.queue-item-icon.donottranslate { background: var(--status-donottranslate); }
 
 .queue-item-info {
     flex: 1;
@@ -761,6 +764,7 @@ svg {
 .qi-status.sendback { background: var(--accent-red); color: var(--text-inverse); }
 .qi-status.accepted { background: var(--accent-green); color: var(--text-inverse); }
 .qi-status.skipped { background: var(--status-skipped); color: var(--text-inverse); }
+.qi-status.donottranslate { background: var(--status-donottranslate); color: var(--text-inverse); }
 
 /* Skip checkbox in full queue rows (issue #75) */
 .qi-skip-check {
@@ -1078,6 +1082,7 @@ svg {
 .detail-status-badge.sendback { background: var(--accent-red); color: var(--text-inverse); }
 .detail-status-badge.accepted { background: var(--accent-green); color: var(--text-inverse); }
 .detail-status-badge.skipped { background: var(--status-skipped); color: var(--text-inverse); }
+.detail-status-badge.donottranslate { background: var(--status-donottranslate); color: var(--text-inverse); }
 
 .detail-panel-body {
     flex: 1;

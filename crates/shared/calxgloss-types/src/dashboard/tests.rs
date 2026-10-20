@@ -166,6 +166,7 @@ fn review_status_display() {
     assert_eq!(ReviewStatus::PatchRequested.to_string(), "patch_requested");
     assert_eq!(ReviewStatus::Blocked.to_string(), "blocked");
     assert_eq!(ReviewStatus::Skipped.to_string(), "skipped");
+    assert_eq!(ReviewStatus::DoNotTranslate.to_string(), "do_not_translate");
 }
 
 #[test]
@@ -196,6 +197,7 @@ fn status_counts_display() {
         patch_requested: 0,
         blocked: 1,
         skipped: 2,
+        do_not_translate: 1,
     };
     let display = format!("{}", counts);
     assert!(display.contains("queued: 3"));
@@ -203,7 +205,8 @@ fn status_counts_display() {
     assert!(display.contains("in_progress: 0"));
     assert!(display.contains("accepted: 5"));
     assert!(display.contains("skipped: 2"));
-    assert_eq!(counts.total(), 14);
+    assert!(display.contains("do_not_translate: 1"));
+    assert_eq!(counts.total(), 15);
 }
 
 #[test]
@@ -217,6 +220,7 @@ fn status_counts_serialization() {
         patch_requested: 5,
         blocked: 6,
         skipped: 7,
+        do_not_translate: 8,
     };
     let json = serde_json::to_string(&counts).unwrap();
     let deserialized: StatusCounts = serde_json::from_str(&json).unwrap();
@@ -228,6 +232,7 @@ fn status_counts_serialization() {
     assert_eq!(deserialized.patch_requested, 5);
     assert_eq!(deserialized.blocked, 6);
     assert_eq!(deserialized.skipped, 7);
+    assert_eq!(deserialized.do_not_translate, 8);
 }
 
 #[test]
@@ -241,6 +246,7 @@ fn review_status_serialization() {
         ReviewStatus::PatchRequested,
         ReviewStatus::Blocked,
         ReviewStatus::Skipped,
+        ReviewStatus::DoNotTranslate,
     ];
     for status in &statuses {
         let json = serde_json::to_string(status).unwrap();
@@ -333,6 +339,77 @@ fn auto_block_preserves_skipped_units() {
         .expect("skipped unit stays in the review queue");
     assert_eq!(func_b.status, ReviewStatus::Skipped);
     assert_eq!(dashboard.status_counts.skipped, 1);
+    assert_eq!(dashboard.status_counts.blocked, 0);
+}
+
+#[test]
+fn do_not_translate_units_stay_visible_sorted_after_skipped_and_counted_apart() {
+    // Issue #235: parked units remain in the review queue (honest parking,
+    // not a silent drop), sort at the very end — after manually skipped
+    // work — and are tallied separately from the active counts.
+    let dashboard = ReviewDashboard::new(vec![
+        make_unit("func_dnt", ReviewStatus::DoNotTranslate, vec![]),
+        make_unit("func_skip", ReviewStatus::Skipped, vec![]),
+        make_unit("func_a", ReviewStatus::Queued, vec![]),
+    ]);
+
+    let ids: Vec<&str> = dashboard
+        .review_queue
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["func_a", "func_skip", "func_dnt"]);
+    assert_eq!(dashboard.status_counts.do_not_translate, 1);
+    assert_eq!(dashboard.status_counts.queued, 1);
+    assert_eq!(dashboard.status_counts.skipped, 1);
+}
+
+#[test]
+fn do_not_translate_units_leave_dependency_order_and_next_unit() {
+    // A parked unit is never served as next work and never appears in the
+    // dependency-ordered active section (issue #235).
+    let dashboard = ReviewDashboard::new(vec![
+        make_unit("func_dnt", ReviewStatus::DoNotTranslate, vec![]),
+        make_unit("func_a", ReviewStatus::Queued, vec![]),
+    ]);
+
+    let ordered: Vec<&str> = dashboard
+        .sorted_queue()
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(ordered, vec!["func_a"]);
+    assert_eq!(dashboard.next_in_dependency_order().unwrap().id, "func_a");
+    let pending: Vec<&str> = dashboard
+        .pending_in_dependency_order()
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(pending, vec!["func_a"]);
+}
+
+#[test]
+fn auto_block_preserves_do_not_translate_units() {
+    // A parked binary stays parked whatever its dependencies do — the
+    // cascade never overwrites the derived do-not-translate verdict.
+    let mut dashboard = ReviewDashboard::new(vec![
+        make_unit("dep", ReviewStatus::SendBack, vec![]),
+        make_unit(
+            "func_dnt",
+            ReviewStatus::DoNotTranslate,
+            vec!["dep".into()],
+        ),
+    ]);
+
+    dashboard.auto_block_units();
+
+    let parked = dashboard
+        .review_queue
+        .iter()
+        .find(|u| u.id == "func_dnt")
+        .expect("parked unit stays in the review queue");
+    assert_eq!(parked.status, ReviewStatus::DoNotTranslate);
+    assert_eq!(dashboard.status_counts.do_not_translate, 1);
     assert_eq!(dashboard.status_counts.blocked, 0);
 }
 

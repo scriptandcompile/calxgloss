@@ -12,21 +12,22 @@ use calxgloss_types::{DllCategory, TokenUsageLog, UnitOfWork};
 use super::super::types::{CategoryCount, QualitySummary, TokenUsageSummary};
 use super::process::{load_json_or_default, token_usage_log_path};
 
-/// The six [`DllCategory`] variants, in the order the dashboard displays
+/// The seven [`DllCategory`] variants, in the order the dashboard displays
 /// them.
-pub const CATEGORY_ORDER: [DllCategory; 6] = [
+pub const CATEGORY_ORDER: [DllCategory; 7] = [
     DllCategory::WindowsOs,
     DllCategory::MicrosoftSdk,
     DllCategory::KnownThirdParty,
     DllCategory::ProjectSpecific,
     DllCategory::UnknownThirdParty,
     DllCategory::RuntimeLibrary,
+    DllCategory::DotNetManaged,
 ];
 
 /// Counts the workspace's classified binaries per category.
 ///
 /// Reads every `re/classify/*.json` artifact and tallies its `category`
-/// field. All six categories are always present in the result (count 0
+/// field. All seven categories are always present in the result (count 0
 /// when nothing is classified into them) so the frontend can render a
 /// stable set of cards. Files with a missing, corrupt, or unrecognised
 /// category are skipped rather than guessed at.
@@ -182,13 +183,14 @@ mod tests {
     #[test]
     fn category_order_covers_every_dll_category() {
         // Keep CATEGORY_ORDER in sync with the enum's serde variant names.
-        const EXPECTED: [&str; 6] = [
+        const EXPECTED: [&str; 7] = [
             "WindowsOs",
             "MicrosoftSdk",
             "KnownThirdParty",
             "ProjectSpecific",
             "UnknownThirdParty",
             "RuntimeLibrary",
+            "DotNetManaged",
         ];
         let names: Vec<String> = CATEGORY_ORDER
             .iter()

@@ -40,6 +40,10 @@ pub async fn handle_batch_translate(
     let no_callgraph = *no_callgraph;
     let refresh_cache = *refresh_cache;
 
+    // A .NET managed binary is refused here, before the engine loads or the
+    // LLM is contacted — the same guard `translate` runs (issue #235).
+    guard_managed_binary(&workspace, binary, target)?;
+
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
     let context_window = settings.context_window.value;

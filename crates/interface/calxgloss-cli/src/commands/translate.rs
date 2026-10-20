@@ -41,6 +41,11 @@ pub async fn handle_translate(
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
 
+    // A .NET managed binary is refused here, before the engine loads or the
+    // LLM is contacted — the engine decompiles native code, and a managed
+    // assembly's IL is not in the disassembly the translator reads (#235).
+    guard_managed_binary(&workspace, binary, target)?;
+
     // Demanded here rather than at startup: `classify` and `verify` never talk
     // to the LLM, so making the endpoint mandatory for them would force users
     // to configure something they do not use.

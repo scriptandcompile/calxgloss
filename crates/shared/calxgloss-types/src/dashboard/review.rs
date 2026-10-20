@@ -56,11 +56,14 @@ impl ReviewDashboard {
             } else if is_pending
                 || unit.status == ReviewStatus::Queued
                 || unit.status == ReviewStatus::Skipped
+                || unit.status == ReviewStatus::DoNotTranslate
             {
                 // Skipped units stay in the queue (not the active section —
                 // `sorted_queue` and the counts treat them as inactive) so
                 // the queue view can render them and the reviewer can
-                // unskip them inline.
+                // unskip them inline. Do-not-translate units (issue #235)
+                // stay visible the same way — parked, not dropped — but
+                // sort after every other status (see the queue sort below).
                 queue.push(unit.clone());
             }
 
@@ -92,8 +95,22 @@ impl ReviewDashboard {
             }
         }
 
-        // Sort queue by dependency order (fewer deps first)
-        queue.sort_by_key(|a| a.dependencies.len());
+        // Sort queue by dependency order (fewer deps first). Parked units
+        // sort past every active one: manually skipped units first (the
+        // reviewer stepped aside), then do-not-translate units (issue #235)
+        // at the very end, so parked work never competes for attention in
+        // a direct queue rendering (the CLI dashboard, the web queue view's
+        // stable tail).
+        queue.sort_by_key(|a| {
+            (
+                match a.status {
+                    ReviewStatus::Skipped => 1,
+                    ReviewStatus::DoNotTranslate => 2,
+                    _ => 0,
+                },
+                a.dependencies.len(),
+            )
+        });
 
         // Stable graph order: the builder's input follows the filesystem, and
         // the web graph view re-runs its layered layout on every refresh —
@@ -308,6 +325,9 @@ impl ReviewDashboard {
             // units, not the failing units themselves. A reviewer's explicit
             // `Skipped` is likewise never overwritten — unskipping re-derives
             // the state from the artifacts, where the cascade applies again.
+            // A derived `DoNotTranslate` (issue #235) is a system fact about
+            // the binary, not reviewer intent: it outranks the cascade too,
+            // so a parked binary stays parked whatever its dependencies do.
             if matches!(
                 unit.status,
                 ReviewStatus::Blocked
@@ -315,6 +335,7 @@ impl ReviewDashboard {
                     | ReviewStatus::SendBack
                     | ReviewStatus::PatchRequested
                     | ReviewStatus::Skipped
+                    | ReviewStatus::DoNotTranslate
             ) {
                 continue;
             }
@@ -337,6 +358,7 @@ impl ReviewDashboard {
                     | ReviewStatus::SendBack
                     | ReviewStatus::PatchRequested
                     | ReviewStatus::Skipped
+                    | ReviewStatus::DoNotTranslate
             ) {
                 continue;
             }

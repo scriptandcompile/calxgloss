@@ -147,6 +147,14 @@ pub(crate) fn set_unit_skipped(
             "Unit {unit_id} is already accepted — skipping does not apply"
         )));
     }
+    if matches!(unit.status, ReviewStatus::DoNotTranslate) {
+        // A parked unit (issue #235) carries a system fact, not reviewer
+        // intent: skipping or unskipping it would be theater — the derived
+        // status re-applies on the next rebuild whatever the skip set says.
+        return Err(ServerError::Conflict(format!(
+            "Unit {unit_id} is parked as do-not-translate — that status is derived from the binary's classification, not reviewer intent; set a classification override to release it"
+        )));
+    }
 
     let mut skips = load_skips(state.repo_path());
     if skipped {
@@ -667,5 +675,38 @@ mod tests {
 
         let order = ids(&queue_order(&dashboard, &QueueOverlay::default()));
         assert_eq!(order, vec!["func_A"], "skipped unit leaves the queue order");
+    }
+
+    #[test]
+    fn queue_order_excludes_parked_units_from_the_active_section() {
+        // A parked (.NET managed, issue #235) unit stays in the dashboard's
+        // review queue (so the operator can see the parking and reach the
+        // override hatch) but leaves the active, dependency-ordered section
+        // /api/queue and /api/queue/next serve from — the same routing a
+        // skipped unit gets.
+        let dashboard = make_dashboard(
+            vec![
+                make_unit(
+                    "func_A",
+                    WorkKind::FunctionTranslation,
+                    ReviewStatus::Queued,
+                ),
+                make_unit(
+                    "func_B",
+                    WorkKind::FunctionTranslation,
+                    ReviewStatus::DoNotTranslate,
+                ),
+            ],
+            make_graph(
+                &[
+                    ("func_A", WorkKind::FunctionTranslation),
+                    ("func_B", WorkKind::FunctionTranslation),
+                ],
+                &[("func_B", "func_A")],
+            ),
+        );
+
+        let order = ids(&queue_order(&dashboard, &QueueOverlay::default()));
+        assert_eq!(order, vec!["func_A"], "parked unit leaves the queue order");
     }
 }

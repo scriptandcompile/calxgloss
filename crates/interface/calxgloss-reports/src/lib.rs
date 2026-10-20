@@ -420,6 +420,7 @@ pub fn print_classification_report(
             Strategy::PalMapping => green_bold,
             Strategy::CrateReplacement { .. } => yellow_bold,
             Strategy::ReverseEngineer => red_bold,
+            Strategy::DoNotTranslate => dim,
         };
 
         let strategy_text = match &classification.strategy {
@@ -428,6 +429,7 @@ pub fn print_classification_report(
                 format!("Crate Replacement ({})", crate_name)
             }
             Strategy::ReverseEngineer => "Reverse Engineer".to_string(),
+            Strategy::DoNotTranslate => "Do Not Translate".to_string(),
         };
 
         println!("  {}{}", white_bold("  DLL: "), classification.binary);
@@ -506,13 +508,18 @@ pub fn print_classification_report(
         .iter()
         .filter(|c| matches!(c.strategy, Strategy::ReverseEngineer))
         .count();
+    let parked_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::DoNotTranslate))
+        .count();
 
     println!(
-        "  {} Summary: {} PAL, {} crate replacement, {} reverse engineer",
+        "  {} Summary: {} PAL, {} crate replacement, {} reverse engineer, {} parked",
         bold(&dim("  Summary:")),
         green_bold(&pal_count.to_string()),
         yellow_bold(&crate_count.to_string()),
-        red_bold(&re_count.to_string())
+        red_bold(&re_count.to_string()),
+        dim(&parked_count.to_string())
     );
 }
 
@@ -525,6 +532,7 @@ fn format_category(category: &calxgloss_types::DllCategory) -> String {
         calxgloss_types::DllCategory::ProjectSpecific => "Project-Specific".to_string(),
         calxgloss_types::DllCategory::UnknownThirdParty => "Unknown Third-Party".to_string(),
         calxgloss_types::DllCategory::RuntimeLibrary => "Runtime Library".to_string(),
+        calxgloss_types::DllCategory::DotNetManaged => ".NET Managed".to_string(),
     }
 }
 
@@ -669,6 +677,10 @@ mod tests {
         assert_eq!(
             format_category(&calxgloss_types::DllCategory::RuntimeLibrary),
             "Runtime Library"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::DotNetManaged),
+            ".NET Managed"
         );
     }
 

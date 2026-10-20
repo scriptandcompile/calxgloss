@@ -50,7 +50,7 @@ Before a single function is translated, each DLL is classified, and the
 classification *is* the handling strategy:
 
 ```rust
-// crates/shared/calxgloss-types/src/dll.rs:L16-L41
+// crates/shared/calxgloss-types/src/dll.rs:L16-L50
 pub enum DllCategory {
     /// Core Windows OS DLLs (`kernel32.dll`, `user32.dll`, etc.).
     /// Strategy: PAL mapping to std / winit / etc.
@@ -76,12 +76,22 @@ pub enum DllCategory {
     /// `SDL2.dll`). These are not target binaries — their functions should be
     /// skipped during translation.
     RuntimeLibrary,
+
+    /// .NET (managed) assemblies — PE files carrying a COM descriptor
+    /// (data directory 14). They are not native machine code, so the
+    /// disassembly pipeline has nothing to translate; we do not yet
+    /// decompile managed code. Strategy: `DoNotTranslate` (issue #235).
+    /// Distinct from [`Self::RuntimeLibrary`]: the `known_runtime` flag
+    /// stays false for managed assemblies — it names runtime libraries,
+    /// not every binary that is out of translation scope.
+    DotNetManaged,
 }
 ```
 
-One enum, three strategies: *map the API* (WindowsOs → PAL), *replace the
-crate* (Sdk/ThirdParty → shim layer), or *reverse engineer function by
-function* (ProjectSpecific/Unknown). `RuntimeLibrary` is a veto. Because every
+One enum, four strategies: *map the API* (WindowsOs → PAL), *replace the
+crate* (Sdk/ThirdParty → shim layer), *reverse engineer function by
+function* (ProjectSpecific/Unknown), or *park the binary* (DotNetManaged →
+Do Not Translate, see ADR-0044). `RuntimeLibrary` is a veto. Because every
 statistic, fault log, and shim suggestion groups by category, a wrong
 classification silently skews every downstream report — this is the single
 most consequential decision the system makes.

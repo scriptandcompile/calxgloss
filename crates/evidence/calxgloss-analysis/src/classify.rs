@@ -361,6 +361,41 @@ pub fn classification_reason(dll_name: &str, category: &DllCategory) -> String {
         DllCategory::ProjectSpecific => {
             format!("'{dll_name}' matched no known table — assumed project code")
         }
+        DllCategory::DotNetManaged => {
+            format!(
+                "'{dll_name}' is a .NET managed assembly (PE COM descriptor) — \
+                 we do not yet decompile .NET programs"
+            )
+        }
+    }
+}
+
+/// Whether a parsed PE is a .NET managed assembly: its COM descriptor data
+/// directory (data directory #14) is non-empty — the marker every managed
+/// PE carries, and the one every PE tool uses for the "managed" verdict
+/// (issue #235). goblin maps an all-zero directory to `None`, so a `Some`
+/// here means the directory is present and non-empty. Imports of
+/// `mscoree.dll` / `clr.dll` / `coreclr.dll` corroborate the verdict but
+/// are not required for it.
+pub fn pe_is_managed(pe: &goblin::pe::PE) -> bool {
+    pe.header
+        .optional_header
+        .as_ref()
+        .and_then(|oh| oh.data_directories.get_clr_runtime_header())
+        .is_some()
+}
+
+/// The same managed marker, read straight from a file: parse the PE and
+/// check the COM descriptor directory. A file that cannot be read or does
+/// not parse as a PE reports `false` — the caller's normal path surfaces
+/// that error; the managed check never invents a failure (issue #235).
+pub fn file_is_managed_pe(path: &std::path::Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    match goblin::pe::PE::parse(&bytes) {
+        Ok(pe) => pe_is_managed(&pe),
+        Err(_) => false,
     }
 }
 

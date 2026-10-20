@@ -38,6 +38,15 @@ pub enum DllCategory {
     /// `SDL2.dll`). These are not target binaries — their functions should be
     /// skipped during translation.
     RuntimeLibrary,
+
+    /// .NET (managed) assemblies — PE files carrying a COM descriptor
+    /// (data directory 14). They are not native machine code, so the
+    /// disassembly pipeline has nothing to translate; we do not yet
+    /// decompile managed code. Strategy: `DoNotTranslate` (issue #235).
+    /// Distinct from [`Self::RuntimeLibrary`]: the `known_runtime` flag
+    /// stays false for managed assemblies — it names runtime libraries,
+    /// not every binary that is out of translation scope.
+    DotNetManaged,
 }
 
 /// An exported symbol from a DLL.

@@ -61,6 +61,93 @@ pub(super) fn resolve_live_workspace(cli_workspace: Option<&PathBuf>) -> PathBuf
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"))
 }
 
+/// Refuse to translate a .NET managed binary at the CLI seam (issue #235).
+///
+/// The pipeline translates native disassembly; a managed assembly's IL is
+/// not in it, so translating one burns LLM tokens on a program the engine
+/// cannot meaningfully decompile. The refusal follows the same precedence
+/// as classification itself: the operator's override wins, then the
+/// managed-PE fact (the COM descriptor data directory), then the persisted
+/// classification record. A binary whose in-force decision parks it gets a
+/// refusal naming the gap, the detected signal, and the override escape
+/// hatch; anything else passes — including a file that cannot be read or
+/// parsed, which the normal flow reports as its own error.
+///
+/// Call it at the command entry points, before the engine loads or the LLM
+/// client is constructed, so a parked target never touches either.
+pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path) -> Result<()> {
+    use calxgloss::DllCategory;
+
+    // The operator's word outranks the PE fact (ADR 0003): an override
+    // away from DotNetManaged makes the binary fully translatable again.
+    let overrides = calxgloss::ClassificationOverrideControl::open(workspace);
+    if let Some(o) = overrides.get(binary) {
+        if o.category != DllCategory::DotNetManaged {
+            return Ok(());
+        }
+        return Err(anyhow::anyhow!(parked_refusal(
+            binary,
+            "the classification override sets its category to DotNetManaged"
+        )));
+    }
+
+    // The persisted record from a previous classify run.
+    if recorded_category(workspace, binary).as_ref() == Some(&DllCategory::DotNetManaged) {
+        return Err(anyhow::anyhow!(parked_refusal(
+            binary,
+            "its classification record says DotNetManaged"
+        )));
+    }
+
+    // The PE fact itself — the same COM-descriptor check the classifier
+    // performs, run here so a never-classified managed binary is refused
+    // before the engine loads. It outranks a stale name-heuristic record.
+    if calxgloss_analysis::file_is_managed_pe(target) {
+        return Err(anyhow::anyhow!(parked_refusal(
+            binary,
+            "the file carries a COM descriptor data directory — the marker every managed PE has"
+        )));
+    }
+
+    Ok(())
+}
+
+/// The refusal text every parked-target guard gives: the gap, the signal,
+/// and the hatch (issue #235, stories 18–20).
+fn parked_refusal(binary: &str, signal: &str) -> String {
+    format!(
+        "{binary} is a .NET managed assembly ({signal}) — we do not yet decompile .NET \
+         programs, so there is no native disassembly to translate. If this is a false \
+         positive, set a classification override away from DotNetManaged (from the \
+         dashboard's classification panel, or re/analysis/classification_overrides.json) \
+         to make {binary} translatable again."
+    )
+}
+
+/// The category persisted in a binary's classification record
+/// (`re/classify/{sanitized}.json`), if the record exists and names one.
+fn recorded_category(workspace: &Path, binary: &str) -> Option<calxgloss::DllCategory> {
+    let sanitized: String = binary
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' => '_',
+            other => other,
+        })
+        .collect();
+    let path = workspace
+        .join("re")
+        .join("classify")
+        .join(format!("{sanitized}.json"));
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|record| {
+            record
+                .get("category")
+                .and_then(|c| serde_json::from_value(c.clone()).ok())
+        })
+}
+
 /// Parse a retry strategy string into a [`RetryStrategy`].
 pub(super) fn parse_retry_strategy(s: &str) -> Result<RetryStrategy> {
     Ok(match s {
@@ -433,5 +520,152 @@ pub(super) fn parse_branch_for_accept(branch: &str) -> (String, String, u32) {
             parts.attempt.unwrap_or(1),
         ),
         None => (String::new(), String::new(), 1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal PE32+ image, byte-assembled — the same fixture shape the
+    /// analyzer's classification tests use: `managed` carries the full
+    /// COM-descriptor chain goblin walks (directory #14 → section → COR20
+    /// header → `BSJB` metadata root); a native one leaves every data
+    /// directory zero.
+    fn fixture_pe(managed: bool) -> Vec<u8> {
+        let mut pe = vec![0u8; 0x400];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes()); // e_lfanew
+        pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let coff = 0x44;
+        pe[coff..coff + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // AMD64
+        pe[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes()); // one section
+        pe[coff + 16..coff + 18].copy_from_slice(&240u16.to_le_bytes()); // opt header size
+        pe[coff + 18..coff + 20].copy_from_slice(&0x2002u16.to_le_bytes()); // DLL, executable
+        let opt = coff + 20;
+        pe[opt..opt + 2].copy_from_slice(&0x20Bu16.to_le_bytes()); // PE32+ magic
+        pe[opt + 32..opt + 36].copy_from_slice(&0x1000u32.to_le_bytes()); // section alignment
+        pe[opt + 36..opt + 40].copy_from_slice(&0x200u32.to_le_bytes()); // file alignment
+        pe[opt + 56..opt + 60].copy_from_slice(&0x1200u32.to_le_bytes()); // size of image
+        pe[opt + 60..opt + 64].copy_from_slice(&0x200u32.to_le_bytes()); // size of headers
+        pe[opt + 68..opt + 70].copy_from_slice(&3u16.to_le_bytes()); // subsystem: console
+        pe[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes()); // data directory count
+        let sec = opt + 240;
+        pe[sec..sec + 5].copy_from_slice(b".text");
+        pe[sec + 8..sec + 12].copy_from_slice(&0x100u32.to_le_bytes()); // virtual size
+        pe[sec + 12..sec + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // virtual address
+        pe[sec + 16..sec + 20].copy_from_slice(&0x100u32.to_le_bytes()); // raw data size
+        pe[sec + 20..sec + 24].copy_from_slice(&0x300u32.to_le_bytes()); // raw data pointer
+        pe[sec + 36..sec + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes()); // characteristics
+        if managed {
+            let dd14 = opt + 112 + 14 * 8;
+            pe[dd14..dd14 + 4].copy_from_slice(&0x1000u32.to_le_bytes()); // COM descriptor RVA
+            pe[dd14 + 4..dd14 + 8].copy_from_slice(&0x48u32.to_le_bytes()); // and size
+            pe[0x300..0x304].copy_from_slice(&0x48u32.to_le_bytes()); // COR20 header size
+            pe[0x304..0x306].copy_from_slice(&2u16.to_le_bytes()); // major runtime version
+            pe[0x306..0x308].copy_from_slice(&5u16.to_le_bytes()); // minor runtime version
+            pe[0x308..0x30C].copy_from_slice(&0x1048u32.to_le_bytes()); // metadata RVA
+            pe[0x30C..0x310].copy_from_slice(&0x40u32.to_le_bytes()); // metadata size
+            pe[0x348..0x34C].copy_from_slice(b"BSJB");
+            pe[0x34C..0x350].copy_from_slice(&1u32.to_le_bytes()); // major=1, minor=0
+            pe[0x354..0x358].copy_from_slice(&4u32.to_le_bytes()); // version string length
+            pe[0x358..0x35C].copy_from_slice(b"v4.0");
+        }
+        pe
+    }
+
+    /// A workspace with the fixture PEs laid down in a `target` dir.
+    fn fixture_workspace(fixtures: &[(&str, bool)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).expect("target dir");
+        for (name, managed) in fixtures {
+            std::fs::write(target.join(name), fixture_pe(*managed)).expect("write fixture PE");
+        }
+        dir
+    }
+
+    #[test]
+    fn guard_refuses_managed_pe_naming_gap_signal_and_override() {
+        // Stories 17–20: the refusal is a non-zero error whose message
+        // states the gap, names the detected signal, and points at the
+        // classification-override hatch.
+        let dir = fixture_workspace(&[("managed_app.dll", true)]);
+        let target = dir.path().join("target").join("managed_app.dll");
+
+        let refusal = guard_managed_binary(dir.path(), "managed_app.dll", &target)
+            .expect_err("a managed PE is refused");
+        let message = refusal.to_string();
+        assert!(
+            message.contains("we do not yet decompile .NET programs"),
+            "the message states the gap, got: {message}"
+        );
+        assert!(
+            message.contains("COM descriptor"),
+            "the message names the signal, got: {message}"
+        );
+        assert!(
+            message.contains("classification override") && message.contains("DotNetManaged"),
+            "the message points at the override hatch, got: {message}"
+        );
+    }
+
+    #[test]
+    fn guard_passes_native_pe_exactly_as_before() {
+        // Story 24: native targets are untouched by the guard.
+        let dir = fixture_workspace(&[("game_logic.dll", false)]);
+        let target = dir.path().join("target").join("game_logic.dll");
+        guard_managed_binary(dir.path(), "game_logic.dll", &target)
+            .expect("a native PE passes the guard");
+    }
+
+    #[test]
+    fn guard_override_away_from_managed_releases_the_binary() {
+        // Stories 21–22: the escape hatch is real — an operator override
+        // away from DotNetManaged makes the binary fully translatable.
+        let dir = fixture_workspace(&[("managed_app.dll", true)]);
+        let analysis = dir.path().join("re").join("analysis");
+        std::fs::create_dir_all(&analysis).expect("analysis dir");
+        std::fs::write(
+            analysis.join("classification_overrides.json"),
+            r#"{"overrides":{"managed_app.dll":{"category":"ProjectSpecific","crate_replacement":null,"known_runtime":false}}}"#,
+        )
+        .expect("write overrides");
+        let target = dir.path().join("target").join("managed_app.dll");
+
+        guard_managed_binary(dir.path(), "managed_app.dll", &target)
+            .expect("an overridden-away binary passes the guard");
+    }
+
+    #[test]
+    fn guard_honors_a_parked_classification_record() {
+        // The record is the durable fact: a binary classified
+        // DotNetManaged is refused even before the PE is consulted.
+        let dir = fixture_workspace(&[("managed_app.dll", true)]);
+        let classify = dir.path().join("re").join("classify");
+        std::fs::create_dir_all(&classify).expect("classify dir");
+        std::fs::write(
+            classify.join("managed_app.dll.json"),
+            r#"{"binary":"managed_app.dll","category":"DotNetManaged","strategy":"DoNotTranslate","known_runtime":false,"reason":"we do not yet decompile .NET programs"}"#,
+        )
+        .expect("write record");
+        let target = dir.path().join("target").join("managed_app.dll");
+
+        let refusal = guard_managed_binary(dir.path(), "managed_app.dll", &target)
+            .expect_err("a parked record refuses");
+        assert!(
+            refusal.to_string().contains("classification record"),
+            "the refusal names the record, got: {refusal}"
+        );
+    }
+
+    #[test]
+    fn guard_passes_unreadable_file_for_the_normal_flow_to_report() {
+        // Story 26: the guard does not change what a corrupt or missing
+        // file does — it passes, and the engine load surfaces the error.
+        let dir = fixture_workspace(&[]);
+        let target = dir.path().join("target").join("broken.dll");
+        guard_managed_binary(dir.path(), "broken.dll", &target)
+            .expect("an unreadable file passes the guard");
     }
 }
