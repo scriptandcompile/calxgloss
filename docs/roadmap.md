@@ -32,7 +32,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
-| P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/implement` from #266 (frontier: #266; #262–#265 done, #266–#267 all open) | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
+| P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ✅ done | — | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
 | P15 | SEH and cleanup-on-failure idiom detection — name each function's error-handling idiom (SEH frame, RaiseException, goto-cleanup ladder) and the failure codes baseline tests must preserve | evidence (`calxgloss-errhandling` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #230 | [#230](https://github.com/scriptandcompile/calxgloss/issues/230) |
 | P16 | Data-table recovery — reconstruct read-only constant data tables (game stats, opcode tables) as named Rust const arrays instead of scattered `DAT_*` reads | evidence (`calxgloss-consts`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #231 | [#231](https://github.com/scriptandcompile/calxgloss/issues/231) |
@@ -93,7 +93,9 @@ corrupt document degrades to today's behavior exactly. The prompt gains a
 findings section naming the target function's matched *callees* (the
 hint-loader pattern, joined against call-graph neighbors) so the translator
 maps those calls to Rust equivalents instead of re-implementing them.
-Spec: #227. Tickets: #262–#267 (`/implement`).
+Spec: #227. Tickets: #262–#267 (`/implement`) — all landed (`c5b2a2a`…`bee6fb3`,
+recorded in the changelog); the spec's open thread is its own suggested ADR for
+body-shape-as-evidence and the Skip confidence floor.
 
 ## P12.7 — Parameter direction analysis (evidence + integrations + pipeline + interface)
 
