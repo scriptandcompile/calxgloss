@@ -1,14 +1,14 @@
 //! Control-flow scan orchestration.
 //!
-//! [`ControlFlowEngine`] runs the five detectors — switch-shaped
+//! [`ControlFlowEngine`] runs the six detectors — switch-shaped
 //! if/else-if chains, self-recursion, state machines, loop
-//! structure, and branch density — over every function of one loaded program and
+//! structure, branch density, and the branch inventory — over every function of one loaded program and
 //! assembles their findings
 //! into a single [`ControlFlowResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
-//! it with all five, rather than having each detector pull its own
+//! it with all six, rather than having each detector pull its own
 //! copy. The scan is then one sequential pass over the function
 //! listing: like sync's disjoint families there is nothing to resolve
 //! between the detectors, and keeping the pass sequential keeps the
@@ -22,6 +22,7 @@
 //! the skip-rate breaker survive untouched.
 
 use crate::branch_density::BranchDensityDetector;
+use crate::branch_inventory::BranchInventoryDetector;
 use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
 use crate::loop_detect::LoopDetector;
@@ -44,7 +45,7 @@ use tracing::{info, warn};
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
-/// Orchestrates the five detectors into one [`ControlFlowResult`].
+/// Orchestrates the six detectors into one [`ControlFlowResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
@@ -52,7 +53,8 @@ pub use calxgloss_decomp::ScanSource;
 /// starts configured with its standard thresholds and name set —
 /// [`with_switch`](Self::with_switch), [`with_recursion`](Self::with_recursion),
 /// [`with_state_machine`](Self::with_state_machine), [`with_loop`](Self::with_loop),
-/// and [`with_branch_density`](Self::with_branch_density) swap a detector
+/// [`with_branch_density`](Self::with_branch_density),
+/// and [`with_branch_inventory`](Self::with_branch_inventory) swap a detector
 /// whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct ControlFlowEngine<S = KunaSource> {
@@ -62,11 +64,12 @@ pub struct ControlFlowEngine<S = KunaSource> {
     state_machine: StateMachineDetector,
     loops: LoopDetector,
     branch_density: BranchDensityDetector,
+    branch_inventory: BranchInventoryDetector,
     cross_function: CrossFunctionAnalyzer,
 }
 
 impl ControlFlowEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the five
+    /// An engine over a loaded Kuna program, scanning with the six
     /// detectors' standard thresholds and name set.
     pub fn new(source: &KunaSource) -> ControlFlowEngine<KunaSource> {
         ControlFlowEngine {
@@ -76,6 +79,7 @@ impl ControlFlowEngine<KunaSource> {
             state_machine: StateMachineDetector::default(),
             loops: LoopDetector::default(),
             branch_density: BranchDensityDetector::default(),
+            branch_inventory: BranchInventoryDetector::default(),
             cross_function: CrossFunctionAnalyzer::new(),
         }
     }
@@ -83,7 +87,7 @@ impl ControlFlowEngine<KunaSource> {
 
 impl<S> ControlFlowEngine<S> {
     /// An engine whose decompiles come from `source`, scanning with
-    /// the five detectors' standard thresholds and name set.
+    /// the six detectors' standard thresholds and name set.
     pub fn with_source(source: S) -> Self {
         ControlFlowEngine {
             source,
@@ -92,6 +96,7 @@ impl<S> ControlFlowEngine<S> {
             state_machine: StateMachineDetector::default(),
             loops: LoopDetector::default(),
             branch_density: BranchDensityDetector::default(),
+            branch_inventory: BranchInventoryDetector::default(),
             cross_function: CrossFunctionAnalyzer::new(),
         }
     }
@@ -131,15 +136,22 @@ impl<S> ControlFlowEngine<S> {
         self
     }
 
+    /// Read the branch inventory against `detector`'s confidence floor
+    /// instead of the standard one.
+    pub fn with_branch_inventory(mut self, detector: BranchInventoryDetector) -> Self {
+        self.branch_inventory = detector;
+        self
+    }
+
     /// Detect control-flow patterns across `binary`, decompiling each
-    /// function exactly once and reading it with all five detectors.
+    /// function exactly once and reading it with all six detectors.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — function by function, and
     /// within one function the switch chains, then the recursion, then
     /// the state machines, then the loop reading, then the branch
-    /// density — and after every function the cross-function
+    /// density, then the branch inventory — and after every function the cross-function
     /// mutual-recursion cycles, in listing order of their earliest
     /// member; two scans of the same program diff cleanly.
     ///
@@ -234,6 +246,12 @@ impl<S> ControlFlowEngine<S> {
                     .into_iter()
                     .map(ControlFlowFinding::BranchDensity),
             );
+            findings.extend(
+                self.branch_inventory
+                    .detect(&function.name, body)
+                    .into_iter()
+                    .map(ControlFlowFinding::BranchSite),
+            );
             kept.push(decompiled);
         }
 
@@ -266,7 +284,7 @@ impl<S> ControlFlowEngine<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BranchClassification, LoopKind};
+    use crate::types::{BranchClassification, GuardedTarget, LoopKind};
     use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -484,14 +502,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scan_collects_findings_from_all_five_detectors() {
+    async fn scan_collects_findings_from_all_six_detectors() {
         let result = scan(program()).await;
 
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 5);
+        assert_eq!(findings.len(), 6);
 
         let ControlFlowFinding::Switch(record) = findings[0] else {
             unreachable!("the if/else-if chain reads as a switch finding");
@@ -535,6 +553,18 @@ mod tests {
         assert_eq!(record.block_count, 8);
         assert_eq!(record.classification, BranchClassification::DispatchTable);
         assert_eq!(u8::from(record.confidence), 60);
+
+        let ControlFlowFinding::BranchSite(record) = findings[5] else {
+            unreachable!("the loop header inside the first arm reads as a branch site");
+        };
+        // The chain's plain arms guard nothing in the inventory's
+        // vocabulary — only the loop header names a site.
+        assert_eq!(record.condition, "local_9 < 3");
+        assert_eq!(record.params, ["local_9"]);
+        assert_eq!(record.operator.as_deref(), Some("<"));
+        assert_eq!(record.immediate.as_deref(), Some("3"));
+        assert_eq!(record.guards, GuardedTarget::LoopExit);
+        assert_eq!(u8::from(record.confidence), 80);
     }
 
     #[tokio::test]
@@ -542,7 +572,8 @@ mod tests {
         // Both functions carry every shape and call each other, so the
         // persisted list must group their findings by function in
         // listing order — and within one function run switch,
-        // recursion, state machine, loop, then branch density — never
+        // recursion, state machine, loop, branch density, then the
+        // branch inventory — never
         // interleaved, with the cross-function mutual-recursion cycle
         // appended after every per-function finding.
         let mut program = program();
@@ -578,11 +609,13 @@ mod tests {
                 ("FUN_18003e750", "state_machine"),
                 ("FUN_18003e750", "loop"),
                 ("FUN_18003e750", "branch_density"),
+                ("FUN_18003e750", "branch_site"),
                 ("FUN_18003ab00", "switch"),
                 ("FUN_18003ab00", "recursion"),
                 ("FUN_18003ab00", "state_machine"),
                 ("FUN_18003ab00", "loop"),
                 ("FUN_18003ab00", "branch_density"),
+                ("FUN_18003ab00", "branch_site"),
                 ("FUN_18003e750", "mutual_recursion"),
             ]
         );
@@ -772,8 +805,8 @@ mod tests {
 
     #[tokio::test]
     async fn scan_decompiles_each_function_exactly_once() {
-        // The five detectors share one fetch per function; a scan
-        // that asked each detector for its own copy would quintuple
+        // The six detectors share one fetch per function; a scan
+        // that asked each detector for its own copy would sextuple
         // the wall time.
         let program = program();
         let result = scan(program.clone()).await;
@@ -948,7 +981,7 @@ mod tests {
         );
 
         let result = scan(program.clone()).await;
-        assert_eq!(kinds(&result, "FUN_1800412a0"), ["loop"]);
+        assert_eq!(kinds(&result, "FUN_1800412a0"), ["loop", "branch_site"]);
         let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_1800412a0").collect();
         let ControlFlowFinding::Loop(record) = findings[0] else {
             unreachable!("the spelled-out while header reads as a loop finding");
@@ -961,9 +994,11 @@ mod tests {
             .scan("eqmain.dll")
             .await
             .expect("scan");
-        assert!(
-            result.is_empty(),
-            "the raised threshold skips the single-loop body"
+        assert_eq!(
+            kinds(&result, "FUN_1800412a0"),
+            ["branch_site"],
+            "the raised loop threshold skips the loop finding, but the \
+             branch inventory still names the loop exit",
         );
     }
 
@@ -1028,6 +1063,89 @@ mod tests {
             unreachable!("the raised threshold still classifies the body");
         };
         assert_eq!(record.classification, BranchClassification::SequentialScan);
+    }
+
+    #[tokio::test]
+    async fn a_configured_branch_inventory_detector_reaches_the_scan() {
+        // Swapping the branch-inventory detector whole reaches the
+        // scan too: the default inventories every readable site of a
+        // body carrying guards, a loop, and a switch — one record per
+        // site, asserted at the engine seam over the fake scan source —
+        // and a raised confidence floor keeps only the exact readings.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_1800412a0")];
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(int param_1)",
+                "\
+  if (param_1 == 0) {
+    return;
+  }
+  if (param_1 < 0) {
+    return 0xffffffff;
+  }
+  while (param_1 < 10) {
+    param_1 = param_1 + 1;
+  }
+  switch (param_1) {
+    case 1:
+      a();
+      break;
+    case 2:
+      b();
+      break;
+    default:
+      c();
+  }",
+            ),
+        );
+
+        let result = scan(program.clone()).await;
+        let sites: Vec<&crate::types::BranchSite> = result
+            .for_function("FUN_1800412a0")
+            .filter_map(|finding| match finding {
+                ControlFlowFinding::BranchSite(record) => Some(record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sites.len(), 6, "one record per branch site");
+        let guards: Vec<GuardedTarget> = sites.iter().map(|site| site.guards).collect();
+        assert_eq!(
+            guards,
+            vec![
+                GuardedTarget::EarlyReturn,
+                GuardedTarget::ErrorPath,
+                GuardedTarget::LoopExit,
+                GuardedTarget::SwitchArm,
+                GuardedTarget::SwitchArm,
+                GuardedTarget::ElseArm,
+            ]
+        );
+        assert_eq!(sites[0].condition, "param_1 == 0");
+        assert_eq!(sites[0].operator.as_deref(), Some("=="));
+        assert_eq!(sites[0].immediate.as_deref(), Some("0"));
+        assert_eq!(sites[2].condition, "param_1 < 10");
+        assert_eq!(sites[3].immediate.as_deref(), Some("1"));
+
+        let result = ControlFlowEngine::with_source(program)
+            .with_branch_inventory(BranchInventoryDetector::default().with_min_confidence(80))
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let sites: Vec<&crate::types::BranchSite> = result
+            .for_function("FUN_1800412a0")
+            .filter_map(|finding| match finding {
+                ControlFlowFinding::BranchSite(record) => Some(record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sites.len(),
+            5,
+            "the raised floor drops the shape-only default arm",
+        );
     }
 
     #[tokio::test]

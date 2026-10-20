@@ -226,12 +226,12 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
-    // The five detectors read one body in one pass and the
+    // The six detectors read one body in one pass and the
     // cross-function pass reads the kept bodies after the walk, so
     // what reaches disk is function by function in listing order and,
     // within one function, the switch chains, then the recursion,
     // then the state machines, then the loop reading, then the branch
-    // density — and only then the mutual-recursion cycle, attached to
+    // density, then the branch inventory — and only then the mutual-recursion cycle, attached to
     // the cycle's earliest member — the order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = ControlFlowEngine::with_source(program())
@@ -254,6 +254,8 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_18003ab00", "recursion"),
             ("FUN_18003ab00", "loop"),
             ("FUN_18003ab00", "branch_density"),
+            ("FUN_18003ab00", "branch_site"),
+            ("FUN_18003ab00", "branch_site"),
             ("FUN_1800412a0", "switch"),
             ("FUN_1800412a0", "state_machine"),
             ("FUN_1800412a0", "branch_density"),
@@ -281,7 +283,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&ControlFlowFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 5);
+    assert_eq!(findings.len(), 7);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -353,10 +355,51 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     );
     assert_eq!(record.confidence.value(), 60);
 
+    // The branch inventory names the body's two readable sites in
+    // body order: the loop exit inside the first arm, then the
+    // trailing else arm — and the chain's plain arms record nothing.
+    let ControlFlowFinding::BranchSite(record) = findings[4] else {
+        unreachable!("the while header inside the first arm reads as a branch site");
+    };
+    assert_eq!(record.condition, "local_9 < 3");
+    assert_eq!(record.params, ["local_9"]);
+    assert_eq!(record.operator.as_deref(), Some("<"));
+    assert_eq!(record.immediate.as_deref(), Some("3"));
+    assert_eq!(
+        record.guards,
+        calxgloss_controlflow::types::GuardedTarget::LoopExit
+    );
+    assert_eq!(
+        record.suggestion,
+        "express the loop exit for local_9 < 3 at the boundary"
+    );
+    assert_eq!(record.evidence, "while (local_9 < 3) {");
+    assert_eq!(record.confidence.value(), 80);
+
+    let ControlFlowFinding::BranchSite(record) = findings[5] else {
+        unreachable!("the trailing else arm reads as a branch site");
+    };
+    assert_eq!(record.condition, "else");
+    assert_eq!(
+        record.guards,
+        calxgloss_controlflow::types::GuardedTarget::ElseArm
+    );
+    assert_eq!(
+        record.operator, None,
+        "a shape-only reading names no operator"
+    );
+    assert_eq!(record.immediate, None);
+    assert_eq!(
+        record.suggestion,
+        "express the else arm as the match default"
+    );
+    assert_eq!(record.evidence, "else {");
+    assert_eq!(record.confidence.value(), 50);
+
     // The cross-function cycle rode the walk's kept bodies: it lands
     // last, attached to the cycle's earliest member, naming both
     // members in cycle order through the round trip.
-    let ControlFlowFinding::MutualRecursion(record) = findings[4] else {
+    let ControlFlowFinding::MutualRecursion(record) = findings[6] else {
         unreachable!("the mutual calls read as a mutual_recursion finding");
     };
     assert_eq!(record.function, "FUN_18003ab00");
@@ -423,7 +466,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::ControlFlowInfo::from)
         .collect();
-    assert_eq!(findings.len(), 5, "the target function's five findings");
+    assert_eq!(findings.len(), 7, "the target function's seven findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -467,6 +510,11 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("express as a match or dispatch table"));
     assert!(prompt.contains("branch_density construct, confidence 60"));
     assert!(prompt.contains("6 conditional edges / 10 blocks (density 0.60)"));
+    assert!(prompt.contains("express the loop exit for local_9 < 3 at the boundary"));
+    assert!(prompt.contains("branch_site construct, confidence 80"));
+    assert!(prompt.contains("while (local_9 < 3) {"));
+    assert!(prompt.contains("express the else arm as the match default"));
+    assert!(prompt.contains("branch_site construct, confidence 50"));
     assert!(prompt.contains(
         "translate the cycle together via an explicit stack, a trampoline, or an enum-driven loop"
     ));

@@ -520,9 +520,11 @@ pub(super) enum Command {
     /// Detect control-flow patterns in the open binary
     ///
     /// Finds the structural patterns ChatGPT most often flattens:
-    /// switch-shaped if/else-if chains, self-recursive functions, and
+    /// switch-shaped if/else-if chains, self-recursive functions,
     /// state-machine patterns (named-constant chains with transition
-    /// assignments).
+    /// assignments), and a per-function inventory of the branch sites —
+    /// guards, loop exits, and switch arms — that Rust `if`/`match` arms
+    /// should keep explicit.
     ///
     /// The control-flow findings are persisted per binary to
     /// `re/analysis/controlflow/<binary>.json` in the workspace — the same

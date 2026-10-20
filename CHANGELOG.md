@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Evidence scans
+
+- **Branch inventory (P12.5/#224, #258)** — the `controlflow` scan now inventories every branch site in each function body: guards, loop exits, else arms, and switch arms, one record per site carrying the condition text, the parameters it involves, the operator and immediate when the predicate is readable, the guarded-target kind (early return, error path, loop exit, else arm, switch arm), a confidence, and the evidence line. An exact operator-and-immediate reading scores highest; a shape-only reading (compound conditions, unreadable predicates) claims only that the branch exists and never names an operator or immediate; truncated or malformed bodies inventory just what is visible, and a body with no readable branch records nothing. The records ride the tagged finding union under the `branch_site` kind — documents written before the kind existed still load unchanged — and the `controlflow` report's kind breakdown names it. Follow-up tickets #259–#261 will feed the inventory into prompt rendering and branch-targeted baseline test generation.
+
 ## [0.3.0] — 2026-10-19
 
 ### Added

@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | work the frontier: #258 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
+| P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | 🔶 in progress | work the frontier: #259 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #227 | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
@@ -68,7 +68,8 @@ already loads the control-flow findings for the prompt; the same loaded
 findings feed generation — one source of truth for context and oracle, no
 second load. Ground-truth capture is untouched: the cases flow through the
 existing Wine baseline run, and the shared test-case schema does not change.
-Spec: #224. Tickets: #258–#261 (blocking edges set; frontier starts at #258).
+Spec: #224. Tickets: #258–#261 (blocking edges set; #258 — the branch
+inventory detector itself — is done, so the frontier is at #259).
 
 ## P13.5 — Float/SIMD usage flagging (evidence + integrations + pipeline + interface)
 

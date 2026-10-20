@@ -139,7 +139,7 @@ impl LineKind<'_> {
 }
 
 /// `s` opens with `word` as a whole word, not as the prefix of a longer name.
-fn starts_word(s: &str, word: &str) -> bool {
+pub(crate) fn starts_word(s: &str, word: &str) -> bool {
     s.starts_with(word)
         && s[word.len()..]
             .chars()

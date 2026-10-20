@@ -258,6 +258,39 @@ pub(super) fn hsep_bold() {
     println!("  {}", "═".repeat(SEP_WIDTH));
 }
 
+/// Whether `ch` occupies a terminal column: control characters do not, and
+/// neither do the printable parameter and final bytes of an ANSI escape —
+/// only the ESC that opens the sequence is a control character, so counting
+/// the rest as visible would truncate a line that still fits.
+fn visible_char(ch: char) -> bool {
+    !ch.is_control() && ch != '\u{1b}'
+}
+
+/// The number of columns `s` occupies, skipping whole ANSI escape sequences.
+fn visible_len(s: &str) -> usize {
+    let mut count = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            // Skip a CSI sequence (ESC [ params… final byte @-~) whole; any
+            // other escape is the single character after the ESC.
+            if chars.peek().is_some_and(|next| *next == '[') {
+                chars.next();
+                for param in chars.by_ref() {
+                    if ('@'..='~').contains(&param) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if visible_char(ch) {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Prints a line of content, padded to SEP_WIDTH with spaces.
 /// Safe for ANSI codes and multi-byte UTF-8.
 pub(super) fn println_content(content: impl AsRef<str>) {
@@ -266,18 +299,31 @@ pub(super) fn println_content(content: impl AsRef<str>) {
     // the ● bullet would otherwise push a short line into the truncation
     // branch, where the character-counting cut below never reaches the
     // byte-based limit and the whole line prints empty.
-    let visible_chars = s.chars().filter(|c| !c.is_control()).count();
+    let visible_chars = visible_len(s);
     let padded = if visible_chars < SEP_WIDTH {
         format!("{:<SEP_WIDTH$}", s)
     } else {
-        let end = SEP_WIDTH.min(visible_chars);
+        // Cut at the SEP_WIDTH-th visible column, keeping the escape
+        // sequences that surround it so the colours still close.
         let mut vcount = 0usize;
-        let mut bend = 0usize;
-        for (bi, ch) in s.chars().enumerate() {
-            if !ch.is_control() {
+        let mut bend = s.len();
+        let mut chars = s.char_indices().peekable();
+        while let Some((bi, ch)) = chars.next() {
+            if ch == '\u{1b}' {
+                if chars.peek().is_some_and(|(_, next)| *next == '[') {
+                    chars.next();
+                    for (_, param) in chars.by_ref() {
+                        if ('@'..='~').contains(&param) {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            if visible_char(ch) {
                 vcount += 1;
             }
-            if vcount >= end {
+            if vcount >= SEP_WIDTH {
                 bend = bi + ch.len_utf8();
                 break;
             }

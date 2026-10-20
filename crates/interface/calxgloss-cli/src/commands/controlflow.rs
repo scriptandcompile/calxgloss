@@ -1,8 +1,8 @@
 //! The `controlflow` command — detect control-flow patterns for a binary.
 //!
 //! Runs the control-flow detectors — switch-shaped if/else-if chains,
-//! self-recursion, and state-machine patterns — against the loaded
-//! program and saves the result to
+//! self-recursion, state-machine patterns, and the per-function branch
+//! inventory — against the loaded program and saves the result to
 //! `re/analysis/controlflow/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
@@ -94,6 +94,7 @@ fn print_controlflow_report(result: &ControlFlowResult, path: &Path) {
         "state_machine",
         "loop",
         "branch_density",
+        "branch_site",
         "mutual_recursion",
     ]
     .into_iter()

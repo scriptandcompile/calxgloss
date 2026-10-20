@@ -16,6 +16,10 @@
 //!   structure of one body — conditional-edge count against basic-block
 //!   count, classified as a dispatch-table candidate or a sequential
 //!   scan, read off the same graph.
+//! - `BranchSite` (with `GuardedTarget`): one branch site in one body —
+//!   its condition text, the parameters it tests, the operator and
+//!   immediate read off the comparison where they are visible, and what
+//!   the branch guards, read off the same graph.
 //! - `MutualRecursion`: a call cycle of two or more functions —
 //!   `A ↔ B`, `A → B → C → A` — read across the bodies one scan keeps.
 //! - `ControlFlowFinding`: the union over the record kinds — one
@@ -338,6 +342,96 @@ pub struct BranchDensity {
 }
 
 // ============================================================
+// Branch inventory
+// ============================================================
+
+/// What a branch site guards — the vocabulary of guarded targets the
+/// branch-inventory detector reads off the control flow graph.
+///
+/// The detector names the shape it read on both the record and the
+/// graph side, so the two cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardedTarget {
+    /// The taken arm returns — a guard clause that ends the function
+    /// early when the condition holds.
+    EarlyReturn,
+    /// The taken arm reports an error — an error-ish call or a value
+    /// return standing for failure.
+    ErrorPath,
+    /// The condition is a loop header — the branch guards whether the
+    /// loop keeps iterating.
+    LoopExit,
+    /// A trailing `else` arm — the default side of a test with no
+    /// condition of its own.
+    ElseArm,
+    /// A `case` arm of a switch — the branch guards one probe value.
+    SwitchArm,
+}
+
+impl GuardedTarget {
+    /// The shape spelled for a report row: `early return`, `error
+    /// path`, `loop exit`, `else arm`, or `switch arm`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            GuardedTarget::EarlyReturn => "early return",
+            GuardedTarget::ErrorPath => "error path",
+            GuardedTarget::LoopExit => "loop exit",
+            GuardedTarget::ElseArm => "else arm",
+            GuardedTarget::SwitchArm => "switch arm",
+        }
+    }
+}
+
+/// One branch-site observation about one function — what the branch
+/// tests and what it guards — with the evidence behind it.
+///
+/// A record says the body carries one branch site: the condition as
+/// written ([`condition`](Self::condition)), the parameter and local
+/// names the condition reads ([`params`](Self::params)), and, where the
+/// comparison is readable, the [`operator`](Self::operator) and the
+/// constant [`immediate`](Self::immediate) compared against them. The
+/// branch guards the [`guards`](Self::guards) shape: an early return,
+/// an error path, a loop exit, an else arm, or a switch arm. A plain
+/// guarded body that guards nothing in that vocabulary is not a branch
+/// site worth a record — the branch-density and switch findings already
+/// tell that story. Confidence is 80 when the operator and immediate
+/// were both read — the exact boundary — 70 when the operator was read
+/// but the other side is a name rather than a constant, and 50 for a
+/// shape-only reading, which names no operator or immediate. The site's
+/// decompiled line is kept as [`evidence`](Self::evidence) so a
+/// reviewer (or a translation prompt) can check the reasoning against
+/// the body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchSite {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The condition as written, e.g. `param_1 == 0`.
+    pub condition: String,
+    /// The parameter and local names the condition reads, in
+    /// first-seen order, deduped, e.g. `["param_1"]`.
+    pub params: Vec<String>,
+    /// The comparison operator read off the condition, e.g. `==`, when
+    /// one was visible; a shape-only record names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    /// The constant compared against the parameters, e.g. `0` or
+    /// `'A'`, when one was visible; a shape-only record names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub immediate: Option<String>,
+    /// What the branch guards.
+    pub guards: GuardedTarget,
+    /// The Rust pattern the site suggests, e.g.
+    /// `keep the early return behind param_1 == 0`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The site's decompiled line, kept so a reviewer (or a translation
+    /// prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Mutual recursion
 // ============================================================
 
@@ -407,6 +501,9 @@ pub enum ControlFlowFinding {
     /// basic blocks, classified dispatch-table candidate or sequential
     /// scan.
     BranchDensity(BranchDensity),
+    /// One branch site in a body — its condition, tested names, the
+    /// operator and immediate where readable, and what it guards.
+    BranchSite(BranchSite),
     /// A call cycle of two or more functions — mutual recursion read
     /// across the bodies one scan keeps.
     MutualRecursion(MutualRecursion),
@@ -421,6 +518,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => &record.function,
             ControlFlowFinding::Loop(record) => &record.function,
             ControlFlowFinding::BranchDensity(record) => &record.function,
+            ControlFlowFinding::BranchSite(record) => &record.function,
             ControlFlowFinding::MutualRecursion(record) => &record.function,
         }
     }
@@ -433,6 +531,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => &record.suggestion,
             ControlFlowFinding::Loop(record) => &record.suggestion,
             ControlFlowFinding::BranchDensity(record) => &record.suggestion,
+            ControlFlowFinding::BranchSite(record) => &record.suggestion,
             ControlFlowFinding::MutualRecursion(record) => &record.suggestion,
         }
     }
@@ -445,6 +544,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => record.confidence,
             ControlFlowFinding::Loop(record) => record.confidence,
             ControlFlowFinding::BranchDensity(record) => record.confidence,
+            ControlFlowFinding::BranchSite(record) => record.confidence,
             ControlFlowFinding::MutualRecursion(record) => record.confidence,
         }
     }
@@ -457,13 +557,14 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => &record.evidence,
             ControlFlowFinding::Loop(record) => &record.evidence,
             ControlFlowFinding::BranchDensity(record) => &record.evidence,
+            ControlFlowFinding::BranchSite(record) => &record.evidence,
             ControlFlowFinding::MutualRecursion(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `switch`, `recursion`, `state_machine`,
-    /// `loop`, `branch_density`, or `mutual_recursion` — naming the
-    /// detector behind the finding.
+    /// `loop`, `branch_density`, `branch_site`, or `mutual_recursion` —
+    /// naming the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ControlFlowFinding::Switch(_) => "switch",
@@ -471,6 +572,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(_) => "state_machine",
             ControlFlowFinding::Loop(_) => "loop",
             ControlFlowFinding::BranchDensity(_) => "branch_density",
+            ControlFlowFinding::BranchSite(_) => "branch_site",
             ControlFlowFinding::MutualRecursion(_) => "mutual_recursion",
         }
     }
@@ -478,8 +580,8 @@ impl ControlFlowFinding {
     /// What the finding names, spelled for a report row: the variable
     /// the switch chain compares, the function that recurses, the state
     /// variable the machine dispatches on, the loop shapes the body
-    /// carries, the branch-density verdict, or the functions in the
-    /// call cycle.
+    /// carries, the branch-density verdict, the condition a branch site
+    /// tests, or the functions in the call cycle.
     pub fn target(&self) -> String {
         match self {
             ControlFlowFinding::Switch(record) => record.variable.clone(),
@@ -487,6 +589,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => record.state_var.clone(),
             ControlFlowFinding::Loop(record) => LoopKind::labels(&record.kinds_seen),
             ControlFlowFinding::BranchDensity(record) => record.classification.label().to_string(),
+            ControlFlowFinding::BranchSite(record) => record.condition.clone(),
             ControlFlowFinding::MutualRecursion(record) => record.cycle.join(" → "),
         }
     }
@@ -519,7 +622,8 @@ impl From<&ControlFlowFinding> for calxgloss_prompts::ControlFlowInfo {
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the switch chains, then the
 /// recursion, then the state machines, then the loop structure, then
-/// the branch density — and after every function, the cross-function
+/// the branch density, then the branch inventory — and after every
+/// function, the cross-function
 /// mutual-recursion cycles in listing order. A
 /// function can carry findings of several kinds at once — the switch
 /// and state-machine detectors read the same chain shape from opposite
@@ -638,6 +742,20 @@ mod tests {
                 .into(),
             confidence: Confidence::new(70),
             evidence: "FUN_18003ab00() -> FUN_18003e750() -> FUN_18003ab00()".into(),
+        }
+    }
+
+    fn branch_site() -> BranchSite {
+        BranchSite {
+            function: "FUN_18003ab00".into(),
+            condition: "param_1 == 0".into(),
+            params: vec!["param_1".into()],
+            operator: Some("==".into()),
+            immediate: Some("0".into()),
+            guards: GuardedTarget::EarlyReturn,
+            suggestion: "keep the early return behind param_1 == 0".into(),
+            confidence: Confidence::new(80),
+            evidence: "if (param_1 == 0) {".into(),
         }
     }
 
@@ -808,6 +926,58 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_site_serde_round_trips() {
+        let record = branch_site();
+        let json = serde_json::to_string(&record).expect("branch site record should serialize");
+        // The guarded-target shape serializes as its snake_case
+        // spelling, matching the union's serde convention.
+        assert!(json.contains("\"condition\":\"param_1 == 0\""));
+        assert!(json.contains("\"operator\":\"==\""));
+        assert!(json.contains("\"immediate\":\"0\""));
+        assert!(json.contains("\"guards\":\"early_return\""));
+        assert!(json.contains("\"confidence\":80"));
+        let back: BranchSite =
+            serde_json::from_str(&json).expect("branch site record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_shape_only_branch_site_omits_operator_and_immediate_and_reads_back_none() {
+        // A record that names no operator or immediate stays small on
+        // disk, and a document written without those fields loads with
+        // them absent.
+        let record = BranchSite {
+            operator: None,
+            immediate: None,
+            guards: GuardedTarget::ElseArm,
+            condition: "local_4 != 0".into(),
+            suggestion: "express the else arm as the match default".into(),
+            confidence: Confidence::new(50),
+            evidence: "} else {".into(),
+            ..branch_site()
+        };
+        let json = serde_json::to_string(&record).expect("shape-only record should serialize");
+        assert!(!json.contains("\"operator\""));
+        assert!(!json.contains("\"immediate\""));
+        let back: BranchSite =
+            serde_json::from_str(&json).expect("shape-only record should read back");
+        assert_eq!(back, record);
+        assert_eq!(back.operator, None);
+        assert_eq!(back.immediate, None);
+    }
+
+    #[test]
+    fn a_branch_site_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ControlFlowFinding::BranchSite(branch_site());
+        let json = serde_json::to_string(&finding).expect("branch site finding should serialize");
+        assert!(json.contains("\"kind\":\"branch_site\""));
+        assert!(json.contains("\"condition\":\"param_1 == 0\""));
+        let back: ControlFlowFinding =
+            serde_json::from_str(&json).expect("branch site finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn a_mutual_recursion_serde_round_trips() {
         let record = mutual_recursion();
         let json =
@@ -840,6 +1010,7 @@ mod tests {
             ControlFlowFinding::StateMachine(state_machine()),
             ControlFlowFinding::Loop(loop_nesting()),
             ControlFlowFinding::BranchDensity(branch_density()),
+            ControlFlowFinding::BranchSite(branch_site()),
             ControlFlowFinding::MutualRecursion(mutual_recursion()),
         ];
         for finding in &findings {
@@ -856,6 +1027,7 @@ mod tests {
                 "state_machine",
                 "loop",
                 "branch_density",
+                "branch_site",
                 "mutual_recursion"
             ]
         );
@@ -867,6 +1039,7 @@ mod tests {
                 "FUN_18003e750",
                 "FUN_1800412a0",
                 "FUN_18003e750",
+                "FUN_18003ab00",
                 "FUN_18003ab00",
                 "FUN_18003ab00"
             ]
@@ -882,6 +1055,7 @@ mod tests {
                 "local_4",
                 "for/while/do-while",
                 "dispatch-table candidate",
+                "param_1 == 0",
                 "FUN_18003ab00 → FUN_18003e750"
             ]
         );
@@ -932,6 +1106,13 @@ mod tests {
             info.evidence
                 .contains("6 conditional edges / 8 blocks (density 0.75)")
         );
+
+        let site = ControlFlowFinding::BranchSite(branch_site());
+        let info = calxgloss_prompts::ControlFlowInfo::from(&site);
+        assert_eq!(info.kind, "branch_site");
+        assert_eq!(info.confidence, 80);
+        assert_eq!(info.suggestion, "keep the early return behind param_1 == 0");
+        assert!(info.evidence.contains("if (param_1 == 0) {"));
 
         let mutual = ControlFlowFinding::MutualRecursion(mutual_recursion());
         let info = calxgloss_prompts::ControlFlowInfo::from(&mutual);

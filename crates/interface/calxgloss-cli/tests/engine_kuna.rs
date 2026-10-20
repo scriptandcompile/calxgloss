@@ -114,3 +114,63 @@ fn test_config_runs_with_no_engine_surface_and_ignores_the_stale_env_vars() {
     assert!(ok, "config should succeed:\n{stdout}\n{stderr}");
     assert!(!stdout.to_ascii_lowercase().contains("ghidra"), "{stdout}");
 }
+
+#[test]
+fn test_controlflow_records_branch_sites_in_the_document_and_the_report() {
+    // #258: a scan of the fixture binary inventories its branch sites —
+    // the persisted document carries branch-site records, and the report's
+    // kind breakdown names the kind.
+    let fixture = calxgloss_testfixtures::fixture_target_path().expect("fixture target");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let ws = dir.path();
+    // Copy the fixture into the workspace so `--binary` can name it plainly:
+    // the persistor files `{binary}.json` literally, and a path-shaped key
+    // would land the document outside the workspace.
+    std::fs::copy(&fixture, ws.join("fixture-target")).expect("copy fixture into workspace");
+
+    let (ok, stdout, stderr) = run(
+        cli(ws).args([
+            "--target-dir",
+            ".",
+            "controlflow",
+            "--binary",
+            "fixture-target",
+        ]),
+        ws,
+    );
+    assert!(ok, "controlflow failed:\n{stdout}\n{stderr}");
+    let doc = std::fs::read_to_string(ws.join("re/analysis/controlflow/fixture-target.json"))
+        .expect("persisted control-flow document");
+    assert!(
+        doc.contains("branch_site"),
+        "the persisted document should hold branch-site records"
+    );
+    // fixture_status's jump table yields switch arms and its default an
+    // else arm; fixture_describe's error-return guard an error path.
+    assert!(
+        doc.contains("switch_arm"),
+        "the switch arms of fixture_status should be recorded"
+    );
+    assert!(
+        doc.contains("error_path"),
+        "the error-return guard of fixture_describe should be recorded"
+    );
+
+    // --show prints the cached result, and its kind breakdown names the kind.
+    let (ok, stdout, stderr) = run(
+        cli(ws).args([
+            "--target-dir",
+            ".",
+            "controlflow",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws,
+    );
+    assert!(ok, "controlflow --show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("branch_site"),
+        "the kind breakdown should name branch_site:\n{stdout}"
+    );
+}
