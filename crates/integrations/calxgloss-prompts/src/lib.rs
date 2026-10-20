@@ -823,6 +823,58 @@ mod tests {
     }
 
     #[test]
+    fn test_escalate_template_renders_branch_inventory_records() {
+        // A retry after a divergence sees the same branch context as the
+        // first attempt: the inventory records ride the escalate CONTROL
+        // FLOW section carrying kind, suggestion, confidence, and evidence.
+        let findings = vec![
+            ControlFlowInfo {
+                function: "FUN_18003ab00".to_string(),
+                kind: "switch".to_string(),
+                suggestion: "replace the if-else chain with match command { /* 5 arms */ }"
+                    .to_string(),
+                confidence: 70,
+                evidence: "if (command == 1) ... else if (command == 5)".to_string(),
+            },
+            branch_site_fixture(),
+        ];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* if-else ladder */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW"));
+        assert!(prompt.contains("keep the early return behind param_1 == 0"));
+        assert!(prompt.contains("branch_site construct"));
+        assert!(prompt.contains("confidence 80"));
+        assert!(prompt.contains("if (param_1 == 0) {"));
+        // The inventory joins the other findings in one section.
+        assert!(prompt.contains("match command { /* 5 arms */ }"));
+        assert!(prompt.contains("switch construct"));
+    }
+
+    #[test]
     fn test_escalate_template_without_control_flow_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
@@ -1223,6 +1275,16 @@ mod tests {
         }
     }
 
+    fn branch_site_fixture() -> ControlFlowInfo {
+        ControlFlowInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "branch_site".to_string(),
+            suggestion: "keep the early return behind param_1 == 0".to_string(),
+            confidence: 80,
+            evidence: "if (param_1 == 0) {".to_string(),
+        }
+    }
+
     #[test]
     fn test_module_context_template_renders_control_flow_section() {
         let req = sample_request();
@@ -1244,6 +1306,36 @@ mod tests {
         assert!(prompt.contains("state_machine construct"));
         assert!(prompt.contains("confidence 70"));
         assert!(prompt.contains("idle: STATE_IDLE"));
+    }
+
+    #[test]
+    fn test_module_context_template_renders_branch_inventory_records() {
+        // A function's branch inventory rides the same CONTROL FLOW
+        // section as the other findings: each branch site is named by
+        // what it guards and the condition behind it, beside the
+        // switch/loop/recursion readings.
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![control_flow_fixture(), branch_site_fixture()],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("keep the early return behind param_1 == 0"));
+        assert!(prompt.contains("branch_site construct"));
+        assert!(prompt.contains("confidence 80"));
+        assert!(prompt.contains("if (param_1 == 0) {"));
+        // The inventory joins the section, it does not replace it.
+        assert!(prompt.contains("enum State + match state { /* 3 states */ }"));
+        assert!(prompt.contains("state_machine construct"));
     }
 
     #[test]

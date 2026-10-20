@@ -2447,6 +2447,22 @@ mod tests {
         )
     }
 
+    fn branch_site_hint(function: &str) -> calxgloss_controlflow::types::ControlFlowFinding {
+        calxgloss_controlflow::types::ControlFlowFinding::BranchSite(
+            calxgloss_controlflow::types::BranchSite {
+                function: function.into(),
+                condition: "param_1 == 0".into(),
+                params: vec!["param_1".into()],
+                operator: Some("==".into()),
+                immediate: Some("0".into()),
+                guards: calxgloss_controlflow::types::GuardedTarget::EarlyReturn,
+                suggestion: "keep the early return behind param_1 == 0".into(),
+                confidence: calxgloss_controlflow::types::Confidence::new(80),
+                evidence: "if (param_1 == 0) {".into(),
+            },
+        )
+    }
+
     fn persist_controlflow_findings(
         dir: &TempDir,
         findings: Vec<calxgloss_controlflow::types::ControlFlowFinding>,
@@ -2527,6 +2543,7 @@ mod tests {
                 switch_hint("FUN_18003ab00"),
                 recursion_hint("FUN_18003ab00"),
                 state_machine_hint("FUN_18003ab00"),
+                branch_site_hint("FUN_18003ab00"),
                 switch_hint("FUN_zzz"),
             ],
         );
@@ -2534,13 +2551,26 @@ mod tests {
         let found = extract_control_flow_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
 
         let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["switch", "recursion", "state_machine"]);
+        assert_eq!(
+            kinds,
+            vec!["switch", "recursion", "state_machine", "branch_site"]
+        );
         assert_eq!(found[0].suggestion, "match local_4 { /* 3 arms */ } + _");
         assert_eq!(found[1].suggestion, "replace with loop { ... } (tail call)");
         assert_eq!(
             found[2].suggestion,
             "enum State + match state { /* 3 states */ }"
         );
+        // The branch inventory rides the same load as the other findings,
+        // carrying what each branch guards and the condition behind it —
+        // so a retry after a divergence sees the same branch context as
+        // the first attempt.
+        assert_eq!(
+            found[3].suggestion,
+            "keep the early return behind param_1 == 0"
+        );
+        assert_eq!(found[3].confidence, 80);
+        assert_eq!(found[3].evidence, "if (param_1 == 0) {");
     }
 
     // ---- global-state hint extraction ---------------------------------
