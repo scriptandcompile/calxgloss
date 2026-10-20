@@ -11,7 +11,9 @@
 //!    the export and import tables
 //! 2. Extract function signatures from the decompiler or the export table
 //! 3. Generate FFI bindings (`extern "system"` blocks) for the original DLL
-//! 4. Generate test inputs covering boundary values, typical values, and edge cases
+//! 4. Generate test inputs covering boundary values, typical values, edge
+//!    cases, and one branch-targeted case per branch target of the scan's
+//!    branch inventory
 //! 5. Execute those inputs against the original binary under Wine to capture
 //!    baseline behavior
 //! 6. Save baseline results as JSON for verification against Rust translations
@@ -43,6 +45,7 @@
 //! let tests = calxgloss_testgen::generate_test_inputs(
 //!     "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)",
 //!     "cmp eax, 0\nje null_handler",
+//!     &[],
 //! ).unwrap();
 //! ```
 

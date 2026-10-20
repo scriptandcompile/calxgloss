@@ -77,17 +77,22 @@ impl TestGenerator {
         Ok(binding)
     }
 
-    /// Generate test inputs for a function based on its signature and disassembly.
+    /// Generate test inputs for a function based on its signature,
+    /// disassembly, and branch inventory.
     ///
     /// Generates 10-20 test input cases covering:
     /// - Boundary values (zero, min/max, null pointers)
     /// - Typical values (small positive integers, common strings)
     /// - Edge cases identified from disassembly (comparisons, boundary checks)
+    /// - One branch-targeted case per branch target from the scan's branch
+    ///   inventory (empty inventory leaves the suite exactly as above)
     ///
     /// # Arguments
     ///
     /// * `signature` - The function signature with parameter types.
     /// * `disassembly` - Raw disassembly for edge case detection.
+    /// * `branch_inventory` - The function's branch-site records from the
+    ///   control-flow scan, in body order.
     ///
     /// # Returns
     ///
@@ -98,13 +103,15 @@ impl TestGenerator {
         &self,
         signature: &str,
         disassembly: &str,
+        branch_inventory: &[calxgloss_controlflow::types::BranchSite],
     ) -> Result<Vec<TestCase>> {
         debug!(
             signature,
             disassembly_len = disassembly.len(),
+            inventory = branch_inventory.len(),
             "Generating test inputs"
         );
-        let test_cases = generate_test_inputs(signature, disassembly)?;
+        let test_cases = generate_test_inputs(signature, disassembly, branch_inventory)?;
         info!(count = test_cases.len(), "Generated test inputs");
         Ok(test_cases)
     }
@@ -112,7 +119,9 @@ impl TestGenerator {
     /// Generate test inputs from a [`FunctionInfo`] struct.
     ///
     /// Convenience method that extracts the disassembly from the function info
-    /// and calls [`generate_test_inputs`](Self::generate_test_inputs).
+    /// and calls [`generate_test_inputs`](Self::generate_test_inputs). The
+    /// branch inventory arrives with the pipeline wiring (#261); until then
+    /// this hands an empty inventory, which is today's behavior exactly.
     pub async fn generate_test_inputs_from_function(
         &self,
         function_info: &FunctionInfo,
@@ -122,7 +131,7 @@ impl TestGenerator {
             function = function_info.name,
             "Generating test inputs from function"
         );
-        self.generate_test_inputs("", &function_info.disassembly)
+        self.generate_test_inputs("", &function_info.disassembly, &[])
             .await
     }
 
@@ -418,7 +427,7 @@ mod tests {
     #[test]
     fn test_generate_test_inputs_from_signature() {
         let sig = "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)";
-        let tests = generate_test_inputs(sig, "").unwrap();
+        let tests = generate_test_inputs(sig, "", &[]).unwrap();
 
         assert!(!tests.is_empty());
         assert!(tests.len() >= 10);
@@ -435,7 +444,7 @@ mod tests {
     fn test_generate_test_inputs_with_disassembly() {
         let sig = "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)";
         let disassembly = "cmp eax, 0\nje null_handler\ncmp ecx, 256\nja out_of_bounds";
-        let tests = generate_test_inputs(sig, disassembly).unwrap();
+        let tests = generate_test_inputs(sig, disassembly, &[]).unwrap();
 
         // Should have more tests due to edge cases from disassembly
         assert!(tests.len() >= 10);

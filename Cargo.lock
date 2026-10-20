@@ -743,6 +743,7 @@ name = "calxgloss-testgen"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "calxgloss-controlflow",
  "calxgloss-globalstate",
  "calxgloss-types",
  "goblin",

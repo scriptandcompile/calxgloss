@@ -1609,9 +1609,13 @@ impl TranslationPipeline {
         // parameters the test cases feed in.
         let signature = self.signature_for(function_info);
 
-        // Generate test inputs from signature and disassembly
+        // Generate test inputs from signature and disassembly. The
+        // branch inventory arrives with the pipeline wiring (#261),
+        // which hands the records from the already-loaded control-flow
+        // findings; today the seam takes an empty inventory, which is
+        // today's suite exactly.
         let mut tests =
-            calxgloss_testgen::generate_test_inputs(&signature, &function_info.disassembly)
+            calxgloss_testgen::generate_test_inputs(&signature, &function_info.disassembly, &[])
                 .map_err(TranslatorError::TestGen)?;
 
         // The global-state artifact supplies the typed side-effect

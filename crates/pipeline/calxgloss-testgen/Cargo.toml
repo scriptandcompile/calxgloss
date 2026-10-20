@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../../shared/calxgloss-types" }
+calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 calxgloss-globalstate = { path = "../../evidence/calxgloss-globalstate" }
 goblin = { workspace = true }
 tokio = { workspace = true }
