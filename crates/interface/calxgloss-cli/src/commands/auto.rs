@@ -184,7 +184,8 @@ pub async fn run_translation_for_dll(
     }
     llm_config = llm_config
         .with_context_window(context_window)
-        .with_temperature(temperature);
+        .with_temperature(temperature)
+        .with_timeout_secs(settings.llm_timeout_secs.value);
     let llm = LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
     // Initialize analyzer, test generator

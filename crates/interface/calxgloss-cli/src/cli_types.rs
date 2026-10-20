@@ -69,6 +69,11 @@ pub(super) struct Cli {
     #[arg(long, global = true)]
     pub(super) max_retries: Option<u32>,
 
+    /// Per-request LLM timeout in seconds, covering the server's generation
+    /// time (default: 300)
+    #[arg(long, global = true, value_name = "SECONDS")]
+    pub(super) timeout_secs: Option<u64>,
+
     /// Retry strategy: compile_fix, test_fix, escalate, edge_case_fix, or auto
     /// (auto cycles through all strategies on each failure)
     #[arg(long, global = true, value_parser = ["compile_fix", "test_fix", "escalate", "edge_case_fix", "auto"])]

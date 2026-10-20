@@ -45,6 +45,11 @@ pub mod defaults {
 
     /// Attempts before a translation is abandoned.
     pub const LLM_MAX_RETRIES: u32 = 3;
+
+    /// Per-request LLM HTTP timeout, in seconds. Five minutes: the wait
+    /// covers the server generating the answer, and a large local model on
+    /// slow hardware can take minutes for one completion.
+    pub const LLM_TIMEOUT_SECS: u64 = 300;
 }
 
 mod error;

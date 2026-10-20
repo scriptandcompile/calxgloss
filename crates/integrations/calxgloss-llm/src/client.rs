@@ -73,6 +73,12 @@ pub struct LlmConfig {
 
     /// Sampling temperature (0.0 = deterministic, higher = more creative).
     pub temperature: f32,
+
+    /// Per-request HTTP timeout, in seconds. Covers the whole exchange —
+    /// connect, send, waiting for the server to generate, and reading the
+    /// body — so a slow local model on modest hardware needs this raised
+    /// above the 300-second default.
+    pub timeout_secs: u64,
 }
 
 impl LlmConfig {
@@ -88,6 +94,7 @@ impl LlmConfig {
             api_key: None,
             context_window: 8192,
             temperature: 0.1,
+            timeout_secs: 300,
         })
     }
 
@@ -106,6 +113,12 @@ impl LlmConfig {
     /// Set the sampling temperature.
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = temperature;
+        self
+    }
+
+    /// Set the per-request HTTP timeout, in seconds.
+    pub fn with_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = timeout_secs;
         self
     }
 }
@@ -298,7 +311,7 @@ impl LlmClient {
     /// Create a new client with the given configuration.
     pub fn new(config: LlmConfig) -> Result<Self> {
         let http = Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
             .map_err(LlmError::Http)?;
 
@@ -640,6 +653,7 @@ mod tests {
         assert_eq!(config.model, "qwen3");
         assert_eq!(config.context_window, 8192);
         assert_eq!(config.temperature, 0.1);
+        assert_eq!(config.timeout_secs, 300);
         assert!(config.api_key.is_none());
     }
 
@@ -649,10 +663,12 @@ mod tests {
             .unwrap()
             .with_context_window(4096)
             .with_temperature(0.5)
+            .with_timeout_secs(900)
             .with_api_key("key123".to_string());
 
         assert_eq!(config.context_window, 4096);
         assert_eq!(config.temperature, 0.5);
+        assert_eq!(config.timeout_secs, 900);
         assert_eq!(config.api_key, Some("key123".to_string()));
     }
 

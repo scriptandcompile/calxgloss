@@ -131,6 +131,7 @@ fn main() -> Result<()> {
             context_window: cli.context_window,
             temperature: cli.temperature,
             max_retries: cli.max_retries,
+            timeout_secs: cli.timeout_secs,
             strategy: cli.strategy.clone(),
         },
         analysis: AnalysisSection {

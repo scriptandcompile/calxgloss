@@ -66,6 +66,12 @@ pub struct LlmSection {
     /// Attempts before a translation is abandoned.
     pub max_retries: Option<u32>,
 
+    /// Per-request LLM timeout, in seconds. Covers the whole HTTP exchange,
+    /// including the time the server spends generating the answer. The
+    /// built-in default is 300 (5 minutes); raise it for slow local models
+    /// on modest hardware.
+    pub timeout_secs: Option<u64>,
+
     /// Retry strategy: compile_fix, test_fix, escalate, edge_case_fix, or auto.
     pub strategy: Option<String>,
 }
@@ -103,5 +109,8 @@ model = "Qwen3.6-35B-A3B-FP8"
 context_window = 8192
 temperature = 0.1
 max_retries = 3
+# Per-request timeout in seconds, covering the whole HTTP exchange
+# including generation (default: 300, i.e. 5 minutes).
+# timeout_secs = 300
 # strategy = "auto"  # compile_fix | test_fix | escalate | edge_case_fix | auto
 "#;

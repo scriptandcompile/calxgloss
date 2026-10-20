@@ -73,6 +73,7 @@ impl Layers {
                     context_window: usize_var("CALXGLOSS_LLM_CONTEXT_WINDOW"),
                     temperature: f32_var("CALXGLOSS_LLM_TEMPERATURE"),
                     max_retries: u32_var("CALXGLOSS_LLM_MAX_RETRIES"),
+                    timeout_secs: u64_var("CALXGLOSS_LLM_TIMEOUT_SECS"),
                     strategy: var("CALXGLOSS_LLM_STRATEGY"),
                 },
                 analysis: AnalysisSection {
@@ -142,6 +143,10 @@ fn usize_var(name: &str) -> Option<usize> {
 
 fn u32_var(name: &str) -> Option<u32> {
     numeric_var!(name, u32)
+}
+
+fn u64_var(name: &str) -> Option<u64> {
+    numeric_var!(name, u64)
 }
 
 fn f32_var(name: &str) -> Option<f32> {
@@ -231,6 +236,7 @@ model = "some-model"
 context_window = 4096
 temperature = 0.7
 max_retries = 5
+timeout_secs = 900
 "#,
         );
         let c = load(Some(&path)).unwrap().file;
@@ -239,6 +245,7 @@ max_retries = 5
         assert_eq!(c.llm.context_window, Some(4096));
         assert_eq!(c.llm.temperature, Some(0.7));
         assert_eq!(c.llm.max_retries, Some(5));
+        assert_eq!(c.llm.timeout_secs, Some(900));
     }
 
     #[test]

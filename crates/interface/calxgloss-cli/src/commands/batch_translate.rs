@@ -120,7 +120,8 @@ pub async fn handle_batch_translate(
     }
     llm_config = llm_config
         .with_context_window(context_window)
-        .with_temperature(temperature);
+        .with_temperature(temperature)
+        .with_timeout_secs(settings.llm_timeout_secs.value);
 
     let llm = calxgloss_llm::LlmClient::new(llm_config).context("Failed to create LLM client")?;
 

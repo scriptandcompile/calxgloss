@@ -38,6 +38,8 @@ pub struct Settings {
     pub temperature: Resolved<f32>,
     /// Attempts before a translation is abandoned.
     pub max_retries: Resolved<u32>,
+    /// Per-request LLM timeout, in seconds, covering generation time.
+    pub llm_timeout_secs: Resolved<u64>,
     /// Which retry strategy to use.
     pub retry_strategy: Option<Resolved<String>>,
     /// Target directory for DLLs (read-only).
@@ -66,6 +68,7 @@ impl Settings {
             context_window: flag_window,
             temperature: flag_temp,
             max_retries: flag_retries,
+            timeout_secs: flag_timeout_secs,
             strategy: _,
         } = flags.llm;
         let AnalysisSection {
@@ -117,6 +120,14 @@ impl Settings {
                     Some(defaults::LLM_MAX_RETRIES),
                 )
                 .expect("max_retries has a default"),
+            llm_timeout_secs: layers
+                .resolve(
+                    flag_timeout_secs,
+                    layers.env.llm.timeout_secs,
+                    layers.file.llm.timeout_secs,
+                    Some(defaults::LLM_TIMEOUT_SECS),
+                )
+                .expect("timeout_secs has a default"),
             retry_strategy: layers.resolve(
                 flags.llm.strategy.clone(),
                 layers.env.llm.strategy.clone(),
@@ -348,6 +359,7 @@ pub fn render(s: &Settings) -> String {
     num(&mut out, "context_window", &s.context_window);
     num(&mut out, "temperature", &s.temperature);
     num(&mut out, "max_retries", &s.max_retries);
+    num(&mut out, "timeout_secs", &s.llm_timeout_secs);
 
     out.push_str("\ntranslation\n");
     row(&mut out, "retry_strategy", s.retry_strategy.as_ref(), false);
@@ -416,6 +428,29 @@ mod tests {
         let s = settings_from(FileConfig::default(), file);
         assert_eq!(s.require_llm_url().unwrap(), "http://127.0.0.1:1919/v1");
         assert_eq!(s.require_llm_model().unwrap(), "m");
+    }
+
+    #[test]
+    fn test_llm_timeout_defaults_to_five_minutes() {
+        let s = settings_from(FileConfig::default(), FileConfig::default());
+        assert_eq!(s.llm_timeout_secs.value, 300);
+        assert_eq!(s.llm_timeout_secs.source, Source::Default);
+    }
+
+    #[test]
+    fn test_llm_timeout_comes_from_the_file_layer() {
+        let file = FileConfig {
+            llm: LlmSection {
+                timeout_secs: Some(900),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        assert_eq!(s.llm_timeout_secs.value, 900);
+        assert_eq!(s.llm_timeout_secs.source, Source::File);
+        let out = render(&s);
+        assert!(out.contains("timeout_secs") && out.contains("900"), "{out}");
     }
 
     #[test]

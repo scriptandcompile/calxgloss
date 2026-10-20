@@ -37,7 +37,10 @@ pub async fn handle_auto_shim(
         .context("LLM model not configured")?
         .value
         .as_str();
-    let llm = LlmClient::from_url(llm_url, llm_model)
+    let llm_config = calxgloss_llm::LlmConfig::new(llm_url, llm_model)
+        .with_context(|| format!("Failed to parse LLM URL: {}", llm_url))?
+        .with_timeout_secs(settings.llm_timeout_secs.value);
+    let llm = LlmClient::new(llm_config)
         .with_context(|| format!("Failed to initialize LLM client at {}", llm_url))?;
 
     // Determine which DLLs to process.
