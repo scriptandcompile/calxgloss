@@ -75,15 +75,34 @@ fn rows(listing: &str) -> Vec<&str> {
         .collect()
 }
 
-fn call_sites<'a>(listing: &'a str, callee: &str) -> Vec<(&'a str, Option<&'a str>)> {
-    let rows: Vec<&str> = rows(listing);
-    rows.iter()
-        .enumerate()
-        .filter(|(_, row)| {
-            let (mnemonic, operand) = split_instruction(instruction(row));
-            mnemonic.eq_ignore_ascii_case("call") && called_name(operand) == Some(callee)
+/// Every call site in every kept listing, grouped per listing by the
+/// callee name the call row names, sites in row order. The corroboration
+/// pass asks "does this listing call that callee, and what follows the
+/// call" once per (listing, record) pair; answering each question by
+/// re-splitting and re-parsing the whole listing is quadratic in the
+/// function count and hung the scan on a 7,267-function 32-bit image
+/// (the 2026-10-20 LaunchPad.exe incident — thousands of `ret N`
+/// epilogue records × thousands of listings). Reading each listing once
+/// here makes the whole pass linear in the disassembly text.
+fn call_index<'a>(listings: &[(&'a str, &'a str)]) -> Vec<HashMap<&'a str, Vec<(&'a str, Option<&'a str>)>>> {
+    listings
+        .iter()
+        .map(|(_, listing)| {
+            let rows: Vec<&str> = rows(listing);
+            let mut by_callee: HashMap<&str, Vec<(&str, Option<&str>)>> = HashMap::new();
+            for (index, row) in rows.iter().enumerate() {
+                let (mnemonic, operand) = split_instruction(instruction(row));
+                if mnemonic.eq_ignore_ascii_case("call")
+                    && let Some(name) = called_name(operand)
+                {
+                    by_callee
+                        .entry(name)
+                        .or_default()
+                        .push((*row, rows.get(index + 1).copied()));
+                }
+            }
+            by_callee
         })
-        .map(|(index, row)| (*row, rows.get(index + 1).copied()))
         .collect()
 }
 
@@ -155,11 +174,37 @@ impl ConventionCorroborator {
         conventions: &[InferredType],
         listings: &[(&str, &str)],
     ) -> Vec<InferredType> {
+        // One read of the kept disassembly text, answering every
+        // "does this caller call that callee, and what follows the
+        // call" the pass asks below.
+        let index = call_index(listings);
+
         // The bumps, in the order the callee's reading appeared in the
         // scan — the scan order is listing order, so the output is
         // deterministic whatever the map's iteration does.
         let mut bumped: HashMap<&str, InferredType> = HashMap::new();
         let mut bumps: Vec<InferredType> = Vec::new();
+        // The x64 facts (does the caller spell `rsp`, what does its
+        // prologue allocate) only matter when some reading is an x64
+        // shape; on an esp-spelled program they are never computed.
+        let x64_shapes = conventions.iter().any(|inference| {
+            matches!(
+                inference,
+                InferredType::Convention(record)
+                    if record.method == InferenceMethod::X64Shape && record.callee.is_none()
+            )
+        });
+        let x64_facts: Option<Vec<(bool, Option<u64>)>> = x64_shapes.then(|| {
+            listings
+                .iter()
+                .map(|(_, listing)| {
+                    (
+                        spells_register(listing, "rsp"),
+                        shadow_space(&rows(listing)).map(|(_, bytes)| bytes),
+                    )
+                })
+                .collect()
+        });
         for inference in conventions {
             let InferredType::Convention(record) = inference else {
                 continue;
@@ -168,8 +213,10 @@ impl ConventionCorroborator {
                 continue;
             }
             let reading = match record.method {
-                InferenceMethod::CalleeEpilogue => self.epilogue_agrees(record, listings),
-                InferenceMethod::X64Shape => self.x64_agrees(record, listings),
+                InferenceMethod::CalleeEpilogue => self.epilogue_agrees(record, listings, &index),
+                InferenceMethod::X64Shape => {
+                    self.x64_agrees(record, listings, &index, x64_facts.as_ref().expect("computed with x64 shapes"))
+                }
                 _ => None,
             };
             if let Some(reading) = reading {
@@ -184,15 +231,44 @@ impl ConventionCorroborator {
         // (caller, callee) pair — the pair is the record's target, so
         // a second site naming the same callee adds nothing — evidenced
         // by the first site that names it.
+        //
+        // The naive shape probes every record against every listing;
+        // instead each listing contributes exactly the records its own
+        // call rows name, visited in record order so the output is
+        // identical to that naive walk.
+        let mut records: Vec<&InferredConvention> = Vec::new();
+        let mut record_of: HashMap<&str, Vec<usize>> = HashMap::new();
+        for inference in conventions {
+            let InferredType::Convention(record) = inference else {
+                continue;
+            };
+            if record.callee.is_some() {
+                continue;
+            }
+            record_of
+                .entry(record.function.as_str())
+                .or_default()
+                .push(records.len());
+            records.push(record);
+        }
         let mut sites: Vec<InferredType> = Vec::new();
-        for (caller, listing) in listings {
-            for inference in conventions {
-                let InferredType::Convention(record) = inference else {
-                    continue;
-                };
-                if record.callee.is_some() || record.function == *caller {
-                    continue;
-                }
+        for (li, (caller, _)) in listings.iter().enumerate() {
+            let called = &index[li];
+            let mut matched: Vec<usize> = called
+                .keys()
+                .filter(|callee| *callee != caller)
+                .flat_map(|callee| {
+                    record_of
+                        .get(callee)
+                        .map(|slots| slots.as_slice())
+                        .unwrap_or(&[])
+                        .iter()
+                        .copied()
+                })
+                .collect();
+            matched.sort_unstable();
+            for slot in matched {
+                let record = records[slot];
                 let final_record = bumped
                     .get(record.function.as_str())
                     .map(|bump| match bump {
@@ -200,16 +276,19 @@ impl ConventionCorroborator {
                         _ => unreachable!("a bump is a convention record"),
                     })
                     .unwrap_or(record);
-                if let Some((row, _)) = call_sites(listing, &record.function).into_iter().next() {
-                    sites.push(InferredType::Convention(InferredConvention {
-                        function: caller.to_string(),
-                        callee: Some(record.function.clone()),
-                        convention: final_record.convention,
-                        method: InferenceMethod::CallSiteConvention,
-                        confidence: final_record.confidence,
-                        evidence: row.to_string(),
-                    }));
-                }
+                // The index only holds real call rows naming a callee,
+                // and `matched` was built from its keys — the lookup
+                // cannot miss, and the first site is in row order
+                // exactly as the naive scan found it.
+                let (row, _) = called[record.function.as_str()][0];
+                sites.push(InferredType::Convention(InferredConvention {
+                    function: caller.to_string(),
+                    callee: Some(record.function.clone()),
+                    convention: final_record.convention,
+                    method: InferenceMethod::CallSiteConvention,
+                    confidence: final_record.confidence,
+                    evidence: row.to_string(),
+                }));
             }
         }
 
@@ -224,6 +303,7 @@ impl ConventionCorroborator {
         &self,
         record: &InferredConvention,
         listings: &[(&str, &str)],
+        index: &[HashMap<&str, Vec<(&str, Option<&str>)>>],
     ) -> Option<InferredType> {
         let declared = declared_argument_bytes(&record.function)?
             .parse::<u64>()
@@ -233,14 +313,13 @@ impl ConventionCorroborator {
             return None;
         }
         let mut callers: Vec<&str> = Vec::new();
-        for (caller, listing) in listings {
+        for (li, (caller, _)) in listings.iter().enumerate() {
             if *caller == record.function {
                 continue;
             }
-            let sites = call_sites(listing, &record.function);
-            if sites.is_empty() {
+            let Some(sites) = index[li].get(record.function.as_str()) else {
                 continue;
-            }
+            };
             if sites.iter().any(|(_, next)| cleans_up(*next, "esp", None)) {
                 return None;
             }
@@ -273,20 +352,21 @@ impl ConventionCorroborator {
         &self,
         record: &InferredConvention,
         listings: &[(&str, &str)],
+        index: &[HashMap<&str, Vec<(&str, Option<&str>)>>],
+        x64_facts: &[(bool, Option<u64>)],
     ) -> Option<InferredType> {
         let mut callers: Vec<&str> = Vec::new();
-        for (caller, listing) in listings {
+        for (li, (caller, _)) in listings.iter().enumerate() {
             if *caller == record.function {
                 continue;
             }
-            let sites = call_sites(listing, &record.function);
-            if sites.is_empty() {
+            let Some(sites) = index[li].get(record.function.as_str()) else {
                 continue;
-            }
-            if !spells_register(listing, "rsp") {
+            };
+            let (spells_rsp, frame) = x64_facts[li];
+            if !spells_rsp {
                 return None;
             }
-            let frame = shadow_space(&rows(listing)).map(|(_, bytes)| bytes);
             if sites.iter().any(|(_, next)| cleans_up(*next, "rsp", frame)) {
                 return None;
             }
@@ -705,5 +785,70 @@ mod tests {
         let records = ConventionCorroborator::new().corroborate(&[view], &listings);
 
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn corroboration_over_a_program_sized_listing_set_stays_program_speed() {
+        // The 2026-10-20 LaunchPad.exe incident: a stripped 32-bit
+        // image listed 7,267 functions, nearly every one carrying a
+        // `ret N` epilogue reading. The pass probed every reading
+        // against every listing, re-splitting and re-parsing each
+        // listing per probe — billions of row parses, tens of minutes
+        // at 100% CPU, the scan looked hung. The pass reads each
+        // listing once now, so a program-sized input finishes in
+        // program time; the bound is generous (the fixed pass runs in
+        // hundredths of a second here, the quadratic one took minutes).
+        const FUNCTIONS: usize = 2_000;
+        const PAD_ROWS: usize = 200;
+        let names: Vec<String> = (0..FUNCTIONS).map(|i| format!("sub_{i:06x}")).collect();
+        let listings: Vec<(String, String)> = (0..FUNCTIONS)
+            .map(|i| {
+                let mut text = String::new();
+                for pad in 0..PAD_ROWS {
+                    text.push_str(&format!("00401000  MOV EAX, ECX ; pad {pad}\n"));
+                }
+                for hop in 1..=5u64 {
+                    let callee = &names[(i + (hop as usize) * FUNCTIONS / 6) % FUNCTIONS];
+                    text.push_str(&format!("00402000  CALL {callee}\n"));
+                }
+                text.push_str("00403000  RET 0x8\n");
+                (names[i].clone(), text)
+            })
+            .collect();
+        let readings: Vec<InferredType> = names
+            .iter()
+            .map(|name| {
+                reading(
+                    name,
+                    CallingConvention::Stdcall,
+                    InferenceMethod::CalleeEpilogue,
+                    80,
+                    "00403000  RET 0x8",
+                )
+            })
+            .collect();
+        let kept: Vec<(&str, &str)> = listings
+            .iter()
+            .map(|(name, text)| (name.as_str(), text.as_str()))
+            .collect();
+
+        let started = std::time::Instant::now();
+        let records = ConventionCorroborator::new().corroborate(&readings, &kept);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "corroboration of {FUNCTIONS} functions took {elapsed:?} — the pass went quadratic again"
+        );
+
+        // Still correct at scale: no bumps (the undecorated names carry
+        // no `@N` to agree with) and exactly one call-site view per
+        // (caller, callee) pair — five callees per caller, none naming
+        // itself — in listing order, callee by record order.
+        assert_eq!(records.len(), FUNCTIONS * 5);
+        let first = convention(&records[0]);
+        assert_eq!(first.function, "sub_000000");
+        assert_eq!(first.callee.as_deref(), Some(names[FUNCTIONS / 6].as_str()));
+        assert_eq!(first.method, InferenceMethod::CallSiteConvention);
+        assert_eq!(first.evidence, "00402000  CALL sub_00014d");
     }
 }
