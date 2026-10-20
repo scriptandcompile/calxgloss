@@ -405,12 +405,7 @@ impl Analyzer {
         // from — no extra file read (issue #235).
         let is_managed = pe_is_managed(&pe);
 
-        Ok(self.build_classification(
-            binary,
-            exports_count,
-            imports_count,
-            is_managed,
-        ))
+        Ok(self.build_classification(binary, exports_count, imports_count, is_managed))
     }
 
     /// Performs complete analysis on a single function.
@@ -1576,10 +1571,9 @@ mod tests {
         // fmod.dll heuristically reads as known third-party; a managed
         // fmod.dll is still parked honestly (story 25).
         let analyzer = test_analyzer();
-        let classifications =
-            classify_fixtures(&analyzer, &[("fmod.dll", minimal_pe_bytes(true))])
-                .await
-                .expect("fixture PE classifies");
+        let classifications = classify_fixtures(&analyzer, &[("fmod.dll", minimal_pe_bytes(true))])
+            .await
+            .expect("fixture PE classifies");
         assert_eq!(classifications[0].category, DllCategory::DotNetManaged);
         assert_eq!(classifications[0].strategy, Strategy::DoNotTranslate);
     }
@@ -1619,8 +1613,8 @@ mod tests {
         // The .NET check rides the existing parse — it does not change
         // what a corrupt binary does (story 26).
         let analyzer = test_analyzer();
-        let result = classify_fixtures(&analyzer, &[("broken.dll", b"MZnot-a-real-pe".to_vec())])
-            .await;
+        let result =
+            classify_fixtures(&analyzer, &[("broken.dll", b"MZnot-a-real-pe".to_vec())]).await;
         assert!(result.is_err(), "a corrupt PE still fails classification");
     }
 }

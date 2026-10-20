@@ -394,11 +394,7 @@ fn auto_block_preserves_do_not_translate_units() {
     // cascade never overwrites the derived do-not-translate verdict.
     let mut dashboard = ReviewDashboard::new(vec![
         make_unit("dep", ReviewStatus::SendBack, vec![]),
-        make_unit(
-            "func_dnt",
-            ReviewStatus::DoNotTranslate,
-            vec!["dep".into()],
-        ),
+        make_unit("func_dnt", ReviewStatus::DoNotTranslate, vec!["dep".into()]),
     ]);
 
     dashboard.auto_block_units();

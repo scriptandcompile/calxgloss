@@ -23,7 +23,10 @@ use calxgloss_types::DllCategory;
 use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewSkips, ReviewStatus, Staleness, UnitOfWork, WorkKind,
 };
-use calxgloss_types::{BinaryIdentity, ClassificationOverrides, classification_override_records_path, work_kind_for_prefix};
+use calxgloss_types::{
+    BinaryIdentity, ClassificationOverrides, classification_override_records_path,
+    work_kind_for_prefix,
+};
 use chrono::Utc;
 
 /// Parses a git branch name like `re/game_logic.dll/DrawSpritev1` or
@@ -1043,10 +1046,11 @@ mod tests {
             .create_branch(binary, function, 1, None)
             .expect("translation branch")
             .branch;
-        let file = git
-            .repo_path()
-            .join("src")
-            .join(format!("{}_{}.rs", binary.replace('.', "_"), function));
+        let file = git.repo_path().join("src").join(format!(
+            "{}_{}.rs",
+            binary.replace('.', "_"),
+            function
+        ));
         std::fs::create_dir_all(file.parent().expect("src dir")).expect("src dir");
         std::fs::write(&file, "// translated").expect("write source");
         git.commit(&branch, &format!("re: translate {function}"), &[])
@@ -1121,7 +1125,11 @@ mod tests {
         assert_eq!(skipped.status, ReviewStatus::Skipped);
 
         // Both stay visible in the full queue view, parked units last.
-        let ids: Vec<&str> = dashboard.review_queue.iter().map(|u| u.id.as_str()).collect();
+        let ids: Vec<&str> = dashboard
+            .review_queue
+            .iter()
+            .map(|u| u.id.as_str())
+            .collect();
         let skipped_at = ids
             .iter()
             .position(|id| *id == "game_logic.dll/DrawPrimitive/v1")
@@ -1138,7 +1146,10 @@ mod tests {
         // The synthetic classify unit is parked too — not auto-accepted.
         let classify = find_unit(&dashboard, "classify/managed_app.dll");
         assert_eq!(classify.status, ReviewStatus::DoNotTranslate);
-        assert!(!classify.accepted, "a parked classification is not accepted");
+        assert!(
+            !classify.accepted,
+            "a parked classification is not accepted"
+        );
         assert_eq!(
             find_unit(&dashboard, "classify/game_logic.dll").status,
             ReviewStatus::Accepted
@@ -1167,7 +1178,9 @@ mod tests {
 
         let unit = find_unit(&dashboard, "managed_app.dll/Main/v1");
         assert!(
-            unit.dependencies.iter().any(|d| d == "classify/managed_app.dll"),
+            unit.dependencies
+                .iter()
+                .any(|d| d == "classify/managed_app.dll"),
             "the branch-model edge is wired, got: {:?}",
             unit.dependencies
         );

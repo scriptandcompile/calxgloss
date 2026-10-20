@@ -515,12 +515,14 @@ mod tests {
     /// one plain function that matches nothing, and one guarded copy
     /// the starter set vetoes.
     fn program() -> FakeProgram {
-        let mut program = FakeProgram::default();
-        program.listing = vec![
-            summary("FUN_18003ab00"),
-            summary("FUN_18003e750"),
-            summary("FUN_1800412a0"),
-        ];
+        let mut program = tests::FakeProgram {
+            listing: vec![
+                summary("FUN_18003ab00"),
+                summary("FUN_18003e750"),
+                summary("FUN_1800412a0"),
+            ],
+            ..Default::default()
+        };
         program.bodies.insert(
             "FUN_18003ab00".into(),
             function(
