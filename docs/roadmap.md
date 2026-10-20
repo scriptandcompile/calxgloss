@@ -31,7 +31,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ✅ done | — | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #227 | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
@@ -41,38 +40,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## P12.5 — Branch-targeted baseline tests (evidence + pipeline)
-
-**Verification must pin every branch the decompiled body reveals, not just
-the happy path.** Today's baseline suites are mined from CMP immediates and
-signature-shaped values alone, so guards, error paths, loop exits, and
-switch arms go untested and a mistranslation of any of them survives
-*Verified*. `calxgloss-controlflow` gains a **branch inventory** reading: a
-new per-function detector walks the crate's existing internal CFG (blocks,
-taken/not-taken edges, back edges — the builder stays `pub(crate)`) and
-emits one record per branch site — condition text, involved parameters,
-operator and immediate when present, guarded-target kind (early return /
-error path / loop exit / else arm / switch arm), confidence, evidence —
-riding the tagged union, the engine's `with_*` builder, and the persistor
-exactly as the switch, loop, and branch-density detectors do, over the
-bodies the scan already keeps. A shape-only reading (branch exists,
-predicate unreadable) claims only a null/zero probe, never a fabricated
-boundary. `calxgloss-testgen`'s existing public `generate_test_inputs` seam
-grows an inventory parameter — empty inventory is today's behavior exactly
-— and emits one case per branch target (equality value, immediate ±1,
-null/zero for null checks, one value per switch arm; uninvolved parameters
-hold typical values), deduplicated against the boundary cases and capped
-per function, lowest-confidence branch cases dropped first. The translator
-already loads the control-flow findings for the prompt; the same loaded
-findings feed generation — one source of truth for context and oracle, no
-second load. Ground-truth capture is untouched: the cases flow through the
-existing Wine baseline run, and the shared test-case schema does not change.
-Spec: #224. Tickets: #258–#261 (blocking edges set; #258 — the branch
-inventory detector — #259 — its prompt rendering — #260 — the testgen
-seam that turns each inventory record into a baseline case — and #261 —
-the pipeline wiring that feeds the loaded findings to generation — all
-landed, closing the track).
 
 ## P13.5 — Float/SIMD usage flagging (evidence + integrations + pipeline + interface)
 
