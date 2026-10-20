@@ -96,7 +96,11 @@ impl<S> LibmatchEngine<S> {
     /// one function the signature matches in configuration order — so
     /// two scans of the same program diff cleanly. Where two signatures
     /// claim one function, only the strongest claim survives resolution,
-    /// standing where the function first appeared.
+    /// standing where the function first appeared. Cross-function
+    /// propagation findings — identical-body duplicates and tail-call
+    /// thunks inheriting a match — append after every per-function
+    /// finding, identical-body findings first and thunks after, each
+    /// group in listing order.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a
     /// bad entry point) is skipped with a warning; only a failure of the
@@ -114,6 +118,7 @@ impl<S> LibmatchEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut findings: Vec<LibmatchFinding> = Vec::new();
+        let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -154,12 +159,20 @@ impl<S> LibmatchEngine<S> {
             };
 
             findings.extend(self.matcher.match_function(&decompiled));
+            bodies.push(decompiled);
         }
 
         // Two signatures can fit one body; one function is one function,
         // so the strongest claim per function stands, in listing order
         // (ADR-0022's precedent).
-        let findings = crate::confidence::resolve_matches(findings);
+        let mut findings = crate::confidence::resolve_matches(findings);
+
+        // The cross-function pass then propagates those claims over the
+        // bodies the scan already holds — no extra engine reads — and
+        // its findings append after every per-function finding,
+        // identical-body duplicates first and thunks after, each group
+        // in listing order.
+        findings.extend(crate::cross_function::propagate(&bodies, &findings));
 
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
@@ -406,6 +419,24 @@ mod tests {
         program
     }
 
+    /// The matcher for the linker-folded-copy tests: the memcpy
+    /// signature additionally vetoes `thunk_` prototype lines, so a
+    /// folded copy named `thunk_…` makes no claim of its own and can
+    /// only inherit the match through the cross-function pass.
+    fn folded_copy_matcher() -> LibmatchMatcher {
+        LibmatchMatcher::with_signatures([LibmatchSignature::new(
+            "memcpy",
+            LibraryFamily::Crt,
+            [
+                r"\*\([^;]*\) = \*\(",
+                r"VAR = VAR \+ -1",
+                r"while \(VAR != 0\)",
+            ],
+            "slice copy",
+        )
+        .with_exclusions([r"\bif \(", r"thunk_"])])
+    }
+
     async fn scan(program: FakeProgram) -> LibmatchResult {
         LibmatchEngine::with_source(program)
             .scan("eqmain.dll")
@@ -536,6 +567,232 @@ mod tests {
         assert_eq!(claims.len(), 1, "one claim per function");
         assert_eq!(claims[0].target(), "memcpy");
         assert_eq!(claims[0].confidence().value(), 70);
+    }
+
+    #[tokio::test]
+    async fn an_identical_body_duplicate_inherits_the_matched_symbol() {
+        // A linker-folded (COMDAT/ICF) copy of a matched body: Ghidra
+        // names the second copy `thunk_…`, and the signature's
+        // exclusion vetoes that prototype line, so the duplicate makes
+        // no claim of its own — but its body is identical to the
+        // matched body's normalized shape, so it inherits the match.
+        let matcher = folded_copy_matcher();
+        let mut program = program();
+        program.listing.push(summary("thunk_FUN_180099999"));
+        program.bodies.insert(
+            "thunk_FUN_180099999".into(),
+            function(
+                "thunk_FUN_180099999",
+                "undefined8 * __fastcall thunk_FUN_180099999(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                MEMCPY_BODY,
+            ),
+        );
+        let result = LibmatchEngine::with_source(program)
+            .with_matcher(matcher)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<&LibmatchFinding> = result.for_function("thunk_FUN_180099999").collect();
+        assert_eq!(claims.len(), 1, "the duplicate inherits one claim");
+        assert_eq!(claims[0].kind(), "identical_body");
+        assert_eq!(
+            claims[0].target(),
+            "memcpy",
+            "the duplicate names the same matched symbol"
+        );
+        assert_eq!(claims[0].family(), LibraryFamily::Crt);
+        assert_eq!(
+            claims[0].confidence().value(),
+            crate::confidence::BODY_MATCH_CONFIDENCE,
+            "an identical body is the same body: it inherits the match whole, penalty-free"
+        );
+        assert!(
+            claims[0].evidence().contains("= *(undefined8"),
+            "the evidence is the duplicate's own body line, not the matched body's"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tail_call_thunk_inherits_the_match_at_a_penalized_confidence() {
+        // A one-line thunk: its whole body is a tail call to a matched
+        // function, so it inherits that match — at a confidence penalty,
+        // because the call line is thinner evidence than the matched
+        // body's own shape.
+        let mut program = program();
+        program.listing.push(summary("thunk_FUN_180099999"));
+        program.bodies.insert(
+            "thunk_FUN_180099999".into(),
+            function(
+                "thunk_FUN_180099999",
+                "undefined8 * __fastcall thunk_FUN_180099999(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                "  return FUN_18003ab00(param_1, param_2, param_3);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let claims: Vec<&LibmatchFinding> = result.for_function("thunk_FUN_180099999").collect();
+        assert_eq!(claims.len(), 1, "the thunk inherits one claim");
+        assert_eq!(claims[0].kind(), "tail_call_thunk");
+        assert_eq!(claims[0].target(), "memcpy");
+        assert_eq!(claims[0].family(), LibraryFamily::Crt);
+        assert_eq!(
+            claims[0].confidence().value(),
+            50,
+            "the match is inherited at the penalty below the matched body's score"
+        );
+        assert_eq!(
+            claims[0].evidence(),
+            "return FUN_18003ab00(param_1, param_2, param_3);",
+            "the evidence is the thunk's own call line"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_of_tail_call_thunks_collapses_onto_the_matched_function() {
+        // Two thunks deep, listed farthest-from-the-match first: the
+        // first tail-calls the second, which tail-calls the matched
+        // copy loop. Both inherit the match, and the chain pays the
+        // penalty once, not per hop, so both stand at one score — the
+        // whole chain collapses into the same downstream decision.
+        let mut program = program();
+        program.listing.push(summary("FUN_180099999"));
+        program.listing.push(summary("FUN_180098765"));
+        program.bodies.insert(
+            "FUN_180099999".into(),
+            function(
+                "FUN_180099999",
+                "undefined8 * __fastcall FUN_180099999(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                "  return FUN_180098765(param_1, param_2, param_3);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180098765".into(),
+            function(
+                "FUN_180098765",
+                "undefined8 * __fastcall FUN_180098765(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                "  return FUN_18003ab00(param_1, param_2, param_3);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        for name in ["FUN_180099999", "FUN_180098765"] {
+            let claims: Vec<&LibmatchFinding> = result.for_function(name).collect();
+            assert_eq!(claims.len(), 1, "{name} inherits one claim");
+            assert_eq!(claims[0].kind(), "tail_call_thunk");
+            assert_eq!(claims[0].target(), "memcpy");
+            assert_eq!(
+                claims[0].confidence().value(),
+                50,
+                "the chain pays the penalty once, not per hop"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn propagation_leaves_unrelated_bodies_unclaimed() {
+        // Three bodies the pass must leave silent: a one-line call to
+        // an *unmatched* function, a body that calls a matched
+        // function but has more to do than call, and a duplicate of an
+        // unmatched body. The matched function keeps its own claim.
+        let mut program = program();
+        program.listing.push(summary("FUN_180099999"));
+        program.listing.push(summary("FUN_180098765"));
+        program.listing.push(summary("FUN_180097777"));
+        program.bodies.insert(
+            "FUN_180099999".into(),
+            function(
+                "FUN_180099999",
+                "undefined8 * __fastcall FUN_180099999(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                "  return FUN_1800412a0(param_1, param_2, param_3);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180098765".into(),
+            function(
+                "FUN_180098765",
+                "undefined8 * __fastcall FUN_180098765(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                "  lVar1 = FUN_18003ab00(param_1, param_2, param_3);\n  lVar1 = lVar1 + 1;\n  return lVar1;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180097777".into(),
+            function(
+                "FUN_180097777",
+                "undefined8 * __fastcall FUN_180097777(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                GUARDED_COPY_BODY,
+            ),
+        );
+        let result = scan(program).await;
+
+        for name in ["FUN_180099999", "FUN_180098765", "FUN_180097777"] {
+            assert!(
+                result.for_function(name).next().is_none(),
+                "{name} carries no finding"
+            );
+        }
+        assert_eq!(result.findings.len(), 1, "only the matched body is claimed");
+        assert_eq!(result.findings[0].function(), "FUN_18003ab00");
+    }
+
+    #[tokio::test]
+    async fn cross_function_findings_append_after_the_per_function_findings() {
+        // The thunk stands first in the listing and the identical
+        // duplicate last, but the per-function walk's claim still
+        // lands first: cross-function findings append after every
+        // per-function finding, each group in listing order.
+        let matcher = folded_copy_matcher();
+        let mut program = FakeProgram {
+            listing: vec![
+                summary("FUN_180099999"),
+                summary("FUN_18003ab00"),
+                summary("thunk_FUN_180098765"),
+            ],
+            ..FakeProgram::default()
+        };
+        program.bodies.insert(
+            "FUN_180099999".into(),
+            function(
+                "FUN_180099999",
+                "undefined8 * __fastcall FUN_180099999(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                "  return FUN_18003ab00(param_1, param_2, param_3);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined8 * __fastcall FUN_18003ab00(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                MEMCPY_BODY,
+            ),
+        );
+        program.bodies.insert(
+            "thunk_FUN_180098765".into(),
+            function(
+                "thunk_FUN_180098765",
+                "undefined8 * __fastcall thunk_FUN_180098765(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                MEMCPY_BODY,
+            ),
+        );
+        let result = LibmatchEngine::with_source(program)
+            .with_matcher(matcher)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("FUN_18003ab00", "body_signature"),
+                ("thunk_FUN_180098765", "identical_body"),
+                ("FUN_180099999", "tail_call_thunk"),
+            ]
+        );
     }
 
     /// Parse a signature-file document, for the tests that configure a

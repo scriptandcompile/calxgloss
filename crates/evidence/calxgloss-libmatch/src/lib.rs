@@ -21,7 +21,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eight modules:
+//! The crate is organized into nine modules:
 //!
 //! - [`types`] - Core data types: `LibmatchMatch` and `LibraryFamily`
 //!   for per-function detection records; `LibmatchFinding` as the
@@ -41,6 +41,9 @@
 //!   scan findings.
 //! - [`matcher`] - Signature matching: `LibmatchMatcher` carries the
 //!   signature set a scan reads normalized bodies against.
+//! - [`cross_function`] - Cross-function propagation over the bodies
+//!   one scan keeps: identical-body duplicates inherit a match, and
+//!   tail-call thunks inherit at a penalty. Internal to the scan.
 //! - [`engine`] - Scan orchestration: `LibmatchEngine` runs the matcher
 //!   over one loaded program through a `ScanSource` (function listing +
 //!   decompile-by-name), one sequential pass that decompiles each
@@ -51,6 +54,7 @@
 //! - [`error`] - [`LibmatchError`] and the crate-wide [`Result`] alias.
 
 pub mod confidence;
+pub(crate) mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod matcher;

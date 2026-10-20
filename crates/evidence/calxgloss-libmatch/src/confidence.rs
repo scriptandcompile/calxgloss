@@ -30,6 +30,15 @@ use crate::types::LibmatchFinding;
 /// hypothesis for review, not a fact applied to the program.
 pub const BODY_MATCH_CONFIDENCE: u8 = 60;
 
+/// The confidence a tail-call thunk pays to inherit its callee's match:
+/// the thunk's whole body is one call line, which proves the wrapper
+/// relationship but only relays the callee's identified shape, so the
+/// claim sits a rung below the matched body's own score. The penalty
+/// is paid once per chain, not per hop: a chain of thunks all stands
+/// at one score, so the whole chain collapses into the same downstream
+/// decision.
+pub const TAIL_CALL_CONFIDENCE_PENALTY: u8 = 10;
+
 /// Resolve competing claims down to one per function.
 ///
 /// Where several signatures claim one function, the highest-confidence

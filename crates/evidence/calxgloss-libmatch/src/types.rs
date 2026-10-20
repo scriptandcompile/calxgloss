@@ -7,9 +7,10 @@
 //!   the matched library symbol and its family (CRT/STL), the Rust
 //!   equivalent the match suggests, and the confidence and evidence behind
 //!   the claim.
-//! - `LibmatchFinding`: the finding union — one variant today, the shape
-//!   later propagation kinds (identical-body inheritance, tail-call
-//!   thunks) will join — serde-tagged by `kind`.
+//! - `LibmatchFinding`: the finding union — the per-function
+//!   body-signature match and the cross-function propagation kinds
+//!   (identical-body inheritance, tail-call thunks) — serde-tagged by
+//!   `kind`.
 //! - `LibmatchResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
 //!
@@ -90,69 +91,78 @@ pub struct LibmatchMatch {
 
 /// One known-library finding, whichever pass made it.
 ///
-/// The union is what the persisted result carries. Today only the
-/// per-function body-signature match lands; the cross-function
-/// propagation kinds (an identical-body duplicate inheriting a match, a
-/// tail-call thunk inheriting at a penalty) join as further variants when
-/// they land, and consumers reading the shared shape — function, kind,
-/// target, confidence, evidence — are unaffected. The serde `kind` tag
-/// names the record shape in the persisted JSON.
+/// The union is what the persisted result carries: the per-function
+/// body-signature match and the cross-function propagation kinds — an
+/// identical-body duplicate inheriting a match, a tail-call thunk
+/// inheriting at a penalty — all riding the same [`LibmatchMatch`]
+/// record, so consumers reading the shared shape (function, kind,
+/// target, confidence, evidence) are unaffected by which pass made the
+/// finding. The serde `kind` tag names the record shape in the
+/// persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LibmatchFinding {
     /// A built-in or supplied body signature matched the decompiled body.
     BodySignature(LibmatchMatch),
+    /// A body whose normalized shape is identical to a matched body —
+    /// a linker-folded (COMDAT/ICF) copy of the same routine — which
+    /// inherits the match whole, at the matched body's confidence.
+    IdenticalBody(LibmatchMatch),
+    /// A body whose only statement is a tail call to a matched
+    /// function — a thunk or wrapper — which inherits the match at a
+    /// confidence penalty.
+    TailCallThunk(LibmatchMatch),
 }
 
 impl LibmatchFinding {
+    /// The match record every variant carries — the finding's shared
+    /// shape, whichever pass made it.
+    fn record(&self) -> &LibmatchMatch {
+        match self {
+            LibmatchFinding::BodySignature(record)
+            | LibmatchFinding::IdenticalBody(record)
+            | LibmatchFinding::TailCallThunk(record) => record,
+        }
+    }
+
     /// The function the finding is about.
     pub fn function(&self) -> &str {
-        match self {
-            LibmatchFinding::BodySignature(record) => &record.function,
-        }
+        &self.record().function
     }
 
     /// The matched library symbol, e.g. `memcpy` — what the finding
     /// names, spelled for a report row.
     pub fn target(&self) -> &str {
-        match self {
-            LibmatchFinding::BodySignature(record) => &record.symbol,
-        }
+        &self.record().symbol
     }
 
     /// The library family the matched symbol belongs to.
     pub fn family(&self) -> LibraryFamily {
-        match self {
-            LibmatchFinding::BodySignature(record) => record.family,
-        }
+        self.record().family
     }
 
     /// The Rust equivalent the match suggests.
     pub fn suggestion(&self) -> &str {
-        match self {
-            LibmatchFinding::BodySignature(record) => &record.suggestion,
-        }
+        &self.record().suggestion
     }
 
     /// Confidence that the finding is right.
     pub fn confidence(&self) -> Confidence {
-        match self {
-            LibmatchFinding::BodySignature(record) => record.confidence,
-        }
+        self.record().confidence
     }
 
     /// The decompiled lines that support the finding.
     pub fn evidence(&self) -> &str {
-        match self {
-            LibmatchFinding::BodySignature(record) => &record.evidence,
-        }
+        &self.record().evidence
     }
 
-    /// The serde `kind` tag — `body_signature` — naming the pass behind
-    /// the finding.
+    /// The serde `kind` tag — `body_signature`, `identical_body`, or
+    /// `tail_call_thunk` — naming the pass behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             LibmatchFinding::BodySignature(_) => "body_signature",
+            LibmatchFinding::IdenticalBody(_) => "identical_body",
+            LibmatchFinding::TailCallThunk(_) => "tail_call_thunk",
         }
     }
 }
@@ -247,6 +257,19 @@ mod tests {
         assert!(json.contains("\"kind\":\"body_signature\""));
         let back: LibmatchFinding = serde_json::from_str(&json).unwrap();
         assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn propagated_findings_serde_round_trip_tagged_by_kind() {
+        for (finding, kind) in [
+            (LibmatchFinding::IdenticalBody(matched()), "identical_body"),
+            (LibmatchFinding::TailCallThunk(matched()), "tail_call_thunk"),
+        ] {
+            let json = serde_json::to_string(&finding).unwrap();
+            assert!(json.contains(&format!("\"kind\":\"{kind}\"")));
+            let back: LibmatchFinding = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, finding);
+        }
     }
 
     #[test]

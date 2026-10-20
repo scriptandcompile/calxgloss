@@ -181,6 +181,53 @@ mod tests {
     }
 
     #[test]
+    fn propagated_findings_persist_in_the_same_document_with_their_own_confidence() {
+        // The cross-function findings ride the per-binary document
+        // beside the direct match, each keeping its own confidence.
+        let dir = TempDir::new().expect("temp dir should be created");
+        let persistor = LibmatchPersistor::with_cache_dir(dir.path());
+        let mut saved = result("eqmain.dll");
+        saved
+            .findings
+            .push(LibmatchFinding::IdenticalBody(LibmatchMatch {
+                function: "thunk_FUN_180098765".into(),
+                symbol: "memcpy".into(),
+                family: LibraryFamily::Crt,
+                suggestion: "slice copy — `copy_nonoverlapping`".into(),
+                confidence: Confidence::new(60),
+                evidence: "*(undefined8 *)((long)puVar7 + -8) = *(undefined8 *)((long)lVar9 + -8);"
+                    .into(),
+            }));
+        saved
+            .findings
+            .push(LibmatchFinding::TailCallThunk(LibmatchMatch {
+                function: "FUN_180099999".into(),
+                symbol: "memcpy".into(),
+                family: LibraryFamily::Crt,
+                suggestion: "slice copy — `copy_nonoverlapping`".into(),
+                confidence: Confidence::new(50),
+                evidence: "return FUN_18003ab00(param_1, param_2, param_3);".into(),
+            }));
+
+        persistor.save(&saved).expect("save should succeed");
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("load should succeed after a save");
+
+        assert_eq!(loaded, saved);
+        let kinds: Vec<&str> = loaded.findings.iter().map(|f| f.kind()).collect();
+        assert_eq!(
+            kinds,
+            ["body_signature", "identical_body", "tail_call_thunk"]
+        );
+        assert_eq!(
+            loaded.findings[2].confidence(),
+            Confidence::new(50),
+            "the thunk keeps its penalized score through the file"
+        );
+    }
+
+    #[test]
     fn new_files_results_under_re_analysis_libmatch() {
         let dir = TempDir::new().expect("temp dir should be created");
         let persistor = LibmatchPersistor::new(dir.path());
