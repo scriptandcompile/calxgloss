@@ -74,6 +74,18 @@ impl<S> LibmatchEngine<S> {
         self
     }
 
+    /// Match bodies against an operator-supplied
+    /// [database](crate::signature_db::SignatureDatabase)'s signature
+    /// set instead of the built-in starter set — the file's set
+    /// replaces the built-in one whole, never merged into it.
+    pub fn with_signature_database(
+        mut self,
+        database: crate::signature_db::SignatureDatabase,
+    ) -> Self {
+        self.matcher = LibmatchMatcher::with_signatures(database.signatures);
+        self
+    }
+
     /// Identify known-library functions across `binary`, decompiling
     /// each function exactly once and matching its normalized body
     /// against every configured signature.
@@ -174,6 +186,7 @@ mod tests {
     use super::*;
     use crate::matcher::LibmatchMatcher;
     use crate::signature::LibmatchSignature;
+    use crate::signature_db::SignatureDatabase;
     use crate::types::LibraryFamily;
     use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
@@ -345,6 +358,21 @@ mod tests {
   return param_1;
 ";
 
+    /// The copy loop again, but allocating its destination first — the
+    /// `malloc` call line is what required and forbidden callee
+    /// references gate on.
+    const ALLOCATING_COPY_BODY: &str = "\
+  puVar1 = malloc(param_3);
+  lVar2 = param_2;
+  do {
+    param_3 = param_3 + -1;
+    *(undefined *)((long)puVar1 + -1) = *(undefined *)((long)lVar2 + -1);
+    lVar2 = lVar2 + 1;
+    puVar1 = puVar1 + 1;
+  } while (param_3 != 0);
+  return puVar1;
+";
+
     /// The canned program: one function whose body is the memcpy idiom,
     /// one plain function that matches nothing, and one guarded copy
     /// the starter set vetoes.
@@ -508,6 +536,138 @@ mod tests {
         assert_eq!(claims.len(), 1, "one claim per function");
         assert_eq!(claims[0].target(), "memcpy");
         assert_eq!(claims[0].confidence().value(), 70);
+    }
+
+    /// Parse a signature-file document, for the tests that configure a
+    /// scan from a supplied database. The documents are spelled as file
+    /// contents on purpose: these tests pin the file format at the
+    /// scan seam.
+    fn database_document(json: &str) -> SignatureDatabase {
+        serde_json::from_str(json).expect("the database document parses")
+    }
+
+    #[tokio::test]
+    async fn a_scan_configured_from_a_supplied_database_recognizes_a_shape_only_the_file_carries() {
+        // A supplied database teaches the scan shapes no built-in set
+        // claims on its own: the guarded copy reads as `memmove` at
+        // the entry's stated confidence, and the plain copy loop is
+        // claimed by the file's own entry — without a stated
+        // confidence, at the standard body-evidence score. And the
+        // swap is whole: the file replaces the built-in set, so the
+        // built-in `memcpy` claim is gone — what stands on the copy
+        // loop is the file's entry, not the built-in one.
+        let database = database_document(
+            r#"{
+                "signatures": [
+                    {
+                        "symbol": "memmove",
+                        "family": "crt",
+                        "match_patterns": ["\\bif \\(", "VAR = VAR \\+ -1", "while \\(VAR != 0\\)"],
+                        "min_lines": 6,
+                        "confidence": 75,
+                        "suggestion": "overlapping slice copy — `copy_within`"
+                    },
+                    {
+                        "symbol": "copy_loop",
+                        "family": "crt",
+                        "match_patterns": ["\\*\\([^;]*\\) = \\*\\(", "VAR = VAR \\+ -1", "while \\(VAR != 0\\)"],
+                        "min_lines": 6,
+                        "suggestion": "slice copy — `copy_nonoverlapping`"
+                    }
+                ]
+            }"#,
+        );
+        let result = LibmatchEngine::with_source(program())
+            .with_signature_database(database)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let guarded: Vec<&LibmatchFinding> = result.for_function("FUN_1800412a0").collect();
+        assert_eq!(guarded.len(), 1, "the guarded copy fits the memmove entry");
+        assert_eq!(guarded[0].target(), "memmove");
+        assert_eq!(
+            guarded[0].confidence().value(),
+            75,
+            "the finding scores at the entry's stated confidence"
+        );
+
+        let copy: Vec<&LibmatchFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(copy.len(), 1);
+        assert_eq!(
+            copy[0].target(),
+            "copy_loop",
+            "the built-in memcpy claim is gone — the file replaces the set whole"
+        );
+        assert_eq!(
+            copy[0].confidence().value(),
+            crate::confidence::BODY_MATCH_CONFIDENCE,
+            "an entry without a stated confidence scores at the standard body-evidence score"
+        );
+    }
+
+    #[tokio::test]
+    async fn required_and_forbidden_callee_references_gate_matching() {
+        // An entry can require a callee reference — "calls `malloc`" —
+        // and forbid one. The allocating copy fits only the entry that
+        // requires the call; the plain copy loop fits only the entry
+        // that forbids it.
+        let mut program = program();
+        program.listing.push(summary("FUN_18005cd00"));
+        program.bodies.insert(
+            "FUN_18005cd00".into(),
+            function(
+                "FUN_18005cd00",
+                "undefined8 * __fastcall FUN_18005cd00(undefined8 *param_1,undefined8 *param_2,ulong param_3)",
+                ALLOCATING_COPY_BODY,
+            ),
+        );
+        let copy_shapes = [
+            r"\*\([^;]*\) = \*\(",
+            r"VAR = VAR \+ -1",
+            r"while \(VAR != 0\)",
+        ];
+        let database = SignatureDatabase {
+            signatures: vec![
+                LibmatchSignature::new(
+                    "allocating_copy",
+                    LibraryFamily::Crt,
+                    copy_shapes
+                        .into_iter()
+                        .map(|shape| shape.to_string())
+                        .chain([r"\bmalloc\b".to_string()]),
+                    "allocate and fill — `Vec::with_capacity` plus a copy",
+                ),
+                LibmatchSignature::new(
+                    "plain_copy",
+                    LibraryFamily::Crt,
+                    copy_shapes,
+                    "slice copy — `copy_nonoverlapping`",
+                )
+                .with_exclusions([r"\bmalloc\b"]),
+            ],
+        };
+        let result = LibmatchEngine::with_source(program)
+            .with_signature_database(database)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let plain: Vec<&LibmatchFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(plain.len(), 1);
+        assert_eq!(
+            plain[0].target(),
+            "plain_copy",
+            "the copy without a malloc call fits the entry forbidding the reference"
+        );
+
+        let allocating: Vec<&LibmatchFinding> = result.for_function("FUN_18005cd00").collect();
+        assert_eq!(allocating.len(), 1);
+        assert_eq!(
+            allocating[0].target(),
+            "allocating_copy",
+            "only the entry requiring the malloc call fits the allocating copy"
+        );
     }
 
     #[tokio::test]

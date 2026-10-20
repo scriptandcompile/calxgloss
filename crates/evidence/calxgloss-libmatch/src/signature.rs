@@ -7,15 +7,16 @@
 //! tiny functions from accidentally fitting a broad shape, and an
 //! optional per-entry confidence that overrides the scan's standard
 //! body-evidence score. The entry type is its own serde shape, per
-//! ADR-0023's pattern-database precedent, so a supplied database file
-//! can carry these entries whole later without a format change.
+//! ADR-0023's pattern-database precedent, so a supplied
+//! [database file](crate::signature_db) carries these entries whole
+//! without a format change.
 //!
 //! [`default_signatures`] is the built-in starter set — the
 //! highest-frequency MSVC CRT shapes, hand-authored against the
-//! [normalize](crate::normalize) contract. It is deliberately small:
-//! every entry trades a false-positive risk against a missed library
-//! function, and the operator-supplied database (a later ticket) is the
-//! growth path.
+//! [normalize](crate::normalize) contract. The set is deliberately
+//! small: every entry trades a false-positive risk against a missed
+//! library function, and the operator-supplied
+//! [signature database](crate::signature_db) is the growth path.
 
 use serde::{Deserialize, Serialize};
 

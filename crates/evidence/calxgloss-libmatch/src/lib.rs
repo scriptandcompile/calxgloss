@@ -21,7 +21,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into seven modules:
+//! The crate is organized into eight modules:
 //!
 //! - [`types`] - Core data types: `LibmatchMatch` and `LibraryFamily`
 //!   for per-function detection records; `LibmatchFinding` as the
@@ -32,6 +32,10 @@
 //!   line-count floor, and an optional per-entry confidence;
 //!   `default_signatures` is the built-in starter set carrying the
 //!   highest-frequency MSVC CRT shapes.
+//! - [`signature_db`] - The operator-supplied signature database:
+//!   `SignatureDatabase`, one strict JSON document carrying the
+//!   signature set whole, per ADR-0023's pattern-database contract; a
+//!   supplied file replaces the built-in set.
 //! - [`normalize`] - Body normalization: the wildcards that make a body
 //!   shape comparable. Internal; never tested directly, only through
 //!   scan findings.
@@ -53,6 +57,7 @@ pub mod matcher;
 pub(crate) mod normalize;
 pub mod persist;
 pub mod signature;
+pub mod signature_db;
 pub mod types;
 
 pub use error::{LibmatchError, Result};

@@ -406,11 +406,16 @@ pub(super) enum Command {
     /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
+    /// * `--signatures` — JSON signature database file: run the scan
+    ///   with the file's signatures instead of the built-in starter
+    ///   set, whole. A malformed file fails the run naming its path.
+    ///   Ignored on the `--show` path, which reads a cached result.
     ///
     /// # Examples
     ///
     /// ```text
     /// calxgloss libmatch --binary eqmain.dll --show
+    /// calxgloss libmatch --binary eqmain.dll --signatures my-signatures.json
     /// ```
     Libmatch {
         /// Binary to scan, e.g. `eqmain.dll`
@@ -420,6 +425,10 @@ pub(super) enum Command {
         /// Show the cached result instead of running the scan
         #[arg(long)]
         show: bool,
+
+        /// JSON signature database replacing the built-in signature set
+        #[arg(long, value_name = "FILE")]
+        signatures: Option<PathBuf>,
     },
 
     /// Detect concurrency constructs (mutex/lock pairings, atomic

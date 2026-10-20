@@ -294,13 +294,23 @@ fn main() -> Result<()> {
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_memory(&binary, &workspace, show, &settings))
         }
-        Command::Libmatch { binary, show } => {
+        Command::Libmatch {
+            binary,
+            show,
+            signatures,
+        } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_libmatch(&binary, &workspace, show, &settings))
+                .block_on(handle_libmatch(
+                    &binary,
+                    &workspace,
+                    show,
+                    signatures.as_deref(),
+                    &settings,
+                ))
         }
         Command::Sync { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);

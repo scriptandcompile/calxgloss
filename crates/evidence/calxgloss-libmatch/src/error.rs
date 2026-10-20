@@ -31,6 +31,18 @@ pub enum LibmatchError {
     /// than letting it persist a phantom-clean record.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
+
+    /// A `--signatures` signature database file could not be read: it
+    /// is missing, unreadable, or not a valid signature document. The
+    /// path is named so the operator knows which file to fix — a
+    /// malformed database fails the run loudly rather than silently
+    /// degrading recognition to a partial set.
+    #[error("could not read signature database {}: {source}", .path.display())]
+    SignatureDatabase {
+        path: std::path::PathBuf,
+        #[source]
+        source: calxgloss_types::persist::PersistError,
+    },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the

@@ -7,12 +7,19 @@
 //! program and saves the result to `re/analysis/libmatch/{binary}.json`
 //! in the workspace. `--show` prints a cached result without running the
 //! scan.
+//!
+//! With `--signatures <file>`, the scan reads its signature set from a
+//! JSON [signature database](calxgloss_libmatch::signature_db) instead
+//! of the built-in starter set — a malformed file fails the run naming
+//! its path. The flag is ignored on the `--show` path, which prints a
+//! cached result without scanning.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use calxgloss_libmatch::engine::LibmatchEngine;
 use calxgloss_libmatch::persist::LibmatchPersistor;
+use calxgloss_libmatch::signature_db::SignatureDatabase;
 use calxgloss_libmatch::types::LibmatchResult;
 use chrono::DateTime;
 use tracing::info;
@@ -24,11 +31,15 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `libmatch` subcommand: identify known-library functions
-/// for `binary`, or print the cached result when `show` is set.
+/// for `binary`, or print the cached result when `show` is set. With
+/// `signatures`, run the scan with that [database](SignatureDatabase)'s
+/// signature set instead of the built-in starter set; the flag means
+/// nothing to a cached result, so `show` ignores it.
 pub async fn handle_libmatch(
     binary: &str,
     workspace: &Path,
     show: bool,
+    signatures: Option<&Path>,
     settings: &Settings,
 ) -> Result<()> {
     let persistor = LibmatchPersistor::new(workspace);
@@ -49,6 +60,17 @@ pub async fn handle_libmatch(
     let kuna = load_kuna_source(settings, binary)?;
 
     let engine = LibmatchEngine::new(&kuna);
+    // A malformed database fails the run loudly — the error already
+    // names the file path and the reason, so a typo never silently
+    // degrades recognition to a partial set.
+    let engine = match signatures {
+        Some(path) => {
+            engine.with_signature_database(SignatureDatabase::load(path).with_context(|| {
+                format!("Failed to load the signature database: {}", path.display())
+            })?)
+        }
+        None => engine,
+    };
     let result = engine
         .scan(binary)
         .await
