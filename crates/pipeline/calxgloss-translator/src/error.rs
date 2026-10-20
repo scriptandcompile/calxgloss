@@ -43,7 +43,9 @@ pub enum TranslatorError {
     /// named function is refused rather than spending LLM tokens on a body
     /// that owns no logic (a `DelayLoad_` thunk, for instance, decompiles
     /// to an unrecovered jumptable plus a bare `return`). The reason names
-    /// the root pattern that matched.
+    /// the root pattern that matched, or — for a thunk the symbol table
+    /// named after its import, invisible to the name patterns — the
+    /// self-call body shape that stands in for the pattern (issue #269).
     #[error("refusing to translate '{function}' from '{binary}': {reason}")]
     SkippedRoot {
         binary: String,

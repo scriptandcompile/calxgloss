@@ -9,6 +9,12 @@
 //! into plausible, hollow Rust. This module reads the warnings out of the
 //! decompiler body before a prompt is built, so the pipeline can name the
 //! jump a human needs to look at instead of quietly translating around it.
+//!
+//! Alongside the warnings it reads one body *shape*: an import thunk the
+//! symbol table named after its import decompiles as a call to its own name,
+//! and [`is_self_call_thunk`] recognizes it so the pipeline refuses the
+//! veneer instead of translating the apparent recursion into a Rust function
+//! that calls itself (issue #269).
 
 /// An indirect jump the decompiler could not resolve into a switch: it gave
 /// up on the jump table and treats the jump as a call. Ghidra says so with a
@@ -88,6 +94,173 @@ pub fn scan_unrecovered_jump_tables(decompiler_output: &str) -> Vec<UnrecoveredJ
         }
     }
     found
+}
+
+// ============================================================
+// Self-call thunk shape
+// ============================================================
+
+/// Whether the whole decompiled body is one unconditional call to the
+/// function's own name — an import thunk the decompiler renders as a
+/// self-call (issue #269).
+///
+/// The PE carries a one-instruction veneer whose body is a tail-jump to the
+/// real imported API (`jmp [__imp_SetCursor]` → `user32!SetCursor`), and the
+/// symbol table names the veneer after the import it jumps to. The decompiler
+/// renders a tail-jump to a symbol as a call to that symbol, which prints as
+/// a call to the function's own name: Ghidra spells it `SetCursor(); return;`,
+/// Kuna spells it `return SetCursor(); // jump-as-call`, wearing a cast when
+/// the veneer converts the return type. It reads as infinite recursion; at
+/// runtime it is a single jump, and the veneer owns no logic — callers reach
+/// the real API through the PAL mappings.
+///
+/// The reading is deliberately strict. Comments are stripped, the body is
+/// split into `;`-terminated statements, and the statements must be exactly
+/// one call to `function` — bare, `return`-prefixed, or cast-wrapped —
+/// optionally followed by a bare `return`. A genuine recursive function
+/// always carries a base case, so its body holds more than the self-call and
+/// reads `false`; a call to any other name is a wrapper or a veneer under a
+/// name the root patterns already catch, and reads `false` too. A `;` inside
+/// a string literal in the call's arguments would split the statements
+/// wrongly and miss the shape — a miss costs only a translation attempt,
+/// today's behavior, never a wrong refusal.
+pub fn is_self_call_thunk(function: &str, decompiler_output: &str) -> bool {
+    if function.is_empty() {
+        return false;
+    }
+    let Some(body) = between_braces(decompiler_output) else {
+        return false;
+    };
+    let body = strip_comments(&body);
+    let statements: Vec<&str> = body
+        .split(';')
+        .map(str::trim)
+        .filter(|statement| !statement.is_empty())
+        .collect();
+    match statements.as_slice() {
+        // The whole body is the call: `return puts(a0);` (Kuna's tail-call
+        // spelling) or a lone `SetCursor();` with nothing after it.
+        [call] => is_self_call(call, function),
+        // The call followed by a bare `return`: Ghidra's `SetCursor();
+        // return;` and Kuna's `free(a0); // jump-as-call` + `return;`.
+        [call, tail] => *tail == "return" && is_self_call(call, function),
+        _ => false,
+    }
+}
+
+/// The body text between the first `{` and the last `}` that follows it —
+/// the decompiler's brace block, signature line and all text after the
+/// closing brace dropped. No braces, no body.
+fn between_braces(decompiler_output: &str) -> Option<String> {
+    let open = decompiler_output.find('{')?;
+    let close = decompiler_output[open + 1..].rfind('}')?;
+    Some(decompiler_output[open + 1..open + 1 + close].to_string())
+}
+
+/// Drop `//` and `/* */` comments, keeping string literals intact so a
+/// comment marker inside a literal is never mistaken for a comment.
+fn strip_comments(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if !in_string => {
+                in_string = true;
+                out.push(c);
+            }
+            '"' => {
+                in_string = false;
+                out.push(c);
+            }
+            '\\' if in_string => {
+                out.push(c);
+                if let Some(escaped) = chars.next() {
+                    out.push(escaped);
+                }
+            }
+            '/' if !in_string && chars.peek() == Some(&'/') => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push(c);
+                        break;
+                    }
+                }
+            }
+            '/' if !in_string && chars.peek() == Some(&'*') => {
+                chars.next();
+                while let (Some(a), Some(b)) = (chars.next(), chars.peek()) {
+                    if a == '*' && *b == '/' {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether one statement is a call to `function`: an optional `return`
+/// prefix, any cast wrappers, then the name immediately followed by its
+/// argument list, closing at the end of the statement. The name must be
+/// *called*, not merely mentioned: `SetCursorEx()` is not `SetCursor()`,
+/// and the `(` required right after the name is what enforces that.
+fn is_self_call(statement: &str, function: &str) -> bool {
+    let rest = strip_casts(strip_word(statement, "return").trim());
+    let Some(args) = rest
+        .strip_prefix(function)
+        .and_then(|r| r.trim_start().strip_prefix('('))
+    else {
+        return false;
+    };
+    matching_paren(args).is_some_and(|end| end + 1 == args.len())
+}
+
+/// Strip a leading keyword (`return`) when the statement continues past it.
+fn strip_word<'a>(statement: &'a str, word: &str) -> &'a str {
+    match statement.strip_prefix(word) {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest,
+        _ => statement,
+    }
+}
+
+/// Strip leading cast wrappers like `(void *)` — a parenthesized group with
+/// no nested call inside it — so Kuna's `return (void *)malloc(a0)` reads as
+/// a call to `malloc`.
+fn strip_casts(mut rest: &str) -> &str {
+    while let Some(inner_end) = rest
+        .strip_prefix('(')
+        .and_then(|r| matching_paren(r).map(|e| e + 1))
+    {
+        let inner = &rest[1..inner_end];
+        if inner.contains('(') || inner.contains(',') {
+            break;
+        }
+        rest = rest[1 + inner_end..].trim_start();
+    }
+    rest
+}
+
+/// Index of the `)` closing an argument list that has already been opened:
+/// `s` starts just after the `(`, and the answer is the index in `s` where
+/// the depth returns to zero. `None` when the parens never balance.
+fn matching_paren(s: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (index, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // ============================================================
@@ -237,5 +410,135 @@ undefined8 sub_140002490(undefined8 param_1)
   return 0;
 }";
         assert!(scan_unrecovered_jump_tables(body).is_empty());
+    }
+
+    // --- Self-call thunk shape (issue #269) ------------------------------
+
+    /// The observed body that motivated the shape: `LaunchPad.exe`'s
+    /// `SetCursor` veneer, named after the user32 import it tail-jumps to,
+    /// decompiled as a call to its own name.
+    fn set_cursor_body() -> &'static str {
+        "\
+void SetCursor(void)
+{
+  SetCursor();
+  return;
+}"
+    }
+
+    #[test]
+    fn the_observed_set_cursor_body_reads_as_a_self_call_thunk() {
+        assert!(is_self_call_thunk("SetCursor", set_cursor_body()));
+    }
+
+    /// The same veneer as Kuna renders it, straight from the fixture's
+    /// MinGW import thunks: the `// jump-as-call` slug, the `return`-prefixed
+    /// tail call, and the cast wrapper when the veneer converts the type.
+    #[test]
+    fn the_kuna_spellings_of_the_same_shape_all_read() {
+        let bare = "\
+void free(void *a0)
+{
+  free(a0); // jump-as-call
+  return;
+}";
+        let returned = "\
+int4 puts(char *a0)
+{
+  return puts(a0); // jump-as-call
+}";
+        let cast = "\
+void * malloc(uint8 a0)
+{
+  return (void *)malloc(a0); // jump-as-call
+}";
+        assert!(is_self_call_thunk("free", bare));
+        assert!(is_self_call_thunk("puts", returned));
+        assert!(is_self_call_thunk("malloc", cast));
+    }
+
+    /// A genuine recursive function keeps its base case, so its body is
+    /// never just the self-call — the shape refuses the veneer, not
+    /// recursion.
+    #[test]
+    fn a_genuine_recursion_with_a_base_case_is_not_the_shape() {
+        let body = "\
+int4 fact(int4 n)
+{
+  if (n <= 1) {
+    return 1;
+  }
+  return n * fact(n - 1);
+}";
+        assert!(!is_self_call_thunk("fact", body));
+    }
+
+    #[test]
+    fn a_call_to_another_name_is_not_a_self_call() {
+        let body = "\
+void thunk_FUN_180098765(undefined8 param_1)
+{
+  FUN_18003ab00(param_1);
+  return;
+}";
+        assert!(!is_self_call_thunk("thunk_FUN_180098765", body));
+    }
+
+    /// The name must be *called*, not merely similar: a longer name sharing
+    /// the prefix, and the same call under a different function name, both
+    /// read false.
+    #[test]
+    fn a_name_lookalike_is_not_a_self_call() {
+        let body = "\
+void SetCursor(void)
+{
+  SetCursorEx();
+  return;
+}";
+        assert!(!is_self_call_thunk("SetCursor", body));
+        assert!(!is_self_call_thunk("SetCursorEx", set_cursor_body()));
+    }
+
+    #[test]
+    fn an_empty_body_or_a_body_without_braces_is_not_the_shape() {
+        assert!(!is_self_call_thunk(
+            "SetCursor",
+            "void SetCursor(void)\n{\n}"
+        ));
+        assert!(!is_self_call_thunk("SetCursor", ""));
+        assert!(!is_self_call_thunk("SetCursor", "SetCursor(); return;"));
+    }
+
+    /// The call must be the whole body: a self-call with anything else —
+    /// a second call, an assignment, a return value — is not the veneer.
+    #[test]
+    fn a_self_call_with_anything_else_in_the_body_is_not_the_shape() {
+        let twice = "\
+void loop(void)
+{
+  loop();
+  loop();
+}";
+        let assigned = "\
+int4 puts(char *a0)
+{
+  int4 iVar1;
+  iVar1 = puts(a0);
+  return iVar1;
+}";
+        assert!(!is_self_call_thunk("loop", twice));
+        assert!(!is_self_call_thunk("puts", assigned));
+    }
+
+    /// A Ghidra spelling with the `return`-prefixed tail call reads too —
+    /// the shape is engine-agnostic, the comment slugs are decoration.
+    #[test]
+    fn a_return_prefixed_self_call_without_a_comment_reads() {
+        let body = "\
+undefined4 GetTickCount(void)
+{
+  return GetTickCount();
+}";
+        assert!(is_self_call_thunk("GetTickCount", body));
     }
 }

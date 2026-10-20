@@ -877,6 +877,15 @@ impl TranslationPipeline {
         let function_info = self.fetch_function(binary, function).await?;
         info!(binary, function, "Fetched function metadata");
 
+        // Body-shape guard (issue #269): an import thunk the symbol table
+        // named after its import — `SetCursor` carrying only
+        // `SetCursor(); return;` — matches no name-based root pattern, but
+        // its body is one unconditional call to its own name. Refuse it
+        // here, before the prompt is built and any token is spent: the LLM
+        // would faithfully translate the apparent recursion into a Rust
+        // function that calls itself.
+        self.refuse_self_call_thunk(binary, function, &function_info.decompiler_output)?;
+
         // Triage: Ghidra's analysis failures ride inside the pseudo-C as
         // WARNING comments. Name them before the LLM sees the body — an
         // unrecovered jump table otherwise becomes a plausible, hollow
@@ -1264,6 +1273,15 @@ impl TranslationPipeline {
             ));
         }
 
+        // Same body-shape guard as [`translate`](Self::translate): a
+        // pre-built request carrying a thunk's self-call body is no reason
+        // to spend LLM tokens on a veneer that owns no logic.
+        self.refuse_self_call_thunk(
+            &request.binary,
+            &request.function,
+            &request.decompiler_output,
+        )?;
+
         self.triage_decompiler_warnings(
             &request.binary,
             &request.function,
@@ -1486,6 +1504,41 @@ impl TranslationPipeline {
                 binary: binary.to_string(),
                 function: function.to_string(),
                 reason: pattern.description.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse a translate request for a function whose whole decompiled
+    /// body is one unconditional call to its own name — an import thunk the
+    /// decompiler renders as a self-call (issue #269).
+    ///
+    /// The name-based root patterns cannot see these: the symbol table names
+    /// the veneer after the import it tail-jumps to, so `SetCursor` carries
+    /// no `thunk_` marker and matches no pattern. The body shape is the
+    /// tell, and unlike the name guard this one can only run once the body
+    /// is in hand — but still before the prompt is built and any LLM token
+    /// is spent. The reason names the shape so the operator learns the same
+    /// *why* the root patterns give: the veneer owns no logic, and the
+    /// caller's translation reaches the real API through the PAL mappings.
+    /// A genuinely recursive function — a self-call inside real logic, with
+    /// a base case — is not this shape and is never refused here.
+    fn refuse_self_call_thunk(
+        &self,
+        binary: &str,
+        function: &str,
+        decompiler_output: &str,
+    ) -> Result<()> {
+        if crate::triage::is_self_call_thunk(function, decompiler_output) {
+            warn!(
+                binary,
+                function,
+                "Refusing to translate a function whose whole body is a call to its own name — an import thunk the decompiler renders as a self-call"
+            );
+            return Err(TranslatorError::SkippedRoot {
+                binary: binary.to_string(),
+                function: function.to_string(),
+                reason: "import thunk decompiled as a self-call (the body is only a call to its own name)".to_string(),
             });
         }
         Ok(())
@@ -3314,6 +3367,13 @@ impl TranslationPipeline {
                 "Translating function in batch"
             );
 
+            // A refused root — a name-pattern root that reached the unit
+            // anyway, or a self-call thunk the name patterns cannot see
+            // (issue #269) — is a request the pipeline refuses, not a unit
+            // that failed: record it skipped, the way the explicit-list
+            // path does, and the flag keeps it out of the completion
+            // callback below (a refused unit has no code to write).
+            let mut unit_refused = false;
             let mut result = match self
                 .try_translate_with_retry(binary, &plan_func.name, config, verifier)
                 .await
@@ -3350,18 +3410,31 @@ impl TranslationPipeline {
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        binary,
-                        name = %plan_func.name,
-                        error = %e,
-                        "Batch function translation failed (pipeline error)"
-                    );
-                    let empty_result = retry::RetryResult::new();
-                    batch::FunctionResult::failure(
-                        binary.clone(),
-                        plan_func.name.clone(),
-                        empty_result,
-                    )
+                    // A root refusal is a refusal, not a failure: record
+                    // it skipped, exactly as the explicit-list path does.
+                    if matches!(e, TranslatorError::SkippedRoot { .. }) {
+                        info!(
+                            binary,
+                            name = %plan_func.name,
+                            error = %e,
+                            "Plan function is a root symbol — recorded skipped, not failed"
+                        );
+                        unit_refused = true;
+                        batch::FunctionResult::skipped(binary.clone(), plan_func.name.clone())
+                    } else {
+                        warn!(
+                            binary,
+                            name = %plan_func.name,
+                            error = %e,
+                            "Batch function translation failed (pipeline error)"
+                        );
+                        let empty_result = retry::RetryResult::new();
+                        batch::FunctionResult::failure(
+                            binary.clone(),
+                            plan_func.name.clone(),
+                            empty_result,
+                        )
+                    }
                 }
             };
 
@@ -3379,8 +3452,13 @@ impl TranslationPipeline {
                 branch: None, // filled by caller after git branch creation
             });
 
-            // Invoke the caller's callback
-            let continue_batch = if let Some(ref mut cb) = on_function_completed {
+            // Invoke the caller's callback. A refused root never reaches
+            // it: it was never attempted, so it has no translated code to
+            // write and no branch to clean up, and a caller that assumes a
+            // success carries code would panic.
+            let continue_batch = if let Some(ref mut cb) = on_function_completed
+                && !unit_refused
+            {
                 cb(binary, &plan_func.name, &mut result)
             } else {
                 true
@@ -3845,6 +3923,156 @@ mod tests {
         assert_eq!(result.total_count(), 1);
         assert_eq!(result.skipped_count(), 1, "the thunk is recorded skipped");
         assert_eq!(result.failure_count(), 0, "a refusal is not a failure");
+    }
+
+    /// An import thunk the symbol table named after its import — the
+    /// fixture's MinGW `puts` veneer, whose whole body is `return puts(a0);`
+    /// — matches no name-based root pattern, so the body-shape guard reads
+    /// the fetched body and refuses it before any LLM token is spent
+    /// (issue #269).
+    #[tokio::test]
+    async fn translate_refuses_a_thunk_named_after_its_own_import() {
+        let result = pipeline_over(None).translate(PROGRAM, "puts").await;
+        let Err(TranslatorError::SkippedRoot {
+            function, reason, ..
+        }) = result
+        else {
+            panic!("the puts veneer must be refused, got {result:?}");
+        };
+        assert_eq!(function, "puts");
+        assert!(
+            reason.contains("self-call"),
+            "the refusal should name the body shape, got: {reason}"
+        );
+    }
+
+    /// The same veneer named explicitly in a batch list is recorded
+    /// skipped, not failed — the batch completes over it exactly as it does
+    /// for a name-pattern thunk.
+    #[tokio::test]
+    async fn batch_translate_records_a_self_call_thunk_as_skipped() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let result = pipeline_over(Some(dir.path()))
+            .batch_translate(
+                PROGRAM,
+                &["free".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("the batch completes even when every unit is refused");
+
+        assert_eq!(result.total_count(), 1);
+        assert_eq!(result.skipped_count(), 1, "the veneer is recorded skipped");
+        assert_eq!(result.failure_count(), 0, "a refusal is not a failure");
+    }
+
+    /// A two-node call graph over the fixture's `puts` and `free` veneers,
+    /// carried as ordinary Middle nodes — the name-based root patterns
+    /// cannot see a veneer named after its import, so the call-graph
+    /// classification leaves them in the plan (issue #269).
+    fn veneer_graph() -> calxgloss_callgraph::CallGraph {
+        calxgloss_callgraph::CallGraph {
+            binary: PROGRAM.to_string(),
+            functions: vec![
+                calxgloss_callgraph::FunctionCallGraph {
+                    name: "puts".to_string(),
+                    address: 0x1000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_callgraph::NodeCategory::Middle,
+                },
+                calxgloss_callgraph::FunctionCallGraph {
+                    name: "free".to_string(),
+                    address: 0x2000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_callgraph::NodeCategory::Middle,
+                },
+            ],
+        }
+    }
+
+    /// The call-graph plan path queues both veneers as units, and the
+    /// body-shape guard refuses each one in the unit loop. The plan path
+    /// must record them skipped rather than failed — the way the
+    /// explicit-list path does — and keep them out of the completion
+    /// callback, where a success carrying no code would panic a
+    /// code-writing caller.
+    #[tokio::test]
+    async fn callgraph_batch_records_a_self_call_thunk_as_skipped() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let pipeline = pipeline_over(Some(dir.path()));
+        let graph = veneer_graph();
+
+        let mut seen: Vec<String> = Vec::new();
+        let results = pipeline
+            .batch_translate_from_callgraph(
+                &graph,
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_binary, function, _result| {
+                    seen.push(function.to_string());
+                    true
+                }),
+            )
+            .await
+            .expect("the plan batch completes even when every unit is refused");
+
+        assert_eq!(
+            results.skipped_count(),
+            2,
+            "both veneers are recorded skipped"
+        );
+        assert_eq!(results.failure_count(), 0, "a refusal is not a failure");
+        for veneer in ["puts", "free"] {
+            let found = results
+                .results
+                .iter()
+                .find(|r| r.function == veneer)
+                .unwrap_or_else(|| panic!("the {veneer} veneer should appear in the plan results"));
+            assert!(
+                found.success && found.rust_code.is_none() && found.stub_code.is_none(),
+                "{veneer} must be recorded skipped — a success carrying no code"
+            );
+            assert!(
+                !seen.iter().any(|f| f == veneer),
+                "the {veneer} veneer must never reach the completion callback"
+            );
+        }
+    }
+
+    /// A pre-built request carrying a thunk's self-call body is refused
+    /// too: the guard reads the body the request brings, before the prompt
+    /// is built.
+    #[tokio::test]
+    async fn translate_from_request_refuses_a_self_call_body() {
+        let request = calxgloss_types::TranslationRequest {
+            binary: PROGRAM.into(),
+            function: "SetCursor".to_string(),
+            disassembly: String::new(),
+            decompiler_output: "\
+void SetCursor(void)
+{
+  SetCursor();
+  return;
+}"
+            .to_string(),
+            windows_apis: Vec::new(),
+            baseline_tests: Vec::new(),
+        };
+
+        let result = pipeline_over(None).translate_from_request(request).await;
+        assert!(
+            matches!(&result, Err(TranslatorError::SkippedRoot { reason, .. })
+                if reason.contains("self-call")),
+            "the self-call body must be refused, got {result:?}"
+        );
     }
 
     /// The callback contract the CLI git-commit path relies on: a result
