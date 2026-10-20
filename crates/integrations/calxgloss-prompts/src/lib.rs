@@ -56,10 +56,10 @@ pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ConstInfo, ControlFlowInfo, ConventionInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    FixTemplate, FormattedTestResult, FullModuleTemplate, GlobalStateInfo, MemoryInfo,
-    MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod,
-    SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData,
-    TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    FixTemplate, FormattedTestResult, FullModuleTemplate, GlobalStateInfo, LibmatchInfo,
+    MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef,
+    PalTraitMethod, SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo, StructField,
+    StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -1297,6 +1297,7 @@ mod tests {
             vec![control_flow_fixture()],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1322,6 +1323,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![control_flow_fixture(), branch_site_fixture()],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         );
@@ -1371,6 +1373,7 @@ mod tests {
             Vec::new(),
             vec![convention_fixture()],
             Vec::new(),
+            Vec::new(),
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1397,6 +1400,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![finding],
+            Vec::new(),
             Vec::new(),
         );
 
@@ -1430,6 +1434,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![global_state_fixture()],
+            Vec::new(),
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1454,6 +1459,56 @@ mod tests {
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
 
         assert!(!prompt.contains("GLOBAL STATE"));
+    }
+
+    fn libmatch_fixture() -> LibmatchInfo {
+        LibmatchInfo {
+            function: "FUN_18003ab00".to_string(),
+            symbol: "memcpy".to_string(),
+            family: "crt".to_string(),
+            suggestion: "slice copy / std::ptr::copy_nonoverlapping".to_string(),
+            confidence: 90,
+            evidence: "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
+                .to_string(),
+        }
+    }
+
+    #[test]
+    fn test_module_context_template_renders_known_library_section() {
+        // The section names the matched callee by symbol, family, and
+        // confidence, and steers the call onto the Rust equivalent.
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![libmatch_fixture()],
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("KNOWN LIBRARY FUNCTIONS"));
+        assert!(prompt.contains("`FUN_18003ab00` matches `memcpy`"));
+        assert!(prompt.contains("crt library"));
+        assert!(prompt.contains("confidence 90"));
+        assert!(prompt.contains("slice copy / std::ptr::copy_nonoverlapping"));
+        assert!(prompt.contains("= *(undefined8"));
+        assert!(prompt.contains("map each call onto the"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_libmatch_findings_omits_the_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(!prompt.contains("KNOWN LIBRARY FUNCTIONS"));
     }
 
     #[test]

@@ -167,6 +167,25 @@ impl LibmatchFinding {
     }
 }
 
+/// Render a finding as prompt data: the function it identifies, the
+/// library symbol it matched, the family that symbol belongs to, the
+/// Rust equivalent the match suggests, and the confidence and evidence
+/// behind the claim — so a translation prompt naming this function's
+/// callees can show the translator what a call is really calling and
+/// how strongly that was read.
+impl From<&LibmatchFinding> for calxgloss_prompts::LibmatchInfo {
+    fn from(finding: &LibmatchFinding) -> Self {
+        Self {
+            function: finding.function().to_string(),
+            symbol: finding.target().to_string(),
+            family: finding.family().to_string(),
+            suggestion: finding.suggestion().to_string(),
+            confidence: finding.confidence().value(),
+            evidence: finding.evidence().to_string(),
+        }
+    }
+}
+
 // ============================================================
 // Persisted result
 // ============================================================
@@ -281,6 +300,23 @@ mod tests {
         assert_eq!(finding.confidence(), Confidence::new(60));
         assert_eq!(finding.kind(), "body_signature");
         assert!(finding.evidence().contains("= *(undefined8"));
+    }
+
+    #[test]
+    fn a_finding_renders_as_prompt_data_with_its_evidence() {
+        let info =
+            calxgloss_prompts::LibmatchInfo::from(&LibmatchFinding::BodySignature(matched()));
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.symbol, "memcpy");
+        // The family reaches the prompt as its serde label — the same
+        // spelling the persisted document carries.
+        assert_eq!(info.family, "crt");
+        assert_eq!(
+            info.suggestion,
+            "slice copy / std::ptr::copy_nonoverlapping"
+        );
+        assert_eq!(info.confidence, 60);
+        assert!(info.evidence.contains("= *(undefined8"));
     }
 
     #[test]

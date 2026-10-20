@@ -275,6 +275,34 @@ pub struct GlobalStateInfo {
     pub evidence: String,
 }
 
+/// A known-library identification of one function, made by the
+/// `calxgloss-libmatch` body-signature matcher.
+///
+/// The module-context prompt shows these for the *callees* of the
+/// function being translated — a matched target is stubbed, never
+/// prompted — so the LLM maps a call onto the suggested Rust equivalent
+/// instead of re-implementing statically linked CRT or STL code. The
+/// symbol names the matched library routine, the family says which body
+/// of standard code it came from (`crt` or `stl`), and the evidence
+/// carries the body shape that matched.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LibmatchInfo {
+    /// The function the identification is about — a callee of the
+    /// function being translated, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The matched library symbol, e.g. `memcpy`.
+    pub symbol: String,
+    /// The library family the symbol belongs to, `crt` or `stl`.
+    pub family: String,
+    /// The Rust equivalent the match suggests, e.g. a `std` slice copy
+    /// for `memcpy`.
+    pub suggestion: String,
+    /// Confidence that the match is right, 0–100.
+    pub confidence: u8,
+    /// The normalized body shape that carried the match.
+    pub evidence: String,
+}
+
 /// A string-context finding about one function, made by the
 /// `calxgloss-stringctx` engines.
 ///
@@ -1178,6 +1206,9 @@ pub struct ModuleContextTemplate {
     /// Global-state access records about this function made by the
     /// global-state scan.
     pub global_state_findings: Vec<GlobalStateInfo>,
+    /// Known-library identifications of this function's callees made by
+    /// the libmatch body-signature matcher.
+    pub libmatch_findings: Vec<LibmatchInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -1199,6 +1230,7 @@ impl ModuleContextTemplate {
             control_flow_findings: data.control_flow_findings.clone(),
             convention_findings: data.convention_findings.clone(),
             global_state_findings: data.global_state_findings.clone(),
+            libmatch_findings: data.libmatch_findings.clone(),
         }
     }
 }

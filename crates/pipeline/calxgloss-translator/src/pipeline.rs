@@ -1094,6 +1094,12 @@ impl TranslationPipeline {
                     &function_info.binary,
                     function,
                 );
+                let libmatch_findings = crate::retry::helpers::extract_libmatch_hints(
+                    self.workspace.as_deref(),
+                    &function_info.binary,
+                    function,
+                    &function_info.call_graph,
+                );
                 let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                     &request,
                     call_graph_neighbors,
@@ -1103,6 +1109,7 @@ impl TranslationPipeline {
                     control_flow_findings,
                     convention_findings,
                     global_state_findings,
+                    libmatch_findings,
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }

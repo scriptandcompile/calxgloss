@@ -13,7 +13,7 @@
 
 use super::templates::{
     CallGraphNeighbor, ControlFlowInfo, ConventionInfo, FormattedTestResult, GlobalStateInfo,
-    NeighborFunction, PalTraitDef, ShimCode, StructuredData,
+    LibmatchInfo, NeighborFunction, PalTraitDef, ShimCode, StructuredData,
 };
 use calxgloss_callgraph::FunctionContext;
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
@@ -187,6 +187,11 @@ pub struct ModuleContextPromptData {
     /// Global-state access records about the target function made by
     /// the `calxgloss-globalstate` scan.
     pub global_state_findings: Vec<GlobalStateInfo>,
+    /// Known-library identifications of the target function's call-graph
+    /// neighbors — its matched *callees* — made by the
+    /// `calxgloss-libmatch` body-signature matcher. A matched target is
+    /// stubbed, never prompted, so this section names callees only.
+    pub libmatch_findings: Vec<LibmatchInfo>,
 }
 
 impl ModuleContextPromptData {
@@ -222,6 +227,7 @@ impl ModuleContextPromptData {
             control_flow_findings: Vec::new(),
             convention_findings: Vec::new(),
             global_state_findings: Vec::new(),
+            libmatch_findings: Vec::new(),
         }
     }
 
@@ -240,6 +246,7 @@ impl ModuleContextPromptData {
         control_flow_findings: Vec<ControlFlowInfo>,
         convention_findings: Vec<ConventionInfo>,
         global_state_findings: Vec<GlobalStateInfo>,
+        libmatch_findings: Vec<LibmatchInfo>,
     ) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -266,6 +273,7 @@ impl ModuleContextPromptData {
             control_flow_findings,
             convention_findings,
             global_state_findings,
+            libmatch_findings,
         }
     }
 }

@@ -716,6 +716,96 @@ pub fn extract_global_state_hints(
         .collect()
 }
 
+/// Load the persisted known-library identification document for a binary.
+///
+/// Reads the per-binary result produced by the `calxgloss-libmatch`
+/// matcher from `re/analysis/libmatch/{binary}.json`. Returns `None`
+/// when no workspace is configured, no result is persisted for `binary`
+/// (the scan has not run), or the document is corrupt: missing
+/// known-library context degrades the prompt, it never fails a
+/// translation run — exactly as the call graph tolerates the same
+/// document for its Skip marking.
+pub fn load_libmatch_result(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+) -> Option<calxgloss_libmatch::types::LibmatchResult> {
+    let workspace = workspace?;
+
+    let persistor = calxgloss_libmatch::persist::LibmatchPersistor::new(workspace);
+    match persistor.load(binary) {
+        Ok(result) => Some(result),
+        Err(e) => {
+            debug!(
+                binary,
+                error = %e,
+                "No usable libmatch result; continuing without known-library context"
+            );
+            None
+        }
+    }
+}
+
+/// The prompt-shaped known-library findings for a function's call-graph
+/// neighbors, taken from an already-loaded document: the neighbors whose
+/// bodies the matcher identified as statically linked known-library code,
+/// each naming the matched symbol, its family, and the confidence behind
+/// the match. The join is against the neighbors, never the target — a
+/// matched target is stubbed at the call graph, not prompted — so the
+/// target's own name is dropped from the neighbor list even when the
+/// function calls itself, and neighbors without a finding contribute
+/// nothing. `None` (no usable document) yields an empty vector.
+///
+/// Findings keep document order — scan order, function by function — so
+/// two prompts built over one document name the same callees the same
+/// way.
+pub fn libmatch_hints_from(
+    result: Option<&calxgloss_libmatch::types::LibmatchResult>,
+    function: &str,
+    neighbors: &[String],
+) -> Vec<calxgloss_prompts::LibmatchInfo> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+    let joined: std::collections::HashSet<&str> = neighbors
+        .iter()
+        .map(String::as_str)
+        .filter(|name| *name != function)
+        .collect();
+    result
+        .findings
+        .iter()
+        .filter(|finding| joined.contains(finding.function()))
+        .map(calxgloss_prompts::LibmatchInfo::from)
+        .collect()
+}
+
+/// Extract known-library findings for a function from the persisted
+/// libmatch result, joined against the function's call-graph neighbors.
+///
+/// Reads the per-binary result produced by the `calxgloss-libmatch`
+/// matcher from `re/analysis/libmatch/{binary}.json` and keeps the
+/// identifications made for the neighbors named in `neighbors` — the
+/// known-library functions the target calls — through
+/// [`libmatch_hints_from`], so the prompt maps those calls onto Rust
+/// equivalents instead of re-implementing them.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `binary` (the scan has not run), or the document is
+/// corrupt: missing known-library context degrades the prompt, it never
+/// fails it.
+pub fn extract_libmatch_hints(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+    neighbors: &[String],
+) -> Vec<calxgloss_prompts::LibmatchInfo> {
+    libmatch_hints_from(
+        load_libmatch_result(workspace, binary).as_ref(),
+        function,
+        neighbors,
+    )
+}
+
 /// Extract string-context findings for a function from the persisted
 /// scan result.
 ///
@@ -1148,6 +1238,8 @@ pub async fn build_escalated_prompt<S: ScanSource>(
             let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
             let convention_findings = extract_convention_hints(workspace, binary, function);
             let global_state_findings = extract_global_state_hints(workspace, binary, function);
+            let libmatch_findings =
+                extract_libmatch_hints(workspace, binary, function, &translation.call_graph);
 
             let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                 &request,
@@ -1158,6 +1250,7 @@ pub async fn build_escalated_prompt<S: ScanSource>(
                 control_flow_findings,
                 convention_findings,
                 global_state_findings,
+                libmatch_findings,
             );
             calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
         }
@@ -2680,6 +2773,235 @@ mod tests {
             load_control_flow_result(Some(dir.path()), "eqmain.dll").is_none(),
             "a missing document loads as nothing"
         );
+    }
+
+    // ---- libmatch callee-hint extraction --------------------------------
+
+    fn libmatch_finding(
+        function: &str,
+        symbol: &str,
+        family: calxgloss_libmatch::types::LibraryFamily,
+    ) -> calxgloss_libmatch::types::LibmatchFinding {
+        calxgloss_libmatch::types::LibmatchFinding::BodySignature(
+            calxgloss_libmatch::types::LibmatchMatch {
+                function: function.to_string(),
+                symbol: symbol.to_string(),
+                family,
+                suggestion: format!("rust equivalent of {symbol}"),
+                confidence: Confidence::new(90),
+                evidence:
+                    "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
+                        .to_string(),
+            },
+        )
+    }
+
+    fn persist_libmatch_findings(
+        dir: &TempDir,
+        findings: Vec<calxgloss_libmatch::types::LibmatchFinding>,
+    ) {
+        let mut result =
+            calxgloss_libmatch::types::LibmatchResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path())
+            .save(&result)
+            .expect("the libmatch result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_libmatch_findings() {
+        assert!(
+            extract_libmatch_hints(None, "eqmain.dll", "FUN_18003ab00", &[]).is_empty(),
+            "no workspace means no known-library context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_libmatch_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_libmatch_hints(
+                Some(dir.path()),
+                "eqmain.dll",
+                "FUN_18003ab00",
+                &["FUN_1800412a0".to_string()],
+            )
+            .is_empty(),
+            "a scan that has not run yet just means no known-library context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_libmatch_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("libmatch")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_libmatch_hints(
+                Some(dir.path()),
+                "eqmain.dll",
+                "FUN_18003ab00",
+                &["FUN_1800412a0".to_string()],
+            )
+            .is_empty(),
+            "one stale artifact never fails a translation run"
+        );
+    }
+
+    #[test]
+    fn libmatch_findings_join_the_callees_never_the_target() {
+        // The join is against the target's call-graph neighbors: a
+        // matched callee lands, the target's own match does not — a
+        // matched target is stubbed at the call graph, not prompted —
+        // even when the neighbor list names the target itself.
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_libmatch_findings(
+            &dir,
+            vec![
+                libmatch_finding(
+                    "FUN_18003ab00",
+                    "memcpy",
+                    calxgloss_libmatch::types::LibraryFamily::Crt,
+                ),
+                libmatch_finding(
+                    "FUN_1800412a0",
+                    "strlen",
+                    calxgloss_libmatch::types::LibraryFamily::Crt,
+                ),
+            ],
+        );
+
+        let found = extract_libmatch_hints(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_1800412a0".to_string(), "FUN_18003ab00".to_string()],
+        );
+
+        assert_eq!(found.len(), 1, "the callee's match, never the target's");
+        assert_eq!(found[0].function, "FUN_1800412a0");
+        assert_eq!(found[0].symbol, "strlen");
+    }
+
+    #[test]
+    fn libmatch_findings_of_functions_the_target_does_not_call_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_libmatch_findings(
+            &dir,
+            vec![libmatch_finding(
+                "FUN_zzz",
+                "memcpy",
+                calxgloss_libmatch::types::LibraryFamily::Crt,
+            )],
+        );
+
+        let found = extract_libmatch_hints(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_1800412a0".to_string()],
+        );
+
+        assert!(
+            found.is_empty(),
+            "a matched function the target does not call contributes nothing"
+        );
+    }
+
+    #[test]
+    fn every_libmatch_finding_of_a_callee_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_libmatch_findings(
+            &dir,
+            vec![
+                libmatch_finding(
+                    "FUN_1800412a0",
+                    "memcpy",
+                    calxgloss_libmatch::types::LibraryFamily::Crt,
+                ),
+                libmatch_finding(
+                    "FUN_180099999",
+                    "_Tree_rot_right",
+                    calxgloss_libmatch::types::LibraryFamily::Stl,
+                ),
+                libmatch_finding(
+                    "FUN_zzz",
+                    "strlen",
+                    calxgloss_libmatch::types::LibraryFamily::Crt,
+                ),
+            ],
+        );
+
+        let found = extract_libmatch_hints(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_180099999".to_string(), "FUN_1800412a0".to_string()],
+        );
+
+        // Document order, not neighbor order: the scan's sequence is
+        // what makes two prompts over one document agree.
+        let symbols: Vec<&str> = found.iter().map(|f| f.symbol.as_str()).collect();
+        assert_eq!(symbols, vec!["memcpy", "_Tree_rot_right"]);
+        assert_eq!(found[0].function, "FUN_1800412a0");
+        assert_eq!(found[0].family, "crt");
+        assert_eq!(found[0].suggestion, "rust equivalent of memcpy");
+        assert_eq!(found[0].confidence, 90);
+        assert!(found[0].evidence.contains("= *(undefined8"));
+        assert_eq!(found[1].family, "stl");
+    }
+
+    #[test]
+    fn a_libmatch_document_written_before_this_pass_still_loads() {
+        // The prompt pass adds no fields to the persisted document: a
+        // document exactly as the matcher wrote it before the prompt
+        // section existed still loads and joins against the callees.
+        let dir = TempDir::new().expect("temp dir should be created");
+        let doc_dir = dir.path().join("re").join("analysis").join("libmatch");
+        std::fs::create_dir_all(&doc_dir).expect("the document directory should be created");
+        std::fs::write(
+            doc_dir.join("eqmain.dll.json"),
+            r#"{
+                "metadata": {"binary": "eqmain.dll", "scanned_at": 1759488000},
+                "findings": [{
+                    "kind": "body_signature",
+                    "function": "FUN_1800412a0",
+                    "symbol": "memcpy",
+                    "family": "crt",
+                    "suggestion": "slice copy / std::ptr::copy_nonoverlapping",
+                    "confidence": 90,
+                    "evidence": "  *(undefined8 *)((long)puVar1 + -8);"
+                }]
+            }"#,
+        )
+        .expect("the pre-pass document should be writable");
+
+        let found = extract_libmatch_hints(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_1800412a0".to_string()],
+        );
+
+        assert_eq!(
+            found.len(),
+            1,
+            "a pre-pass document joins like a current one"
+        );
+        assert_eq!(found[0].symbol, "memcpy");
+        assert_eq!(found[0].family, "crt");
+        assert_eq!(found[0].confidence, 90);
     }
 
     // ---- global-state hint extraction ---------------------------------

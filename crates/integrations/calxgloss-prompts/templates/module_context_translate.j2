@@ -167,6 +167,20 @@ for it:
 {% endfor %}
 
 {% endif %}
+{% if !libmatch_findings.is_empty() %}
+## KNOWN LIBRARY FUNCTIONS
+
+The functions this one calls that static analysis has identified as
+statically linked known-library code — the C runtime or the C++ standard
+library. Do NOT re-implement these bodies: map each call onto the
+suggested Rust equivalent instead:
+
+{% for finding in libmatch_findings %}
+- **{{ finding.suggestion|safe }}** — `{{ finding.function }}` matches `{{ finding.symbol }}` ({{ finding.family }} library, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.
