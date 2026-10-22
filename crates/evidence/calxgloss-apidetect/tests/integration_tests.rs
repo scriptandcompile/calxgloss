@@ -342,22 +342,10 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         "eqmain.dll".into(),
         "fn fun_18003ab00() { /* raw imports */ }".into(),
         "Wrong result".into(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        findings,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
+        calxgloss_prompts::EvidenceBundle {
+            api_findings: findings,
+            ..Default::default()
+        },
         Vec::new(),
     )
     .expect("the escalate prompt should render");
@@ -411,26 +399,14 @@ async fn the_platform_divergence_finding_survives_scan_persist_load_and_prompt()
         "eqmain.dll".into(),
         "fn fun_18003ab00() { /* raw imports */ }".into(),
         "Wrong result".into(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        loaded
-            .findings
-            .iter()
-            .map(calxgloss_prompts::ApiInfo::from)
-            .collect(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
+        calxgloss_prompts::EvidenceBundle {
+            api_findings: loaded
+                .findings
+                .iter()
+                .map(calxgloss_prompts::ApiInfo::from)
+                .collect(),
+            ..Default::default()
+        },
         Vec::new(),
     )
     .expect("the escalate prompt should render");
@@ -496,26 +472,14 @@ async fn the_com_interface_finding_survives_scan_persist_load_and_prompt() {
         "eqmain.dll".into(),
         "fn fun_18003ab00() { /* raw imports */ }".into(),
         "Wrong result".into(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        loaded
-            .findings
-            .iter()
-            .map(calxgloss_prompts::ApiInfo::from)
-            .collect(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
+        calxgloss_prompts::EvidenceBundle {
+            api_findings: loaded
+                .findings
+                .iter()
+                .map(calxgloss_prompts::ApiInfo::from)
+                .collect(),
+            ..Default::default()
+        },
         Vec::new(),
     )
     .expect("the escalate prompt should render");

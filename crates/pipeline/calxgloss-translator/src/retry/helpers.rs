@@ -4,10 +4,43 @@ use crate::Translation;
 use calxgloss_callgraph::FunctionContext;
 use calxgloss_decomp::ScanSource;
 use calxgloss_prompts::{
-    CallGraphNeighbor, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
+    CallGraphNeighbor, EvidenceBundle, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
 };
 use calxgloss_types::{ApiCategory, ContextTier, TranslationRequest, WindowsApiCall};
 use tracing::debug;
+
+/// Collect every synchronous per-analyzer evidence list for one function
+/// in a single pass — the bundle the escalate and module-context prompts
+/// read (issue #268).
+///
+/// Each analyzer cache is read exactly once. The call-graph lists stay
+/// out of the gather: they come from the live scan source or an enriched
+/// context, not the persisted analyzer caches, so callers set them on the
+/// returned bundle themselves.
+pub fn gather_function_evidence(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+    call_graph: &[String],
+) -> EvidenceBundle {
+    EvidenceBundle {
+        data_structures: extract_data_structures(workspace, binary, function),
+        type_info: extract_type_info(workspace, binary, function),
+        recognized_algorithms: extract_algorithm_hints(workspace, binary, function),
+        memory_findings: extract_memory_hints(workspace, binary, function),
+        concurrency_findings: extract_concurrency_hints(workspace, binary, function),
+        callback_findings: extract_callback_hints(workspace, binary, function),
+        control_flow_findings: extract_control_flow_hints(workspace, binary, function),
+        convention_findings: extract_convention_hints(workspace, binary, function),
+        global_state_findings: extract_global_state_hints(workspace, binary, function),
+        string_findings: extract_string_context(workspace, binary, function),
+        api_findings: extract_api_hints(workspace, binary, function),
+        const_findings: extract_constant_hints(workspace, binary, function),
+        serialization_findings: extract_serialization_hints(workspace, binary, function),
+        libmatch_findings: extract_libmatch_hints(workspace, binary, function, call_graph),
+        ..Default::default()
+    }
+}
 
 /// Extract call graph neighbor details from an enriched context list.
 ///
@@ -1225,32 +1258,22 @@ pub async fn build_escalated_prompt<S: ScanSource>(
                 baseline_tests: translation.baseline_tests.clone(),
             };
 
-            let call_graph_neighbors = extract_call_graph_neighbors(
+            // One gather over the analyzer caches, plus the two lists
+            // that come from the scan source (issue #268).
+            let mut evidence =
+                gather_function_evidence(workspace, binary, function, &translation.call_graph);
+            evidence.call_graph_neighbors = extract_call_graph_neighbors(
                 source,
                 &translation.call_graph,
                 translation.function_address.unwrap_or(0),
             )
             .await;
-            let neighboring_functions =
+            evidence.neighboring_functions =
                 extract_neighboring_context(source, &translation.call_graph).await;
-            let data_structures = extract_data_structures(workspace, binary, function);
-
-            let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
-            let convention_findings = extract_convention_hints(workspace, binary, function);
-            let global_state_findings = extract_global_state_hints(workspace, binary, function);
-            let libmatch_findings =
-                extract_libmatch_hints(workspace, binary, function, &translation.call_graph);
+            evidence.call_graph_context = translation.call_graph_context.clone();
 
             let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
-                &request,
-                call_graph_neighbors,
-                neighboring_functions,
-                data_structures,
-                translation.call_graph_context.clone(),
-                control_flow_findings,
-                convention_findings,
-                global_state_findings,
-                libmatch_findings,
+                &request, evidence,
             );
             calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
         }
@@ -1275,30 +1298,28 @@ pub async fn build_escalated_prompt<S: ScanSource>(
                 baseline_tests: translation.baseline_tests.clone(),
             };
 
-            let call_graph_neighbors = extract_call_graph_neighbors(
+            // One gather over the analyzer caches, plus the lists from
+            // the scan source and the workspace shim layer (issue #268).
+            let mut evidence =
+                gather_function_evidence(workspace, binary, function, &translation.call_graph);
+            evidence.call_graph_neighbors = extract_call_graph_neighbors(
                 source,
                 &translation.call_graph,
                 translation.function_address.unwrap_or(0),
             )
             .await;
-            let neighboring_functions =
+            evidence.neighboring_functions =
                 extract_neighboring_context(source, &translation.call_graph).await;
-            let data_structures = extract_data_structures(workspace, binary, function);
+            evidence.call_graph_context = translation.call_graph_context.clone();
 
             let shim_layers = extract_shim_layers(workspace, binary);
             let pal_traits = Vec::<PalTraitDef>::new();
 
-            let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
-
             let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
                 &request,
-                call_graph_neighbors,
-                neighboring_functions,
-                data_structures,
+                evidence,
                 shim_layers,
                 pal_traits,
-                translation.call_graph_context.clone(),
-                control_flow_findings,
             );
             calxgloss_prompts::build_full_module_prompt(&data).map_err(|e| e.to_string())
         }
@@ -3285,5 +3306,71 @@ mod tests {
         assert_eq!(found[1].callee.as_deref(), Some("FUN_1800412a0"));
         assert_eq!(found[1].method, "call_site_convention");
         assert_eq!(found[1].evidence, "00401103  CALL FUN_1800412a0");
+    }
+
+    // --- the evidence gather (issue #268) ---------------------------------
+
+    #[test]
+    fn gather_function_evidence_reads_the_caches_into_one_bundle() {
+        let dir = TempDir::new().unwrap();
+        let mut db = TypeDatabase::new(ScanMetadata::new("eqmain.dll"));
+        db.inferred_structs = vec![inferred_struct("Player", &["FUN_18003ab00"])];
+        persist(&dir, db);
+        persist_inferences(
+            &dir,
+            vec![
+                param_inference("FUN_18003ab00", 0, "Widget *"),
+                convention_inference(
+                    "FUN_18003ab00",
+                    None,
+                    calxgloss_typeinfer::types::CallingConvention::Thiscall,
+                    InferenceMethod::MangledConvention,
+                    90,
+                    "?paint@Widget@@QAEXXZ",
+                ),
+            ],
+        );
+        persist_hints(&dir, vec![algorithm_hint("FUN_18003ab00", "bubble sort")]);
+
+        let evidence =
+            gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+
+        assert_eq!(evidence.data_structures.len(), 1);
+        assert_eq!(evidence.data_structures[0].name, "Player");
+        assert_eq!(
+            evidence.type_info.len(),
+            2,
+            "every inference record for the function"
+        );
+        assert!(
+            evidence.type_info.iter().any(|t| t.name == "param_1"),
+            "the param inference lands in type_info"
+        );
+        assert_eq!(evidence.convention_findings.len(), 1);
+        assert_eq!(evidence.convention_findings[0].convention, "thiscall");
+        assert_eq!(evidence.recognized_algorithms.len(), 1);
+
+        // The call-graph lists are the caller's to fill — the gather reads
+        // only the persisted analyzer caches.
+        assert!(evidence.call_graph_neighbors.is_empty());
+        assert!(evidence.neighboring_functions.is_empty());
+        assert!(evidence.call_graph_context.is_empty());
+
+        // No workspace, no caches: every synchronous list degrades to empty.
+        let none = gather_function_evidence(None, "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(none.data_structures.is_empty());
+        assert!(none.type_info.is_empty());
+        assert!(none.recognized_algorithms.is_empty());
+        assert!(none.memory_findings.is_empty());
+        assert!(none.concurrency_findings.is_empty());
+        assert!(none.callback_findings.is_empty());
+        assert!(none.control_flow_findings.is_empty());
+        assert!(none.convention_findings.is_empty());
+        assert!(none.global_state_findings.is_empty());
+        assert!(none.string_findings.is_empty());
+        assert!(none.api_findings.is_empty());
+        assert!(none.const_findings.is_empty());
+        assert!(none.serialization_findings.is_empty());
+        assert!(none.libmatch_findings.is_empty());
     }
 }

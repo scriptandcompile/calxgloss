@@ -482,10 +482,12 @@ fn test_store_failure() {
     let patch_path = manager
         .store_failure(
             &branch,
-            "Compilation failed",
-            &["error[E0308]: mismatched types".to_string()],
-            &["test_input_3: expected 42, got 43".to_string()],
-            &commit.hash,
+            FailureRecord {
+                error_message: "Compilation failed".to_string(),
+                compilation_errors: vec!["error[E0308]: mismatched types".to_string()],
+                test_failures: vec!["test_input_3: expected 42, got 43".to_string()],
+                commit_hash: commit.hash.clone(),
+            },
         )
         .unwrap();
 

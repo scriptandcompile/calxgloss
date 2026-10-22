@@ -87,6 +87,21 @@ pub struct PatchRecord {
     pub patch_request: Option<String>,
 }
 
+/// The failure fields of a translation attempt, carried as one record into
+/// [`GitManager::store_failure`] instead of as loose positional parameters
+/// (issue #268) — adjacent same-typed lists can no longer be transposed.
+#[derive(Debug, Clone, Default)]
+pub struct FailureRecord {
+    /// The failure description shown to reviewers.
+    pub error_message: String,
+    /// Captured compilation errors, when the attempt failed to compile.
+    pub compilation_errors: Vec<String>,
+    /// Captured behavioral test failures, when tests failed.
+    pub test_failures: Vec<String>,
+    /// The attempt's commit hash.
+    pub commit_hash: String,
+}
+
 /// Manages all Git operations for the translation pipeline.
 pub struct GitManager {
     repo: Repository,
@@ -767,10 +782,7 @@ impl GitManager {
     pub fn store_failure(
         &self,
         branch: &GitBranch,
-        error_message: &str,
-        compilation_errors: &[String],
-        test_failures: &[String],
-        commit_hash: &str,
+        failure: FailureRecord,
     ) -> Result<PathBuf, TypesError> {
         let patch_dir = self
             .repo_path
@@ -789,10 +801,10 @@ impl GitManager {
             attempt: branch.attempt,
             branch_name: branch.name.clone(),
             committed_at: Utc::now().to_rfc3339(),
-            error_message: error_message.to_string(),
-            compilation_errors: compilation_errors.to_vec(),
-            test_failures: test_failures.to_vec(),
-            commit_hash: commit_hash.to_string(),
+            error_message: failure.error_message,
+            compilation_errors: failure.compilation_errors,
+            test_failures: failure.test_failures,
+            commit_hash: failure.commit_hash,
             patch_request: None,
         };
 

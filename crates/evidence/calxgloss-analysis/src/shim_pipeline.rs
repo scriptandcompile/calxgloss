@@ -17,7 +17,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use calxgloss_analysis::shim_pipeline::{ShimPipeline, ShimPipelineResult};
+//! use calxgloss_analysis::shim_pipeline::{ShimPipeline, ShimPipelineResult, ShimRunConfig};
 //! use calxgloss_llm::LlmClient;
 //! use calxgloss_types::Export;
 //!
@@ -34,11 +34,11 @@
 //!     verifier,
 //! );
 //!
-//! let result = pipeline.run(
-//!     std::path::Path::new("/path/to/workspace"),
-//!     true,  // skip_git
-//!     None,  // git manager
-//! ).await?;
+//! let result = pipeline.run(ShimRunConfig {
+//!     base_dir: std::path::Path::new("/path/to/workspace"),
+//!     skip_git: true,
+//!     git: None,
+//! }).await?;
 //!
 //! println!("Generated {} mappings", result.mapping_count);
 //! println!("Verification passed: {}", result.verification.all_passed());
@@ -112,6 +112,21 @@ pub enum PipelineError {
     Persistence(#[source] std::io::Error),
 }
 
+/// Where a shim-pipeline run writes its artifacts and whether it commits them
+/// (issue #268) — the run options shared by [`ShimPipeline::run`] and
+/// [`generate_all_shims`], bundled so neither entry point carries three loose
+/// positional parameters.
+#[derive(Clone, Copy)]
+pub struct ShimRunConfig<'a> {
+    /// The workspace root directory. Artifacts are written to
+    /// `<base_dir>/re/shims/<dll_name>/`.
+    pub base_dir: &'a Path,
+    /// If `true`, skip the git commit of the generated artifacts.
+    pub skip_git: bool,
+    /// Optional git manager for committing artifacts.
+    pub git: Option<&'a calxgloss_git::GitManager>,
+}
+
 /// Orchestrates the end-to-end shim generation flow for a single DLL.
 ///
 /// The pipeline executes the following steps:
@@ -163,13 +178,12 @@ impl ShimPipeline {
         }
     }
 
-    /// Runs the full pipeline and persists all artifacts to the given base directory.
+    /// Runs the full pipeline and persists all artifacts per the [`ShimRunConfig`].
     ///
     /// # Arguments
     ///
-    /// * `base_dir` — The workspace root directory. Artifacts are written to
-    ///   `<base_dir>/re/shims/<dll_name>/`.
-    /// * `skip_git` — If `true`, skip git commit of the generated artifacts.
+    /// * `config` — Workspace root for artifact persistence, the git-skip
+    ///   flag, and the optional git manager for committing artifacts.
     ///
     /// # Returns
     ///
@@ -179,14 +193,16 @@ impl ShimPipeline {
     /// On mapping generation failure, the pipeline produces a skeletal shim
     /// (with `TODO` stubs) and returns the best-effort result so the
     /// reviewer can still inspect and fix the output.
-    #[instrument(skip(self, base_dir, git), fields(binary = %self.dll_name, crate = %self.target_crate))]
+    #[instrument(skip(self, config), fields(binary = %self.dll_name, crate = %self.target_crate))]
     pub async fn run(
         &self,
-        base_dir: &Path,
-        skip_git: bool,
-        git: Option<&calxgloss_git::GitManager>,
+        config: ShimRunConfig<'_>,
     ) -> Result<ShimPipelineResult, PipelineError> {
-        let dll_dir = base_dir.join("re").join("shims").join(&self.dll_name);
+        let dll_dir = config
+            .base_dir
+            .join("re")
+            .join("shims")
+            .join(&self.dll_name);
         std::fs::create_dir_all(&dll_dir).map_err(PipelineError::Persistence)?;
 
         let mappings_path = dll_dir.join("mappings.json");
@@ -301,7 +317,9 @@ impl ShimPipeline {
         .map_err(PipelineError::Persistence)?;
 
         // Git commit (if not skipped).
-        if !skip_git && let Some(git) = git {
+        if !config.skip_git
+            && let Some(git) = config.git
+        {
             let files = [
                 mappings_path.to_string_lossy().to_string(),
                 source_path.to_string_lossy().to_string(),
@@ -400,9 +418,8 @@ fn persist_shim_artifacts(
 ///   each DLL is verified against it with the wrong-program guard first.
 /// * `llm` — LLM client for mapping generation.
 /// * `verifier` — Verifier for compilation and test execution.
-/// * `base_dir` — Workspace root for artifact persistence.
-/// * `skip_git` — If `true`, skip git commit of the generated artifacts.
-/// * `git` — Optional git manager for committing artifacts.
+/// * `config` — Workspace root for artifact persistence, the git-skip flag,
+///   and the optional git manager for committing artifacts.
 ///
 /// # Returns
 ///
@@ -413,9 +430,7 @@ pub async fn generate_all_shims(
     target_dir: &Path,
     llm: LlmClient,
     verifier: Verifier,
-    base_dir: &Path,
-    skip_git: bool,
-    git: Option<&calxgloss_git::GitManager>,
+    config: ShimRunConfig<'_>,
 ) -> Vec<Result<ShimPipelineResult, PipelineError>> {
     let shim_layers: Vec<_> = classifications
         .iter()
@@ -462,7 +477,7 @@ pub async fn generate_all_shims(
             llm.clone(),
             verifier.clone(),
         );
-        let result = pipeline.run(base_dir, skip_git, git).await;
+        let result = pipeline.run(config).await;
         results.push(result);
     }
 

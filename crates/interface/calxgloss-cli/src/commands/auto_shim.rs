@@ -124,9 +124,11 @@ pub async fn handle_auto_shim(
         target_dir,
         llm,
         verifier,
-        workspace,
-        skip_git,
-        git_manager.as_ref(),
+        shim_pipeline::ShimRunConfig {
+            base_dir: workspace,
+            skip_git,
+            git: git_manager.as_ref(),
+        },
     )
     .await;
 

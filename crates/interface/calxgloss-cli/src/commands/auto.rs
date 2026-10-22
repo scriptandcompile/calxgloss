@@ -9,16 +9,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
-use calxgloss::OverrideControl;
-use calxgloss::PipelineControl;
 use calxgloss::PipelineRunRequest;
 use calxgloss::ProgressEvent;
 use calxgloss::RunScope;
 use calxgloss::RunTarget;
-use calxgloss::ScopeControl;
-use calxgloss::StopSignal;
-use calxgloss::TranslationEvents;
-use calxgloss::UnitCancellation;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
@@ -29,8 +23,8 @@ use calxgloss_translator::TranslationPipeline;
 use calxgloss_translator::build_hallucination_detector;
 use tracing::{info, warn};
 
-use crate::Settings;
 use crate::commands::classify::handle_classify;
+use crate::commands::run_options::{AutoRunOptions, PassPlumbing, RunControls};
 use crate::commands::{classification_record_exists, scan_targets};
 use crate::utils::*;
 
@@ -73,28 +67,33 @@ impl PassOutcome {
 /// The return reports the pass as [`PassOutcome`] — units attempted against
 /// units planned — so the queue loop can derive whether it ended early
 /// (issue #220).
-// The per-binary plumbing (engine, LLM, git, live hooks) is one coherent
-// pass — bundling it into a struct would scatter the call site for no gain.
-#[allow(clippy::too_many_arguments)]
 pub async fn run_translation_for_dll(
     binary: &str,
     binary_path: &Path,
-    workspace: &Path,
-    skip_git: bool,
-    settings: &Settings,
-    events: Option<&TranslationEvents>,
-    no_callgraph: bool,
-    callgraph_cache: Option<PathBuf>,
-    callgraph_verbose: bool,
-    refresh_cache: bool,
-    stop: Option<&StopSignal>,
-    control: Option<&PipelineControl>,
-    cancellation: Option<&UnitCancellation>,
     scope: RunScope,
-    scope_control: Option<&ScopeControl>,
-    override_control: Option<&OverrideControl>,
+    plumbing: &PassPlumbing<'_>,
 ) -> Result<PassOutcome> {
-    // The workspace — git, src/, scratch all live here.
+    let PassPlumbing {
+        workspace,
+        settings,
+        skip_git,
+        no_callgraph,
+        callgraph_cache,
+        callgraph_verbose,
+        refresh_cache,
+        run,
+    } = plumbing;
+    let RunControls {
+        events,
+        stop,
+        control,
+        cancellation,
+        scope_control,
+        override_control,
+        classification_overrides: _,
+    } = *run;
+    let workspace = *workspace;
+    let settings = *settings;
 
     // Announce the per-binary pass so the dashboard can mark this binary as
     // being worked on before any unit event exists — function enumeration,
@@ -197,32 +196,32 @@ pub async fn run_translation_for_dll(
     let mut pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
         .with_testgen(testgen)
         .with_hallucination_detector(detector);
-    if no_callgraph {
+    if *no_callgraph {
         pipeline = pipeline.with_no_callgraph();
     }
-    if let Some(ref cache_dir) = callgraph_cache {
+    if let Some(cache_dir) = callgraph_cache {
         pipeline = pipeline.with_callgraph_cache_dir(cache_dir);
     }
-    if callgraph_verbose {
+    if *callgraph_verbose {
         pipeline = pipeline.with_callgraph_verbose();
     }
     if let Some(events) = events {
-        pipeline = pipeline.with_events(events.clone());
+        pipeline = pipeline.with_events((*events).clone());
     }
     if let Some(stop) = stop {
-        pipeline = pipeline.with_stop_signal(stop.clone());
+        pipeline = pipeline.with_stop_signal((*stop).clone());
     }
     if let Some(control) = control {
-        pipeline = pipeline.with_pipeline_control(control.clone());
+        pipeline = pipeline.with_pipeline_control((*control).clone());
     }
     if let Some(cancellation) = cancellation {
-        pipeline = pipeline.with_unit_cancellation(cancellation.clone());
+        pipeline = pipeline.with_unit_cancellation((*cancellation).clone());
     }
     if let Some(scope_control) = scope_control {
-        pipeline = pipeline.with_scope(scope_control.clone());
+        pipeline = pipeline.with_scope((*scope_control).clone());
     }
     if let Some(override_control) = override_control {
-        pipeline = pipeline.with_overrides(override_control.clone());
+        pipeline = pipeline.with_overrides((*override_control).clone());
     }
     pipeline = pipeline.with_workspace(workspace);
     // The batch's shared scan read cache keys on the target binary's
@@ -230,12 +229,12 @@ pub async fn run_translation_for_dll(
     pipeline = pipeline.with_binary_path(binary_path);
     // The refresh escape hatch (issue #106): force the cache cold when the
     // operator says the cached reads are stale.
-    if refresh_cache {
+    if *refresh_cache {
         pipeline = pipeline.with_refresh_cache();
     }
 
     // Git setup
-    let mut git = if !skip_git {
+    let mut git = if !*skip_git {
         info!("Initializing git repository");
         let git_config = calxgloss_git::InitConfig::default();
         Some(
@@ -431,33 +430,38 @@ fn ensure_workspace_repo(workspace: &Path, skip_git: bool) -> Result<()> {
 /// to one binary, `phase=Classify` forces re-classification, and `scope`
 /// restricts which functions re-enter the translation queue (see
 /// [`scope_functions`]). `None` keeps the plain `auto` behaviour.
-// Mirrors the CLI flag surface plus the live-mode hooks; every caller
-// passes the same settings-derived values, so a struct would only rename
-// the plumbing.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_auto(
-    target: Option<PathBuf>,
-    binaries_arg: Option<String>,
-    _all_functions: bool,
-    classify_only: bool,
-    skip_git: bool,
-    settings: &Settings,
-    continue_mode: bool,
-    events: Option<&TranslationEvents>,
-    workspace: PathBuf,
-    no_callgraph: bool,
-    callgraph_cache: Option<PathBuf>,
-    callgraph_verbose: bool,
-    refresh_cache: bool,
-    stop: Option<&StopSignal>,
-    control: Option<&PipelineControl>,
-    cancellation: Option<&UnitCancellation>,
+    opts: AutoRunOptions<'_>,
+    run_controls: RunControls<'_>,
     run: Option<&PipelineRunRequest>,
-    scope_control: Option<&ScopeControl>,
-    override_control: Option<&OverrideControl>,
-    classification_overrides: Option<&calxgloss::ClassificationOverrideControl>,
 ) -> Result<()> {
+    let AutoRunOptions {
+        target,
+        binaries_arg: binaries,
+        all_functions: _all_functions,
+        classify_only,
+        continue_mode,
+        skip_git,
+        settings,
+        workspace,
+        no_callgraph,
+        callgraph_cache,
+        callgraph_verbose,
+        refresh_cache,
+    } = opts;
     info!("Auto mode: detecting project state");
+
+    // The phases below read these three by name; the rest of the live
+    // controls reach the run through `run_controls` itself.
+    let RunControls {
+        events,
+        stop: _,
+        control: _,
+        cancellation: _,
+        scope_control,
+        override_control: _,
+        classification_overrides,
+    } = run_controls;
 
     // target_dir is required: it's the directory containing DLLs/EXEs.
     let target_dir = settings
@@ -473,7 +477,7 @@ pub async fn handle_auto(
     info!(path = ?workspace, "Auto mode: using workspace");
 
     // Discover or accept DLL list
-    let dlls = if let Some(ref dll_list) = binaries_arg {
+    let dlls = if let Some(ref dll_list) = binaries {
         dll_list
             .split(',')
             .map(|s| s.trim().to_string())
@@ -649,28 +653,25 @@ pub async fn handle_auto(
         // Issue #220: the queue is a worklist — a paused binary is held out,
         // a binary paused mid-pass is re-queued once, and every order change
         // re-publishes the queue plan.
-        run_binary_worklist(classified, events, stop, control, scope_control, |binary| {
+        let pass_plumbing = PassPlumbing {
+            settings,
+            workspace: &workspace,
+            skip_git,
+            no_callgraph,
+            callgraph_cache: callgraph_cache.clone(),
+            callgraph_verbose,
+            refresh_cache,
+            run: &run_controls,
+        };
+        run_binary_worklist(classified, &run_controls, |binary| {
             let target_dir = target_dir.clone();
-            let workspace = workspace.clone();
-            let callgraph_cache = callgraph_cache.clone();
+            let pass_plumbing = pass_plumbing.clone();
             async move {
                 run_translation_for_dll(
                     &binary,
                     &target_dir.join(&binary),
-                    &workspace,
-                    skip_git,
-                    settings,
-                    events,
-                    no_callgraph,
-                    callgraph_cache,
-                    callgraph_verbose,
-                    refresh_cache,
-                    stop,
-                    control,
-                    cancellation,
                     run.map(|r| r.scope).unwrap_or_default(),
-                    scope_control,
-                    override_control,
+                    &pass_plumbing,
                 )
                 .await
             }
@@ -712,20 +713,17 @@ pub async fn handle_auto(
         run_translation_for_dll(
             binary,
             &target_dir.join(binary),
-            &workspace,
-            skip_git,
-            settings,
-            events,
-            no_callgraph,
-            callgraph_cache,
-            callgraph_verbose,
-            refresh_cache,
-            stop,
-            control,
-            cancellation,
             run.map(|r| r.scope).unwrap_or_default(),
-            scope_control,
-            override_control,
+            &PassPlumbing {
+                settings,
+                workspace: &workspace,
+                skip_git,
+                no_callgraph,
+                callgraph_cache,
+                callgraph_verbose,
+                refresh_cache,
+                run: &run_controls,
+            },
         )
         .await?;
     }
@@ -753,16 +751,22 @@ pub async fn handle_auto(
 /// fake that records which binaries were ever started.
 async fn run_binary_worklist<P, Fut>(
     queue: Vec<String>,
-    events: Option<&TranslationEvents>,
-    stop: Option<&StopSignal>,
-    control: Option<&PipelineControl>,
-    scope_control: Option<&ScopeControl>,
+    run: &RunControls<'_>,
     run_pass: P,
 ) -> Result<()>
 where
     P: Fn(String) -> Fut,
     Fut: Future<Output = Result<PassOutcome>>,
 {
+    let RunControls {
+        events,
+        stop,
+        control,
+        cancellation: _,
+        scope_control,
+        override_control: _,
+        classification_overrides: _,
+    } = run;
     let mut queue: VecDeque<String> = queue.into();
     // Binaries already re-queued once — a second visit while still paused
     // ends that binary's part in the run, so a paused binary can never spin
@@ -1088,6 +1092,7 @@ mod tests {
 
     // --- the auto run's binary worklist (issue #220) ---------------------
 
+    use calxgloss::{ScopeControl, TranslationEvents};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1121,10 +1126,11 @@ mod tests {
 
         run_binary_worklist(
             vec!["a.dll".to_string(), "b.dll".to_string()],
-            Some(&events),
-            None,
-            None,
-            Some(&scope),
+            &RunControls {
+                events: Some(&events),
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
             |binary| {
                 let started = started.clone();
                 async move {
@@ -1158,10 +1164,10 @@ mod tests {
 
         run_binary_worklist(
             vec!["a.dll".to_string(), "b.dll".to_string()],
-            None,
-            None,
-            None,
-            Some(&scope),
+            &RunControls {
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
             |binary| {
                 let started = started.clone();
                 let scope = scope.clone();
@@ -1195,10 +1201,11 @@ mod tests {
 
         run_binary_worklist(
             vec!["a.dll".to_string(), "b.dll".to_string()],
-            Some(&events),
-            None,
-            None,
-            Some(&scope),
+            &RunControls {
+                events: Some(&events),
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
             |binary| {
                 let started = started.clone();
                 let scope = scope.clone();
@@ -1249,10 +1256,11 @@ mod tests {
 
         run_binary_worklist(
             vec!["a.dll".to_string(), "b.dll".to_string()],
-            Some(&events),
-            None,
-            None,
-            Some(&scope),
+            &RunControls {
+                events: Some(&events),
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
             |binary| {
                 let started = started.clone();
                 let scope = scope.clone();

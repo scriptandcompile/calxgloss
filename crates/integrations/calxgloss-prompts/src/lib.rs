@@ -56,10 +56,10 @@ pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ConstInfo, ControlFlowInfo, ConventionInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    FixTemplate, FormattedTestResult, FullModuleTemplate, GlobalStateInfo, LibmatchInfo,
-    MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef,
-    PalTraitMethod, SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo, StructField,
-    StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    EvidenceBundle, FixTemplate, FormattedTestResult, FullModuleTemplate, GlobalStateInfo,
+    LibmatchInfo, MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction,
+    PalTraitDef, PalTraitMethod, SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo,
+    StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -173,16 +173,50 @@ mod tests {
     }
 
     #[test]
+    fn the_evidence_bundle_carries_every_finding_list_and_defaults_empty() {
+        let empty = EvidenceBundle::default();
+        assert!(empty.call_graph_neighbors.is_empty());
+        assert!(empty.neighboring_functions.is_empty());
+        assert!(empty.data_structures.is_empty());
+        assert!(empty.type_info.is_empty());
+        assert!(empty.recognized_algorithms.is_empty());
+        assert!(empty.memory_findings.is_empty());
+        assert!(empty.concurrency_findings.is_empty());
+        assert!(empty.callback_findings.is_empty());
+        assert!(empty.control_flow_findings.is_empty());
+        assert!(empty.convention_findings.is_empty());
+        assert!(empty.global_state_findings.is_empty());
+        assert!(empty.string_findings.is_empty());
+        assert!(empty.api_findings.is_empty());
+        assert!(empty.const_findings.is_empty());
+        assert!(empty.serialization_findings.is_empty());
+        assert!(empty.libmatch_findings.is_empty());
+        assert!(empty.call_graph_context.is_empty());
+
+        let filled = EvidenceBundle {
+            call_graph_neighbors: vec![CallGraphNeighbor {
+                name: "helper_compute".to_string(),
+                address: 0x1000,
+                signature: "int __stdcall helper_compute(int x)".to_string(),
+                role: "callee".to_string(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(filled.call_graph_neighbors.len(), 1);
+        assert!(
+            filled.memory_findings.is_empty(),
+            "a named-field bundle keeps the other lists at their default"
+        );
+    }
+
+    #[test]
     fn test_escalate_prompt_basic() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Tests failed: boundary case x=0 produced wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .unwrap();
@@ -209,10 +243,10 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            neighbors,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                call_graph_neighbors: neighbors,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .unwrap();
@@ -603,10 +637,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             hints,
         )
         .unwrap();
@@ -633,22 +664,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* manual open/close */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                memory_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -667,10 +686,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -693,22 +709,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* manual lock/unlock */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                concurrency_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -727,10 +731,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -753,22 +754,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* raw table indexing */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                callback_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -795,22 +784,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* if-else ladder */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                control_flow_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -844,22 +821,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* if-else ladder */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                control_flow_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -881,10 +846,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -918,22 +880,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* __stdcall extern */ }".to_string(),
             "Stack corruption".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                convention_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -955,10 +905,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -987,22 +934,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00(param_1: i32) { /* DAT store */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                global_state_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1026,10 +961,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1061,22 +993,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* raw literals */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                string_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1118,22 +1038,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* raw imports */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                api_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1155,10 +1063,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1197,22 +1102,10 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* bare literals */ }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            findings,
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                const_findings: findings,
+                ..Default::default()
+            },
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1236,10 +1129,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1254,10 +1144,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");
@@ -1290,14 +1177,10 @@ mod tests {
         let req = sample_request();
         let data = ModuleContextPromptData::from_request_with_context(
             &req,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![control_flow_fixture()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                control_flow_findings: vec![control_flow_fixture()],
+                ..Default::default()
+            },
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1318,14 +1201,10 @@ mod tests {
         let req = sample_request();
         let data = ModuleContextPromptData::from_request_with_context(
             &req,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![control_flow_fixture(), branch_site_fixture()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                control_flow_findings: vec![control_flow_fixture(), branch_site_fixture()],
+                ..Default::default()
+            },
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1366,14 +1245,10 @@ mod tests {
         let req = sample_request();
         let data = ModuleContextPromptData::from_request_with_context(
             &req,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![convention_fixture()],
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                convention_findings: vec![convention_fixture()],
+                ..Default::default()
+            },
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1394,14 +1269,10 @@ mod tests {
         finding.method = "call_site_convention".to_string();
         let data = ModuleContextPromptData::from_request_with_context(
             &req,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![finding],
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle {
+                convention_findings: vec![finding],
+                ..Default::default()
+            },
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1427,14 +1298,10 @@ mod tests {
         let req = sample_request();
         let data = ModuleContextPromptData::from_request_with_context(
             &req,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![global_state_fixture()],
-            Vec::new(),
+            EvidenceBundle {
+                global_state_findings: vec![global_state_fixture()],
+                ..Default::default()
+            },
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1480,14 +1347,10 @@ mod tests {
         let req = sample_request();
         let data = ModuleContextPromptData::from_request_with_context(
             &req,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![libmatch_fixture()],
+            EvidenceBundle {
+                libmatch_findings: vec![libmatch_fixture()],
+                ..Default::default()
+            },
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1516,13 +1379,12 @@ mod tests {
         let req = sample_request();
         let data = FullModulePromptData::from_request_with_full_context(
             &req,
+            EvidenceBundle {
+                control_flow_findings: vec![control_flow_fixture()],
+                ..Default::default()
+            },
             Vec::new(),
             Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![control_flow_fixture()],
         );
 
         let prompt = build_full_module_prompt(&data).expect("the prompt should render");
@@ -1676,10 +1538,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            EvidenceBundle::default(),
             Vec::new(),
         )
         .expect("the escalate prompt should render");

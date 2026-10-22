@@ -3,7 +3,7 @@
 use crate::Translation;
 use crate::retry::helpers::build_escalated_prompt;
 use crate::retry::{
-    EscalatePromptCtx, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt,
+    EscalatePromptCtx, FixPromptCtx, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt,
     build_compile_fix_prompt, build_edge_case_fix_prompt, build_escalate_prompt_with_context,
     build_failure_informed_compile_fix_prompt, build_failure_informed_edge_case_fix_prompt,
     build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
@@ -717,22 +717,19 @@ pub async fn try_translate_with_retry(
                 continue;
             }
             RetryStrategy::CompileFix => {
+                let fix_ctx = FixPromptCtx {
+                    function_name: initial_translation.function.clone(),
+                    dll_name: initial_translation.binary.to_string(),
+                    original_rust_code: initial_translation.rust_code.clone(),
+                    compilation_errors: initial_errors.clone(),
+                    failed_tests: Vec::new(),
+                    history: failure_history.clone(),
+                };
                 // Use failure-informed prompts after first retry
                 let prompt = if failure_history.is_empty() {
-                    build_compile_fix_prompt(
-                        &initial_translation.function,
-                        &initial_translation.binary,
-                        &initial_translation.rust_code,
-                        &initial_errors,
-                    )
+                    build_compile_fix_prompt(&fix_ctx)
                 } else {
-                    build_failure_informed_compile_fix_prompt(
-                        &initial_translation.function,
-                        &initial_translation.binary,
-                        &initial_translation.rust_code,
-                        &initial_errors,
-                        &failure_history,
-                    )
+                    build_failure_informed_compile_fix_prompt(&fix_ctx)
                 };
                 (prompt, "compile_fix".to_string())
             }
@@ -763,21 +760,18 @@ pub async fn try_translate_with_retry(
                 };
 
                 // Use failure-informed prompts after first retry
+                let fix_ctx = FixPromptCtx {
+                    function_name: initial_translation.function.clone(),
+                    dll_name: initial_translation.binary.to_string(),
+                    original_rust_code: initial_translation.rust_code.clone(),
+                    compilation_errors: Vec::new(),
+                    failed_tests,
+                    history: failure_history.clone(),
+                };
                 let prompt = if failure_history.is_empty() {
-                    build_test_fix_prompt(
-                        &initial_translation.function,
-                        &initial_translation.binary,
-                        &initial_translation.rust_code,
-                        &failed_tests,
-                    )
+                    build_test_fix_prompt(&fix_ctx)
                 } else {
-                    build_failure_informed_test_fix_prompt(
-                        &initial_translation.function,
-                        &initial_translation.binary,
-                        &initial_translation.rust_code,
-                        &failed_tests,
-                        &failure_history,
-                    )
+                    build_failure_informed_test_fix_prompt(&fix_ctx)
                 };
                 (prompt, "test_fix".to_string())
             }
@@ -878,21 +872,18 @@ pub async fn try_translate_with_retry(
                 };
 
                 // Use failure-informed edge case prompt
+                let fix_ctx = FixPromptCtx {
+                    function_name: initial_translation.function.clone(),
+                    dll_name: initial_translation.binary.to_string(),
+                    original_rust_code: initial_translation.rust_code.clone(),
+                    compilation_errors: Vec::new(),
+                    failed_tests: Vec::new(),
+                    history: failure_history.clone(),
+                };
                 let prompt = if failure_history.is_empty() {
-                    build_edge_case_fix_prompt(
-                        &initial_translation.function,
-                        &initial_translation.binary,
-                        &initial_translation.rust_code,
-                        &failed_tests,
-                    )
+                    build_edge_case_fix_prompt(&fix_ctx, &failed_tests)
                 } else {
-                    build_failure_informed_edge_case_fix_prompt(
-                        &initial_translation.function,
-                        &initial_translation.binary,
-                        &initial_translation.rust_code,
-                        &failed_tests,
-                        &failure_history,
-                    )
+                    build_failure_informed_edge_case_fix_prompt(&fix_ctx, &failed_tests)
                 };
                 (prompt, "edge_case_fix".to_string())
             }
@@ -1503,12 +1494,16 @@ mod tests {
 
     #[test]
     fn test_build_compile_fix_prompt() {
-        let prompt = build_compile_fix_prompt(
-            "entry",
-            "eqmain.dll",
-            "fn entry() { __security_init_cookie(); }",
-            &["error[E0425]: not found: `__security_init_cookie`".to_string()],
-        );
+        let prompt = build_compile_fix_prompt(&FixPromptCtx {
+            function_name: "entry".to_string(),
+            dll_name: "eqmain.dll".to_string(),
+            original_rust_code: "fn entry() { __security_init_cookie(); }".to_string(),
+            compilation_errors: vec![
+                "error[E0425]: not found: `__security_init_cookie`".to_string(),
+            ],
+            failed_tests: Vec::new(),
+            history: Vec::new(),
+        });
         assert!(prompt.contains("entry"));
         assert!(prompt.contains("eqmain.dll"));
         assert!(prompt.contains("__security_init_cookie"));
@@ -1517,15 +1512,17 @@ mod tests {
 
     #[test]
     fn test_build_test_fix_prompt() {
-        let prompt = build_test_fix_prompt(
-            "DrawSprite",
-            "game_logic.dll",
-            "fn draw_sprite(x: i32) -> i32 { x }",
-            &[
+        let prompt = build_test_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            compilation_errors: Vec::new(),
+            failed_tests: vec![
                 "Test 0: expected 42, got 10 — input was 10".to_string(),
                 "Test 1: expected 0, got 5 — input was 5".to_string(),
             ],
-        );
+            history: Vec::new(),
+        });
         assert!(prompt.contains("DrawSprite"));
         assert!(prompt.contains("expected 42"));
         assert!(prompt.contains("expected 0"));
@@ -1581,13 +1578,16 @@ mod tests {
             FailureHint::new(2, "test_fix", "Wrong result on boundary input"),
         ];
 
-        let prompt = build_failure_informed_compile_fix_prompt(
-            "entry",
-            "eqmain.dll",
-            "fn entry() { __security_init_cookie(); }",
-            &["error[E0425]: not found: `__security_init_cookie`".to_string()],
-            &hints,
-        );
+        let prompt = build_failure_informed_compile_fix_prompt(&FixPromptCtx {
+            function_name: "entry".to_string(),
+            dll_name: "eqmain.dll".to_string(),
+            original_rust_code: "fn entry() { __security_init_cookie(); }".to_string(),
+            compilation_errors: vec![
+                "error[E0425]: not found: `__security_init_cookie`".to_string(),
+            ],
+            failed_tests: Vec::new(),
+            history: hints,
+        });
 
         assert!(prompt.contains("entry"));
         assert!(prompt.contains("eqmain.dll"));
@@ -1600,13 +1600,14 @@ mod tests {
 
     #[test]
     fn test_failure_informed_compile_fix_empty_history() {
-        let prompt = build_failure_informed_compile_fix_prompt(
-            "entry",
-            "eqmain.dll",
-            "fn entry() { }",
-            &["error[E0425]: not found: `foo`".to_string()],
-            &[], // empty history — should not include history section
-        );
+        let prompt = build_failure_informed_compile_fix_prompt(&FixPromptCtx {
+            function_name: "entry".to_string(),
+            dll_name: "eqmain.dll".to_string(),
+            original_rust_code: "fn entry() { }".to_string(),
+            compilation_errors: vec!["error[E0425]: not found: `foo`".to_string()],
+            failed_tests: Vec::new(),
+            history: Vec::new(), // empty history — should not include history section
+        });
 
         assert!(prompt.contains("entry"));
         assert!(!prompt.contains("PREVIOUS ATTEMPT HISTORY"));
@@ -1620,13 +1621,14 @@ mod tests {
             "Compilation failed: E0412",
         )];
 
-        let prompt = build_failure_informed_test_fix_prompt(
-            "DrawSprite",
-            "game_logic.dll",
-            "fn draw_sprite(x: i32) -> i32 { x }",
-            &["Test 0: expected 42, got 10 — input was 10".to_string()],
-            &hints,
-        );
+        let prompt = build_failure_informed_test_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            compilation_errors: Vec::new(),
+            failed_tests: vec!["Test 0: expected 42, got 10 — input was 10".to_string()],
+            history: hints,
+        });
 
         assert!(prompt.contains("DrawSprite"));
         assert!(prompt.contains("game_logic.dll"));
@@ -1652,11 +1654,15 @@ mod tests {
         }];
 
         let prompt = build_failure_informed_edge_case_fix_prompt(
-            "DrawSprite",
-            "game_logic.dll",
-            "fn draw_sprite(x: i32) -> i32 { x + 1 }",
+            &FixPromptCtx {
+                function_name: "DrawSprite".to_string(),
+                dll_name: "game_logic.dll".to_string(),
+                original_rust_code: "fn draw_sprite(x: i32) -> i32 { x + 1 }".to_string(),
+                compilation_errors: Vec::new(),
+                failed_tests: Vec::new(),
+                history: hints,
+            },
             &failed_tests,
-            &hints,
         );
 
         assert!(prompt.contains("DrawSprite"));

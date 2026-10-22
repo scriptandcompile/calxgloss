@@ -1076,69 +1076,56 @@ impl TranslationPipeline {
                 calxgloss_prompts::build_with_tests_prompt(&data)?
             }
             ContextTier::ModuleContext => {
-                let call_graph_neighbors =
+                // One gather over the analyzer caches (issue #268); the
+                // call-graph lists and the in-memory control-flow result
+                // ride in on top of it.
+                let mut evidence = crate::retry::helpers::gather_function_evidence(
+                    self.workspace.as_deref(),
+                    &function_info.binary,
+                    function,
+                    &function_info.call_graph,
+                );
+                evidence.call_graph_neighbors =
                     crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
                         &enriched_context,
                         function_info.address,
                     );
-                let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
-                    &self.scan_source(),
-                    &function_info.call_graph,
-                )
-                .await;
-                let data_structures = crate::retry::helpers::extract_data_structures(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                );
-                let control_flow_findings =
+                evidence.neighboring_functions =
+                    crate::retry::helpers::extract_neighboring_context(
+                        &self.scan_source(),
+                        &function_info.call_graph,
+                    )
+                    .await;
+                evidence.call_graph_context = enriched_context.clone();
+                evidence.control_flow_findings =
                     crate::retry::helpers::control_flow_hints_from(control_flow.as_ref(), function);
-                let convention_findings = crate::retry::helpers::extract_convention_hints(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                );
-                let global_state_findings = crate::retry::helpers::extract_global_state_hints(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                );
-                let libmatch_findings = crate::retry::helpers::extract_libmatch_hints(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                    &function_info.call_graph,
-                );
                 let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
-                    &request,
-                    call_graph_neighbors,
-                    neighboring_functions,
-                    data_structures,
-                    enriched_context.clone(),
-                    control_flow_findings,
-                    convention_findings,
-                    global_state_findings,
-                    libmatch_findings,
+                    &request, evidence,
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }
             ContextTier::FullModule => {
                 // Tier 4: Full module context + shim layer code + PAL trait definitions
-                let call_graph_neighbors =
+                let mut evidence = crate::retry::helpers::gather_function_evidence(
+                    self.workspace.as_deref(),
+                    &function_info.binary,
+                    function,
+                    &function_info.call_graph,
+                );
+                evidence.call_graph_neighbors =
                     crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
                         &enriched_context,
                         function_info.address,
                     );
-                let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
-                    &self.scan_source(),
-                    &function_info.call_graph,
-                )
-                .await;
-                let data_structures = crate::retry::helpers::extract_data_structures(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                );
+                evidence.neighboring_functions =
+                    crate::retry::helpers::extract_neighboring_context(
+                        &self.scan_source(),
+                        &function_info.call_graph,
+                    )
+                    .await;
+                evidence.call_graph_context = enriched_context.clone();
+                evidence.control_flow_findings =
+                    crate::retry::helpers::control_flow_hints_from(control_flow.as_ref(), function);
 
                 // Extract shim layer code from the workspace
                 let shim_layers = crate::retry::helpers::extract_shim_layers(
@@ -1150,17 +1137,11 @@ impl TranslationPipeline {
                 let pal_traits =
                     crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
 
-                let control_flow_findings =
-                    crate::retry::helpers::control_flow_hints_from(control_flow.as_ref(), function);
                 let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
                     &request,
-                    call_graph_neighbors,
-                    neighboring_functions,
-                    data_structures,
+                    evidence,
                     shim_layers,
                     pal_traits,
-                    enriched_context.clone(),
-                    control_flow_findings,
                 );
                 calxgloss_prompts::build_full_module_prompt(&data)?
             }

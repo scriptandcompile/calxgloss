@@ -7,12 +7,11 @@ use calxgloss::{
     PipelineControl, PipelineRunRequest, PipelineState, RunRequestSignal, StopSignal,
     TranslationEvents, UnitCancellation,
 };
-use calxgloss_web::{
-    LogLevelControl, ServerState, SessionManager, build_router_with_ws, serve_with_listener,
-};
+use calxgloss_web::{ServerState, SessionManager, build_router_with_ws, serve_with_listener};
 use tracing::{debug, error, info};
 
 use crate::Settings;
+use crate::commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use crate::utils::*;
 
 /// Walk the shared state machine to the run's terminal state once a run
@@ -48,25 +47,25 @@ fn finish_run(control: &PipelineControl, result: &Result<()>) {
 /// re-run the pipeline in-process — no process restart. A `--classify-only`
 /// launch runs classification with the state machine Idle and waits for the
 /// Start endpoint to begin translation.
-// Mirrors the CLI flag surface of `auto` plus the log controls; the flags
-// arrive straight from clap, so a struct would only rename the plumbing.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_live(
-    target: Option<PathBuf>,
-    binaries: Option<String>,
-    all_functions: bool,
-    classify_only: bool,
-    skip_git: bool,
+    opts: LiveRunOptions,
     workspace: PathBuf,
     port: u16,
     settings: &Settings,
-    no_callgraph: bool,
-    callgraph_cache: Option<PathBuf>,
-    callgraph_verbose: bool,
-    refresh_cache: bool,
-    log_level: &'static str,
-    log_filter: LogLevelControl,
 ) -> Result<()> {
+    let LiveRunOptions {
+        target,
+        binaries,
+        all_functions,
+        classify_only,
+        skip_git,
+        no_callgraph,
+        callgraph_cache,
+        callgraph_verbose,
+        refresh_cache,
+        log_level,
+        log_filter,
+    } = opts;
     info!(
         port,
         repo = ?workspace,
@@ -288,29 +287,34 @@ pub async fn handle_live(
         }
 
         auto_result = crate::commands::auto::handle_auto(
-            target.clone(),
-            binaries.clone(),
-            all_functions,
-            // Only the classify-only launch pass classifies; a requested
-            // run translates (its phase selector drives re-classification
-            // through `run` instead).
-            is_launch_pass && classify_only,
-            skip_git,
-            settings,
-            true,              // continue mode — don't stop after classification, translate all
-            Some(&events),     // pass event emitter for live progress streaming
-            workspace.clone(), // resolved workspace (same value used by serve task)
-            no_callgraph,
-            callgraph_cache.clone(),
-            callgraph_verbose,
-            refresh_cache,
-            Some(&stop_signal), // shutdown/restart endpoints pause at unit boundaries
-            Some(&control),     // pause/resume/stop endpoints drive the run
-            Some(&cancellation), // cancel-current endpoint aborts the in-flight unit
-            run.as_ref(),       // W2.3 start/restart selectors for this run
-            Some(&scope_control), // W2.5 scope endpoints steer this run
-            Some(&override_control), // W2.7 override endpoints steer this run
-            Some(&classification_override_control), // W2.8 classification endpoints steer this run
+            AutoRunOptions {
+                target: target.clone(),
+                binaries_arg: binaries.clone(),
+                all_functions,
+                // Only the classify-only launch pass classifies; a requested
+                // run translates (its phase selector drives re-classification
+                // through `run` instead).
+                classify_only: is_launch_pass && classify_only,
+                continue_mode: true, // don't stop after classification, translate all
+                skip_git,
+                settings,
+                workspace: workspace.clone(), // resolved workspace (same value used by serve task)
+                no_callgraph,
+                callgraph_cache: callgraph_cache.clone(),
+                callgraph_verbose,
+                refresh_cache,
+            },
+            // The web server drives every live control for this run.
+            RunControls {
+                events: Some(&events),
+                stop: Some(&stop_signal),
+                control: Some(&control),
+                cancellation: Some(&cancellation),
+                scope_control: Some(&scope_control),
+                override_control: Some(&override_control),
+                classification_overrides: Some(&classification_override_control),
+            },
+            run.as_ref(), // W2.3 start/restart selectors for this run
         )
         .await;
 

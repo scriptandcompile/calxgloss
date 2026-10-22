@@ -12,10 +12,9 @@
 //! - [`FullModulePromptData`] — Tier 4: full module with shim layer + PAL traits
 
 use super::templates::{
-    CallGraphNeighbor, ControlFlowInfo, ConventionInfo, FormattedTestResult, GlobalStateInfo,
-    LibmatchInfo, NeighborFunction, PalTraitDef, ShimCode, StructuredData,
+    CallGraphNeighbor, ControlFlowInfo, ConventionInfo, EvidenceBundle, FormattedTestResult,
+    GlobalStateInfo, LibmatchInfo, NeighborFunction, PalTraitDef, ShimCode, StructuredData,
 };
-use calxgloss_callgraph::FunctionContext;
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
 
@@ -235,19 +234,9 @@ impl ModuleContextPromptData {
     /// additional decompiler-derived context.
     ///
     /// Use this constructor when neighboring function code and data structure
-    /// information have been fetched from the engine.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_request_with_context(
-        req: &TranslationRequest,
-        call_graph_neighbors: Vec<CallGraphNeighbor>,
-        neighboring_functions: Vec<NeighborFunction>,
-        data_structures: Vec<StructuredData>,
-        call_graph_context: Vec<FunctionContext>,
-        control_flow_findings: Vec<ControlFlowInfo>,
-        convention_findings: Vec<ConventionInfo>,
-        global_state_findings: Vec<GlobalStateInfo>,
-        libmatch_findings: Vec<LibmatchInfo>,
-    ) -> Self {
+    /// information have been fetched from the engine; the finding lists ride
+    /// in as one [`EvidenceBundle`].
+    pub fn from_request_with_context(req: &TranslationRequest, evidence: EvidenceBundle) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
             .iter()
@@ -265,15 +254,15 @@ impl ModuleContextPromptData {
             decompiler_output: req.decompiler_output.clone(),
             windows_apis,
             no_windows_apis: req.windows_apis.is_empty(),
-            call_graph_neighbors,
+            call_graph_neighbors: evidence.call_graph_neighbors,
             test_results,
-            neighboring_functions,
-            data_structures,
-            call_graph_context,
-            control_flow_findings,
-            convention_findings,
-            global_state_findings,
-            libmatch_findings,
+            neighboring_functions: evidence.neighboring_functions,
+            data_structures: evidence.data_structures,
+            call_graph_context: evidence.call_graph_context,
+            control_flow_findings: evidence.control_flow_findings,
+            convention_findings: evidence.convention_findings,
+            global_state_findings: evidence.global_state_findings,
+            libmatch_findings: evidence.libmatch_findings,
         }
     }
 }
@@ -425,17 +414,13 @@ impl FullModulePromptData {
     ///
     /// Use this constructor when all context — call graph neighbors,
     /// neighboring function code, data structures, shim layer code,
-    /// and PAL trait definitions — is available.
-    #[allow(clippy::too_many_arguments)]
+    /// and PAL trait definitions — is available; the shared finding
+    /// lists ride in as one [`EvidenceBundle`].
     pub fn from_request_with_full_context(
         req: &TranslationRequest,
-        call_graph_neighbors: Vec<CallGraphNeighbor>,
-        neighboring_functions: Vec<NeighborFunction>,
-        data_structures: Vec<StructuredData>,
+        evidence: EvidenceBundle,
         shim_layers: Vec<ShimCode>,
         pal_traits: Vec<PalTraitDef>,
-        call_graph_context: Vec<FunctionContext>,
-        control_flow_findings: Vec<ControlFlowInfo>,
     ) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -454,14 +439,14 @@ impl FullModulePromptData {
             decompiler_output: req.decompiler_output.clone(),
             windows_apis,
             no_windows_apis: req.windows_apis.is_empty(),
-            call_graph_neighbors,
+            call_graph_neighbors: evidence.call_graph_neighbors,
             test_results,
-            neighboring_functions,
-            data_structures,
+            neighboring_functions: evidence.neighboring_functions,
+            data_structures: evidence.data_structures,
             shim_layers,
             pal_traits,
-            call_graph_context,
-            control_flow_findings,
+            call_graph_context: evidence.call_graph_context,
+            control_flow_findings: evidence.control_flow_findings,
         }
     }
 }

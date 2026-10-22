@@ -22,7 +22,7 @@ use super::context::{
 };
 use super::error::PromptError;
 use super::templates::{
-    BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
+    BoundaryValue, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, EvidenceBundle,
     FullModuleTemplate, MinimalTemplate, ModuleContextTemplate, RichTemplate, SignatureTemplate,
     TranslateTemplate, WithTestsTemplate,
 };
@@ -106,18 +106,14 @@ pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, Prompt
 /// Builds an escalation prompt with additional decompiler context.
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
-/// Adds call graph neighbors, neighboring functions, data structures,
-/// and type information to help the LLM understand the broader context.
-#[allow(clippy::too_many_arguments)]
+/// The decompiler-derived finding lists ride in as an [`EvidenceBundle`];
+/// the function identity and failure history stay as separate parameters.
 pub fn build_escalate_prompt(
     function_name: String,
     dll_name: String,
     original_rust_code: String,
     failure_description: String,
-    call_graph_neighbors: Vec<CallGraphNeighbor>,
-    neighboring_functions: Vec<super::templates::NeighborFunction>,
-    data_structures: Vec<super::templates::StructuredData>,
-    type_info: Vec<super::templates::TypeInfo>,
+    evidence: EvidenceBundle,
     failure_history: Vec<calxgloss_types::FailureHint>,
 ) -> Result<String, PromptError> {
     build_escalate_prompt_with_context(
@@ -125,23 +121,8 @@ pub fn build_escalate_prompt(
         dll_name,
         original_rust_code,
         failure_description,
-        call_graph_neighbors,
-        neighboring_functions,
-        data_structures,
-        type_info,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
+        evidence,
         failure_history,
-        Vec::new(),
     )
 }
 
@@ -149,60 +130,29 @@ pub fn build_escalate_prompt(
 /// call graph data.
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
-/// Adds call graph neighbors, neighboring functions, data structures,
-/// type information, recognized algorithms, memory lifecycle findings,
-/// concurrency findings, callback findings, control-flow findings,
+/// The bundle carries call graph neighbors, neighboring functions, data
+/// structures, type information, recognized algorithms, memory lifecycle
+/// findings, concurrency findings, callback findings, control-flow findings,
 /// calling-convention readings, global-state access records, string
 /// context findings, library/API findings, constant/enum findings,
 /// serialization findings, and enriched call graph context (caller/callee
 /// details and leaf API suggestions) to help the LLM understand the
 /// broader context.
-#[allow(clippy::too_many_arguments)]
 pub fn build_escalate_prompt_with_context(
     function_name: String,
     dll_name: String,
     original_rust_code: String,
     failure_description: String,
-    call_graph_neighbors: Vec<CallGraphNeighbor>,
-    neighboring_functions: Vec<super::templates::NeighborFunction>,
-    data_structures: Vec<super::templates::StructuredData>,
-    type_info: Vec<super::templates::TypeInfo>,
-    recognized_algorithms: Vec<super::templates::AlgorithmInfo>,
-    memory_findings: Vec<super::templates::MemoryInfo>,
-    concurrency_findings: Vec<super::templates::ConcurrencyInfo>,
-    callback_findings: Vec<super::templates::CallbackInfo>,
-    control_flow_findings: Vec<super::templates::ControlFlowInfo>,
-    convention_findings: Vec<super::templates::ConventionInfo>,
-    global_state_findings: Vec<super::templates::GlobalStateInfo>,
-    string_findings: Vec<super::templates::StringContextInfo>,
-    api_findings: Vec<super::templates::ApiInfo>,
-    const_findings: Vec<super::templates::ConstInfo>,
-    serialization_findings: Vec<super::templates::SerializationInfo>,
+    evidence: EvidenceBundle,
     failure_history: Vec<calxgloss_types::FailureHint>,
-    call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 ) -> Result<String, PromptError> {
-    let template = EscalateTemplate::with_context(
+    let template = EscalateTemplate::with_history(
         function_name,
         dll_name,
         original_rust_code,
         failure_description,
-        call_graph_neighbors,
-        neighboring_functions,
-        data_structures,
-        type_info,
-        recognized_algorithms,
-        memory_findings,
-        concurrency_findings,
-        callback_findings,
-        control_flow_findings,
-        convention_findings,
-        global_state_findings,
-        string_findings,
-        api_findings,
-        const_findings,
-        serialization_findings,
+        evidence,
         failure_history,
-        call_graph_context,
     );
 
     render_prompt(&template)

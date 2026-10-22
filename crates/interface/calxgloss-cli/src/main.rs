@@ -77,6 +77,7 @@ use commands::init::handle_init;
 use commands::libmatch::handle_libmatch;
 use commands::live::handle_live;
 use commands::memory::handle_memory;
+use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use commands::serialize::handle_serialize;
 use commands::serve::handle_serve;
 use commands::stringctx::handle_stringctx;
@@ -463,26 +464,25 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_auto(
-                    target,
-                    binaries,
-                    all_functions,
-                    classify_only,
-                    skip_git,
-                    &settings,
-                    false, // interactive mode — prompt user, stop after classification
-                    None,  // no event emitter in interactive mode
-                    workspace,
-                    no_callgraph,
-                    callgraph_cache,
-                    callgraph_verbose,
-                    refresh_cache,
-                    None, // no stop signal — plain auto runs to completion
-                    None, // no pipeline control — plain auto has no web server
-                    None, // no unit cancellation — plain auto has no web server
-                    None, // no run selectors — plain auto has no start/restart channel
-                    None, // no scope control — plain auto has no scope endpoints
-                    None, // no override control — plain auto has no override endpoints
-                    None, // no classification overrides — plain auto has no classification endpoints
+                    AutoRunOptions {
+                        target,
+                        binaries_arg: binaries,
+                        all_functions,
+                        classify_only,
+                        // interactive mode — prompt user, stop after classification
+                        continue_mode: false,
+                        skip_git,
+                        settings: &settings,
+                        workspace,
+                        no_callgraph,
+                        callgraph_cache,
+                        callgraph_verbose,
+                        refresh_cache,
+                    },
+                    // plain auto has no web server: no live run state, no
+                    // run selectors, no scope or override controls
+                    RunControls::default(),
+                    None,
                 ))
         }
         Command::AutoShim { binary, skip_git } => {
@@ -539,20 +539,22 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_live(
-                    target,
-                    binaries,
-                    all_functions,
-                    classify_only,
-                    skip_git,
+                    LiveRunOptions {
+                        target,
+                        binaries,
+                        all_functions,
+                        classify_only,
+                        skip_git,
+                        no_callgraph,
+                        callgraph_cache,
+                        callgraph_verbose,
+                        refresh_cache,
+                        log_level,
+                        log_filter,
+                    },
                     workspace,
                     port,
                     &settings,
-                    no_callgraph,
-                    callgraph_cache,
-                    callgraph_verbose,
-                    refresh_cache,
-                    log_level,
-                    log_filter,
                 ))
         }
     };

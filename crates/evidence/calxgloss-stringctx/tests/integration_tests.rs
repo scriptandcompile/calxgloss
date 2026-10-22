@@ -408,22 +408,10 @@ async fn the_loaded_findings_render_into_the_escalate_prompt() {
         "eqmain.dll".into(),
         "fn fun_18003ab00() { /* raw literals */ }".into(),
         "Wrong result".into(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        findings,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
+        calxgloss_prompts::EvidenceBundle {
+            string_findings: findings,
+            ..Default::default()
+        },
         Vec::new(),
     )
     .expect("the escalate prompt should render");

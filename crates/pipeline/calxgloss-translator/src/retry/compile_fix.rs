@@ -1,16 +1,12 @@
 //! Compile fix prompt builders.
 
+use super::prompts::FixPromptCtx;
 use askama::Template;
 use calxgloss_prompts::FixTemplate;
-use calxgloss_types::FailureHint;
 
 /// Build a fix prompt for compilation errors.
-pub fn build_compile_fix_prompt(
-    function_name: &str,
-    dll_name: &str,
-    original_rust_code: &str,
-    compilation_errors: &[String],
-) -> String {
+pub fn build_compile_fix_prompt(ctx: &FixPromptCtx) -> String {
+    let compilation_errors = &ctx.compilation_errors;
     let failure_desc = if compilation_errors.is_empty() {
         "Compilation failed but no error details were captured.".to_string()
     } else {
@@ -22,9 +18,9 @@ pub fn build_compile_fix_prompt(
     };
 
     let template = FixTemplate::new(
-        function_name.to_string(),
-        dll_name.to_string(),
-        original_rust_code.to_string(),
+        ctx.function_name.clone(),
+        ctx.dll_name.clone(),
+        ctx.original_rust_code.clone(),
         failure_desc,
     );
     template.render().unwrap_or_else(|_| {
@@ -37,16 +33,11 @@ pub fn build_compile_fix_prompt(
 
 /// Build a failure-informed compile fix prompt.
 ///
-/// When `history` contains prior failures, the prompt includes a
+/// When `ctx.history` contains prior failures, the prompt includes a
 /// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from
 /// specific past mistakes (e.g., "v1 mapped SetTexture incorrectly").
-pub fn build_failure_informed_compile_fix_prompt(
-    function_name: &str,
-    dll_name: &str,
-    original_rust_code: &str,
-    compilation_errors: &[String],
-    history: &[FailureHint],
-) -> String {
+pub fn build_failure_informed_compile_fix_prompt(ctx: &FixPromptCtx) -> String {
+    let compilation_errors = &ctx.compilation_errors;
     let failure_desc = if compilation_errors.is_empty() {
         "Compilation failed but no error details were captured.".to_string()
     } else {
@@ -58,11 +49,11 @@ pub fn build_failure_informed_compile_fix_prompt(
     };
 
     let template = FixTemplate::with_history(
-        function_name.to_string(),
-        dll_name.to_string(),
-        original_rust_code.to_string(),
+        ctx.function_name.clone(),
+        ctx.dll_name.clone(),
+        ctx.original_rust_code.clone(),
         failure_desc,
-        history.to_vec(),
+        ctx.history.to_vec(),
     );
     template.render().unwrap_or_else(|_| {
         format!(

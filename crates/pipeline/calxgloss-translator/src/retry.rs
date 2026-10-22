@@ -29,7 +29,7 @@ pub use escalate::{
     EscalatePromptCtx, build_escalate_prompt_with_context, build_failure_informed_escalate_prompt,
 };
 pub use prompts::{
-    build_edge_case_fix_prompt, build_failure_informed_edge_case_fix_prompt,
+    FixPromptCtx, build_edge_case_fix_prompt, build_failure_informed_edge_case_fix_prompt,
     build_failure_informed_test_fix_prompt, build_test_fix_prompt,
 };
 

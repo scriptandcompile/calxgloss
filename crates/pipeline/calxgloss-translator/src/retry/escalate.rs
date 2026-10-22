@@ -44,76 +44,20 @@ async fn build_escalate_prompt_inner(
     ctx: EscalatePromptCtx,
     history: Vec<calxgloss_types::FailureHint>,
 ) -> String {
-    let call_graph_neighbors =
+    // One pass over the persisted analyzer caches yields every finding
+    // list the escalate template reads (issue #268); the call-graph
+    // lists come from the live scan source and the initial translation.
+    let mut evidence = super::helpers::gather_function_evidence(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+        &ctx.call_graph,
+    );
+    evidence.call_graph_neighbors =
         extract_call_graph_neighbors(&ctx.source, &ctx.call_graph, ctx.address).await;
-
-    let neighboring_functions = extract_neighboring_context(&ctx.source, &ctx.call_graph).await;
-
-    let data_structures = super::helpers::extract_data_structures(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let type_info = super::helpers::extract_type_info(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let algorithm_hints = super::helpers::extract_algorithm_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let memory_findings = super::helpers::extract_memory_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let concurrency_findings = super::helpers::extract_concurrency_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let callback_findings = super::helpers::extract_callback_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let control_flow_findings = super::helpers::extract_control_flow_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let convention_findings = super::helpers::extract_convention_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let global_state_findings = super::helpers::extract_global_state_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let string_findings = super::helpers::extract_string_context(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let api_findings = super::helpers::extract_api_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let const_findings = super::helpers::extract_constant_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
-    let serialization_findings = super::helpers::extract_serialization_hints(
-        ctx.workspace.as_deref(),
-        &ctx.dll_name,
-        &ctx.function_name,
-    );
+    evidence.neighboring_functions =
+        extract_neighboring_context(&ctx.source, &ctx.call_graph).await;
+    evidence.call_graph_context = ctx.call_graph_context.clone();
 
     // Clone for the error fallback (original is moved into build_escalate_prompt)
     let rust_code_for_error = ctx.original_rust_code.clone();
@@ -123,23 +67,8 @@ async fn build_escalate_prompt_inner(
         ctx.dll_name,
         ctx.original_rust_code,
         ctx.failure_description,
-        call_graph_neighbors,
-        neighboring_functions,
-        data_structures,
-        type_info,
-        algorithm_hints,
-        memory_findings,
-        concurrency_findings,
-        callback_findings,
-        control_flow_findings,
-        convention_findings,
-        global_state_findings,
-        string_findings,
-        api_findings,
-        const_findings,
-        serialization_findings,
+        evidence,
         history,
-        ctx.call_graph_context,
     )
     .unwrap_or_else(|e| {
         format!(

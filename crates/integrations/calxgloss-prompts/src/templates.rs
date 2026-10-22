@@ -658,6 +658,66 @@ impl FixTemplate {
 }
 
 // ============================================================
+// Evidence bundle — the finding lists a fix prompt is built from
+// ============================================================
+
+/// The decompiler-derived evidence an escalate prompt is built from.
+///
+/// Every finding list the escalate builders and prompt-data constructors
+/// read, grouped into one struct so those constructors take a bundle
+/// instead of a dozen same-typed positional lists (issue #268). Each
+/// list is optional: a bundle that populates only some findings renders
+/// exactly what the old call with empty lists elsewhere rendered.
+#[derive(Debug, Clone, Default)]
+pub struct EvidenceBundle {
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    /// Other functions sharing context with this function.
+    pub neighboring_functions: Vec<NeighborFunction>,
+    /// Data structures referenced near this function.
+    pub data_structures: Vec<StructuredData>,
+    /// Type information inferred by the decompiler.
+    pub type_info: Vec<TypeInfo>,
+    /// Algorithms recognized in this function by the analysis pipeline.
+    pub recognized_algorithms: Vec<AlgorithmInfo>,
+    /// Memory lifecycle findings about this function made by the analysis
+    /// pipeline.
+    pub memory_findings: Vec<MemoryInfo>,
+    /// Concurrency findings about this function made by the analysis
+    /// pipeline.
+    pub concurrency_findings: Vec<ConcurrencyInfo>,
+    /// Callback and function-pointer-table findings about this function
+    /// made by the analysis pipeline.
+    pub callback_findings: Vec<CallbackInfo>,
+    /// Control-flow findings about this function made by the analysis
+    /// pipeline.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// Calling-convention readings about this function and its callees
+    /// made by the type-inference engine.
+    pub convention_findings: Vec<ConventionInfo>,
+    /// Global-state access records about this function made by the
+    /// global-state scan.
+    pub global_state_findings: Vec<GlobalStateInfo>,
+    /// String-context findings about this function made by the analysis
+    /// pipeline.
+    pub string_findings: Vec<StringContextInfo>,
+    /// Library/API findings about this function and its binary made by
+    /// the analysis pipeline.
+    pub api_findings: Vec<ApiInfo>,
+    /// Constant and enum findings about this function made by the
+    /// analysis pipeline.
+    pub const_findings: Vec<ConstInfo>,
+    /// Endianness and serialization findings about this function made
+    /// by the analysis pipeline.
+    pub serialization_findings: Vec<SerializationInfo>,
+    /// Library-match findings about this function and its call graph —
+    /// read by the module-context prompt data, not the escalate template.
+    pub libmatch_findings: Vec<LibmatchInfo>,
+    /// Enriched call graph context with caller/callee/leaf-API details.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+}
+
+// ============================================================
 // Escalate template — for retrying with additional decompiler context
 // ============================================================
 
@@ -723,75 +783,30 @@ pub struct EscalateTemplate {
 
 impl EscalateTemplate {
     /// Create a new escalate template without failure history.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         function_name: String,
         dll_name: String,
         original_rust_code: String,
         failure_description: String,
-        call_graph_neighbors: Vec<CallGraphNeighbor>,
-        neighboring_functions: Vec<NeighborFunction>,
-        data_structures: Vec<StructuredData>,
-        type_info: Vec<TypeInfo>,
-        recognized_algorithms: Vec<AlgorithmInfo>,
-        memory_findings: Vec<MemoryInfo>,
-        concurrency_findings: Vec<ConcurrencyInfo>,
-        callback_findings: Vec<CallbackInfo>,
-        control_flow_findings: Vec<ControlFlowInfo>,
-        convention_findings: Vec<ConventionInfo>,
-        global_state_findings: Vec<GlobalStateInfo>,
-        string_findings: Vec<StringContextInfo>,
-        api_findings: Vec<ApiInfo>,
-        const_findings: Vec<ConstInfo>,
-        serialization_findings: Vec<SerializationInfo>,
+        evidence: EvidenceBundle,
     ) -> Self {
-        Self {
+        Self::with_history(
             function_name,
             dll_name,
             original_rust_code,
             failure_description,
-            call_graph_neighbors,
-            neighboring_functions,
-            data_structures,
-            type_info,
-            recognized_algorithms,
-            memory_findings,
-            concurrency_findings,
-            callback_findings,
-            control_flow_findings,
-            convention_findings,
-            global_state_findings,
-            string_findings,
-            api_findings,
-            const_findings,
-            serialization_findings,
-            failure_history: Vec::new(),
-            call_graph_context: Vec::new(),
-        }
+            evidence,
+            Vec::new(),
+        )
     }
 
     /// Create a new escalate template with failure history.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_history(
         function_name: String,
         dll_name: String,
         original_rust_code: String,
         failure_description: String,
-        call_graph_neighbors: Vec<CallGraphNeighbor>,
-        neighboring_functions: Vec<NeighborFunction>,
-        data_structures: Vec<StructuredData>,
-        type_info: Vec<TypeInfo>,
-        recognized_algorithms: Vec<AlgorithmInfo>,
-        memory_findings: Vec<MemoryInfo>,
-        concurrency_findings: Vec<ConcurrencyInfo>,
-        callback_findings: Vec<CallbackInfo>,
-        control_flow_findings: Vec<ControlFlowInfo>,
-        convention_findings: Vec<ConventionInfo>,
-        global_state_findings: Vec<GlobalStateInfo>,
-        string_findings: Vec<StringContextInfo>,
-        api_findings: Vec<ApiInfo>,
-        const_findings: Vec<ConstInfo>,
-        serialization_findings: Vec<SerializationInfo>,
+        evidence: EvidenceBundle,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -799,73 +814,23 @@ impl EscalateTemplate {
             dll_name,
             original_rust_code,
             failure_description,
-            call_graph_neighbors,
-            neighboring_functions,
-            data_structures,
-            type_info,
-            recognized_algorithms,
-            memory_findings,
-            concurrency_findings,
-            callback_findings,
-            control_flow_findings,
-            convention_findings,
-            global_state_findings,
-            string_findings,
-            api_findings,
-            const_findings,
-            serialization_findings,
+            call_graph_neighbors: evidence.call_graph_neighbors,
+            neighboring_functions: evidence.neighboring_functions,
+            data_structures: evidence.data_structures,
+            type_info: evidence.type_info,
+            recognized_algorithms: evidence.recognized_algorithms,
+            memory_findings: evidence.memory_findings,
+            concurrency_findings: evidence.concurrency_findings,
+            callback_findings: evidence.callback_findings,
+            control_flow_findings: evidence.control_flow_findings,
+            convention_findings: evidence.convention_findings,
+            global_state_findings: evidence.global_state_findings,
+            string_findings: evidence.string_findings,
+            api_findings: evidence.api_findings,
+            const_findings: evidence.const_findings,
+            serialization_findings: evidence.serialization_findings,
             failure_history,
-            call_graph_context: Vec::new(),
-        }
-    }
-
-    /// Create a new escalate template with enriched call graph context.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_context(
-        function_name: String,
-        dll_name: String,
-        original_rust_code: String,
-        failure_description: String,
-        call_graph_neighbors: Vec<CallGraphNeighbor>,
-        neighboring_functions: Vec<NeighborFunction>,
-        data_structures: Vec<StructuredData>,
-        type_info: Vec<TypeInfo>,
-        recognized_algorithms: Vec<AlgorithmInfo>,
-        memory_findings: Vec<MemoryInfo>,
-        concurrency_findings: Vec<ConcurrencyInfo>,
-        callback_findings: Vec<CallbackInfo>,
-        control_flow_findings: Vec<ControlFlowInfo>,
-        convention_findings: Vec<ConventionInfo>,
-        global_state_findings: Vec<GlobalStateInfo>,
-        string_findings: Vec<StringContextInfo>,
-        api_findings: Vec<ApiInfo>,
-        const_findings: Vec<ConstInfo>,
-        serialization_findings: Vec<SerializationInfo>,
-        failure_history: Vec<FailureHint>,
-        call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
-    ) -> Self {
-        Self {
-            function_name,
-            dll_name,
-            original_rust_code,
-            failure_description,
-            call_graph_neighbors,
-            neighboring_functions,
-            data_structures,
-            type_info,
-            recognized_algorithms,
-            memory_findings,
-            concurrency_findings,
-            callback_findings,
-            control_flow_findings,
-            convention_findings,
-            global_state_findings,
-            string_findings,
-            api_findings,
-            const_findings,
-            serialization_findings,
-            failure_history,
-            call_graph_context,
+            call_graph_context: evidence.call_graph_context,
         }
     }
 }
