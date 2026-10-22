@@ -204,7 +204,7 @@ pub(crate) fn parse_msvc(name: &str) -> Option<MsvcSignature> {
         // 64-bit `this`, optional restrict/unaligned and ref-qualifier
         // letters, and an optional const/volatile letter — none of
         // which change what the contract types.
-        while matches!(bytes.get(i), Some(b'E' | b'I' | b'F' | b'G' | b'H')) {
+        while matches!(bytes.get(i), Some(b'E'..=b'I')) {
             i += 1;
         }
         if matches!(bytes.get(i), Some(b'A'..=b'D' | b'Q'..=b'T')) {
