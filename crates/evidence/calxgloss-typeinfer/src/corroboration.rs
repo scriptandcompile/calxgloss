@@ -65,6 +65,12 @@ const CORROBORATED_X64_CONFIDENCE: u8 = 75;
 /// (the record's evidence) and the instruction row right after it, if
 /// any. Rows are pairwise-adjacent exactly as the stack-discipline
 /// reader sees them.
+type CallSite<'a> = (&'a str, Option<&'a str>);
+
+/// One kept listing's call sites, grouped by the callee name each call
+/// row names, sites in row order.
+type CallSitesByCallee<'a> = HashMap<&'a str, Vec<CallSite<'a>>>;
+
 /// The listing's rows, trimmed and with the blanks dropped — exactly the
 /// shape the listing-borne detectors read.
 fn rows(listing: &str) -> Vec<&str> {
@@ -84,12 +90,12 @@ fn rows(listing: &str) -> Vec<&str> {
 /// (the 2026-10-20 LaunchPad.exe incident — thousands of `ret N`
 /// epilogue records × thousands of listings). Reading each listing once
 /// here makes the whole pass linear in the disassembly text.
-fn call_index<'a>(listings: &[(&'a str, &'a str)]) -> Vec<HashMap<&'a str, Vec<(&'a str, Option<&'a str>)>>> {
+fn call_index<'a>(listings: &[(&'a str, &'a str)]) -> Vec<CallSitesByCallee<'a>> {
     listings
         .iter()
         .map(|(_, listing)| {
             let rows: Vec<&str> = rows(listing);
-            let mut by_callee: HashMap<&str, Vec<(&str, Option<&str>)>> = HashMap::new();
+            let mut by_callee = CallSitesByCallee::new();
             for (index, row) in rows.iter().enumerate() {
                 let (mnemonic, operand) = split_instruction(instruction(row));
                 if mnemonic.eq_ignore_ascii_case("call")
@@ -214,9 +220,12 @@ impl ConventionCorroborator {
             }
             let reading = match record.method {
                 InferenceMethod::CalleeEpilogue => self.epilogue_agrees(record, listings, &index),
-                InferenceMethod::X64Shape => {
-                    self.x64_agrees(record, listings, &index, x64_facts.as_ref().expect("computed with x64 shapes"))
-                }
+                InferenceMethod::X64Shape => self.x64_agrees(
+                    record,
+                    listings,
+                    &index,
+                    x64_facts.as_ref().expect("computed with x64 shapes"),
+                ),
                 _ => None,
             };
             if let Some(reading) = reading {
@@ -303,7 +312,7 @@ impl ConventionCorroborator {
         &self,
         record: &InferredConvention,
         listings: &[(&str, &str)],
-        index: &[HashMap<&str, Vec<(&str, Option<&str>)>>],
+        index: &[CallSitesByCallee],
     ) -> Option<InferredType> {
         let declared = declared_argument_bytes(&record.function)?
             .parse::<u64>()
@@ -352,7 +361,7 @@ impl ConventionCorroborator {
         &self,
         record: &InferredConvention,
         listings: &[(&str, &str)],
-        index: &[HashMap<&str, Vec<(&str, Option<&str>)>>],
+        index: &[CallSitesByCallee],
         x64_facts: &[(bool, Option<u64>)],
     ) -> Option<InferredType> {
         let mut callers: Vec<&str> = Vec::new();
