@@ -33,7 +33,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 |---|-------|-------|--------|--------|-----------|------|
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P15 | SEH and cleanup-on-failure idiom detection — name each function's error-handling idiom (SEH frame, RaiseException, goto-cleanup ladder) and the failure codes baseline tests must preserve | evidence (`calxgloss-errhandling` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #230 | [#230](https://github.com/scriptandcompile/calxgloss/issues/230) |
-| P16 | Data-table recovery — reconstruct read-only constant data tables (game stats, opcode tables) as named Rust const arrays instead of scattered `DAT_*` reads | evidence (`calxgloss-consts`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ✅ done | — | [#231](https://github.com/scriptandcompile/calxgloss/issues/231) |
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
@@ -97,41 +96,6 @@ is already stripped from the bodies this scan reads by the shipped
 decompiler-noise pre-filter (#232, #271–#273), so the canary-false-fire gate
 is redundant insurance against a filter miss, not a load-bearing guard.
 Spec: #230. Tickets: not yet filed (`/to-tickets`).
-
-## P16 — Data-table recovery (evidence + integrations + pipeline + interface)
-
-**Read-only constant data tables survive decompilation as scattered `DAT_*`
-reads, and the translator re-implements them as match arms over magic
-numbers.** Game stats, opcode tables, and damage curves sit in `.rdata` as
-uniform arrays the decompiler never types, while the two finished readings
-each own half the problem: callback's jump-table reading names
-function-pointer tables, consts' named constants and codegen cover scalars —
-the array half falls between the owners. The reading lives in
-`calxgloss-consts` as a new program-level detector, not a new crate: it
-enumerates the program's defined data objects through the existing
-`data_items` read, decodes each read-only, array-shaped object into a
-uniform element type and entry count from raw bytes via the existing
-`read_memory` read (typesdb's vtable reconstruction is the prior art), and
-corroborates the decode against `DAT_x[idx]` reads in the kept bodies — all
-reads already cached under ADR-0043, no new seam methods. The write gate is
-absolute: any kept body storing through the symbol disqualifies it as
-mutable global state (the shipped global-state reference sets already name
-such writes); an all-pointer table belongs to
-callback and claims nothing, and so does a mixed pointer/scalar table;
-incoherent decodes at every stride claim nothing. Confidence families:
-engine-applied array type highest, decode corroborated by an indexed read
-high-mid, unreferenced clean decode low. One `DataTable` finding per table —
-symbol, address, element type, count, values capped at 512 with a truncation
-flag, referencing functions, evidence, Evidence-scale confidence — joins the
-existing tagged union, so the persistor, the pre-batch
-`ensure_const_detection` pass, the CLI report, and codegen carry it with
-zero new wiring; codegen grows a pass emitting `pub const NAME: [T; N] =
-[...]`. Consumers: a new DATA TABLES findings section on the module-context
-prompt (the control-flow-findings pattern — the table shape matters on the
-first attempt, and consts findings reach only escalate today) and the
-escalate prompt's existing CONSTANTS section through the union's prompt
-conversion. Nothing is written back to the program (ADR-0020). Spec: #231.
-Tickets: #278–#282 — all landed, recorded in the changelog.
 
 ## P18 — Binary-version diffing (BinDiff-style) (evidence + pipeline + interface)
 
