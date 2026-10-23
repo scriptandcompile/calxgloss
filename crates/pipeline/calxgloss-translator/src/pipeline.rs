@@ -2859,6 +2859,9 @@ impl TranslationPipeline {
         }
     }
 
+    /// Performs batch translation of the specified functions within a binary.
+    ///
+    /// Returns a `BatchTranslationResult` containing the translation outcomes for each function.
     #[allow(clippy::type_complexity)]
     pub async fn batch_translate(
         &self,

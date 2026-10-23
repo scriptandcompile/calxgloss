@@ -166,7 +166,6 @@ pub fn build_escalate_prompt_with_context(
 ///
 /// Includes failing test details, disassembly hints, and boundary
 /// value analysis to help the LLM fix off-by-one and boundary conditions.
-#[allow(clippy::too_many_arguments)]
 pub fn build_edge_case_prompt(
     function_name: String,
     dll_name: String,
