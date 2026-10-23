@@ -23,7 +23,7 @@ pub struct DashboardResponse {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub queue_effort: std::collections::HashMap<String, u64>,
     /// Binary counts per classification category (issue #66), sourced from
-    /// the `re/classify` artifacts. Always lists all six categories.
+    /// the `re/classify` artifacts. Always lists all seven categories.
     #[serde(default)]
     pub binary_categories: Vec<CategoryCount>,
     /// Aggregate quality metrics over the dashboard units (issue #66).

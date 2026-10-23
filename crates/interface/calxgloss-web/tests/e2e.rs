@@ -3077,6 +3077,7 @@ async fn test_dashboard_binary_categories() {
     assert_eq!(count("KnownThirdParty"), Some(Some(0)));
     assert_eq!(count("UnknownThirdParty"), Some(Some(0)));
     assert_eq!(count("RuntimeLibrary"), Some(Some(0)));
+    assert_eq!(count("DotNetManaged"), Some(Some(0)));
 }
 
 #[tokio::test]
@@ -15955,10 +15956,14 @@ async fn test_headless_dashboard_summary_sections() {
         if eval_bool(
             &tab,
             "(() => { const cards = document.querySelectorAll('#category-cards .category-card'); \
-                if (cards.length !== 6) return false; \
+                if (cards.length !== 7) return false; \
                 const ps = document.querySelector('#category-cards [data-category=\"ProjectSpecific\"]'); \
                 const sdk = document.querySelector('#category-cards [data-category=\"MicrosoftSdk\"]'); \
-                return !!ps && !!sdk && ps.textContent.includes('1') && sdk.textContent.includes('1'); })()",
+                const dotnet = document.querySelector('#category-cards [data-category=\"DotNetManaged\"]'); \
+                return !!ps && !!sdk && ps.textContent.includes('1') && sdk.textContent.includes('1') && \
+                    !!dotnet && \
+                    dotnet.querySelector('.category-card-label')?.textContent === '.NET Managed' && \
+                    dotnet.querySelector('.category-card-value')?.textContent === '0'; })()",
         ) {
             cards_rendered = true;
             break;
@@ -15967,7 +15972,7 @@ async fn test_headless_dashboard_summary_sections() {
     }
     assert!(
         cards_rendered,
-        "category cards should render 6 categories with fixture counts"
+        "category cards should render 7 categories with fixture counts, with the DotNetManaged card present at an honest zero"
     );
 
     // Quality summary: avg confidence 73% (0.725 rounded), and honest

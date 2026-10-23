@@ -117,7 +117,7 @@ export function renderStatusCards(dashboard) {
 
 /* Binary category cards (issue #66) — one per DllCategory, counts sourced
    from the workspace classification artifacts. The server always sends all
-   six categories, so a zero is a real zero, not missing data. */
+   seven categories, so a zero is a real zero, not missing data. */
 export function renderCategoryCards(categories) {
     const container = document.getElementById("category-cards");
     if (!container) return;
