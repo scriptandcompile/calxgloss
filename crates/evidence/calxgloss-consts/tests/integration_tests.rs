@@ -9,11 +9,12 @@
 //! - **Consumption** — the loaded result answers the lookups a
 //!   translation pipeline makes (the findings recorded for one
 //!   function, the program-level named constants, flag families,
-//!   protocol constants, and color palette included), and the
-//!   persisted list keeps every finding in scan order: function by
-//!   function the bitmask groups then the enum candidates, and the
-//!   program-level named constants, merged flag families, protocol
-//!   constants, and color palette appended after them.
+//!   protocol constants, color palette, and data tables included),
+//!   and the persisted list keeps every finding in scan order:
+//!   function by function the bitmask groups then the enum
+//!   candidates, and the program-level named constants, merged flag
+//!   families, protocol constants, color palette, and data tables
+//!   appended after them.
 //! - **Prompt rendering** — the loaded findings render into `ConstInfo`
 //!   prompt data and the escalate prompt carries the CONSTANTS section,
 //!   the repeated literal's context-named `const` form included.
@@ -67,6 +68,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
     bodies: HashMap<String, DecompiledFunction>,
+    data_items: Vec<DataItem>,
+    memory: HashMap<u64, Vec<u8>>,
+    xrefs: HashMap<u64, Vec<Xref>>,
 }
 
 impl FakeProgram {
@@ -90,8 +94,10 @@ impl ScanSource for FakeProgram {
             })
     }
 
-    // The rest of the shared trait's reads: these tests never make
-    // them, so they answer with empty or not-found data.
+    // The rest of the shared trait's reads: the scan answers the data
+    // listing, memory windows, and cross-references from the canned
+    // state above; the tests never make the other reads, so those
+    // answer with empty or not-found data.
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
         Ok(Vec::new())
     }
@@ -100,8 +106,8 @@ impl ScanSource for FakeProgram {
         Ok(Vec::new())
     }
 
-    async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
-        Ok(Vec::new())
+    async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
+        Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
     }
 
     async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
@@ -123,7 +129,7 @@ impl ScanSource for FakeProgram {
     }
 
     async fn data_items(&self) -> Result<Vec<DataItem>> {
-        Ok(Vec::new())
+        Ok(self.data_items.clone())
     }
 
     async fn imports(&self) -> Result<Vec<Symbol>> {
@@ -138,8 +144,14 @@ impl ScanSource for FakeProgram {
         Ok(0)
     }
 
-    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
-        Ok(Vec::new())
+    async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        match self.memory.get(&address) {
+            Some(window) => Ok(window.iter().copied().take(length).collect()),
+            None => Err(EngineError::NotFound {
+                kind: "memory window",
+                query: format!("{address:#x}"),
+            }),
+        }
     }
 }
 
@@ -693,6 +705,84 @@ async fn a_color_constant_survives_the_round_trip_and_the_prompt() {
         prompt.contains("0x123456 used 1 times in FUN_18003ab00"),
         "the prompt carries the palette summary as evidence"
     );
+}
+
+#[tokio::test]
+async fn a_data_table_survives_the_round_trip_and_answers_its_referencing_function() {
+    // A bounds-guarded indexed read over a defined data object: the
+    // table reading rides the persisted document under its own kind
+    // tag with every field intact, and answers the referencing
+    // function's per-function lookup.
+    let workspace = TempDir::new().unwrap();
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+        ),
+    );
+    program.data_items.push(DataItem {
+        label: "DAT_1400a1b60".into(),
+        address: 0x1400_a1b60,
+        type_name: "undefined".into(),
+        length: 24,
+    });
+    program.memory.insert(
+        0x1400_a1b60,
+        (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+    );
+    program.xrefs.insert(
+        0x1400_a1b60,
+        vec![Xref {
+            address: 0x1800_3ab10,
+            function: Some("FUN_18003ab00".into()),
+            kind: Some("DATA".into()),
+        }],
+    );
+    let result = ConstEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ConstPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let raw = std::fs::read_to_string(persistor.path_for("eqmain.dll")).expect("read");
+    assert!(raw.contains("\"kind\": \"data_table\""));
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let tables: Vec<&ConstFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "data_table")
+        .collect();
+    assert_eq!(tables.len(), 1, "one table finding for the object");
+    let ConstFinding::DataTable(record) = tables[0] else {
+        unreachable!("the indexed read reads as a data-table finding");
+    };
+    assert_eq!(record.symbol, "DAT_1400a1b60");
+    assert_eq!(record.address, 0x1400_a1b60);
+    assert_eq!(record.element_type, "u16");
+    assert_eq!(record.count, 12);
+    assert_eq!(record.values, (1..=12).collect::<Vec<u64>>());
+    assert!(!record.values_truncated);
+    assert_eq!(record.functions, ["FUN_18003ab00"]);
+    assert_eq!(record.suggestion, "const DAT_1400A1B60: [u16; 12];");
+
+    // The table answers its referencing function's lookup.
+    let kinds: Vec<&str> = loaded
+        .for_function("FUN_18003ab00")
+        .map(|finding| finding.kind())
+        .collect();
+    assert_eq!(kinds, ["data_table"]);
+
+    // And it renders into prompt data at the corroborated tier.
+    let info = calxgloss_prompts::ConstInfo::from(tables[0]);
+    assert_eq!(info.kind, "data_table");
+    assert_eq!(info.confidence, 70);
+    assert_eq!(info.suggestion, "const DAT_1400A1B60: [u16; 12];");
 }
 
 // ------------------------------------------------------------

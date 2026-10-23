@@ -203,7 +203,7 @@ pub use calxgloss_globalstate::types::{
 // named here.
 pub use calxgloss_consts::ConstError;
 pub use calxgloss_consts::types::{
-    BitflagGroup, ConstFinding, ConstResult, EnumCandidate, NamedConstant,
+    BitflagGroup, ConstFinding, ConstResult, DataTable, EnumCandidate, NamedConstant,
 };
 
 // ============================================================

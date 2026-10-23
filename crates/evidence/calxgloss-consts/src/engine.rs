@@ -25,8 +25,13 @@
 //! exactly once. The color-grouping reading (`color`) then groups
 //! the color-shaped values the tally still holds — ≤ 24-bit, not
 //! powers of two — into at most one program-level `color_constant`
-//! palette finding, appended last. No bodies kept, no new reads. The
-//! scan is one sequential pass over the function listing — like
+//! palette finding. The data-table reading (`data_table`) last walks
+//! the engine's data-object listing and the indexed reads the kept
+//! bodies carry, appending one `data_table` finding per object whose
+//! bytes decode uniformly at one corroborated stride, kept in
+//! listing order; it reads only existing seam methods (`data_items`,
+//! `read_memory`, `xrefs_to`), cached under ADR-0043, and writes
+//! nothing back to the program (ADR-0020). The scan is one sequential pass over the function listing — like
 //! sync, there is nothing to resolve between the detectors, they
 //! read disjoint shapes — and keeping the pass sequential keeps the
 //! persisted finding list in a stable, diffable order.
@@ -140,7 +145,11 @@ impl<S> ConstEngine<S> {
     /// scans of the same program diff cleanly and name their
     /// constants identically. A value the protocol table matches
     /// lands only as its protocol finding: the frequency pass skips
-    /// matched values, and so does the color reading.
+    /// matched values, and so does the color reading. The data-table
+    /// reading then appends one `data_table` finding per object the
+    /// data listing defines that the kept bodies index and whose
+    /// bytes decode uniformly at one corroborated stride, kept in
+    /// data-listing order.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -159,6 +168,10 @@ impl<S> ConstEngine<S> {
     {
         let started = Instant::now();
         let functions = self.source.functions().await?;
+        // The data objects the engine's listing defines, read up front
+        // like the function listing: a failing data listing fails the
+        // run the same way.
+        let data_objects = self.source.data_items().await?;
 
         let mut findings = Vec::new();
         let mut tally = ProgramTally::new();
@@ -166,6 +179,12 @@ impl<S> ConstEngine<S> {
         // flag-family merge to tie them through shared bits — the
         // merge needs the detector's final contents, not the bodies.
         let mut groups: Vec<BitflagGroup> = Vec::new();
+        // The indexed reads of each data object, parallel to the
+        // listing, as the walk finds them in the bodies it reads — the
+        // data-table reading's corroboration, collected without
+        // keeping the bodies themselves.
+        let mut table_reads: Vec<Vec<crate::data_table::IndexedRead>> =
+            vec![Vec::new(); data_objects.len()];
         // The context names the bodies gave the literals as the tally
         // filled: first qualifying sighting per value wins, so naming
         // follows listing order and two scans name identically.
@@ -228,6 +247,15 @@ impl<S> ConstEngine<S> {
             for (value, name) in context_names(&decompiled.body) {
                 names.entry(value).or_insert(name);
             }
+            for (item, reads) in data_objects.iter().zip(table_reads.iter_mut()) {
+                for line in decompiled.body.lines() {
+                    if let Some(read) =
+                        crate::data_table::indexed_read(&decompiled, &item.label, line, item.length)
+                    {
+                        reads.push(read);
+                    }
+                }
+            }
         }
 
         // The protocol reading runs over the full tally before the
@@ -262,6 +290,16 @@ impl<S> ConstEngine<S> {
         // strictly stronger claim, so it never joins a palette, and
         // the palette lands last among the program-level findings.
         findings.extend(color_palette(&frequency_tally).map(ConstFinding::ColorConstant));
+        // The data-table reading (tracer bullet #278): objects the data
+        // listing defines that the bodies the walk read index, decoded
+        // uniformly at one corroborated stride, land as program-level
+        // table findings after the palette, kept in listing order.
+        findings.extend(
+            crate::data_table::data_tables(&self.source, &data_objects, &table_reads)
+                .await
+                .into_iter()
+                .map(ConstFinding::DataTable),
+        );
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
@@ -326,7 +364,11 @@ mod tests {
         bodies: HashMap<String, DecompiledFunction>,
         fail_decompiles: Vec<String>,
         fail_listing: bool,
+        fail_xrefs: bool,
         stats: Arc<Stats>,
+        data_items: Vec<DataItem>,
+        memory: HashMap<u64, Vec<u8>>,
+        xrefs: HashMap<u64, Vec<Xref>>,
     }
 
     impl FakeProgram {
@@ -336,12 +378,50 @@ mod tests {
                 bodies: HashMap::new(),
                 fail_decompiles: Vec::new(),
                 fail_listing: false,
+                fail_xrefs: false,
                 stats: Arc::new(Stats::default()),
+                data_items: Vec::new(),
+                memory: HashMap::new(),
+                xrefs: HashMap::new(),
             }
         }
 
         fn decompiled(&self) -> Vec<String> {
             self.stats.decompiles.lock().unwrap().clone()
+        }
+
+        /// The prior art from typesdb's vtable tests: a canned data
+        /// object in the listing plus the byte window `read_memory`
+        /// answers with at its address, length read off the bytes.
+        fn object_at(&mut self, label: &str, address: u64, bytes: Vec<u8>) {
+            self.data_items.push(DataItem {
+                label: label.to_string(),
+                address,
+                type_name: "undefined".to_string(),
+                length: bytes.len() as u64,
+            });
+            self.memory_at(address, bytes);
+        }
+
+        /// A canned memory window at `address`.
+        fn memory_at(&mut self, address: u64, bytes: Vec<u8>) {
+            self.memory.insert(address, bytes);
+        }
+
+        /// The engine's cross-references into `address`: one `DATA`
+        /// xref from each named function's code site.
+        fn xrefs_from(&mut self, address: u64, functions: &[&str]) {
+            self.xrefs.insert(
+                address,
+                functions
+                    .iter()
+                    .map(|name| Xref {
+                        address: 0x1800_3ab10,
+                        function: Some((*name).to_string()),
+                        kind: Some("DATA".to_string()),
+                    })
+                    .collect(),
+            );
         }
     }
 
@@ -372,8 +452,10 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads: this engine never makes
-        // them, so they answer with empty or not-found data.
+        // The rest of the shared trait's reads. The scan answers the
+        // data-table reading's three — the data listing, canned memory
+        // windows, and canned cross-references — and answers the ones
+        // this engine never makes with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
@@ -382,8 +464,13 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
-            Ok(Vec::new())
+        async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
+            if self.fail_xrefs {
+                return Err(EngineError::Reported {
+                    message: "cross-references unavailable".into(),
+                });
+            }
+            Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
         }
 
         async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
@@ -405,7 +492,7 @@ mod tests {
         }
 
         async fn data_items(&self) -> Result<Vec<DataItem>> {
-            Ok(Vec::new())
+            Ok(self.data_items.clone())
         }
 
         async fn imports(&self) -> Result<Vec<Symbol>> {
@@ -420,8 +507,14 @@ mod tests {
             Ok(0)
         }
 
-        async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
-            Ok(Vec::new())
+        async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+            match self.memory.get(&address) {
+                Some(window) => Ok(window.iter().copied().take(length).collect()),
+                None => Err(EngineError::NotFound {
+                    kind: "memory window",
+                    query: format!("{address:#x}"),
+                }),
+            }
         }
         // Story 9 (#203): the fake source names itself, so the tests can pin
         // that scan() stamps the source's provenance onto the record (#208).
@@ -1218,6 +1311,420 @@ mod tests {
         assert_eq!(engine.name, "fake-engine");
         assert_eq!(engine.version.as_deref(), Some("9.9"));
         assert_eq!(engine.fingerprint.as_deref(), Some("0123456"));
+    }
+
+    // ---- data-table readings (issue #278) ----
+
+    /// The scan's data-table findings, in landing order.
+    fn table_findings(result: &ConstResult) -> Vec<&crate::types::DataTable> {
+        result
+            .findings
+            .iter()
+            .filter_map(|finding| match finding {
+                ConstFinding::DataTable(record) => Some(record),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_bounds_guarded_indexed_read_names_one_data_table() {
+        // The happy path (#278's tracer bullet): a kept body indexes
+        // a defined data object under a bounds guard, the bytes
+        // decode uniformly, and the guard's bound picks the stride
+        // out of the three that do — one table finding, every field
+        // corroborated.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uint uVar2 = index;\n  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n    store(uVar3);\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        program.xrefs_from(0x1400_a1b60, &["FUN_18003ab00"]);
+        let result = scan(program).await;
+        assert_eq!(result.findings.len(), 1, "only the table lands");
+        let finding = &result.findings[0];
+        assert_eq!(finding.kind(), "data_table");
+        let ConstFinding::DataTable(table) = finding else {
+            panic!("the finding should be a data table: {finding:?}");
+        };
+        assert_eq!(table.symbol, "DAT_1400a1b60");
+        assert_eq!(table.address, 0x1400_a1b60);
+        assert_eq!(table.element_type, "u16");
+        assert_eq!(table.count, 12);
+        assert_eq!(table.values, (1..=12).collect::<Vec<u64>>());
+        assert!(!table.values_truncated);
+        assert_eq!(table.functions, ["FUN_18003ab00"]);
+        // The bare `DAT_*` label names its table by mechanical uppercase form.
+        assert_eq!(table.suggestion, "const DAT_1400A1B60: [u16; 12];");
+        assert_eq!(table.confidence, Confidence::new(70));
+        assert_eq!(
+            table.evidence,
+            "FUN_18003ab00: uVar3 = DAT_1400a1b60[uVar2];"
+        );
+        assert_eq!(finding.target(), "DAT_1400a1b60 [u16; 12]");
+        assert_eq!(finding.function(), "");
+        // The referencing function's per-function lookup surfaces the table.
+        assert_eq!(kinds(&result, "FUN_18003ab00"), ["data_table"]);
+        assert!(result.for_function("FUN_18003fffff").next().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_meaningful_label_names_its_table_verbatim_and_a_bare_label_gets_its_uppercase_form()
+    {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0xc) {\n    uVar3 = weapon_stats[uVar2];\n  }\n  if (uVar4 < 3) {\n    uVar5 = DAT_1400a1c00[uVar4];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "weapon_stats",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        program.object_at(
+            "DAT_1400a1c00",
+            0x1400_a1c00,
+            [1000u32, 3000, 5000]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        );
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 2, "both objects were claimed as tables");
+        assert_eq!(tables[0].symbol, "weapon_stats");
+        assert_eq!(tables[0].suggestion, "const weapon_stats: [u16; 12];");
+        assert_eq!(tables[1].suggestion, "const DAT_1400A1C00: [u32; 3];");
+    }
+
+    #[tokio::test]
+    async fn data_table_findings_follow_data_listing_order() {
+        // The listing puts the higher-addressed object first; the
+        // findings keep that order, not any derived sorting.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 3) {\n    uVar3 = DAT_1400a1c20[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  if (uVar4 < 0xc) {\n    uVar5 = DAT_1400a1b60[uVar4];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1c20",
+            0x1400_a1c20,
+            [1000u32, 3000, 5000]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        let symbols: Vec<&str> = table_findings(&result)
+            .iter()
+            .map(|table| table.symbol.as_str())
+            .collect();
+        assert_eq!(symbols, ["DAT_1400a1c20", "DAT_1400a1b60"]);
+    }
+
+    #[tokio::test]
+    async fn a_uniform_decode_at_one_width_needs_no_guard_to_name_the_table() {
+        // An indexed read corroborates; the guard only disambiguates.
+        // With one uniform width surviving, the read alone claims the
+        // table.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar3 = DAT_1400a1c00[uVar2];\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1c00",
+            0x1400_a1c00,
+            [1000u32, 3000, 5000]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        );
+        let result = scan(program).await;
+        assert_eq!(result.findings.len(), 1);
+        let ConstFinding::DataTable(table) = &result.findings[0] else {
+            unreachable!()
+        };
+        assert_eq!(table.element_type, "u32");
+        assert_eq!(table.count, 3);
+        assert_eq!(table.values, [1000, 3000, 5000]);
+    }
+
+    #[tokio::test]
+    async fn a_data_object_no_body_indexes_claims_nothing() {
+        // The tracer claims only the corroborated path: an object
+        // that decodes cleanly but no body indexes lands no finding.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1c00",
+            0x1400_a1c00,
+            [1000u32, 3000, 5000]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        );
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_decode_uniform_at_two_widths_with_no_guard_to_pick_claims_nothing() {
+        // Multi-stride resolution is the sibling ticket's: bytes the
+        // read cannot size claim nothing.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar3 = DAT_1400a1b60[uVar2];\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_guard_that_contradicts_the_bytes_claims_nothing() {
+        // A guard naming width 1 over bytes that carry zero u8
+        // entries: the guard and the decode disagree, and the claim
+        // stays inside what both agree on.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0x18) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn guards_naming_different_widths_claim_nothing() {
+        // Two readers' guards imply different widths (12 entries of
+        // u16 and 6 entries of u32 for the same object); the
+        // disagreement claims nothing, and the table's other findings
+        // stay untouched.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  if (uVar4 < 6) {\n    uVar5 = DAT_1400a1b60[uVar4];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        assert!(table_findings(&result).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_all_equal_fill_claims_nothing_even_under_a_sizing_guard() {
+        // 0xCC padding guarded like a table: entries all equal at
+        // every width — a fill is not a table.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0x18) {\n    uVar3 = DAT_1400a1d00[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at("DAT_1400a1d00", 0x1400_a1d00, vec![0xcc; 48]);
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn values_past_the_inline_cap_truncate_while_the_count_stays_whole() {
+        // 600 u32 entries (2400 bytes) guarded by their own count:
+        // the values list caps at the inline ceiling, the truncation
+        // flag says so, and the count keeps the whole 600.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0x258) {\n    uVar3 = DAT_1400a1e00[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1e00",
+            0x1400_a1e00,
+            (1u32..=600).flat_map(|value| value.to_le_bytes()).collect(),
+        );
+        let result = scan(program).await;
+        assert_eq!(result.findings.len(), 1);
+        let ConstFinding::DataTable(table) = &result.findings[0] else {
+            unreachable!()
+        };
+        assert_eq!(table.element_type, "u32");
+        assert_eq!(table.count, 600);
+        assert_eq!(table.values.len(), crate::types::MAX_INLINE_TABLE_VALUES);
+        assert!(table.values_truncated);
+        assert_eq!(&table.values[..3], &[1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn an_object_with_no_readable_window_claims_nothing() {
+        // The bytes are the decode's ground truth: an object the
+        // listing defines but `read_memory` cannot answer is skipped.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.data_items.push(DataItem {
+            label: "DAT_1400a1b60".to_string(),
+            address: 0x1400_a1b60,
+            type_name: "undefined".to_string(),
+            length: 24,
+        });
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_short_memory_window_claims_nothing() {
+        // A listing length of 24 answered by a 12-byte window is not
+        // enough ground truth to decode against — skip, don't guess.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.data_items.push(DataItem {
+            label: "DAT_1400a1b60".to_string(),
+            address: 0x1400_a1b60,
+            type_name: "undefined".to_string(),
+            length: 24,
+        });
+        program.memory_at(
+            0x1400_a1b60,
+            (1u16..=6).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_xref_read_lands_the_table_with_no_referencing_functions() {
+        // The claim rests on the bytes and the body read; a failing
+        // `xrefs_to` degrades the record's function list to empty
+        // (logged), it does not drop the table.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        program.fail_xrefs = true;
+        let result = scan(program).await;
+        assert_eq!(result.findings.len(), 1);
+        let ConstFinding::DataTable(table) = &result.findings[0] else {
+            unreachable!()
+        };
+        assert_eq!(table.element_type, "u16");
+        assert!(table.functions.is_empty());
     }
 
     #[tokio::test]

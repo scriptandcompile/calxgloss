@@ -328,6 +328,105 @@ pub struct ColorConstant {
 }
 
 // ============================================================
+// Data tables
+// ============================================================
+
+/// The ceiling on a data table's inline `values` list. Beyond it the
+/// list truncates, `values_truncated` says so, and `count` still
+/// carries the full entry count.
+pub const MAX_INLINE_TABLE_VALUES: usize = 512;
+
+/// One data-table reading of the whole program — a defined, uniformly
+/// decoding data object the kept bodies index.
+///
+/// A record claims one defined data object — [`symbol`]/[`address`] —
+/// holds [`count`](Self::count) uniform entries of
+/// [`element_type`](Self::element_type): the object's engine-listed
+/// length divided by the stride its bytes decode cleanly at (the
+/// entries are the [`values`](Self::values)), with the entry count a
+/// bounds-guarded indexed read (`DAT_x[idx]` under `if (idx < N)`) in
+/// a kept body agreeing on the stride when more than one stride
+/// decodes cleanly. [`functions`](Self::functions) names the
+/// referencing functions from the engine's cross-references,
+/// ascending; a body indexing the object is never a write claim —
+/// mutation disqualification lands separately.
+///
+/// The `values` list is inline up to [`MAX_INLINE_TABLE_VALUES`];
+/// beyond it the list truncates, [`values_truncated`](Self::values_truncated)
+/// flags that, and [`count`](Self::count) still records the full entry
+/// count. It reads like [`suggestion`](Self::suggestion) — a Rust
+/// `const` array naming the [`rust_name`](Self::rust_name) the label
+/// implies — the shape codegen and the prompts will later carry.
+///
+/// [`symbol`]: Self::symbol
+/// [`address`]: Self::address
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataTable {
+    /// The listing label of the data object, e.g. `DAT_1400a1b60` —
+    /// exactly as the engine's data listing names it.
+    pub symbol: String,
+    /// The object's address.
+    pub address: u64,
+    /// The element type the entries decode as — `u8`, `u16`, `u32`, or
+    /// `u64`.
+    pub element_type: String,
+    /// The full entry count, whether or not `values` carries them all.
+    pub count: usize,
+    /// The decoded entries, inline up to [`MAX_INLINE_TABLE_VALUES`];
+    /// truncated beyond it.
+    pub values: Vec<u64>,
+    /// Whether `values` was truncated at the cap — `count` still
+    /// records the full entry count.
+    pub values_truncated: bool,
+    /// The functions that reference the object, from the engine's
+    /// cross-references, ascending.
+    pub functions: Vec<String>,
+    /// The Rust shape the reading suggests — `const` array, e.g.
+    /// `const DAT_1400A1B60: [u16; 12];`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100. The corroborated
+    /// reading — a clean decode with a bounds-guarded indexed read —
+    /// sits in the high-mid band; the engine-applied-type tier above
+    /// it and the unreferenced tiers below land with later tickets.
+    pub confidence: Confidence,
+    /// The indexed-read lines behind the claim, each prefixed with the
+    /// function that carries it, so a reviewer can check the read the
+    /// table was sized from.
+    pub evidence: String,
+}
+
+impl DataTable {
+    /// The Rust identifier the label implies: the context-name
+    /// precedent — a meaningful listing label names the table as it
+    /// stands; a bare `DAT_*` or `switchD_*` label yields its
+    /// mechanical uppercase form, e.g. `DAT_1400a1b60` →
+    /// `DAT_1400A1B60`.
+    pub fn rust_name(symbol: &str) -> String {
+        if is_bare_data_label(symbol) {
+            symbol.to_uppercase()
+        } else {
+            symbol.to_string()
+        }
+    }
+
+    /// Render the `const` array the reading suggests for one listing
+    /// label.
+    pub fn render_suggestion(symbol: &str, element_type: &str, count: usize) -> String {
+        format!(
+            "const {}: [{element_type}; {count}];",
+            Self::rust_name(symbol)
+        )
+    }
+}
+
+/// Whether a listing label is a generated stand-in rather than a
+/// meaningful name: the bare `DAT_*` and `switchD_*` forms the
+/// decompiler gives unlabeled data.
+fn is_bare_data_label(label: &str) -> bool {
+    label.starts_with("DAT_") || label.starts_with("switchD_")
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -360,6 +459,9 @@ pub enum ConstFinding {
     /// The color-shaped literals the tally holds, grouped into one
     /// palette claim for the binary.
     ColorConstant(ColorConstant),
+    /// A defined, uniformly decoding data object the kept bodies
+    /// index, read as one constant-array table.
+    DataTable(DataTable),
 }
 
 impl ConstFinding {
@@ -375,6 +477,7 @@ impl ConstFinding {
             ConstFinding::FlagFamily(_) => "",
             ConstFinding::ProtocolConstant(_) => "",
             ConstFinding::ColorConstant(_) => "",
+            ConstFinding::DataTable(_) => "",
         }
     }
 
@@ -387,6 +490,7 @@ impl ConstFinding {
             ConstFinding::FlagFamily(record) => &record.suggestion,
             ConstFinding::ProtocolConstant(record) => &record.suggestion,
             ConstFinding::ColorConstant(record) => &record.suggestion,
+            ConstFinding::DataTable(record) => &record.suggestion,
         }
     }
 
@@ -399,6 +503,7 @@ impl ConstFinding {
             ConstFinding::FlagFamily(record) => record.confidence,
             ConstFinding::ProtocolConstant(record) => record.confidence,
             ConstFinding::ColorConstant(record) => record.confidence,
+            ConstFinding::DataTable(record) => record.confidence,
         }
     }
 
@@ -412,12 +517,14 @@ impl ConstFinding {
             ConstFinding::FlagFamily(record) => &record.evidence,
             ConstFinding::ProtocolConstant(record) => &record.evidence,
             ConstFinding::ColorConstant(record) => &record.evidence,
+            ConstFinding::DataTable(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `bitflag_group`, `enum_candidate`,
-    /// `named_constant`, `flag_family`, `protocol_constant`, or
-    /// `color_constant` — naming the reading behind the finding.
+    /// `named_constant`, `flag_family`, `protocol_constant`,
+    /// `color_constant`, or `data_table` — naming the reading behind
+    /// the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ConstFinding::BitflagGroup(_) => "bitflag_group",
@@ -426,12 +533,14 @@ impl ConstFinding {
             ConstFinding::FlagFamily(_) => "flag_family",
             ConstFinding::ProtocolConstant(_) => "protocol_constant",
             ConstFinding::ColorConstant(_) => "color_constant",
+            ConstFinding::DataTable(_) => "data_table",
         }
     }
 
     /// What the finding names, spelled for a report row: the group's
     /// or family's bit mask, the run's value range, the repeated or
-    /// matched value, or the palette's colors.
+    /// matched value, the palette's colors, or the table's label and
+    /// array shape.
     pub fn target(&self) -> String {
         match self {
             ConstFinding::BitflagGroup(record) => format!("{:#x}", record.mask),
@@ -447,6 +556,12 @@ impl ConstFinding {
                 .map(|value| format!("{value:#x}"))
                 .collect::<Vec<String>>()
                 .join(", "),
+            ConstFinding::DataTable(record) => {
+                format!(
+                    "{} [{}; {}]",
+                    record.symbol, record.element_type, record.count
+                )
+            }
         }
     }
 }
@@ -530,6 +645,7 @@ impl ConstResult {
                 ConstFinding::ColorConstant(record) => {
                     record.functions.iter().any(|f| f == function)
                 }
+                ConstFinding::DataTable(record) => record.functions.iter().any(|f| f == function),
             })
     }
 
@@ -620,6 +736,21 @@ mod tests {
             evidence: "0x123456 used 2 times in FUN_18003ab00; 0xff00ff used 1 times in \
                        FUN_18003e750"
                 .into(),
+        }
+    }
+
+    fn data_table() -> DataTable {
+        DataTable {
+            symbol: "DAT_1400a1b60".into(),
+            address: 0x1400_a1b60,
+            element_type: "u16".into(),
+            count: 12,
+            values: (1..=12).collect(),
+            values_truncated: false,
+            functions: vec!["FUN_18003ab00".into()],
+            suggestion: "const DAT_1400A1B60: [u16; 12];".into(),
+            confidence: Confidence::new(70),
+            evidence: "FUN_18003ab00: uVar3 = DAT_1400a1b60[uVar2];".into(),
         }
     }
 
@@ -755,6 +886,46 @@ mod tests {
     }
 
     #[test]
+    fn a_data_table_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ConstFinding::DataTable(data_table());
+        let json = serde_json::to_string(&finding).expect("data-table finding should serialize");
+        assert!(json.contains("\"kind\":\"data_table\""));
+        assert!(json.contains("\"element_type\":\"u16\""));
+        assert!(json.contains("\"values\":[1,2,3,4,5,6,7,8,9,10,11,12]"));
+        let back: ConstFinding =
+            serde_json::from_str(&json).expect("data-table finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn documents_written_before_the_data_table_variant_load_unchanged() {
+        // The literal on-disk shape of pre-variant findings — the new
+        // variant changes no old tag, so a persisted document from
+        // before it exists still loads finding-for-finding unchanged.
+        let json = r#"[
+            {"kind": "named_constant", "value": 1024, "count": 5,
+             "functions": ["FUN_18003ab00", "FUN_18003e750"],
+             "suggestion": "const VALUE_0x400: u32 = 0x400;",
+             "confidence": 60,
+             "evidence": "0x400 used 5 times in FUN_18003ab00, FUN_18003e750"},
+            {"kind": "color_constant", "values": [1193046, 16711935],
+             "functions": ["FUN_18003ab00", "FUN_18003e750"],
+             "suggestion": "const COLOR_0x123456: u32 = 0x123456; const COLOR_0xff00ff: u32 = 0xff00ff;",
+             "confidence": 60,
+             "evidence": "0x123456 used 2 times in FUN_18003ab00; 0xff00ff used 1 times in FUN_18003e750"}
+        ]"#;
+        let back: Vec<ConstFinding> =
+            serde_json::from_str(json).expect("a pre-variant document should load");
+        assert_eq!(
+            back,
+            vec![
+                ConstFinding::NamedConstant(named_constant()),
+                ConstFinding::ColorConstant(color_constant()),
+            ]
+        );
+    }
+
+    #[test]
     fn a_context_name_renders_the_named_const_form() {
         // When the bodies named the value, the suggestion reads like
         // the code that uses it.
@@ -830,6 +1001,7 @@ mod tests {
             ConstFinding::FlagFamily(flag_family()),
             ConstFinding::ProtocolConstant(protocol_constant()),
             ConstFinding::ColorConstant(color_constant()),
+            ConstFinding::DataTable(data_table()),
         ];
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
@@ -841,6 +1013,7 @@ mod tests {
                 "flag_family",
                 "protocol_constant",
                 "color_constant",
+                "data_table",
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
@@ -853,6 +1026,7 @@ mod tests {
                 "0xd00",
                 "0xdeadbeef",
                 "0x123456, 0xff00ff",
+                "DAT_1400a1b60 [u16; 12]",
             ]
         );
         for finding in &findings {
@@ -865,10 +1039,12 @@ mod tests {
         assert_eq!(findings[3].function(), "");
         assert_eq!(findings[4].function(), "");
         assert_eq!(findings[5].function(), "");
+        assert_eq!(findings[6].function(), "");
         assert_eq!(findings[2].confidence(), Confidence::new(60));
         assert_eq!(findings[3].confidence(), Confidence::new(80));
         assert_eq!(findings[4].confidence(), Confidence::new(75));
         assert_eq!(findings[5].confidence(), Confidence::new(60));
+        assert_eq!(findings[6].confidence(), Confidence::new(70));
     }
 
     #[test]
@@ -925,6 +1101,10 @@ mod tests {
             functions: vec!["FUN_18003e750".into(), "FUN_180099998".into()],
             ..color_constant()
         });
+        let table = ConstFinding::DataTable(DataTable {
+            functions: vec!["FUN_18003e750".into(), "FUN_180099998".into()],
+            ..data_table()
+        });
         let unrelated = ConstFinding::EnumCandidate(EnumCandidate {
             function: "FUN_180099999".into(),
             ..enum_candidate()
@@ -937,16 +1117,20 @@ mod tests {
                 family.clone(),
                 protocol.clone(),
                 palette.clone(),
+                table.clone(),
                 unrelated,
             ],
         };
         let found: Vec<&ConstFinding> = result.for_function("FUN_18003e750").collect();
-        assert_eq!(found, vec![&other, &named, &family, &protocol, &palette]);
+        assert_eq!(
+            found,
+            vec![&other, &named, &family, &protocol, &palette, &table]
+        );
         assert_eq!(
             result.for_function("FUN_180099998").collect::<Vec<_>>(),
-            vec![&family, &protocol, &palette],
-            "the family, the protocol constant, and the palette answer \
-             the lookup of every contributor"
+            vec![&family, &protocol, &palette, &table],
+            "the family, the protocol constant, the palette, and the table \
+             answer the lookup of every contributor"
         );
         assert!(result.for_function("FUN_180099997").next().is_none());
         assert!(!result.is_empty());
@@ -999,5 +1183,29 @@ mod tests {
             "const COLOR_0x123456: u32 = 0x123456; const COLOR_0xff00ff: u32 = 0xff00ff;"
         );
         assert!(info.evidence.contains("0x123456 used 2 times"));
+
+        let table = ConstFinding::DataTable(data_table());
+        let info = calxgloss_prompts::ConstInfo::from(&table);
+        assert_eq!(info.function, "");
+        assert_eq!(info.kind, "data_table");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(info.suggestion, "const DAT_1400A1B60: [u16; 12];");
+        assert!(info.evidence.contains("DAT_1400a1b60[uVar2]"));
+    }
+
+    #[test]
+    fn a_bare_data_label_gets_its_mechanical_uppercase_name_a_meaningful_label_its_own() {
+        assert_eq!(
+            DataTable::render_suggestion("DAT_1400a1b60", "u16", 12),
+            "const DAT_1400A1B60: [u16; 12];"
+        );
+        assert_eq!(
+            DataTable::render_suggestion("switchD_1400a1b80_case_1", "u32", 4),
+            "const SWITCHD_1400A1B80_CASE_1: [u32; 4];"
+        );
+        assert_eq!(
+            DataTable::render_suggestion("weapon_stats", "u16", 12),
+            "const weapon_stats: [u16; 12];"
+        );
     }
 }
