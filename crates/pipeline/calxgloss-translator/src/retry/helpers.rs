@@ -38,6 +38,9 @@ pub fn gather_function_evidence(
         const_findings: extract_constant_hints(workspace, binary, function),
         serialization_findings: extract_serialization_hints(workspace, binary, function),
         libmatch_findings: extract_libmatch_hints(workspace, binary, function, call_graph),
+        parameter_direction_findings: extract_parameter_direction_hints(
+            workspace, binary, function,
+        ),
         ..Default::default()
     }
 }
@@ -700,6 +703,55 @@ pub fn extract_convention_hints(
         .filter_map(|inference| match inference {
             calxgloss_typeinfer::types::InferredType::Convention(record) => {
                 Some(calxgloss_prompts::ConventionInfo::from(record))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Extract parameter-direction readings for a function from the persisted
+/// type-inference result.
+///
+/// Reads the per-binary result produced by the `calxgloss-typeinfer`
+/// engine from `re/analysis/typeinfer/{binary}.json` and keeps the
+/// direction records made for the target function — which way each
+/// pointer parameter's data flows, each naming the body line that
+/// decided it — in scan order. The document's other record kinds
+/// contribute nothing: they already reach the prompts through their own
+/// seams, and on the escalate path the direction lines ride the
+/// type-info section instead (issue #276).
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `binary` (the scan has not run), or the document is
+/// corrupt: missing direction context degrades the prompt, it never
+/// fails it.
+pub fn extract_parameter_direction_hints(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::ParameterDirectionInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace);
+    let result = match persistor.load(binary) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                binary,
+                error = %e,
+                "No usable type inference result; continuing without parameter-direction context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .filter_map(|inference| match inference {
+            calxgloss_typeinfer::types::InferredType::Direction(record) => {
+                Some(calxgloss_prompts::ParameterDirectionInfo::from(record))
             }
             _ => None,
         })
@@ -3351,8 +3403,126 @@ mod tests {
         assert_eq!(found[1].evidence, "00401103  CALL FUN_1800412a0");
     }
 
-    // --- the evidence gather (issue #268) ---------------------------------
+    #[test]
+    fn no_workspace_configured_yields_no_parameter_direction_findings() {
+        assert!(
+            extract_parameter_direction_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no parameter-direction context"
+        );
+    }
 
+    #[test]
+    fn a_missing_cache_yields_no_parameter_direction_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00")
+                .is_empty(),
+            "a scan that has not run yet just means no parameter-direction context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_parameter_direction_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("typeinfer")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00")
+                .is_empty(),
+            "a corrupt document degrades the prompt, it never fails it"
+        );
+    }
+
+    #[test]
+    fn direction_records_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_inferences(
+            &dir,
+            vec![
+                direction_inference("FUN_18003ab00", 0, Direction::Out),
+                direction_inference("FUN_zzz", 0, Direction::In),
+            ],
+        );
+
+        let found =
+            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's record");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].parameter, "param_1");
+        assert_eq!(found[0].direction, "out");
+        assert_eq!(found[0].method, "param_direction");
+        assert_eq!(found[0].confidence, 75);
+        assert_eq!(found[0].evidence, "*param_1 = 0;");
+    }
+
+    #[test]
+    fn every_direction_record_of_the_function_lands_in_scan_order_and_other_kinds_stay_out() {
+        // The section carries the function's direction records in scan
+        // order — the contract that keeps two scans' prompts diffing
+        // cleanly — and nothing else from the document: type and
+        // convention records reach the prompts through their own seams,
+        // and an unnamed parameter falls back to the positional spelling
+        // the type-info seam uses for the same parameter.
+        let dir = TempDir::new().expect("temp dir should be created");
+        let unnamed = InferredType::Direction(InferredParamDirection {
+            function: "FUN_18003ab00".to_string(),
+            param_index: 2,
+            param_name: None,
+            direction: Direction::InOut,
+            method: InferenceMethod::ParamDirection,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(70),
+            evidence: "  param_3[0] = 3;".to_string(),
+        });
+        persist_inferences(
+            &dir,
+            vec![
+                param_inference("FUN_18003ab00", 0, "char *"),
+                direction_inference("FUN_18003ab00", 0, Direction::In),
+                convention_inference(
+                    "FUN_18003ab00",
+                    None,
+                    calxgloss_typeinfer::types::CallingConvention::Thiscall,
+                    InferenceMethod::MangledConvention,
+                    90,
+                    "?paint@Widget@@QAEXXZ",
+                ),
+                direction_inference("FUN_18003ab00", 1, Direction::Out),
+                direction_inference("FUN_zzz", 0, Direction::Out),
+                unnamed,
+            ],
+        );
+
+        let found =
+            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let named: Vec<(&str, &str)> = found
+            .iter()
+            .map(|f| (f.parameter.as_str(), f.direction.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            vec![("param_1", "in"), ("param_2", "out"), ("param_3", "inout")],
+            "the direction records in document order, and only they"
+        );
+        assert_eq!(found[1].confidence, 75);
+        assert_eq!(found[2].confidence, 70);
+        assert_eq!(found[2].evidence, "  param_3[0] = 3;");
+    }
+
+    // --- the evidence gather (issue #268) ---------------------------------
     #[test]
     fn gather_function_evidence_reads_the_caches_into_one_bundle() {
         let dir = TempDir::new().unwrap();
@@ -3371,6 +3541,7 @@ mod tests {
                     90,
                     "?paint@Widget@@QAEXXZ",
                 ),
+                direction_inference("FUN_18003ab00", 0, Direction::Out),
             ],
         );
         persist_hints(&dir, vec![algorithm_hint("FUN_18003ab00", "bubble sort")]);
@@ -3382,7 +3553,7 @@ mod tests {
         assert_eq!(evidence.data_structures[0].name, "Player");
         assert_eq!(
             evidence.type_info.len(),
-            2,
+            3,
             "every inference record for the function"
         );
         assert!(
@@ -3392,6 +3563,12 @@ mod tests {
         assert_eq!(evidence.convention_findings.len(), 1);
         assert_eq!(evidence.convention_findings[0].convention, "thiscall");
         assert_eq!(evidence.recognized_algorithms.len(), 1);
+        assert_eq!(
+            evidence.parameter_direction_findings.len(),
+            1,
+            "the direction record also reaches the module-context bundle"
+        );
+        assert_eq!(evidence.parameter_direction_findings[0].direction, "out");
 
         // The call-graph lists are the caller's to fill — the gather reads
         // only the persisted analyzer caches.
@@ -3415,5 +3592,6 @@ mod tests {
         assert!(none.const_findings.is_empty());
         assert!(none.serialization_findings.is_empty());
         assert!(none.libmatch_findings.is_empty());
+        assert!(none.parameter_direction_findings.is_empty());
     }
 }

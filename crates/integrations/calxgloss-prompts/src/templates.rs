@@ -303,6 +303,35 @@ pub struct LibmatchInfo {
     pub evidence: String,
 }
 
+/// One pointer parameter's direction reading about one function, made by
+/// the `calxgloss-typeinfer` direction detector.
+///
+/// The module-context prompt shows these so the LLM shapes each pointer
+/// parameter to the way its data actually flows — a shared borrow for an
+/// `in` parameter, a mutable borrow or handed-back value for an `out`
+/// parameter, a read-modify-write for an `inout` — instead of guessing
+/// the Rust shape from the narrowed type alone. The parameter is named
+/// exactly as the type records name it, so the section and the retry
+/// prompts' type-info lines agree on which parameter a claim is about,
+/// and the evidence line carries the deciding write or read from the
+/// body so a reviewer can check the claim.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ParameterDirectionInfo {
+    /// The function the parameter belongs to, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The parameter the reading is about, spelled as the decompiler
+    /// names it, e.g. `param_2`.
+    pub parameter: String,
+    /// The direction the body reads: `in`, `out`, or `inout`.
+    pub direction: String,
+    /// The reading that produced the direction, e.g. `param_direction`.
+    pub method: String,
+    /// Confidence that the reading is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled line carrying the deciding write or read.
+    pub evidence: String,
+}
+
 /// A string-context finding about one function, made by the
 /// `calxgloss-stringctx` engines.
 ///
@@ -713,6 +742,11 @@ pub struct EvidenceBundle {
     /// Library-match findings about this function and its call graph —
     /// read by the module-context prompt data, not the escalate template.
     pub libmatch_findings: Vec<LibmatchInfo>,
+    /// Parameter-direction readings about this function made by the
+    /// type-inference direction detector — read by the module-context
+    /// prompt data, not the escalate template, whose direction lines
+    /// ride the type-info section instead.
+    pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
@@ -1177,6 +1211,9 @@ pub struct ModuleContextTemplate {
     /// Known-library identifications of this function's callees made by
     /// the libmatch body-signature matcher.
     pub libmatch_findings: Vec<LibmatchInfo>,
+    /// Pointer-parameter direction readings about this function made by
+    /// the type-inference direction detector.
+    pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -1199,6 +1236,7 @@ impl ModuleContextTemplate {
             convention_findings: data.convention_findings.clone(),
             global_state_findings: data.global_state_findings.clone(),
             libmatch_findings: data.libmatch_findings.clone(),
+            parameter_direction_findings: data.parameter_direction_findings.clone(),
         }
     }
 }

@@ -181,6 +181,22 @@ suggested Rust equivalent instead:
 {% endfor %}
 
 {% endif %}
+{% if !parameter_direction_findings.is_empty() %}
+## PARAMETER DIRECTIONS
+
+Which way data flows through this function's pointer parameters, read from
+its body by static analysis. Give each parameter the Rust shape its
+direction names — an `in` parameter a shared borrow, an `out` parameter a
+mutable borrow or a value handed back to the caller, an `inout` parameter
+a read-modify-write through a mutable borrow — and add no mutability a
+direction reading does not claim:
+
+{% for finding in parameter_direction_findings %}
+- **{{ finding.parameter }} is {{ finding.direction|safe }}** (via {{ finding.method }}, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.

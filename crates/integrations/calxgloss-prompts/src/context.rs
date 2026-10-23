@@ -13,7 +13,8 @@
 
 use super::templates::{
     CallGraphNeighbor, ControlFlowInfo, ConventionInfo, EvidenceBundle, FormattedTestResult,
-    GlobalStateInfo, LibmatchInfo, NeighborFunction, PalTraitDef, ShimCode, StructuredData,
+    GlobalStateInfo, LibmatchInfo, NeighborFunction, PalTraitDef, ParameterDirectionInfo, ShimCode,
+    StructuredData,
 };
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
@@ -191,6 +192,10 @@ pub struct ModuleContextPromptData {
     /// `calxgloss-libmatch` body-signature matcher. A matched target is
     /// stubbed, never prompted, so this section names callees only.
     pub libmatch_findings: Vec<LibmatchInfo>,
+    /// Pointer-parameter direction readings about the target function
+    /// made by the `calxgloss-typeinfer` direction detector, one per
+    /// parameter the body gave evidence for.
+    pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
 }
 
 impl ModuleContextPromptData {
@@ -227,6 +232,7 @@ impl ModuleContextPromptData {
             convention_findings: Vec::new(),
             global_state_findings: Vec::new(),
             libmatch_findings: Vec::new(),
+            parameter_direction_findings: Vec::new(),
         }
     }
 
@@ -263,6 +269,7 @@ impl ModuleContextPromptData {
             convention_findings: evidence.convention_findings,
             global_state_findings: evidence.global_state_findings,
             libmatch_findings: evidence.libmatch_findings,
+            parameter_direction_findings: evidence.parameter_direction_findings,
         }
     }
 }

@@ -649,6 +649,27 @@ impl From<&InferredConvention> for calxgloss_prompts::ConventionInfo {
     }
 }
 
+/// Render a direction record as the module-context PARAMETER DIRECTIONS
+/// section's prompt data. The direction is spelled the way the persisted
+/// JSON spells it, the method names the reading behind the claim, and the
+/// parameter is named exactly as the type-info conversion names it, so a
+/// reader can tie a section line to the same parameter's type line.
+impl From<&InferredParamDirection> for calxgloss_prompts::ParameterDirectionInfo {
+    fn from(record: &InferredParamDirection) -> Self {
+        Self {
+            function: record.function.clone(),
+            parameter: record
+                .param_name
+                .clone()
+                .unwrap_or_else(|| format!("param_{}", record.param_index + 1)),
+            direction: record.direction.label().to_string(),
+            method: record.method.to_string(),
+            confidence: record.confidence.value(),
+            evidence: record.evidence.clone(),
+        }
+    }
+}
+
 // ============================================================
 // Persisted result
 // ============================================================

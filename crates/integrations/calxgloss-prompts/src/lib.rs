@@ -58,8 +58,9 @@ pub use templates::{
     ConstInfo, ControlFlowInfo, ConventionInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
     EvidenceBundle, FixTemplate, FormattedTestResult, FullModuleTemplate, GlobalStateInfo,
     LibmatchInfo, MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction,
-    PalTraitDef, PalTraitMethod, SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo,
-    StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    PalTraitDef, PalTraitMethod, ParameterDirectionInfo, SerializationInfo, ShimCode,
+    SignatureTemplate, StringContextInfo, StructField, StructuredData, TestCaseFormatted,
+    TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -191,6 +192,7 @@ mod tests {
         assert!(empty.const_findings.is_empty());
         assert!(empty.serialization_findings.is_empty());
         assert!(empty.libmatch_findings.is_empty());
+        assert!(empty.parameter_direction_findings.is_empty());
         assert!(empty.call_graph_context.is_empty());
 
         let filled = EvidenceBundle {
@@ -1374,6 +1376,60 @@ mod tests {
         assert!(!prompt.contains("KNOWN LIBRARY FUNCTIONS"));
     }
 
+    fn parameter_direction_fixture() -> ParameterDirectionInfo {
+        ParameterDirectionInfo {
+            function: "FUN_18003ab00".to_string(),
+            parameter: "param_2".to_string(),
+            direction: "out".to_string(),
+            method: "param_direction".to_string(),
+            confidence: 75,
+            evidence: "*param_2 = 0;".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_module_context_template_renders_parameter_direction_section() {
+        // Each record names its parameter, its direction, and the body
+        // line that decided it — the shape the first attempt needs to
+        // pick the right Rust borrow instead of guessing from the type.
+        let req = sample_request();
+        let mut inout = parameter_direction_fixture();
+        inout.parameter = "param_3".to_string();
+        inout.direction = "inout".to_string();
+        inout.confidence = 70;
+        inout.evidence = "  param_3[0] = 3;".to_string();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                parameter_direction_findings: vec![parameter_direction_fixture(), inout],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("PARAMETER DIRECTIONS"));
+        assert!(prompt.contains("param_2 is out"));
+        assert!(prompt.contains("param_direction"));
+        assert!(prompt.contains("confidence 75"));
+        assert!(prompt.contains("*param_2 = 0;"));
+        assert!(prompt.contains("param_3 is inout"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("param_3[0] = 3;"));
+        // The section steers the signature shape the readings name.
+        assert!(prompt.contains("a read-modify-write through a mutable borrow"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_parameter_direction_findings_omits_the_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(!prompt.contains("PARAMETER DIRECTIONS"));
+    }
+
     #[test]
     fn test_full_module_template_renders_control_flow_section() {
         let req = sample_request();
@@ -1568,9 +1624,7 @@ mod tests {
 
         assert!(prompt.contains("ADDITIONAL CONTEXT — TYPE INFORMATION"));
         assert!(prompt.contains("- `param_1`: char * (via string_function, confidence 70)"));
-        assert!(prompt.contains(
-            "- `param_1`: out parameter (via param_direction, confidence 75)"
-        ));
+        assert!(prompt.contains("- `param_1`: out parameter (via param_direction, confidence 75)"));
         assert!(
             !prompt.contains("PARAMETER DIRECTION"),
             "directions ride the existing section, not a new one"
@@ -1600,9 +1654,7 @@ mod tests {
 
         assert!(prompt.contains("TYPE INFORMATION"));
         assert!(prompt.contains("- `param_1`: char * (via string_function, confidence 70)"));
-        assert!(prompt.contains(
-            "- `param_1`: out parameter (via param_direction, confidence 75)"
-        ));
+        assert!(prompt.contains("- `param_1`: out parameter (via param_direction, confidence 75)"));
         assert!(
             !prompt.contains("PARAMETER DIRECTION"),
             "directions ride the existing section, not a new one"
@@ -1632,9 +1684,7 @@ mod tests {
 
         assert!(prompt.contains("TYPE INFORMATION"));
         assert!(prompt.contains("- `param_1`: char * (via string_function, confidence 70)"));
-        assert!(prompt.contains(
-            "- `param_1`: out parameter (via param_direction, confidence 75)"
-        ));
+        assert!(prompt.contains("- `param_1`: out parameter (via param_direction, confidence 75)"));
         assert!(
             !prompt.contains("PARAMETER DIRECTION"),
             "directions ride the existing section, not a new one"
