@@ -36,7 +36,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
 | P15 | SEH and cleanup-on-failure idiom detection — name each function's error-handling idiom (SEH frame, RaiseException, goto-cleanup ladder) and the failure codes baseline tests must preserve | evidence (`calxgloss-errhandling` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #230 | [#230](https://github.com/scriptandcompile/calxgloss/issues/230) |
 | P16 | Data-table recovery — reconstruct read-only constant data tables (game stats, opcode tables) as named Rust const arrays instead of scattered `DAT_*` reads | evidence (`calxgloss-consts`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #231 | [#231](https://github.com/scriptandcompile/calxgloss/issues/231) |
-| P17 | Decompiler-noise pre-filter — strip GS stack-canary code at the exit of the decompile read so prompts and evidence bodies stop paying for compiler guard code | integrations (`calxgloss-decomp`) | — | ⬜ not started | `/to-tickets` from #232 | [#232](https://github.com/scriptandcompile/calxgloss/issues/232) |
+| P17 | Decompiler-noise pre-filter — strip GS stack-canary code at the exit of the decompile read so prompts and evidence bodies stop paying for compiler guard code | integrations (`calxgloss-decomp`) | — | ✅ done | — | [#232](https://github.com/scriptandcompile/calxgloss/issues/232) |
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
@@ -157,7 +157,7 @@ control-flow-findings pattern, omitted when the function has no findings)
 naming the idiom, its Rust mapping (`Result` + early returns + scope guards
 for ladders, an exception-mapped error type for SEH frames), and the
 function's failure codes; and a CLI breakdown command. GS stack-canary
-checks must not false-fire as SEH frames — stripping them is specced as the
+checks must not false-fire as SEH frames — stripping them landed with the
 P17 decompiler-noise pre-filter (#232). Spec: #230. Tickets: not yet filed
 (`/to-tickets`).
 
@@ -224,7 +224,10 @@ byte-for-byte (P15's territory). No findings, no new document, no schema
 change, no write-back to the program (ADR-0020), no new engine reads
 (ADR-0026); stripping rides a debug log naming the function and families.
 Old records still load — the text is opaque to consumers. Spec: #232.
-Tickets: not yet filed (`/to-tickets`).
+Tickets: #271–#273 (`/implement`) — all landed (`e6dee90`…`1ac1c55`, recorded
+in the changelog); the filter module remains the designated home for future
+noise families (kCFG checks, EH-table artifacts) — each joins as a recognizer,
+never a seam edit.
 
 ## P18 — Binary-version diffing (BinDiff-style) (evidence + pipeline + interface)
 
