@@ -2,11 +2,13 @@
 //!
 //! An operator steers a live run over REST: which target binaries to
 //! translate, which target binaries to pause (held out of the queue without
-//! stopping the run — issue #218), which functions to skip (runtime entry
-//! points, hooks, callback stubs that never need translation), which
-//! functions to prioritize (entry points, the rendering path, core algorithms
-//! sort ahead of the rest of the queue), and constraints that bound
-//! consumption — max LLM attempt count, max context tier, token budget.
+//! stopping the run — issue #218), which single binary to *focus* (the one
+//! the run works first at the next binary boundary — issue #284), which
+//! functions to skip (runtime entry points, hooks, callback stubs that never
+//! need translation), which functions to prioritize (entry points, the
+//! rendering path, core algorithms sort ahead of the rest of the queue), and
+//! constraints that bound consumption — max LLM attempt count, max context
+//! tier, token budget.
 //!
 //! Two layers live here:
 //!
@@ -93,6 +95,12 @@ pub struct TranslationScope {
     /// is still in scope — it is held out of the queue, not dropped.
     #[serde(default)]
     pub paused: Vec<BinaryIdentity>,
+    /// The one binary the operator has asked to be worked **first** at the
+    /// next queue boundary (issue #284). One slot, last press wins; the run
+    /// consumes it the moment it honors it, so a stale focus never reorders
+    /// later runs. `None` means the queue runs in its own order.
+    #[serde(default)]
+    pub focus: Option<BinaryIdentity>,
 }
 
 impl TranslationScope {
@@ -118,6 +126,18 @@ impl TranslationScope {
         self.paused
             .iter()
             .any(|b| b.as_str().eq_ignore_ascii_case(binary))
+    }
+
+    /// Whether the named binary is the one the operator has focused — the
+    /// binary the run works first at the next queue boundary (issue #284).
+    ///
+    /// Binary names match ASCII case-insensitively, the same case policy as
+    /// [`is_paused`](Self::is_paused) (issue #107): one focus entry covers
+    /// every spelling of the same DLL.
+    pub fn is_focus(&self, binary: &str) -> bool {
+        self.focus
+            .as_ref()
+            .is_some_and(|b| b.as_str().eq_ignore_ascii_case(binary))
     }
 
     /// Whether the named function is skipped in the named binary.
@@ -180,7 +200,10 @@ pub fn constraints_record_path(workspace: impl AsRef<Path>) -> PathBuf {
 /// [`ProgressEvent::BinaryPauseChanged`](crate::ProgressEvent::BinaryPauseChanged)
 /// on the shared event channel (issue #221) — the same pattern as
 /// [`PipelineControl::with_events`](crate::PipelineControl::with_events) —
-/// so WebSocket clients re-render the binary's row without a reload.
+/// so WebSocket clients re-render the binary's row without a reload. The
+/// focus slot (issue #284) emits nothing itself: the run loop consumes it
+/// at a binary boundary, and the reorder rides the run's own queue-plan
+/// re-publish.
 #[derive(Debug, Clone)]
 pub struct ScopeControl {
     inner: Arc<Mutex<ScopeState>>,
@@ -401,6 +424,58 @@ impl ScopeControl {
         self.lock().scope.paused.clone()
     }
 
+    /// Focus one target binary (issue #284): the run works it first at the
+    /// next binary boundary. One slot, last press wins — setting a focus
+    /// replaces any previous one rather than queueing a list. A focus naming
+    /// a binary the queue does not hold reorders nothing and survives until
+    /// a boundary names it. Like the paused set, the focus persists with the
+    /// scope record so a restart hands it to the next run.
+    pub fn set_focus(&self, binary: &str) -> Result<(), PersistError> {
+        let mut state = self.lock();
+        state.scope.focus = Some(binary.into());
+        Self::persist(&state)
+    }
+
+    /// Drop the current focus, however it is spelled. Idempotent: clearing
+    /// with no focus set is not an error.
+    pub fn clear_focus(&self) -> Result<(), PersistError> {
+        let mut state = self.lock();
+        state.scope.focus = None;
+        Self::persist(&state)
+    }
+
+    /// A snapshot of the focused binary identity, if any.
+    pub fn focused_binary(&self) -> Option<BinaryIdentity> {
+        self.lock().scope.focus.clone()
+    }
+
+    /// Whether the current focus names the given binary (issue #107's
+    /// case-insensitive rule — the same matching the paused set uses).
+    pub fn is_focus(&self, binary: &str) -> bool {
+        self.lock().scope.is_focus(binary)
+    }
+
+    /// Consume the focus for `binary` (issue #284): it is cleared — and
+    /// re-persisted, so a restart never re-honors it — when the current
+    /// focus names that binary, and nothing changes when it no longer does
+    /// (a fresh press that won in the meantime stays in force). Returns
+    /// whether the focus was consumed.
+    pub fn consume_focus(&self, binary: &str) -> bool {
+        let mut state = self.lock();
+        if !state.scope.is_focus(binary) {
+            return false;
+        }
+        state.scope.focus = None;
+        if let Err(e) = Self::persist(&state) {
+            // The run already honored the focus, so the in-memory clear
+            // stands; only a restart could re-honor the stale record. The
+            // failure is named on stderr — tracing is not a dependency of
+            // calxgloss-types (see open()'s corrupt-record warning).
+            eprintln!("warning: focus consumed but the scope record did not persist: {e}");
+        }
+        true
+    }
+
     /// Replace the run's constraints.
     pub fn set_constraints(&self, constraints: TranslationConstraints) -> Result<(), PersistError> {
         let mut state = self.lock();
@@ -450,6 +525,7 @@ mod tests {
             skipped_functions: vec![FunctionRef::new("game_logic.dll", "DllMain")],
             priority_functions: vec![FunctionRef::new("game_logic.dll", "DrawPrimitive")],
             paused: vec!["eqgame.exe".into()],
+            focus: Some("eqmain.dll".into()),
         };
         let json = serde_json::to_string(&scope).expect("serializes");
         let back: TranslationScope = serde_json::from_str(&json).expect("deserializes");
@@ -478,6 +554,10 @@ mod tests {
             scope.paused.is_empty(),
             "a record written before the paused field (issue #218) still loads"
         );
+        assert!(
+            scope.focus.is_none(),
+            "a record written before the focus field (issue #284) still loads"
+        );
         let constraints: TranslationConstraints =
             serde_json::from_str("{}").expect("empty constraints deserialize");
         assert_eq!(constraints.max_attempts, None);
@@ -490,6 +570,7 @@ mod tests {
             skipped_functions: vec![FunctionRef::new("game_logic.dll", "DllMain")],
             priority_functions: vec![FunctionRef::new("eqmain.dll", "DrawPrimitive")],
             paused: vec!["eqgame.exe".into()],
+            focus: Some("eqmain.dll".into()),
         };
         assert!(scope.admits_binary("anything.dll"), "empty list admits all");
         assert!(scope.is_skipped("game_logic.dll", "DllMain"));
@@ -522,6 +603,15 @@ mod tests {
         assert!(
             !scope.is_paused("other.dll"),
             "a pause is scoped to its binary"
+        );
+        assert!(scope.is_focus("eqmain.dll"));
+        assert!(
+            scope.is_focus("EQMAIN.DLL"),
+            "a differently-cased binary spelling still matches the focused entry"
+        );
+        assert!(
+            !scope.is_focus("other.dll"),
+            "a focus is scoped to its binary"
         );
     }
 
@@ -671,6 +761,112 @@ mod tests {
         let plain = ScopeControl::new();
         plain.pause_binary("b.dll").expect("pause without events");
         assert!(plain.is_paused("b.dll"));
+    }
+
+    /// The focus slot (issue #284): set/replace/clear are idempotent, one
+    /// slot keeps only the last press, and matching follows the #107
+    /// case-insensitive rule — mirroring the paused set's semantics.
+    #[test]
+    fn set_replace_and_clear_focus_are_idempotent_and_match_case_insensitively() {
+        fn focused_name(control: &ScopeControl) -> Option<String> {
+            control.focused_binary().map(|b| b.as_str().to_string())
+        }
+
+        let control = ScopeControl::new();
+        assert_eq!(
+            focused_name(&control),
+            None,
+            "a fresh handle carries no focus"
+        );
+
+        control.set_focus("a.dll").expect("set focus");
+        assert_eq!(focused_name(&control), Some("a.dll".into()));
+        control
+            .set_focus("a.dll")
+            .expect("setting the same focus twice is idempotent");
+
+        // One slot, last press wins — a focus replaces, it never lists.
+        control.set_focus("B.DLL").expect("replace the focus");
+        assert_eq!(
+            focused_name(&control),
+            Some("B.DLL".into()),
+            "the new focus keeps the pressed spelling"
+        );
+        assert!(control.is_focus("b.dll"), "the focus matches case-insensitively");
+        assert!(!control.is_focus("a.dll"), "the replaced focus is gone");
+
+        control.clear_focus().expect("clear the focus");
+        assert_eq!(focused_name(&control), None, "the focus slot is empty again");
+        control
+            .clear_focus()
+            .expect("clearing with no focus set is idempotent");
+    }
+
+    /// Consumption (issue #284): the moment a run honors the focus it is
+    /// gone — and consuming never clears a fresher press that won the slot
+    /// in the meantime.
+    #[test]
+    fn consume_focus_clears_only_when_the_current_focus_names_the_binary() {
+        let control = ScopeControl::new();
+        control.set_focus("a.dll").expect("set focus");
+
+        assert!(
+            !control.consume_focus("b.dll"),
+            "consuming for another binary changes nothing"
+        );
+        assert!(control.is_focus("A.DLL"), "the focus still names a.dll");
+
+        assert!(
+            control.consume_focus("A.DLL"),
+            "consumption matches case-insensitively, like every other binary control"
+        );
+        assert!(!control.is_focus("a.dll"), "the focus is consumed once honored");
+        assert!(
+            !control.consume_focus("a.dll"),
+            "consuming an absent focus is a no-op, not an error"
+        );
+    }
+
+    /// The focus rides the same persisted record as the paused set, so a
+    /// restarted run picks it up (issue #284) — and a consumed or cleared
+    /// focus stays gone through re-opens, so a stale focus never reorders
+    /// later runs forever.
+    #[test]
+    fn focus_persists_with_the_scope_record() {
+        let ws = temp_workspace();
+        let control = ScopeControl::open(ws.path());
+        control
+            .set_focus("game_logic.dll")
+            .expect("setting a focus persists the record");
+
+        let reloaded = ScopeControl::open(ws.path());
+        assert_eq!(
+            reloaded.focused_binary().map(|b| b.as_str().to_string()),
+            Some("game_logic.dll".into()),
+            "a handle re-opened over the workspace restores the focus"
+        );
+
+        assert!(
+            reloaded.consume_focus("GAME_LOGIC.DLL"),
+            "the restored focus is consumed on the #107 match rule"
+        );
+        assert_eq!(
+            ScopeControl::open(ws.path()).focused_binary(),
+            None,
+            "consumption re-persists — the next restart starts unsteered again"
+        );
+
+        reloaded
+            .set_focus("eqmain.dll")
+            .expect("a fresh focus persists");
+        ScopeControl::open(ws.path())
+            .clear_focus()
+            .expect("clearing through another handle persists");
+        assert_eq!(
+            ScopeControl::open(ws.path()).focused_binary(),
+            None,
+            "the clear survived the re-open"
+        );
     }
 
     /// Removing a priority entry (issue #95, W2.6 — the panel's remove
