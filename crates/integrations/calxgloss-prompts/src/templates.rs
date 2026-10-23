@@ -927,6 +927,8 @@ pub struct RichTemplate {
     pub test_cases: Vec<TestCaseFormatted>,
     /// API-category-specific mapping rows.
     pub api_category_mappings: Vec<ApiCategoryMapping>,
+    /// Type information inferred by the decompiler.
+    pub type_info: Vec<TypeInfo>,
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
@@ -958,6 +960,7 @@ impl RichTemplate {
             no_windows_apis: req.windows_apis.is_empty(),
             test_cases,
             api_category_mappings: Vec::new(),
+            type_info: Vec::new(),
             control_flow_findings: Vec::new(),
         }
     }

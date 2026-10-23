@@ -342,6 +342,10 @@ pub fn build_complexity_prompt(
             if !api_category_mappings.is_empty() {
                 template.api_category_mappings = api_category_mappings;
             }
+            // Type-info rows (issue #276): the persisted type-inference
+            // artifact's readings, direction records included, ride the
+            // template's existing type-info section — no new section.
+            template.type_info = data.type_info.clone();
             template.control_flow_findings = data.control_flow_findings.clone();
             render_prompt(&template)?
         }
@@ -352,6 +356,10 @@ pub fn build_complexity_prompt(
             if !api_category_mappings.is_empty() {
                 template.api_category_mappings = api_category_mappings;
             }
+            // Type-info rows (issue #276): same riding as the rich arm —
+            // the artifact's readings render through the existing
+            // type-info section, no new section.
+            template.type_info = data.type_info.clone();
             template.control_flow_findings = data.control_flow_findings.clone();
             render_prompt(&template)?
         }

@@ -50,6 +50,16 @@ Test #{{ test.index }}:
 {% endfor %}
 
 {% endif %}
+{% if !type_info.is_empty() %}
+## TYPE INFORMATION
+
+The following types were inferred by Ghidra's type database:
+
+{% for ti in type_info %}
+- `{{ ti.name }}`: {% if !ti.description.is_empty() %}{{ ti.description }}{% else %}inferred type{% endif %}
+{% endfor %}
+
+{% endif %}
 {% if !control_flow_findings.is_empty() %}
 ## CONTROL FLOW PATTERNS
 

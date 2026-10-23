@@ -1335,8 +1335,9 @@ mod tests {
     use super::*;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::{
-        Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredConvention,
-        InferredLocalType, InferredParamType, InferredType, TypeInferenceResult,
+        Confidence, Direction, InferenceMethod, InferenceScope, InferredCallType,
+        InferredConvention, InferredLocalType, InferredParamDirection, InferredParamType,
+        InferredType, TypeInferenceResult,
     };
     use calxgloss_typesdb::persist::TypeDatabasePersistor;
     use calxgloss_typesdb::types::{
@@ -1563,6 +1564,19 @@ mod tests {
         TypeInferPersistor::new(dir.path()).save(&result).unwrap();
     }
 
+    fn direction_inference(function: &str, index: usize, direction: Direction) -> InferredType {
+        InferredType::Direction(InferredParamDirection {
+            function: function.to_string(),
+            param_index: index,
+            param_name: Some(format!("param_{}", index + 1)),
+            direction,
+            method: InferenceMethod::ParamDirection,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(75),
+            evidence: "*param_1 = 0;".to_string(),
+        })
+    }
+
     #[test]
     fn no_workspace_configured_yields_no_type_info() {
         assert!(extract_type_info(None, "eqmain.dll", "FUN_18003ab00").is_empty());
@@ -1650,6 +1664,35 @@ mod tests {
         assert_eq!(
             found[2].description,
             "void * (via known_signature, confidence 75)"
+        );
+    }
+
+    #[test]
+    fn a_direction_reading_lands_beside_its_parameter_s_type_reading() {
+        // Issue #276: the persisted artifact's direction record converts
+        // through the same type-info seam as the type record, under the
+        // same parameter name — the full hypothesis, what the parameter
+        // is and which way it flows, stands side by side for the retry.
+        let dir = TempDir::new().unwrap();
+        persist_inferences(
+            &dir,
+            vec![
+                param_inference("FUN_18003ab00", 0, "char *"),
+                direction_inference("FUN_18003ab00", 0, Direction::Out),
+            ],
+        );
+
+        let found = extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 2, "the type and direction readings coexist");
+        assert_eq!(found[0].name, found[1].name, "both name param_1");
+        assert_eq!(
+            found[0].description,
+            "char * (via vtable_call, confidence 85)"
+        );
+        assert_eq!(
+            found[1].description,
+            "out parameter (via param_direction, confidence 75)"
         );
     }
 

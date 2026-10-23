@@ -1531,6 +1531,170 @@ mod tests {
         }
     }
 
+    fn type_info_pair() -> Vec<TypeInfo> {
+        // The two readings one pointer parameter's records render through
+        // the typeinfer union's prompt conversion (issue #274): the type
+        // reading and the direction reading, both naming the parameter,
+        // so the pair lands side by side in one section (issue #276).
+        vec![
+            TypeInfo {
+                name: "param_1".to_string(),
+                description: "char * (via string_function, confidence 70)".to_string(),
+            },
+            TypeInfo {
+                name: "param_1".to_string(),
+                description: "out parameter (via param_direction, confidence 75)".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn test_escalate_template_renders_direction_line_beside_the_type_line() {
+        // An escalated attempt sees the direction beside the type: the
+        // existing type-info section carries both lines, and no separate
+        // directions section joins the prompt.
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_1800412a0".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_1800412a0(param_1: *mut i8) { /* ... */ }".to_string(),
+            "Wrong result".to_string(),
+            EvidenceBundle {
+                type_info: type_info_pair(),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("ADDITIONAL CONTEXT — TYPE INFORMATION"));
+        assert!(prompt.contains("- `param_1`: char * (via string_function, confidence 70)"));
+        assert!(prompt.contains(
+            "- `param_1`: out parameter (via param_direction, confidence 75)"
+        ));
+        assert!(
+            !prompt.contains("PARAMETER DIRECTION"),
+            "directions ride the existing section, not a new one"
+        );
+    }
+
+    #[test]
+    fn test_rich_template_renders_type_info_section_with_direction_line() {
+        let data = ComplexityPromptData {
+            function_name: "FUN_1800412a0".to_string(),
+            dll_name: "eqmain.dll".to_string(),
+            address: 0x3000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "undefined FUN_1800412a0(void) { }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: type_info_pair(),
+            control_flow_findings: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
+            .expect("the rich prompt should render");
+
+        assert!(prompt.contains("TYPE INFORMATION"));
+        assert!(prompt.contains("- `param_1`: char * (via string_function, confidence 70)"));
+        assert!(prompt.contains(
+            "- `param_1`: out parameter (via param_direction, confidence 75)"
+        ));
+        assert!(
+            !prompt.contains("PARAMETER DIRECTION"),
+            "directions ride the existing section, not a new one"
+        );
+    }
+
+    #[test]
+    fn test_detailed_template_renders_type_info_section_with_direction_line() {
+        let data = ComplexityPromptData {
+            function_name: "FUN_1800412a0".to_string(),
+            dll_name: "eqmain.dll".to_string(),
+            address: 0x4000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "undefined FUN_1800412a0(void) { }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: type_info_pair(),
+            control_flow_findings: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
+            .expect("the detailed prompt should render");
+
+        assert!(prompt.contains("TYPE INFORMATION"));
+        assert!(prompt.contains("- `param_1`: char * (via string_function, confidence 70)"));
+        assert!(prompt.contains(
+            "- `param_1`: out parameter (via param_direction, confidence 75)"
+        ));
+        assert!(
+            !prompt.contains("PARAMETER DIRECTION"),
+            "directions ride the existing section, not a new one"
+        );
+    }
+
+    #[test]
+    fn test_rich_and_detailed_templates_without_type_info_omit_the_section() {
+        let data = ComplexityPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x3000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
+        };
+
+        for tier in [FunctionComplexity::Rich, FunctionComplexity::Detailed] {
+            let prompt = build_complexity_prompt(&tier, &data).expect("the prompt should render");
+            assert!(
+                !prompt.contains("TYPE INFORMATION"),
+                "a scan that read nothing leaves the tier's prompt as it was"
+            );
+        }
+    }
+
+    #[test]
+    fn test_minimal_and_standard_templates_stay_clean_of_type_info() {
+        let data = ComplexityPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: type_info_pair(),
+            control_flow_findings: Vec::new(),
+        };
+
+        for tier in [FunctionComplexity::Minimal, FunctionComplexity::Standard] {
+            let prompt = build_complexity_prompt(&tier, &data).expect("the prompt should render");
+            assert!(
+                !prompt.contains("TYPE INFORMATION"),
+                "the low tiers stay as sparse as they are today"
+            );
+        }
+    }
+
     #[test]
     fn test_escalate_template_without_callback_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
