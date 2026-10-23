@@ -12,29 +12,38 @@
 //! three reads are existing `ScanSource` seam methods, cached under
 //! ADR-0043; nothing is written back to the program (ADR-0020).
 //!
-//! The reading claims the corroborated happy path only — the tracer
-//! bullet. An object lands a [`DataTable`] record when a kept body
-//! indexes it, its bytes decode uniformly at a single stride —
-//! every entry nonzero, entries not all equal (a fill is a fill, not
-//! a table) — and, when more than one stride decodes uniformly, a
-//! bounds guard in an indexing body names the entry count that picks
-//! exactly one. The disqualification gates (a body storing through
-//! the symbol, pointer-wide entries) and the general stride
-//! viability and multi-stride resolution land in sibling tickets —
-//! so a guard and a byte decode that disagree, or two guards naming
-//! different widths, or a uniform decode at two widths with no guard
-//! to pick one, all claim nothing. The claim stays inside what bytes
-//! and reads agree on.
+//! The reading claims the corroborated happy path and nothing the
+//! program says is somebody else's. An object lands a [`DataTable`]
+//! record when a kept body indexes it, its bytes decode uniformly at
+//! a single stride — every entry nonzero, entries not all equal (a
+//! fill is a fill, not a table) — and, when more than one stride
+//! decodes uniformly, a bounds guard in an indexing body names the
+//! entry count that picks exactly one. Three shapes claim nothing
+//! outright: a kept body that stores through the symbol makes the
+//! object mutable global state, the global-state track's territory,
+//! and never a constant table; an object whose entries resolve to
+//! function starts is a dispatch table, which the callback crate's
+//! jump-table reading owns outright; and one where only some entries
+//! resolve is a half-decoded mix that never lands as a false const
+//! array. The general stride viability and multi-stride resolution
+//! land in a sibling ticket — so a guard and a byte decode that
+//! disagree, or two guards naming different widths, or a uniform
+//! decode at two widths with no guard to pick one, all claim nothing.
+//! The claim stays inside what bytes, reads, and the function listing
+//! agree on.
 //!
 //! The engine calls [`data_tables`] once per scan with the data
-//! listing and, parallel to it, the indexed reads it collected from
-//! the bodies the walk kept; the reading lands one record per
-//! qualifying object, in listing order.
+//! listing and, parallel to it, what the bodies the walk kept do with
+//! each object — its indexed reads and whether anything stores
+//! through its symbol — plus the addresses the function listing
+//! names; the reading lands one record per qualifying object, in
+//! listing order.
 
 use std::collections::BTreeSet;
 
 use calxgloss_decomp::{DataItem, DecompiledFunction, ScanSource};
-use tracing::warn;
+use calxgloss_types::{is_ident_byte, skip_char, skip_string, skip_ws};
+use tracing::{debug, warn};
 
 use crate::types::{Confidence, DataTable, MAX_INLINE_TABLE_VALUES};
 
@@ -68,10 +77,10 @@ pub(crate) struct IndexedRead {
 /// width it implies. A bracketed index that is a compound expression
 /// (`i * 4`, `i + 1`) proves the reference but names no bound, so it
 /// carries no width; only a simple identifier index is read for a
-/// guard. The read is found textually — a write (`label[i] = v`) is
-/// the same text, and the mutation gate belongs to the
-/// disqualification ticket, so this reads the shape, not the
-/// direction.
+/// guard. The read is found textually, so it reads the shape, not the
+/// direction — a write (`label[i] = v`) is the same text — and the
+/// engine asks [`stores_through`] first, calling this only for a line
+/// that stores nothing, so a claim's evidence is always a read.
 pub(crate) fn indexed_read(
     body: &DecompiledFunction,
     label: &str,
@@ -94,6 +103,183 @@ pub(crate) fn indexed_read(
         line: line.trim().to_string(),
         width,
     })
+}
+
+/// What the bodies the walk kept do with one data object, collected as
+/// the engine reads them: the indexed reads a table claim rests on,
+/// and the mutation gate's signal.
+#[derive(Debug, Default)]
+pub(crate) struct ObjectUsage {
+    /// The indexed reads found in the kept bodies, in body order.
+    pub reads: Vec<IndexedRead>,
+    /// Whether any kept body stores through the symbol. Such an
+    /// object is mutable global state — the global-state track's
+    /// territory — so it never reads as a constant table.
+    pub written: bool,
+}
+
+/// Whether a kept body's `line` stores through the data object
+/// `label`: an assignment to the symbol (`DAT_x = v`, `DAT_x += v`),
+/// a store through an index into it (`DAT_x[i] = v`, `DAT_x[i]++`),
+/// or a store through it another way (`*(&DAT_x)[i] = v`,
+/// `*(int *)(DAT_x + 4) = 0`).
+///
+/// The rule reads forward from the name, the way the global-state
+/// crate's access kind does, so a dereference, cast, or address-of
+/// wrapped around the symbol needs no case of its own: the reference's
+/// tail — subscript groups, a `)` closing the wrapper the body opened
+/// before the name, a `+ 4` offset, a `.field` selection — has to open
+/// with an assignment (`=`, never `==`, and the compound `+=`-style
+/// stores) or a `++`/`--` bump for the name to be a store target. A
+/// test, a plain copy, and the name spelled inside a string or char
+/// literal store nothing, and a longer label that merely starts with
+/// this one (`DAT_1400a1b600`) is never this object.
+pub(crate) fn stores_through(line: &str, label: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' => at = skip_string(bytes, at + 1),
+            b'\'' => at = skip_char(bytes, at + 1),
+            b if b.is_ascii_alphabetic() || b == b'_' => {
+                let end = name_end(bytes, at);
+                if &line[at..end] == label && stores_after(line, end) {
+                    return true;
+                }
+                at = end;
+            }
+            _ => at += 1,
+        }
+    }
+    false
+}
+
+/// The end of the identifier run starting at `start` — letters,
+/// digits, and underscores — so a name is only ever matched whole.
+fn name_end(bytes: &[u8], start: usize) -> usize {
+    let mut end = start;
+    while end < bytes.len() && is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+    end
+}
+
+/// Whether what follows the symbol reference ending at `at` is a
+/// store, past the reference's tail. `if (DAT_x[i] == 3) uVar1 = 4;`
+/// reads as a read because the reference's tail stops at the `==`,
+/// which is a comparison: the assignment further along the line never
+/// becomes this object's store target.
+fn stores_after(line: &str, mut at: usize) -> bool {
+    let bytes = line.as_bytes();
+    loop {
+        at = skip_ws(bytes, at);
+        if store_operator(line, at).is_some() {
+            return true;
+        }
+        match bytes.get(at) {
+            // A subscript group belongs to the reference, index
+            // expression and all — `DAT_x[i]`, `(&DAT_x)[uVar2]`,
+            // `DAT_x[i][j]`.
+            Some(b'[') => match closing_bracket(line, at) {
+                Some(close) => at = close + 1,
+                None => return false,
+            },
+            // A closer belongs to the wrapper the body opened before
+            // the name: `*(int *)(DAT_x + 4)`, `*(&DAT_x)[i]`.
+            Some(b')') => at += 1,
+            // A field selection: `DAT_x.count = 3`.
+            Some(b'.') => match member_at(bytes, at + 1) {
+                Some(end) => at = end,
+                None => return false,
+            },
+            Some(b'-') if bytes.get(at + 1) == Some(&b'>') => match member_at(bytes, at + 2) {
+                Some(end) => at = end,
+                None => return false,
+            },
+            // A byte offset out of the symbol's own storage: the
+            // `+ 4` of `*(int *)(DAT_x + 4) = 0`.
+            Some(b'+' | b'-') => match number_end(bytes, at + 1) {
+                Some(end) => at = end,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+}
+
+/// The assignment and bump operators, longest spelling first so
+/// `<<=` never reads as a comparison. `==` is excluded: a test stores
+/// nothing. The index just past the operator, when `line` opens with
+/// one at `at`.
+fn store_operator(line: &str, at: usize) -> Option<usize> {
+    const OPERATORS: [&str; 13] = [
+        "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "++", "--", "=",
+    ];
+    let rest = &line[at..];
+    OPERATORS
+        .iter()
+        .find(|op| rest.starts_with(**op) && !rest.starts_with("=="))
+        .map(|op| at + op.len())
+}
+
+/// The member name a `.` or `->` selects at `at`, as the end of that
+/// name — `None` when nothing name-like follows, which ends the
+/// reference's tail rather than letting the scan stall.
+fn member_at(bytes: &[u8], at: usize) -> Option<usize> {
+    let start = skip_ws(bytes, at);
+    if !bytes
+        .get(start)
+        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+    {
+        return None;
+    }
+    Some(name_end(bytes, start))
+}
+
+/// The index of the `]` matching the `[` at `open`, skipping string
+/// and char literals so a `]` inside one cannot close the subscript
+/// early — [`calxgloss_types::closing_paren`]'s rule for brackets.
+fn closing_bracket(body: &str, open: usize) -> Option<usize> {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut at = open;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' => at = skip_string(bytes, at + 1),
+            b'\'' => at = skip_char(bytes, at + 1),
+            b'[' => {
+                depth += 1;
+                at += 1;
+            }
+            b']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(at);
+                }
+                at += 1;
+            }
+            _ => at += 1,
+        }
+    }
+    None
+}
+
+/// The end of the integer literal starting at or after `at`, as the
+/// index just past its digits — the `4` of `DAT_x + 4`, hex spelled
+/// too — `None` when no digits are there at all.
+fn number_end(bytes: &[u8], at: usize) -> Option<usize> {
+    let start = skip_ws(bytes, at);
+    let hex = bytes.get(start) == Some(&b'0')
+        && matches!(bytes.get(start + 1), Some(&b'x') | Some(&b'X'));
+    let digits = if hex { start + 2 } else { start };
+    let mut end = digits;
+    while end < bytes.len()
+        && bytes[end].is_ascii_hexdigit()
+        && (hex || bytes[end].is_ascii_digit())
+    {
+        end += 1;
+    }
+    (end > digits).then_some(end)
 }
 
 /// The text between an opening bracket already consumed and its
@@ -207,16 +393,31 @@ fn le_u64(bytes: &[u8]) -> u64 {
     value
 }
 
-/// The table reading for one data object: a kept body must index it,
-/// its bytes must be readable in full and decode uniformly, and a
-/// single stride must survive — the only uniform width, or a width a
-/// bounds guard in an indexing body picks out of several. `None` with
-/// a warning for anything else.
+/// The table reading for one data object: a kept body must index it
+/// and none may store through its symbol, its bytes must be readable
+/// in full and decode uniformly, a single stride must survive — the
+/// only uniform width, or a width a bounds guard in an indexing body
+/// picks out of several — and none of its entries may resolve to one
+/// of the `function_starts` the listing names. `None` silently for a
+/// disqualifying shape, with a warning for a read that failed.
 async fn read_object<S: ScanSource>(
     source: &S,
     item: &DataItem,
-    reads: &[IndexedRead],
+    usage: &ObjectUsage,
+    function_starts: &BTreeSet<u64>,
 ) -> Option<DataTable> {
+    if usage.written {
+        // The mutation gate: a body that stores through the symbol
+        // makes it mutable global state, the global-state track's
+        // territory, so it never reads as a constant table.
+        debug!(
+            object = %item.label,
+            address = format_args!("{:#x}", item.address),
+            "Skipping data object: a kept body stores through the symbol"
+        );
+        return None;
+    }
+    let reads = &usage.reads;
     if reads.is_empty() {
         // The tracer claims only the corroborated path: an object no
         // kept body indexes is a raw-bytes-only claim, a lower tier
@@ -272,6 +473,27 @@ async fn read_object<S: ScanSource>(
 
     let entries: Vec<u64> = bytes.chunks(width as usize).map(le_u64).collect();
     let count = entries.len();
+    // The pointer gates: an entry equal to one of the addresses the
+    // function listing names is a pointer to a function start. Every
+    // entry resolving is a dispatch table — the callback crate's
+    // jump-table reading is that owner outright — and some entries
+    // resolving is a half-decoded mix that never lands as a false
+    // const array, so one resolving entry claims nothing. A value the
+    // listing does not name is an ordinary scalar: the veto is
+    // resolution, not magnitude.
+    let pointers = entries
+        .iter()
+        .filter(|entry| function_starts.contains(entry))
+        .count();
+    if pointers > 0 {
+        debug!(
+            object = %item.label,
+            address = format_args!("{:#x}", item.address),
+            resolving = format_args!("{pointers}/{count} entries resolve to function starts"),
+            "Skipping data object: function-pointer table, the callback crate's jump-table reading owns it"
+        );
+        return None;
+    }
     let values_truncated = count > MAX_INLINE_TABLE_VALUES;
     let mut values = entries;
     values.truncate(MAX_INLINE_TABLE_VALUES);
@@ -317,21 +539,25 @@ async fn read_object<S: ScanSource>(
 }
 
 /// The program's data tables: every object the engine's data listing
-/// defines that a kept body indexes and whose bytes decode uniformly
-/// at exactly one corroborated stride, in listing order. `table_reads`
-/// is parallel to `items` — the indexed reads the walk collected from
-/// the bodies it kept, per object. A failed listing fails the run
+/// defines that a kept body indexes, that no kept body stores through,
+/// and whose bytes decode uniformly at exactly one corroborated stride
+/// of values none of which resolves to a listed function start, in
+/// listing order. `table_usage` is parallel to `items` — what the walk
+/// collected from the bodies it kept, per object — and `function_starts`
+/// is the address set the function listing names, which the pointer
+/// gates resolve entries against. A failed listing fails the run
 /// like the function listing's failure (the engine reads it before
 /// calling this); a failing per-object read skips that object with a
-/// warning.
+/// warning, and a disqualified shape skips it silently.
 pub(crate) async fn data_tables<S: ScanSource>(
     source: &S,
     items: &[DataItem],
-    table_reads: &[Vec<IndexedRead>],
+    table_usage: &[ObjectUsage],
+    function_starts: &BTreeSet<u64>,
 ) -> Vec<DataTable> {
     let mut tables = Vec::new();
-    for (item, reads) in items.iter().zip(table_reads) {
-        if let Some(record) = read_object(source, item, reads).await {
+    for (item, usage) in items.iter().zip(table_usage) {
+        if let Some(record) = read_object(source, item, usage, function_starts).await {
             tables.push(record);
         }
     }
@@ -390,16 +616,78 @@ mod tests {
     fn a_compound_index_proves_the_read_but_names_no_width() {
         let program = body(
             "FUN_18003ab00",
-            "  if (uVar2 < 0xc) {\n    DAT_1400a1b60[uVar2 * 2] = uVar3;\n  }\n",
+            "  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2 * 2];\n  }\n",
         );
         let read = indexed_read(
             &program,
             "DAT_1400a1b60",
-            "    DAT_1400a1b60[uVar2 * 2] = uVar3;",
+            "    uVar3 = DAT_1400a1b60[uVar2 * 2];",
             24,
         )
         .expect("the bracketed reference is found");
         assert_eq!(read.width, None);
+    }
+
+    #[test]
+    fn a_store_through_the_symbol_spells_itself_three_ways() {
+        // Assignment to the symbol itself.
+        assert!(stores_through("  DAT_1400a1b60 = 0;", "DAT_1400a1b60"));
+        assert!(stores_through("  DAT_1400a1b60 += 2;", "DAT_1400a1b60"));
+        // A store through an index into it.
+        assert!(stores_through(
+            "  DAT_1400a1b60[uVar2] = uVar3;",
+            "DAT_1400a1b60"
+        ));
+        assert!(stores_through("  DAT_1400a1b60[uVar2]++;", "DAT_1400a1b60"));
+        // A store through it another way, wrapper and offset included.
+        assert!(stores_through(
+            "  *(int *)(&DAT_1400a1b60)[uVar2] = uVar3;",
+            "DAT_1400a1b60"
+        ));
+        assert!(stores_through(
+            "  *(int *)(DAT_1400a1b60 + 4) = 0;",
+            "DAT_1400a1b60"
+        ));
+    }
+
+    #[test]
+    fn reading_and_comparing_through_the_symbol_stores_nothing() {
+        // The gate takes a store spelled outright: the reference's
+        // tail has to open with one, so the reads a table claim lives
+        // on all stay claims.
+        assert!(!stores_through(
+            "  uVar3 = DAT_1400a1b60[uVar2];",
+            "DAT_1400a1b60"
+        ));
+        assert!(!stores_through(
+            "  if (DAT_1400a1b60[uVar2] == 3) { uVar1 = 4; }",
+            "DAT_1400a1b60"
+        ));
+        assert!(!stores_through(
+            "  if (DAT_1400a1b60[uVar2] < 3) { uVar1 = 4; }",
+            "DAT_1400a1b60"
+        ));
+        assert!(!stores_through(
+            "  uVar4 = (uint)(&DAT_1400a1b60)[uVar2];",
+            "DAT_1400a1b60"
+        ));
+        // A call through the table dispatches; it stores nothing.
+        assert!(!stores_through(
+            "  (*(code *)(&switchD_1800412a0)[uVar2])();",
+            "switchD_1800412a0"
+        ));
+        // The scan reads code, not prose: a store inside a string
+        // literal is not a store.
+        assert!(!stores_through(
+            "  printf(\"DAT_1400a1b60 = 1\\n\");",
+            "DAT_1400a1b60"
+        ));
+        // A longer label that starts with this one names another object.
+        assert!(!stores_through("  DAT_1400a1b600 = 1;", "DAT_1400a1b60"));
+        assert!(!stores_through(
+            "  uVar1 = sDAT_1400a1b60[0];",
+            "DAT_1400a1b60"
+        ));
     }
 
     #[test]

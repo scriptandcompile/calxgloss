@@ -72,12 +72,14 @@
 //!   qualifying values make a palette, a lone one claims nothing.
 //! - `data_table` - a crate-private data-table reading: `data_tables`
 //!   reads each object the engine's data listing defines against the
-//!   indexed reads the kept bodies carry, decodes its bytes uniformly
-//!   at one stride — a bounds guard picks the stride when several
-//!   decode cleanly — and reports each corroborated table as one
-//!   program-level `data_table` record in listing order; the
-//!   disqualification gates and multi-stride resolution are sibling
-//!   tickets, so anything the bytes and the guards disagree on claims
+//!   body usage the kept bodies carry — indexed reads to corroborate
+//!   a claim, stores through the symbol to disqualify one — decodes
+//!   its bytes uniformly at one stride — a bounds guard picks the
+//!   stride when several decode cleanly — and reports each
+//!   corroborated table as one program-level `data_table` record in
+//!   listing order; an object a kept body writes, or whose entries
+//!   resolve to function starts at all, claims nothing, so anything
+//!   the bytes, the guards, and the bodies disagree on claims
 //!   nothing.
 //! - `tokenize` - a crate-private pseudo-C tokenizer the three
 //!   detectors and the naming reading share, keeping string contents

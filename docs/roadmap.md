@@ -33,7 +33,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 |---|-------|-------|--------|--------|-----------|------|
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P15 | SEH and cleanup-on-failure idiom detection — name each function's error-handling idiom (SEH frame, RaiseException, goto-cleanup ladder) and the failure codes baseline tests must preserve | evidence (`calxgloss-errhandling` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #230 | [#230](https://github.com/scriptandcompile/calxgloss/issues/230) |
-| P16 | Data-table recovery — reconstruct read-only constant data tables (game stats, opcode tables) as named Rust const arrays instead of scattered `DAT_*` reads | evidence (`calxgloss-consts`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | 🔶 in progress | #279–#282 | [#231](https://github.com/scriptandcompile/calxgloss/issues/231) |
+| P16 | Data-table recovery — reconstruct read-only constant data tables (game stats, opcode tables) as named Rust const arrays instead of scattered `DAT_*` reads | evidence (`calxgloss-consts`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | 🔶 in progress | #280–#282 | [#231](https://github.com/scriptandcompile/calxgloss/issues/231) |
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
@@ -131,7 +131,7 @@ prompt (the control-flow-findings pattern — the table shape matters on the
 first attempt, and consts findings reach only escalate today) and the
 escalate prompt's existing CONSTANTS section through the union's prompt
 conversion. Nothing is written back to the program (ADR-0020). Spec: #231.
-Tickets: #278–#282 (#278 landed, #279–#282 open).
+Tickets: #278–#282 (#278–#279 landed, #280–#282 open).
 
 ## P18 — Binary-version diffing (BinDiff-style) (evidence + pipeline + interface)
 

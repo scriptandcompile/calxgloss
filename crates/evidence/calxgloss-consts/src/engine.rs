@@ -26,9 +26,11 @@
 //! the color-shaped values the tally still holds — ≤ 24-bit, not
 //! powers of two — into at most one program-level `color_constant`
 //! palette finding. The data-table reading (`data_table`) last walks
-//! the engine's data-object listing and the indexed reads the kept
-//! bodies carry, appending one `data_table` finding per object whose
-//! bytes decode uniformly at one corroborated stride, kept in
+//! the engine's data-object listing and what the kept bodies do with
+//! each object, appending one `data_table` finding per object whose
+//! bytes decode uniformly at one corroborated stride and which the
+//! gates leave alone — no kept body stores through its symbol, and no
+//! entry resolves to a function start the listing names — kept in
 //! listing order; it reads only existing seam methods (`data_items`,
 //! `read_memory`, `xrefs_to`), cached under ADR-0043, and writes
 //! nothing back to the program (ADR-0020). The scan is one sequential pass over the function listing — like
@@ -36,7 +38,7 @@
 //! read disjoint shapes — and keeping the pass sequential keeps the
 //! persisted finding list in a stable, diffable order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use calxgloss_kuna::KunaSource;
@@ -148,7 +150,9 @@ impl<S> ConstEngine<S> {
     /// matched values, and so does the color reading. The data-table
     /// reading then appends one `data_table` finding per object the
     /// data listing defines that the kept bodies index and whose
-    /// bytes decode uniformly at one corroborated stride, kept in
+    /// bytes decode uniformly at one corroborated stride — an object
+    /// a kept body stores through, or whose entries resolve to the
+    /// function starts the listing names, claims nothing — kept in
     /// data-listing order.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a bad
@@ -179,12 +183,18 @@ impl<S> ConstEngine<S> {
         // flag-family merge to tie them through shared bits — the
         // merge needs the detector's final contents, not the bodies.
         let mut groups: Vec<BitflagGroup> = Vec::new();
-        // The indexed reads of each data object, parallel to the
-        // listing, as the walk finds them in the bodies it reads — the
-        // data-table reading's corroboration, collected without
-        // keeping the bodies themselves.
-        let mut table_reads: Vec<Vec<crate::data_table::IndexedRead>> =
-            vec![Vec::new(); data_objects.len()];
+        // The addresses the function listing names, as the data-table
+        // reading's pointer gate resolves table entries against them:
+        // an entry equal to a listed start is a pointer to a function,
+        // the callback crate's jump-table territory, not a scalar.
+        let function_starts: BTreeSet<u64> =
+            functions.iter().map(|function| function.address).collect();
+        // What the bodies the walk reads do with each data object,
+        // parallel to the listing — the indexed reads a table claim
+        // rests on, and whether anything stores through the symbol.
+        // Collected without keeping the bodies themselves.
+        let mut table_usage: Vec<crate::data_table::ObjectUsage> =
+            data_objects.iter().map(|_| Default::default()).collect();
         // The context names the bodies gave the literals as the tally
         // filled: first qualifying sighting per value wins, so naming
         // follows listing order and two scans name identically.
@@ -247,12 +257,20 @@ impl<S> ConstEngine<S> {
             for (value, name) in context_names(&decompiled.body) {
                 names.entry(value).or_insert(name);
             }
-            for (item, reads) in data_objects.iter().zip(table_reads.iter_mut()) {
+            for (item, usage) in data_objects.iter().zip(table_usage.iter_mut()) {
                 for line in decompiled.body.lines() {
-                    if let Some(read) =
+                    if crate::data_table::stores_through(line, &item.label) {
+                        // The mutation gate: some kept body stores
+                        // through the symbol, so the object is mutable
+                        // global state — the global-state track's
+                        // territory — and claims no table. The reads
+                        // it also carries would only be evidence for a
+                        // claim the gate refuses anyway.
+                        usage.written = true;
+                    } else if let Some(read) =
                         crate::data_table::indexed_read(&decompiled, &item.label, line, item.length)
                     {
-                        reads.push(read);
+                        usage.reads.push(read);
                     }
                 }
             }
@@ -290,15 +308,23 @@ impl<S> ConstEngine<S> {
         // strictly stronger claim, so it never joins a palette, and
         // the palette lands last among the program-level findings.
         findings.extend(color_palette(&frequency_tally).map(ConstFinding::ColorConstant));
-        // The data-table reading (tracer bullet #278): objects the data
-        // listing defines that the bodies the walk read index, decoded
-        // uniformly at one corroborated stride, land as program-level
-        // table findings after the palette, kept in listing order.
+        // The data-table reading (#278's tracer, #279's gates):
+        // objects the data listing defines that the bodies the walk
+        // read index, decoded uniformly at one corroborated stride,
+        // land as program-level table findings after the palette, kept
+        // in listing order — an object any kept body stored through,
+        // or whose entries resolve to the function starts the listing
+        // names, claims nothing.
         findings.extend(
-            crate::data_table::data_tables(&self.source, &data_objects, &table_reads)
-                .await
-                .into_iter()
-                .map(ConstFinding::DataTable),
+            crate::data_table::data_tables(
+                &self.source,
+                &data_objects,
+                &table_usage,
+                &function_starts,
+            )
+            .await
+            .into_iter()
+            .map(ConstFinding::DataTable),
         );
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
@@ -337,6 +363,16 @@ mod tests {
         FunctionSummary {
             name: name.to_string(),
             address: 0x1800_3ab00,
+        }
+    }
+
+    /// A listing entry at a chosen address, for tests where the
+    /// address itself is the point — the starts a table's entries
+    /// resolve against.
+    fn summary_at(name: &str, address: u64) -> FunctionSummary {
+        FunctionSummary {
+            name: name.to_string(),
+            address,
         }
     }
 
@@ -1327,6 +1363,42 @@ mod tests {
             .collect()
     }
 
+    /// The program the disqualification-gate tests start from: one
+    /// kept body indexes the 24-byte `DAT_1400a1b60` under a guard
+    /// naming 12 entries — the tracer's one-finding shape — so the
+    /// only thing between this program and a table finding is what a
+    /// gate makes of it.
+    fn table_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uint uVar2 = index;\n  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        program.xrefs_from(0x1400_a1b60, &["FUN_18003ab00"]);
+        program
+    }
+
+    /// Adds one more kept function — listing entry and body — so a
+    /// test can put a shape in a second body than the one that reads
+    /// the table.
+    fn add_body(program: &mut FakeProgram, name: &str, body: &str) {
+        program.listing.push(summary(name));
+        program.bodies.insert(
+            name.to_string(),
+            function(name, &format!("undefined {name}(void)"), body),
+        );
+    }
+
     #[tokio::test]
     async fn a_bounds_guarded_indexed_read_names_one_data_table() {
         // The happy path (#278's tracer bullet): a kept body indexes
@@ -1611,6 +1683,192 @@ mod tests {
         program.object_at("DAT_1400a1d00", 0x1400_a1d00, vec![0xcc; 48]);
         let result = scan(program).await;
         assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_body_that_assigns_to_the_symbol_claims_nothing() {
+        // The mutation gate is absolute and any kept body trips it:
+        // the object is mutable global state, the global-state
+        // track's territory, so the read that sized it never claims a
+        // constant table. This program without the store line is the
+        // tracer's one-finding case.
+        let mut program = table_program();
+        add_body(
+            &mut program,
+            "FUN_18003e750",
+            "  DAT_1400a1b60 = 0;\n  return;\n",
+        );
+        let result = scan(program).await;
+        assert!(table_findings(&result).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stores_through_an_index_into_the_symbol_claims_nothing() {
+        let mut program = table_program();
+        add_body(
+            &mut program,
+            "FUN_18003e750",
+            "  if (uVar4 < 0xc) {\n    DAT_1400a1b60[uVar4] = uVar5;\n  }\n  return;\n",
+        );
+        let result = scan(program).await;
+        assert!(table_findings(&result).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stores_through_the_symbol_another_way_claims_nothing() {
+        // The decompiler spells a store through a symbol's address
+        // several ways; every one of them is the same mutable state.
+        let mut program = table_program();
+        add_body(
+            &mut program,
+            "FUN_18003e750",
+            "  *(int *)(&DAT_1400a1b60)[uVar4] = 3;\n  *(int *)(DAT_1400a1b60 + 4) = 0;\n  return;\n",
+        );
+        let result = scan(program).await;
+        assert!(table_findings(&result).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_all_function_pointer_table_claims_nothing() {
+        // A table whose every entry is the address of a listed
+        // function is a dispatch table: the callback crate's
+        // jump-table reading owns that outright, so this one claims
+        // nothing even though the bytes decode cleanly at u64 and a
+        // guard picks that stride out of the widths the bytes allow.
+        // The pointed-to functions carry bodies because most of a
+        // listing failing to decompile aborts the whole scan.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 3) {\n    (*(code *)DAT_1400a1b60[uVar2])();\n  }\n  return;\n",
+            ),
+        );
+        for address in [0x1400_412a0u64, 0x1400_41300, 0x1400_41540] {
+            let name = format!("FUN_{address:08x}");
+            program.listing.push(summary_at(&name, address));
+            program.bodies.insert(
+                name.clone(),
+                function(&name, &format!("undefined {name}(void)"), "  return;\n"),
+            );
+        }
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            [0x1400_412a0u64, 0x1400_41300, 0x1400_41540]
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect(),
+        );
+        program.xrefs_from(0x1400_a1b60, &["FUN_18003ab00"]);
+        let result = scan(program).await;
+        assert!(table_findings(&result).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_mixed_pointer_and_scalar_object_claims_nothing() {
+        // Some entries resolve to listed function starts and some are
+        // ordinary small values: a half-decoded mix claims nothing —
+        // resolving the pointers is the types track's call, never a
+        // const array of numbers that are really addresses.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 4) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        for address in [0x1400_412a0u64, 0x1400_41300] {
+            let name = format!("FUN_{address:08x}");
+            program.listing.push(summary_at(&name, address));
+            program.bodies.insert(
+                name.clone(),
+                function(&name, &format!("undefined {name}(void)"), "  return;\n"),
+            );
+        }
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            [0x1400_412a0u64, 0x1400_41300, 0x22b, 0x1400_41540]
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect(),
+        );
+        program.xrefs_from(0x1400_a1b60, &["FUN_18003ab00"]);
+        let result = scan(program).await;
+        assert!(table_findings(&result).is_empty());
+    }
+
+    #[tokio::test]
+    async fn entries_no_function_start_names_claim_their_table_the_same() {
+        // Large magnitudes are not a disqualification: none of these
+        // values equals a listed function's start address, so they
+        // stay ordinary scalars and the table lands with them. The
+        // veto is resolution, not magnitude.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 4) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            [0xffff_fff0u32, 1, 0x8000_0001, 0x7fff_ffff]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        );
+        program.xrefs_from(0x1400_a1b60, &["FUN_18003ab00"]);
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].element_type, "u32");
+        assert_eq!(tables[0].count, 4);
+        assert_eq!(
+            tables[0].values,
+            vec![0xffff_fff0, 1, 0x8000_0001, 0x7fff_ffff]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_only_reads_and_compares_through_the_object_still_claims_it() {
+        // Reads are not writes even when they read a lot: a
+        // comparison against the symbol, a read through a cast of it,
+        // and a string literal naming it all leave the object a
+        // constant table.
+        let mut program = table_program();
+        add_body(
+            &mut program,
+            "FUN_18003e750",
+            "  if ((int)DAT_1400a1b60 != 5) {\n    uVar4 = (uint)(&DAT_1400a1b60)[uVar5];\n  }\n  printf(\"DAT_1400a1b60 = 1\\n\");\n  return;\n",
+        );
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].element_type, "u16");
+    }
+
+    #[tokio::test]
+    async fn a_write_in_a_body_that_never_decompiled_claims_the_table_anyway() {
+        // The gate watches the bodies the scan actually keeps: a
+        // function whose decompile failed contributes nothing, store
+        // lines included, so the table the kept body reads still
+        // lands.
+        let mut program = table_program();
+        program.listing.push(summary("FUN_18003e750"));
+        let result = scan(program).await;
+        assert_eq!(table_findings(&result).len(), 1);
     }
 
     #[tokio::test]
