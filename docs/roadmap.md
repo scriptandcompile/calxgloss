@@ -58,9 +58,9 @@ FLOAT/SIMD findings section on the module-context and escalate prompts (the
 control-flow-findings pattern, omitted when the function has no flag) and a CLI
 breakdown command. The record's shape field is chosen so the follow-ups need no
 re-derivation: testgen swapping integer boundary sampling for rounding/NaN
-sampling on flagged functions, and disassembly corroboration (SSE/x87
-mnemonics) once #226's disassembly-text method lands. Spec: #229. Tickets: not
-yet filed (`/to-tickets`).
+sampling on flagged functions, and disassembly corroboration against SSE/x87
+mnemonics — unblocked now, since #226 landed its machine-listing reads with
+P12.6. Spec: #229. Tickets: not yet filed (`/to-tickets`).
 
 ## P15 — SEH and cleanup-on-failure idiom detection (evidence + integrations + pipeline + interface)
 
@@ -92,10 +92,11 @@ HANDLING findings section on the module-context and escalate prompts (the
 control-flow-findings pattern, omitted when the function has no findings)
 naming the idiom, its Rust mapping (`Result` + early returns + scope guards
 for ladders, an exception-mapped error type for SEH frames), and the
-function's failure codes; and a CLI breakdown command. GS stack-canary
-checks must not false-fire as SEH frames — stripping them landed with the
-P17 decompiler-noise pre-filter (#232). Spec: #230. Tickets: not yet filed
-(`/to-tickets`).
+function's failure codes; and a CLI breakdown command. GS stack-canary code
+is already stripped from the bodies this scan reads by the shipped
+decompiler-noise pre-filter (#232, #271–#273), so the canary-false-fire gate
+is redundant insurance against a filter miss, not a load-bearing guard.
+Spec: #230. Tickets: not yet filed (`/to-tickets`).
 
 ## P16 — Data-table recovery (evidence + integrations + pipeline + interface)
 
@@ -146,8 +147,8 @@ so the previous version's scan document is already on disk, and the pass reads
 only the two cached scan documents — no new seam methods (ADR-0026), no
 write-back (ADR-0020), no LLM. Pairing is a strongest-wins ladder: name
 identity (exported/demangled exact match, 95), normalized-body structural
-equivalence (the pseudo-C normalization P14's spec describes — one shared
-normalizer, whichever track lands first owns it), and call-graph topology
+equivalence (riding the shared normalizer P14/#227 shipped and now owns —
+`calxgloss-libmatch`'s `normalize` module), and call-graph topology
 propagation over already-paired neighbors (ADR-0024's rails; 70, two paired
 neighbors required, a lone paired neighbor claims nothing; corroboration bumps
 beat any single reading). Pairings are one-to-one — best wins, ties keep first
