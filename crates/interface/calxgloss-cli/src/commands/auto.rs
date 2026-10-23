@@ -746,6 +746,14 @@ pub async fn handle_auto(
 /// dashboard shows the run's real remaining order, not the plan from the
 /// first pass.
 ///
+/// The scope handle's **focus** slot (issue #284) is consulted at the same
+/// boundary: if the focused binary is among the not-yet-started entries it
+/// rotates to the front, the plan re-publishes with it there, and the focus
+/// is consumed — honored once, never again. A focus naming nothing still in
+/// the queue changes nothing and survives until a boundary names it. Focus
+/// reorders, it never parallelizes: the run still works one binary at a
+/// time.
+///
 /// `run_pass` runs one binary's translation pass and reports its
 /// [`PassOutcome`]; `handle_auto` supplies the real one and tests supply a
 /// fake that records which binaries were ever started.
@@ -783,23 +791,62 @@ where
         });
     }
 
-    while let Some(binary) = queue.pop_front() {
-        if stop.is_some_and(|s| s.is_stopped()) {
-            println!();
-            println_content("Stop requested — skipping remaining binaries.");
-            println_content("Work completed so far is saved; restart to continue.");
-            break;
+    loop {
+        if !queue.is_empty() {
+            if stop.is_some_and(|s| s.is_stopped()) {
+                println!();
+                println_content("Stop requested — skipping remaining binaries.");
+                println_content("Work completed so far is saved; restart to continue.");
+                break;
+            }
+            // Issue #90: a stop requested through the pipeline control (or a
+            // run that already reached a terminal state) also ends the queue
+            // between binaries — the pipeline itself halts at unit
+            // boundaries, this keeps us from starting the next pass.
+            if control.is_some_and(|c| c.state().is_halted()) {
+                println!();
+                println_content("Pipeline stop requested — skipping remaining binaries.");
+                println_content("Work completed so far is saved; restart to continue.");
+                break;
+            }
+
+            // Issue #284: honor the scope focus at the binary boundary — the
+            // same point where pauses are checked. A focused binary among the
+            // not-yet-started entries moves to the front and the plan
+            // re-publishes with it there; the focus is then consumed, so a
+            // restored record never reorders a later run twice. A focus
+            // naming nothing in the queue is left alone: it waits for a
+            // boundary that names it. Binary names match case-insensitively
+            // (issue #107).
+            if let Some(sc) = scope_control {
+                if let Some(focus) = sc.focused_binary() {
+                    let hoisted = queue
+                        .iter()
+                        .position(|b| b.eq_ignore_ascii_case(focus.as_str()))
+                        .and_then(|idx| queue.remove(idx).map(|focused| (idx, focused)));
+                    if let Some((idx, focused)) = hoisted {
+                        queue.push_front(focused.clone());
+                        sc.consume_focus(&focused);
+                        if idx != 0 {
+                            println_content(format!(
+                                "  {} {} is focused — the run works it next.",
+                                cyan_bold("→"),
+                                bold(&focused)
+                            ));
+                            if let Some(ev) = events {
+                                ev.emit(ProgressEvent::QueuePlanned {
+                                    binaries: queue.iter().cloned().collect(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
-        // Issue #90: a stop requested through the pipeline control (or a
-        // run that already reached a terminal state) also ends the queue
-        // between binaries — the pipeline itself halts at unit
-        // boundaries, this keeps us from starting the next pass.
-        if control.is_some_and(|c| c.state().is_halted()) {
-            println!();
-            println_content("Pipeline stop requested — skipping remaining binaries.");
-            println_content("Work completed so far is saved; restart to continue.");
+
+        let Some(binary) = queue.pop_front() else {
             break;
-        }
+        };
 
         // Issue #220: a paused binary is held out of the pass — no scan, no
         // units, no BatchStarted — and comes back around exactly once.
@@ -1293,5 +1340,195 @@ mod tests {
             queue_plans(&mut rx),
             vec![vec!["a.dll", "b.dll"], vec!["b.dll", "a.dll"]]
         );
+    }
+
+    // --- the run's "translate this next" focus (issue #284) --------------
+
+    #[tokio::test]
+    async fn focus_hoists_a_queued_binary_at_the_next_boundary() {
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let scope = ScopeControl::new();
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string(), "c.dll".to_string()],
+            &RunControls {
+                events: Some(&events),
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
+            |binary| {
+                let started = started.clone();
+                let scope = scope.clone();
+                async move {
+                    if binary == "a.dll" {
+                        // The operator presses "translate this next" on
+                        // c.dll while a.dll's pass runs; the focus names the
+                        // identity in its own casing.
+                        scope.set_focus("C.DLL").expect("focus c.dll mid-run");
+                    }
+                    started.borrow_mut().push(binary);
+                    Ok(PassOutcome {
+                        planned: 3,
+                        attempted: 3,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes");
+
+        // c.dll passed right after a.dll — hoisted at the boundary — and the
+        // focus was consumed on the way.
+        assert_eq!(*started.borrow(), ["a.dll", "c.dll", "b.dll"]);
+        assert!(scope.focused_binary().is_none());
+        // The initial plan, then the re-published one with the focus at the
+        // front of the remaining queue.
+        assert_eq!(
+            queue_plans(&mut rx),
+            vec![vec!["a.dll", "b.dll", "c.dll"], vec!["c.dll", "b.dll"]]
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_naming_no_queued_binary_changes_nothing_and_survives() {
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let scope = ScopeControl::new();
+        scope.set_focus("ghost.dll").expect("focus ghost.dll");
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string()],
+            &RunControls {
+                events: Some(&events),
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
+            |binary| {
+                let started = started.clone();
+                async move {
+                    started.borrow_mut().push(binary);
+                    Ok(PassOutcome {
+                        planned: 3,
+                        attempted: 3,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes");
+
+        // The run is untouched, and the focus waits for a boundary that
+        // names it.
+        assert_eq!(*started.borrow(), ["a.dll", "b.dll"]);
+        assert_eq!(
+            scope.focused_binary().map(|f| f.as_str().to_string()),
+            Some("ghost.dll".to_string())
+        );
+        assert_eq!(queue_plans(&mut rx), vec![vec!["a.dll", "b.dll"]]);
+    }
+
+    #[tokio::test]
+    async fn focus_already_at_the_front_is_consumed_without_re_publishing() {
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let scope = ScopeControl::new();
+        scope.set_focus("a.dll").expect("focus a.dll");
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string()],
+            &RunControls {
+                events: Some(&events),
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
+            |binary| {
+                let started = started.clone();
+                async move {
+                    started.borrow_mut().push(binary);
+                    Ok(PassOutcome {
+                        planned: 3,
+                        attempted: 3,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes");
+
+        // The run continues where it was, and the focus does not survive
+        // the run.
+        assert_eq!(*started.borrow(), ["a.dll", "b.dll"]);
+        assert!(scope.focused_binary().is_none());
+        // Only the initial plan was published — hoisting a binary already
+        // at the front changes nothing, so nothing is re-published.
+        assert_eq!(queue_plans(&mut rx), vec![vec!["a.dll", "b.dll"]]);
+    }
+
+    #[tokio::test]
+    async fn paused_in_flight_binary_yields_to_a_focused_binary_and_re_queues_once() {
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let scope = ScopeControl::new();
+        let started = started_recorder();
+
+        run_binary_worklist(
+            vec!["a.dll".to_string(), "b.dll".to_string(), "c.dll".to_string()],
+            &RunControls {
+                events: Some(&events),
+                scope_control: Some(&scope),
+                ..RunControls::default()
+            },
+            |binary| {
+                let started = started.clone();
+                let scope = scope.clone();
+                async move {
+                    let first_visit = !started.borrow().iter().any(|b| b == &binary);
+                    started.borrow_mut().push(binary.clone());
+                    if binary == "a.dll" && first_visit {
+                        // a.dll is paused mid-pass (issue #219) while the
+                        // operator focuses c.dll.
+                        scope.pause_binary("a.dll").expect("pause a.dll mid-pass");
+                        scope.set_focus("c.dll").expect("focus c.dll mid-pass");
+                        return Ok(PassOutcome {
+                            planned: 5,
+                            attempted: 2,
+                        });
+                    }
+                    if binary == "c.dll" {
+                        // The operator resumes a.dll while c.dll's pass runs.
+                        scope.resume_binary("a.dll").expect("resume a.dll");
+                    }
+                    Ok(PassOutcome {
+                        planned: 5,
+                        attempted: 5,
+                    })
+                }
+            },
+        )
+        .await
+        .expect("the run finishes");
+
+        // The focused c.dll came first after a.dll's early end, and the
+        // still-paused a.dll kept its re-queued-once place at the back —
+        // translated on its second visit once resumed.
+        assert_eq!(
+            *started.borrow(),
+            ["a.dll", "c.dll", "b.dll", "a.dll"]
+        );
+        // Initial plan; a.dll's re-queue; then the focus hoist re-publishes
+        // the remaining order.
+        assert_eq!(
+            queue_plans(&mut rx),
+            vec![
+                vec!["a.dll", "b.dll", "c.dll"],
+                vec!["b.dll", "c.dll", "a.dll"],
+                vec!["c.dll", "b.dll", "a.dll"],
+            ]
+        );
+        assert!(scope.focused_binary().is_none());
     }
 }
