@@ -1016,6 +1016,258 @@ async fn test_pipeline_binary_focus_endpoint() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Per-binary start — a row's Start Translation press (issue #285)
+// ─────────────────────────────────────────────────────────────
+
+/// One press of a planned row's Start Translation composes the swap
+/// server-side: 200 reusing the binary-pause body (the target echoed
+/// unpaused, the message naming the binary paused to make way), the scope
+/// seam recording the target resumed-and-focused and the binary in flight
+/// paused — each change fanned out as a `BinaryPauseChanged` on the shared
+/// broadcast, target first — the served plan re-ordered with the target at
+/// the front at once, and both answers persisted for a re-opened handle.
+/// The run-level machine is never walked by this press: a live pass stays
+/// live.
+#[tokio::test]
+async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let mut seam = events.subscribe();
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let run_requests = RunRequestSignal::new();
+    let state = ServerState::new(fixture.repo_path())
+        .with_scope_control(scope)
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The run's plan is a.dll, b.dll, c.dll — and a.dll's pass is in
+    // flight. c.dll's row shows Start Translation; pressing it swaps the
+    // run onto c.dll.
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec!["a.dll".to_string(), "b.dll".to_string(), "c.dll".to_string()],
+    });
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "a.dll".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/start").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["binary"], "c.dll");
+    assert_eq!(body["paused"], false);
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("c.dll") && message.contains("a.dll"),
+        "the message names the binary the swap paused, got: {message}"
+    );
+
+    // The seam saw exactly the swap's two changes, in composition order:
+    // the target admitted, then the previous leader held out at the next
+    // unit boundary.
+    let mut changes: Vec<(String, bool)> = Vec::new();
+    while changes.len() < 2 {
+        let event = tokio::time::timeout(Duration::from_millis(500), seam.recv())
+            .await
+            .expect("both pause changes arrive")
+            .expect("event stream open");
+        if let ProgressEvent::BinaryPauseChanged { binary, paused } = event {
+            changes.push((binary.as_str().to_string(), paused));
+        }
+    }
+    assert_eq!(
+        changes,
+        vec![("c.dll".to_string(), false), ("a.dll".to_string(), true)],
+        "the target is resumed before the in-flight binary is paused"
+    );
+
+    // The served rows follow the focus at once — no run-loop boundary has
+    // to be reached for the new plan order to show (issue #284's hoist).
+    assert_eq!(
+        pipeline_row_names(fixture.port()).await,
+        ["c.dll", "a.dll", "b.dll"],
+        "the swapped-in target leads the served plan"
+    );
+
+    // Both answers rode the persisted scope record — a handle re-opened
+    // over the same workspace honors them on the #107 match rule.
+    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    assert!(reopened.is_paused("A.DLL"), "the previous leader stays paused");
+    assert!(!reopened.is_paused("C.DLL"), "the target is admitted");
+    assert!(reopened.is_focus("C.DLL"), "the target holds the focus slot");
+
+    // And the swap steered, never lifecycle-walked: the run stayed live.
+    assert!(
+        matches!(control.state(), PipelineState::Running),
+        "the composition never walks the run-level machine"
+    );
+}
+
+/// A Start Translation press against a run that cannot honor it is refused
+/// with the server's own reason, never a silent no-op: an undiscovered
+/// binary is 409 like the pause pair, and a discovered binary the live plan
+/// no longer names — its pass already completed in this run — is the stale
+/// press, 409 naming the reason and pointing at the row's Configure.
+#[tokio::test]
+async fn test_pipeline_binary_start_refusals() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let run_requests = RunRequestSignal::new();
+    let state = ServerState::new(fixture.repo_path())
+        .with_scope_control(scope)
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The plan names only a.dll; done.dll is discovered (classified) but
+    // the live plan no longer names it — its pass is behind this run.
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec!["a.dll".to_string()],
+    });
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "done.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 10,
+        imported_symbols: 4,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Undiscovered: 409 with the server's own reason, same rule as pause.
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/nope.dll/start").await;
+    assert_eq!(status, 409);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has not discovered"),
+        "409 carries the server's own reason, got: {body}"
+    );
+
+    // The stale press: discovered, but this run already had its pass —
+    // 409 naming the reason and the fix, because re-running a finished
+    // pass is restart's verb, not the row button's.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/done.dll/start").await;
+    assert_eq!(status, 409);
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("already completed its pass") && message.contains("done.dll"),
+        "409 names the stale pass and the target, got: {message}"
+    );
+}
+
+/// The Start Translation press carries the lifecycle truth of the row it
+/// sits on: from Idle it drives the start transition before queueing a
+/// plain run request (transition-first, the run endpoint's ADR-0004
+/// discipline); from a run-level pause it releases the pause without
+/// queueing anything new; and a terminal run is refused with the state
+/// machine's own message — the row button never reaches restart.
+#[tokio::test]
+async fn test_pipeline_binary_start_walks_the_run_level_machine() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let control = PipelineControl::new().with_events(events.clone());
+    let run_requests = RunRequestSignal::new();
+    let mut request_rx = run_requests.subscribe();
+    let state = ServerState::new(fixture.repo_path())
+        .with_scope_control(scope)
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec!["a.dll".to_string(), "b.dll".to_string()],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Idle: the press begins translating with the pressed binary first —
+    // 200, the machine walked Running, the default full-scope request
+    // queued on the shared channel exactly as the run endpoint queues it.
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["paused"], false);
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("b.dll") && !message.contains("paused"),
+        "nothing was in flight to pause, got: {message}"
+    );
+    request_rx.changed().await.expect("a request was queued");
+    let queued = request_rx.borrow_and_update().clone();
+    assert_eq!(
+        queued,
+        Some(PipelineRunRequest::default()),
+        "the row button queues a plain run — never a recovery, never a scoped workload"
+    );
+    assert!(
+        matches!(control.state(), PipelineState::Running),
+        "the start transition is driven before the request"
+    );
+
+    // Run-level pause, then a press on the focused row: the pause releases
+    // so the swap can proceed, and no second request is queued.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["state"], "paused");
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        matches!(control.state(), PipelineState::Running),
+        "the press releases the run-level pause"
+    );
+    assert!(
+        !request_rx.has_changed().expect("watch alive"),
+        "releasing a pause queues nothing new"
+    );
+
+    // Terminal: the machine itself refuses, and its message is carried
+    // through verbatim — restarting a finished run is a different verb.
+    control.complete().expect("running -> complete");
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/a.dll/start").await;
+    assert_eq!(status, 409);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot start a pipeline that is complete"),
+        "409 carries the machine's own message, got: {body}"
+    );
+    assert!(
+        !request_rx.has_changed().expect("watch alive"),
+        "a refused press queues nothing"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Translation scope controls (issue #93, W2.5)
 // ─────────────────────────────────────────────────────────────
 
@@ -1079,10 +1331,13 @@ async fn test_scope_endpoints_503_without_control() {
     // Issue #221: the per-binary pause endpoints are honest the same way —
     // with no scope handle attached there is no paused set to change.
     // Issue #284: the focus endpoint joins them — no handle, no focus slot.
+    // Issue #285: and so the start endpoint — the swap steers through the
+    // handle, and with none attached there is nothing to steer.
     for path in [
         "/api/pipeline/binaries/game_logic.dll/pause",
         "/api/pipeline/binaries/game_logic.dll/resume",
         "/api/pipeline/binaries/game_logic.dll/focus",
+        "/api/pipeline/binaries/game_logic.dll/start",
     ] {
         let resp = client
             .post(format!("http://127.0.0.1:{}{path}", fixture.port()))
@@ -5488,6 +5743,11 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             // Issue #221: the per-binary pause endpoints are live-only too.
             "/api/pipeline/binaries/game_logic.dll/pause",
             "/api/pipeline/binaries/game_logic.dll/resume",
+            // Issue #284: the focus endpoint too.
+            "/api/pipeline/binaries/game_logic.dll/focus",
+            // Issue #285: and the start endpoint — a plain serve/actions
+            // router has no run to swap onto a binary.
+            "/api/pipeline/binaries/game_logic.dll/start",
         ] {
             let resp = reqwest::Client::new()
                 .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))
@@ -11493,9 +11753,10 @@ async fn test_headless_pipeline_phase_bar_live() {
 /// with its classification strategy, function counts (total, translated,
 /// in-progress, queued, failed), token consumption, and success rate —
 /// unknown values as em-dashes, never fabricated zeros. The quick-action
-/// buttons are real controls (issue #94): clicking one drives the
-/// lifecycle endpoint, and on a router with no live control attached the
-/// server's honest 503 reason surfaces as an error toast.
+/// buttons are real controls (issue #94): each row carries one translation
+/// toggle (issue #285) plus Configure and Classify, clicking the toggle
+/// drives its per-binary endpoint, and on a router with no scope handle
+/// attached the server's honest 503 reason surfaces as an error toast.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -11767,13 +12028,42 @@ async fn test_headless_pipeline_binary_rows() {
         );
     }
 
-    // ── Quick-action buttons: real controls driving the lifecycle endpoints ──
+    // ── Quick-action buttons: one translation toggle plus Configure and
+    // Classify (issue #285) — never two translation buttons on one row ──
     assert!(
         eval_bool(
             &tab,
-            "[...document.querySelectorAll('#pipeline-binaries [data-binary=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 4"
+            "[...document.querySelectorAll('#pipeline-binaries [data-binary=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 3"
         ),
-        "each row should offer Start Translation, Pause, Configure, and Classify"
+        "each row should offer its translation toggle, Configure, and Classify"
+    );
+    // The toggle's state follows the row honestly (issue #285): engine.dll's
+    // batch pass is in flight — its button reads Pause; game_logic.dll's
+    // pass has finished — its button reads Start Translation.
+    assert_eq!(
+        eval_text(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"engine.dll\"] [data-action=\"pause\"]')?.textContent || ''"
+        ),
+        "Pause",
+        "the working row's toggle reads Pause"
+    );
+    assert_eq!(
+        eval_text(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]')?.textContent || ''"
+        ),
+        "Start Translation",
+        "the finished row's toggle reads Start Translation"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"engine.dll\"] [data-action=\"start\"]') === null \
+                 && document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]') === null \
+                 && ![...document.querySelectorAll('#pipeline-binaries .pipeline-action-btn')].some(b => b.dataset.action === 'resume')"
+        ),
+        "one translation button per row — never Pause and Start together, and no row-level Resume"
     );
 
     // Instrument fetch so any state-changing request becomes observable.
@@ -11794,7 +12084,8 @@ async fn test_headless_pipeline_binary_rows() {
     )
     .expect("click the start-translation quick action");
 
-    // The click is a real control: it fires a POST to the lifecycle endpoint…
+    // The click is a real control: it fires a POST to the row's per-binary
+    // start endpoint…
     let mut fired = false;
     for _ in 0..25 {
         if eval_count(&tab, "window.__nonGetFetches") >= 1 {
@@ -11805,17 +12096,18 @@ async fn test_headless_pipeline_binary_rows() {
     }
     assert!(
         fired,
-        "the quick action must drive POST /api/pipeline/start, not just announce"
+        "the quick action must drive POST /api/pipeline/binaries/{{name}}/start, not just announce"
     );
 
-    // …and this plain router has no live control attached, so the server's
-    // own honest 503 reason surfaces as an error toast — never a silent
-    // no-op, never a locally-faked state change.
+    // …and this plain router has no scope handle attached — the swap steers
+    // through the handle, so the server's own honest 503 reason surfaces as
+    // an error toast — never a silent no-op, never a locally-faked state
+    // change.
     let mut surfaced = false;
     for _ in 0..25 {
         if eval_bool(
             &tab,
-            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('no live pipeline control'))",
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('no scope control'))",
         ) {
             surfaced = true;
             break;
@@ -11841,7 +12133,7 @@ async fn test_headless_pipeline_binary_rows() {
 /// count in the counts area, an empty cost placeholder keeping the grid
 /// aligned, and Classify alone in the actions cell. A PAL row whose poll
 /// carried no summary shows an em-dash, never a fabricated 0/0. A non-PAL
-/// neighbour keeps its counts, its success-column placeholder, and all four
+/// neighbour keeps its counts, its success-column placeholder, and its three
 /// buttons. A live reclassification to a translation strategy restores the
 /// full row and moves it up into table order on the next refresh.
 ///
@@ -11983,12 +12275,12 @@ async fn test_headless_pipeline_pal_rows_compact() {
             r#"(() => {
                 const row = document.querySelector('#pipeline-binaries [data-binary="game_logic.dll"]');
                 if (!row) return false;
-                return row.querySelectorAll('.pipeline-action-btn').length === 4
+                return row.querySelectorAll('.pipeline-action-btn').length === 3
                     && !!row.querySelector('[data-count="total"]')
                     && !!row.querySelector('[data-metric="tokens"]');
             })()"#
         ),
-        "the non-PAL neighbour keeps its counts and all four buttons"
+        "the non-PAL neighbour keeps its counts and its three buttons"
     );
     assert!(
         cell_text("game_logic.dll", "[data-metric=\"success-rate\"]").contains("In pipeline"),
@@ -12057,7 +12349,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
                 const row = rows.find(r => r.dataset.binary === 'd3d9.dll');
                 if (!row) return false;
                 const palIdx = rows.findIndex(r => r.dataset.binary === 'audio.dll');
-                return row.querySelectorAll('.pipeline-action-btn').length === 4
+                return row.querySelectorAll('.pipeline-action-btn').length === 3
                     && !!row.querySelector('[data-count="total"]')
                     && row.querySelector('[data-count="pal-readiness"]') === null
                     && rows.indexOf(row) < palIdx;
@@ -12419,28 +12711,34 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     drop(browser);
 }
 
-/// Headless-browser test for the per-binary Pause/Resume button on a
-/// pipeline row (issue #222, X6): clicking Pause drives the per-binary
-/// pause endpoint — not the run-wide POST /api/pipeline/pause — the row
-/// re-renders as Paused with a Resume button, and the WS
-/// binary_pause_changed event drives that re-render without a reload.
-/// Mirrors the restart-dialog endpoint test.
+/// Headless-browser test for a pipeline row's single translation toggle
+/// (issue #285): while the pipeline works a binary its one button reads
+/// Pause — clicking it drives the per-binary pause endpoint, not the
+/// run-wide POST /api/pipeline/pause, and the WS binary_pause_changed
+/// event re-renders the row as Paused (the paused flag wins over working)
+/// with the same button slot relabeled Start Translation. Pressing that
+/// drives the per-binary start endpoint — which resumes the held binary
+/// and focuses it — and the row re-renders Working with Pause back in the
+/// slot. The run-level machine never moves in either direction. Mirrors
+/// the restart-dialog endpoint test.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Chromium/Chrome installed; run with --ignored"]
-async fn test_headless_binary_pause_button_drives_endpoint() {
+async fn test_headless_binary_translation_toggle_matrix() {
     let fixture = TestFixture::new();
     let events = TranslationEvents::new(128);
     let scope =
         calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    // A running run: if the row's button drove the run-wide pause endpoint,
-    // the machine would move to paused — it must stay running.
+    // A running run: if the row's button drove the run-wide endpoints,
+    // the machine would move — it must stay running throughout.
     let control = PipelineControl::new().with_events(events.clone());
     control.start().expect("idle -> running");
+    let run_requests = RunRequestSignal::new();
     let state = ServerState::new(fixture.repo_path())
         .with_scope_control(scope)
-        .with_pipeline_control(control.clone());
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
     let router = build_router_with_ws(state, manager, progress);
@@ -12448,9 +12746,13 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // One planned binary — the row exists before anything starts on it.
+    // One planned binary whose batch pass is in flight — the honest
+    // Pause state of the toggle.
     events.emit(ProgressEvent::QueuePlanned {
         binaries: vec!["game_logic.dll".to_string()],
+    });
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "game_logic.dll".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -12470,14 +12772,14 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(rendered, "the row must render with a Pause button");
+    assert!(rendered, "the working row must render with a Pause button");
     assert_eq!(
         eval_text(
             &tab,
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')?.textContent || ''"
         ),
         "Pause",
-        "an unpaused row's button reads Pause"
+        "an unpaused working row's button reads Pause"
     );
 
     // Click Pause on the row.
@@ -12487,14 +12789,17 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
     )
     .expect("click the row's Pause button");
 
-    // The row re-renders as Paused with a Resume button — over the WS
-    // binary_pause_changed event, with no reload.
+    // The row re-renders as Paused — over the WS binary_pause_changed
+    // event, with no reload — and its single button slot relabels to
+    // Start Translation: the paused flag wins over the working flag, so
+    // the held-out row never still reads Pause.
     let mut paused = false;
     for _ in 0..25 {
         if eval_bool(
             &tab,
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status === 'paused' \
-                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]')",
+                 && document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]')?.textContent === 'Start Translation' \
+                 && !document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')",
         ) {
             paused = true;
             break;
@@ -12503,14 +12808,13 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
     }
     assert!(
         paused,
-        "the row must re-render as Paused with a Resume button, got: {}",
+        "the row must re-render as Paused with a Start Translation button, got: {}",
         eval_text(
             &tab,
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.outerHTML || ''"
         )
     );
-    // The badge reads Paused ahead of Working / Batch done, and the button
-    // label follows the row's paused flag.
+    // The badge reads Paused ahead of Working, the single honest state.
     assert!(
         eval_text(
             &tab,
@@ -12518,14 +12822,6 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
         )
         .contains("Paused"),
         "the paused row's status badge reads Paused"
-    );
-    assert_eq!(
-        eval_text(
-            &tab,
-            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]')?.textContent || ''"
-        ),
-        "Resume",
-        "the button label follows the row's paused flag"
     );
 
     // The success toast carries the server's own reason.
@@ -12564,12 +12860,14 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
         "the click drove POST /api/pipeline/binaries/game_logic.dll/pause"
     );
 
-    // Click Resume — the same slot, relabeled.
+    // Press Start Translation in the same slot — the swap press on the
+    // still-in-flight binary resumes it and focuses it, and the row falls
+    // back to its Working state with Pause in the slot.
     tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]').click() === undefined",
+        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
         false,
     )
-    .expect("click the row's Resume button");
+    .expect("click the row's Start Translation button");
 
     let mut resumed = false;
     for _ in 0..25 {
@@ -12585,7 +12883,7 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
     }
     assert!(
         resumed,
-        "the row must re-render unpaused with a Pause button, got: {}",
+        "the row must re-render working with a Pause button, got: {}",
         eval_text(
             &tab,
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.outerHTML || ''"
@@ -12593,12 +12891,28 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
     );
     assert!(
         !calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("game_logic.dll"),
-        "the resume click drove POST /api/pipeline/binaries/game_logic.dll/resume"
+        "the start click resumed the held binary through POST /api/pipeline/binaries/game_logic.dll/start"
+    );
+    assert!(
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("game_logic.dll"),
+        "the start click also parked the binary in the focus slot"
+    );
+    // The swap toast names what the server actually did.
+    assert!(
+        eval_bool(
+            &tab,
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('Started game_logic.dll'))"
+        ),
+        "the toast reports the start the server made, got: {}",
+        eval_text(
+            &tab,
+            "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
+        )
     );
     assert_eq!(
         control.state(),
         PipelineState::Running,
-        "a row resume must not touch the run-level lifecycle machine either"
+        "a row start must not touch the run-level lifecycle machine either"
     );
 
     tab.close_target().ok();
@@ -12607,11 +12921,12 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
 
 /// Headless-browser test for the "translate this next" focus end to end
 /// (issue #284): with a plan of three rows rendered, an operator focus on
-/// the last binary — the endpoint, not a button (the row toggle is issue
-/// #285) — makes the re-served pipeline state put that binary at the front
-/// of the plan order. Entering the Pipeline view refetches the rows, and
-/// the fetched order already honors the pending focus: the dashboard shows
-/// what the live run will do at its next binary boundary.
+/// the last binary — the bare endpoint, not the row's Start Translation
+/// button, which composes the swap on top of this focus (issue #285,
+/// tested just below) — makes the re-served pipeline state put that binary
+/// at the front of the plan order. Entering the Pipeline view refetches
+/// the rows, and the fetched order already honors the pending focus: the
+/// dashboard shows what the live run will do at its next binary boundary.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -12696,6 +13011,150 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
     assert!(
         calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("C.DLL"),
         "the focus is in the persisted scope record"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the row's Start Translation press driving the
+/// per-binary start swap (issue #285): with a three-binary plan rendered
+/// and a.dll in flight, one click on c.dll's button swaps the run — the
+/// WS binary_pause_changed events re-render the dashboard with no reload,
+/// the served plan now leads with c.dll, the previous leader re-renders
+/// Paused, and the success toast names both halves of the swap. The
+/// run-level machine never moves: the row button steers, never walks.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binary_start_swaps_the_rows() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let run_requests = RunRequestSignal::new();
+    let state = ServerState::new(fixture.repo_path())
+        .with_scope_control(scope)
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The plan's three rows, with a.dll's pass in flight: a.dll reads
+    // Pause, c.dll reads Start Translation.
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec![
+            "a.dll".to_string(),
+            "b.dll".to_string(),
+            "c.dll".to_string(),
+        ],
+    });
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "a.dll".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let row_order = || {
+        eval_text(
+            &tab,
+            "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')].map(e => e.dataset.binary).join(',')",
+        )
+    };
+
+    // Poll until the rows render in plan order and c.dll's row carries its
+    // Start Translation button (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        if row_order() == "a.dll,b.dll,c.dll"
+            && eval_bool(
+                &tab,
+                "!!document.querySelector('#pipeline-binaries [data-binary=\"c.dll\"] [data-action=\"start\"]')",
+            )
+        {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "the plan's rows must render with c.dll offering Start Translation, got: {}",
+        row_order()
+    );
+
+    // Press Start Translation on c.dll — one click, the whole swap.
+    tab.evaluate(
+        "document.querySelector('#pipeline-binaries [data-binary=\"c.dll\"] [data-action=\"start\"]').click() === undefined",
+        false,
+    )
+    .expect("click c.dll's Start Translation button");
+
+    // The WS pause events drive the dashboard to show both halves of the
+    // swap with no reload: the served plan leads with the target now, and
+    // the previous leader re-renders Paused — held out to make way.
+    let mut swapped = false;
+    for _ in 0..25 {
+        if row_order() == "c.dll,a.dll,b.dll"
+            && eval_bool(
+                &tab,
+                "document.querySelector('#pipeline-binaries [data-binary=\"a.dll\"]')?.dataset.status === 'paused'",
+            )
+        {
+            swapped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        swapped,
+        "the swap must re-render the plan led by c.dll with a.dll Paused, got: {}",
+        row_order()
+    );
+
+    // The toast is honest about the side effect: it names both binaries.
+    assert!(
+        eval_bool(
+            &tab,
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('Started c.dll') && t.textContent.includes('paused a.dll'))"
+        ),
+        "the toast names the swap the server made, got: {}",
+        eval_text(
+            &tab,
+            "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
+        )
+    );
+
+    // The server's truth behind the re-render: the swap rode the persisted
+    // scope record, and the run-level machine and header badge never moved.
+    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    assert!(reopened.is_paused("A.DLL"), "the previous leader is paused");
+    assert!(
+        !reopened.is_paused("C.DLL"),
+        "the target row's press admitted c.dll"
+    );
+    assert!(reopened.is_focus("C.DLL"), "c.dll holds the focus slot");
+    assert_eq!(
+        control.state(),
+        PipelineState::Running,
+        "the swap never walks the run-level lifecycle machine"
+    );
+    assert_eq!(
+        eval_text(
+            &tab,
+            "document.getElementById('pipeline-state')?.dataset.state || ''"
+        ),
+        "running",
+        "the header badge never moved"
     );
 
     tab.close_target().ok();
