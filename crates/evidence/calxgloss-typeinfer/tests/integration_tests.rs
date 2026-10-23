@@ -415,17 +415,19 @@ async fn return_usage_records_survive_the_persistence_round_trip() {
 
 #[tokio::test]
 async fn direction_records_survive_the_persistence_round_trip() {
-    // The tracer bullet's three readings — the direct write, the
-    // double-pointer hand-back, and the string-function read — must
+    // The full evidence families — the tracer's direct write, the
+    // double-pointer hand-back, and the string-function read, plus the
+    // widened indexed write and read-plus-write inout of #275 — must
     // reach disk and read back like any other record, and the list must
     // keep them function by function in listing order so two scans of
-    // one program diff cleanly (issue #274).
+    // one program diff cleanly (issues #274, #275).
     let program = || {
         let mut program = FakeProgram::empty();
         program.listing = vec![
             summary("FUN_18003ab00"),
             summary("FUN_18003e750"),
             summary("FUN_1800412a0"),
+            summary("FUN_180045000"),
         ];
         program.bodies.insert(
             "FUN_18003ab00".into(),
@@ -449,6 +451,17 @@ async fn direction_records_survive_the_persistence_round_trip() {
                 "FUN_1800412a0",
                 "undefined FUN_1800412a0(void *param_1)",
                 "  CloseHandle(param_1);\n  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180045000".into(),
+            function(
+                "FUN_180045000",
+                "undefined FUN_180045000(undefined *param_1,undefined *param_2)",
+                "  if (param_2->count == 0) { return; }\n\
+                 \x20 param_2->count = 1;\n\
+                 \x20 param_1[0] = 3;\n\
+                 \x20 return;\n",
             ),
         );
         program
@@ -513,8 +526,44 @@ async fn direction_records_survive_the_persistence_round_trip() {
             .all(|inference| !matches!(inference, InferredType::Direction(_)))
     );
 
-    // The scan-order contract (issue #274): direction records follow
-    // the function listing, and a second scan shows the same list.
+    // The widened families of #275 reach disk with their bands intact:
+    // the indexed store writes param_1 out and the field test followed
+    // by the field store reads and writes param_2 — both at the solid
+    // band 70, each evidenced by its deciding line.
+    let widened: Vec<&InferredType> = loaded
+        .for_function("FUN_180045000")
+        .filter(|inference| matches!(inference, InferredType::Direction(_)))
+        .collect();
+    assert_eq!(widened.len(), 2, "one reading per touched parameter");
+    let InferredType::Direction(indexed) = widened[0] else {
+        unreachable!("the direction detector emits direction records");
+    };
+    assert_eq!(indexed.param_index, 0);
+    assert_eq!(indexed.direction, Direction::Out);
+    assert_eq!(indexed.confidence, Confidence::new(70));
+    assert_eq!(indexed.evidence, "param_1[0] = 3;");
+    let InferredType::Direction(field_both) = widened[1] else {
+        unreachable!("the direction detector emits direction records");
+    };
+    assert_eq!(field_both.param_index, 1);
+    assert_eq!(field_both.direction, Direction::InOut);
+    assert_eq!(field_both.confidence, Confidence::new(70));
+    assert_eq!(field_both.evidence, "param_2->count = 1;");
+
+    // The confidence bands are observable through the round trip
+    // (issue #275): direct write outranks field and indexed write,
+    // which outrank a read-only body.
+    assert!(
+        written.confidence > field_both.confidence,
+        "the direct write (75) stands above the field/indexed write (70)"
+    );
+    assert!(
+        field_both.confidence > read.confidence,
+        "the field/indexed write (70) stands above the read-only body (60)"
+    );
+
+    // The scan-order contract (issues #274, #275): direction records
+    // follow the function listing, and a second scan shows the same list.
     let order: Vec<(&str, &str)> = loaded
         .inferences
         .iter()
@@ -532,6 +581,8 @@ async fn direction_records_survive_the_persistence_round_trip() {
             ("FUN_18003ab00", "param_1"),
             ("FUN_18003ab00", "param_2"),
             ("FUN_18003e750", "param_2"),
+            ("FUN_180045000", "param_1"),
+            ("FUN_180045000", "param_2"),
         ]
     );
     let second = TypeInferEngine::with_source(program())
@@ -1025,20 +1076,24 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let inferred: Vec<&InferredType> = loaded.for_function("FUN_18003ab00").collect();
     assert_eq!(
         inferred.len(),
-        4,
-        "three type readings and the direction reading for the string-parameter"
+        5,
+        "three type readings plus the direction readings for the string-parameter \
+         (read by `strlen`) and the object pointer (its vtable load reads through it)"
     );
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
-    // Each record renders into prompt data naming what it types and the
-    // narrowed type with the evidence class behind it.
+    // Each type reading renders into prompt data naming what it types
+    // and the narrowed type with the evidence class behind it; the
+    // direction renderings are checked separately, since two of the
+    // three parameters now carry a direction reading beside their type.
     let rendered: Vec<TypeInfo> = inferred
         .iter()
         .map(|inference| TypeInfo::from(*inference))
         .collect();
     let by_name: HashMap<&str, &str> = rendered
         .iter()
+        .filter(|info| !info.description.contains("param_direction"))
         .map(|info| (info.name.as_str(), info.description.as_str()))
         .collect();
     assert_eq!(
@@ -1261,9 +1316,9 @@ async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
     );
 
     // Every surviving type reading applied, and the pass refused nothing
-    // but the direction reading: the program holds the function, every
-    // slot was undefined, and direction is not a program type (issue
-    // #274) — it is skipped as a reading, never written.
+    // but the two direction readings: the program holds the function, every
+    // slot was undefined, and direction is not a program type (issues
+    // #274, #275) — they are skipped as readings, never written.
     let params = loaded
         .inferences
         .iter()
@@ -1273,11 +1328,17 @@ async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
     assert_eq!(report.applied, params);
     assert_eq!(
         report.skipped,
-        [SkippedRecord {
-            target: "FUN_18003ab00 param_2 direction".to_string(),
-            reason: SkipReason::Direction,
-        }],
-        "the direction reading is skipped, not written"
+        [
+            SkippedRecord {
+                target: "FUN_18003ab00 param_1 direction".to_string(),
+                reason: SkipReason::Direction,
+            },
+            SkippedRecord {
+                target: "FUN_18003ab00 param_2 direction".to_string(),
+                reason: SkipReason::Direction,
+            },
+        ],
+        "the direction readings are skipped, not written"
     );
     assert!(report.failed.is_empty());
 }

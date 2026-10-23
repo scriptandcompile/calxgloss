@@ -542,8 +542,8 @@ fn surviving_param_readings(inferences: &[InferredType]) -> CalleeParams<'_> {
 mod tests {
     use super::*;
     use crate::types::{
-        CallingConvention, Confidence, InferenceMethod, InferenceScope, InferredCallType,
-        InferredConvention, InferredLocalType,
+        CallingConvention, Confidence, Direction, InferenceMethod, InferenceScope,
+        InferredCallType, InferredConvention, InferredLocalType,
     };
     use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
@@ -831,6 +831,50 @@ mod tests {
         assert_eq!(record.scope, InferenceScope::Program);
 
         assert!(result.for_function("FUN_18003e750").next().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_written_this_pointer_reads_inout_beside_its_type_record() {
+        // A member function's `this` parameter takes both readings at
+        // once (issue #275): the vtable dispatch reads through the
+        // object and the slot store writes through it, so the direction
+        // reading composes to inout — and it stands beside the
+        // this-pointer type record on the same parameter, the conflict
+        // model keying the two apart (issue #274).
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(undefined8 param_1)",
+                "  (**(code **)*param_1)(param_1);\n\
+                 \x20 *(undefined ***)param_1 = &DAT_180040140;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let this_ptr = finding(&result, "FUN_18003ab00", InferenceMethod::VtableCall, 0);
+        let InferredType::Param(record) = this_ptr else {
+            unreachable!("the this-pointer detector emits parameter records");
+        };
+        assert!(record.is_this_pointer());
+
+        let direction = result
+            .for_function("FUN_18003ab00")
+            .find_map(|inference| match inference {
+                InferredType::Direction(record) if record.param_index == 0 => Some(record),
+                _ => None,
+            })
+            .expect("the direction reading for the written this pointer");
+        assert_eq!(direction.param_name.as_deref(), Some("param_1"));
+        assert_eq!(direction.direction, Direction::InOut);
+        // The write rides the cast band, below the bare direct write.
+        assert_eq!(direction.confidence, Confidence::new(70));
+        assert_eq!(
+            direction.evidence,
+            "*(undefined ***)param_1 = &DAT_180040140;"
+        );
     }
 
     #[tokio::test]

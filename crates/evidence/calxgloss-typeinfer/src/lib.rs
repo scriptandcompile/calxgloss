@@ -59,10 +59,13 @@
 //!   known-signature position, or dereferenced — as the return record kind.
 //! - [`param_direction`] - Parameter direction readings: `ParamDirectionDetector`
 //!   reads which way data flows through each pointer parameter off the
-//!   body the scan already keeps — a write through the pointer makes it
-//!   out, a string-function read makes it in, both together make it
-//!   inout, and no deciding shape records nothing — as the direction
-//!   record kind, keyed beside the parameter's type record.
+//!   body the scan already keeps — a write through the pointer, direct
+//!   or through a field, index, or cast chain, makes it out; a read
+//!   through it — a dereference, a comparison, a string call — makes it
+//!   in; both together make it inout at the write's band; and no
+//!   deciding shape records nothing — at the ADR-0045 bands (75 above
+//!   70 above 60), as the direction record kind, keyed beside the
+//!   parameter's type record.
 //! - [`mangling`] - C++ mangling analysis: `ManglingDetector` reads the
 //!   contract carried in a name — an MSVC-mangled listing symbol decoded
 //!   for convention, argument count, and rough argument types, and a
