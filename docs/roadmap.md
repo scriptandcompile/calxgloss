@@ -32,7 +32,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
-| P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ✅ done | — | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
 | P15 | SEH and cleanup-on-failure idiom detection — name each function's error-handling idiom (SEH frame, RaiseException, goto-cleanup ladder) and the failure codes baseline tests must preserve | evidence (`calxgloss-errhandling` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #230 | [#230](https://github.com/scriptandcompile/calxgloss/issues/230) |
 | P16 | Data-table recovery — reconstruct read-only constant data tables (game stats, opcode tables) as named Rust const arrays instead of scattered `DAT_*` reads | evidence (`calxgloss-consts`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #231 | [#231](https://github.com/scriptandcompile/calxgloss/issues/231) |
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
@@ -62,37 +61,6 @@ re-derivation: testgen swapping integer boundary sampling for rounding/NaN
 sampling on flagged functions, and disassembly corroboration (SSE/x87
 mnemonics) once #226's disassembly-text method lands. Spec: #229. Tickets: not
 yet filed (`/to-tickets`).
-
-## P12.7 — Parameter direction analysis (evidence + integrations + pipeline + interface)
-
-**A pointer parameter's inferred type says what it is, not which way the data
-flows.** The translator guesses `&` vs `&mut` vs a return value from the type
-alone; a wrong guess compiles and then diverges at Verification because the
-Rust version never writes the caller's buffer the original wrote — and the
-baseline suite never sees the write, because the harness observes return
-values only. The reading lives in `calxgloss-typeinfer` as a new domain
-detector: per-function readings over the kept bodies classify each pointer
-parameter **in**, **out**, or **inout** — writes through the pointer
-(`*param =`, `param->f =`, `param[i] =`, the double-pointer `*param = &local`
-idiom) are the out family, string-function and comparison reads the in
-family, both sets make inout, an unknown-callee hand-off is evidence-neutral
-— with evidence lines and Evidence-scale confidence; the detector adds no
-reads at all, riding the body the scan already decompiles exactly once per
-function (ADR-0026). Records join the existing type-inference artifact as a
-fifth tagged union variant — old documents still load — keyed on (function,
-parameter position), so a direction record coexists with a type record on the
-same parameter and resolution keeps one direction per parameter (highest
-wins, tie keeps first seen); this-pointer parameters are not excluded — a
-constructor writing through `this` is legitimately inout; nothing is written
-back to the program (ADR-0020). Consumers: a PARAMETER DIRECTIONS findings
-section on the module-context prompt (the control-flow-findings pattern), the
-existing type-info section of the retry prompts through the union's prompt
-conversion, and the CLI inference listing. The record's key is chosen so the
-follow-ups need no re-derivation: baseline tests capturing out-params as
-expected side effects, and cross-function direction propagation on the
-ADR-0014/0015 pattern. Spec: #228. Tickets: #274–#277 (`/implement`) — all
-landed (`ecff6dc`, `61476f6`, `24bc9d7`, `69a6523`, recorded in the
-changelog).
 
 ## P15 — SEH and cleanup-on-failure idiom detection (evidence + integrations + pipeline + interface)
 
