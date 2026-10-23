@@ -336,20 +336,24 @@ pub struct ColorConstant {
 /// carries the full entry count.
 pub const MAX_INLINE_TABLE_VALUES: usize = 512;
 
-/// One data-table reading of the whole program — a defined, uniformly
-/// decoding data object the kept bodies index.
+/// One data-table reading of the whole program — a defined data object
+/// whose bytes decode coherently at one stride and whose claim the
+/// evidence backs.
 ///
 /// A record claims one defined data object — [`symbol`]/[`address`] —
-/// holds [`count`](Self::count) uniform entries of
+/// holding [`count`](Self::count) entries of
 /// [`element_type`](Self::element_type): the object's engine-listed
-/// length divided by the stride its bytes decode cleanly at (the
-/// entries are the [`values`](Self::values)), with the entry count a
-/// bounds-guarded indexed read (`DAT_x[idx]` under `if (idx < N)`) in
-/// a kept body agreeing on the stride when more than one stride
-/// decodes cleanly. [`functions`](Self::functions) names the
-/// referencing functions from the engine's cross-references,
-/// ascending; a body indexing the object is never a write claim —
-/// mutation disqualification lands separately.
+/// length divided by the stride its whole byte run decodes coherently
+/// at — at least two entries, none zero or all equal, magnitudes in
+/// one bounded band (the entries are the [`values`](Self::values)).
+/// Where more than one stride decodes coherently, the engine's applied
+/// listing type (`uint`, `float [3]`) resolves the stride; failing it,
+/// the bounds guard on an indexed body read (`DAT_x[idx]` under
+/// `if (idx < N)`) sizes it; and a decode nothing resolves claims
+/// nothing. [`functions`](Self::functions) names the referencing
+/// functions from the engine's cross-references, ascending; a body
+/// indexing the object is never a write claim — mutation
+/// disqualification lands separately.
 ///
 /// The `values` list is inline up to [`MAX_INLINE_TABLE_VALUES`];
 /// beyond it the list truncates, [`values_truncated`](Self::values_truncated)
@@ -367,13 +371,17 @@ pub struct DataTable {
     pub symbol: String,
     /// The object's address.
     pub address: u64,
-    /// The element type the entries decode as — `u8`, `u16`, `u32`, or
-    /// `u64`.
+    /// The element type the entries decode as — `u8`, `u16`, `u32`,
+    /// `f32`, `u64`, or `f64`. Strides 4 and 8 spell an integer and a
+    /// float type each; the integer claims the stride unless the
+    /// listing's applied type names the float one.
     pub element_type: String,
     /// The full entry count, whether or not `values` carries them all.
     pub count: usize,
     /// The decoded entries, inline up to [`MAX_INLINE_TABLE_VALUES`];
-    /// truncated beyond it.
+    /// truncated beyond it. A float table's entries are the raw
+    /// little-endian IEEE-754 bit patterns of its `f32` or `f64`
+    /// values, kept whole for codegen to re-spell.
     pub values: Vec<u64>,
     /// Whether `values` was truncated at the cap — `count` still
     /// records the full entry count.
@@ -384,14 +392,20 @@ pub struct DataTable {
     /// The Rust shape the reading suggests — `const` array, e.g.
     /// `const DAT_1400A1B60: [u16; 12];`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100. The corroborated
-    /// reading — a clean decode with a bounds-guarded indexed read —
-    /// sits in the high-mid band; the engine-applied-type tier above
-    /// it and the unreferenced tiers below land with later tickets.
+    /// Confidence that the record is right, 0–100, in the four table
+    /// families: 90 for a stride the engine's listing applied a type
+    /// for; 70 for a clean decode an indexed read in a kept body
+    /// corroborates, beside the corroborated jump-table reading; 50
+    /// for a clean decode the cross-references name readers for with
+    /// no kept body indexing it; and 30 for the raw decode alone,
+    /// nothing referencing the object — an honest low score on the
+    /// record rather than silence.
     pub confidence: Confidence,
-    /// The indexed-read lines behind the claim, each prefixed with the
-    /// function that carries it, so a reviewer can check the read the
-    /// table was sized from.
+    /// What the claim rests on, strongest first: the applied listing
+    /// type when it resolved the stride, then the indexed-read lines,
+    /// each prefixed with the function that carries it; a claim with
+    /// no read behind it states its decode and what referencing the
+    /// object amounts to instead.
     pub evidence: String,
 }
 
@@ -459,8 +473,8 @@ pub enum ConstFinding {
     /// The color-shaped literals the tally holds, grouped into one
     /// palette claim for the binary.
     ColorConstant(ColorConstant),
-    /// A defined, uniformly decoding data object the kept bodies
-    /// index, read as one constant-array table.
+    /// A defined data object whose bytes decode coherently at one
+    /// resolved stride, read as one constant-array table.
     DataTable(DataTable),
 }
 

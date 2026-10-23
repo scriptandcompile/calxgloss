@@ -308,13 +308,17 @@ impl<S> ConstEngine<S> {
         // strictly stronger claim, so it never joins a palette, and
         // the palette lands last among the program-level findings.
         findings.extend(color_palette(&frequency_tally).map(ConstFinding::ColorConstant));
-        // The data-table reading (#278's tracer, #279's gates):
-        // objects the data listing defines that the bodies the walk
-        // read index, decoded uniformly at one corroborated stride,
-        // land as program-level table findings after the palette, kept
-        // in listing order — an object any kept body stored through,
-        // or whose entries resolve to the function starts the listing
-        // names, claims nothing.
+        // The data-table reading (#278's tracer, #279's gates, #280's
+        // stride viability and tiers): objects the data listing defines
+        // that the bodies the walk read index, decoded coherently at a
+        // viable stride, land as program-level table findings after the
+        // palette, kept in listing order — an object any kept body
+        // stored through, or whose entries resolve to the function
+        // starts the listing, claims nothing. Several viable strides
+        // resolve through the engine's applied listing type or an
+        // indexed read's guard width, and the tier follows the
+        // evidence: 90 applied type, 70 decode plus indexed read, 50
+        // Xrefs-only, 30 bytes-only.
         findings.extend(
             crate::data_table::data_tables(
                 &self.source,
@@ -430,10 +434,17 @@ mod tests {
         /// object in the listing plus the byte window `read_memory`
         /// answers with at its address, length read off the bytes.
         fn object_at(&mut self, label: &str, address: u64, bytes: Vec<u8>) {
+            self.typed_object_at(label, address, "undefined", bytes);
+        }
+
+        /// The same object carrying the type the engine's listing
+        /// applied — the applied type the detector resolves its stride
+        /// from (#280).
+        fn typed_object_at(&mut self, label: &str, address: u64, type_name: &str, bytes: Vec<u8>) {
             self.data_items.push(DataItem {
                 label: label.to_string(),
                 address,
-                type_name: "undefined".to_string(),
+                type_name: type_name.to_string(),
                 length: bytes.len() as u64,
             });
             self.memory_at(address, bytes);
@@ -1561,9 +1572,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_data_object_no_body_indexes_claims_nothing() {
-        // The tracer claims only the corroborated path: an object
-        // that decodes cleanly but no body indexes lands no finding.
+    async fn a_data_object_only_the_xrefs_name_claims_its_table_at_the_referenced_tier() {
+        // The mid rung of the confidence ladder: a clean decode the
+        // cross-references name a body reader for, but whose kept body
+        // read the walk never saw — real use, no read to corroborate
+        // the shape against. The reader's name is on the record and
+        // the claim scores below the corroborated one.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1c00",
+            0x1400_a1c00,
+            [1000u32, 3000, 5000]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        );
+        program.xrefs_from(0x1400_a1c00, &["FUN_18003ab00"]);
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1, "the referenced object claims its table");
+        let table = tables[0];
+        assert_eq!(table.confidence.value(), 50);
+        assert_eq!(
+            table.evidence,
+            "12 bytes decode cleanly as 3 u32 entries at 0x1400a1c00; the cross-references name one function, no kept body indexes it"
+        );
+        assert_eq!(table.functions, ["FUN_18003ab00"]);
+    }
+
+    #[tokio::test]
+    async fn a_data_object_nothing_references_claims_its_table_at_the_raw_tier() {
+        // The floor of the ladder: bytes that decode cleanly with no
+        // body read and no reference at all stay on the record at a
+        // low score the human filters rather than being hidden.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -1583,13 +1633,296 @@ mod tests {
                 .collect(),
         );
         let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1, "the clean bytes claim their table");
+        let table = tables[0];
+        assert_eq!(table.confidence.value(), 30);
+        assert_eq!(
+            table.evidence,
+            "12 bytes decode cleanly as 3 u32 entries at 0x1400a1c00; nothing references the object"
+        );
+        assert!(table.functions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bytes_incoherent_at_every_width_claim_nothing() {
+        // Viability before resolution: four u32 scalars whose u32
+        // decode spreads three orders of magnitude past the coherent
+        // family's budget (1, 2, and two 4-billion-scale values), the
+        // u16 and u8 decodes hit the zero halves between them, the
+        // wide u64 decode inherits the same spread across its two
+        // entries, and the float decodes read the small values as
+        // denormal dust — no stride carries a coherent table at all,
+        // and the guard-sized read resolves nothing.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 8) {\n    uVar3 = DAT_1400a1c00[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        let mut bytes = Vec::new();
+        for value in [1u32, 2, 0xf000_0000, 0xe000_0000] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        program.object_at("DAT_1400a1c00", 0x1400_a1c00, bytes);
+        let result = scan(program).await;
         assert!(result.findings.is_empty());
     }
 
     #[tokio::test]
+    async fn an_object_shorter_than_two_entries_claims_nothing() {
+        // The minimum bar: one byte decodes to fewer than two elements
+        // at every stride, so it is a scalar, not a table.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar3 = DAT_1400a1c00[uVar2];\n  return;\n",
+            ),
+        );
+        program.object_at("DAT_1400a1c00", 0x1400_a1c00, vec![0x24u8]);
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_applied_uint_over_bytes_that_decode_at_three_widths_types_the_table() {
+        // The spec's top rung: the engine's own listing typed the
+        // object `uint` while the bytes decode coherently at u16, u32
+        // and u64 alike — the applied type resolves the multi-stride
+        // decode to u32 and out-ranks every decode-only tier.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar3 = DAT_1400a1c40[uVar2];\n  return;\n",
+            ),
+        );
+        program.typed_object_at(
+            "DAT_1400a1c40",
+            0x1400_a1c40,
+            "uint",
+            (1u16..=8).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1, "the typed object claims one table");
+        let table = tables[0];
+        assert_eq!(table.confidence.value(), 90);
+        assert_eq!(table.element_type, "u32");
+        assert_eq!(table.count, 4);
+        assert_eq!(
+            table.values,
+            [0x0002_0001, 0x0004_0003, 0x0006_0005, 0x0008_0007]
+        );
+        assert_eq!(
+            table.evidence,
+            "data listing applies type `uint`; FUN_18003ab00: uVar3 = DAT_1400a1c40[uVar2];"
+        );
+        assert_eq!(table.suggestion, "const DAT_1400A1C40: [u32; 4];");
+        assert!(table.functions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_listing_applied_float_three_over_f32_bytes_claims_the_float_table() {
+        // The float families landing with the listing's applied type:
+        // `float [3]` over three f32 bit patterns whose u32 decode is
+        // coherent as well — the applied array type picks f32, its
+        // count agrees with the length, and the values carry the
+        // entries' bit patterns whole for codegen to re-spell.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  fVar1 = DAT_1400a1c40[fVar2];\n  return;\n",
+            ),
+        );
+        let mut bytes = Vec::new();
+        for value in [0.5f32, 1.0, 2.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        program.typed_object_at("DAT_1400a1c40", 0x1400_a1c40, "float [3]", bytes);
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1, "the typed object claims one table");
+        let table = tables[0];
+        assert_eq!(table.confidence.value(), 90);
+        assert_eq!(table.element_type, "f32");
+        assert_eq!(table.count, 3);
+        assert_eq!(
+            table.values,
+            [
+                u64::from(0.5f32.to_bits()),
+                u64::from(1.0f32.to_bits()),
+                u64::from(2.0f32.to_bits())
+            ]
+        );
+        assert_eq!(
+            table.evidence,
+            "data listing applies type `float [3]`; FUN_18003ab00: fVar1 = DAT_1400a1c40[fVar2];"
+        );
+        assert_eq!(table.suggestion, "const DAT_1400A1C40: [f32; 3];");
+    }
+
+    #[tokio::test]
+    async fn an_applied_array_whose_count_disagrees_with_the_length_types_nothing() {
+        // `float [4]` over eight bytes: the applied count says sixteen
+        // bytes, so the listing types nothing; the surviving u16 and
+        // u32 decodes are two widths with no guard to pick between
+        // them, and the claim stays unresolved.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar3 = DAT_1400a1c40[uVar2];\n  return;\n",
+            ),
+        );
+        program.typed_object_at(
+            "DAT_1400a1c40",
+            0x1400_a1c40,
+            "float [4]",
+            (1u16..=4).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_applied_type_the_guards_contradict_claims_nothing() {
+        // The listing applied `ushort`, and the guard sizes the read at
+        // 4 bytes: the applied type has to name a stride the decode
+        // supports and the reads agree with, and a guard contradicting
+        // it leaves the object unresolved rather than overruling the
+        // body that indexes it.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 4) {\n    uVar3 = DAT_1400a1c40[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.typed_object_at(
+            "DAT_1400a1c40",
+            0x1400_a1c40,
+            "ushort",
+            (1u16..=8).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        assert!(result.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_bodies_guards_that_agree_on_one_width_resolve_the_decode() {
+        // Resolution from the reads themselves: the 24 bytes decode
+        // coherently at u16, u32 and u64 alike, and the two bodies'
+        // guards — one hex, one decimal — both name twelve entries, so
+        // both imply the 2-byte stride and the u16 table lands with the
+        // indexed reads as its corroboration.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003ac00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 < 0xc) {\n    uVar3 = DAT_1400a1b60[uVar2];\n  }\n  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003ac00".into(),
+            function(
+                "FUN_18003ac00",
+                "undefined FUN_18003ac00(void)",
+                "  if (12 > uVar4) {\n    uVar5 = DAT_1400a1b60[uVar4];\n  }\n  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1b60",
+            0x1400_a1b60,
+            (1u16..=12).flat_map(u16::to_le_bytes).collect(),
+        );
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1, "the agreeing guards resolve one width");
+        let table = tables[0];
+        assert_eq!(table.element_type, "u16");
+        assert_eq!(table.count, 12);
+        assert_eq!(table.confidence.value(), 70);
+        assert_eq!(
+            table.evidence,
+            "FUN_18003ab00: uVar3 = DAT_1400a1b60[uVar2]; FUN_18003ac00: uVar5 = DAT_1400a1b60[uVar4];"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_indexed_read_beats_function_xrefs_to_the_corroborated_tier() {
+        // The two evidence paths over one clean decode: the body read
+        // corroborates at 70 where the Xrefs-only path lands at 50, and
+        // every reader the engine names stays on the record.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003ac00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar3 = DAT_1400a1c00[uVar2];\n  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003ac00".into(),
+            function(
+                "FUN_18003ac00",
+                "undefined FUN_18003ac00(void)",
+                "  return;\n",
+            ),
+        );
+        program.object_at(
+            "DAT_1400a1c00",
+            0x1400_a1c00,
+            [1000u32, 3000, 5000]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        );
+        program.xrefs_from(0x1400_a1c00, &["FUN_18003ab00", "FUN_18003ac00"]);
+        let result = scan(program).await;
+        let tables = table_findings(&result);
+        assert_eq!(tables.len(), 1, "the read corroborates one table");
+        let table = tables[0];
+        assert_eq!(table.confidence.value(), 70);
+        assert_eq!(
+            table.evidence,
+            "FUN_18003ab00: uVar3 = DAT_1400a1c00[uVar2];"
+        );
+        assert_eq!(table.functions, ["FUN_18003ab00", "FUN_18003ac00"]);
+    }
+
+    #[tokio::test]
     async fn a_decode_uniform_at_two_widths_with_no_guard_to_pick_claims_nothing() {
-        // Multi-stride resolution is the sibling ticket's: bytes the
-        // read cannot size claim nothing.
+        // The resolution the stride-viability ticket (#280) needs an
+        // input for: bytes coherent at u16, u32 and u64, no guard to
+        // size the read and no listing type to name the stride, stay
+        // unresolved — a table the engine cannot size claims nothing.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -1795,7 +2128,7 @@ mod tests {
         program.object_at(
             "DAT_1400a1b60",
             0x1400_a1b60,
-            [0x1400_412a0u64, 0x1400_41300, 0x22b, 0x1400_41540]
+            [0x1400_412a0u64, 0x1400_41300, 0x2_0000, 0x1400_41540]
                 .into_iter()
                 .flat_map(u64::to_le_bytes)
                 .collect(),
@@ -1807,10 +2140,11 @@ mod tests {
 
     #[tokio::test]
     async fn entries_no_function_start_names_claim_their_table_the_same() {
-        // Large magnitudes are not a disqualification: none of these
-        // values equals a listed function's start address, so they
-        // stay ordinary scalars and the table lands with them. The
-        // veto is resolution, not magnitude.
+        // Large magnitudes are not a disqualification: these values sit
+        // in the same 400-million range as the listed function's start
+        // address without any of them equal to it, so they stay
+        // ordinary scalars and the table lands with them. The veto is
+        // resolution, not magnitude.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -1824,7 +2158,7 @@ mod tests {
         program.object_at(
             "DAT_1400a1b60",
             0x1400_a1b60,
-            [0xffff_fff0u32, 1, 0x8000_0001, 0x7fff_ffff]
+            [0x1400_0000u32, 0x1401_0000, 0x1800_3000, 0x1800_0000]
                 .into_iter()
                 .flat_map(u32::to_le_bytes)
                 .collect(),
@@ -1832,12 +2166,13 @@ mod tests {
         program.xrefs_from(0x1400_a1b60, &["FUN_18003ab00"]);
         let result = scan(program).await;
         let tables = table_findings(&result);
-        assert_eq!(tables.len(), 1);
+        assert_eq!(tables.len(), 1, "the near-address values land as one table");
         assert_eq!(tables[0].element_type, "u32");
         assert_eq!(tables[0].count, 4);
+        assert_eq!(tables[0].confidence.value(), 70);
         assert_eq!(
             tables[0].values,
-            vec![0xffff_fff0, 1, 0x8000_0001, 0x7fff_ffff]
+            vec![0x1400_0000, 0x1401_0000, 0x1800_3000, 0x1800_0000]
         );
     }
 

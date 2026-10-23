@@ -3,34 +3,48 @@
 //! A read-only data table — game stats, an opcode table, a damage
 //! curve — survives decompilation as scattered `DAT_x[idx]` reads and
 //! an untyped blob in the engine's data listing. This module reads
-//! that shape back: for each object the listing defines
-//! (`data_items`), the kept bodies' indexed reads corroborate it
-//! (`DAT_x[idx]` under a bounds guard `if (idx < N)`, the same shape
-//! callback's jump-table reading sizes its tables from), the bytes
-//! the engine exposes (`read_memory`) decode cleanly, and the engine's
-//! cross-references (`xrefs_to`) name the referencing functions. All
-//! three reads are existing `ScanSource` seam methods, cached under
-//! ADR-0043; nothing is written back to the program (ADR-0020).
+//! that shape back: for each object the listing defines (`data_items`),
+//! the bytes the engine exposes (`read_memory`) decode coherently at a
+//! stride, the kept bodies' indexed reads corroborate a read and its
+//! width (`DAT_x[idx]` under a bounds guard `if (idx < N)`, the same
+//! shape callback's jump-table reading sizes its tables from), and the
+//! engine's cross-references (`xrefs_to`) name the referencing
+//! functions. All three reads are existing `ScanSource` seam methods,
+//! cached under ADR-0043; nothing is written back to the program
+//! (ADR-0020).
 //!
-//! The reading claims the corroborated happy path and nothing the
-//! program says is somebody else's. An object lands a [`DataTable`]
-//! record when a kept body indexes it, its bytes decode uniformly at
-//! a single stride — every entry nonzero, entries not all equal (a
-//! fill is a fill, not a table) — and, when more than one stride
-//! decodes uniformly, a bounds guard in an indexing body names the
-//! entry count that picks exactly one. Three shapes claim nothing
-//! outright: a kept body that stores through the symbol makes the
-//! object mutable global state, the global-state track's territory,
-//! and never a constant table; an object whose entries resolve to
-//! function starts is a dispatch table, which the callback crate's
-//! jump-table reading owns outright; and one where only some entries
-//! resolve is a half-decoded mix that never lands as a false const
-//! array. The general stride viability and multi-stride resolution
-//! land in a sibling ticket — so a guard and a byte decode that
-//! disagree, or two guards naming different widths, or a uniform
-//! decode at two widths with no guard to pick one, all claim nothing.
-//! The claim stays inside what bytes, reads, and the function listing
-//! agree on.
+//! A stride claims only when the object's whole byte run decodes into
+//! one coherent family for that type: at least two entries, none zero
+//! or equal to all the rest, magnitudes within one bounded spread
+//! (finite, ordinary-magnitude values for the float strides at 4 and
+//! 8, bounded spread for the integer strides) — an object whose bytes
+//! decode incoherently at every stride, unstructured `.rdata` padding,
+//! claims nothing. Strides 4 and 8 spell two families each and both
+//! readings can be coherent at once; the integer family claims the
+//! stride and the float family claims it only where the integer
+//! reading fails or where the listing's applied type names a float, so
+//! a claim never reports floats the bytes do not say are floats. When
+//! several strides decode coherently the engine's applied listing type
+//! (`type_name`, e.g. `uint` or `float [3]`) resolves the claim when
+//! its stride is a viable one; failing that, the widths implied by
+//! indexing bodies' bounds guards narrow the strides to one, and it
+//! claims nothing unless they do — as does a guard that contradicts
+//! the bytes or the applied type, or bytes that contradict the applied
+//! type. The Evidence scale scores each claim by what stands behind
+//! it: the engine-applied type is the highest tier (90); a clean
+//! decode corroborated by an indexed read in a kept body high-mid
+//! (70); a clean decode that cross-references name readers for but no
+//! kept body visibly indexes mid (50); and raw bytes only,
+//! unreferenced, low (30) — an honest low score, not silence.
+//!
+//! Two shapes still claim nothing outright: a kept body that stores
+//! through the symbol makes the object mutable global state, the
+//! global-state track's territory, and never a constant table; and any
+//! entry resolving to a function start the function listing names is
+//! either a dispatch table — the callback crate's jump-table reading
+//! owns that outright — or a half-decoded mix that never lands as a
+//! false const array. The claim stays inside what bytes, reads, and
+//! the function listing agree on.
 //!
 //! The engine calls [`data_tables`] once per scan with the data
 //! listing and, parallel to it, what the bodies the walk kept do with
@@ -47,15 +61,102 @@ use tracing::{debug, warn};
 
 use crate::types::{Confidence, DataTable, MAX_INLINE_TABLE_VALUES};
 
-/// Confidence of a table the bytes decode uniformly and an indexed
-/// read corroborates — the spec's high-mid band, beside the
-/// corroborated jump-table reading's 70. The engine-applied-type tier
-/// above it lands with the stride-viability ticket.
-const DATA_TABLE_CONFIDENCE: u8 = 70;
+/// Confidence of a table the engine's own listing typed: the applied
+/// array or element type is the decompiler's own declaration about the
+/// object, the spec's highest table tier, above every decode-only
+/// family below it.
+const APPLIED_TYPE_CONFIDENCE: u8 = 90;
+
+/// Confidence of a table the bytes decode coherently at and an indexed
+/// read in a kept body corroborates — the spec's high-mid band, beside
+/// the corroborated jump-table reading's 70.
+const CORROBORATED_CONFIDENCE: u8 = 70;
+
+/// Confidence of a clean decode the cross-references name readers for
+/// but no kept body visibly indexes — the spec's mid tier: real use,
+/// but no body read to corroborate the shape against.
+const REFERENCED_CONFIDENCE: u8 = 50;
+
+/// Confidence of a raw-bytes-only claim: bytes that decode coherently
+/// with nothing referencing the object at all — the spec's low tier,
+/// kept on the record at an honestly low score rather than hidden.
+const UNREFERENCED_CONFIDENCE: u8 = 30;
+
+/// The largest ratio between a table's biggest and smallest entry
+/// magnitude that still reads as one coherent family of values. Entries
+/// further apart than this look like unstructured padding, or like a
+/// wide stride accidentally reading a small table's bytes as huge
+/// scalars, and claim nothing.
+const MAGNITUDE_SPREAD: u64 = 1_000_000;
+
+/// The same gate in the float families' space, as a `f32` so it reaches
+/// `f64` through an exact `From` rather than a lossy cast.
+const MAGNITUDE_SPREAD_F: f32 = 1_000_000.0;
+
+/// The float magnitudes an entry has to stay inside for a float decode
+/// to be sane: below [`MAGNITUDE_SPREAD`]-spaced, but also ordinary —
+/// subnormal-scale and astronomically large bit patterns are what
+/// integer-looking bytes misread as floats look like, and they claim
+/// nothing.
+const FLOAT_MAGNITUDE_MIN: f64 = 1e-30;
+
+/// The upper bound of the ordinary float magnitude band; see
+/// [`FLOAT_MAGNITUDE_MIN`].
+const FLOAT_MAGNITUDE_MAX: f64 = 1e30;
 
 /// The byte widths a table entry can occupy, as widths and as the
 /// Rust element type each spells.
 const ELEMENT_WIDTHS: [(u64, &str); 4] = [(1, "u8"), (2, "u16"), (4, "u32"), (8, "u64")];
+
+/// One element family a stride can decode into: a width in bytes, the
+/// Rust element type it spells, and whether entries read as IEEE-754
+/// floats rather than unsigned integers. Strides 4 and 8 each spell
+/// two families — the widths where `.rdata` scalars are as likely to
+/// be floats as integers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Family {
+    width: u64,
+    name: &'static str,
+    float: bool,
+}
+
+/// The element families a table can claim: an integer decode at every
+/// stride in {1, 2, 4, 8}, plus the float decodes at the strides whose
+/// bytes could be floats. The order is the tie-break at the strides
+/// that spell two families: the integer family stands first, so it
+/// claims the stride wherever its own reading is coherent.
+const FAMILIES: &[Family] = &[
+    Family {
+        width: 1,
+        name: "u8",
+        float: false,
+    },
+    Family {
+        width: 2,
+        name: "u16",
+        float: false,
+    },
+    Family {
+        width: 4,
+        name: "u32",
+        float: false,
+    },
+    Family {
+        width: 4,
+        name: "f32",
+        float: true,
+    },
+    Family {
+        width: 8,
+        name: "u64",
+        float: false,
+    },
+    Family {
+        width: 8,
+        name: "f64",
+        float: true,
+    },
+];
 
 /// One indexed read of a data object found in a kept body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,30 +459,108 @@ fn parse_count(s: &str) -> Option<usize> {
     }
 }
 
-/// The element widths the object's bytes decode uniformly at: the
-/// width divides the length into at least two little-endian entries,
-/// every entry is nonzero (a zero entry is a gap or terminator, not a
-/// uniform array), and the entries are not all equal (a fill claims
-/// no table).
-///
-/// This is the tracer bullet's viability bar — the general
-/// viability rules and multi-stride resolution are the stride
-/// ticket's; here, anything but a single width passing this bar
-/// claims nothing.
-fn viable_widths(bytes: &[u8]) -> Vec<u64> {
-    ELEMENT_WIDTHS
+/// The element families the object's bytes decode coherently at. Each
+/// family survives only when the width divides the length into at
+/// least two entries and every entry decodes into a coherent family
+/// for that type: no zero entries (a gap or terminator is not a
+/// uniform array), not all equal (a fill is a fill, not a table), and
+/// magnitudes within [`MAGNITUDE_SPREAD`] of each other — the float
+/// families additionally require every bit pattern to be a finite,
+/// nonzero, ordinary-magnitude number, the shape integer-looking bytes
+/// never accidentally spell. An object that fails every family is
+/// unstructured padding and claims nothing.
+fn viable_families(bytes: &[u8]) -> Vec<Family> {
+    FAMILIES
         .iter()
-        .map(|(width, _)| *width)
-        .filter(|&width| {
-            let length = bytes.len() as u64;
-            if !length.is_multiple_of(width) || length / width < 2 {
-                return false;
-            }
-            let entries: Vec<u64> = bytes.chunks(width as usize).map(le_u64).collect();
-            entries.iter().all(|entry| *entry != 0)
-                && entries.iter().any(|entry| *entry != entries[0])
-        })
+        .copied()
+        .filter(|family| coherent_family(bytes, family))
         .collect()
+}
+
+/// The family to claim one stride with, out of the coherent families
+/// the guards left standing. Families are the tie-break order, so the
+/// integer reading of a stride claims it wherever both readings hold;
+/// no family surviving the guards contradicts them, and several
+/// surviving strides is a decode nothing sized — both claim nothing.
+fn one_stride(families: &[Family]) -> Option<Family> {
+    let widths: BTreeSet<u64> = families.iter().map(|family| family.width).collect();
+    match widths.len() {
+        1 => families.first().copied(),
+        _ => None,
+    }
+}
+
+/// Whether `bytes` decode into one coherent family of `family`'s type.
+fn coherent_family(bytes: &[u8], family: &Family) -> bool {
+    let width = family.width as usize;
+    if !bytes.len().is_multiple_of(width) || bytes.len() / width < 2 {
+        return false;
+    }
+    if family.float {
+        let values: Vec<f64> = bytes
+            .chunks(width)
+            .map(|chunk| {
+                let bits = le_u64(chunk);
+                if width == 4 {
+                    f32::from_bits(bits as u32) as f64
+                } else {
+                    f64::from_bits(bits)
+                }
+            })
+            .collect();
+        let (mut min, mut max) = (f64::INFINITY, 0.0f64);
+        values.iter().all(|value| {
+            min = min.min(value.abs());
+            max = max.max(value.abs());
+            value.is_finite()
+                && *value != 0.0
+                && value.abs() >= FLOAT_MAGNITUDE_MIN
+                && value.abs() <= FLOAT_MAGNITUDE_MAX
+        }) && values.iter().any(|value| *value != values[0])
+            && max <= min * f64::from(MAGNITUDE_SPREAD_F)
+    } else {
+        let entries: Vec<u64> = bytes.chunks(width).map(le_u64).collect();
+        let (mut min, mut max) = (u64::MAX, 0u64);
+        entries.iter().all(|entry| {
+            min = min.min(*entry);
+            max = max.max(*entry);
+            *entry != 0
+        }) && entries.iter().any(|entry| *entry != entries[0])
+            && max / min <= MAGNITUDE_SPREAD
+    }
+}
+
+/// The element family the engine's applied listing type names, when it
+/// names one. The type is the listing's own declaration about the
+/// object — `uint`, `float [3]`, `undefined4` — and names a stride only
+/// for the uniform element types: `undefined`, pointers, struct and
+/// typedef names name nothing. An applied array type states a count
+/// too, and an array whose count disagrees with the object's length is
+/// a mislabeled object — it resolves no stride either.
+fn applied_family(type_name: &str, length: u64) -> Option<Family> {
+    let (base, count) = match type_name.split_once('[') {
+        Some((base, rest)) => (
+            base.trim(),
+            rest.trim().trim_end_matches(']').trim().parse::<u64>().ok(),
+        ),
+        None => (type_name.trim(), None),
+    };
+    let name = match base.to_ascii_lowercase().as_str() {
+        "char" | "uchar" | "byte" | "uint8" | "undefined1" => "u8",
+        "short" | "ushort" | "word" | "uint16" | "undefined2" => "u16",
+        "int" | "uint" | "dword" | "uint32" | "undefined4" => "u32",
+        "float" => "f32",
+        "qword" | "longlong" | "ulonglong" | "uint64" | "undefined8" => "u64",
+        "double" => "f64",
+        _ => return None,
+    };
+    let family = FAMILIES.iter().copied().find(|f| f.name == name)?;
+    if let Some(count) = count
+        && count.checked_mul(family.width) != Some(length)
+    {
+        return None;
+    }
+    Some(family)
 }
 
 /// One little-endian chunk as an integer.
@@ -393,13 +572,18 @@ fn le_u64(bytes: &[u8]) -> u64 {
     value
 }
 
-/// The table reading for one data object: a kept body must index it
-/// and none may store through its symbol, its bytes must be readable
-/// in full and decode uniformly, a single stride must survive — the
-/// only uniform width, or a width a bounds guard in an indexing body
-/// picks out of several — and none of its entries may resolve to one
-/// of the `function_starts` the listing names. `None` silently for a
-/// disqualifying shape, with a warning for a read that failed.
+/// The table reading for one data object: no kept body may store
+/// through its symbol, its bytes must be readable in full and decode
+/// coherently, one family must survive the resolution — the engine's
+/// applied listing type when it names a viable family, otherwise the
+/// families the bounds guards of indexing bodies narrow to exactly one,
+/// otherwise a single coherent family standing alone — and none of its
+/// entries may resolve to one of the `function_starts` the listing
+/// names. `None` silently for a disqualifying or unresolved shape, with
+/// a warning for a read that failed. A kept body's indexed read is no
+/// longer required to claim: it decides which Evidence tier the claim
+/// lands at, from applied type at the top to raw bytes only at the
+/// bottom.
 async fn read_object<S: ScanSource>(
     source: &S,
     item: &DataItem,
@@ -418,13 +602,9 @@ async fn read_object<S: ScanSource>(
         return None;
     }
     let reads = &usage.reads;
-    if reads.is_empty() {
-        // The tracer claims only the corroborated path: an object no
-        // kept body indexes is a raw-bytes-only claim, a lower tier
-        // the unreferenced-families ticket will land.
-        return None;
-    }
     if item.label.is_empty() || item.length < 2 {
+        // No stride divides a shorter object into the two entries the
+        // candidate gate asks for.
         return None;
     }
     let bytes = match source.read_memory(item.address, item.length as usize).await {
@@ -448,30 +628,76 @@ async fn read_object<S: ScanSource>(
         return None;
     }
 
-    // The strides the bytes decode cleanly at, narrowed by the widths
-    // the guards imply (guards naming no width do not narrow). A
-    // guard that contradicts the bytes empties the intersection.
-    let viable = viable_widths(&bytes);
-    let implied: BTreeSet<u64> = reads.iter().filter_map(|read| read.width).collect();
-    let narrowed: Vec<u64> = if implied.is_empty() {
-        viable
-    } else {
-        viable
-            .into_iter()
-            .filter(|width| implied.contains(width))
-            .collect()
-    };
-    let Ok([width]) = <[u64; 1]>::try_from(narrowed) else {
-        // Zero widths surviving is a contradiction; more than one is
-        // an unresolved multi-stride decode — both claim nothing.
+    let viable = viable_families(&bytes);
+    if viable.is_empty() {
+        debug!(
+            object = %item.label,
+            address = format_args!("{:#x}", item.address),
+            "Skipping data object: bytes decode incoherently at every stride"
+        );
         return None;
+    }
+    // The widths the indexing bodies' guards imply; guards naming no
+    // width do not narrow.
+    let implied: BTreeSet<u64> = reads.iter().filter_map(|read| read.width).collect();
+    // Resolution in the spec's order, over strides: the listing's
+    // applied type claims its stride, and claims nothing when the
+    // bytes or a guard contradict it; failing the applied type, the
+    // guards narrow the viable strides to one; and several strides
+    // nothing resolves claim nothing.
+    let applied = applied_family(&item.type_name, item.length);
+    let mut confidence = None;
+    let family = if let Some(applied) = applied {
+        if !viable.contains(&applied) {
+            debug!(
+                object = %item.label,
+                address = format_args!("{:#x}", item.address),
+                applied_type = %item.type_name,
+                "Skipping data object: the bytes decode incoherently at the applied type's stride"
+            );
+            return None;
+        }
+        if !implied.is_empty() && !implied.contains(&applied.width) {
+            debug!(
+                object = %item.label,
+                address = format_args!("{:#x}", item.address),
+                applied_type = %item.type_name,
+                "Skipping data object: the reads' bounds guards contradict the applied type"
+            );
+            return None;
+        }
+        confidence = Some(APPLIED_TYPE_CONFIDENCE);
+        applied
+    } else if !implied.is_empty() {
+        let narrowed: Vec<Family> = viable
+            .into_iter()
+            .filter(|family| implied.contains(&family.width))
+            .collect();
+        let Some(family) = one_stride(&narrowed) else {
+            // Zero surviving strides is a contradiction between the
+            // guards and the bytes; several is an unresolved
+            // multi-stride decode — both claim nothing.
+            return None;
+        };
+        confidence = Some(CORROBORATED_CONFIDENCE);
+        family
+    } else {
+        let Some(family) = one_stride(&viable) else {
+            debug!(
+                object = %item.label,
+                address = format_args!("{:#x}", item.address),
+                "Skipping data object: several strides decode coherently with nothing to resolve them"
+            );
+            return None;
+        };
+        family
     };
-    let element_type = ELEMENT_WIDTHS
-        .iter()
-        .find(|(w, _)| *w == width)
-        .map(|(_, name)| *name)?;
 
-    let entries: Vec<u64> = bytes.chunks(width as usize).map(le_u64).collect();
+    // The entries the claim reports and vetoes against: the raw
+    // little-endian chunk at the chosen width — for the float
+    // families, the entries' IEEE-754 bit patterns, kept whole for
+    // codegen to re-spell.
+    let entries: Vec<u64> = bytes.chunks(family.width as usize).map(le_u64).collect();
     let count = entries.len();
     // The pointer gates: an entry equal to one of the addresses the
     // function listing names is a pointer to a function start. Every
@@ -501,7 +727,8 @@ async fn read_object<S: ScanSource>(
     // The referencing functions come from the engine's
     // cross-references — ascending, deduped. A failed xref read is
     // logged and left empty: the claim rests on the bytes and the
-    // body read; the functions only widen the per-function view.
+    // body read; the functions only widen the per-function view and
+    // settle the tier.
     let functions: Vec<String> = match source.xrefs_to(item.address).await {
         Ok(xrefs) => xrefs
             .iter()
@@ -520,35 +747,83 @@ async fn read_object<S: ScanSource>(
         }
     };
 
+    // The tier, last settled against what actually stands behind the
+    // claim: applied type and guard-corroborated claims scored during
+    // resolution; an open claim at indexed read (high-mid), named
+    // cross-references (mid), or nothing at all (low).
+    let confidence = confidence.unwrap_or(if !reads.is_empty() {
+        CORROBORATED_CONFIDENCE
+    } else if !functions.is_empty() {
+        REFERENCED_CONFIDENCE
+    } else {
+        UNREFERENCED_CONFIDENCE
+    });
+
+    // The evidence a reviewer checks: the resolution's strongest
+    // backing first — the applied listing type when it decided the
+    // claim — then the indexed-read lines, and for a decode-only
+    // claim the decode itself with what referencing it amounts to.
+    let mut evidence: Vec<String> = Vec::new();
+    if confidence == APPLIED_TYPE_CONFIDENCE {
+        evidence.push(format!(
+            "data listing applies type `{}`",
+            item.type_name.trim()
+        ));
+    }
+    if !reads.is_empty() {
+        // The read lines already end in the decompiler's semicolon:
+        // one line per corroborating body, spaced apart.
+        evidence.push(
+            reads
+                .iter()
+                .map(|read| format!("{}: {}", read.function, read.line))
+                .collect::<Vec<String>>()
+                .join(" "),
+        );
+    }
+    if evidence.is_empty() {
+        let decode = format!(
+            "{} bytes decode cleanly as {count} {} entries at {:#x}",
+            item.length, family.name, item.address
+        );
+        if functions.is_empty() {
+            evidence.push(format!("{decode}; nothing references the object"));
+        } else {
+            let readers = match functions.len() {
+                1 => "one function".to_string(),
+                count => format!("{count} functions"),
+            };
+            evidence.push(format!(
+                "{decode}; the cross-references name {readers}, no kept body indexes it"
+            ));
+        }
+    }
+
     Some(DataTable {
         symbol: item.label.clone(),
         address: item.address,
-        element_type: element_type.to_string(),
+        element_type: family.name.to_string(),
         count,
         values,
         values_truncated,
         functions,
-        suggestion: DataTable::render_suggestion(&item.label, element_type, count),
-        confidence: Confidence::new(DATA_TABLE_CONFIDENCE),
-        evidence: reads
-            .iter()
-            .map(|read| format!("{}: {}", read.function, read.line))
-            .collect::<Vec<String>>()
-            .join("; "),
+        suggestion: DataTable::render_suggestion(&item.label, family.name, count),
+        confidence: Confidence::new(confidence),
+        evidence: evidence.join("; "),
     })
 }
 
 /// The program's data tables: every object the engine's data listing
-/// defines that a kept body indexes, that no kept body stores through,
-/// and whose bytes decode uniformly at exactly one corroborated stride
-/// of values none of which resolves to a listed function start, in
-/// listing order. `table_usage` is parallel to `items` — what the walk
-/// collected from the bodies it kept, per object — and `function_starts`
-/// is the address set the function listing names, which the pointer
-/// gates resolve entries against. A failed listing fails the run
-/// like the function listing's failure (the engine reads it before
-/// calling this); a failing per-object read skips that object with a
-/// warning, and a disqualified shape skips it silently.
+/// defines whose bytes decode coherently at exactly one resolved
+/// stride, that no kept body stores through, and whose entries none of
+/// which resolves to a listed function start, in listing order.
+/// `table_usage` is parallel to `items` — what the walk collected from
+/// the bodies it kept, per object — and `function_starts` is the
+/// address set the function listing names, which the pointer gates
+/// resolve entries against. A failed listing fails the run like the
+/// function listing's failure (the engine reads it before calling
+/// this); a failing per-object read skips that object with a warning,
+/// and a disqualified or unresolved shape skips it silently.
 pub(crate) async fn data_tables<S: ScanSource>(
     source: &S,
     items: &[DataItem],
@@ -578,6 +853,15 @@ mod tests {
             signature: format!("undefined {name}(void)"),
             body: format!("\nundefined {name}(void)\n\n{{\n{text}}}\n"),
         }
+    }
+
+    /// The element type names of a viability result, for readable
+    /// assertions.
+    fn families_at(bytes: &[u8]) -> Vec<&'static str> {
+        viable_families(bytes)
+            .iter()
+            .map(|family| family.name)
+            .collect()
     }
 
     #[test]
@@ -727,15 +1011,67 @@ mod tests {
     }
 
     #[test]
-    fn a_fill_or_gapped_object_is_not_uniform_at_any_width() {
+    fn a_fill_or_gapped_object_is_not_coherent_at_any_stride() {
         // 0xCCCC padding: uniform-looking but a fill, not a table.
-        assert!(viable_widths(&[0xcc; 24]).is_empty());
+        assert!(viable_families(&[0xcc; 24]).is_empty());
         // Zero runs kill every stride the length admits at all.
-        assert!(viable_widths(&[1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0]).is_empty());
-        // u16 values with no gaps decode cleanly at 2 (and, paired, at 4 and 8).
+        assert!(viable_families(&[1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0]).is_empty());
+        // u16 values with no gaps decode coherently at 2 (and, paired,
+        // at 4 and 8 — the float misreads stay out of the sane band).
         let bytes: Vec<u8> = (1u16..=12).flat_map(u16::to_le_bytes).collect();
-        assert_eq!(viable_widths(&bytes), vec![2, 4, 8]);
+        assert_eq!(families_at(&bytes), ["u16", "u32", "u64"]);
         // Too few entries to be a table at any width.
-        assert!(viable_widths(&[7, 0]).is_empty());
+        assert!(viable_families(&[7, 0]).is_empty());
+    }
+
+    #[test]
+    fn a_wide_magnitude_spread_reads_as_padding_not_a_table() {
+        // Nonzero and distinct, but the entry magnitudes run a billion
+        // fold apart — scattered flags and masks, not one coherent run
+        // of values. The float misreads join the verdict: a NaN entry
+        // and subnormal-scale bit patterns are never a sane decode.
+        let bytes: Vec<u8> = [1u32, 2, 0xFFFF_FFF0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        assert!(families_at(&bytes).is_empty());
+    }
+
+    #[test]
+    fn sane_float_entries_form_a_family_and_insane_ones_never_do() {
+        // 0.5, 1.0, 2.0: finite, ordinary-magnitude floats — the f32
+        // family decodes, and the integer misread of the same bits
+        // (magnitudes within the spread, none zero) decodes beside it.
+        let bytes: Vec<u8> = [0.5f32, 1.0, 2.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        assert_eq!(families_at(&bytes), ["u32", "f32"]);
+        // A NaN entry puts the whole stride out of the coherent band.
+        let with_nan: Vec<u8> = [0.5f32, f32::NAN, 2.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        assert_eq!(families_at(&with_nan), ["u32"]);
+        // 1 as a bit pattern is a subnormal near-zero float: the
+        // misread of integer-looking bytes, not a sane decode.
+        let integer_bytes: Vec<u8> = [1u32, 2, 3]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        assert_eq!(families_at(&integer_bytes), ["u32"]);
+    }
+
+    #[test]
+    fn the_listing_type_names_its_family_only_when_it_names_one() {
+        assert_eq!(applied_family("uint", 24).unwrap().name, "u32");
+        assert_eq!(applied_family("float [3]", 12).unwrap().name, "f32");
+        // The array count has to square with the object's length.
+        assert!(applied_family("float [4]", 12).is_none());
+        // A bare object with no listing type, and everything the
+        // engine spells as opaque, names no stride.
+        assert!(applied_family("undefined", 24).is_none());
+        assert!(applied_family("IMAGE_DOS_HEADER", 24).is_none());
+        assert!(applied_family("undefined8 *", 24).is_none());
     }
 }

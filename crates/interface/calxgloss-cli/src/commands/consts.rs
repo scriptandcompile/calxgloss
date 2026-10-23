@@ -235,7 +235,7 @@ fn kind_breakdown(result: &ConstResult) -> Vec<String> {
 mod tests {
     use super::*;
     use calxgloss_consts::types::{
-        BitflagGroup, ColorConstant, ConstFinding, Confidence, DataTable, EnumCandidate,
+        BitflagGroup, ColorConstant, Confidence, ConstFinding, DataTable, EnumCandidate,
         FlagFamily, NamedConstant, ProtocolConstant, ScanMetadata,
     };
 
