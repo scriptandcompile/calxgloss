@@ -893,6 +893,7 @@ Cargo.toml's words:
 | `calxgloss-apidetect` | Which third-party library is this? (import-table fingerprinting → crate mapping) |
 | `calxgloss-serialize` | Where is endianness/serialization logic? (byte swaps, magic bytes) |
 | `calxgloss-libmatch` | Which functions are statically linked library code? (body-shape signatures → CRT/STL symbols) |
+| `calxgloss-errhandling` | Which functions guard their work in an exception frame? (spelled `try`/`catch` blocks → the error-handling idiom and its Rust mapping) |
 
 They share two pieces of plumbing from `calxgloss-types`: `ScanMetadata` —
 the provenance header stamped on every cached scan JSON (`scan.rs:L19-L48`) —

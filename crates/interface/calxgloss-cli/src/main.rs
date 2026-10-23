@@ -71,6 +71,7 @@ use commands::dashboard::{
     handle_dashboard_reject, handle_dashboard_view,
 };
 use commands::doctor::handle_doctor;
+use commands::errhandling::handle_errhandling;
 use commands::gc::handle_gc;
 use commands::globalstate::handle_global_state;
 use commands::init::handle_init;
@@ -377,6 +378,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_serialize(&binary, &workspace, show, &settings))
+        }
+        Command::Errhandling { binary, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_errhandling(&binary, &workspace, show, &settings))
         }
         Command::Verify {
             binary,

@@ -694,6 +694,34 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Detect error-handling idioms (spelled SEH frames) for a binary
+    /// by reading each decompiled body for the shapes that spell them.
+    ///
+    /// The detection findings are persisted per binary to
+    /// `re/analysis/errhandling/<binary>.json` in the workspace. `--show`
+    /// prints a cached result without running the scan.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss errhandling --binary eqmain.dll --show
+    /// ```
+    Errhandling {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is

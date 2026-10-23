@@ -11,6 +11,7 @@ pub mod consts;
 pub mod controlflow;
 pub mod dashboard;
 pub mod doctor;
+pub mod errhandling;
 pub mod gc;
 pub mod globalstate;
 pub mod init;

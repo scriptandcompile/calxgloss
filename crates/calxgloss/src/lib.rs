@@ -268,6 +268,18 @@ pub use calxgloss_libmatch::types::{
 };
 
 // ============================================================
+// calxgloss-errhandling — error-handling idiom detection
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `ErrhandlingResult` already names the per-binary document, and a
+// second alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already named
+// here.
+pub use calxgloss_errhandling::ErrhandlingError;
+pub use calxgloss_errhandling::{ErrhandlingFinding, ErrhandlingResult, SehFrame};
+
+// ============================================================
 // calxgloss-serialize — endianness & serialization detection
 // ============================================================
 

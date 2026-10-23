@@ -1,0 +1,22 @@
+[package]
+name = "calxgloss-errhandling"
+version.workspace = true
+edition.workspace = true
+description = "Error-handling idiom evidence: the try/catch frame, named handlers and failure codes read from kept function bodies as decompile-level evidence, persisted per binary"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
+
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -348,6 +348,7 @@ dependencies = [
  "calxgloss-consts",
  "calxgloss-controlflow",
  "calxgloss-decomp",
+ "calxgloss-errhandling",
  "calxgloss-git",
  "calxgloss-globalstate",
  "calxgloss-kuna",
@@ -477,6 +478,7 @@ dependencies = [
  "calxgloss-consts",
  "calxgloss-controlflow",
  "calxgloss-decomp",
+ "calxgloss-errhandling",
  "calxgloss-git",
  "calxgloss-globalstate",
  "calxgloss-kuna",
@@ -566,6 +568,21 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-core",
+]
+
+[[package]]
+name = "calxgloss-errhandling"
+version = "0.4.0"
+dependencies = [
+ "calxgloss-decomp",
+ "calxgloss-kuna",
+ "calxgloss-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
