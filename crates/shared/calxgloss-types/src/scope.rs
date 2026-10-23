@@ -792,11 +792,18 @@ mod tests {
             Some("B.DLL".into()),
             "the new focus keeps the pressed spelling"
         );
-        assert!(control.is_focus("b.dll"), "the focus matches case-insensitively");
+        assert!(
+            control.is_focus("b.dll"),
+            "the focus matches case-insensitively"
+        );
         assert!(!control.is_focus("a.dll"), "the replaced focus is gone");
 
         control.clear_focus().expect("clear the focus");
-        assert_eq!(focused_name(&control), None, "the focus slot is empty again");
+        assert_eq!(
+            focused_name(&control),
+            None,
+            "the focus slot is empty again"
+        );
         control
             .clear_focus()
             .expect("clearing with no focus set is idempotent");
@@ -820,7 +827,10 @@ mod tests {
             control.consume_focus("A.DLL"),
             "consumption matches case-insensitively, like every other binary control"
         );
-        assert!(!control.is_focus("a.dll"), "the focus is consumed once honored");
+        assert!(
+            !control.is_focus("a.dll"),
+            "the focus is consumed once honored"
+        );
         assert!(
             !control.consume_focus("a.dll"),
             "consuming an absent focus is a no-op, not an error"

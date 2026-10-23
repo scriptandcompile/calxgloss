@@ -818,26 +818,25 @@ where
             // naming nothing in the queue is left alone: it waits for a
             // boundary that names it. Binary names match case-insensitively
             // (issue #107).
-            if let Some(sc) = scope_control {
-                if let Some(focus) = sc.focused_binary() {
-                    let hoisted = queue
-                        .iter()
-                        .position(|b| b.eq_ignore_ascii_case(focus.as_str()))
-                        .and_then(|idx| queue.remove(idx).map(|focused| (idx, focused)));
-                    if let Some((idx, focused)) = hoisted {
-                        queue.push_front(focused.clone());
-                        sc.consume_focus(&focused);
-                        if idx != 0 {
-                            println_content(format!(
-                                "  {} {} is focused — the run works it next.",
-                                cyan_bold("→"),
-                                bold(&focused)
-                            ));
-                            if let Some(ev) = events {
-                                ev.emit(ProgressEvent::QueuePlanned {
-                                    binaries: queue.iter().cloned().collect(),
-                                });
-                            }
+            let focused = scope_control.and_then(|sc| sc.focused_binary().map(|focus| (sc, focus)));
+            if let Some((sc, focus)) = focused {
+                let hoisted = queue
+                    .iter()
+                    .position(|b| b.eq_ignore_ascii_case(focus.as_str()))
+                    .and_then(|idx| queue.remove(idx).map(|focused| (idx, focused)));
+                if let Some((idx, focused)) = hoisted {
+                    queue.push_front(focused.clone());
+                    sc.consume_focus(&focused);
+                    if idx != 0 {
+                        println_content(format!(
+                            "  {} {} is focused — the run works it next.",
+                            cyan_bold("→"),
+                            bold(&focused)
+                        ));
+                        if let Some(ev) = events {
+                            ev.emit(ProgressEvent::QueuePlanned {
+                                binaries: queue.iter().cloned().collect(),
+                            });
                         }
                     }
                 }
@@ -1352,7 +1351,11 @@ mod tests {
         let started = started_recorder();
 
         run_binary_worklist(
-            vec!["a.dll".to_string(), "b.dll".to_string(), "c.dll".to_string()],
+            vec![
+                "a.dll".to_string(),
+                "b.dll".to_string(),
+                "c.dll".to_string(),
+            ],
             &RunControls {
                 events: Some(&events),
                 scope_control: Some(&scope),
@@ -1476,7 +1479,11 @@ mod tests {
         let started = started_recorder();
 
         run_binary_worklist(
-            vec!["a.dll".to_string(), "b.dll".to_string(), "c.dll".to_string()],
+            vec![
+                "a.dll".to_string(),
+                "b.dll".to_string(),
+                "c.dll".to_string(),
+            ],
             &RunControls {
                 events: Some(&events),
                 scope_control: Some(&scope),
@@ -1515,10 +1522,7 @@ mod tests {
         // The focused c.dll came first after a.dll's early end, and the
         // still-paused a.dll kept its re-queued-once place at the back —
         // translated on its second visit once resumed.
-        assert_eq!(
-            *started.borrow(),
-            ["a.dll", "c.dll", "b.dll", "a.dll"]
-        );
+        assert_eq!(*started.borrow(), ["a.dll", "c.dll", "b.dll", "a.dll"]);
         // Initial plan; a.dll's re-queue; then the focus hoist re-publishes
         // the remaining order.
         assert_eq!(

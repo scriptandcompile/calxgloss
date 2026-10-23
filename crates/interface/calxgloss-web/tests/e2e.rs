@@ -935,6 +935,87 @@ async fn test_binary_pause_changed_reaches_ws_clients() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Per-binary focus — "translate this next" (issue #284)
+// ─────────────────────────────────────────────────────────────
+
+/// The focus endpoint parks a discovered binary in the scope record's
+/// single focus slot: 200 echoing the addressed binary, 409 with the
+/// server's own reason for an undiscovered one, last press wins, the slot
+/// persists on disk (a re-opened handle honors it on the #107 case-rule) —
+/// and the served pipeline table hoists the focused binary to the front of
+/// its planned order, so a re-fetch shows the new plan before the worklist
+/// even reaches its next boundary.
+#[tokio::test]
+async fn test_pipeline_binary_focus_endpoint() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec![
+            "a.dll".to_string(),
+            "b.dll".to_string(),
+            "c.dll".to_string(),
+        ],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        pipeline_row_names(fixture.port()).await,
+        ["a.dll", "b.dll", "c.dll"],
+        "the plan alone sets the row order"
+    );
+
+    // A binary the workspace has not discovered: 409 carrying the server's
+    // own reason — a stale click is never a silent no-op.
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/nope.dll/focus").await;
+    assert_eq!(status, 409);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has not discovered"),
+        "409 carries the server's own reason, got: {body}"
+    );
+
+    // Focus c.dll: 200 echoing the addressed binary.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/focus").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["binary"], "c.dll");
+
+    // The served rows follow at once — the focus reads as the front of the
+    // plan, matching what the live loop will do at the next boundary.
+    assert_eq!(
+        pipeline_row_names(fixture.port()).await,
+        ["c.dll", "a.dll", "b.dll"],
+        "GET /api/pipeline hoists the focused binary"
+    );
+
+    // One slot, last press wins: b.dll replaces c.dll without ceremony.
+    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/focus").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        pipeline_row_names(fixture.port()).await,
+        ["b.dll", "a.dll", "c.dll"],
+        "the later press is the focus now"
+    );
+
+    // The slot rode the persisted scope record — a handle re-opened over
+    // the same workspace (a restarted run) honors it, on the #107 match
+    // rule.
+    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    assert!(reopened.is_focus("B.DLL"), "the focus survives a restart");
+}
+
+// ─────────────────────────────────────────────────────────────
 // Translation scope controls (issue #93, W2.5)
 // ─────────────────────────────────────────────────────────────
 
@@ -997,9 +1078,11 @@ async fn test_scope_endpoints_503_without_control() {
 
     // Issue #221: the per-binary pause endpoints are honest the same way —
     // with no scope handle attached there is no paused set to change.
+    // Issue #284: the focus endpoint joins them — no handle, no focus slot.
     for path in [
         "/api/pipeline/binaries/game_logic.dll/pause",
         "/api/pipeline/binaries/game_logic.dll/resume",
+        "/api/pipeline/binaries/game_logic.dll/focus",
     ] {
         let resp = client
             .post(format!("http://127.0.0.1:{}{path}", fixture.port()))
@@ -12516,6 +12599,103 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
         control.state(),
         PipelineState::Running,
         "a row resume must not touch the run-level lifecycle machine either"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the "translate this next" focus end to end
+/// (issue #284): with a plan of three rows rendered, an operator focus on
+/// the last binary — the endpoint, not a button (the row toggle is issue
+/// #285) — makes the re-served pipeline state put that binary at the front
+/// of the plan order. Entering the Pipeline view refetches the rows, and
+/// the fetched order already honors the pending focus: the dashboard shows
+/// what the live run will do at its next binary boundary.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_focus_reorders_served_pipeline_rows() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The run's plan renders three rows in plan order before anything starts.
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec![
+            "a.dll".to_string(),
+            "b.dll".to_string(),
+            "c.dll".to_string(),
+        ],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let row_order = || {
+        eval_text(
+            &tab,
+            "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')].map(e => e.dataset.binary).join(',')",
+        )
+    };
+
+    // Rows render asynchronously once the boot pipeline fetch settles; poll
+    // until all three appear in plan order (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        if row_order() == "a.dll,b.dll,c.dll" {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "the plan's three rows must render in plan order, got: {}",
+        row_order()
+    );
+
+    // The operator focuses c.dll — the endpoint's 200, not a row button.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/focus").await;
+    assert_eq!(status, 200, "the focus call should succeed, got: {body}");
+
+    // Entering the Pipeline view refetches the rows; the re-served state
+    // puts the focused binary at the front of the plan.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click() === undefined",
+        false,
+    )
+    .expect("click the Pipeline tab");
+
+    let mut hoisted = false;
+    for _ in 0..25 {
+        if row_order() == "c.dll,a.dll,b.dll" {
+            hoisted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        hoisted,
+        "the re-served rows must show the focused binary first, got: {}",
+        row_order()
+    );
+
+    // The focus rode the persisted scope record — the same slot the live
+    // worklist will consume at the next boundary.
+    assert!(
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("C.DLL"),
+        "the focus is in the persisted scope record"
     );
 
     tab.close_target().ok();

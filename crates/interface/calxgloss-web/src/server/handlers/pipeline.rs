@@ -2,9 +2,9 @@
 
 use super::super::{
     BatchInfo, BinaryFocusResponse, BinaryPauseResponse, ClassificationInfo, CombinedState,
-    PipelineControl,
-    PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse, PipelineTimeEstimate,
-    ProgressEntry, ProgressInfo, ProgressResponse, ServerError, UnitCancelResponse,
+    PipelineControl, PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse,
+    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse, ServerError,
+    UnitCancelResponse,
 };
 
 use super::process::binary_matches;
@@ -236,11 +236,13 @@ pub async fn api_get_pipeline(
                 .scope_control()
                 .and_then(|sc| sc.focused_binary().map(|f| f.as_str().to_owned()))
             {
-                if let Some(idx) = plan.iter().position(|b| b.eq_ignore_ascii_case(&focus)) {
-                    if idx != 0 {
-                        let hoisted = plan.remove(idx);
-                        plan.insert(0, hoisted);
-                    }
+                let hoist = plan
+                    .iter()
+                    .position(|b| b.eq_ignore_ascii_case(&focus))
+                    .filter(|idx| *idx != 0);
+                if let Some(idx) = hoist {
+                    let hoisted = plan.remove(idx);
+                    plan.insert(0, hoisted);
                 }
             }
             plan
