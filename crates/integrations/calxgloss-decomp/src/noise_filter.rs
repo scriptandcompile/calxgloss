@@ -1,6 +1,8 @@
 //! The decompiler-noise pre-filter: compiler theater stripped from the
 //! pseudo-C every consumer sees (issue #232; #271 opened the module with
-//! the named guard calls, #272 adds the if-wrapped compare epilogue).
+//! the named guard calls, #272 added the if-wrapped compare epilogue, and
+//! #273 closes the canary family with the prologue cookie-save and the
+//! cookie declaration its strips leave orphaned).
 //!
 //! Every MSVC-compiled function carries the same piece of theater: the /GS
 //! stack canary's cookie-save prologue, its compare epilogue, and calls into
@@ -37,6 +39,10 @@
 //! body with no real content — a function that *is* the guard code, a
 //! cookie thunk — nothing is stripped and the body passes through whole.
 //!
+//! **Locals survive unless orphaned.** A cookie local's declaration leaves
+//! with the idiom only when the strips leave it unreferenced; any statement
+//! that still names it keeps the declaration byte-for-byte.
+//!
 //! **How a family joins:** add a recognizer `fn(&str) -> Option<String>`
 //! below that returns the stripped body only when it recognized and removed
 //! a complete idiom, and one line in [`filter_body`] naming its family.
@@ -59,6 +65,7 @@ const GUARD_CALL_FUNCTIONS: [&str; 3] = [
 /// so an operator's log filter keeps working as families join.
 const NAMED_GUARD_CALLS: &str = "named-guard-calls";
 const EPILOGUE_COOKIE_CHECK: &str = "epilogue-cookie-check";
+const PROLOGUE_COOKIE_SAVE: &str = "prologue-cookie-save";
 
 /// The pre-filter's one entry point, applied at the exit of both sources'
 /// `decompile` read: in with the record as the engine rendered it, out with
@@ -91,7 +98,10 @@ pub(crate) fn strip_decompiler_noise(function: DecompiledFunction) -> Decompiled
 /// clears the standalone calls that sit outside any wrapper, and the
 /// comparison wrappers those calls hollow out are deliberately left behind:
 /// a hollowed `if` is a lone comparison, which claims nothing to either
-/// pass.
+/// pass. The prologue pass runs last because whether its saved local is
+/// orphaned is only knowable once the other families have had their turn:
+/// the epilogue comparison and a standalone check call are the local's
+/// usual last uses, and its declaration can go only after they are gone.
 ///
 /// The never-empties rule lives here, over the combined strips: if they
 /// would leave a body with not one word of real content in it — a function
@@ -107,6 +117,10 @@ fn filter_body(body: &str) -> (String, Vec<&'static str>) {
     if let Some(after_calls) = strip_named_guard_calls(&stripped) {
         stripped = after_calls;
         families.push(NAMED_GUARD_CALLS);
+    }
+    if let Some(after_prologue) = strip_prologue_cookie_save(&stripped) {
+        stripped = after_prologue;
+        families.push(PROLOGUE_COOKIE_SAVE);
     }
     if !stripped.chars().any(|c| c.is_alphanumeric()) {
         return (body.to_string(), Vec::new());
@@ -329,6 +343,233 @@ fn attached_else_before(body: &str, keyword: usize) -> bool {
 fn attached_else_after(after_brace: &str) -> bool {
     let after = after_brace.trim_start();
     after.starts_with("else") && !after["else".len()..].starts_with(is_identifier_char)
+}
+
+/// The prologue-cookie-save family (issue #273): the save half of the /GS
+/// canary — a line that is exactly one assignment storing the cookie global
+/// XOR'd with a stack-slot address into a local (`local_8 = DAT_18004a040 ^
+/// (ulonglong)&stack0x00000008;`) — vanishes along with its line break, and
+/// each local the stripped saves wrote loses its bare declaration line once
+/// no surviving statement names it — inside the body's declaration block
+/// only, the run of bare declarations the decompiler opens right after the
+/// body's brace. A local still referenced anywhere — a real statement, a
+/// comment, a declaration beside the idiom — keeps its declaration
+/// byte-for-byte; the sweep only ever follows a strip of the local's own
+/// save.
+///
+/// The assignment shape is itself the anchor (the conservative gate,
+/// ADR-0038's "a lone reading claims nothing" precedent): a lone XOR
+/// (`x = a ^ b` with neither side the cookie or the stack slot), a lone
+/// cookie save without the XOR (`uVar = __security_cookie;`), a cookie
+/// XOR'd with a plain constant instead of a stack-slot address, a store
+/// through a pointer or into a global, and a save sharing its line with
+/// any other text all claim nothing and pass through.
+///
+/// Answers [`None`] when no save line matched. A body a strip would empty
+/// is caught by the never-empties rule in [`filter_body`], the same as the
+/// other families'.
+fn strip_prologue_cookie_save(body: &str) -> Option<String> {
+    let mut saved: Vec<&str> = Vec::new();
+    let mut stripped = String::with_capacity(body.len());
+    for line in body.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\n', '\r']);
+        match cookie_save_local(content.trim()) {
+            // A matched save line goes whole; the local it wrote is remembered
+            // for the orphan sweep below.
+            Some(local) => saved.push(local),
+            None => stripped.push_str(line),
+        }
+    }
+    if saved.is_empty() {
+        return None;
+    }
+    // The orphan sweep, line-indexed so removals stay inside the body's
+    // declaration block: Ghidra emits the local declarations as one block
+    // opening right after the body's brace line, and that block — nothing
+    // else — is where a declaration may go.
+    let lines: Vec<&str> = stripped.split_inclusive('\n').collect();
+    let block_end = declaration_block_end(&lines);
+    let mut dropped = vec![false; lines.len()];
+    for local in &saved {
+        let referenced = lines.iter().enumerate().any(|(at, line)| {
+            let content = line.trim_end_matches(['\n', '\r']).trim();
+            !(at < block_end && is_declaration_of(content, local))
+                && mentions_identifier(content, local)
+        });
+        if !referenced {
+            for (at, line) in lines.iter().enumerate().take(block_end) {
+                if is_declaration_of(line.trim_end_matches(['\n', '\r']).trim(), local) {
+                    dropped[at] = true;
+                }
+            }
+        }
+    }
+    Some(
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| !dropped[*at])
+            .map(|(_, line)| *line)
+            .collect(),
+    )
+}
+
+/// The save-statement gate: the whole trimmed line is one simple
+/// assignment `local = <cookie global> ^ <stack-slot address>;` — either
+/// operand order — whose target is a plain local name, not a global or a
+/// store through a pointer. Answers the local's name for the complete
+/// shape, [`None`] for anything else.
+fn cookie_save_local(statement: &str) -> Option<&str> {
+    let assignment = statement.strip_suffix(';')?.trim_end();
+    let (target, operands) = assignment.split_once('=')?;
+    let (target, operands) = (target.trim(), operands.trim());
+    if operands.contains('=')
+        || target.is_empty()
+        || !target.chars().all(is_identifier_char)
+        || names_cookie_global(target)
+        || names_dat_global(target)
+    {
+        return None;
+    }
+    // Exactly two operands — any third operand or nested expression is
+    // the function's own arithmetic, not the save.
+    let (first, second) = operands.split_once('^')?;
+    if first.contains('^') || second.contains('^') {
+        return None;
+    }
+    let is_save = (is_cookie_global_read(first) && is_stack_pointer_operand(second))
+        || (is_cookie_global_read(second) && is_stack_pointer_operand(first));
+    is_save.then_some(target)
+}
+
+/// Whether `operand` is a read of a cookie global whole — one of the named
+/// spellings, with only import-prefixed underscores in front, or a bare
+/// `DAT_`-shaped name — behind at most one cast. An expression that merely
+/// mentions a cookie spelling (`__security_cookie - cookie`, a call) names
+/// the global's value being computed on, not a read of the global itself,
+/// and claims nothing.
+fn is_cookie_global_read(operand: &str) -> bool {
+    let operand = strip_cast(operand).trim();
+    COOKIE_GLOBAL_SPELLINGS.iter().any(|spelling| {
+        operand
+            .strip_suffix(spelling)
+            .is_some_and(|prefix| prefix.chars().all(|c| c == '_'))
+    }) || operand
+        .strip_prefix("DAT_")
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Whether `operand` is the address of a stack slot — the decompiler's
+/// `&stack0x`-plus-hex spelling of the stack-pointer-shaped operand the
+/// save XORs the cookie with, behind at most one cast — and nothing else.
+fn is_stack_pointer_operand(operand: &str) -> bool {
+    strip_cast(operand)
+        .trim()
+        .strip_prefix("&stack0x")
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Peel one leading `(cast)` off an operand so a cast global read or stack
+/// address still reads as its bare shape; `(long)&stack0x...` →
+/// `&stack0x...`.
+fn strip_cast(operand: &str) -> &str {
+    let operand = operand.trim();
+    let Some(rest) = operand.strip_prefix('(') else {
+        return operand;
+    };
+    match rest.find(')') {
+        Some(close) if close > 0 => rest[close + 1..].trim_start(),
+        _ => operand,
+    }
+}
+
+/// One past the last line of the body's declaration block: the maximal run
+/// of bare declaration lines opening right after the first line bearing an
+/// opening brace. A body whose brace line never comes, or whose first line
+/// after the brace already says something (a statement, a comment, even a
+/// blank line), has no block at `0`, and no declaration is ever removed
+/// from it — the sweep's removal candidates live only inside the block the
+/// decompiler itself drew.
+fn declaration_block_end(lines: &[&str]) -> usize {
+    let open = match lines.iter().position(|line| {
+        line.trim_end_matches(['\n', '\r'])
+            .trim_end()
+            .ends_with('{')
+    }) {
+        Some(at) => at + 1,
+        None => return 0,
+    };
+    let mut end = open;
+    while end < lines.len() && is_declaration(lines[end].trim_end_matches(['\n', '\r']).trim()) {
+        end += 1;
+    }
+    end
+}
+
+/// Whether the trimmed line content is a bare declaration of `local`.
+fn is_declaration_of(content: &str, local: &str) -> bool {
+    declaration_parts(content).is_some_and(|(_, declared)| declared == local)
+}
+
+/// Whether the trimmed line content is a bare declaration of any local.
+fn is_declaration(content: &str) -> bool {
+    declaration_parts(content).is_some()
+}
+
+/// Split the trimmed line content into its declaration shape — non-empty
+/// declarator text and the identifier declared just before the closing
+/// semicolon — answering [`None`] for everything else: no semicolon, a
+/// line ending on anything but an identifier, an assignment, a bare name
+/// with nothing declaring it, or a line opening on a statement keyword.
+/// `return local_8;` and `goto local_8;` end in a whole identifier plus a
+/// semicolon exactly like a declaration does; it is the opening word that
+/// tells them apart.
+fn declaration_parts(content: &str) -> Option<(&str, &str)> {
+    let declared = content.strip_suffix(';')?.trim_end();
+    let bytes = declared.as_bytes();
+    let last = *bytes.last()?;
+    if !identifier_byte(last) || declared.contains('=') {
+        return None;
+    }
+    let mut at = bytes.len() - 1;
+    while at > 0 && identifier_byte(bytes[at - 1]) {
+        at -= 1;
+    }
+    let (declarator, name) = declared.split_at(at);
+    if declarator.is_empty() || opens_on_statement_keyword(declarator) {
+        return None;
+    }
+    Some((declarator, name))
+}
+
+/// Whether a would-be declaration's declarator text opens on a C statement
+/// keyword — the tell that a `<keyword> <name>;` line is a statement
+/// wearing a declaration's shape. Types (`unsigned long`, `ulonglong`,
+/// `undefined8`) are no member of the set.
+fn opens_on_statement_keyword(declarator: &str) -> bool {
+    const STATEMENT_KEYWORDS: [&str; 7] = [
+        "return", "goto", "break", "continue", "case", "default", "else",
+    ];
+    STATEMENT_KEYWORDS.contains(&declarator.split_whitespace().next().unwrap_or_default())
+}
+
+/// Whether `text` names `identifier` as a whole word — the bytes on either
+/// side are never identifier bytes, so `local_8` never reads inside
+/// `local_88` or `savelocal_8`.
+fn mentions_identifier(text: &str, identifier: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut search = 0;
+    while let Some(found) = text[search..].find(identifier) {
+        let at = search + found;
+        let end = at + identifier.len();
+        let whole_word = (at == 0 || !identifier_byte(bytes[at - 1]))
+            && !bytes.get(end).copied().is_some_and(identifier_byte);
+        if whole_word {
+            return true;
+        }
+        search = end;
+    }
+    false
 }
 
 /// Walk from `open` (naming an opener byte) to its matching closer:
@@ -560,14 +801,14 @@ mod tests {
             concat!(
                 "{\n",
                 "  undefined8 local_8;\n",
-                "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
                 "  FUN_180045a00(param_1);\n",
                 "  return local_8;\n",
                 "}\n",
             ),
             "every complete wrapper — multi-line and single-line, every cookie-global \
-             spelling — is gone whole, and the prologue line (the #273 family) and the \
-             real statements around them are byte-identical"
+             spelling — is gone whole, the prologue save line went with the #273 \
+             family, and the local keeps its declaration because the return still \
+             names it while the real statements around all this are byte-identical"
         );
     }
 
@@ -597,7 +838,7 @@ mod tests {
     fn a_lone_cookie_global_read_claims_nothing() {
         let body = concat!(
             "{\n",
-            "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
+            "  local_8 = DAT_18004a040;\n",
             "  uVar = __security_cookie;\n",
             "  if (uVar != 0) {\n",
             "    FUN_180045a00(uVar);\n",
@@ -608,7 +849,141 @@ mod tests {
         let stripped = strip("FUN_180045a00", body);
         assert_eq!(
             stripped.body, body,
-            "cookie reads without a complete compare-check shape pass through byte-for-byte"
+            "cookie globals copied whole into locals, without the save's XOR against \
+             a stack-slot address or a compare-check shape, pass through byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn a_full_prologue_and_epilogue_canary_body_comes_back_with_the_idiom_gone() {
+        let stripped = strip(
+            "FUN_1800012a0",
+            concat!(
+                "{\n",
+                "  undefined8 local_8;\n",
+                "  ulong local_4;\n",
+                "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
+                "  local_4 = param_1 * 3;\n",
+                "  FUN_180045a00(local_4);\n",
+                "  if (local_8 != DAT_18004a040) {\n",
+                "    __report_gsfailure();\n",
+                "  }\n",
+                "  return local_4;\n",
+                "}\n",
+            ),
+        );
+        assert_eq!(
+            stripped.body,
+            concat!(
+                "{\n",
+                "  ulong local_4;\n",
+                "  local_4 = param_1 * 3;\n",
+                "  FUN_180045a00(local_4);\n",
+                "  return local_4;\n",
+                "}\n",
+            ),
+            "the whole canary idiom — save line, wrapper with its failure call — is \
+             gone and the cookie local its strips orphaned lost its declaration too, \
+             while the referenced local and the real statements are byte-identical"
+        );
+    }
+
+    #[test]
+    fn a_local_still_referenced_after_the_save_strips_keeps_its_declaration() {
+        let stripped = strip(
+            "FUN_1800012a0",
+            concat!(
+                "{\n",
+                "  undefined8 local_8;\n",
+                "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
+                "  FUN_180045a00(param_1);\n",
+                "  if (local_8 != DAT_18004a040) {\n",
+                "    FUN_180045a00(local_8);\n",
+                "    __report_gsfailure();\n",
+                "  }\n",
+                "  return local_8;\n",
+                "}\n",
+            ),
+        );
+        assert_eq!(
+            stripped.body,
+            concat!(
+                "{\n",
+                "  undefined8 local_8;\n",
+                "  FUN_180045a00(param_1);\n",
+                "  if (local_8 != DAT_18004a040) {\n",
+                "    FUN_180045a00(local_8);\n",
+                "  }\n",
+                "  return local_8;\n",
+                "}\n",
+            ),
+            "the save line goes, but the statements around it still name local_8 — \
+             its declaration and every reference to it survive byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn a_lone_xor_or_a_lone_cookie_save_claims_nothing() {
+        let body = concat!(
+            "{\n",
+            "  local_8 = param_1 ^ 0x22;\n",
+            "  uVar = __security_cookie;\n",
+            "  local_c = __security_cookie ^ 0x22;\n",
+            "  DAT_18004a040 = local_8 ^ (ulonglong)&stack0x00000008;\n",
+            "  local_10 = (ulonglong)&stack0x00000010;\n",
+            "  if (local_8 == DAT_18004a040 ^ (ulonglong)&stack0x00000008) {\n",
+            "    FUN_180045a00(local_8);\n",
+            "  }\n",
+            "  return local_8 ^ uVar ^ local_c ^ local_10;\n",
+            "}\n",
+        );
+        let stripped = strip("FUN_180045a00", body);
+        assert_eq!(
+            stripped.body, body,
+            "the function's own XOR, a cookie copied without the XOR, a cookie XOR'd \
+             with a constant instead of a stack-slot address, a store into a global, \
+             a stack address without a cookie, and the shape sitting inside an `if` \
+             are all incomplete idioms and pass through byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn every_cookie_spelling_and_the_reversed_operand_join_the_prologue_family() {
+        let stripped = strip(
+            "FUN_1800012a0",
+            concat!(
+                "{\n",
+                "  local_8 = ___security_cookie ^ (ulonglong)&stack0x00000008;\n",
+                "  local_18 = stack_cookie_guard ^ (long)&stack0xffffffffffffffe8;\n",
+                "  local_20 = (ulonglong)&stack0x00000018 ^ DAT_18004a040;\n",
+                "  return local_8 ^ local_18 ^ local_20;\n",
+                "}\n",
+            ),
+        );
+        assert_eq!(
+            stripped.body, "{\n  return local_8 ^ local_18 ^ local_20;\n}\n",
+            "the import-prefixed `___security_cookie` and `stack_cookie_guard` \
+             spellings and their DAT_-shaped forms, either operand order, and any \
+             cast shape strip; the return naming the locals keeps them referenced"
+        );
+    }
+
+    #[test]
+    fn a_save_sharing_its_line_with_anything_else_claims_nothing() {
+        let body = concat!(
+            "{\n",
+            "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008; // security cookie\n",
+            "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008 + 4;\n",
+            "  local_8 ^= DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
+            "  uVar = DAT_18004a040 ^ (ulonglong)&stack0x00000008 ^ DAT_18004a050;\n",
+            "  return uVar;\n",
+            "}\n",
+        );
+        let stripped = strip("FUN_180045a00", body);
+        assert_eq!(
+            stripped.body, body,
+            "a trailing comment, an offset stack address, a compound assignment, and \
+             a three-operand XOR are not the one complete save statement and stand"
         );
     }
 
@@ -883,6 +1258,40 @@ mod tests {
     }
 
     #[test]
+    fn the_prologue_strip_is_logged_naming_both_canary_families() {
+        let capture = std::sync::Arc::new(Capture::default());
+        let shared = Arc::clone(&capture.0);
+        tracing::subscriber::with_default(Arc::clone(&capture), || {
+            strip(
+                "FUN_1800012a0",
+                concat!(
+                    "{\n",
+                    "  undefined8 local_8;\n",
+                    "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
+                    "  if (local_8 != DAT_18004a040) {\n",
+                    "    __report_gsfailure();\n",
+                    "  }\n",
+                    "  return;\n",
+                    "}\n",
+                ),
+            );
+        });
+        let events = shared.lock().expect("capture lock");
+        let stripping = events
+            .iter()
+            .find(|(_, values)| values.iter().any(|(name, _)| name == "families"))
+            .expect("the stripping is reported");
+        assert_eq!(stripping.0, Level::DEBUG, "the report is debug-level");
+        let fields: std::collections::BTreeMap<_, _> = stripping.1.iter().cloned().collect();
+        assert_eq!(
+            fields.get("families").map(String::as_str),
+            Some(format!("{:?}", vec![EPILOGUE_COOKIE_CHECK, PROLOGUE_COOKIE_SAVE]).as_str()),
+            "the whole canary body reports its two families in pass order, and the \
+             failure call went with its wrapper so the named-guard family stayed quiet"
+        );
+    }
+
+    #[test]
     fn a_body_that_strips_nothing_logs_nothing() {
         let capture = std::sync::Arc::new(Capture::default());
         let shared = Arc::clone(&capture.0);
@@ -913,6 +1322,8 @@ mod tests {
 
         let idiom = concat!(
             "{\n",
+            "  undefined8 local_8;\n",
+            "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
             "  if (local_8 != DAT_18004a040) {\n",
             "    __report_gsfailure();\n",
             "  }\n",
@@ -923,7 +1334,8 @@ mod tests {
         let once = strip("FUN_1800012a0", idiom);
         assert_eq!(
             once.body, "{\n  return;\n}\n",
-            "the wrapper goes with its call and the standalone init call follows it"
+            "the wrapper goes with its call, the save line and the orphaned \
+             declaration with it, and the standalone init call follows them"
         );
         let twice = strip("FUN_1800012a0", &once.body);
         assert_eq!(

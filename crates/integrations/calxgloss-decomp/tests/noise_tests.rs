@@ -1,5 +1,5 @@
 //! The decompiler-noise pre-filter at the seam's `decompile` read exits
-//! (issues #271 and #272).
+//! (issues #271–#273).
 //!
 //! The fake-engine-body assertions drive the cached source in the tampered-
 //! document style of `cache_tests.rs`: bodies the fixture engine could never
@@ -114,12 +114,12 @@ async fn a_seeded_body_of_guard_calls_comes_back_stripped_and_stays_raw_on_disk(
 }
 
 #[tokio::test]
-async fn a_seeded_body_of_the_epilogue_cookie_check_comes_back_stripped_and_stays_raw_on_disk() {
-    // The epilogue family (issue #272): the if-wrapped cookie comparison
-    // with the failure call inside comes out whole. The cookie-save line
-    // beside it belongs to the prologue family (#273) and the equality
-    // test with a real call in its block is the conservative gate's —
-    // both stand byte-for-byte.
+async fn a_seeded_full_canary_body_comes_back_stripped_and_stays_raw_on_disk() {
+    // The prologue+epilogue idiom (issues #272–#273): the save line and the
+    // if-wrapped comparison with its failure call come out whole, but the
+    // declaration stays — the equality test and the return still name the
+    // local. That equality test, with a real call in its block, is the
+    // conservative gate's and stands byte-for-byte.
     let (workspace, binary) = workspace_with_fixture();
     let source = cached_source(workspace.path(), &binary);
     let fake = DecompiledFunction {
@@ -158,14 +158,14 @@ async fn a_seeded_body_of_the_epilogue_cookie_check_comes_back_stripped_and_stay
         concat!(
             "{\n",
             "  undefined8 local_8;\n",
-            "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
             "  FUN_180045a00(param_1);\n",
             "  if (local_8 == DAT_18004a040) { FUN_180045a00(local_8); }\n",
             "  return (local_8 ^ 0x22);\n",
             "}\n",
         ),
-        "the wrapper, the comparison, and the failure call are gone together, and \
-         everything around them is byte-identical"
+        "the save line, the wrapper, the comparison, and the failure call are gone \
+         together, the still-referenced declaration stays, and everything else is \
+         byte-identical"
     );
 
     let on_disk: DecompiledFunction =
@@ -173,6 +173,52 @@ async fn a_seeded_body_of_the_epilogue_cookie_check_comes_back_stripped_and_stay
     assert_eq!(
         on_disk.body, fake.body,
         "the cache file holds the raw engine text"
+    );
+}
+
+#[tokio::test]
+async fn a_seeded_canary_body_loses_its_orphaned_cookie_declaration_too() {
+    // Issue #273's local sweep at the seam: with the save and the compare
+    // gone, nothing references local_8 anymore, and its declaration goes
+    // with the idiom — while the function's real statements and return
+    // come back byte-identical.
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
+    let fake = DecompiledFunction {
+        name: "gs_prologue".into(),
+        signature: "void gs_prologue(int param_1)".into(),
+        body: concat!(
+            "{\n",
+            "  undefined8 local_8;\n",
+            "  local_8 = ___security_cookie ^ (ulonglong)&stack0x00000008;\n",
+            "  FUN_180045a00(param_1);\n",
+            "  if (local_8 != ___security_cookie) {\n",
+            "    __report_gsfailure();\n",
+            "  }\n",
+            "  return;\n",
+            "}\n",
+        )
+        .into(),
+    };
+    let document = source
+        .cache_dir()
+        .expect("the disk tier is on")
+        .join("decompile/gs_prologue.json");
+    calxgloss_types::save_json(&document, &fake).expect("fake body seeded");
+
+    let read = ScanSource::decompile(&source, "gs_prologue")
+        .await
+        .expect("disk-hit decompile");
+    assert_eq!(
+        read.body,
+        concat!("{\n", "  FUN_180045a00(param_1);\n", "  return;\n", "}\n",),
+        "the whole idiom and the orphaned declaration are gone through the seam read"
+    );
+    let on_disk: DecompiledFunction =
+        calxgloss_types::load_json(&document).expect("the seeded document still parses");
+    assert_eq!(
+        on_disk.body, fake.body,
+        "the cache file holds the raw engine text, declaration and all"
     );
 }
 
