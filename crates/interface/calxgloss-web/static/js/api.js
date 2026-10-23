@@ -132,9 +132,12 @@ export const API = {
     async cancelCurrentUnit() { return API.post("/api/pipeline/cancel-current"); },
     // Per-binary pause (issue #221/#222, X6) — steers one target binary in or
     // out of the run's queue without touching the run-level machine; live
-    // router only, like the lifecycle controls.
+    // router only, like the lifecycle controls. Per-binary start (issue #285)
+    // composes the swap — pause the in-flight binary, resume and focus this
+    // one — and releases a run-level pause or begins a classify-only session.
     async pauseBinary(name) { return API.post(`/api/pipeline/binaries/${encodeURIComponent(name)}/pause`); },
     async resumeBinary(name) { return API.post(`/api/pipeline/binaries/${encodeURIComponent(name)}/resume`); },
+    async startBinary(name) { return API.post(`/api/pipeline/binaries/${encodeURIComponent(name)}/start`); },
     // Translation scope controls (issue #93, driven by the panel in issue
     // #95) — live router only; plain serve has no pipeline to steer.
     async scopeStatus() { return API.get("/api/scope"); },

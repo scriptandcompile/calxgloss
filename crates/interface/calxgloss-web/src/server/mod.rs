@@ -1055,6 +1055,14 @@ fn live_only_routes() -> Router<CombinedState> {
             "/api/pipeline/binaries/{binary}/resume",
             post(handlers::api_resume_binary),
         )
+        // Per-binary start (issue #285): one press composes the swap — the
+        // in-flight binary is paused, the pressed one resumed and focused
+        // at the front of the queue plan. Live-only like the pause/focus
+        // pair — there is no run to swap onto without a live loop.
+        .route(
+            "/api/pipeline/binaries/{binary}/start",
+            post(handlers::api_start_binary),
+        )
         // Per-binary focus (issue #284): park one discovered binary in the
         // scope record's single focus slot; the running worklist hoists it
         // at the next boundary and consumes the slot. Live-only — there is

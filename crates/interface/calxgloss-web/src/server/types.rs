@@ -1876,10 +1876,12 @@ pub struct UnitCancelResponse {
     pub message: String,
 }
 
-/// Response body of the `POST /api/pipeline/binaries/{binary}/pause` and
-/// `.../resume` endpoints (issue #221, X6). Echoes the addressed binary and
-/// the paused flag now in force, so the dashboard reconciles the row without
-/// a second round-trip.
+/// Response body of the `POST /api/pipeline/binaries/{binary}/pause`,
+/// `.../resume`, and `.../start` endpoints (issue #221, X6; #285). Echoes
+/// the addressed binary and the paused flag now in force, so the dashboard
+/// reconciles the row without a second round-trip — a start echoes the
+/// target with `paused: false`, its message naming the binary the swap
+/// paused instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BinaryPauseResponse {
     /// The binary the call addressed, echoed verbatim.

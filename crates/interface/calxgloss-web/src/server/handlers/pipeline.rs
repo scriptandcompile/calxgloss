@@ -17,7 +17,8 @@ use axum::{
 use calxgloss_types::{
     BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PalReadiness,
     PalTraitReadiness, PassStatus, PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest,
-    RunRequestSignal, ScopeControl, TokenUsageLog, TranslationPhase, derive_unit_confidence,
+    PipelineState, RunRequestSignal, ScopeControl, TokenUsageLog, TranslationPhase,
+    derive_unit_confidence,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -886,6 +887,151 @@ pub async fn api_resume_binary(
     PathExtractor(binary): PathExtractor<String>,
 ) -> Result<Json<BinaryPauseResponse>, ServerError> {
     control_binary_pause(&combined, &binary, false).await
+}
+
+// ─── POST /api/pipeline/binaries/{binary}/start ──────────────────────
+
+/// The pipeline rows' single translation toggle pressed in its Start
+/// Translation state (issue #285): one press **swaps** the run onto this
+/// binary, composed server-side so the sequence cannot half-apply from a
+/// flaky client. The target is resumed and focused — the front of the
+/// run's queue at the next binary boundary (issue #284) — and whatever is
+/// in flight is paused through the per-binary pause path (unit-boundary
+/// semantics, completed work kept, re-queued once), so exactly one binary
+/// is ever actively translated. The press also carries the lifecycle
+/// truth of the row it sits on: a run-level pause is released, and a
+/// session that has only classified so far begins translating with this
+/// binary first. A run that has already completed its pass for the target
+/// is refused with 409 naming the reason — re-running a finished pass is
+/// restart's verb, and the row's Configure opens that dialog with the
+/// binary pre-selected — and a terminal run is refused with the state
+/// machine's own message. The response reuses the binary-pause shape:
+/// the target echoed with `paused: false`, and a message naming the
+/// binary the swap paused, so the toast is honest about the side effect.
+/// Same honesty rules as the pause pair: 503 with no live scope handle or
+/// run channel attached, 409 for a binary the workspace has not
+/// discovered. Live router only.
+async fn control_binary_start(
+    combined: &CombinedState,
+    binary: &str,
+) -> Result<Json<BinaryPauseResponse>, ServerError> {
+    let scope = scope_handle(combined)?;
+    let (control, run_requests) = run_handles(combined)?;
+    let discovered = discovered_binaries(combined, &scope).await;
+    if !discovered
+        .iter()
+        .any(|b| binary_matches(b.as_str(), binary))
+    {
+        return Err(ServerError::conflict(&format!(
+            "this workspace has not discovered the binary '{binary}' — nothing to start"
+        )));
+    }
+
+    // Stale-press guard: while the run is in flight, a target that is
+    // neither the binary in flight nor named by its live queue plan has
+    // already had its pass. (Names match case-insensitively, issue #107.)
+    let previous = control.state();
+    let in_flight = matches!(
+        previous,
+        PipelineState::Running | PipelineState::Paused | PipelineState::Stopping
+    );
+    let processing = match &combined.progress {
+        Some(progress) => progress.read().await.processing_binary().await,
+        None => None,
+    };
+    let planned = match &combined.progress {
+        Some(progress) => progress.read().await.queue().await,
+        None => Vec::new(),
+    };
+    let target_is_processing = processing
+        .as_ref()
+        .is_some_and(|current| binary_matches(current.as_str(), binary));
+    if in_flight
+        && !target_is_processing
+        && !planned.iter().any(|name| binary_matches(name, binary))
+    {
+        return Err(ServerError::conflict(&format!(
+            "this run has already completed its pass for the binary '{binary}' — \
+             use restart (the row's Configure) to run it again"
+        )));
+    }
+
+    // The target enters the swap already admitted: its own pause, if any,
+    // is cleared exactly as the resume endpoint clears it (idempotent).
+    scope.resume_binary(binary).map_err(persist_error)?;
+
+    // The lifecycle half follows the transition-first discipline of
+    // POST /api/pipeline/start (ADR-0004): a paused run releases so the
+    // swap can actually proceed, a not-yet-translating session drives the
+    // start transition before any request is queued, and a run already
+    // translating is left exactly as it is. Stopping and terminal states
+    // are refused by the machine itself, carrying its own message.
+    match previous {
+        PipelineState::Paused => control
+            .resume()
+            .map_err(|e| ServerError::conflict(&e.to_string()))?,
+        PipelineState::Idle => {
+            control
+                .start()
+                .map_err(|e| ServerError::conflict(&e.to_string()))?;
+            run_requests.request(PipelineRunRequest::default());
+        }
+        PipelineState::Running => {}
+        PipelineState::Stopping | PipelineState::Complete | PipelineState::Error => {
+            control
+                .start()
+                .map_err(|e| ServerError::conflict(&e.to_string()))?;
+        }
+    }
+
+    // The swap itself: the binary in flight yields to the target — held
+    // out of the queue at the next unit boundary through the existing
+    // pause path, with its `BinaryPauseChanged` fan-out; a differently-
+    // cased spelling of the same binary is the same binary (issue #107).
+    let mut swapped_out = None;
+    if let Some(current) = &processing
+        && !binary_matches(current.as_str(), binary)
+    {
+        scope
+            .pause_binary(current.as_str())
+            .map_err(persist_error)?;
+        swapped_out = Some(current.as_str().to_string());
+    }
+
+    // The focus slot steers the run loop and the served plan order (issue
+    // #284): the target leads at the next binary boundary, and the poll
+    // already shows it at the front.
+    scope.set_focus(binary).map_err(persist_error)?;
+
+    info!(
+        binary,
+        swapped_out = swapped_out.as_deref().unwrap_or("none"),
+        previous = %previous,
+        state = %control.state(),
+        "scope: binary start (swap) applied via API"
+    );
+    Ok(Json(BinaryPauseResponse {
+        binary: binary.to_string(),
+        paused: false,
+        message: match &swapped_out {
+            Some(held) => format!(
+                "Started {binary} — paused {held} to make way; {binary} leads the queue plan."
+            ),
+            None => format!("Started {binary} — it leads the run's queue plan."),
+        },
+    }))
+}
+
+/// Swap the live run onto one target binary (issue #285): the rows' single
+/// Start Translation button drives this — pause what is in flight, resume
+/// and focus what was pressed. Distinct from `POST /api/pipeline/start`,
+/// which begins the whole run with no binary in mind; the row's button
+/// never touches that endpoint. Live router only.
+pub async fn api_start_binary(
+    State(combined): State<CombinedState>,
+    PathExtractor(binary): PathExtractor<String>,
+) -> Result<Json<BinaryPauseResponse>, ServerError> {
+    control_binary_start(&combined, &binary).await
 }
 
 // ─── POST /api/pipeline/binaries/{binary}/focus ──────────────────────
