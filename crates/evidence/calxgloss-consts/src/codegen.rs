@@ -4,8 +4,10 @@
 //! string — the reconstructed constants spelled out as code a reviewer
 //! reads side by side with the JSON: a `bitflags!`-style block per flag
 //! family with its bits named by position, an `enum` block per enum
-//! candidate with its variants named by value, and `const` items for
-//! the named, protocol, and color constants using each record's name.
+//! candidate with its variants named by value, `const` items for
+//! the named, protocol, and color constants using each record's name,
+//! and a `pub const` array per data table with its element type and
+//! decoded entries.
 //! The renderer is pure — data in, string out, no engine and no clock —
 //! and deterministic: it stamps no timestamp and sorts every section,
 //! so two renders of the same document are byte-identical and a rescan
@@ -32,8 +34,8 @@
 //!   taken gains `_2`, `_3`, … in render order — so two same-named
 //!   records still get distinct, stable declarations.
 //! - **Everything sorted.** Families by mask, enums by function then
-//!   run start, constants by value — so the same document always
-//!   renders the same blocks in the same order.
+//!   run start, constants by value, tables by address — so the same
+//!   document always renders the same blocks in the same order.
 //! - **The header always stands, the body only when supported.** An
 //!   empty result renders a header-only file: the header names the
 //!   binary and nothing else, never the scan time.
@@ -47,7 +49,7 @@
 use std::collections::HashSet;
 
 use crate::bitmask::flags_type;
-use crate::types::{ConstFinding, ConstResult, FlagFamily, int_const_type};
+use crate::types::{ConstFinding, ConstResult, DataTable, FlagFamily, int_const_type};
 
 /// Rust keywords and reserved words a sanitized identifier must not spell
 /// verbatim; a declaration named one gets a trailing `_` instead.
@@ -62,7 +64,8 @@ const RUST_KEYWORDS: &[&str] = &[
 /// Render the result's findings as one Rust source string.
 ///
 /// Declarations appear sorted by record — families by mask, enums by
-/// function then run start, constants by value — and nothing volatile
+/// function then run start, constants by value, tables by address —
+/// and nothing volatile
 /// (timestamps, counts) is written, so the same document always renders
 /// to the same bytes. An empty result renders a header-only file: the
 /// header names the binary and stands on its own.
@@ -85,6 +88,7 @@ pub fn render_codegen(result: &ConstResult) -> String {
     render_families(result, &mut taken, &mut out);
     render_enums(result, &mut taken, &mut out);
     render_constants(result, &mut taken, &mut out);
+    render_tables(result, &mut taken, &mut out);
     out
 }
 
@@ -227,6 +231,101 @@ fn render_constants(result: &ConstResult, taken: &mut HashSet<String>, out: &mut
     }
 }
 
+/// The data-table blocks: one `pub const` array per table finding,
+/// sorted by address, named by the label's Rust form (the mechanical
+/// uppercase spelling for a bare `DAT_*`/`switchD_*` label, the
+/// meaningful label verbatim). The declared length is the number of
+/// entries actually spelled, so the file always compiles; a truncated
+/// record gets a comment above the declaration stating the full entry
+/// count rather than pretending the prefix is the whole table. Float
+/// entries are the raw bit patterns the record carries, re-spelled as
+/// the float literals their element type names.
+fn render_tables(result: &ConstResult, taken: &mut HashSet<String>, out: &mut String) {
+    let mut tables: Vec<&DataTable> = result
+        .findings
+        .iter()
+        .filter_map(|finding| match finding {
+            ConstFinding::DataTable(record) => Some(record),
+            _ => None,
+        })
+        .collect();
+    tables.sort_by_key(|record| (record.address, record.symbol.as_str()));
+
+    for record in tables {
+        out.push('\n');
+        if record.values_truncated {
+            out.push_str(&format!(
+                "// values truncated — {} entries total, first {} shown\n",
+                record.count,
+                record.values.len(),
+            ));
+        }
+        let name = unique_name(
+            &sanitize_identifier(&DataTable::rust_name(&record.symbol)),
+            taken,
+        );
+        let values: Vec<String> = record
+            .values
+            .iter()
+            .map(|value| table_value(&record.element_type, *value))
+            .collect();
+        out.push_str(&format!(
+            "pub const {name}: [{type}; {len}] = [\n",
+            type = record.element_type,
+            len = values.len(),
+        ));
+        for chunk in values.chunks(VALUES_PER_LINE) {
+            out.push_str(&format!("    {},\n", chunk.join(", ")));
+        }
+        out.push_str("];\n");
+    }
+}
+
+/// Table entries spelled per line before the value list wraps — wide
+/// enough to read as a row, narrow enough to keep the file diffable.
+const VALUES_PER_LINE: usize = 12;
+
+/// The literal one decoded entry spells: integers in hex as the rest
+/// of the file spells values; a float entry is the record's raw
+/// IEEE-754 bit pattern, formatted back through its element type to
+/// the shortest decimal that reads as the same float. A non-finite
+/// bit pattern — one the engine's decode gate refuses, but a
+/// hand-edited document can carry — spells the type's `NAN`,
+/// `INFINITY`, or `NEG_INFINITY` path so the emitted array stays
+/// valid Rust whatever the record holds.
+fn table_value(element_type: &str, value: u64) -> String {
+    match element_type {
+        "f32" => {
+            let v = f32::from_bits(value as u32);
+            if v.is_finite() {
+                format!("{v}")
+            } else {
+                format!("f32::{}", non_finite_name(v.is_nan(), v.is_sign_negative()))
+            }
+        }
+        "f64" => {
+            let v = f64::from_bits(value);
+            if v.is_finite() {
+                format!("{v}")
+            } else {
+                format!("f64::{}", non_finite_name(v.is_nan(), v.is_sign_negative()))
+            }
+        }
+        _ => format!("{value:#x}"),
+    }
+}
+
+/// The associated-constant name a non-finite float spells: `NAN`,
+/// `INFINITY`, or `NEG_INFINITY` — all valid paths in a `const`
+/// expression, unlike the `NaN`/`inf` its `Display` would emit.
+fn non_finite_name(is_nan: bool, is_negative: bool) -> &'static str {
+    match (is_nan, is_negative) {
+        (true, _) => "NAN",
+        (false, false) => "INFINITY",
+        (false, true) => "NEG_INFINITY",
+    }
+}
+
 /// The variant spelling one case value suggests: `VALUE_3`, and a
 /// negative run's value spelled `VALUE_NEG_3` — a Rust identifier
 /// cannot carry the minus sign, and the name still says the value.
@@ -294,8 +393,8 @@ fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
 mod tests {
     use super::*;
     use crate::types::{
-        BitflagGroup, ColorConstant, Confidence, EnumCandidate, NamedConstant, ProtocolConstant,
-        ScanMetadata,
+        BitflagGroup, ColorConstant, Confidence, DataTable, EnumCandidate, NamedConstant,
+        ProtocolConstant, ScanMetadata,
     };
 
     fn result_with(binary: &str, findings: Vec<ConstFinding>) -> ConstResult {
@@ -363,6 +462,35 @@ mod tests {
             suggestion: "one named const per color".to_string(),
             confidence: Confidence::new(60),
             evidence: "0x123456 used 1 times in FUN_a".to_string(),
+        })
+    }
+
+    /// A table finding with the given label and entries; a `truncated`
+    /// record keeps the entries shown plus 88 more that the count
+    /// states but the list drops.
+    fn table(
+        symbol: &str,
+        address: u64,
+        element_type: &str,
+        values: Vec<u64>,
+        truncated: bool,
+    ) -> ConstFinding {
+        let count = if truncated {
+            values.len() + 88
+        } else {
+            values.len()
+        };
+        ConstFinding::DataTable(DataTable {
+            symbol: symbol.to_string(),
+            address,
+            element_type: element_type.to_string(),
+            count,
+            values,
+            values_truncated: truncated,
+            functions: vec!["FUN_a".to_string(), "FUN_b".to_string()],
+            suggestion: DataTable::render_suggestion(symbol, element_type, count),
+            confidence: Confidence::new(70),
+            evidence: format!("{symbol} decoded as {count} {element_type} entries"),
         })
     }
 
@@ -476,6 +604,160 @@ mod tests {
     }
 
     #[test]
+    fn a_data_table_renders_a_pub_const_array_with_its_type_count_and_values() {
+        let values = (1u64..=12).collect();
+        let rendered = render_codegen(&result_with(
+            "eqmain.dll",
+            vec![table("DAT_1400a1b60", 0x1400_a1b60, "u16", values, false)],
+        ));
+
+        assert!(
+            rendered.contains("pub const DAT_1400A1B60: [u16; 12] = [\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("    0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc,\n"),
+            "{rendered}"
+        );
+        assert!(rendered.ends_with("];\n"), "{rendered}");
+    }
+
+    #[test]
+    fn a_meaningful_label_names_its_table_verbatim() {
+        let rendered = render_codegen(&result_with(
+            "eqmain.dll",
+            vec![table(
+                "gDamageCurve",
+                0x1400_a1b60,
+                "u32",
+                vec![10, 20, 30],
+                false,
+            )],
+        ));
+
+        assert!(
+            rendered.contains("pub const gDamageCurve: [u32; 3] = [\n    0xa, 0x14, 0x1e,\n];\n"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_float_table_renders_its_bit_patterns_as_float_literals() {
+        let f32s = |vs: &[f32]| vs.iter().map(|v| v.to_bits() as u64).collect();
+        let rendered = render_codegen(&result_with(
+            "eqmain.dll",
+            vec![
+                table(
+                    "DAT_1400a1b60",
+                    0x1400_a1b60,
+                    "f32",
+                    f32s(&[1.5, -2.25]),
+                    false,
+                ),
+                table(
+                    "gScaleFactors",
+                    0x1400_a1c00,
+                    "f64",
+                    vec![0.25f64.to_bits()],
+                    false,
+                ),
+            ],
+        ));
+
+        assert!(
+            rendered.contains("pub const DAT_1400A1B60: [f32; 2] = [\n    1.5, -2.25,\n];\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("pub const gScaleFactors: [f64; 1] = [\n    0.25,\n];\n"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_non_finite_bit_pattern_still_renders_a_compiling_literal() {
+        // The record is data a hand-edited document can carry anything
+        // in: the engine's decode gate refuses non-finite floats, but
+        // a stray bit pattern still has to spell valid Rust.
+        let rendered = render_codegen(&result_with(
+            "eqmain.dll",
+            vec![table(
+                "DAT_1400a1b60",
+                0x1400_a1b60,
+                "f32",
+                vec![0x7f80_0000, 0xff80_0000, 0x7fc0_0000],
+                false,
+            )],
+        ));
+
+        assert!(
+            rendered.contains(
+                "pub const DAT_1400A1B60: [f32; 3] = [\n    f32::INFINITY, f32::NEG_INFINITY, f32::NAN,\n];\n"
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_table_colliding_with_an_earlier_declaration_gains_a_suffix() {
+        // The collision machinery is file-wide: a named constant
+        // already holds the name the bare label's mechanical form
+        // spells, so the table gains the next suffix.
+        let rendered = render_codegen(&result_with(
+            "eqmain.dll",
+            vec![
+                named(0x5, Some("DAT_1400A1B60")),
+                table("DAT_1400a1b60", 0x1400_a1b60, "u16", vec![1, 2], false),
+            ],
+        ));
+
+        assert!(
+            rendered.contains("const DAT_1400A1B60: u32 = 0x5;\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("pub const DAT_1400A1B60_2: [u16; 2] = [\n"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_truncated_value_list_renders_a_truncation_comment_stating_the_full_count() {
+        let values = (0..512).collect();
+        let rendered = render_codegen(&result_with(
+            "eqmain.dll",
+            vec![table("DAT_1400a1b60", 0x1400_a1b60, "u16", values, true)],
+        ));
+
+        assert!(
+            rendered.contains("// values truncated — 600 entries total, first 512 shown\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("pub const DAT_1400A1B60: [u16; 512] = [\n"),
+            "the declared length matches the values actually spelled: {rendered}"
+        );
+    }
+
+    #[test]
+    fn tables_render_sorted_by_address() {
+        let rendered = render_codegen(&result_with(
+            "eqmain.dll",
+            vec![
+                table("DAT_1400a1b60", 0x1400_a1b60, "u16", vec![1, 2], false),
+                table("DAT_1400a1000", 0x1400_a1000, "u16", vec![3, 4], false),
+            ],
+        ));
+
+        let low = rendered.find("DAT_1400A1000").unwrap_or(usize::MAX);
+        let high = rendered.find("DAT_1400A1B60").unwrap_or(usize::MAX);
+        assert!(
+            low < high,
+            "tables render at ascending addresses: {rendered}"
+        );
+    }
+
+    #[test]
     fn identifiers_are_sanitized_and_collisions_gain_suffixes_in_render_order() {
         let rendered = render_codegen(&result_with(
             "eqmain.dll",
@@ -552,6 +834,13 @@ mod tests {
                 named(0x280, Some("SIZE_0x280")),
                 protocol(0xdeadbeef, "DEAD_BEEF_MARKER"),
                 palette(&[0x123456, 0xff00ff]),
+                table(
+                    "DAT_1400a1b60",
+                    0x1400_a1b60,
+                    "u16",
+                    (1..=12).collect(),
+                    false,
+                ),
             ],
         );
         assert_eq!(render_codegen(&result), render_codegen(&result));
@@ -613,6 +902,7 @@ mod tests {
                 named(0x280, Some("SIZE_0x280")),
                 protocol(0x89504e47, "PNG_MAGIC"),
                 palette(&[0x123456]),
+                table("DAT_1400a1b60", 0x1400_a1b60, "u16", vec![1, 2, 3], false),
             ],
         ));
         let expected = "\
@@ -640,6 +930,10 @@ pub enum FUN_c_State {
 const SIZE_0x280: u32 = 0x280;
 const PNG_MAGIC: u32 = 0x89504e47;
 const COLOR_0x123456: u32 = 0x123456;
+
+pub const DAT_1400A1B60: [u16; 3] = [
+    0x1, 0x2, 0x3,
+];
 ";
         assert_eq!(rendered, expected);
     }
