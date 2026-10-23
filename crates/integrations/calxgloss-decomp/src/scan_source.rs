@@ -148,6 +148,25 @@ pub trait ScanSource {
     }
 }
 
+/// The engine's decompile mapped to the seam's shape, raw — the text as the
+/// engine rendered it, before the decompiler-noise pre-filter has seen it.
+///
+/// Both analysis sources read through this one function: the in-process arm
+/// below filters the mapped record at its exit, and the read cache's live
+/// tier fetches through here so its memo and disk documents hold the
+/// engine's raw text, with the filter applied above the cache instead —
+/// reversible by deleting the cache (ADR-0043, issue #271).
+pub(crate) async fn raw_decompile(source: &KunaSource, name: &str) -> Result<DecompiledFunction> {
+    KunaSource::decompile_function(source, name)
+        .await
+        .map(|function| DecompiledFunction {
+            name: function.name,
+            signature: function.signature,
+            body: function.body,
+        })
+        .map_err(EngineError::from)
+}
+
 /// The core scan reads answered by the in-process Kuna engine (issue #206).
 ///
 /// Every read the trait carries maps onto [`KunaSource`]'s inherent API,
@@ -174,14 +193,11 @@ impl ScanSource for KunaSource {
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        KunaSource::decompile_function(self, name)
+        // The exit filter (issue #271): every consumer of this arm's pseudo-C
+        // sees bodies with the recognized compiler noise already stripped.
+        raw_decompile(self, name)
             .await
-            .map(|function| DecompiledFunction {
-                name: function.name,
-                signature: function.signature,
-                body: function.body,
-            })
-            .map_err(EngineError::from)
+            .map(crate::noise_filter::strip_decompiler_noise)
     }
 
     async fn disassembly(&self, name: &str) -> Result<String> {

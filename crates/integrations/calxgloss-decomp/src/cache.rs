@@ -7,6 +7,9 @@
 //! record of effort, then the engine — and every engine result is written
 //! through to disk immediately, so an interrupted run leaves a valid partial
 //! cache and a second run over the same bytes replays with zero engine calls.
+//! The `decompile` read is the one exception on the way out: the
+//! decompiler-noise pre-filter runs above the cache, so every tier keeps the
+//! engine's raw text and the filter re-applies on each read (issue #271).
 //!
 //! **Validity is the key.** The disk tier lives at
 //! `re/cache/{binary identity}/{sha256}/`, where the hash is SHA-256
@@ -65,7 +68,7 @@ use crate::model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, StringLiteral,
     StructLayout, Symbol, Xref,
 };
-use crate::scan_source::ScanSource;
+use crate::scan_source::{ScanSource, raw_decompile};
 use calxgloss_kuna::KunaSource;
 use calxgloss_types::BinaryIdentity;
 use calxgloss_types::TranslationEvents;
@@ -411,9 +414,14 @@ impl ScanSource for CachedScanSource {
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
+        // The live tier fetches through `raw_decompile`, not the Kuna arm's
+        // `ScanSource::decompile`: the noise pre-filter must sit above the
+        // cache, so the memo and the disk document keep the engine's raw
+        // text — debuggable, and reversible by deleting the cache
+        // (ADR-0043, issue #271) — and the filter runs on the way out.
         let (body, from_cache) = self
             .cached_hit(CacheKey::Decompile(name.to_string()), || {
-                ScanSource::decompile(&self.inner.source, name)
+                raw_decompile(&self.inner.source, name)
             })
             .await?;
         if from_cache {
@@ -422,7 +430,7 @@ impl ScanSource for CachedScanSource {
             // (issue #121 — the dashboard's per-binary activity line).
             self.inner.source.tick(name);
         }
-        Ok(body)
+        Ok(crate::noise_filter::strip_decompiler_noise(body))
     }
 
     async fn disassembly(&self, name: &str) -> Result<String> {

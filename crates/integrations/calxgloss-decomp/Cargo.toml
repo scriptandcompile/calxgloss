@@ -22,6 +22,9 @@ thiserror = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile = "3"
+# The noise filter's debug-log test installs a capturing `Subscriber`, whose
+# full method set (tracing-core 0.1.36) names `tracing_core::span::Current`.
+tracing-core = "0.1.36"
 # The fixture target binary the Kuna engine tests drive the `drive_all`
 # seam harness over; the reachability test below keeps that wiring honest.
 calxgloss-testfixtures = { path = "../calxgloss-testfixtures" }

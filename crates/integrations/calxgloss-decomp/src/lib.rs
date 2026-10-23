@@ -22,6 +22,11 @@
 //!   types that remain live vocabulary: decompiled pseudo-C in the FUN_…
 //!   dialect, the scraper over it, and the shapes the persisted records
 //!   carry.
+//! * `noise_filter` is the decompiler-noise pre-filter — the one pure text
+//!   pass applied at the exit of the `decompile` read in both sources, so
+//!   every consumer sees pseudo-C with recognized compiler noise (the GS
+//!   stack-canary family first, issue #232) already stripped. It changes
+//!   nothing on disk: the cache keeps the engine's raw text (issue #271).
 //!
 //! The crate was named `calxgloss-ghidra` until ADR-0042 took up ADR-0041's
 //! deferred renames, and the scan read cache filed under `re/ghidra-cache`
@@ -32,6 +37,7 @@
 mod cache;
 mod error;
 mod model;
+mod noise_filter;
 pub mod parse;
 mod scan_source;
 mod type_write_source;
