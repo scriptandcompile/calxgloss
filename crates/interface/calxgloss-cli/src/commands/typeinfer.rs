@@ -286,7 +286,7 @@ fn print_method_breakdown(items: &[String]) {
     println_content(&line);
 }
 
-/// Which record kind an inference is — the union's five variants.
+/// Which record kind an inference is — the union's six variants.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InferenceKind {
     Param,
@@ -294,6 +294,7 @@ enum InferenceKind {
     CallSite,
     Return,
     Convention,
+    Direction,
 }
 
 /// How many inferences of one record kind the result carries.
@@ -309,6 +310,7 @@ fn count_kind(result: &TypeInferenceResult, kind: InferenceKind) -> usize {
                     | (InferenceKind::CallSite, InferredType::CallSite(_))
                     | (InferenceKind::Return, InferredType::Return(_))
                     | (InferenceKind::Convention, InferredType::Convention(_))
+                    | (InferenceKind::Direction, InferredType::Direction(_))
             )
         })
         .count()
@@ -323,6 +325,7 @@ fn kind_breakdown(result: &TypeInferenceResult) -> Vec<String> {
         ("call_site", count_kind(result, InferenceKind::CallSite)),
         ("return", count_kind(result, InferenceKind::Return)),
         ("convention", count_kind(result, InferenceKind::Convention)),
+        ("direction", count_kind(result, InferenceKind::Direction)),
     ]
     .into_iter()
     .filter(|(_, count)| *count > 0)
@@ -346,6 +349,7 @@ fn method_breakdown(result: &TypeInferenceResult) -> Vec<String> {
         InferenceMethod::CrossFunction,
         InferenceMethod::AssignmentChain,
         InferenceMethod::ReturnUsage,
+        InferenceMethod::ParamDirection,
         InferenceMethod::Mangling,
         InferenceMethod::MangledConvention,
         InferenceMethod::ImportDecoration,
@@ -380,13 +384,16 @@ fn inference_method(inference: &InferredType) -> InferenceMethod {
         InferredType::CallSite(record) => record.method,
         InferredType::Return(record) => record.method,
         InferredType::Convention(record) => record.method,
+        InferredType::Direction(record) => record.method,
     }
 }
 
 /// The name of what an inference types: a parameter (its decompiled name,
 /// falling back to its position), a local variable, a call-site argument
-/// spelled as the site that produced it, a function's return, or a
-/// function's calling convention.
+/// spelled as the site that produced it, a function's return, a
+/// function's calling convention, or a parameter's direction — spelled
+/// with the parameter's name so a direction reading stands beside the
+/// type reading for the same parameter.
 fn inference_target(inference: &InferredType) -> String {
     match inference {
         InferredType::Param(record) => record
@@ -405,6 +412,13 @@ fn inference_target(inference: &InferredType) -> String {
             Some(callee) => format!("{callee} convention"),
             None => "convention".to_string(),
         },
+        InferredType::Direction(record) => {
+            let param = record
+                .param_name
+                .clone()
+                .unwrap_or_else(|| format!("param_{}", record.param_index + 1));
+            format!("{param} direction")
+        }
     }
 }
 
@@ -438,8 +452,8 @@ fn print_hidden_count(noun: &str, total: usize) {
 mod tests {
     use super::*;
     use calxgloss_typeinfer::types::{
-        CallingConvention, InferenceScope, InferredCallType, InferredConvention, InferredLocalType,
-        InferredParamType, InferredReturnType,
+        CallingConvention, Direction, InferenceScope, InferredCallType, InferredConvention,
+        InferredLocalType, InferredParamDirection, InferredParamType, InferredReturnType,
     };
 
     fn param(function: &str, method: InferenceMethod) -> InferredType {
@@ -502,6 +516,16 @@ mod tests {
                 confidence: Confidence::new(90),
                 evidence: "?paint@Widget@@QAEXXZ".into(),
             }),
+            InferredType::Direction(InferredParamDirection {
+                function: "FUN_18003ab00".into(),
+                param_index: 0,
+                param_name: Some("param_1".into()),
+                direction: Direction::Out,
+                method: InferenceMethod::ParamDirection,
+                scope: InferenceScope::Function,
+                confidence: Confidence::new(75),
+                evidence: "*param_1 = 0;".into(),
+            }),
         ]);
         assert_eq!(
             kind_breakdown(&result),
@@ -511,6 +535,7 @@ mod tests {
                 "call_site 1",
                 "return 1",
                 "convention 1",
+                "direction 1",
             ]
         );
     }
@@ -603,6 +628,16 @@ mod tests {
                 confidence: Confidence::new(92),
                 evidence: "00401103  CALL paint@12".into(),
             }),
+            InferredType::Direction(InferredParamDirection {
+                function: "FUN_19".into(),
+                param_index: 0,
+                param_name: Some("param_1".into()),
+                direction: Direction::Out,
+                method: InferenceMethod::ParamDirection,
+                scope: InferenceScope::Function,
+                confidence: Confidence::new(75),
+                evidence: "*param_1 = 0;".into(),
+            }),
         ]);
         let breakdown = method_breakdown(&result);
         for method in [
@@ -616,6 +651,7 @@ mod tests {
             InferenceMethod::CrossFunction,
             InferenceMethod::AssignmentChain,
             InferenceMethod::ReturnUsage,
+            InferenceMethod::ParamDirection,
             InferenceMethod::Mangling,
             InferenceMethod::MangledConvention,
             InferenceMethod::ImportDecoration,
@@ -645,5 +681,25 @@ mod tests {
         assert_eq!(inference_target(&record), "convention");
         assert_eq!(inference_method(&record), InferenceMethod::ImportDecoration);
         assert_eq!(record.inferred_type(), "stdcall");
+    }
+
+    #[test]
+    fn a_direction_record_reports_beside_its_parameter() {
+        // The target line names the parameter's direction so the reading
+        // stands beside the parameter's type reading in the list, and
+        // the value column carries the direction word.
+        let record = InferredType::Direction(InferredParamDirection {
+            function: "FUN_18003ab00".into(),
+            param_index: 1,
+            param_name: Some("param_2".into()),
+            direction: Direction::InOut,
+            method: InferenceMethod::ParamDirection,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(75),
+            evidence: "*param_2 = &local_8;".into(),
+        });
+        assert_eq!(inference_target(&record), "param_2 direction");
+        assert_eq!(inference_method(&record), InferenceMethod::ParamDirection);
+        assert_eq!(record.inferred_type(), "inout");
     }
 }

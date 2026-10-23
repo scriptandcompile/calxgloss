@@ -103,6 +103,10 @@ pub enum SkipReason {
     /// A convention record says how a function is called, not a type the
     /// program can hold in a slot — the setters speak types.
     Convention,
+    /// A direction record says which way data flows through a parameter,
+    /// not a type the program can hold in a slot — direction never
+    /// writes back (issue #274).
+    Direction,
 }
 
 impl std::fmt::Display for SkipReason {
@@ -116,6 +120,7 @@ impl std::fmt::Display for SkipReason {
             Self::SlotNotFound => write!(f, "slot not in the current body"),
             Self::CallSiteArgument => write!(f, "call-site reading, not a program slot"),
             Self::Convention => write!(f, "not a program type"),
+            Self::Direction => write!(f, "direction reading, not a program type"),
         }
     }
 }
@@ -191,9 +196,10 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
         let mut report = WriteBackReport::default();
 
         // Floor gate first, and the records that type no program slot —
-        // call-site readings and convention readings — aside: the
-        // setters hold types in parameters and locals, not arguments at
-        // a site or a calling convention.
+        // call-site readings, convention readings, and direction
+        // readings — aside: the setters hold types in parameters and
+        // locals, not arguments at a site, a calling convention, or a
+        // direction.
         let mut surviving: Vec<&InferredType> = Vec::new();
         for record in &result.inferences {
             if record.confidence() < self.floor {
@@ -213,6 +219,11 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
                 report.skipped.push(SkippedRecord {
                     target: target_of(record),
                     reason: SkipReason::Convention,
+                });
+            } else if matches!(record, InferredType::Direction(_)) {
+                report.skipped.push(SkippedRecord {
+                    target: target_of(record),
+                    reason: SkipReason::Direction,
                 });
             } else {
                 surviving.push(record);
@@ -533,7 +544,8 @@ fn is_undefined_type(type_text: &str) -> bool {
 
 /// The report name of a record's target: the function plus what it types —
 /// a parameter's decompiled name (or position), a local's name, `return`,
-/// `convention`, or the call site a call-site record read.
+/// `convention`, a parameter carrying a direction reading, or the call
+/// site a call-site record read.
 fn target_of(record: &InferredType) -> String {
     let subject = match record {
         InferredType::Param(record) => return param_target(record),
@@ -544,6 +556,15 @@ fn target_of(record: &InferredType) -> String {
         },
         InferredType::Return(_) => "return".to_string(),
         InferredType::Convention(_) => "convention".to_string(),
+        // A function can carry several direction readings, so the name
+        // says which parameter's direction was skipped.
+        InferredType::Direction(record) => {
+            let param = record
+                .param_name
+                .clone()
+                .unwrap_or_else(|| format!("param_{}", record.param_index + 1));
+            format!("{param} direction")
+        }
     };
     format!("{} {subject}", record.function())
 }
@@ -740,8 +761,8 @@ mod tests {
 
     use super::*;
     use crate::types::{
-        CallingConvention, InferredCallType, InferredConvention, InferredLocalType,
-        InferredParamType, InferredReturnType, ScanMetadata,
+        CallingConvention, Direction, InferredCallType, InferredConvention, InferredLocalType,
+        InferredParamDirection, InferredParamType, InferredReturnType, ScanMetadata,
     };
 
     // ------------------------------------------------------------
@@ -1008,6 +1029,24 @@ mod tests {
             method: crate::types::InferenceMethod::ImportDecoration,
             confidence: Confidence::new(confidence),
             evidence: function.to_string(),
+        })
+    }
+
+    fn direction(
+        function: &str,
+        param: &str,
+        direction: Direction,
+        confidence: u8,
+    ) -> InferredType {
+        InferredType::Direction(InferredParamDirection {
+            function: function.to_string(),
+            param_index: 1,
+            param_name: Some(param.to_string()),
+            direction,
+            method: crate::types::InferenceMethod::ParamDirection,
+            scope: crate::types::InferenceScope::Function,
+            confidence: Confidence::new(confidence),
+            evidence: "*param_2 = &local_8;".to_string(),
         })
     }
 
@@ -1351,7 +1390,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn site_and_convention_records_are_skipped_as_readings_not_slots() {
+    async fn site_convention_and_direction_records_are_skipped_as_readings_not_slots() {
         let writer = RecordingWriter::default();
         let report = apply(
             program(),
@@ -1359,6 +1398,7 @@ mod tests {
             vec![
                 call_site("FUN_18003ab00", "CloseHandle", "param_2", "void *"),
                 convention("CreateFileA@28", CallingConvention::Stdcall, 85),
+                direction("FUN_18003ab00", "param_2", Direction::Out, 75),
             ],
             0,
         )
@@ -1374,6 +1414,10 @@ mod tests {
                 SkippedRecord {
                     target: "CreateFileA@28 convention".to_string(),
                     reason: SkipReason::Convention,
+                },
+                SkippedRecord {
+                    target: "FUN_18003ab00 param_2 direction".to_string(),
+                    reason: SkipReason::Direction,
                 },
             ]
         );

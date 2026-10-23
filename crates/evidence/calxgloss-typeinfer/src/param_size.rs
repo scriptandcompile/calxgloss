@@ -84,9 +84,14 @@ const WORD_BITS: u32 = 32;
 /// `strn*` family, the character for `strchr`, the buffer size for
 /// `snprintf` — is not a string, and a parameter sitting there gets no
 /// character-pointer reading.
-struct StringFunction {
-    name: &'static str,
-    string_args: &'static [usize],
+///
+/// `pub(crate)` because the direction detector reads the same family:
+/// one table, so a "string function" means the same routine — and reads
+/// the same argument positions — to the size reading and to the
+/// direction reading.
+pub(crate) struct StringFunction {
+    pub(crate) name: &'static str,
+    pub(crate) string_args: &'static [usize],
 }
 
 /// The C string-function family: the routines whose `char *` arguments
@@ -95,7 +100,7 @@ struct StringFunction {
 /// string behind a size argument — `snprintf(buf, size, fmt, ...)` reads
 /// positions 0 and 2 — and a variadic tail argument is not necessarily a
 /// string at all.
-const STRING_FUNCTIONS: [StringFunction; 23] = [
+pub(crate) const STRING_FUNCTIONS: [StringFunction; 23] = [
     StringFunction {
         name: "strlen",
         string_args: &[0],

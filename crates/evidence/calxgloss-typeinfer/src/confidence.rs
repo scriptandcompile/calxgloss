@@ -10,8 +10,8 @@
 //! argument stands read by the size detector and by the known-signature
 //! engine at once. Conflict resolution collapses each target — a
 //! parameter, a local variable, a call-site argument, a function's
-//! return value, or a function's calling convention — to its single
-//! strongest record: the highest confidence
+//! return value, a function's calling convention, or a parameter's
+//! direction — to its single strongest record: the highest confidence
 //! wins, a tie keeps the record the scan showed first, and the survivor
 //! stands where its target first appeared, so the list keeps scan order
 //! and two scans of the same program diff cleanly.
@@ -23,15 +23,18 @@ use std::collections::HashMap;
 use crate::types::InferredType;
 
 /// What a set of competing inferences is keyed on: one parameter, one
-/// local variable, one call-site argument, one function's return, or one
-/// function's calling convention.
+/// local variable, one call-site argument, one function's return, one
+/// function's calling convention, or one parameter's direction.
 ///
-/// The five record kinds identify their targets differently — a
+/// The six record kinds identify their targets differently — a
 /// parameter by position, a local by its decompiled name, a call-site
 /// argument by the callee and position, a return and a convention by the
 /// function alone (a call-site convention view by the caller-and-callee
-/// pair) — so one key shape names all five and records of different
-/// kinds never collide.
+/// pair), and a direction by the function and parameter position in a
+/// key of its own, separate from the parameter arm, so a direction
+/// reading stands beside the type reading for one parameter instead of
+/// competing with it (issue #274) — so one key shape names all six and
+/// records of different kinds never collide.
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Target {
     /// One parameter of one function, by position.
@@ -61,6 +64,14 @@ enum Target {
         function: String,
         callee: Option<String>,
     },
+    /// One parameter's direction — the function and parameter position,
+    /// a key of its own beside the parameter arm: one parameter may
+    /// carry a type reading and a direction reading at once, but only
+    /// one direction (issue #274).
+    Direction {
+        function: String,
+        param_index: usize,
+    },
 }
 
 impl Target {
@@ -87,6 +98,10 @@ impl Target {
                 function: record.function.clone(),
                 callee: record.callee.clone(),
             },
+            InferredType::Direction(record) => Target::Direction {
+                function: record.function.clone(),
+                param_index: record.param_index,
+            },
         }
     }
 }
@@ -94,8 +109,9 @@ impl Target {
 /// Resolve competing inferences down to one per target.
 ///
 /// Where several detectors read the same parameter, local, call-site
-/// argument, or return value differently, the highest-confidence record
-/// wins and the rest drop; a tie keeps the record the scan showed first.
+/// argument, return value, or parameter direction differently, the
+/// highest-confidence record wins and the rest drop; a tie keeps the
+/// record the scan showed first.
 /// The survivor stands where its target first appeared in the list, so
 /// the resolved list keeps scan order — function by function, targets in
 /// the order the bodies showed them — exactly as the raw scan did.
@@ -126,8 +142,9 @@ pub fn resolve_conflicts(inferences: Vec<InferredType>) -> Vec<InferredType> {
 mod tests {
     use super::*;
     use crate::types::{
-        CallingConvention, Confidence, InferenceMethod, InferenceScope, InferredCallType,
-        InferredConvention, InferredLocalType, InferredParamType, InferredReturnType,
+        CallingConvention, Confidence, Direction, InferenceMethod, InferenceScope,
+        InferredCallType, InferredConvention, InferredLocalType, InferredParamDirection,
+        InferredParamType, InferredReturnType,
     };
 
     fn param(
@@ -200,6 +217,24 @@ mod tests {
             method: InferenceMethod::MangledConvention,
             confidence: Confidence::new(confidence),
             evidence: function.into(),
+        })
+    }
+
+    fn direction(
+        function: &str,
+        param_index: usize,
+        direction: Direction,
+        confidence: u8,
+    ) -> InferredType {
+        InferredType::Direction(InferredParamDirection {
+            function: function.into(),
+            param_index,
+            param_name: Some(format!("param_{}", param_index + 1)),
+            direction,
+            method: InferenceMethod::ParamDirection,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(confidence),
+            evidence: format!("*param_{} = x;", param_index + 1),
         })
     }
 
@@ -455,6 +490,69 @@ mod tests {
             convention("?paint@Widget@@QAEXXZ", CallingConvention::Thiscall, 90),
         ]);
         assert_eq!(winners.len(), 2);
+    }
+
+    #[test]
+    fn a_direction_reading_does_not_compete_with_the_type_reading_for_one_parameter() {
+        // The direction arm is keyed apart from the parameter arm on
+        // purpose (issue #274): what a parameter *is* and which way it
+        // *flows* are separate facts and both survive — the type record
+        // and the direction record stand side by side.
+        let winners = resolve_conflicts(vec![
+            param(
+                "FUN_1800412a0",
+                0,
+                InferenceMethod::StringFunction,
+                "char *",
+                70,
+            ),
+            direction("FUN_1800412a0", 0, Direction::In, 60),
+        ]);
+        assert_eq!(winners.len(), 2);
+        assert_eq!(winners[0].inferred_type(), "char *");
+        assert_eq!(winners[1].inferred_type(), "in");
+    }
+
+    #[test]
+    fn one_parameter_never_keeps_two_directions() {
+        // Two direction readings for one parameter — a stronger out and a
+        // weaker in — resolve to the stronger, like every other target.
+        let winners = resolve_conflicts(vec![
+            direction("FUN_1800412a0", 1, Direction::In, 60),
+            direction("FUN_1800412a0", 1, Direction::Out, 75),
+        ]);
+        assert_eq!(winners.len(), 1);
+        let InferredType::Direction(record) = &winners[0] else {
+            unreachable!("direction records stay direction records");
+        };
+        assert_eq!(record.direction, Direction::Out);
+        assert_eq!(record.confidence, Confidence::new(75));
+    }
+
+    #[test]
+    fn a_direction_tie_keeps_the_reading_the_scan_showed_first() {
+        let winners = resolve_conflicts(vec![
+            direction("FUN_1800412a0", 1, Direction::Out, 75),
+            direction("FUN_1800412a0", 1, Direction::InOut, 75),
+        ]);
+        assert_eq!(winners.len(), 1);
+        let InferredType::Direction(record) = &winners[0] else {
+            unreachable!("direction records stay direction records");
+        };
+        assert_eq!(record.direction, Direction::Out);
+    }
+
+    #[test]
+    fn directions_of_two_functions_do_not_conflict() {
+        // The key carries the function: the same parameter position in two
+        // functions is two targets, exactly as for the parameter arm.
+        let winners = resolve_conflicts(vec![
+            direction("FUN_18003ab00", 0, Direction::Out, 75),
+            direction("FUN_18003e750", 0, Direction::In, 60),
+        ]);
+        assert_eq!(winners.len(), 2);
+        assert_eq!(winners[0].function(), "FUN_18003ab00");
+        assert_eq!(winners[1].function(), "FUN_18003e750");
     }
 
     #[test]

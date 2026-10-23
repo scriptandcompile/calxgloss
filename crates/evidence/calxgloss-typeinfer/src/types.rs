@@ -12,7 +12,10 @@
 //!   return value.
 //! - `CallingConvention`, `InferredConvention`: the closed set of calling
 //!   conventions and the reading a function's *name* gives its convention.
-//! - `InferredType`: the union over the five record kinds — one inference
+//! - `Direction`, `InferredParamDirection`: the closed set of parameter
+//!   directions and the reading a function's own *body* gives one of its
+//!   pointer parameters — which way the data flows.
+//! - `InferredType`: the union over the six record kinds — one inference
 //!   wherever it lands.
 //! - `TypeInferenceResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
@@ -70,6 +73,12 @@ pub enum InferenceMethod {
     /// typed local, passed at a known-signature position, or
     /// dereferenced — reads the function's return type.
     ReturnUsage,
+    /// The body's writes and reads on a pointer parameter — a write
+    /// through the pointer makes it an out parameter, a string-function
+    /// read an in parameter, and both together an inout one — read the
+    /// parameter's direction; the evidence line names the write or read
+    /// that decided the reading.
+    ParamDirection,
     /// A C++ name carries the contract: an MSVC-mangled symbol decoded
     /// for convention and argument types, or a demangled qualified name
     /// with a spelled parameter list, types the parameters (and where
@@ -132,6 +141,7 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     CrossFunction => "cross_function",
     AssignmentChain => "assignment_chain",
     ReturnUsage => "return_usage",
+    ParamDirection => "param_direction",
     Mangling => "mangling",
     MangledConvention => "mangled_convention",
     ImportDecoration => "import_decoration",
@@ -410,12 +420,94 @@ pub struct InferredReturnType {
 }
 
 // ============================================================
+// Parameter directions
+// ============================================================
+
+/// Which way data flows through a pointer parameter.
+///
+/// The closed set of directions a body can read: whether the function
+/// writes through the pointer before returning, only reads through it,
+/// or does both. A value parameter is *in* by definition, so no detector
+/// ever reads a direction for one — the set only applies to pointers.
+/// The translator's Rust shape hangs off this choice — a shared borrow,
+/// a mutable borrow, or a return value — so a misread direction mis-
+/// translates the parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    /// The body only reads through the parameter — the reading's
+    /// evidence shows a read and no write.
+    In,
+    /// The body writes through the parameter before returning — the
+    /// caller's storage changes, so the side effect must survive the
+    /// translation.
+    Out,
+    /// The body both reads and writes through the parameter: a
+    /// read-modify-write, not a copy-in/copy-out dance.
+    InOut,
+}
+
+calxgloss_types::display_serde_label!(Direction {
+    In => "in",
+    Out => "out",
+    InOut => "inout",
+});
+
+impl Direction {
+    /// The serde label as a static string, for callers that need `&str`
+    /// where `Display` would only allocate — the same words the macro
+    /// above writes and serde persists.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Direction::In => "in",
+            Direction::Out => "out",
+            Direction::InOut => "inout",
+        }
+    }
+}
+
+/// One pointer parameter's inferred direction, with the evidence behind it.
+///
+/// The sixth place an inference can land: where the type records say what
+/// a parameter *is*, this record says which way its data *flows* — read
+/// from the same body the type detectors ride. It is keyed by function
+/// and parameter position, the key the baseline-test follow-up needs so
+/// out-parameters can become expected side effects without
+/// re-derivation, and it rides beside the parameter's type record rather
+/// than competing with it: one parameter may carry both, but only one
+/// direction. Absence of a record means *unknown*, never silently *in*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredParamDirection {
+    /// The function the parameter belongs to, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// Parameter position, starting at 0.
+    pub param_index: usize,
+    /// The parameter's name in the decompiled output, e.g. `param_2`.
+    /// `None` when the body gave the parameter no usable name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param_name: Option<String>,
+    /// The direction the body reads.
+    pub direction: Direction,
+    /// The technique that produced the reading.
+    pub method: InferenceMethod,
+    /// How far the reading reaches beyond this function — function-only
+    /// in v1: the evidence lives in this body and says nothing about
+    /// what callers hand in.
+    pub scope: InferenceScope,
+    /// Confidence that the reading is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line carrying the deciding write or read — kept so
+    /// a reviewer can check the claim against the body.
+    pub evidence: String,
+}
+
+// ============================================================
 // Inference union
 // ============================================================
 
 /// One inferred type wherever it lands — a parameter, a local variable,
-/// a call-site argument, a function's return value, or a function's
-/// calling convention.
+/// a call-site argument, a function's return value, a function's
+/// calling convention, or a parameter's direction.
 ///
 /// The detectors emit the concrete records; the union is what the
 /// persisted result carries, so one list can hold every inference for a
@@ -435,6 +527,8 @@ pub enum InferredType {
     Return(InferredReturnType),
     /// A function's calling convention.
     Convention(InferredConvention),
+    /// A parameter's direction — in, out, or inout.
+    Direction(InferredParamDirection),
 }
 
 impl InferredType {
@@ -446,12 +540,14 @@ impl InferredType {
             InferredType::CallSite(record) => &record.function,
             InferredType::Return(record) => &record.function,
             InferredType::Convention(record) => &record.function,
+            InferredType::Direction(record) => &record.function,
         }
     }
 
     /// The narrowed type as C text. For a convention record this is the
     /// convention's label — the reading's "what", spelled the same way the
-    /// persisted JSON spells it.
+    /// persisted JSON spells it. For a direction record it is the
+    /// direction's label, standing in the "what" position the same way.
     pub fn inferred_type(&self) -> &str {
         match self {
             InferredType::Param(record) => &record.inferred_type,
@@ -459,6 +555,7 @@ impl InferredType {
             InferredType::CallSite(record) => &record.inferred_type,
             InferredType::Return(record) => &record.inferred_type,
             InferredType::Convention(record) => record.convention.label(),
+            InferredType::Direction(record) => record.direction.label(),
         }
     }
 
@@ -470,6 +567,7 @@ impl InferredType {
             InferredType::CallSite(record) => record.confidence,
             InferredType::Return(record) => record.confidence,
             InferredType::Convention(record) => record.confidence,
+            InferredType::Direction(record) => record.confidence,
         }
     }
 }
@@ -480,10 +578,10 @@ impl InferredType {
 
 /// Render an inference as prompt data. The name is what the inference
 /// types — a parameter, a local variable, a call-site argument, the
-/// function's return value, or the function's calling convention — and
-/// the description carries the narrowed type with the method and
-/// confidence behind it, so the prompt shows the reading and the evidence
-/// class that produced it.
+/// function's return value, the function's calling convention, or a
+/// parameter carrying a direction reading — and the description carries
+/// the narrowed type with the method and confidence behind it, so the
+/// prompt shows the reading and the evidence class that produced it.
 impl From<&InferredType> for calxgloss_prompts::TypeInfo {
     fn from(inference: &InferredType) -> Self {
         let name = match inference {
@@ -501,6 +599,13 @@ impl From<&InferredType> for calxgloss_prompts::TypeInfo {
                 Some(callee) => format!("{callee} convention"),
                 None => "convention".to_string(),
             },
+            // A direction record names its parameter exactly as the type
+            // record for the same parameter does, so the two readings —
+            // what it is and which way it flows — stand side by side.
+            InferredType::Direction(record) => record
+                .param_name
+                .clone()
+                .unwrap_or_else(|| format!("param_{}", record.param_index + 1)),
         };
         let (method, confidence) = match inference {
             InferredType::Param(record) => (record.method, record.confidence),
@@ -508,14 +613,21 @@ impl From<&InferredType> for calxgloss_prompts::TypeInfo {
             InferredType::CallSite(record) => (record.method, record.confidence),
             InferredType::Return(record) => (record.method, record.confidence),
             InferredType::Convention(record) => (record.method, record.confidence),
+            InferredType::Direction(record) => (record.method, record.confidence),
         };
-        Self {
-            name,
-            description: format!(
+        let description = match inference {
+            // The direction word reads as a sentence beside the
+            // parameter's name: `param_2: out parameter (...)`.
+            InferredType::Direction(record) => format!(
+                "{} parameter (via {method}, confidence {confidence})",
+                record.direction
+            ),
+            _ => format!(
                 "{} (via {method}, confidence {confidence})",
                 inference.inferred_type()
             ),
-        }
+        };
+        Self { name, description }
     }
 }
 
@@ -673,8 +785,23 @@ mod tests {
             InferenceMethod::ImportDecoration.to_string(),
             "import_decoration"
         );
+        assert_eq!(
+            InferenceMethod::ParamDirection.to_string(),
+            "param_direction"
+        );
         assert_eq!(InferenceScope::Function.to_string(), "function");
         assert_eq!(InferenceScope::Program.to_string(), "program");
+    }
+
+    #[test]
+    fn directions_display_their_serde_labels() {
+        // Display, `label()`, and serde say the same word — the labels the
+        // persisted JSON and the CLI breakdowns speak.
+        for direction in [Direction::In, Direction::Out, Direction::InOut] {
+            let label = serde_json::to_value(direction).unwrap();
+            assert_eq!(direction.to_string(), label.as_str().unwrap());
+            assert_eq!(direction.label(), label.as_str().unwrap());
+        }
     }
 
     #[test]
@@ -768,6 +895,19 @@ mod tests {
         }
     }
 
+    fn direction_record() -> InferredParamDirection {
+        InferredParamDirection {
+            function: "FUN_18003e750".into(),
+            param_index: 1,
+            param_name: Some("param_2".into()),
+            direction: Direction::Out,
+            method: InferenceMethod::ParamDirection,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(75),
+            evidence: "*param_2 = &local_8;".into(),
+        }
+    }
+
     fn metadata() -> ScanMetadata {
         ScanMetadata {
             binary: "eqmain.dll".into(),
@@ -811,6 +951,25 @@ mod tests {
     }
 
     #[test]
+    fn a_direction_inference_serde_round_trips_and_an_unnamed_parameter_omits_its_name() {
+        let record = direction_record();
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("\"method\":\"param_direction\""));
+        assert!(json.contains("\"direction\":\"out\""));
+        let back: InferredParamDirection = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+
+        let unnamed = InferredParamDirection {
+            param_name: None,
+            ..direction_record()
+        };
+        let json = serde_json::to_string(&unnamed).unwrap();
+        assert!(!json.contains("\"param_name\""));
+        let back: InferredParamDirection = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, unnamed);
+    }
+
+    #[test]
     fn the_inference_union_tags_its_kind_in_json() {
         let inferences = vec![
             InferredType::Param(param_record()),
@@ -818,6 +977,7 @@ mod tests {
             InferredType::CallSite(call_record()),
             InferredType::Return(return_record()),
             InferredType::Convention(convention_record()),
+            InferredType::Direction(direction_record()),
         ];
         let json = serde_json::to_string(&inferences).unwrap();
         assert!(json.contains("\"kind\":\"param\""));
@@ -825,6 +985,7 @@ mod tests {
         assert!(json.contains("\"kind\":\"call_site\""));
         assert!(json.contains("\"kind\":\"return\""));
         assert!(json.contains("\"kind\":\"convention\""));
+        assert!(json.contains("\"kind\":\"direction\""));
         let back: Vec<InferredType> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, inferences);
     }
@@ -886,6 +1047,36 @@ mod tests {
     }
 
     #[test]
+    fn a_document_written_before_the_direction_kind_still_loads() {
+        // The union stays additive: a persisted list carrying only the
+        // five kinds that existed before the direction record reads back
+        // exactly, and a document with no direction records at all is
+        // unaffected by the new tag.
+        let json = r#"[
+            {"kind": "param", "function": "FUN_18003ab00", "param_index": 0,
+             "param_name": "param_1", "inferred_type": "Widget *",
+             "method": "vtable_call", "scope": "class", "confidence": 85,
+             "evidence": "(*(code *)(**param_1))[3](param_1)"},
+            {"kind": "return", "function": "FUN_180051c00",
+             "inferred_type": "char *", "method": "return_usage",
+             "scope": "function", "confidence": 60,
+             "evidence": "local_8 = FUN_180051c00();"},
+            {"kind": "convention", "function": "?paint@Widget@@QAEXXZ",
+             "convention": "thiscall", "method": "mangled_convention",
+             "confidence": 90, "evidence": "?paint@Widget@@QAEXXZ"}
+        ]"#;
+        let back: Vec<InferredType> = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            back,
+            vec![
+                InferredType::Param(param_record()),
+                InferredType::Return(return_record()),
+                InferredType::Convention(convention_record()),
+            ]
+        );
+    }
+
+    #[test]
     fn union_accessors_reach_through_every_variant() {
         let inferences = [
             InferredType::Param(param_record()),
@@ -893,21 +1084,25 @@ mod tests {
             InferredType::CallSite(call_record()),
             InferredType::Return(return_record()),
             InferredType::Convention(convention_record()),
+            InferredType::Direction(direction_record()),
         ];
         assert_eq!(inferences[0].function(), "FUN_18003ab00");
         assert_eq!(inferences[1].function(), "FUN_18003ab00");
         assert_eq!(inferences[2].function(), "FUN_1800412a0");
         assert_eq!(inferences[3].function(), "FUN_180051c00");
         assert_eq!(inferences[4].function(), "?paint@Widget@@QAEXXZ");
+        assert_eq!(inferences[5].function(), "FUN_18003e750");
         assert_eq!(inferences[0].inferred_type(), "Widget *");
         assert_eq!(inferences[1].inferred_type(), "char *");
         assert_eq!(inferences[2].inferred_type(), "void *");
         assert_eq!(inferences[3].inferred_type(), "char *");
         assert_eq!(inferences[4].inferred_type(), "thiscall");
+        assert_eq!(inferences[5].inferred_type(), "out");
         assert_eq!(inferences[0].confidence(), Confidence::new(85));
         assert_eq!(inferences[2].confidence(), Confidence::new(75));
         assert_eq!(inferences[3].confidence(), Confidence::new(60));
         assert_eq!(inferences[4].confidence(), Confidence::new(90));
+        assert_eq!(inferences[5].confidence(), Confidence::new(75));
     }
 
     #[test]
@@ -977,6 +1172,26 @@ mod tests {
     }
 
     #[test]
+    fn a_direction_reading_renders_beside_its_parameter() {
+        // The record names its parameter exactly as the type record for
+        // the same parameter does, and the description reads as a
+        // sentence: `param_2: out parameter (...)`.
+        let info = calxgloss_prompts::TypeInfo::from(&InferredType::Direction(direction_record()));
+        assert_eq!(info.name, "param_2");
+        assert_eq!(
+            info.description,
+            "out parameter (via param_direction, confidence 75)"
+        );
+
+        let unnamed = InferredType::Direction(InferredParamDirection {
+            param_name: None,
+            ..direction_record()
+        });
+        let info = calxgloss_prompts::TypeInfo::from(&unnamed);
+        assert_eq!(info.name, "param_2");
+    }
+
+    #[test]
     fn a_call_site_convention_record_names_its_callee_and_omits_nothing_else() {
         // The caller's view of its callee: the callee rides as an
         // optional field, a document written before it existed reads
@@ -1030,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn type_inference_result_serde_round_trips_all_five_kinds() {
+    fn type_inference_result_serde_round_trips_all_six_kinds() {
         let result = TypeInferenceResult {
             metadata: metadata(),
             inferences: vec![
@@ -1039,6 +1254,7 @@ mod tests {
                 InferredType::CallSite(call_record()),
                 InferredType::Return(return_record()),
                 InferredType::Convention(convention_record()),
+                InferredType::Direction(direction_record()),
             ],
         };
         let json = serde_json::to_string(&result).unwrap();

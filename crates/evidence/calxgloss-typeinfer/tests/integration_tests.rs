@@ -25,10 +25,10 @@ use calxgloss_prompts::TypeInfo;
 use calxgloss_typeinfer::engine::{ScanSource, TypeInferEngine};
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{
-    CallingConvention, Confidence, InferenceMethod, InferenceScope, InferredConvention,
+    CallingConvention, Confidence, Direction, InferenceMethod, InferenceScope, InferredConvention,
     InferredType,
 };
-use calxgloss_typeinfer::write_back::WriteBack;
+use calxgloss_typeinfer::write_back::{SkipReason, SkippedRecord, WriteBack};
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -410,6 +410,146 @@ async fn return_usage_records_survive_the_persistence_round_trip() {
     assert_eq!(
         rendered.description,
         "char * (via return_usage, confidence 60)"
+    );
+}
+
+#[tokio::test]
+async fn direction_records_survive_the_persistence_round_trip() {
+    // The tracer bullet's three readings — the direct write, the
+    // double-pointer hand-back, and the string-function read — must
+    // reach disk and read back like any other record, and the list must
+    // keep them function by function in listing order so two scans of
+    // one program diff cleanly (issue #274).
+    let program = || {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_18003e750"),
+            summary("FUN_1800412a0"),
+        ];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(undefined *param_1,char *param_2)",
+                "  *param_1 = 0;\n  uVar3 = strlen(param_2);\n  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(undefined8 param_1,undefined **param_2)",
+                "  undefined local_8;\n  *param_2 = &local_8;\n  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void *param_1)",
+                "  CloseHandle(param_1);\n  return;\n",
+            ),
+        );
+        program
+    };
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+
+    // The writing function carries both families: the direct write reads
+    // out at the solid-high band, the string-function read reads in at
+    // the modest band, each evidenced by its deciding line.
+    let directions: Vec<&InferredType> = loaded
+        .for_function("FUN_18003ab00")
+        .filter(|inference| matches!(inference, InferredType::Direction(_)))
+        .collect();
+    assert_eq!(directions.len(), 2, "one reading per touched parameter");
+    let InferredType::Direction(written) = directions[0] else {
+        unreachable!("the direction detector emits direction records");
+    };
+    assert_eq!(written.function, "FUN_18003ab00");
+    assert_eq!(written.param_index, 0);
+    assert_eq!(written.param_name.as_deref(), Some("param_1"));
+    assert_eq!(written.direction, Direction::Out);
+    assert_eq!(written.method, InferenceMethod::ParamDirection);
+    assert_eq!(written.scope, InferenceScope::Function);
+    assert_eq!(written.confidence, Confidence::new(75));
+    assert_eq!(written.evidence, "*param_1 = 0;");
+    let InferredType::Direction(read) = directions[1] else {
+        unreachable!("the direction detector emits direction records");
+    };
+    assert_eq!(read.param_index, 1);
+    assert_eq!(read.direction, Direction::In);
+    assert_eq!(read.confidence, Confidence::new(60));
+    assert_eq!(read.evidence, "uVar3 = strlen(param_2);");
+
+    // The double-pointer hand-back reads out, same family and band.
+    let handed: Vec<&InferredType> = loaded
+        .for_function("FUN_18003e750")
+        .filter(|inference| matches!(inference, InferredType::Direction(_)))
+        .collect();
+    assert_eq!(handed.len(), 1);
+    let InferredType::Direction(record) = handed[0] else {
+        unreachable!("the direction detector emits direction records");
+    };
+    assert_eq!(record.param_index, 1);
+    assert_eq!(record.direction, Direction::Out);
+    assert_eq!(record.confidence, Confidence::new(75));
+    assert_eq!(record.evidence, "*param_2 = &local_8;");
+
+    // Merely passing a parameter to a callee the pass has not read is
+    // no evidence: no direction record for the third function.
+    assert!(
+        loaded
+            .for_function("FUN_1800412a0")
+            .all(|inference| !matches!(inference, InferredType::Direction(_)))
+    );
+
+    // The scan-order contract (issue #274): direction records follow
+    // the function listing, and a second scan shows the same list.
+    let order: Vec<(&str, &str)> = loaded
+        .inferences
+        .iter()
+        .filter_map(|inference| match inference {
+            InferredType::Direction(record) => Some((
+                record.function.as_str(),
+                record.param_name.as_deref().unwrap_or_default(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("FUN_18003ab00", "param_1"),
+            ("FUN_18003ab00", "param_2"),
+            ("FUN_18003e750", "param_2"),
+        ]
+    );
+    let second = TypeInferEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("second scan");
+    assert_eq!(
+        second.inferences, result.inferences,
+        "two scans diff cleanly"
+    );
+
+    // And the records render into prompt type-info beside the
+    // parameters they read.
+    let rendered = TypeInfo::from(directions[0]);
+    assert_eq!(rendered.name, "param_1");
+    assert_eq!(
+        rendered.description,
+        "out parameter (via param_direction, confidence 75)"
     );
 }
 
@@ -883,7 +1023,11 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was inferred for the function it is about to
     // translate; the plain function carries nothing.
     let inferred: Vec<&InferredType> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(inferred.len(), 3);
+    assert_eq!(
+        inferred.len(),
+        4,
+        "three type readings and the direction reading for the string-parameter"
+    );
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -902,12 +1046,26 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
         "void * (via vtable_call, confidence 85)"
     );
     assert_eq!(
-        by_name["param_2"],
-        "char * (via string_function, confidence 70)"
-    );
-    assert_eq!(
         by_name["param_3"],
         "void * (via known_signature, confidence 75)"
+    );
+    // The type reading and the direction reading for `param_2` stand side
+    // by side in the list and in the renderings, both naming the same
+    // parameter (issue #274).
+    let type_and_direction: Vec<&TypeInfo> = rendered
+        .iter()
+        .filter(|info| info.name == "param_2")
+        .collect();
+    assert_eq!(type_and_direction.len(), 2);
+    assert!(
+        type_and_direction
+            .iter()
+            .any(|info| info.description == "char * (via string_function, confidence 70)")
+    );
+    assert!(
+        type_and_direction
+            .iter()
+            .any(|info| info.description == "in parameter (via param_direction, confidence 60)")
     );
 
     // The this-pointer reading keeps its class-wide reach through the
@@ -1102,8 +1260,10 @@ async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
         )
     );
 
-    // Every surviving parameter reading applied, and the pass refused
-    // nothing: the program holds the function, every slot was undefined.
+    // Every surviving type reading applied, and the pass refused nothing
+    // but the direction reading: the program holds the function, every
+    // slot was undefined, and direction is not a program type (issue
+    // #274) — it is skipped as a reading, never written.
     let params = loaded
         .inferences
         .iter()
@@ -1111,6 +1271,13 @@ async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
         .count();
     assert!(params > 0, "the scan produced parameter readings");
     assert_eq!(report.applied, params);
-    assert!(report.skipped.is_empty());
+    assert_eq!(
+        report.skipped,
+        [SkippedRecord {
+            target: "FUN_18003ab00 param_2 direction".to_string(),
+            reason: SkipReason::Direction,
+        }],
+        "the direction reading is skipped, not written"
+    );
     assert!(report.failed.is_empty());
 }

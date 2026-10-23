@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eighteen modules:
+//! The crate is organized into nineteen modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
@@ -15,12 +15,16 @@
 //!   variables, call-site arguments, and function return values;
 //!   `CallingConvention` and `InferredConvention` for the closed set of
 //!   calling conventions and the reading a name gives one;
-//!   `InferredType` as the union over the five record kinds;
+//!   `Direction` and `InferredParamDirection` for the closed set of
+//!   parameter directions and the reading a body gives one of its
+//!   pointer parameters;
+//!   `InferredType` as the union over the six record kinds;
 //!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
 //!   function of a program exactly once, reads it with the inline
-//!   detectors, reads its listing name with the mangling and convention
+//!   detectors — including the direction readings of the parameter
+//!   direction detector — reads its listing name with the mangling and convention
 //!   detectors, reads its machine listing once with the listing-borne
 //!   convention detectors — the 32-bit stack discipline and the
 //!   Microsoft-x64 shape — reads its import names with the convention
@@ -53,6 +57,12 @@
 //!   `ReturnUsageDetector` types a function's return by how its callers
 //!   use the value — assigned to a typed local, passed at a
 //!   known-signature position, or dereferenced — as the return record kind.
+//! - [`param_direction`] - Parameter direction readings: `ParamDirectionDetector`
+//!   reads which way data flows through each pointer parameter off the
+//!   body the scan already keeps — a write through the pointer makes it
+//!   out, a string-function read makes it in, both together make it
+//!   inout, and no deciding shape records nothing — as the direction
+//!   record kind, keyed beside the parameter's type record.
 //! - [`mangling`] - C++ mangling analysis: `ManglingDetector` reads the
 //!   contract carried in a name — an MSVC-mangled listing symbol decoded
 //!   for convention, argument count, and rough argument types, and a
@@ -92,8 +102,8 @@
 //!   and shared record assembly.
 //! - [`confidence`] - Shared confidence model: `resolve_conflicts` —
 //!   highest-confidence-wins resolution when several detectors read one
-//!   parameter, local, call-site argument, return, or convention
-//!   differently.
+//!   parameter, local, call-site argument, return, convention, or
+//!   parameter direction differently.
 //! - [`persist`] - JSON persistence: `TypeInferPersistor` saves and loads
 //!   the per-binary inference results under `re/analysis/typeinfer/`.
 //! - [`write_back`] - Writing the surviving inferences into the open
@@ -113,6 +123,7 @@ pub mod error;
 pub mod known_type;
 pub mod local_chain;
 pub mod mangling;
+pub mod param_direction;
 pub mod param_size;
 pub mod persist;
 pub(crate) mod reading;

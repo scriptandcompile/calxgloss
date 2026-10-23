@@ -2,7 +2,8 @@
 //!
 //! [`TypeInferEngine`] runs the inline detectors — this-pointer
 //! detection, parameter-size detection, known-type propagation, the
-//! name-borne readings of the mangling detector, and the convention
+//! name-borne readings of the mangling detector, the direction readings
+//! of the parameter-direction detector, and the convention
 //! readings of the convention detector — over every function of
 //! one loaded program, reads each listed function's machine listing
 //! once with the listing-borne convention detectors — the 32-bit
@@ -42,6 +43,7 @@ use crate::error::Result;
 use crate::known_type::KnownTypePropagationEngine;
 use crate::local_chain::LocalChainDetector;
 use crate::mangling::ManglingDetector;
+use crate::param_direction::ParamDirectionDetector;
 use crate::param_size::ParameterSizeDetector;
 use crate::return_usage::{LocalReadings, ReturnUsageDetector};
 use crate::stack_discipline::StackDisciplineDetector;
@@ -74,6 +76,7 @@ pub struct TypeInferEngine<S = KunaSource> {
     source: S,
     this_ptr: ThisPointerDetector,
     param_size: ParameterSizeDetector,
+    param_direction: ParamDirectionDetector,
     known: KnownTypePropagationEngine,
     local_chain: LocalChainDetector,
     cross: CrossFunctionPropagator,
@@ -91,6 +94,7 @@ impl TypeInferEngine<KunaSource> {
             source: source.clone(),
             this_ptr: ThisPointerDetector::new(),
             param_size: ParameterSizeDetector::new(),
+            param_direction: ParamDirectionDetector::new(),
             known: KnownTypePropagationEngine::new(),
             local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
@@ -110,6 +114,7 @@ impl<S> TypeInferEngine<S> {
             source,
             this_ptr: ThisPointerDetector::new(),
             param_size: ParameterSizeDetector::new(),
+            param_direction: ParamDirectionDetector::new(),
             known: KnownTypePropagationEngine::new(),
             local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
@@ -133,7 +138,8 @@ impl<S> TypeInferEngine<S> {
     /// mangling contract, then the convention its letter spells), then
     /// the this-pointer readings, then the size readings, then
     /// the known-signature readings, then the readings carried in names
-    /// inside the body, then the convention readings off its machine
+    /// inside the body, then the direction readings of its parameters
+    /// (issue #274), then the convention readings off its machine
     /// listing — the 32-bit stack discipline or the Microsoft-x64 shape
     /// the listing's own register spelling keys — with the import
     /// names' `@N` convention readings
@@ -174,7 +180,11 @@ impl<S> TypeInferEngine<S> {
     /// known-signature engine at once — conflict resolution collapses the
     /// competition to the strongest record before the result is assembled,
     /// so the result carries at most one inference per parameter, local,
-    /// or call-site argument. The cross-function pass propagates only
+    /// call-site argument, return, convention, or parameter direction —
+    /// and since the direction target is keyed apart from the parameter
+    /// one, one parameter's direction reading stands beside its type
+    /// reading rather than competing with it (issue #274). The
+    /// cross-function pass propagates only
     /// those resolved survivors, and its own records compete with the
     /// inline ones for the same targets in the final resolution.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<TypeInferenceResult>
@@ -256,6 +266,19 @@ impl<S> TypeInferEngine<S> {
             // function's own demangled name with a spelled parameter
             // list, and qualified calls whose callee spells one.
             inferences.extend(self.mangling.detect_from_body(&decompiled));
+            // Which way the body's writes and reads move data through
+            // the function's own pointer parameters (issue #274): read
+            // off the body already in hand, no extra engine read. The
+            // records join the same inline set and resolve in the same
+            // pass as the type readings, but key on a target of their
+            // own, so a direction reading stands beside the type
+            // reading for one parameter instead of competing with it.
+            inferences.extend(
+                self.param_direction
+                    .detect_directions(&decompiled)
+                    .into_iter()
+                    .map(InferredType::Direction),
+            );
             bodies.push(decompiled);
 
             // The machine listing beside the body: one disassembly read
@@ -827,10 +850,17 @@ mod tests {
         );
         let result = scan(program).await;
 
+        // The direction reading keys on a target of its own, so it stands
+        // beside the surviving type record; among the type readings for
+        // one parameter, only the stronger survives.
         let records: Vec<&InferredType> = result.for_function("FUN_1800412a0").collect();
-        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records.len(),
+            2,
+            "one type reading and one direction reading"
+        );
         let InferredType::Param(record) = records[0] else {
-            unreachable!("the detectors emit parameter records");
+            unreachable!("the inline type records lead each function's block");
         };
         assert_eq!(record.method, InferenceMethod::KnownSignature);
         assert_eq!(record.inferred_type, "void *");
