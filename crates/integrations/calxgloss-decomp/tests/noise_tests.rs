@@ -1,17 +1,18 @@
 //! The decompiler-noise pre-filter at the seam's `decompile` read exits
-//! (issue #271).
+//! (issues #271 and #272).
 //!
 //! The fake-engine-body assertions drive the cached source in the tampered-
-//! document style of `cache_tests.rs`: a body the fixture engine could never
-//! answer — standalone guard calls beside real statements — is seeded into
-//! the disk tier, and the replayed read comes back stripped while the
-//! document on disk keeps the raw text. That proves the shared filter sits
-//! at the cached source's exit *above* the cache, with raw staying raw
-//! (ADR-0043). The in-process Kuna source's exit is pinned from the other
-//! side: the fixture's canary-free bodies come back byte-identical against
-//! the engine's own raw text, so the filter at that exit changes exactly
-//! nothing it must not change. The filter's behavior on fake bodies — the
-//! strip itself, the never-empties rule, the debug log — is pinned in
+//! document style of `cache_tests.rs`: bodies the fixture engine could never
+//! answer — standalone guard calls and the if-wrapped cookie compare beside
+//! real statements — are seeded into the disk tier, and the replayed read
+//! comes back stripped while the document on disk keeps the raw text. That
+//! proves the shared filter sits at the cached source's exit *above* the
+//! cache, with raw staying raw (ADR-0043). The in-process Kuna source's
+//! exit is pinned from the other side: the fixture's canary-free bodies
+//! come back byte-identical against the engine's own raw text, so the
+//! filter at that exit changes exactly nothing it must not change. The
+//! filter's behavior on fake bodies — the strips themselves, the
+//! conservative gate, the never-empties rule, the debug log — is pinned in
 //! `noise_filter`'s unit tests.
 
 use calxgloss_decomp::{CachedScanSource, DecompiledFunction, PipelineSource, ScanSource};
@@ -110,6 +111,69 @@ async fn a_seeded_body_of_guard_calls_comes_back_stripped_and_stays_raw_on_disk(
     assert_eq!(replayed, read, "a warm replay strips the same way");
     let on_disk: DecompiledFunction = calxgloss_types::load_json(&document).expect("still raw");
     assert_eq!(on_disk.body, fake.body, "the raw text is never rewritten");
+}
+
+#[tokio::test]
+async fn a_seeded_body_of_the_epilogue_cookie_check_comes_back_stripped_and_stays_raw_on_disk() {
+    // The epilogue family (issue #272): the if-wrapped cookie comparison
+    // with the failure call inside comes out whole. The cookie-save line
+    // beside it belongs to the prologue family (#273) and the equality
+    // test with a real call in its block is the conservative gate's —
+    // both stand byte-for-byte.
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
+    let fake = DecompiledFunction {
+        name: "gs_epilogue".into(),
+        signature: "undefined8 gs_epilogue(int param_1)".into(),
+        body: concat!(
+            "{\n",
+            "  undefined8 local_8;\n",
+            "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
+            "  FUN_180045a00(param_1);\n",
+            "  if (local_8 != DAT_18004a040) {\n",
+            "    __report_gsfailure();\n",
+            "  }\n",
+            "  if (local_8 == DAT_18004a040) { FUN_180045a00(local_8); }\n",
+            "  return (local_8 ^ 0x22);\n",
+            "}\n",
+        )
+        .into(),
+    };
+    let document = source
+        .cache_dir()
+        .expect("the disk tier is on")
+        .join("decompile/gs_epilogue.json");
+    calxgloss_types::save_json(&document, &fake).expect("fake body seeded");
+
+    let read = ScanSource::decompile(&source, "gs_epilogue")
+        .await
+        .expect("disk-hit decompile");
+    assert_eq!(read.name, fake.name, "the name survives byte-for-byte");
+    assert_eq!(
+        read.signature, fake.signature,
+        "the signature line survives filtering byte-for-byte"
+    );
+    assert_eq!(
+        read.body,
+        concat!(
+            "{\n",
+            "  undefined8 local_8;\n",
+            "  local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;\n",
+            "  FUN_180045a00(param_1);\n",
+            "  if (local_8 == DAT_18004a040) { FUN_180045a00(local_8); }\n",
+            "  return (local_8 ^ 0x22);\n",
+            "}\n",
+        ),
+        "the wrapper, the comparison, and the failure call are gone together, and \
+         everything around them is byte-identical"
+    );
+
+    let on_disk: DecompiledFunction =
+        calxgloss_types::load_json(&document).expect("the seeded document still parses");
+    assert_eq!(
+        on_disk.body, fake.body,
+        "the cache file holds the raw engine text"
+    );
 }
 
 #[tokio::test]
