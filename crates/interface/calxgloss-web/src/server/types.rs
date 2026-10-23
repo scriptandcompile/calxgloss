@@ -1890,6 +1890,19 @@ pub struct BinaryPauseResponse {
     pub message: String,
 }
 
+/// Response body of the `POST /api/pipeline/binaries/{binary}/focus`
+/// endpoint (issue #284). Echoes the addressed binary — the one now sitting
+/// in the scope record's single focus slot, which the running worklist
+/// hoists to the front of its queue at the next binary boundary and then
+/// consumes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BinaryFocusResponse {
+    /// The binary the call addressed, echoed verbatim.
+    pub binary: String,
+    /// Human-readable confirmation for the operator.
+    pub message: String,
+}
+
 /// Response body of `GET /api/llm-io` (issue #77) — the retained window of
 /// the server-side LLM I/O log, oldest first. A workspace that has never
 /// run live honestly reports an empty `entries`, never a 404.

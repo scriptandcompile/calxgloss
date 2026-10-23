@@ -1055,6 +1055,14 @@ fn live_only_routes() -> Router<CombinedState> {
             "/api/pipeline/binaries/{binary}/resume",
             post(handlers::api_resume_binary),
         )
+        // Per-binary focus (issue #284): park one discovered binary in the
+        // scope record's single focus slot; the running worklist hoists it
+        // at the next boundary and consumes the slot. Live-only — there is
+        // no queue to steer without a live run loop.
+        .route(
+            "/api/pipeline/binaries/{binary}/focus",
+            post(handlers::api_focus_binary),
+        )
         // Start & restart (issue #92, W2.3): begin translation in a session
         // that has not translated yet, or re-run a stopped pipeline in the
         // same process. Live-only — a plain `serve` router has no live loop

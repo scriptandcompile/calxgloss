@@ -1,7 +1,8 @@
 //! Live translation progress and pipeline progress endpoints.
 
 use super::super::{
-    BatchInfo, BinaryPauseResponse, ClassificationInfo, CombinedState, PipelineControl,
+    BatchInfo, BinaryFocusResponse, BinaryPauseResponse, ClassificationInfo, CombinedState,
+    PipelineControl,
     PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse, PipelineTimeEstimate,
     ProgressEntry, ProgressInfo, ProgressResponse, ServerError, UnitCancelResponse,
 };
@@ -222,7 +223,29 @@ pub async fn api_get_pipeline(
                 .get(d)
                 .is_some_and(|c| is_pal_strategy(&c.strategy))
         };
-        let pos = |d: &BinaryIdentity| queue.iter().position(|q| q == d.as_str());
+        // Issue #284: a pending focus reads as the front of the plan — the
+        // live loop hoists it at the next binary boundary, and the served
+        // table shows that intent ahead of time. Only a focus the current
+        // plan names is hoisted; one it does not name waits, exactly as the
+        // worklist waits. PAL rows stay last: focus reorders intent, never
+        // overrides it. Names match case-insensitively (issue #107).
+        let plan: Vec<String> = {
+            let mut plan = queue.clone();
+            if let Some(focus) = combined
+                .server
+                .scope_control()
+                .and_then(|sc| sc.focused_binary().map(|f| f.as_str().to_owned()))
+            {
+                if let Some(idx) = plan.iter().position(|b| b.eq_ignore_ascii_case(&focus)) {
+                    if idx != 0 {
+                        let hoisted = plan.remove(idx);
+                        plan.insert(0, hoisted);
+                    }
+                }
+            }
+            plan
+        };
+        let pos = |d: &BinaryIdentity| plan.iter().position(|q| q == d.as_str());
         v.sort_by(|a, b| match (is_pal(a), is_pal(b)) {
             (true, true) => a.cmp(b),
             (true, false) => std::cmp::Ordering::Greater,
@@ -861,6 +884,38 @@ pub async fn api_resume_binary(
     PathExtractor(binary): PathExtractor<String>,
 ) -> Result<Json<BinaryPauseResponse>, ServerError> {
     control_binary_pause(&combined, &binary, false).await
+}
+
+// ─── POST /api/pipeline/binaries/{binary}/focus ──────────────────────
+
+/// Put one target binary at the front of the run's queue (issue #284): the
+/// scope handle's single focus slot is set here, the running worklist
+/// consults it at each binary boundary, hoists the focused binary to the
+/// front, re-publishes the plan with it there, and consumes the slot —
+/// honored once, never again. The same honesty rules as the pause pair:
+/// 503 without a scope handle, 409 for a binary the workspace has not
+/// discovered. A second press simply replaces the first (last press wins).
+/// Live router only.
+pub async fn api_focus_binary(
+    State(combined): State<CombinedState>,
+    PathExtractor(binary): PathExtractor<String>,
+) -> Result<Json<BinaryFocusResponse>, ServerError> {
+    let scope = scope_handle(&combined)?;
+    let discovered = discovered_binaries(&combined, &scope).await;
+    if !discovered
+        .iter()
+        .any(|b| binary_matches(b.as_str(), &binary))
+    {
+        return Err(ServerError::conflict(&format!(
+            "this workspace has not discovered the binary '{binary}' — nothing to focus"
+        )));
+    }
+    scope.set_focus(&binary).map_err(persist_error)?;
+    info!(binary, "scope: binary focus set via API");
+    Ok(Json(BinaryFocusResponse {
+        binary: binary.to_string(),
+        message: format!("Binary {binary} focused — the run works it at the next boundary."),
+    }))
 }
 
 // ─── POST /api/pipeline/{start,restart} ──────────────────────────────
