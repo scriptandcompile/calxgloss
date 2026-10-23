@@ -32,11 +32,9 @@ Test counts in the archive are indicative targets, not exact requirements.
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
-| P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ✅ done | — | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
 | P15 | SEH and cleanup-on-failure idiom detection — name each function's error-handling idiom (SEH frame, RaiseException, goto-cleanup ladder) and the failure codes baseline tests must preserve | evidence (`calxgloss-errhandling` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #230 | [#230](https://github.com/scriptandcompile/calxgloss/issues/230) |
 | P16 | Data-table recovery — reconstruct read-only constant data tables (game stats, opcode tables) as named Rust const arrays instead of scattered `DAT_*` reads | evidence (`calxgloss-consts`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #231 | [#231](https://github.com/scriptandcompile/calxgloss/issues/231) |
-| P17 | Decompiler-noise pre-filter — strip GS stack-canary code at the exit of the decompile read so prompts and evidence bodies stop paying for compiler guard code | integrations (`calxgloss-decomp`) | — | ✅ done | — | [#232](https://github.com/scriptandcompile/calxgloss/issues/232) |
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
@@ -64,38 +62,6 @@ re-derivation: testgen swapping integer boundary sampling for rounding/NaN
 sampling on flagged functions, and disassembly corroboration (SSE/x87
 mnemonics) once #226's disassembly-text method lands. Spec: #229. Tickets: not
 yet filed (`/to-tickets`).
-
-## P14 — Known-library function identification (evidence + integrations + pipeline + interface)
-
-**Statically linked CRT/STL code enters the queue as ordinary units of work.**
-The Skip consumer chain — translator stubbing, translation ordering,
-call-graph stats — is fully built, yet `build_enriched_call_graph` only ever
-assigns Root/Leaf/Middle: nothing produces Skip, so the LLM "translates"
-`memcpy` and `std::map` trees and the corpus gains false translations. A new
-evidence crate, `calxgloss-libmatch`, matches *body shape*: each kept
-decompiled body is normalized — Ghidra variables, temporaries, and volatile
-addresses to wildcards, calls/operators/constants/literals/control-flow
-keywords preserved — and matched against a signature database of known
-library functions, the body-shape counterpart to ADR-0012's name-shape
-flagging. The signature file rides ADR-0023's pattern-database contract
-whole: one strict serde document, entries are the pattern types' own shapes
-with per-entry confidence, a supplied file replaces the hand-authored
-built-in starter set (MSVC CRT memory/string routines, allocator wrappers,
-container tree idioms) outright. Per-function readings land findings —
-matched symbol, family, evidence lines, Evidence-scale confidence — and a
-cross-function pass over the kept bodies propagates them to identical-body
-duplicates (COMDAT folding/ICF) and tail-call thunks at a confidence penalty,
-scan order preserved. The call graph's classification pass loads the
-persisted document and assigns `NodeCategory::Skip` to functions whose best
-match meets a confidence floor (80 on the evidence scale) before the
-Root/Leaf/Middle cascade; below the floor nothing changes, and a missing or
-corrupt document degrades to today's behavior exactly. The prompt gains a
-findings section naming the target function's matched *callees* (the
-hint-loader pattern, joined against call-graph neighbors) so the translator
-maps those calls to Rust equivalents instead of re-implementing them.
-Spec: #227. Tickets: #262–#267 (`/implement`) — all landed (`c5b2a2a`…`bee6fb3`,
-recorded in the changelog); the spec's open thread is its own suggested ADR for
-body-shape-as-evidence and the Skip confidence floor.
 
 ## P12.7 — Parameter direction analysis (evidence + integrations + pipeline + interface)
 
@@ -195,39 +161,6 @@ first attempt, and consts findings reach only escalate today) and the
 escalate prompt's existing CONSTANTS section through the union's prompt
 conversion. Nothing is written back to the program (ADR-0020). Spec: #231.
 Tickets: not yet filed (`/to-tickets`).
-
-## P17 — Decompiler-noise pre-filter (integrations)
-
-**Every MSVC function carries the same /GS stack-canary prologue and
-epilogue, and it rides into every prompt and every kept body as if it were
-the function's own logic** — the LLM pays for it in every prompt that carries
-pseudo-C and invents Rust panic scaffolding for a check that never fires
-under baseline inputs, while each body-reading detector must build its own
-private canary guard (P15 had to write one into its own spec). A pure text
-filter in the seam crate applies at the exit of the `decompile` read in both
-analysis sources — one filter at the highest seam the body text passes — so
-the scan's kept bodies, the persisted function records feeding the
-translation and retry prompts, the neighbor context on escalate prompts, and
-every evidence reading see the canary idiom already stripped. The scan cache
-still stores the engine's raw text (ADR-0043 untouched); the filter runs
-after the cache read, so raw output stays on disk and the filter stays
-reversible. Recognized families, the whole first cut: the prologue
-cookie-save (a named cookie global XORed with a stack-pointer-shaped operand
-into a local), the epilogue cookie-check (its `if` wrapper and
-`__report_gsfailure`, or a direct `__security_check_cookie` call), and
-standalone named guard calls (`__security_init_cookie`,
-`__security_check_cookie`, `__report_gsfailure`). Only complete idioms
-strip — a lone XOR, lone cookie read, or lone comparison claims nothing
-(ADR-0038's precedent); a body that would empty strips nothing; a
-cookie-shaped local left unreferenced goes with it; SEH/EH shapes pass
-byte-for-byte (P15's territory). No findings, no new document, no schema
-change, no write-back to the program (ADR-0020), no new engine reads
-(ADR-0026); stripping rides a debug log naming the function and families.
-Old records still load — the text is opaque to consumers. Spec: #232.
-Tickets: #271–#273 (`/implement`) — all landed (`e6dee90`…`1ac1c55`, recorded
-in the changelog); the filter module remains the designated home for future
-noise families (kCFG checks, EH-table artifacts) — each joins as a recognizer,
-never a seam edit.
 
 ## P18 — Binary-version diffing (BinDiff-style) (evidence + pipeline + interface)
 
