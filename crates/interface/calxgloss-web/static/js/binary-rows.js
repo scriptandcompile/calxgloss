@@ -9,11 +9,15 @@
    tokens, queued counts, and rates render as "—", never as fabricated
    zeros.
 
-   The quick-action buttons (Start Translation, Pause/Resume, Configure,
-   Classify) are real controls (issue #94): Start drives the run-level
-   lifecycle endpoint, Pause/Resume steer just this binary through the
-   per-binary pause endpoints (issue #222) — the label follows the row's
-   paused flag — Configure opens the restart dialog with this binary pre-
+   The quick-action buttons (Start Translation / Pause toggle, Configure,
+   Classify) are real controls (issue #94). One honest translation toggle
+   per row (issue #285): it reads Pause exactly while the pipeline works
+   this binary, and Start Translation for everything else. Start drives
+   the per-binary start endpoint, a swap composed server-side that pauses
+   the in-flight binary, resumes the pressed one, and moves it to the
+   front of the queue plan — never the run-level lifecycle endpoint;
+   Pause steers just this binary through the per-binary pause endpoint
+   (issue #222). Configure opens the restart dialog with this binary pre-
    selected as the target, Classify opens the classification-override panel
    (issue #97). The server's own reason surfaces on rejection —
    a stale click is never a silent no-op.
@@ -33,15 +37,13 @@ import { openClassificationPanel } from "./classification-override.js";
 const ACTION_LABELS = {
     start: "Start Translation",
     pause: "Pause",
-    resume: "Resume",
     configure: "Configure",
     classify: "Classify",
 };
 
 const ACTION_TITLES = {
-    start: "Start a pipeline run (POST /api/pipeline/start)",
+    start: "Pause the binary in flight and move this one to the front of the queue (POST /api/pipeline/binaries/{name}/start)",
     pause: "Hold this binary out of the queue until resumed (POST /api/pipeline/binaries/{name}/pause)",
-    resume: "Re-admit this binary to the queue (POST /api/pipeline/binaries/{name}/resume)",
     configure: "Open restart options with this binary pre-selected",
     classify: "Review and override this binary's classification (POST /api/binaries/{name}/classification)",
 };
@@ -201,11 +203,16 @@ function renderRow(b) {
     const shim = shimStatus(b);
     const queued = queuedCount(b);
     const rate = successRate(b);
-    // The pause slot follows the row's paused flag (issue #222): an unpaused
-    // row offers Pause, a paused one offers Resume — never both.
-    const actions = Object.entries(ACTION_LABELS).filter(([action]) =>
-        action === "pause" ? !b.paused : action === "resume" ? b.paused : true
-    );
+    // One honest translation toggle per row (issue #285): Pause exactly
+    // while the pipeline works this binary, Start Translation for
+    // everything else — the paused flag wins, a held-out row never reads
+    // as working. Start and Pause are one button, never both.
+    const toggle = b.processing && !b.paused ? "pause" : "start";
+    const actions = [
+        [toggle, ACTION_LABELS[toggle]],
+        ["configure", ACTION_LABELS.configure],
+        ["classify", ACTION_LABELS.classify],
+    ];
 
     return `
         <div class="pipeline-binary-row" data-binary="${dll}" data-status="${status.cls}">
@@ -273,9 +280,9 @@ export function renderPipelineBinaryRows(binaries) {
     if (!container) return;
 
     // One delegated listener survives innerHTML re-renders. Real controls:
-    // start drives the run-level lifecycle endpoint, pause/resume steer just
-    // this binary through the per-binary endpoints (issue #222), configure
-    // opens the restart dialog for this binary.
+    // the translation toggle drives the per-binary endpoints — start the
+    // swap, pause the hold (issues #285, #222) — and configure opens the
+    // restart dialog for this binary.
     if (!container.dataset.actionsWired) {
         container.dataset.actionsWired = "1";
         container.addEventListener("click", async (e) => {
@@ -290,14 +297,14 @@ export function renderPipelineBinaryRows(binaries) {
                 openClassificationPanel(binary);
                 return;
             }
-            // Pausing one binary is steering, not lifecycle (issue #217):
-            // the row's button never touches the run-wide pause endpoint.
+            // Both halves of the toggle are steering, not lifecycle
+            // (issue #217): the row's buttons never touch the run-wide
+            // endpoints — start drives the per-binary swap composed
+            // server-side (issue #285), pause the per-binary hold.
             const call =
                 action === "start"
-                    ? () => API.startPipeline()
-                    : action === "pause"
-                      ? () => API.pauseBinary(binary)
-                      : () => API.resumeBinary(binary);
+                    ? () => API.startBinary(binary)
+                    : () => API.pauseBinary(binary);
             // Same driver as the header buttons: success adopts the server's
             // state, rejection surfaces the server's own reason.
             await runControl(action, call);
