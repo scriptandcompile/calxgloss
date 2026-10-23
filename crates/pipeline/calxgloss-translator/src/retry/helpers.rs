@@ -23,6 +23,9 @@ pub fn gather_function_evidence(
     function: &str,
     call_graph: &[String],
 ) -> EvidenceBundle {
+    // The constant document serves two readers — the union findings and
+    // the data-table records — from one load.
+    let consts = load_consts_result(workspace, binary);
     EvidenceBundle {
         data_structures: extract_data_structures(workspace, binary, function),
         type_info: extract_type_info(workspace, binary, function),
@@ -35,12 +38,13 @@ pub fn gather_function_evidence(
         global_state_findings: extract_global_state_hints(workspace, binary, function),
         string_findings: extract_string_context(workspace, binary, function),
         api_findings: extract_api_hints(workspace, binary, function),
-        const_findings: extract_constant_hints(workspace, binary, function),
+        const_findings: constant_hints_from(consts.as_ref(), function),
         serialization_findings: extract_serialization_hints(workspace, binary, function),
         libmatch_findings: extract_libmatch_hints(workspace, binary, function, call_graph),
         parameter_direction_findings: extract_parameter_direction_hints(
             workspace, binary, function,
         ),
+        data_table_findings: data_table_hints_from(consts.as_ref(), function),
         ..Default::default()
     }
 }
@@ -438,46 +442,77 @@ pub fn extract_api_hints(
         .collect()
 }
 
-/// Extract constant findings for a function from the persisted
-/// detection result.
+/// Load the per-binary constant result produced by the
+/// `calxgloss-consts` engine from `re/analysis/consts/{binary}.json`.
 ///
-/// Reads the per-binary result produced by the `calxgloss-consts`
-/// engine from `re/analysis/consts/{binary}.json` and keeps the findings
-/// about the target function — the bitflag groups and enum candidates
-/// made in `function`'s decompiled body, plus the program-level findings
-/// that name `function`: the named constants whose value it repeats,
-/// the flag families it contributes bits to, and the protocol constants
-/// whose matched magic it uses.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
+/// Returns `None` when no workspace is configured, no result is
+/// persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing constant context degrades the prompt, it never
-/// fails it.
-pub fn extract_constant_hints(
+/// fails it. One load feeds every reader of the document — the constant
+/// findings and the data-table records — so the gather reads the cache
+/// exactly once.
+pub fn load_consts_result(
     workspace: Option<&std::path::Path>,
     binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::ConstInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
+) -> Option<calxgloss_consts::types::ConstResult> {
+    let workspace = workspace?;
 
     let persistor = calxgloss_consts::persist::ConstPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
+    match persistor.load(binary) {
+        Ok(result) => Some(result),
         Err(e) => {
             debug!(
                 binary,
                 error = %e,
                 "No usable constant result; continuing without constant context"
             );
-            return Vec::new();
+            None
         }
+    }
+}
+
+/// The constant findings of one function from an already-loaded constant
+/// result — the bitflag groups and enum candidates made in `function`'s
+/// decompiled body, plus the program-level findings that name
+/// `function`: the named constants whose value it repeats, the flag
+/// families it contributes bits to, the protocol constants whose
+/// matched magic it uses, and the data tables it reads — the union's
+/// prompt conversion reaching every kind, so the escalate prompt's
+/// CONSTANTS section carries the table shape on a retry.
+pub fn constant_hints_from(
+    result: Option<&calxgloss_consts::types::ConstResult>,
+    function: &str,
+) -> Vec<calxgloss_prompts::ConstInfo> {
+    let Some(result) = result else {
+        return Vec::new();
     };
 
     result
         .for_function(function)
         .map(calxgloss_prompts::ConstInfo::from)
+        .collect()
+}
+
+/// The data tables one function reads from an already-loaded constant
+/// result — each table record whose referencing functions name
+/// `function`, so every function that touches the table is told its
+/// shape. The record carries the listing label, element type, and entry
+/// count the module-context DATA TABLES section names.
+pub fn data_table_hints_from(
+    result: Option<&calxgloss_consts::types::ConstResult>,
+    function: &str,
+) -> Vec<calxgloss_prompts::DataTableInfo> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+
+    result
+        .for_function(function)
+        .filter_map(|finding| match finding {
+            calxgloss_consts::types::ConstFinding::DataTable(record) => Some(record),
+            _ => None,
+        })
+        .map(calxgloss_prompts::DataTableInfo::from)
         .collect()
 }
 
@@ -2391,6 +2426,21 @@ mod tests {
         }
     }
 
+    fn table_record(functions: &[&str]) -> calxgloss_consts::types::ConstFinding {
+        calxgloss_consts::types::ConstFinding::DataTable(calxgloss_consts::types::DataTable {
+            symbol: "DAT_1400a1b60".into(),
+            address: 0x1400_a1b60,
+            element_type: "u16".into(),
+            count: 12,
+            values: (1..=12).collect(),
+            values_truncated: false,
+            functions: functions.iter().map(|f| f.to_string()).collect(),
+            suggestion: "const DAT_1400A1B60: [u16; 12];".into(),
+            confidence: calxgloss_consts::types::Confidence::new(70),
+            evidence: "12 bytes decode cleanly as 6 u16 entries at 0x1400a1b60".into(),
+        })
+    }
+
     fn persist_const_findings(dir: &TempDir, findings: Vec<calxgloss_consts::types::ConstFinding>) {
         let mut result = calxgloss_consts::types::ConstResult::new(ScanMetadata::new("eqmain.dll"));
         result.findings = findings;
@@ -2399,10 +2449,24 @@ mod tests {
             .expect("the constant result should be saved");
     }
 
+    fn constant_hints_of(dir: &TempDir, function: &str) -> Vec<calxgloss_prompts::ConstInfo> {
+        constant_hints_from(
+            load_consts_result(Some(dir.path()), "eqmain.dll").as_ref(),
+            function,
+        )
+    }
+
+    fn data_table_hints_of(dir: &TempDir, function: &str) -> Vec<calxgloss_prompts::DataTableInfo> {
+        data_table_hints_from(
+            load_consts_result(Some(dir.path()), "eqmain.dll").as_ref(),
+            function,
+        )
+    }
+
     #[test]
     fn no_workspace_configured_yields_no_constant_findings() {
         assert!(
-            extract_constant_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            constant_hints_from(None, "FUN_18003ab00").is_empty(),
             "no workspace means no constant context"
         );
     }
@@ -2411,7 +2475,7 @@ mod tests {
     fn a_missing_cache_yields_no_constant_findings() {
         let dir = TempDir::new().expect("temp dir should be created");
         assert!(
-            extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            constant_hints_of(&dir, "FUN_18003ab00").is_empty(),
             "a scan that has not run yet just means no constant context"
         );
     }
@@ -2432,7 +2496,7 @@ mod tests {
         .expect("the cache directory should be creatable");
         std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
 
-        assert!(extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
+        assert!(constant_hints_of(&dir, "FUN_18003ab00").is_empty());
     }
 
     #[test]
@@ -2448,7 +2512,7 @@ mod tests {
             ],
         );
 
-        let found = extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+        let found = constant_hints_of(&dir, "FUN_18003ab00");
 
         assert_eq!(found.len(), 1, "only the target function's finding");
         assert_eq!(found[0].function, "FUN_18003ab00");
@@ -2479,15 +2543,21 @@ mod tests {
                     "FUN_18003ab00",
                     "FUN_zzz",
                 ])),
+                table_record(&["FUN_18003ab00", "FUN_zzz"]),
             ],
         );
 
-        let found = extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+        let found = constant_hints_of(&dir, "FUN_18003ab00");
 
         let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
         assert_eq!(
             kinds,
-            vec!["bitflag_group", "enum_candidate", "named_constant"]
+            vec![
+                "bitflag_group",
+                "enum_candidate",
+                "named_constant",
+                "data_table"
+            ]
         );
         assert_eq!(
             found[0].suggestion,
@@ -2499,6 +2569,83 @@ mod tests {
         );
         assert_eq!(found[2].suggestion, "const VALUE_0x400: u32 = 0x400;");
         assert_eq!(found[2].confidence, 60);
+        // The table rides the escalate CONSTANTS section through the
+        // union's prompt conversion — a retry after a divergence does
+        // not re-scatter the table.
+        assert_eq!(found[3].kind, "data_table");
+        assert_eq!(found[3].suggestion, "const DAT_1400A1B60: [u16; 12];");
+        assert_eq!(found[3].confidence, 70);
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_data_table_hints() {
+        assert!(
+            data_table_hints_from(None, "FUN_18003ab00").is_empty(),
+            "no workspace means no table context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_data_table_hints() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            data_table_hints_of(&dir, "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no table context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_data_table_hints() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("consts")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            data_table_hints_of(&dir, "FUN_18003ab00").is_empty(),
+            "a corrupt document degrades the prompt, it never fails it"
+        );
+    }
+
+    #[test]
+    fn every_function_that_references_a_table_gets_its_shape() {
+        // The table is program-level: its cross-references name every
+        // reader, and each reader's lookup surfaces it — so the
+        // module-context prompt of every function that indexes the
+        // table renders the DATA TABLES section.
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_const_findings(
+            &dir,
+            vec![
+                table_record(&["FUN_18003ab00", "FUN_180099998"]),
+                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record(
+                    "FUN_18003ab00",
+                )),
+            ],
+        );
+
+        for function in ["FUN_18003ab00", "FUN_180099998"] {
+            let found = data_table_hints_of(&dir, function);
+            assert_eq!(found.len(), 1, "{function} reads the table");
+            assert_eq!(found[0].name, "DAT_1400a1b60");
+            assert_eq!(found[0].element_type, "u16");
+            assert_eq!(found[0].count, 12);
+            assert_eq!(found[0].confidence, 70);
+        }
+
+        assert!(
+            data_table_hints_of(&dir, "FUN_000000000").is_empty(),
+            "a function that never touches the table pays no table context"
+        );
     }
 
     // ---- serialization hint extraction --------------------------------
@@ -3545,6 +3692,7 @@ mod tests {
             ],
         );
         persist_hints(&dir, vec![algorithm_hint("FUN_18003ab00", "bubble sort")]);
+        persist_const_findings(&dir, vec![table_record(&["FUN_18003ab00"])]);
 
         let evidence =
             gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
@@ -3569,6 +3717,21 @@ mod tests {
             "the direction record also reaches the module-context bundle"
         );
         assert_eq!(evidence.parameter_direction_findings[0].direction, "out");
+        assert_eq!(
+            evidence.data_table_findings.len(),
+            1,
+            "the table the function reads reaches the module-context bundle"
+        );
+        assert_eq!(evidence.data_table_findings[0].name, "DAT_1400a1b60");
+        assert_eq!(
+            evidence
+                .const_findings
+                .iter()
+                .filter(|f| f.kind == "data_table")
+                .count(),
+            1,
+            "the same table also rides the union findings for the escalate CONSTANTS section"
+        );
 
         // The call-graph lists are the caller's to fill — the gather reads
         // only the persisted analyzer caches.
@@ -3593,5 +3756,6 @@ mod tests {
         assert!(none.serialization_findings.is_empty());
         assert!(none.libmatch_findings.is_empty());
         assert!(none.parameter_direction_findings.is_empty());
+        assert!(none.data_table_findings.is_empty());
     }
 }

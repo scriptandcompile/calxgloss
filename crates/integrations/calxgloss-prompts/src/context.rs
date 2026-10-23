@@ -12,9 +12,9 @@
 //! - [`FullModulePromptData`] — Tier 4: full module with shim layer + PAL traits
 
 use super::templates::{
-    CallGraphNeighbor, ControlFlowInfo, ConventionInfo, EvidenceBundle, FormattedTestResult,
-    GlobalStateInfo, LibmatchInfo, NeighborFunction, PalTraitDef, ParameterDirectionInfo, ShimCode,
-    StructuredData,
+    CallGraphNeighbor, ControlFlowInfo, ConventionInfo, DataTableInfo, EvidenceBundle,
+    FormattedTestResult, GlobalStateInfo, LibmatchInfo, NeighborFunction, PalTraitDef,
+    ParameterDirectionInfo, ShimCode, StructuredData,
 };
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
@@ -196,6 +196,10 @@ pub struct ModuleContextPromptData {
     /// made by the `calxgloss-typeinfer` direction detector, one per
     /// parameter the body gave evidence for.
     pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
+    /// Data tables the target function reads, made by the
+    /// `calxgloss-consts` table reader — one record per table the
+    /// function's body or the object's cross-references name it for.
+    pub data_table_findings: Vec<DataTableInfo>,
 }
 
 impl ModuleContextPromptData {
@@ -233,6 +237,7 @@ impl ModuleContextPromptData {
             global_state_findings: Vec::new(),
             libmatch_findings: Vec::new(),
             parameter_direction_findings: Vec::new(),
+            data_table_findings: Vec::new(),
         }
     }
 
@@ -270,6 +275,7 @@ impl ModuleContextPromptData {
             global_state_findings: evidence.global_state_findings,
             libmatch_findings: evidence.libmatch_findings,
             parameter_direction_findings: evidence.parameter_direction_findings,
+            data_table_findings: evidence.data_table_findings,
         }
     }
 }

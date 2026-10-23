@@ -405,6 +405,26 @@ pub struct ConstInfo {
     pub evidence: String,
 }
 
+/// A read-only data table the target function reads, made by the
+/// `calxgloss-consts` table reader.
+///
+/// The module-context prompt names each table the function reads —
+/// its listing label, element type, and entry count — so the first
+/// translation attempt renders the lookup as a named `const` array
+/// instead of match arms over the magic numbers the scattered reads
+/// decode to.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DataTableInfo {
+    /// The listing label of the table object, e.g. `DAT_1400a1b60`.
+    pub name: String,
+    /// The element type the entries decode as, e.g. `u16`.
+    pub element_type: String,
+    /// The full number of entries in the table.
+    pub count: usize,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: u8,
+}
+
 /// A calling-convention reading about one function, made by the
 /// `calxgloss-typeinfer` convention detector.
 ///
@@ -747,6 +767,12 @@ pub struct EvidenceBundle {
     /// prompt data, not the escalate template, whose direction lines
     /// ride the type-info section instead.
     pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
+    /// Data tables the target function reads, made by the
+    /// `calxgloss-consts` table reader — read by the module-context
+    /// prompt data, not the escalate template, whose table facts ride
+    /// the CONSTANTS section through the constant findings' union
+    /// prompt conversion.
+    pub data_table_findings: Vec<DataTableInfo>,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
@@ -1214,6 +1240,9 @@ pub struct ModuleContextTemplate {
     /// Pointer-parameter direction readings about this function made by
     /// the type-inference direction detector.
     pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
+    /// Data tables the function reads, made by the `calxgloss-consts`
+    /// table reader.
+    pub data_table_findings: Vec<DataTableInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -1237,6 +1266,7 @@ impl ModuleContextTemplate {
             global_state_findings: data.global_state_findings.clone(),
             libmatch_findings: data.libmatch_findings.clone(),
             parameter_direction_findings: data.parameter_direction_findings.clone(),
+            data_table_findings: data.data_table_findings.clone(),
         }
     }
 }

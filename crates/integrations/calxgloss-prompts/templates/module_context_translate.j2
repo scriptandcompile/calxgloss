@@ -197,6 +197,22 @@ direction reading does not claim:
 {% endfor %}
 
 {% endif %}
+{% if !data_table_findings.is_empty() %}
+## DATA TABLES
+
+The defined data objects this function indexes that static analysis has
+recognized as constant data tables — objects whose bytes decode coherently
+at one element width and that nothing in the program writes. Where a
+finding is credible, render each lookup of one of these objects as a named
+`const` array of the element type and entry count shown, indexed where the
+original offsets the object — do not re-scatter the decoded entries as
+match arms or magic numbers:
+
+{% for table in data_table_findings %}
+- **{{ table.name }}**: `const [{{ table.element_type }}; {{ table.count }}]` (confidence {{ table.confidence }})
+{% endfor %}
+
+{% endif %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.

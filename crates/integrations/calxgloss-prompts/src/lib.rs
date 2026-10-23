@@ -55,11 +55,11 @@ pub use context::{
 pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
-    ConstInfo, ControlFlowInfo, ConventionInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    EvidenceBundle, FixTemplate, FormattedTestResult, FullModuleTemplate, GlobalStateInfo,
-    LibmatchInfo, MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction,
-    PalTraitDef, PalTraitMethod, ParameterDirectionInfo, SerializationInfo, ShimCode,
-    SignatureTemplate, StringContextInfo, StructField, StructuredData, TestCaseFormatted,
+    ConstInfo, ControlFlowInfo, ConventionInfo, DataTableInfo, EdgeCaseTemplate, EdgeCaseTest,
+    EscalateTemplate, EvidenceBundle, FixTemplate, FormattedTestResult, FullModuleTemplate,
+    GlobalStateInfo, LibmatchInfo, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
+    NeighborFunction, PalTraitDef, PalTraitMethod, ParameterDirectionInfo, SerializationInfo,
+    ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData, TestCaseFormatted,
     TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
@@ -1140,6 +1140,38 @@ mod tests {
     }
 
     #[test]
+    fn test_escalate_template_data_table_rides_the_const_findings_section() {
+        // The table facts reach a retry through the finding union's
+        // prompt conversion — the escalate side of the table context,
+        // so a retry after a divergence does not re-scatter the table.
+        let findings = vec![ConstInfo {
+            function: String::new(),
+            kind: "data_table".to_string(),
+            suggestion: "const DAT_1400A1B60: [u16; 12];".to_string(),
+            confidence: 70,
+            evidence: "12 bytes decode cleanly as 6 u16 entries at 0x1400a1b60".to_string(),
+        }];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* magic numbers */ }".to_string(),
+            "Wrong result".to_string(),
+            EvidenceBundle {
+                const_findings: findings,
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONSTANTS"));
+        assert!(prompt.contains("const DAT_1400A1B60: [u16; 12];"));
+        assert!(prompt.contains("data_table"));
+        assert!(prompt.contains("confidence 70"));
+    }
+
+    #[test]
     fn test_escalate_template_without_string_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
@@ -1229,6 +1261,45 @@ mod tests {
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
 
         assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
+    }
+
+    fn data_table_fixture() -> DataTableInfo {
+        DataTableInfo {
+            name: "DAT_1400a1b60".to_string(),
+            element_type: "u16".to_string(),
+            count: 12,
+            confidence: 70,
+        }
+    }
+
+    #[test]
+    fn test_module_context_template_renders_data_tables_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                data_table_findings: vec![data_table_fixture()],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("DATA TABLES"));
+        assert!(prompt.contains("DAT_1400a1b60"));
+        assert!(prompt.contains("[u16; 12]"));
+        assert!(prompt.contains("u16"));
+        assert!(prompt.contains("confidence 70"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_data_table_findings_omits_the_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(!prompt.contains("DATA TABLES"));
     }
 
     fn convention_fixture() -> ConventionInfo {

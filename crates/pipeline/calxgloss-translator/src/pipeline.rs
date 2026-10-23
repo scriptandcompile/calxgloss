@@ -2514,10 +2514,10 @@ impl TranslationPipeline {
     /// Detect constant structures across the binary before a batch
     /// starts, unless a detection result is already cached.
     ///
-    /// The scan's findings — bitflag groups, enum candidates, and
-    /// repeated magic numbers — are filed at
+    /// The scan's findings — bitflag groups, enum candidates, repeated
+    /// magic numbers, and data tables — are filed at
     /// `re/analysis/consts/{binary}.json` for the prompt path to read (see
-    /// [`extract_constant_hints`](crate::retry::helpers::extract_constant_hints));
+    /// [`load_consts_result`](crate::retry::helpers::load_consts_result));
     /// running the detection scan once up front means every function in
     /// the batch can see constant context instead of none. The
     /// persisted file is the cache: when a result is already saved for

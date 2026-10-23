@@ -601,6 +601,21 @@ impl From<&ConstFinding> for calxgloss_prompts::ConstInfo {
     }
 }
 
+/// Render a table record as module-context prompt data: the object's
+/// listing label, its element type, and its full entry count — enough
+/// for the first translation attempt to name the array and index it
+/// where the original offsets the object.
+impl From<&DataTable> for calxgloss_prompts::DataTableInfo {
+    fn from(record: &DataTable) -> Self {
+        Self {
+            name: record.symbol.clone(),
+            element_type: record.element_type.clone(),
+            count: record.count,
+            confidence: record.confidence.value(),
+        }
+    }
+}
+
 // ============================================================
 // Persisted result
 // ============================================================
@@ -1205,6 +1220,17 @@ mod tests {
         assert_eq!(info.confidence, 70);
         assert_eq!(info.suggestion, "const DAT_1400A1B60: [u16; 12];");
         assert!(info.evidence.contains("DAT_1400a1b60[uVar2]"));
+    }
+
+    #[test]
+    fn a_table_record_converts_to_module_context_table_data() {
+        // The module-context DATA TABLES section reads the record's own
+        // shape — label, element type, full count — not the union row.
+        let info = calxgloss_prompts::DataTableInfo::from(&data_table());
+        assert_eq!(info.name, "DAT_1400a1b60");
+        assert_eq!(info.element_type, "u16");
+        assert_eq!(info.count, 12);
+        assert_eq!(info.confidence, 70);
     }
 
     #[test]
