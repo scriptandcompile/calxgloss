@@ -193,6 +193,20 @@ pub use calxgloss_globalstate::types::{
 };
 
 // ============================================================
+// calxgloss-floatsimd — float/SIMD usage flags
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `FloatsimdResult` already names the per-binary document, and a
+// second alias spelled like it would read as the same thing. The
+// crate's `ScanMetadata` is the shared one from calxgloss-types,
+// already named here.
+pub use calxgloss_floatsimd::FloatsimdError;
+pub use calxgloss_floatsimd::types::{
+    FloatsimdFinding, FloatsimdRecord, FloatsimdResult, ShapeKind,
+};
+
+// ============================================================
 // calxgloss-consts — constant & enum recovery
 // ============================================================
 

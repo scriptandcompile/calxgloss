@@ -349,6 +349,7 @@ dependencies = [
  "calxgloss-controlflow",
  "calxgloss-decomp",
  "calxgloss-errhandling",
+ "calxgloss-floatsimd",
  "calxgloss-git",
  "calxgloss-globalstate",
  "calxgloss-kuna",
@@ -578,6 +579,23 @@ dependencies = [
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "calxgloss-floatsimd"
+version = "0.4.0"
+dependencies = [
+ "calxgloss-decomp",
+ "calxgloss-kuna",
+ "calxgloss-prompts",
+ "calxgloss-types",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
