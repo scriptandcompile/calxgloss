@@ -42,8 +42,22 @@ instead of "the pipeline stopped with nobody complaining" (P25–P26). P27–P33
 close stuck functions, strengthen evidence, or serve operations, and block
 nothing above them.
 
+**P34–P39 are architecture deepening tracks from the 2026-10-24 codebase
+review, pinned to the top by decision: they are to be worked before anything
+else in this matrix.** Only P39 is blocked inside the group (by P34's
+descriptor); together they pay for themselves by making every later Evidence
+track (P19–P21, P28) and the retry-loop hypothesis ledger (P27) cheaper to
+land — one place to add an engine, one place to read one, one place to
+assemble the pipeline.
+
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
+| P34 | Evidence-scan registry — one descriptor behind the pre-batch scan phase: an engine contributes one table row (name, persistor, engine ctor, count-for-log) and the 14 hand-copied scan methods, wrappers, registry thunks, and `ensure_*` test wrappers collapse into it; register `libmatch` or justify leaving it manual | pipeline (`calxgloss-translator`) + evidence (all scan crates) | — | ⬜ not started | not specced | — |
+| P35 | Evidence-bundle projector — one `AnalysisDoc` seam (persistor load + `for_function`) behind a generic load-and-project that fills the prompt bundle by fold; the 19 hand-copied `extract_*`/`load_*` functions in `retry/helpers` and their 49 trio tests collapse to one parametrized suite | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
+| P36 | Prompt bundle through the templates — `EscalateTemplate` and the module-context renderers take `&EvidenceBundle` (or a section list); per-engine template sections become `.j2` includes and the four near-duplicate prompt-data structs die with the ~8–10 field re-declarations they force per engine | integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
+| P37 | Assemble the pipeline once, from settings — one `PipelineSpec` seam; CLI and review UI become adapters over it, and the four divergent builder dances — including web patch-retry's quiet *lesser* pipeline (no events, no overrides) — are deleted | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
+| P38 | Attempt as a deep module — one attempt = prompt → LLM → verification → record, returning a verdict; the 1,272-line retry-loop body becomes attempt-selection and cancellation policy, with retry strategies as adapters at the existing internal seam | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
+| P39 | One CLI scan command, sixteen report printers — a generic `ScanCommand` driven by P34's descriptor (load · scan · persist · show); each engine contributes its report printer and flag block only; 16 command-module skeletons and `main.rs` match arms deleted | interface (`calxgloss-cli`) + evidence (all scan crates) | — | ⬜ not started | not specced | — |
 | P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
 | P20 | Seam capability report + engine-identity cache key — the seam advertises which questions Kuna can currently answer, and the scan cache keys on the engine build digest instead of a hand-bumped format version | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
 | P21 | First-class unknown records — per function, record what the evidence could not determine, with what evidence would close it; review UI resolves them, `escalate` retries consume them, the run leaves an audit ledger | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
@@ -61,6 +75,102 @@ nothing above them.
 | P33 | Whole-task measurement harness — benchmark pipeline tasks end to end (tokens, RSS, ms) with an oracle independent of the implementation, counting discovery, retries, and continuations in every token claim | — (dev-side experiment harness, no crate) | — | ⬜ not started | not specced | — |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
+
+## P34 — Evidence-scan registry: one descriptor behind the pre-batch scan phase (pipeline + evidence)
+
+**Every new Evidence engine pays the same four hand-copied edits, and the
+convention has already drifted.** The pre-batch scan phase runs fourteen
+engines, each hand-wired at four sites: a ~28-line `ScanJob` scan method, a
+pipeline wrapper fn, a one-line registry thunk, and a public `ensure_*`
+wrapper with zero production callers — 56 shallow interface members total,
+while `run_scan` already proves the shape is uniform and only the names,
+persistor, engine ctor, and two bespoke log strings differ. `libmatch` has an
+engine, persistor, and CLI yet never joined the registry, so the pipeline
+consumes a document only the manual CLI produces — the concrete cost of a
+hand-maintained convention. This track deepens the scan phase behind one
+interface: an engine contributes a single descriptor row, and the window,
+latch, heartbeat, and persist-or-skip machinery stay inside the module. The
+`ensure_*` wrappers disappear; the test surface becomes one generic pass over
+the registry. Registering `libmatch` — or recording why it stays
+CLI-only — is part of the definition of done. Source: architecture review
+(2026-10-24), candidate 1.
+
+## P35 — Evidence-bundle projector: one seam from analysis documents to the prompt bundle (pipeline)
+
+**One new Evidence engine re-spells its cache read nineteen times, and every
+spelling gets its own trio of tests.** `gather_function_evidence` assembles
+the prompt bundle from nineteen near-identical `extract_*`/`load_*` functions
+in `retry/helpers` (4,159 lines, two-thirds of them tests): persistor →
+miss-log → `for_function` → `Info::from`, differing only in crate name,
+persistor name, and log string; 49 trio tests each rebuild a temp workspace
+to re-assert "missing cache ⇒ empty hints". This track deepens the projection
+behind one interface: an `AnalysisDoc` seam — persistor load + `for_function`
+— with seventeen adapters making it real rather than hypothetical, and one
+generic load-and-project filling the bundle by fold. Only genuinely
+engine-specific projection logic survives in helpers; the trio tests collapse
+into one parametrized suite. Source: architecture review (2026-10-24),
+candidate 2. Pairs with: P34 — the same descriptor seam later feeds the CLI
+scan commands and a generic analysis-document persistor.
+
+## P36 — Prompt bundle through the templates: render the bundle once (integrations + pipeline)
+
+**A new engine's `*Info` field is re-declared ~8–10 times before a template
+may read it.** The 21-field `EvidenceBundle` plus four near-duplicate
+prompt-data structs (`EscalateTemplate`, `ModuleContextTemplate`,
+`ModuleContextPromptData`, `FullModulePromptData`) each re-declare and
+re-initialise the same field, and `escalate.j2` and
+`module_context_translate.j2` repeat the section — five prompt sites moved
+per engine, plus a renders/omits test pair each. This track inverts the
+rendering: templates take `&EvidenceBundle` (or the section list it
+projects), per-engine sections become `.j2` includes, and the prompt-data
+twins lose their reason to exist. The bundle becomes the seam; the
+templates adapt at it. Source: architecture review (2026-10-24), candidate
+3. Pairs with: P35 — the projector fills the bundle this renders over;
+together a new engine's prompt surface shrinks to its own crate plus one
+include.
+
+## P37 — Assemble the pipeline once, from settings (pipeline + interface)
+
+**The pipeline's interface includes its own assembly.** 29 fields, ~25
+`with_*` builders, and four call sites each redo the builder dance:
+`auto.rs` chains 13 conditional `with_*`, `batch_translate.rs` and
+`translate.rs` build their own, and web's `run_patch_retry` constructs a
+quietly *lesser* pipeline — no event stream, no overrides — so a fix in
+one assembly fixes none of the others. This track closes one seam:
+settings → `PipelineSpec` → one assembly. The CLI and the review UI become
+adapters over it — two adapters make the seam real, not hypothetical — and
+the lesser-pipeline bug class is deleted rather than tracked. Source:
+architecture review (2026-10-24), candidate 4.
+
+## P38 — Attempt as a deep module: the retry loop becomes policy (pipeline)
+
+**The retry loop hides an attempt inside one 1,272-line async fn.** Attempt
+rotation, escalation and context-tier decisions, compile-fix / test-fix
+prompt construction, verification against the scratch project, token and
+experiment logging, and pause/stop handling interleave — a bug in "how one
+attempt fails and gets re-prompted" can only be exercised through the
+whole loop, and `translate()` repeats the evidence gathering twice rather
+than routing a unit through it. This track names the hidden module:
+`Attempt` — prompt → LLM → verification → record — taking a unit of work
+and a context tier, returning the attempt and its verdict; the loop keeps
+attempt selection and cancellation policy only, and retry strategies
+(compile fix, test fix, escalation, edge-case fix) become adapters at the
+internal seam — `escalate.rs` and `retry/config` are already two of them,
+waiting. Source: architecture review (2026-10-24), candidate 5. Pairs with:
+P27 — the hypothesis ledger lands on this loop; the deepening gives it
+per-attempt verdict records instead of log lines.
+
+## P39 — One CLI scan command, sixteen report printers (interface + evidence)
+
+**Sixteen engine subcommands re-spell the same sequence.** 16 clap variant
+blocks, 16 command modules of 150–570 lines, 16 `main.rs` match arms — all
+load source → engine → scan → persist → report, modulo names; only the
+report printer is genuinely per-engine. This track builds `ScanCommand`
+over P34's descriptor (load · scan · persist · show), each engine
+contributing its report printer and flag block only. One descriptor pays
+back at two interfaces — pipeline and CLI — leverage made real; the match
+arms and the 35-line skeletons are deleted. Source: architecture review
+(2026-10-24), candidate 6. Blocked by: P34 (the descriptor it drives).
 
 ## P19 — Admitted semantics: coverage + limits on every evidence finding (evidence + shared + pipeline + interface)
 
