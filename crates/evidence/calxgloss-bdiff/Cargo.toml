@@ -1,0 +1,21 @@
+[package]
+name = "calxgloss-bdiff"
+version.workspace = true
+edition.workspace = true
+description = "Binary-version function pairing: name-identity matching of two scan snapshots into one confidence-scored pairing document"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Document-level pass only: the snapshot vocabulary reuses the shared
+# identity and confidence types, and no analysis-engine crate is a
+# dependency — the pass reads documents, never a program (ADR-0026,
+# ADR-0020).
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -431,6 +431,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-bdiff"
+version = "0.4.0"
+dependencies = [
+ "calxgloss-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "calxgloss-callback"
 version = "0.4.0"
 dependencies = [
