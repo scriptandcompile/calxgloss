@@ -24,13 +24,17 @@
 //! * [`types`] — the document model: [`ScanSnapshot`] and
 //!   [`FunctionEntry`], one scan's in-memory listing; [`PairingDocument`],
 //!   [`PairingRecord`], and [`MatchFamily`], the one persisted pairing;
-//!   the name-identity and byte-equal-body bands and the carry-over
-//!   confidence floor as named constants.
+//!   the name-identity, byte-equal-body, and call-topology bands, the
+//!   topology agreement bump, and the carry-over confidence floor as
+//!   named constants.
 //! * [`engine`] — [`pair_versions`], the pairing pass: a pure function
 //!   over two snapshots, documents in and pairing document out, opening
-//!   the ladder with the name-identity and normalized-body families
-//!   before the one-to-one resolution rule (strongest claim wins, ties
-//!   first seen in scan order).
+//!   the ladder with the name-identity and normalized-body families,
+//!   then propagating the call graph's topology claims to a fixed point
+//!   and bumping body pairs the topology agrees on — all before the
+//!   one-to-one resolution rule (strongest claim wins, ties first seen
+//!   in scan order). The call map rides the snapshots' own bodies; the
+//!   pass reads no engine (ADR-0024).
 //! * [`persist`] — [`BdiffPersistor`], the JSON document store: one
 //!   pairing document per (binary identity, old bytes, new bytes) under
 //!   `re/analysis/bdiff/`, keyed on the hash pair so a stale document
@@ -47,4 +51,5 @@ pub use persist::BdiffPersistor;
 pub use types::{
     BODY_EQUAL_CONFIDENCE, BODY_SIMILARITY_FLOOR, CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry,
     MatchFamily, NAME_IDENTITY_CONFIDENCE, PairingDocument, PairingRecord, ScanSnapshot,
+    TOPOLOGY_AGREEMENT_BUMP, TOPOLOGY_CONFIDENCE, TOPOLOGY_MIN_PAIRED_NEIGHBORS,
 };

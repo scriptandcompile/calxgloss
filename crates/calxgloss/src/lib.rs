@@ -313,6 +313,7 @@ pub use calxgloss_bdiff::BdiffError;
 pub use calxgloss_bdiff::{
     BODY_EQUAL_CONFIDENCE, BODY_SIMILARITY_FLOOR, CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry,
     MatchFamily, NAME_IDENTITY_CONFIDENCE, PairingDocument, PairingRecord, ScanSnapshot,
+    TOPOLOGY_AGREEMENT_BUMP, TOPOLOGY_CONFIDENCE, TOPOLOGY_MIN_PAIRED_NEIGHBORS,
 };
 pub use calxgloss_bdiff::{BdiffPersistor, pair_versions};
 

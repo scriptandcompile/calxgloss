@@ -44,6 +44,34 @@ pub const BODY_EQUAL_CONFIDENCE: u8 = 90;
 /// anything below claims nothing.
 pub const BODY_SIMILARITY_FLOOR: u8 = 60;
 
+/// Confidence of a call-graph-topology pair: a function neither the name
+/// nor body families claimed pairs because its call neighborhood agrees —
+/// already-paired functions reach it on both sides through call edges,
+/// propagated to a fixed point over the body-derived call map (ADR-0024's
+/// rails). The score is the scan correlation detector's band (ADR-0022's
+/// ladder): two functions' neighborhoods agreeing on a pair beats any
+/// single body's shape, but a *renamed* neighborhood still infers the
+/// relationship rather than quoting it, so it sits below the body family —
+/// and below the carry-over floor. Alone it cannot drive carry-over;
+/// corroborating a body-family pair lifts that record instead (ticket
+/// #297, track #233's ladder rung three).
+pub const TOPOLOGY_CONFIDENCE: u8 = 70;
+
+/// How many paired neighbors a topological propagation claim requires:
+/// two neighbors corroborate the neighborhood from two readings; one
+/// paired neighbor is a lone coincidence, and a lone signal claims
+/// nothing (ADR-0038 again, ticket #297's propagation gate).
+pub const TOPOLOGY_MIN_PAIRED_NEIGHBORS: usize = 2;
+
+/// How much a corroborated reading rides up the record: when the call map
+/// agrees on a pair the body family already claimed, two independent
+/// families read one pair, and the flag-family agreement precedent
+/// (P12.6's merged families scored above the per-function groups —
+/// agreement beats any single reading) lifts the record one bump above
+/// its family score. The bump keeps the ladder intact: a corroborated
+/// byte-equal body pair reaches name identity's 95, never past it.
+pub const TOPOLOGY_AGREEMENT_BUMP: u8 = 5;
+
 /// The carry-over confidence floor: only pairings at or above this
 /// score may seed a new-version unit from an old accepted translation
 /// (track #233). Named after the libmatch Skip-classification floor's
@@ -77,9 +105,10 @@ pub struct FunctionEntry {
 
     /// The decompiled body the scan kept for this function, as the
     /// scan wrote it. Read by the normalized-body family (#296), which
-    /// puts it through the shared libmatch normalizer; unused by
-    /// name-identity pairing and carried for the call-map family that
-    /// lands with #297.
+    /// puts it through the shared libmatch normalizer, and by the call-
+    /// graph family (#297), whose call map is derived from these bodies
+    /// with no engine read (ADR-0024's rails); unused by name-identity
+    /// pairing.
     pub body: String,
 }
 
@@ -127,9 +156,11 @@ impl ScanSnapshot {
 /// strongest claim per function (ADR-0022), so a record names the one
 /// family that won.
 ///
-/// The ladder opens with name identity (#295) and adds the
-/// normalized-body family with #296; the call-graph-topology family
-/// lands with #297 and extends this enum.
+/// The ladder opens with name identity (#295), adds the normalized-body
+/// family with #296, and closes with the call-graph-topology family
+/// (#297). A topology reading that corroborates a pair the body family
+/// won stays corroboration, not a competing family: the record keeps
+/// `NormalizedBody` and rides the agreement bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchFamily {
@@ -142,6 +173,14 @@ pub enum MatchFamily {
     /// equal normalized bodies score [`BODY_EQUAL_CONFIDENCE`], and a
     /// near-equal pair scores on its structural-diff ratio beside it.
     NormalizedBody,
+    /// The function's call neighborhood agrees: at least
+    /// [`TOPOLOGY_MIN_PAIRED_NEIGHBORS`] already-paired callers and/or
+    /// callees reach the pair on both sides through call edges of the
+    /// body-derived call map (ADR-0024's rails), propagated to a fixed
+    /// point. Scores [`TOPOLOGY_CONFIDENCE`] — below the carry-over
+    /// floor on its own; records name their paired-neighbor evidence
+    /// lines.
+    CallTopology,
 }
 
 impl MatchFamily {
@@ -151,6 +190,7 @@ impl MatchFamily {
         match self {
             Self::NameIdentity => "name_identity",
             Self::NormalizedBody => "normalized_body",
+            Self::CallTopology => "call_topology",
         }
     }
 }
@@ -259,10 +299,51 @@ mod tests {
     }
 
     #[test]
+    fn the_topology_band_is_70_below_the_carry_over_floor() {
+        // Ladder rung three, ADR-0024's band: two neighborhoods agreeing
+        // outranks a single body reading, but a below-floor score alone
+        // can never seed a carry-over — the record stands, the consumer
+        // refuses it (#299 applies the floor).
+        assert_eq!(TOPOLOGY_CONFIDENCE, 70);
+        assert!(
+            !Confidence::new(TOPOLOGY_CONFIDENCE).at_least(CARRY_OVER_CONFIDENCE_FLOOR),
+            "a topology claim on its own never reaches the carry-over floor"
+        );
+    }
+
+    #[test]
+    fn a_propagation_claim_needs_two_paired_neighbors() {
+        // A lone paired neighbor is a lone signal: the ADR-0038 refusal
+        // spelled in neighborhood form (ticket #297).
+        assert_eq!(TOPOLOGY_MIN_PAIRED_NEIGHBORS, 2);
+    }
+
+    #[test]
+    fn the_agreement_bump_beats_either_reading_without_leaving_the_ladder() {
+        // The flag-family precedent: agreement outranks any single
+        // reading. The byte-equal 90 corroborated by topology rides the
+        // bump to exactly name identity's 95 — never past the ladder's
+        // top rung.
+        assert_eq!(TOPOLOGY_AGREEMENT_BUMP, 5);
+        assert_eq!(
+            BODY_EQUAL_CONFIDENCE + TOPOLOGY_AGREEMENT_BUMP,
+            NAME_IDENTITY_CONFIDENCE
+        );
+        assert!(
+            Confidence::new(BODY_EQUAL_CONFIDENCE + TOPOLOGY_AGREEMENT_BUMP)
+                .at_least(TOPOLOGY_CONFIDENCE + 1),
+            "the corroborated pair outranks the topology reading alone"
+        );
+    }
+
+    #[test]
     fn match_families_serialize_as_their_stable_names() {
         let json = serde_json::to_string(&MatchFamily::NameIdentity).expect("serializable");
         assert_eq!(json, "\"name_identity\"");
         assert_eq!(MatchFamily::NameIdentity.as_str(), "name_identity");
+        let json = serde_json::to_string(&MatchFamily::CallTopology).expect("serializable");
+        assert_eq!(json, "\"call_topology\"");
+        assert_eq!(MatchFamily::CallTopology.as_str(), "call_topology");
     }
 
     #[test]

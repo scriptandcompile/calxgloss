@@ -4,14 +4,28 @@
 //! [`pair_versions`] is the crate's whole engine: it adds no `ScanSource`
 //! methods (ADR-0026 untouched), reads no engine, writes nothing back
 //! to any program (ADR-0020), and runs no LLM — a version diff costs
-//! milliseconds, not dollars. The pass runs the match ladder's opening
-//! rungs (track #233). First, name identity: an exported name or a
+//! milliseconds, not dollars. The pass runs the match ladder (track
+//! #233). First, name identity: an exported name or a
 //! demangled name present in both versions pairs the old function to
 //! the new at [`crate::types::NAME_IDENTITY_CONFIDENCE`]. Second, the
 //! normalized-body family: kept bodies put through the shared libmatch
 //! normalizer (#294's public cross-crate rule — one shared rule, one
 //! owner, never a second normalizer), where byte-equal shapes pair at
-//! [`crate::types::BODY_EQUAL_CONFIDENCE`]. A lone signal claims
+//! [`crate::types::BODY_EQUAL_CONFIDENCE`]. Third, call-graph topology
+//! propagation (#297): over a call map derived purely from the bodies
+//! the two snapshots carry (ADR-0024's rails — no new reads), a
+//! function the first two rungs left unpaired pairs when its callers
+//! and callees agree through already-paired neighbors, iterated to a
+//! fixed point so chains of renamed functions pair through neighbors
+//! that converged themselves. A claim requires at least
+//! [`crate::types::TOPOLOGY_MIN_PAIRED_NEIGHBORS`] paired neighbors — a
+//! lone paired neighbor claims nothing — scores
+//! [`crate::types::TOPOLOGY_CONFIDENCE`], below the carry-over floor on
+//! its own, and names its paired-neighbor evidence lines. Topology
+//! corroborating a body-family pair instead rides the flag-family
+//! agreement precedent (P12.6 — agreement beats any single reading):
+//! the body record gains [`crate::types::TOPOLOGY_AGREEMENT_BUMP`]. A
+//! lone signal claims
 //! nothing (ADR-0038): address equality pairs nothing on its own, and
 //! neither does a matching address-derived `FUN_…` spelling — that
 //! spelling *is* an address, so pairing on it would smuggle the
@@ -23,7 +37,7 @@
 //! positional precedent), so two documents of one version pair diff
 //! cleanly and a candidate's second-best pairing is dropped.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use calxgloss_libmatch::normalize::normalize_lines;
 
@@ -31,6 +45,7 @@ use crate::error::{BdiffError, Result};
 use crate::types::{
     BODY_EQUAL_CONFIDENCE, BODY_SIMILARITY_FLOOR, FunctionEntry, MatchFamily,
     NAME_IDENTITY_CONFIDENCE, PairingDocument, PairingRecord, ScanSnapshot,
+    TOPOLOGY_AGREEMENT_BUMP, TOPOLOGY_CONFIDENCE, TOPOLOGY_MIN_PAIRED_NEIGHBORS,
 };
 
 /// Pair the old scan snapshot against the new one of one binary
@@ -65,14 +80,24 @@ pub fn pair_versions(old: &ScanSnapshot, new: &ScanSnapshot) -> Result<PairingDo
 
     let mut candidates = name_identity_candidates(old, new);
     candidates.extend(body_candidates(old, new));
-    let pairings = resolve_one_to_one(candidates, &old.functions, &new.functions);
+    let mut winners = resolve_one_to_one(candidates, &old.functions, &new.functions);
+
+    // Ladder rung three (#297): the call map is derived only from the
+    // bodies the two snapshots carry — no engine read anywhere in the
+    // pass (ADR-0024's rails, ADR-0026 intact).
+    let old_map = call_map(old);
+    let new_map = call_map(new);
+    propagate_topology(&mut winners, old, new, &old_map, &new_map);
+    corroborate_body_pairs(&mut winners, old, new, &old_map, &new_map);
+    winners.sort_by_key(|(old_index, new_index, _)| (*old_index, *new_index));
+
     Ok(PairingDocument {
         binary: old.binary.as_str().to_string(),
         old_bytes_sha256: old.bytes_sha256.clone(),
         new_bytes_sha256: new.bytes_sha256.clone(),
         old_functions: old.function_names(),
         new_functions: new.function_names(),
-        pairings,
+        pairings: winners.into_iter().map(|(_, _, record)| record).collect(),
     })
 }
 
@@ -390,13 +415,15 @@ fn line_edits(old: &[String], new: &[String]) -> (usize, Vec<BodyEdit>) {
 /// the sort is stable, so a candidate earlier in the scan beats a later
 /// one at the same score, and a candidate's second-best pairing is
 /// dropped once its side is taken (ADR-0022's strongest-claim-wins,
-/// ADR-0028's positional tie rule). Surviving records come back in old
-/// scan order so two documents of one version pair diff cleanly.
+/// ADR-0028's positional tie rule). Surviving `(old, new, record)`
+/// triples come back in old scan order so two documents of one version
+/// pair diff cleanly, and the topology rung can build on the resolved
+/// pairs by index.
 fn resolve_one_to_one(
     candidates: Vec<Candidate>,
     old_entries: &[FunctionEntry],
     new_entries: &[FunctionEntry],
-) -> Vec<PairingRecord> {
+) -> Vec<(usize, usize, PairingRecord)> {
     let mut ordered = candidates;
     ordered.sort_by_key(|candidate| std::cmp::Reverse(candidate.confidence));
 
@@ -422,7 +449,302 @@ fn resolve_one_to_one(
         ));
     }
     winners.sort_by_key(|(old, new, _)| (*old, *new));
-    winners.into_iter().map(|(_, _, record)| record).collect()
+    winners
+}
+
+// ------------------------------------------------------------
+// Call-graph topology propagation (#297, ladder rung three)
+// ------------------------------------------------------------
+
+/// How many paired neighbors a topology record's evidence quotes: the
+/// body family's `MAX_QUOTED_EDITS` precedent again — the first few
+/// neighbors read as an audit glance, and the remainder are named.
+const MAX_QUOTED_NEIGHBORS: usize = 3;
+
+/// One snapshot's call map, derived from the bodies the snapshot itself
+/// carries — ADR-0024's rails: each body is read for whole identifier
+/// tokens that are one of the snapshot's own listed function names, so
+/// both call shapes that matter are covered (a direct call `FUN_x(…);`
+/// and a callback handed to a host, `qsort(a, n, 4, FUN_y)`), and the
+/// map costs the pass no engine read. A mention of a function's own
+/// name — the signature line's spelling, self-recursion — records no
+/// edge: a self-loop can never be a *paired* neighbor of its own claim,
+/// and a pair can therefore never corroborate or propagate itself.
+struct CallMap {
+    /// For each listed function, the listed functions whose names its
+    /// body names as call targets, ascending by old/new scan index.
+    callees: Vec<BTreeSet<usize>>,
+
+    /// The same relation read backwards: for each listed function, the
+    /// listed functions whose bodies name it, ascending by index.
+    callers: Vec<BTreeSet<usize>>,
+}
+
+/// Derive one snapshot's call map purely from the bodies it carries:
+/// the zero-extra-reads rule of ADR-0024, applied to pairing. A demangled
+/// listing name (`::`-qualified chains, spelled parameter lists) spells
+/// no identifier token, so bodies never edge toward it — the same rail
+/// the scan's own correlation detector accepted. A name listed twice
+/// (duplicates the scan can list) takes an edge from every mention.
+fn call_map(snapshot: &ScanSnapshot) -> CallMap {
+    let mut listed: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, entry) in snapshot.functions.iter().enumerate() {
+        listed.entry(entry.name.as_str()).or_default().push(index);
+    }
+
+    let mut callees: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); snapshot.functions.len()];
+    let mut callers: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); snapshot.functions.len()];
+    for (index, entry) in snapshot.functions.iter().enumerate() {
+        for token in identifier_tokens(&entry.body) {
+            let Some(targets) = listed.get(token) else {
+                continue;
+            };
+            for &target in targets {
+                if target == index {
+                    continue;
+                }
+                callees[index].insert(target);
+                callers[target].insert(index);
+            }
+        }
+    }
+    CallMap { callees, callers }
+}
+
+/// A body's whole identifier tokens: maximal runs of identifier
+/// characters, so a mention only ever matches a listed name spelled as
+/// one token, never a fragment inside a longer word or literal.
+fn identifier_tokens(body: &str) -> Vec<&str> {
+    fn is_identifier(ch: char) -> bool {
+        ch.is_alphanumeric() || ch == '_'
+    }
+
+    let mut tokens = Vec::new();
+    let mut start: Option<usize> = None;
+    for (index, ch) in body.char_indices() {
+        match (start, is_identifier(ch)) {
+            (None, true) => start = Some(index),
+            (Some(from), false) => {
+                tokens.push(&body[from..index]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        tokens.push(&body[from..]);
+    }
+    tokens
+}
+
+/// One already-paired function whose call edge corroborates a pair: an
+/// edge between `old` and the old-side function has a matching edge in
+/// the same direction between its partner `new` and the new-side
+/// function. A neighbor counts once however many directions it agrees
+/// in — the gate counts neighbors, not edges.
+struct Neighbor {
+    /// The neighbor's old-snapshot index; its listing name is what the
+    /// evidence line names.
+    old: usize,
+
+    /// The partner the neighbor pairs with in the new snapshot.
+    new: usize,
+
+    /// The candidate calls the neighbor and its partner calls the
+    /// partner: the callee sets agree through this pair.
+    calls: bool,
+
+    /// The neighbor calls the candidate and its partner calls the
+    /// partner: the caller sets agree through this pair.
+    called_by: bool,
+}
+
+/// Every paired neighbor agreeing on the pair `x` ↔ `y` through `pairs`
+/// (old index to new index): the old-side neighbors of `x` walked in
+/// scan order, keeping each one whose partner reaches `y` along an edge
+/// in the same direction. Since the call map records no self-loop, the
+/// pair under discussion can never agree with itself.
+fn agreeing_neighbors(
+    x: usize,
+    y: usize,
+    pairs: &BTreeMap<usize, usize>,
+    old_map: &CallMap,
+    new_map: &CallMap,
+) -> Vec<Neighbor> {
+    let mut neighbors = Vec::new();
+    for &a in old_map.callees[x].union(&old_map.callers[x]) {
+        let Some(&b) = pairs.get(&a) else {
+            continue;
+        };
+        let calls = old_map.callees[x].contains(&a) && new_map.callees[y].contains(&b);
+        let called_by = old_map.callers[x].contains(&a) && new_map.callers[y].contains(&b);
+        if calls || called_by {
+            neighbors.push(Neighbor {
+                old: a,
+                new: b,
+                calls,
+                called_by,
+            });
+        }
+    }
+    neighbors
+}
+
+/// The evidence lines a topology reading contributes: the summary line
+/// first, then the paired-neighbor evidence lines the records name —
+/// one line per paired neighbor spelling both sides of the neighbor and
+/// the direction of agreement, capped at [`MAX_QUOTED_NEIGHBORS`]
+/// quotes with the remainder named.
+fn topology_evidence(
+    summary: &str,
+    candidate: &str,
+    neighbors: &[Neighbor],
+    old_entries: &[FunctionEntry],
+    new_entries: &[FunctionEntry],
+) -> Vec<String> {
+    let mut lines = vec![summary.to_string()];
+    for neighbor in neighbors.iter().take(MAX_QUOTED_NEIGHBORS) {
+        let direction = match (neighbor.calls, neighbor.called_by) {
+            (true, true) => "calls and is called by",
+            (true, false) => "calls",
+            (false, _) => "is called by",
+        };
+        lines.push(format!(
+            "{candidate} {direction} paired neighbor {} -> {}",
+            old_entries[neighbor.old].name, new_entries[neighbor.new].name
+        ));
+    }
+    if neighbors.len() > MAX_QUOTED_NEIGHBORS {
+        lines.push(format!(
+            "(+{} more paired neighbors)",
+            neighbors.len() - MAX_QUOTED_NEIGHBORS
+        ));
+    }
+    lines
+}
+
+/// Ladder rung three: pair the functions the first two rungs left
+/// unpaired because their caller and callee sets agree *through already-
+/// paired neighbors*, propagated to a fixed point over the [`CallMap`]:
+/// every claim enters the pair set immediately, so a chain of renamed
+/// functions pairs through neighbors that converged themselves (ticket
+/// #297). A claim requires at least [`TOPOLOGY_MIN_PAIRED_NEIGHBORS`]
+/// distinct paired neighbors — a lone paired neighbor is a lone signal
+/// and claims nothing (ADR-0038). The score is [`TOPOLOGY_CONFIDENCE`],
+/// below the carry-over floor on its own: the document persists the
+/// record and only the carry-over consumer applies the floor. Claims
+/// walk old scan order and take the first agreeing partner in new scan
+/// order, so the fixed point is deterministic and diff-clean
+/// (ADR-0028's positional rule again), and one-to-one holds because a
+/// claimed side never comes up again.
+fn propagate_topology(
+    winners: &mut Vec<(usize, usize, PairingRecord)>,
+    old: &ScanSnapshot,
+    new: &ScanSnapshot,
+    old_map: &CallMap,
+    new_map: &CallMap,
+) {
+    let mut pairs: BTreeMap<usize, usize> = winners.iter().map(|(o, n, _)| (*o, *n)).collect();
+    let mut new_paired: BTreeSet<usize> = winners.iter().map(|(_, n, _)| *n).collect();
+
+    loop {
+        let mut grew = false;
+        for x in 0..old.functions.len() {
+            if pairs.contains_key(&x) {
+                continue;
+            }
+            // Candidates on the new side: partners of `x`'s already-paired
+            // neighbors — the only functions whose sets can agree with x's.
+            let partners = old_map.callees[x]
+                .union(&old_map.callers[x])
+                .filter_map(|&a| pairs.get(&a).copied())
+                .collect::<BTreeSet<usize>>();
+            let candidates = partners
+                .iter()
+                .flat_map(|&b| new_map.callees[b].union(&new_map.callers[b]).copied())
+                .collect::<BTreeSet<usize>>();
+            for &y in &candidates {
+                if new_paired.contains(&y) {
+                    continue;
+                }
+                let neighbors = agreeing_neighbors(x, y, &pairs, old_map, new_map);
+                if neighbors.len() < TOPOLOGY_MIN_PAIRED_NEIGHBORS {
+                    continue;
+                }
+                let evidence = topology_evidence(
+                    &format!(
+                        "call-graph topology through {} paired neighbors",
+                        neighbors.len()
+                    ),
+                    &old.functions[x].name,
+                    &neighbors,
+                    &old.functions,
+                    &new.functions,
+                );
+                winners.push((
+                    x,
+                    y,
+                    PairingRecord {
+                        old_function: old.functions[x].name.clone(),
+                        new_function: new.functions[y].name.clone(),
+                        family: MatchFamily::CallTopology,
+                        confidence: TOPOLOGY_CONFIDENCE.into(),
+                        evidence,
+                    },
+                ));
+                pairs.insert(x, y);
+                new_paired.insert(y);
+                grew = true;
+                break;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+}
+
+/// The agreement bump (ticket #297, the P12.6 flag-family precedent):
+/// when the call map agrees on a pair the body family already claimed,
+/// two independent families read one pair, and agreement beats any
+/// single reading — the record rides [`TOPOLOGY_AGREEMENT_BUMP`] above
+/// its body score. A byte-equal pair corroborated by topology reaches
+/// name identity's 95, never past it. The family stays
+/// `normalized_body`: a corroborating topology is not a competing
+/// claim, the stronger body claim stands, and the record keeps naming
+/// its paired-neighbor evidence lines beside the body diff that won.
+fn corroborate_body_pairs(
+    winners: &mut [(usize, usize, PairingRecord)],
+    old: &ScanSnapshot,
+    new: &ScanSnapshot,
+    old_map: &CallMap,
+    new_map: &CallMap,
+) {
+    let pairs: BTreeMap<usize, usize> = winners.iter().map(|(o, n, _)| (*o, *n)).collect();
+    for (x, y, record) in winners.iter_mut() {
+        if record.family != MatchFamily::NormalizedBody {
+            continue;
+        }
+        let neighbors = agreeing_neighbors(*x, *y, &pairs, old_map, new_map);
+        if neighbors.len() < TOPOLOGY_MIN_PAIRED_NEIGHBORS {
+            continue;
+        }
+        record.confidence = record
+            .confidence
+            .value()
+            .saturating_add(TOPOLOGY_AGREEMENT_BUMP)
+            .into();
+        record.evidence.extend(topology_evidence(
+            &format!(
+                "call-graph topology corroborates through {} paired neighbors",
+                neighbors.len()
+            ),
+            &old.functions[*x].name,
+            &neighbors,
+            &old.functions,
+            &new.functions,
+        ));
+    }
 }
 
 // ============================================================
@@ -1042,7 +1364,8 @@ mod tests {
             },
         ];
 
-        let records = resolve_one_to_one(candidates, &old.functions, &new.functions);
+        let winners = resolve_one_to_one(candidates, &old.functions, &new.functions);
+        let records: Vec<&PairingRecord> = winners.iter().map(|(_, _, record)| record).collect();
         assert_eq!(records.len(), 2);
         assert_eq!(
             (
@@ -1095,12 +1418,307 @@ mod tests {
             },
         ];
 
-        let records = resolve_one_to_one(candidates, &old.functions, &new.functions);
-        assert_eq!(records.len(), 1);
+        let winners = resolve_one_to_one(candidates, &old.functions, &new.functions);
+        assert_eq!(winners.len(), 1);
         assert_eq!(
-            records[0].old_function, "a",
+            old.functions[winners[0].0].name, "a",
             "the first seen in scan order keeps the pair"
         );
+    }
+
+    /// A decompiled body of listed calls followed by filler assignments:
+    /// the filler pushes a new-side body past the line-gap skip, so a
+    /// renamed pair can only meet through the call graph, never through
+    /// the body family.
+    fn padded_body(calls: &[&str], assignments: usize) -> String {
+        let mut lines = vec!["{".to_string()];
+        lines.extend(calls.iter().map(|call| format!("   {call}(uVar1);")));
+        lines.extend((0..assignments).map(|i| format!("   uVar1 = uVar1 + {i};")));
+        lines.push("}".to_string());
+        lines.join("\n")
+    }
+
+    #[test]
+    fn a_renamed_callee_pairs_at_70_through_two_paired_callers() {
+        // Ladder rung three's headline (ticket #297): a FUN_-renamed
+        // internal whose body changed too much to pair, but both its
+        // callers are exported names that paired on their own — the
+        // call map, built purely from the snapshots' bodies, agrees on
+        // the callee through those two paired neighbors.
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![
+                function_with_body("present(void)", 0x1000, "{\n\tFUN_140001337();\n}"),
+                function_with_body("startup(void)", 0x1100, "{\n\tFUN_140001337();\n}"),
+                function_with_body("FUN_140001337", 0x1200, "{\n\treturn;\n}"),
+            ],
+            &["present(void)", "startup(void)"],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![
+                function_with_body("present(void)", 0x4000, "{\n\tFUN_140009937();\n}"),
+                function_with_body("startup(void)", 0x4100, "{\n\tFUN_140009937();\n}"),
+                function_with_body("FUN_140009937", 0x4200, &padded_body(&[], 10)),
+            ],
+            &["present(void)", "startup(void)"],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(
+            document.pairings.len(),
+            3,
+            "the two callers pair by name, the callee through topology"
+        );
+        let record = document
+            .pairings
+            .iter()
+            .find(|record| record.old_function == "FUN_140001337")
+            .expect("the renamed callee pairs through the call graph");
+        assert_eq!(record.new_function, "FUN_140009937");
+        assert_eq!(record.family, MatchFamily::CallTopology);
+        assert_eq!(record.confidence.value(), TOPOLOGY_CONFIDENCE);
+        assert!(
+            record.confidence.value() < CARRY_OVER_CONFIDENCE_FLOOR,
+            "topology alone sits below the carry-over floor"
+        );
+        assert_eq!(
+            record.evidence,
+            [
+                "call-graph topology through 2 paired neighbors",
+                "FUN_140001337 is called by paired neighbor present(void) -> present(void)",
+                "FUN_140001337 is called by paired neighbor startup(void) -> startup(void)",
+            ],
+            "the record names each paired-neighbor line it stood on"
+        );
+    }
+
+    #[test]
+    fn a_lone_paired_neighbor_claims_nothing() {
+        // Same call graph, but only one of the two callers still calls
+        // the renamed callee in the new listing: a lone agreeing
+        // neighbor is a lone signal (ADR-0038) and the callee stays
+        // unpaired.
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![
+                function_with_body("present(void)", 0x1000, "{\n\tFUN_140001337();\n}"),
+                function_with_body("startup(void)", 0x1100, "{\n\tFUN_140001337();\n}"),
+                function_with_body("FUN_140001337", 0x1200, "{\n\treturn;\n}"),
+            ],
+            &["present(void)", "startup(void)"],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![
+                function_with_body("present(void)", 0x4000, "{\n\treturn;\n}"),
+                function_with_body("startup(void)", 0x4100, "{\n\tFUN_140009937();\n}"),
+                function_with_body("FUN_140009937", 0x4200, &padded_body(&[], 10)),
+            ],
+            &["present(void)", "startup(void)"],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(
+            document
+                .pairings
+                .iter()
+                .filter(|record| record.family == MatchFamily::CallTopology)
+                .count(),
+            0,
+            "one agreeing paired neighbor is not topology"
+        );
+        assert_eq!(
+            document
+                .pairings
+                .iter()
+                .map(|record| record.old_function.as_str())
+                .collect::<Vec<_>>(),
+            ["present(void)", "startup(void)"],
+            "only the name pairs stand"
+        );
+    }
+
+    #[test]
+    fn a_renamed_chain_pairs_through_neighbors_that_converged_themselves() {
+        // Propagation iterates to a fixed point (ticket #297's AC):
+        // the snapshot lists the chain's leaf first, so the leaf's
+        // neighbors are still unpaired when the first pass walks it —
+        // it pairs only after the chain's roots have converged through
+        // the exported callers. Three renamed links, three claim
+        // rounds, one deterministic fixed point.
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![
+                function_with_body("root_a(void)", 0x1000, "{\n\tFUN_14000a101();\n}"),
+                function_with_body(
+                    "root_b(void)",
+                    0x1100,
+                    "{\n\tFUN_14000a101();\n\tFUN_14000a202();\n}",
+                ),
+                function_with_body("FUN_14000a303", 0x1200, "{\n\treturn;\n}"),
+                function_with_body("FUN_14000a202", 0x1300, "{\n\tFUN_14000a303();\n}"),
+                function_with_body(
+                    "FUN_14000a101",
+                    0x1400,
+                    "{\n\tFUN_14000a202();\n\tFUN_14000a303();\n}",
+                ),
+            ],
+            &["root_a(void)", "root_b(void)"],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![
+                function_with_body("root_a(void)", 0x4000, &padded_body(&["FUN_14000f777"], 8)),
+                function_with_body(
+                    "root_b(void)",
+                    0x4100,
+                    &padded_body(&["FUN_14000f777", "FUN_14000f888"], 7),
+                ),
+                function_with_body("FUN_14000f999", 0x4200, &padded_body(&[], 10)),
+                function_with_body("FUN_14000f888", 0x4300, &padded_body(&["FUN_14000f999"], 9)),
+                function_with_body(
+                    "FUN_14000f777",
+                    0x4400,
+                    &padded_body(&["FUN_14000f888", "FUN_14000f999"], 8),
+                ),
+            ],
+            &["root_a(void)", "root_b(void)"],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(
+            document
+                .pairings
+                .iter()
+                .map(|record| (record.old_function.as_str(), record.new_function.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("root_a(void)", "root_a(void)"),
+                ("root_b(void)", "root_b(void)"),
+                ("FUN_14000a303", "FUN_14000f999"),
+                ("FUN_14000a202", "FUN_14000f888"),
+                ("FUN_14000a101", "FUN_14000f777"),
+            ],
+            "every renamed link in the chain pairs through converged neighbors"
+        );
+        for record in document.pairings.iter().skip(2) {
+            assert_eq!(record.family, MatchFamily::CallTopology);
+            assert_eq!(record.confidence.value(), TOPOLOGY_CONFIDENCE);
+        }
+        let leaf = document
+            .pairings
+            .iter()
+            .find(|record| record.old_function == "FUN_14000a303")
+            .expect("the leaf paired through the chain");
+        assert_eq!(
+            leaf.evidence,
+            [
+                "call-graph topology through 2 paired neighbors",
+                "FUN_14000a303 is called by paired neighbor FUN_14000a202 -> FUN_14000f888",
+                "FUN_14000a303 is called by paired neighbor FUN_14000a101 -> FUN_14000f777",
+            ],
+            "the leaf names the links that had already converged when it claimed"
+        );
+    }
+
+    #[test]
+    fn a_body_pair_the_topology_agrees_on_rides_above_both_readings() {
+        // The agreement bump (the P12.6 flag-family precedent): a
+        // byte-equal body pair at 90 that the call graph also agrees
+        // on through two paired callers is two independent families
+        // reading one pair — the record rides above either single
+        // reading, landing on name identity's band without leaving
+        // the body family, and gains the neighbor evidence lines.
+        let old_body = "\
+{
+   uint uVar1;
+   uVar1 = DAT_140045a68;
+   if (uVar1 != 0) {
+      FUN_140002000(uVar1);
+   }
+   return;
+}";
+        let new_body = "\
+{
+   uint iVar4;
+   iVar4 = DAT_140049a68;
+   if (iVar4 != 0) {
+      FUN_140002000(iVar4);
+   }
+   return;
+}";
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![
+                function_with_body("present(void)", 0x1000, "{\n\tFUN_14000c001();\n}"),
+                function_with_body("startup(void)", 0x1100, "{\n\tFUN_14000c001();\n}"),
+                function_with_body("FUN_14000c001", 0x1200, old_body),
+            ],
+            &["present(void)", "startup(void)"],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![
+                function_with_body("present(void)", 0x4000, "{\n\tFUN_14000dd99();\n}"),
+                function_with_body("startup(void)", 0x4100, "{\n\tFUN_14000dd99();\n}"),
+                function_with_body("FUN_14000dd99", 0x4200, new_body),
+            ],
+            &["present(void)", "startup(void)"],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(
+            document.pairings.len(),
+            3,
+            "two name pairs and the corroborated body pair"
+        );
+        let record = document
+            .pairings
+            .iter()
+            .find(|record| record.old_function == "FUN_14000c001")
+            .expect("the moved internal still pairs through the body family");
+        assert_eq!(record.new_function, "FUN_14000dd99");
+        assert_eq!(
+            record.family,
+            MatchFamily::NormalizedBody,
+            "a corroborating topology is not a competing claim"
+        );
+        assert_eq!(
+            record.confidence.value(),
+            BODY_EQUAL_CONFIDENCE + TOPOLOGY_AGREEMENT_BUMP
+        );
+        assert!(record.confidence.value() > BODY_EQUAL_CONFIDENCE);
+        assert!(record.confidence.value() > TOPOLOGY_CONFIDENCE);
+        assert_eq!(
+            record.evidence,
+            [
+                "normalized bodies are byte-equal (8 lines)",
+                "call-graph topology corroborates through 2 paired neighbors",
+                "FUN_14000c001 is called by paired neighbor present(void) -> present(void)",
+                "FUN_14000c001 is called by paired neighbor startup(void) -> startup(void)",
+            ],
+            "the body record keeps its body line and gains the neighbor lines"
+        );
+        for record in document.pairings.iter().take(2) {
+            assert_eq!(record.family, MatchFamily::NameIdentity);
+            assert_eq!(record.confidence.value(), NAME_IDENTITY_CONFIDENCE);
+            assert!(
+                record
+                    .evidence
+                    .iter()
+                    .all(|line| !line.contains("paired neighbor")),
+                "name pairs that topology merely repeats are left alone"
+            );
+        }
     }
 
     #[test]
