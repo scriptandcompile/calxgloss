@@ -8,9 +8,9 @@
 //! xrefs-to, the Type Manager reads (data types, struct layouts, enum values,
 //! data items), the import and export listings, and the raw reads the vtable
 //! scan makes (image base, memory bytes) — defined once so the read cache
-//! implements it once instead of thirteen times. All thirteen scan-based
+//! implements it once instead of fourteen times. All fourteen scan-based
 //! evidence engines — algorithm, callback, consts, control-flow,
-//! error-handling, memory, serialization, string-context, concurrency,
+//! error-handling, float-SIMD, memory, serialization, string-context, concurrency,
 //! global-state, types-database, type-inference, and API-detection —
 //! re-export this trait in place of their own.
 //!

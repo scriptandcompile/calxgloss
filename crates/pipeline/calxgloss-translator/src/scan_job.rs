@@ -1,6 +1,6 @@
 //! One pre-batch evidence scan as an owned job (issue #237).
 //!
-//! The thirteen `ensure_*` entry points on [`TranslationPipeline`](crate::TranslationPipeline)
+//! The fourteen `ensure_*` entry points on [`TranslationPipeline`](crate::TranslationPipeline)
 //! keep their signatures and their cached-document short-circuits, but the
 //! scan itself — the engine call, the document
 //! persist, and the warn-and-continue degradation — runs through [`ScanJob`],
@@ -33,6 +33,8 @@ use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_decomp::PipelineSource;
 use calxgloss_errhandling::engine::ErrhandlingEngine;
 use calxgloss_errhandling::persist::ErrhandlingPersistor;
+use calxgloss_floatsimd::engine::FloatsimdEngine;
+use calxgloss_floatsimd::persist::FloatsimdPersistor;
 use calxgloss_globalstate::engine::GlobalStateEngine;
 use calxgloss_globalstate::persist::GlobalStatePersistor;
 use calxgloss_memory::engine::MemoryEngine;
@@ -640,6 +642,37 @@ impl ScanJob {
                     binary = %self.binary,
                     findings = result.findings.len(),
                     "Error-handling idiom detection complete"
+                );
+            },
+        )
+        .await
+    }
+
+    /// The float/SIMD usage detection scan, unless its document is
+    /// already filed (issue #229).
+    pub(crate) async fn floatsimd_detection(&self) -> bool {
+        let persistor = FloatsimdPersistor::new(&self.workspace);
+        if persistor.exists(&self.binary) {
+            debug!(
+                binary = %self.binary,
+                path = %persistor.path_for(&self.binary).display(),
+                "Float/SIMD result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(binary = %self.binary, "Detecting float/SIMD usage before batch translation");
+        let engine = FloatsimdEngine::with_source(self.source.clone());
+        self.run_scan(
+            engine.scan(self.binary.as_str()),
+            |result| persistor.save(result),
+            "Float/SIMD usage detection failed; continuing without float/SIMD context",
+            "Failed to persist float/SIMD result; continuing without float/SIMD context",
+            |result| {
+                info!(
+                    binary = %self.binary,
+                    findings = result.findings.len(),
+                    "Float/SIMD usage detection complete"
                 );
             },
         )

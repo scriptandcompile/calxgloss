@@ -68,7 +68,7 @@ use crate::retry;
 use crate::scan_job::{ScanJob, TypeInferenceLatch};
 
 /// The pass name the scan phase's heartbeat carries: one honest
-/// "n of m functions consumed" row for the whole group of thirteen
+/// "n of m functions consumed" row for the whole group of fourteen
 /// pre-batch evidence scans, instead of one row per scan that restarts
 /// with each scan (issue #239).
 const SCAN_PHASE: &str = "evidence scans";
@@ -96,12 +96,12 @@ const SCAN_PHASE: &str = "evidence scans";
 const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 
 /// One evidence scan as the fan-out's unit of work: takes its owned
-/// [`ScanJob`] and hands back the boxed scan future. The thirteen scans'
-/// futures are thirteen distinct types, so the window boxes them to move
+/// [`ScanJob`] and hands back the boxed scan future. The fourteen scans'
+/// futures are fourteen distinct types, so the window boxes them to move
 /// them onto tasks (issue #240).
 type EvidenceScanTask = fn(ScanJob) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
-// The thirteen scans as task-ready async fns. Their futures are boxed at
+// The fourteen scans as task-ready async fns. Their futures are boxed at
 // spawn time rather than in closure position — the compiler cannot prove
 // a boxed `async` block inside a closure is `'static` (rust#100013),
 // while a named async fn's future is `'static` by signature.
@@ -144,6 +144,9 @@ async fn scan_serialize_detection(job: ScanJob) {
 async fn scan_error_handling_detection(job: ScanJob) {
     job.error_handling_detection().await;
 }
+async fn scan_floatsimd_detection(job: ScanJob) {
+    job.floatsimd_detection().await;
+}
 
 /// One evidence scan as it crosses the fan-out window: it announces itself
 /// to the phase's in-flight tracker, runs, and leaves. The phase keeps the
@@ -162,10 +165,10 @@ async fn run_scan_in_window(
     in_flight.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// The thirteen evidence scans in today's spawn order — type database,
+/// The fourteen evidence scans in today's spawn order — type database,
 /// type inference, algorithm recognition, memory, sync, global state,
-/// callback, control flow, string context, api, const, serialize, and
-/// error handling. The order is only the order they enter the window: the
+/// callback, control flow, string context, api, const, serialize, error
+/// handling, and float/SIMD. The order is only the order they enter the window: the
 /// scans no longer run in a fixed order, and the one real ordering edge —
 /// callback detection awaiting type inference's completion latch — rides
 /// the latch itself, not this list (issue #238, fan-out issue #240,
@@ -185,6 +188,7 @@ fn evidence_scan_tasks() -> Vec<EvidenceScanTask> {
         |job| Box::pin(scan_const_detection(job)),
         |job| Box::pin(scan_serialize_detection(job)),
         |job| Box::pin(scan_error_handling_detection(job)),
+        |job| Box::pin(scan_floatsimd_detection(job)),
     ]
 }
 
@@ -2180,7 +2184,7 @@ impl TranslationPipeline {
         }
     }
 
-    /// The read source every batch consumer — the [`ScanJob`]s the thirteen
+    /// The read source every batch consumer — the [`ScanJob`]s the fourteen
     /// `ensure_*` scans build, the call-graph build, and the
     /// retry/escalation helpers — pulls program facts through: the batch's
     /// [`CachedScanSource`] once armed by
@@ -2247,7 +2251,7 @@ impl TranslationPipeline {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TypeInferenceLatch::new());
     }
 
-    /// Run the thirteen pre-batch evidence scans, the shared scan-phase
+    /// Run the fourteen pre-batch evidence scans, the shared scan-phase
     /// preamble both batch entry points drive — the function-list path
     /// ([`batch_translate`](Self::batch_translate)) and the call-graph path
     /// ([`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph))
@@ -2270,7 +2274,7 @@ impl TranslationPipeline {
     /// Each scan keeps its own shape: a cached document short-circuits it
     /// before any engine read, and a failed scan or save only warns and
     /// continues — one detector's failure never takes down the batch. The
-    /// group joins all thirteen and never cancels its siblings.
+    /// group joins all fourteen and never cancels its siblings.
     ///
     /// The phase arms a fresh type-inference completion latch first:
     /// the inference scan publishes it on every exit and callback
@@ -2281,7 +2285,7 @@ impl TranslationPipeline {
     /// The phase also arms the engine heartbeat once around the whole
     /// group, under the phase name, and disarms it when the group ends:
     /// the dashboard shows one honest "n of m functions consumed" row
-    /// for the scan phase instead of thirteen that restart with each
+    /// for the scan phase instead of fourteen that restart with each
     /// scan. Beats count unique functions consumed — a body pulled cold
     /// from the engine and replayed warm by the read cache counts once —
     /// so a warm run still shows life and the row stays honest while the
@@ -2311,7 +2315,7 @@ impl TranslationPipeline {
             ));
         }
         // Sliding window: every completion frees a permit for the next
-        // scan, and the group joins all thirteen — a failing or panicking
+        // scan, and the group joins all fourteen — a failing or panicking
         // scan never cancels its siblings (issue #240).
         while let Some(outcome) = set.join_next().await {
             if let Err(e) = outcome {
@@ -2731,6 +2735,40 @@ impl TranslationPipeline {
         job.error_handling_detection().await
     }
 
+    /// Flag float/SIMD usage across the binary's functions before a
+    /// batch starts, unless a detection result is already cached
+    /// (issue #229).
+    ///
+    /// The scan's findings — one flag per function whose kept body
+    /// carries float evidence, naming the shape (scalar float math,
+    /// vector/matrix idioms, or both) and the strongest evidence that
+    /// carried it — are filed at `re/analysis/floatsimd/{binary}.json`,
+    /// the document the prompt path reads through
+    /// [`extract_float_hints`](crate::retry::helpers::extract_float_hints);
+    /// running the detection scan once up front means every function in
+    /// the batch can see float/SIMD context instead of none. The
+    /// persisted file is the cache: when a result is already saved for
+    /// `binary`, the scan is skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// a failed scan — the engine's decompile breaker among them, so a
+    /// mismatched program never leaves a phantom-clean document behind — or
+    /// a failed save only log a warning and return `false`; prompts without
+    /// float/SIMD context are degraded, not fatal, and the batch proceeds
+    /// either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
+    pub async fn ensure_floatsimd_detection(&self, binary: &str) -> bool {
+        let Some(job) = self.scan_job(binary) else {
+            debug!(
+                binary,
+                "No workspace configured; skipping float/SIMD usage detection"
+            );
+            return false;
+        };
+        job.floatsimd_detection().await
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -2742,7 +2780,7 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the thirteen evidence scans run through
+    /// memory, and concurrency context — the fourteen evidence scans run through
     /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
@@ -3165,7 +3203,7 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the thirteen evidence scans run through
+    /// memory, and concurrency context — the fourteen evidence scans run through
     /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
@@ -3712,6 +3750,8 @@ mod tests {
     use calxgloss_controlflow::types::ControlFlowResult;
     use calxgloss_errhandling::persist::ErrhandlingPersistor;
     use calxgloss_errhandling::types::ErrhandlingResult;
+    use calxgloss_floatsimd::persist::FloatsimdPersistor;
+    use calxgloss_floatsimd::types::FloatsimdResult;
     use calxgloss_globalstate::persist::GlobalStatePersistor;
     use calxgloss_globalstate::types::{GlobalAccess, GlobalStateFinding, GlobalStateResult};
     use calxgloss_memory::persist::MemoryPersistor;
@@ -4486,7 +4526,7 @@ void SetCursor(void)
         // The timeout is the "never parks" assertion: a run-level pause
         // would hold here until a resume that never arrives, while a binary
         // pause ends the batch on its own. The bound is generous because the
-        // thirteen pre-analysis scans over the fixture run inside it.
+        // fourteen pre-analysis scans over the fixture run inside it.
         let batch = tokio::time::timeout(
             std::time::Duration::from_secs(300),
             pipeline.batch_translate(
@@ -5380,6 +5420,102 @@ void SetCursor(void)
     }
 
     #[tokio::test]
+    async fn a_cached_floatsimd_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        let persistor = FloatsimdPersistor::new(dir.path());
+        persistor
+            .save(&FloatsimdResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
+
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_floatsimd_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_floatsimd_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(pipeline.ensure_floatsimd_detection("eqmain.dll").await);
+
+        let persistor = FloatsimdPersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("floatsimd")
+                .join("eqmain.dll.json"),
+            "the document should be filed under re/analysis/floatsimd"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_floatsimd_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_floatsimd_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_floatsimd_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_floatsimd_detection("eqmain.dll").await);
+    }
+
+    /// The all-decompiles-fail breaker, asserted at the batch seam: with
+    /// every decompile tripping the engine's per-function instruction
+    /// budget, the float/SIMD scan aborts instead of claiming a binary it
+    /// never read, warns, and leaves no phantom-clean document behind.
+    #[tokio::test]
+    async fn a_floatsimd_scan_aborted_by_the_breaker_persists_nothing() {
+        let dir = TempDir::new().unwrap();
+        let target = calxgloss_testfixtures::load_target()
+            .expect("fixture target should build and validate");
+        let kuna = calxgloss_kuna::KunaSource::load_with_budget(
+            target.path(),
+            None,
+            calxgloss_kuna::KunaBudget {
+                // One instruction per function: every decompile trips the
+                // watchdog, exactly the all-failing shape the breaker
+                // guards against (issue #211 armed the knob).
+                max_instructions: Some(1),
+                ..Default::default()
+            },
+        )
+        .expect("the fixture must load with the budget armed");
+        let pipeline = pipeline_with(kuna, Some(dir.path()));
+
+        assert!(
+            !pipeline.ensure_floatsimd_detection("eqmain.dll").await,
+            "a scan aborted by the breaker must degrade to false"
+        );
+        assert!(
+            !FloatsimdPersistor::new(dir.path()).exists("eqmain.dll"),
+            "the aborted scan must leave no phantom-clean document behind"
+        );
+    }
+
+    #[tokio::test]
     async fn a_cached_constant_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
         let persistor = ConstPersistor::new(dir.path());
@@ -5967,7 +6103,7 @@ void SetCursor(void)
         let (pipeline, _) = cached_pipeline(dir.path());
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
-        // Batch 1, cold: the thirteen scans read live through the engine and
+        // Batch 1, cold: the fourteen scans read live through the engine and
         // write every answer through to the scan cache.
         pipeline
             .batch_translate(
@@ -5991,7 +6127,7 @@ void SetCursor(void)
         );
 
         // Wipe the engine-result documents so the second batch re-runs all
-        // thirteen scans — only the scan cache may answer them.
+        // fourteen scans — only the scan cache may answer them.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
             .expect("clear engine-result documents");
 
@@ -6170,7 +6306,7 @@ void SetCursor(void)
         assert_phase_beats(&cold);
 
         // Wipe the engine-result documents so the second batch re-runs
-        // all thirteen scans — every body now arrives warm from the read
+        // all fourteen scans — every body now arrives warm from the read
         // cache, and a warm replay of an already-counted function counts
         // once in the fresh phase's count.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
@@ -6258,7 +6394,7 @@ void SetCursor(void)
     }
 
     /// The fan-out keeps the engine the serial resource it has always
-    /// been: across a cold phase's thirteen concurrent scans the engine
+    /// been: across a cold phase's fourteen concurrent scans the engine
     /// call log shows every function of the listing exactly once — the
     /// read cache's per-key cell collapses concurrent misses of one
     /// body into a single round trip (issue #240).
@@ -6280,13 +6416,13 @@ void SetCursor(void)
         assert_eq!(
             sorted.len(),
             calls.len(),
-            "no function reached the engine twice across the thirteen scans: {calls:?}"
+            "no function reached the engine twice across the fourteen scans: {calls:?}"
         );
     }
 
     /// The fan-out's marquee: given the same cached reads, the
     /// concurrent phase and the sequential preamble persist the same
-    /// thirteen documents — findings, order, and callback enrichment
+    /// fourteen documents — findings, order, and callback enrichment
     /// alike (issue #240).
     ///
     /// Both compared runs replay one read cache, warmed by a cold
@@ -6333,9 +6469,10 @@ void SetCursor(void)
             filed!(ConstPersistor),
             filed!(SerializePersistor),
             filed!(ErrhandlingPersistor),
+            filed!(FloatsimdPersistor),
         ];
 
-        // The sequential preamble: the same thirteen scans one after the
+        // The sequential preamble: the same fourteen scans one after the
         // other, in the order they used to run — the inference scan
         // before callback detection, so the enrichment rides in on the
         // workspace document exactly as it did when the scans shared a
@@ -6355,6 +6492,7 @@ void SetCursor(void)
         assert!(pipeline.ensure_const_detection(PROGRAM).await);
         assert!(pipeline.ensure_serialize_detection(PROGRAM).await);
         assert!(pipeline.ensure_error_handling_detection(PROGRAM).await);
+        assert!(pipeline.ensure_floatsimd_detection(PROGRAM).await);
         let in_sequence = [
             filed!(TypeDatabasePersistor),
             filed!(TypeInferPersistor),
@@ -6369,6 +6507,7 @@ void SetCursor(void)
             filed!(ConstPersistor),
             filed!(SerializePersistor),
             filed!(ErrhandlingPersistor),
+            filed!(FloatsimdPersistor),
         ];
 
         let names = [
@@ -6385,6 +6524,7 @@ void SetCursor(void)
             "const detection",
             "serialize detection",
             "error handling",
+            "float/SIMD",
         ];
         for ((name, fanned), in_sequence) in names.into_iter().zip(fanned).zip(in_sequence) {
             assert_eq!(
@@ -6407,11 +6547,12 @@ void SetCursor(void)
 
     /// One scan's failure stays its own: with the memory document's
     /// directory sabotaged, the memory scan degrades at its save while
-    /// the other twelve documents are still filed and the phase still
-    /// ends — the group joins all thirteen and never cancels a sibling
-    /// (issue #240, roster grown by errhandling in #292).
+    /// the other thirteen documents are still filed and the phase still
+    /// ends — the group joins all fourteen and never cancels a sibling
+    /// (issue #240, roster grown by errhandling in #292 and float/SIMD
+    /// in #229).
     #[tokio::test]
-    async fn one_failing_scan_leaves_the_other_twelve_persisted() {
+    async fn one_failing_scan_leaves_the_other_thirteen_persisted() {
         let dir = TempDir::new().expect("temp workspace");
         let (pipeline, _) = cached_pipeline(dir.path());
         // `re/analysis/memory` as a plain file makes the memory
@@ -6480,6 +6621,10 @@ void SetCursor(void)
             (
                 "error handling",
                 ErrhandlingPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "float/SIMD",
+                FloatsimdPersistor::new(workspace).exists(PROGRAM),
             ),
         ] {
             assert!(

@@ -207,7 +207,6 @@ fn component_triplet(body: &str) -> Option<String> {
     let mut first_line: Option<String> = None;
     for line in body.lines() {
         for capture in component_members().captures_iter(line) {
-            let receiver = capture[1].to_string();
             let index = match &capture[2] {
                 "x" => 0,
                 "y" => 1,
