@@ -436,6 +436,33 @@ pub(super) enum Command {
         signatures: Option<PathBuf>,
     },
 
+    /// Review a binary version change's function pairings before the run.
+    ///
+    /// Loads the pairing documents the auto run's version-pairing scan
+    /// step leaves in `re/analysis/bdiff/` for a binary identity and
+    /// lists each old↔new pair with its confidence and match family,
+    /// plus the functions paired on neither side — old-only and
+    /// new-only. The live document is the one naming the target
+    /// directory's current bytes as its new side; a document naming a
+    /// since-replaced version is stale and reported as such, never
+    /// printed as an empty success. Pure report: no scan runs, no
+    /// engine read.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — Binary identity to review, e.g. `eqmain.dll`.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss bdiff --binary eqmain.dll
+    /// ```
+    Bdiff {
+        /// Binary identity to review, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        binary: String,
+    },
+
     /// Detect concurrency constructs (mutex/lock pairings, atomic
     /// operations, thread spawns) for a binary.
     ///

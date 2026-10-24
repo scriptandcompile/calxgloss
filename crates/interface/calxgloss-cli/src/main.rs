@@ -63,6 +63,7 @@ use commands::apidetect::handle_apidetect;
 use commands::auto::handle_auto;
 use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
+use commands::bdiff::handle_bdiff;
 use commands::callback::handle_callback;
 use commands::classify::handle_classify;
 use commands::consts::handle_consts;
@@ -316,6 +317,14 @@ fn main() -> Result<()> {
                     signatures.as_deref(),
                     &settings,
                 ))
+        }
+        Command::Bdiff { binary } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_bdiff(&binary, &workspace, &settings))
         }
         Command::Sync { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);

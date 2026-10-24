@@ -5,6 +5,7 @@ pub mod apidetect;
 pub mod auto;
 pub mod auto_shim;
 pub mod batch_translate;
+pub mod bdiff;
 pub mod callback;
 pub mod classify;
 pub mod consts;
