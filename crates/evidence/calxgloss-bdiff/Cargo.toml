@@ -15,6 +15,7 @@ calxgloss-types = { path = "../../shared/calxgloss-types" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

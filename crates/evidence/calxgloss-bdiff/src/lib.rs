@@ -21,10 +21,26 @@
 //!
 //! # Architecture
 //!
-//! The crate opens with its persistence plumbing; the snapshot model
-//! and the pairing pass land in this track's follow-up modules:
-//!
+//! * [`types`] — the document model: [`ScanSnapshot`] and
+//!   [`FunctionEntry`], one scan's in-memory listing; [`PairingDocument`],
+//!   [`PairingRecord`], and [`MatchFamily`], the one persisted pairing;
+//!   the name-identity band and the carry-over confidence floor as
+//!   named constants.
+//! * [`engine`] — [`pair_versions`], the pairing pass: a pure function
+//!   over two snapshots, documents in and pairing document out, with
+//!   the one-to-one resolution rule (strongest claim wins, ties first
+//!   seen in scan order).
 //! * [`error`] — [`BdiffError`], the crate's error type.
+//!
+//! The persistor for the pairing document lands with this track's
+//! plumbing follow-up.
+pub mod engine;
 pub mod error;
+pub mod types;
 
+pub use engine::pair_versions;
 pub use error::{BdiffError, Result};
+pub use types::{
+    CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry, MatchFamily, NAME_IDENTITY_CONFIDENCE,
+    PairingDocument, PairingRecord, ScanSnapshot,
+};

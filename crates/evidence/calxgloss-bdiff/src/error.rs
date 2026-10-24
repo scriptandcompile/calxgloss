@@ -10,6 +10,12 @@ use thiserror::Error;
 /// the pairing document.
 #[derive(Debug, Error)]
 pub enum BdiffError {
+    /// The two snapshots do not describe one binary identity — the pass
+    /// pairs *versions of one binary*, and mixing identities is a caller
+    /// error it refuses rather than a pairing it guesses at.
+    #[error("not one binary identity: {old} vs {new}")]
+    IdentityMismatch { old: String, new: String },
+
     /// An I/O error occurred while reading or writing the pairing document.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
