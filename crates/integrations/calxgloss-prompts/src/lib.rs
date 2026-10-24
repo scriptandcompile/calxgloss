@@ -56,11 +56,11 @@ pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ConstInfo, ControlFlowInfo, ConventionInfo, DataTableInfo, EdgeCaseTemplate, EdgeCaseTest,
-    EscalateTemplate, EvidenceBundle, FixTemplate, FormattedTestResult, FullModuleTemplate,
-    GlobalStateInfo, LibmatchInfo, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
-    NeighborFunction, PalTraitDef, PalTraitMethod, ParameterDirectionInfo, SerializationInfo,
-    ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData, TestCaseFormatted,
-    TranslateTemplate, TypeInfo, WithTestsTemplate,
+    ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate, FormattedTestResult,
+    FullModuleTemplate, GlobalStateInfo, LibmatchInfo, MemoryInfo, MinimalTemplate,
+    ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod, ParameterDirectionInfo,
+    SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData,
+    TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -1980,5 +1980,196 @@ mod tests {
 
         assert_eq!(extract_signature_from_decompiler(""), "");
         assert_eq!(extract_signature_from_decompiler("  \n  "), "");
+    }
+
+    fn seh_finding() -> ErrhandlingInfo {
+        ErrhandlingInfo {
+            function: "FUN_1800014a0".to_string(),
+            kind: "seh_frame".to_string(),
+            target: "try/catch frame".to_string(),
+            suggestion: "translate the frame as a Rust match arms ladder".to_string(),
+            confidence: 100,
+            evidence: "  catch(...) {".to_string(),
+            code: None,
+            site: None,
+            partner: None,
+        }
+    }
+
+    fn code_finding() -> ErrhandlingInfo {
+        ErrhandlingInfo {
+            function: "FUN_1800014a0".to_string(),
+            kind: "error_code".to_string(),
+            target: "failure code".to_string(),
+            suggestion: "treat the constant as a failure code and name it in the error enum"
+                .to_string(),
+            confidence: 85,
+            evidence: "  mov eax, 80070057h".to_string(),
+            code: Some("0x80070057".to_string()),
+            site: Some("return".to_string()),
+            partner: None,
+        }
+    }
+
+    #[test]
+    fn test_module_context_template_renders_error_handling_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                error_handling_findings: vec![seh_finding(), code_finding()],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("ERROR HANDLING"));
+        // The idiom bullet states its suggestion, target, and band.
+        assert!(prompt.contains("translate the frame as a Rust match arms ladder"));
+        assert!(prompt.contains("try/catch frame"));
+        assert!(prompt.contains("confidence 100"));
+        assert!(prompt.contains("  catch(...) {"));
+        // The failure code arrives spelled as the translator's hex
+        // literal, with the site it surfaced at named.
+        assert!(prompt.contains("failure code 0x80070057"));
+        assert!(prompt.contains("from a `return` site"));
+        assert!(prompt.contains("confidence 85"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_error_handling_findings_omits_the_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(!prompt.contains("ERROR HANDLING"));
+    }
+
+    #[test]
+    fn test_module_context_template_error_handling_codes_only_omits_the_mapping_guidance() {
+        // Codes without idioms steer the error mapping but claim no frame
+        // to translate.
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                error_handling_findings: vec![code_finding()],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("ERROR HANDLING"));
+        assert!(prompt.contains("failure code 0x80070057"));
+        // Codes alone state no idiom to translate.
+        assert!(!prompt.contains("frame idiom"));
+        assert!(!prompt.contains("idiom,"));
+    }
+
+    #[test]
+    fn test_module_context_template_error_handling_idioms_only_omit_the_code_line() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                error_handling_findings: vec![seh_finding()],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("ERROR HANDLING"));
+        assert!(prompt.contains("try/catch frame"));
+        // An idiom without a code states no failure code.
+        assert!(!prompt.contains("failure code 0x"));
+    }
+
+    #[test]
+    fn test_module_context_template_error_handling_raise_idiom_names_the_code_it_raises() {
+        let mut finding = seh_finding();
+        finding.kind = "raise_exception".to_string();
+        finding.target = "raised exception".to_string();
+        finding.suggestion = "surface the raise as the matching Rust panic".to_string();
+        finding.code = Some("0xe06d7363".to_string());
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                error_handling_findings: vec![finding],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        // The raise idiom bullet names the code it raises inline.
+        assert!(prompt.contains("raised exception idiom"));
+        assert!(prompt.contains("raising code 0xe06d7363"));
+    }
+
+    #[test]
+    fn test_module_context_template_error_handling_inherited_code_names_its_partner() {
+        let mut finding = code_finding();
+        finding.kind = "inherited_error_code".to_string();
+        finding.target = "inherited failure code".to_string();
+        finding.site = None;
+        finding.partner = Some("FUN_1800412a0".to_string());
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                error_handling_findings: vec![finding],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        // The inherited-code bullet names the code and the partner that
+        // hands it up.
+        assert!(prompt.contains("inherited failure code"));
+        assert!(prompt.contains("carried from `FUN_1800412a0`"));
+        assert!(prompt.contains("failure code 0x80070057"));
+    }
+
+    #[test]
+    fn test_escalate_template_with_error_handling_findings() {
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_1800014a0".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_1800014a0() { /* flattened guarded block */ }".to_string(),
+            "Wrong result".to_string(),
+            EvidenceBundle {
+                error_handling_findings: vec![seh_finding(), code_finding()],
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("ADDITIONAL CONTEXT — ERROR HANDLING"));
+        assert!(prompt.contains("try/catch frame"));
+        assert!(prompt.contains("confidence 100"));
+        assert!(prompt.contains("failure code 0x80070057"));
+        assert!(prompt.contains("from a `return` site"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_error_handling_findings_omits_the_section() {
+        let prompt = build_escalate_prompt(
+            "FUN_1800014a0".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_1800014a0() {} ".to_string(),
+            "Wrong result".to_string(),
+            EvidenceBundle::default(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(!prompt.contains("ERROR HANDLING"));
     }
 }

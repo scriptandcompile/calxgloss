@@ -277,6 +277,28 @@ Rust crate instead of transliterating the raw import or declaring it as an
 {% endfor %}
 
 {% endif %}
+{% if !error_handling_findings.is_empty() %}
+## ADDITIONAL CONTEXT — ERROR HANDLING
+
+The error-handling contract this function's body carries, read by static
+analysis — the same findings the first attempt saw. Translate the idiom into
+the suggested Rust shape — an exception-mapped error type for a try/catch
+frame, early returns plus RAII or scope guards for a cleanup ladder — and
+surface the failure codes below as the numeric codes of the Rust error values
+the function hands back; a divergence here is usually the translation dropping
+or reshaping this contract:
+
+{% for finding in error_handling_findings %}
+{% if finding.kind == "error_code" %}- **failure code {{ finding.code.as_ref().unwrap() }}** ({{ finding.target }} from a `{{ finding.site.as_ref().unwrap() }}` site, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% elif finding.kind == "inherited_error_code" %}- **failure code {{ finding.code.as_ref().unwrap() }}** ({{ finding.target }} carried from `{{ finding.partner.as_ref().unwrap() }}`, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% else %}- **{{ finding.suggestion|safe }}** ({{ finding.target }} idiom{% if finding.code.is_some() %}, raising code {{ finding.code.as_ref().unwrap() }}{% endif %}, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endif %}
+{% endfor %}
+
+{% endif %}
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

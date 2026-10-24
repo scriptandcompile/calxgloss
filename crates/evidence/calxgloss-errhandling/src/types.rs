@@ -378,6 +378,55 @@ impl ErrhandlingFinding {
     }
 }
 
+/// Render a finding as prompt data: the function it is about, the kind
+/// tag, the reading spelled for a reader, the Rust pattern the finding
+/// steers a translation toward, and the confidence and evidence behind
+/// the claim — so the module-context and escalate prompts show the
+/// error-handling contract the body carries and how strongly each
+/// reading was made, and the translator stops guessing at error shapes
+/// (issue #293). Code-bearing records carry the code in its spelled
+/// `0x…` form: a failure-code record names the site kind the literal
+/// was read from, an inherited record names the callee the code
+/// carried from, and a `RaiseException` idiom names the code it raises
+/// beside its suggestion without becoming a failure-code record itself.
+impl From<&ErrhandlingFinding> for calxgloss_prompts::ErrhandlingInfo {
+    fn from(finding: &ErrhandlingFinding) -> Self {
+        let code = match finding {
+            ErrhandlingFinding::RaiseException(record) => {
+                record.code.map(|code| format!("{code:#010x}"))
+            }
+            ErrhandlingFinding::ErrorCode(record) => Some(format!("{:#010x}", record.code)),
+            ErrhandlingFinding::InheritedErrorCode(record) => {
+                Some(format!("{:#010x}", record.code))
+            }
+            _ => None,
+        };
+        let site = match finding {
+            ErrhandlingFinding::ErrorCode(record) => Some(match record.site {
+                ErrorCodeSite::Return => "return".to_string(),
+                ErrorCodeSite::Raise => "raise".to_string(),
+                ErrorCodeSite::Guard => "guard".to_string(),
+            }),
+            _ => None,
+        };
+        let partner = match finding {
+            ErrhandlingFinding::InheritedErrorCode(record) => Some(record.partner.clone()),
+            _ => None,
+        };
+        Self {
+            function: finding.function().to_string(),
+            kind: finding.kind().to_string(),
+            target: finding.target().to_string(),
+            suggestion: finding.suggestion().to_string(),
+            confidence: finding.confidence().value(),
+            evidence: finding.evidence().to_string(),
+            code,
+            site,
+            partner,
+        }
+    }
+}
+
 /// The whole scan of one binary: the findings plus the metadata stamp
 /// every evidence artifact carries.
 ///
@@ -404,6 +453,18 @@ impl ErrhandlingResult {
             metadata,
             findings: Vec::new(),
         }
+    }
+
+    /// Every finding the scan made about one function, e.g.
+    /// `FUN_18003ab00`, in listing order — the idiom readings first,
+    /// then the function's failure-code records, then any inherited
+    /// codes appended after the per-function records. A by-function
+    /// lookup is what the prompt seam reads, so the same lookup answers
+    /// idiom and codes at once.
+    pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ErrhandlingFinding> {
+        self.findings
+            .iter()
+            .filter(move |finding| finding.function() == function)
     }
 
     /// Whether the scan made no finding at all.
@@ -777,5 +838,80 @@ mod tests {
         let back: ErrhandlingResult = serde_json::from_str(&json).unwrap();
         assert!(back.is_empty());
         assert_eq!(back.metadata.binary, "eqmain.dll");
+    }
+
+    #[test]
+    fn for_function_yields_only_that_function_s_findings_in_order() {
+        // The prompt seam's lookup: only the target function's records,
+        // idioms and codes together, in listing order.
+        let mut result = ErrhandlingResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = vec![
+            ErrhandlingFinding::SehFrame(framed()),
+            ErrhandlingFinding::ErrorCode(coded(ErrorCodeSite::Return, 74)),
+            ErrhandlingFinding::SehFrame(SehFrame {
+                function: "FUN_zzz".into(),
+                ..framed()
+            }),
+            ErrhandlingFinding::InheritedErrorCode(inherited()),
+        ];
+
+        let kinds: Vec<&str> = result
+            .for_function("FUN_1800014a0")
+            .map(|finding| finding.kind())
+            .collect();
+        assert_eq!(kinds, vec!["seh_frame", "error_code", "inherited_error_code"]);
+    }
+
+    #[test]
+    fn an_idiom_finding_converts_to_prompt_data() {
+        // The module-context and escalate ERROR HANDLING sections read
+        // the finding's own shape — kind, target, suggestion, band, and
+        // evidence — with no code, site, or partner to spell.
+        let finding = ErrhandlingFinding::SehFrame(framed());
+        let info = calxgloss_prompts::ErrhandlingInfo::from(&finding);
+        assert_eq!(info.function, "FUN_1800014a0");
+        assert_eq!(info.kind, "seh_frame");
+        assert_eq!(info.target, "try/catch frame");
+        assert_eq!(info.suggestion, SEH_FRAME_SUGGESTION);
+        assert_eq!(info.confidence, SPELLED_FRAME_CONFIDENCE);
+        assert_eq!(info.evidence, "  catch(...){");
+        assert!(info.code.is_none());
+        assert!(info.site.is_none());
+        assert!(info.partner.is_none());
+    }
+
+    #[test]
+    fn a_failure_code_finding_converts_with_its_code_and_site_spelled() {
+        let finding = ErrhandlingFinding::ErrorCode(coded(ErrorCodeSite::Guard, 64));
+        let info = calxgloss_prompts::ErrhandlingInfo::from(&finding);
+        assert_eq!(info.target, "failure code");
+        assert_eq!(info.code.as_deref(), Some("0x80070057"));
+        assert_eq!(info.site.as_deref(), Some("guard"));
+        assert!(info.partner.is_none());
+    }
+
+    #[test]
+    fn an_inherited_code_finding_converts_naming_its_partner() {
+        let finding = ErrhandlingFinding::InheritedErrorCode(inherited());
+        let info = calxgloss_prompts::ErrhandlingInfo::from(&finding);
+        assert_eq!(info.target, "inherited failure code");
+        assert_eq!(info.code.as_deref(), Some("0x80070057"));
+        assert_eq!(info.partner.as_deref(), Some("FUN_1800412a0"));
+        assert!(info.site.is_none());
+    }
+
+    #[test]
+    fn a_raise_finding_names_its_code_without_becoming_a_code_record() {
+        let with = calxgloss_prompts::ErrhandlingInfo::from(&ErrhandlingFinding::RaiseException(
+            raised(Some(0xe06d_7363)),
+        ));
+        assert_eq!(with.code.as_deref(), Some("0xe06d7363"));
+        assert!(with.site.is_none());
+        assert!(with.partner.is_none());
+        // A raise whose argument did not spell a code stays code-less.
+        let without = calxgloss_prompts::ErrhandlingInfo::from(&ErrhandlingFinding::RaiseException(
+            raised(None),
+        ));
+        assert!(without.code.is_none());
     }
 }

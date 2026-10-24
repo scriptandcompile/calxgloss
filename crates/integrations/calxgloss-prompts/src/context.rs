@@ -12,9 +12,9 @@
 //! - [`FullModulePromptData`] — Tier 4: full module with shim layer + PAL traits
 
 use super::templates::{
-    CallGraphNeighbor, ControlFlowInfo, ConventionInfo, DataTableInfo, EvidenceBundle,
-    FormattedTestResult, GlobalStateInfo, LibmatchInfo, NeighborFunction, PalTraitDef,
-    ParameterDirectionInfo, ShimCode, StructuredData,
+    CallGraphNeighbor, ControlFlowInfo, ConventionInfo, DataTableInfo, ErrhandlingInfo,
+    EvidenceBundle, FormattedTestResult, GlobalStateInfo, LibmatchInfo, NeighborFunction,
+    PalTraitDef, ParameterDirectionInfo, ShimCode, StructuredData,
 };
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
@@ -200,6 +200,10 @@ pub struct ModuleContextPromptData {
     /// `calxgloss-consts` table reader — one record per table the
     /// function's body or the object's cross-references name it for.
     pub data_table_findings: Vec<DataTableInfo>,
+    /// Error-handling findings about the target function made by the
+    /// `calxgloss-errhandling` scan — the idiom the body guards its
+    /// work with and the failure codes it states.
+    pub error_handling_findings: Vec<ErrhandlingInfo>,
 }
 
 impl ModuleContextPromptData {
@@ -238,6 +242,7 @@ impl ModuleContextPromptData {
             libmatch_findings: Vec::new(),
             parameter_direction_findings: Vec::new(),
             data_table_findings: Vec::new(),
+            error_handling_findings: Vec::new(),
         }
     }
 
@@ -276,6 +281,7 @@ impl ModuleContextPromptData {
             libmatch_findings: evidence.libmatch_findings,
             parameter_direction_findings: evidence.parameter_direction_findings,
             data_table_findings: evidence.data_table_findings,
+            error_handling_findings: evidence.error_handling_findings,
         }
     }
 }

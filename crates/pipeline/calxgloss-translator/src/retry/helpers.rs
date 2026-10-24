@@ -45,6 +45,7 @@ pub fn gather_function_evidence(
             workspace, binary, function,
         ),
         data_table_findings: data_table_hints_from(consts.as_ref(), function),
+        error_handling_findings: extract_error_handling_hints(workspace, binary, function),
         ..Default::default()
     }
 }
@@ -694,6 +695,82 @@ pub fn extract_control_flow_hints(
 ) -> Vec<calxgloss_prompts::ControlFlowInfo> {
     control_flow_hints_from(
         load_control_flow_result(workspace, binary).as_ref(),
+        function,
+    )
+}
+
+/// Load the persisted error-handling document for a binary.
+///
+/// Reads the per-binary result produced by the `calxgloss-errhandling`
+/// scan from `re/analysis/errhandling/{binary}.json`. Returns `None`
+/// when no workspace is configured, no result is persisted for `binary`
+/// (the scan has not run), or the document is corrupt: missing
+/// error-handling context degrades the prompt, it never fails a
+/// translation run — exactly as the control-flow seam tolerates the
+/// same absence.
+pub fn load_error_handling_result(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+) -> Option<calxgloss_errhandling::types::ErrhandlingResult> {
+    let workspace = workspace?;
+
+    let persistor = calxgloss_errhandling::persist::ErrhandlingPersistor::new(workspace);
+    match persistor.load(binary) {
+        Ok(result) => Some(result),
+        Err(e) => {
+            debug!(
+                binary,
+                error = %e,
+                "No usable error-handling result; continuing without error-handling context"
+            );
+            None
+        }
+    }
+}
+
+/// The prompt-shaped error-handling findings for a function, taken from
+/// an already-loaded document — the idiom readings (the spelled frame,
+/// named handler, exception-API call, `RaiseException` call, and cleanup
+/// ladder) and the failure-code records, whose contract lives in
+/// `function`'s decompiled body. Idioms and codes ride one lookup, the
+/// document's listing order, so the prompt's ERROR HANDLING section and
+/// a reviewer reading the same document agree on the same contract.
+/// `None` (no usable document) yields an empty vector.
+pub fn error_handling_hints_from(
+    result: Option<&calxgloss_errhandling::types::ErrhandlingResult>,
+    function: &str,
+) -> Vec<calxgloss_prompts::ErrhandlingInfo> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::ErrhandlingInfo::from)
+        .collect()
+}
+
+/// Extract error-handling findings for a function from the cached
+/// error-handling scan result.
+///
+/// Reads the per-binary result produced by the `calxgloss-errhandling`
+/// scan from `re/analysis/errhandling/{binary}.json` and keeps the
+/// findings made for the target function — the idiom its body guards
+/// its work with and the failure codes it states — through
+/// [`error_handling_hints_from`], so the first attempt and every retry
+/// map the frame onto a Rust error type and keep the codes instead of
+/// guessing at the error shape (issue #293).
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `binary` (the scan has not run), or the document is
+/// corrupt: missing error-handling context degrades the prompt, it
+/// never fails it.
+pub fn extract_error_handling_hints(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::ErrhandlingInfo> {
+    error_handling_hints_from(
+        load_error_handling_result(workspace, binary).as_ref(),
         function,
     )
 }
@@ -3669,6 +3746,155 @@ mod tests {
         assert_eq!(found[2].evidence, "  param_3[0] = 3;");
     }
 
+    // --- error-handling findings (issue #293) ------------------------------
+
+    fn seh_finding(function: &str) -> calxgloss_errhandling::types::ErrhandlingFinding {
+        calxgloss_errhandling::types::ErrhandlingFinding::SehFrame(
+            calxgloss_errhandling::types::SehFrame {
+                function: function.to_string(),
+                confidence: Confidence::new(80),
+                evidence: "  catch(...){".to_string(),
+                suggestion: calxgloss_errhandling::SEH_FRAME_SUGGESTION.to_string(),
+            },
+        )
+    }
+
+    fn ladder_finding(function: &str) -> calxgloss_errhandling::types::ErrhandlingFinding {
+        calxgloss_errhandling::types::ErrhandlingFinding::GotoCleanup(
+            calxgloss_errhandling::types::GotoCleanup {
+                function: function.to_string(),
+                confidence: Confidence::new(55),
+                evidence: "  CloseHandle(hFile);".to_string(),
+                join_label: "LAB_140001a2c".to_string(),
+                suggestion: calxgloss_errhandling::GOTO_CLEANUP_SUGGESTION.to_string(),
+            },
+        )
+    }
+
+    fn code_finding(function: &str) -> calxgloss_errhandling::types::ErrhandlingFinding {
+        calxgloss_errhandling::types::ErrhandlingFinding::ErrorCode(
+            calxgloss_errhandling::types::ErrorCode {
+                function: function.to_string(),
+                confidence: Confidence::new(74),
+                evidence: "  return 0x80070057;".to_string(),
+                code: 0x8007_0057,
+                site: calxgloss_errhandling::types::ErrorCodeSite::Return,
+                suggestion: calxgloss_errhandling::ERROR_CODE_SUGGESTION.to_string(),
+            },
+        )
+    }
+
+    fn inherited_code_finding(function: &str) -> calxgloss_errhandling::types::ErrhandlingFinding {
+        calxgloss_errhandling::types::ErrhandlingFinding::InheritedErrorCode(
+            calxgloss_errhandling::types::InheritedErrorCode {
+                function: function.to_string(),
+                partner: "FUN_1800412a0".to_string(),
+                confidence: Confidence::new(54),
+                evidence: "  return FUN_1800412a0(param_1);".to_string(),
+                code: 0xC000_0001,
+                suggestion: calxgloss_errhandling::ERROR_CODE_SUGGESTION.to_string(),
+            },
+        )
+    }
+
+    fn persist_errhandling_findings(
+        dir: &TempDir,
+        findings: Vec<calxgloss_errhandling::types::ErrhandlingFinding>,
+    ) {
+        let mut result =
+            calxgloss_errhandling::types::ErrhandlingResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_errhandling::persist::ErrhandlingPersistor::new(dir.path())
+            .save(&result)
+            .expect("the error-handling result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_error_handling_findings() {
+        assert!(
+            extract_error_handling_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no error-handling context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_error_handling_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no error-handling context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_error_handling_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("errhandling")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+        );
+    }
+
+    #[test]
+    fn error_handling_findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_errhandling_findings(
+            &dir,
+            vec![seh_finding("FUN_18003ab00"), seh_finding("FUN_zzz")],
+        );
+
+        let found = extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's finding");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "seh_frame");
+        assert_eq!(found[0].target, "try/catch frame");
+        assert_eq!(found[0].suggestion, calxgloss_errhandling::SEH_FRAME_SUGGESTION);
+        assert_eq!(found[0].confidence, 80);
+        assert_eq!(found[0].evidence, "  catch(...){");
+    }
+
+    #[test]
+    fn every_error_handling_finding_of_the_function_lands_in_scan_order() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_errhandling_findings(
+            &dir,
+            vec![
+                seh_finding("FUN_18003ab00"),
+                ladder_finding("FUN_18003ab00"),
+                code_finding("FUN_18003ab00"),
+                inherited_code_finding("FUN_18003ab00"),
+                seh_finding("FUN_zzz"),
+            ],
+        );
+
+        let found = extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["seh_frame", "goto_cleanup", "error_code", "inherited_error_code"]
+        );
+        // The code-bearing records carry their payload through the load:
+        // the code spelled, the site named, the partner named.
+        assert_eq!(found[2].code.as_deref(), Some("0x80070057"));
+        assert_eq!(found[2].site.as_deref(), Some("return"));
+        assert_eq!(found[3].code.as_deref(), Some("0xc0000001"));
+        assert_eq!(found[3].partner.as_deref(), Some("FUN_1800412a0"));
+    }
+
     // --- the evidence gather (issue #268) ---------------------------------
     #[test]
     fn gather_function_evidence_reads_the_caches_into_one_bundle() {
@@ -3693,6 +3919,14 @@ mod tests {
         );
         persist_hints(&dir, vec![algorithm_hint("FUN_18003ab00", "bubble sort")]);
         persist_const_findings(&dir, vec![table_record(&["FUN_18003ab00"])]);
+        persist_errhandling_findings(
+            &dir,
+            vec![
+                seh_finding("FUN_18003ab00"),
+                code_finding("FUN_18003ab00"),
+                seh_finding("FUN_zzz"),
+            ],
+        );
 
         let evidence =
             gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
@@ -3723,6 +3957,16 @@ mod tests {
             "the table the function reads reaches the module-context bundle"
         );
         assert_eq!(evidence.data_table_findings[0].name, "DAT_1400a1b60");
+        assert_eq!(
+            evidence.error_handling_findings.len(),
+            2,
+            "the function's idiom and failure code reach the module-context bundle"
+        );
+        assert_eq!(evidence.error_handling_findings[0].kind, "seh_frame");
+        assert_eq!(
+            evidence.error_handling_findings[1].code.as_deref(),
+            Some("0x80070057")
+        );
         assert_eq!(
             evidence
                 .const_findings
@@ -3757,5 +4001,6 @@ mod tests {
         assert!(none.libmatch_findings.is_empty());
         assert!(none.parameter_direction_findings.is_empty());
         assert!(none.data_table_findings.is_empty());
+        assert!(none.error_handling_findings.is_empty());
     }
 }

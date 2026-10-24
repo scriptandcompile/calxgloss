@@ -457,6 +457,48 @@ pub struct ConventionInfo {
     pub evidence: String,
 }
 
+/// An error-handling finding about one function, made by the
+/// `calxgloss-errhandling` scan.
+///
+/// The module-context and escalate prompts show these so the LLM keeps
+/// the function's error-handling contract — an SEH frame mapped to an
+/// exception-carrying Rust error type, a `goto`-cleanup ladder mapped to
+/// early returns plus RAII or scope guards — instead of flattening the
+/// frame into straight-line logic or collapsing the failure codes into
+/// ad-hoc error values. The kind spells the serde tag — `seh_frame`,
+/// `named_handler`, `exception_api_call`, `raise_exception`,
+/// `goto_cleanup`, `error_code`, `inherited_error_code` — and the target
+/// names the same reading spelled for a reader. Code-bearing records
+/// carry the code in its spelled `0x…` form: failure-code records name
+/// the site the literal was read from (`return`, `raise`, `guard`) or
+/// the callee an inherited code travels from; a `RaiseException` idiom
+/// names the code it raises without becoming a failure-code record.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ErrhandlingInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `seh_frame`, `goto_cleanup`,
+    /// `error_code`, `inherited_error_code`.
+    pub kind: String,
+    /// What the finding names, spelled for a reader, e.g.
+    /// `try/catch frame`, `failure code`.
+    pub target: String,
+    /// The Rust pattern the finding steers the translation toward.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The body line that supports the claim.
+    pub evidence: String,
+    /// The code value in its spelled `0x…` form, for failure-code
+    /// records and for a `RaiseException` idiom whose argument named it.
+    pub code: Option<String>,
+    /// The site kind a failure-code record was read from — `return`,
+    /// `raise`, or `guard`.
+    pub site: Option<String>,
+    /// The callee an inherited failure code travels from.
+    pub partner: Option<String>,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -773,6 +815,10 @@ pub struct EvidenceBundle {
     /// the CONSTANTS section through the constant findings' union
     /// prompt conversion.
     pub data_table_findings: Vec<DataTableInfo>,
+    /// Error-handling findings about this function made by the
+    /// `calxgloss-errhandling` scan — the idiom the body guards its
+    /// work with and the failure codes it states.
+    pub error_handling_findings: Vec<ErrhandlingInfo>,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
@@ -835,6 +881,10 @@ pub struct EscalateTemplate {
     /// Endianness and serialization findings about this function made
     /// by the analysis pipeline.
     pub serialization_findings: Vec<SerializationInfo>,
+    /// Error-handling findings about this function made by the
+    /// `calxgloss-errhandling` scan — the idiom the body guards its
+    /// work with and the failure codes it states.
+    pub error_handling_findings: Vec<ErrhandlingInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -889,6 +939,7 @@ impl EscalateTemplate {
             api_findings: evidence.api_findings,
             const_findings: evidence.const_findings,
             serialization_findings: evidence.serialization_findings,
+            error_handling_findings: evidence.error_handling_findings,
             failure_history,
             call_graph_context: evidence.call_graph_context,
         }
@@ -1243,6 +1294,10 @@ pub struct ModuleContextTemplate {
     /// Data tables the function reads, made by the `calxgloss-consts`
     /// table reader.
     pub data_table_findings: Vec<DataTableInfo>,
+    /// Error-handling findings about this function made by the
+    /// `calxgloss-errhandling` scan — the idiom the body guards its
+    /// work with and the failure codes it states.
+    pub error_handling_findings: Vec<ErrhandlingInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -1267,6 +1322,7 @@ impl ModuleContextTemplate {
             libmatch_findings: data.libmatch_findings.clone(),
             parameter_direction_findings: data.parameter_direction_findings.clone(),
             data_table_findings: data.data_table_findings.clone(),
+            error_handling_findings: data.error_handling_findings.clone(),
         }
     }
 }

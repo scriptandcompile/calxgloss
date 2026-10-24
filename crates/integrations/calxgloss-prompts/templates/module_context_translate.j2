@@ -213,6 +213,28 @@ match arms or magic numbers:
 {% endfor %}
 
 {% endif %}
+{% if !error_handling_findings.is_empty() %}
+## ERROR HANDLING
+
+The error-handling contract this function's body carries, read by static
+analysis. Where a finding is credible, translate the idiom into the suggested
+Rust shape — an exception-mapped error type for a try/catch frame, early
+returns plus RAII or scope guards for a cleanup ladder — instead of flattening
+the guarded block into straight-line logic, and surface the failure codes
+below as the numeric codes of the Rust error values the function hands back
+instead of collapsing them into ad-hoc error variants:
+
+{% for finding in error_handling_findings %}
+{% if finding.kind == "error_code" %}- **failure code {{ finding.code.as_ref().unwrap() }}** ({{ finding.target }} from a `{{ finding.site.as_ref().unwrap() }}` site, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% elif finding.kind == "inherited_error_code" %}- **failure code {{ finding.code.as_ref().unwrap() }}** ({{ finding.target }} carried from `{{ finding.partner.as_ref().unwrap() }}`, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% else %}- **{{ finding.suggestion|safe }}** ({{ finding.target }} idiom{% if finding.code.is_some() %}, raising code {{ finding.code.as_ref().unwrap() }}{% endif %}, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endif %}
+{% endfor %}
+
+{% endif %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.
