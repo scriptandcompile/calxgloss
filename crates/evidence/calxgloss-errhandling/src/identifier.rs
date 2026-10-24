@@ -66,6 +66,43 @@ pub(crate) fn starts_call(after: &str) -> bool {
     after.trim_start_matches([' ', '\t', '\r']).starts_with('(')
 }
 
+/// Whether `s` opens with `word` as a whole word, not as the prefix
+/// of a longer name — the keyword-shape rule the goto-cleanup ladder
+/// reads its guard heads and constant returns through, and the
+/// failure-code reading reads its statement shapes through.
+pub(crate) fn starts_word(s: &str, word: &str) -> bool {
+    s.starts_with(word)
+        && !s[word.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The offset of `word` as a whole word inside `hay`, if it stands
+/// anywhere in it. A keyword standing mid-line — the one-line
+/// `if (cond) return X;` spelling — still marks what follows it, so
+/// the reading of what the statement carries reads from there.
+pub(crate) fn find_word(hay: &str, word: &str) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(offset) = hay[from..].find(word) {
+        let start = from + offset;
+        let end = start + word.len();
+        from = end;
+        let before_clear = !hay[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        let after_clear = !hay[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if before_clear && after_clear {
+            return Some(start);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +167,25 @@ mod tests {
         // line by a wrapped call, is not the call shape.
         assert!(!starts_call(";"));
         assert!(!starts_call(" = &handler;"));
+    }
+
+    #[test]
+    fn a_head_word_reads_the_keyword_and_nothing_longer() {
+        assert!(starts_word("if (uVar == 0) {", "if"));
+        assert!(starts_word("else if (bad) {", "else"));
+        // A keyword-shaped prefix of a longer name is a different
+        // word entirely: the goto-cleanup crate's own guard reading
+        // refuses `iffy` just as this rule does.
+        assert!(!starts_word("iffy = 1;", "if"));
+        assert!(!starts_word("_return;", "return"));
+    }
+
+    #[test]
+    fn a_keyword_mid_line_is_found_at_its_offset() {
+        // The one-line `if (cond) return X;` spelling puts the
+        // keyword mid-line; the reading of what follows starts there.
+        assert_eq!(find_word("  if (bad) return 0;", "return"), Some(11));
+        assert_eq!(find_word("  return_value = 1;", "return"), None);
+        assert_eq!(find_word("  goto joined_r0x123;", "return"), None);
     }
 }

@@ -142,19 +142,78 @@ pub struct GotoCleanup {
     pub suggestion: String,
 }
 
+/// The site shape a failure-code literal was read from — the closed
+/// set of statement kinds the failure-code reading treats as the
+/// function stating its failure contract (issue #290). The persisted
+/// record names which one it was, so a consumer can tell a code the
+/// function hands its caller from one it merely tests for; the
+/// baseline-test follow-up pins only the returned and raised ones as
+/// expected outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCodeSite {
+    /// The literal stands in the function's `return` statement —
+    /// the value goes to the caller, the most direct statement of
+    /// the failure contract the reading takes.
+    Return,
+    /// The literal stands as the first argument of a
+    /// `RaiseException` call — the code rides the exception
+    /// mechanism the function invokes, not its return value.
+    Raise,
+    /// The literal stands in a guard comparison — the function
+    /// tests for the code; whether it also emits it is inference,
+    /// and the band says so.
+    Guard,
+}
+
+/// A failure-code literal one function's body spells — the HRESULT-
+/// or NTSTATUS-shaped value it returns, compares a guard against, or
+/// raises, one record per distinct code per function (issue #290,
+/// the artifact the baseline-test follow-up consumes: the expected
+/// outcomes recorded, not re-derived).
+///
+/// The record carries the code value as the literal spells it, the
+/// site kind it was read from, and the line that carries the claim
+/// as its evidence; the confidence band rides the site kind (the
+/// bands live in [`error_code`](crate::error_code)). A function
+/// carrying codes and no idiom shape still carries its code records
+/// — the failure contract and the idiom are different facts — and
+/// the same code sighted at several sites in one function stands as
+/// one record at its strongest site, so per-function lookup stays
+/// direct and two scans of one program keep diffing cleanly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorCode {
+    /// The function whose body spells the code.
+    pub function: String,
+    /// Confidence that the code really rides this function's failure
+    /// contract, on the shared 0–100 Evidence scale, banded by the
+    /// site kind.
+    pub confidence: Confidence,
+    /// The body line carrying the literal — the claim's evidence.
+    pub evidence: String,
+    /// The code value, as the literal spells it: an HRESULT-shaped
+    /// (`0x8xxx_xxxx`) or NTSTATUS-shaped (`0xCxxx_xxxx`) 32-bit value.
+    pub code: u32,
+    /// The statement kind the literal was read from.
+    pub site: ErrorCodeSite,
+    /// The Rust pattern the finding steers a translation toward.
+    pub suggestion: String,
+}
+
 /// One error-handling evidence finding about one function.
 ///
 /// The union is what the persisted document carries, so the follow-up
-/// families (the per-code failure codes) land as new variants without
-/// reshaping the artifact. The serde `kind` tag names the finding
-/// kind in the persisted JSON; the tag *is* the idiom kind, so a
-/// record can never disagree with its own kind by carrying a redundant
-/// label. The three SEH kinds — spelled frame, named handler,
+/// families (the cross-function propagation readings) land as new
+/// variants without reshaping the artifact. The serde `kind` tag names
+/// the finding kind in the persisted JSON; the tag *is* the idiom kind,
+/// so a record can never disagree with its own kind by carrying a
+/// redundant label. The three SEH kinds — spelled frame, named handler,
 /// exception-API call — stand one per function at most, the strongest
 /// family winning the one claim (the engine takes the first family
 /// that fires, in ADR-0046's rung order); a `RaiseException` finding
 /// and a `GotoCleanup` finding each ride beside them, different facts
-/// about the same function.
+/// about the same function, and so do as many `ErrorCode` records as
+/// the function spells distinct codes (issue #290).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ErrhandlingFinding {
@@ -169,6 +228,10 @@ pub enum ErrhandlingFinding {
     /// The body's guarded forward gotos converge on one shared
     /// cleanup block — the C cleanup-on-failure ladder.
     GotoCleanup(GotoCleanup),
+    /// The body spells a failure-code literal — returned, compared
+    /// in a guard, or raised — one record per distinct code per
+    /// function.
+    ErrorCode(ErrorCode),
 }
 
 impl ErrhandlingFinding {
@@ -180,6 +243,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::ExceptionApiCall(record) => &record.function,
             ErrhandlingFinding::RaiseException(record) => &record.function,
             ErrhandlingFinding::GotoCleanup(record) => &record.function,
+            ErrhandlingFinding::ErrorCode(record) => &record.function,
         }
     }
 
@@ -191,6 +255,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::ExceptionApiCall(record) => &record.evidence,
             ErrhandlingFinding::RaiseException(record) => &record.evidence,
             ErrhandlingFinding::GotoCleanup(record) => &record.evidence,
+            ErrhandlingFinding::ErrorCode(record) => &record.evidence,
         }
     }
 
@@ -202,6 +267,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::ExceptionApiCall(record) => record.confidence,
             ErrhandlingFinding::RaiseException(record) => record.confidence,
             ErrhandlingFinding::GotoCleanup(record) => record.confidence,
+            ErrhandlingFinding::ErrorCode(record) => record.confidence,
         }
     }
 
@@ -213,6 +279,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::ExceptionApiCall(record) => &record.suggestion,
             ErrhandlingFinding::RaiseException(record) => &record.suggestion,
             ErrhandlingFinding::GotoCleanup(record) => &record.suggestion,
+            ErrhandlingFinding::ErrorCode(record) => &record.suggestion,
         }
     }
 
@@ -226,12 +293,13 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::ExceptionApiCall(_) => "exception-API call",
             ErrhandlingFinding::RaiseException(_) => "RaiseException call",
             ErrhandlingFinding::GotoCleanup(_) => "goto-cleanup ladder",
+            ErrhandlingFinding::ErrorCode(_) => "failure code",
         }
     }
 
     /// The serde `kind` tag — `seh_frame`, `named_handler`,
-    /// `exception_api_call`, `raise_exception`, or `goto_cleanup` —
-    /// naming the finding kind.
+    /// `exception_api_call`, `raise_exception`, `goto_cleanup`, or
+    /// `error_code` — naming the finding kind.
     pub fn kind(&self) -> &'static str {
         match self {
             ErrhandlingFinding::SehFrame(_) => "seh_frame",
@@ -239,6 +307,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::ExceptionApiCall(_) => "exception_api_call",
             ErrhandlingFinding::RaiseException(_) => "raise_exception",
             ErrhandlingFinding::GotoCleanup(_) => "goto_cleanup",
+            ErrhandlingFinding::ErrorCode(_) => "error_code",
         }
     }
 
@@ -252,6 +321,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::ExceptionApiCall(record) => record.function = function.to_string(),
             ErrhandlingFinding::RaiseException(record) => record.function = function.to_string(),
             ErrhandlingFinding::GotoCleanup(record) => record.function = function.to_string(),
+            ErrhandlingFinding::ErrorCode(record) => record.function = function.to_string(),
         }
     }
 }
@@ -352,6 +422,17 @@ mod tests {
         }
     }
 
+    fn coded(site: ErrorCodeSite, band: u8) -> ErrorCode {
+        ErrorCode {
+            function: "FUN_1800014a0".into(),
+            confidence: Confidence::new(band),
+            evidence: "  return 0x80070057;".into(),
+            code: 0x8007_0057,
+            site,
+            suggestion: crate::error_code::ERROR_CODE_SUGGESTION.into(),
+        }
+    }
+
     #[test]
     fn a_seh_frame_record_serde_round_trips() {
         let record = framed();
@@ -376,7 +457,7 @@ mod tests {
     fn each_new_record_serde_round_trips_under_its_kind_tag() {
         // Documents written before a kind existed keep loading
         // because each kind is its own tag — the union's standing
-        // guarantee, asserted for the three kinds issue #288 adds.
+        // guarantee, asserted for every kind the track has grown.
         let cases = [
             (
                 ErrhandlingFinding::NamedHandler(named()),
@@ -393,6 +474,13 @@ mod tests {
             (
                 ErrhandlingFinding::GotoCleanup(laddered(GOTO_CLEANUP_RELEASE_CONFIDENCE)),
                 "\"kind\":\"goto_cleanup\"",
+            ),
+            (
+                ErrhandlingFinding::ErrorCode(coded(
+                    ErrorCodeSite::Return,
+                    crate::error_code::ERROR_CODE_RETURN_CONFIDENCE,
+                )),
+                "\"kind\":\"error_code\"",
             ),
         ];
         for (finding, tag) in cases {
@@ -468,6 +556,19 @@ mod tests {
         );
         assert!(finding.evidence().contains("CloseHandle"));
         assert!(finding.suggestion().contains("scope guard"));
+
+        let finding = ErrhandlingFinding::ErrorCode(coded(
+            ErrorCodeSite::Return,
+            crate::error_code::ERROR_CODE_RETURN_CONFIDENCE,
+        ));
+        assert_eq!(finding.kind(), "error_code");
+        assert_eq!(finding.target(), "failure code");
+        assert_eq!(
+            finding.confidence(),
+            Confidence::new(crate::error_code::ERROR_CODE_RETURN_CONFIDENCE)
+        );
+        assert!(finding.evidence().contains("0x80070057"));
+        assert!(finding.suggestion().contains("failure contract"));
     }
 
     #[test]
@@ -490,6 +591,36 @@ mod tests {
             other => panic!("expected the ladder kind back, got {other:?}"),
         }
         assert_eq!(back.confidence(), finding.confidence());
+    }
+
+    #[test]
+    fn a_code_record_round_trips_with_its_value_and_site_kind() {
+        // The code value rides the document as a number and the site
+        // kind as its spelled tag: a consumer reading the document can
+        // pin the expected outcome and tell a returned code from a
+        // compared one without opening the body.
+        for (site, tag) in [
+            (ErrorCodeSite::Return, "\"site\":\"return\""),
+            (ErrorCodeSite::Raise, "\"site\":\"raise\""),
+            (ErrorCodeSite::Guard, "\"site\":\"guard\""),
+        ] {
+            let finding = ErrhandlingFinding::ErrorCode(coded(
+                site,
+                crate::error_code::ERROR_CODE_GUARD_CONFIDENCE,
+            ));
+            let json = serde_json::to_string(&finding).unwrap();
+            assert!(json.contains(tag), "the {tag} tag rides the document");
+            assert!(json.contains(&format!("\"code\":{}", 0x8007_0057u32)));
+            let back: ErrhandlingFinding = serde_json::from_str(&json).unwrap();
+            match &back {
+                ErrhandlingFinding::ErrorCode(record) => {
+                    assert_eq!(record.code, 0x8007_0057);
+                    assert_eq!(record.site, site);
+                }
+                other => panic!("expected the code kind back, got {other:?}"),
+            }
+            assert_eq!(back, finding);
+        }
     }
 
     #[test]

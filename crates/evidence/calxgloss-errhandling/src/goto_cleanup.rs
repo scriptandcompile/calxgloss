@@ -22,7 +22,7 @@
 //! comments (which Ghidra sprinkles over label blocks) are blanked
 //! before any shape is matched, so pseudo-C noise invents no rung.
 
-use crate::identifier::{named_token, starts_call};
+use crate::identifier::{find_word, named_token, starts_call, starts_word};
 use crate::types::{ErrhandlingFinding, GotoCleanup};
 use calxgloss_types::Confidence;
 use std::iter::Peekable;
@@ -332,46 +332,15 @@ fn constant_return(t: &str) -> bool {
     }
 }
 
-/// Whether `s` opens with `word` as a whole word, not as the prefix
-/// of a longer name.
-fn starts_word(s: &str, word: &str) -> bool {
-    s.starts_with(word)
-        && !s[word.len()..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// The offset of `word` as a whole word inside `hay`, if it stands
-/// anywhere in it.
-fn find_word(hay: &str, word: &str) -> Option<usize> {
-    let mut from = 0usize;
-    while let Some(offset) = hay[from..].find(word) {
-        let start = from + offset;
-        let end = start + word.len();
-        from = end;
-        let before_clear = !hay[..start]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        let after_clear = !hay[end..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        if before_clear && after_clear {
-            return Some(start);
-        }
-    }
-    None
-}
-
 /// `line` with its string and character literals and its comments
 /// blanked — `in_block_comment` carries an open `/* */` across
 /// lines, exactly as the decompiler's own label decoration spells
 /// it. The blanking, not the copy, is the point: a `puts("goto
 /// LAB_100;")` invents no rung and a `/* free(pv) */` decoration
-/// names no release call.
-fn blank_literals(line: &str, in_block_comment: &mut bool) -> String {
+/// names no release call. The failure-code reading blanks the same
+/// way, so a code spelled inside a string or a comment names no
+/// contract.
+pub(crate) fn blank_literals(line: &str, in_block_comment: &mut bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.char_indices().peekable();
     while let Some((_, ch)) = chars.next() {

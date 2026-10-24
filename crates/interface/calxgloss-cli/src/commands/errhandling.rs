@@ -3,7 +3,9 @@
 //! Runs the body-text detectors — reading each decompiled body for spelled
 //! `try`/`catch` frames, named personality-handler thunks, exception-API
 //! calls, direct `RaiseException` sites, and goto-cleanup ladders (guarded
-//! forward gotos converging on one releasing join block) — against the loaded program and
+//! forward gotos converging on one releasing join block), and records the
+//! HRESULT- and NTSTATUS-shaped failure codes each body returns, raises, or
+//! compares for — against the loaded program and
 //! saves the result to `re/analysis/errhandling/{binary}.json` in the
 //! workspace. `--show` prints a cached result without running the scan.
 
@@ -94,6 +96,8 @@ fn print_errhandling_report(result: &ErrhandlingResult, path: &Path) {
         "named_handler",
         "exception_api_call",
         "raise_exception",
+        "goto_cleanup",
+        "error_code",
     ]
     .into_iter()
     .map(|kind| {

@@ -10,6 +10,7 @@
 //! findings are asserted at this seam, never inside a detector.
 
 use crate::error::Result;
+use crate::error_code::ErrorCodeDetector;
 use crate::exception_api::ExceptionApiDetector;
 use crate::goto_cleanup::GotoCleanupDetector;
 use crate::named_handler::NamedHandlerDetector;
@@ -34,10 +35,11 @@ pub use calxgloss_decomp::ScanSource;
 /// Orchestrates the per-body idiom readings into one
 /// [`ErrhandlingResult`].
 ///
-/// One loop, five detectors, per the ADR-0046 family ladder: the
+/// One loop, six detectors, per the ADR-0046 family ladder: the
 /// spelled SEH frame, the named personality-handler thunk, the
-/// exception-API call, the direct `RaiseException` call, and the
-/// goto-cleanup ladder. The SEH detectors run in rung order and
+/// exception-API call, the direct `RaiseException` call, the
+/// goto-cleanup ladder, and the per-function failure-code reading.
+/// The SEH detectors run in rung order and
 /// **the strongest family that fires takes the function's one SEH
 /// claim** — a body showing a spelled block beside a thunk
 /// registration lands one finding at the spelled band, never a stack
@@ -46,11 +48,13 @@ pub use calxgloss_decomp::ScanSource;
 /// guarded — and rides beside the SEH claim, and so does the
 /// `GotoCleanup` reading — the function *cleaning up on failure*,
 /// whether or not any exception mechanism is involved (issue #289).
-/// One function therefore contributes at most three findings, in
-/// rung order. Follow-up P15 bullets add detectors, not new control
-/// flow, so the scan-order, skip and breaker behaviour — the
-/// behaviour contract every evidence engine keeps — stays written in
-/// exactly one place.
+/// One function therefore contributes at most three idiom findings,
+/// in rung order, plus its own failure-code records: one record per
+/// distinct code, keyed to the function beside the idioms (issue
+/// #290). Follow-up P15 bullets add detectors, not new control flow,
+/// so the scan-order, skip and breaker behaviour — the behaviour
+/// contract every evidence engine keeps — stays written in exactly
+/// one place.
 /// The engine is generic over its [`ScanSource`], so tests can run
 /// the whole orchestration over canned bodies; [`new`](Self::new)
 /// builds one over a loaded [`KunaSource`]. The SEH and raise
@@ -58,9 +62,10 @@ pub use calxgloss_decomp::ScanSource;
 /// whole scan, and [`with_seh_frame`](Self::with_seh_frame),
 /// [`with_named_handler`](Self::with_named_handler),
 /// [`with_exception_api`](Self::with_exception_api),
-/// [`with_raise_exception`](Self::with_raise_exception), and
-/// [`with_goto_cleanup`](Self::with_goto_cleanup) swap one detector
-/// for a configured one.
+/// [`with_raise_exception`](Self::with_raise_exception),
+/// [`with_goto_cleanup`](Self::with_goto_cleanup), and
+/// [`with_error_code`](Self::with_error_code) swap one detector for a
+/// configured one.
 #[derive(Debug, Clone)]
 pub struct ErrhandlingEngine<S = KunaSource> {
     source: S,
@@ -69,6 +74,7 @@ pub struct ErrhandlingEngine<S = KunaSource> {
     exception_api: ExceptionApiDetector,
     raise_exception: RaiseExceptionDetector,
     goto_cleanup: GotoCleanupDetector,
+    error_code: ErrorCodeDetector,
 }
 
 /// The detectors of a standard engine, spelled once so `new` and
@@ -79,6 +85,7 @@ fn standard_detectors() -> (
     ExceptionApiDetector,
     RaiseExceptionDetector,
     GotoCleanupDetector,
+    ErrorCodeDetector,
 ) {
     (
         SehFrameDetector,
@@ -86,15 +93,17 @@ fn standard_detectors() -> (
         ExceptionApiDetector,
         RaiseExceptionDetector,
         GotoCleanupDetector::new(),
+        ErrorCodeDetector,
     )
 }
 
 impl ErrhandlingEngine<KunaSource> {
     /// An engine over a loaded Kuna program, detecting the SEH frame
     /// across its three body-text families, the direct
-    /// `RaiseException` call, and the goto-cleanup ladder.
+    /// `RaiseException` call, the goto-cleanup ladder, and recording
+    /// each function's shaped failure codes beside them.
     pub fn new(source: &KunaSource) -> ErrhandlingEngine<KunaSource> {
-        let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup) =
+        let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup, error_code) =
             standard_detectors();
         ErrhandlingEngine {
             source: source.clone(),
@@ -103,6 +112,7 @@ impl ErrhandlingEngine<KunaSource> {
             exception_api,
             raise_exception,
             goto_cleanup,
+            error_code,
         }
     }
 }
@@ -111,7 +121,7 @@ impl<S> ErrhandlingEngine<S> {
     /// An engine whose decompiles come from `source`, scanning with
     /// the detectors' standard bands and name sets.
     pub fn with_source(source: S) -> Self {
-        let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup) =
+        let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup, error_code) =
             standard_detectors();
         ErrhandlingEngine {
             source,
@@ -120,6 +130,7 @@ impl<S> ErrhandlingEngine<S> {
             exception_api,
             raise_exception,
             goto_cleanup,
+            error_code,
         }
     }
 
@@ -158,6 +169,14 @@ impl<S> ErrhandlingEngine<S> {
     /// touching the loop.
     pub fn with_goto_cleanup(mut self, detector: GotoCleanupDetector) -> Self {
         self.goto_cleanup = detector;
+        self
+    }
+
+    /// Read per-function failure codes with `detector` instead of the
+    /// standard one — the seam a follow-up reading plugs its own
+    /// configured code detector into without touching the loop.
+    pub fn with_error_code(mut self, detector: ErrorCodeDetector) -> Self {
+        self.error_code = detector;
         self
     }
 
@@ -243,6 +262,7 @@ impl<S> ErrhandlingEngine<S> {
                 .into_iter()
                 .chain(self.raise_exception.detect(&decompiled.body))
                 .chain(self.goto_cleanup.detect(&decompiled.body))
+                .chain(self.error_code.detect(&decompiled.body))
                 .collect::<Vec<_>>()
             {
                 // The detectors fill no function name (they never
@@ -298,6 +318,13 @@ mod tests {
     /// A body spelling the SEH frame the decompiler produces (the
     /// shape pinned by issue #286's tests).
     const SEH_BODY: &str = "  try {\n    work();\n  }\n  catch(...){\n    recover();\n  }\n";
+
+    // A raise carrying the C++ exception code: the raise finding
+    // rides, but `0xe06d7363` itself claims no failure code — the
+    // shape floor is what makes that true — while the returned
+    // invalid-argument code below records as one.
+    const CODED_RAISE_BODY: &str =
+        "  RaiseException(0xe06d7363, 0, NULL, 0);\n  return 0x80070057;\n";
 
     /// A `ScanSource` over canned data, recording every call.
     #[derive(Clone, Default)]
@@ -982,6 +1009,7 @@ mod tests {
                 summary("spelled"),
                 summary("named"),
                 summary("raiser"),
+                summary("coded"),
                 summary("plain"),
                 summary("api_only"),
             ],
@@ -989,6 +1017,7 @@ mod tests {
                 ("spelled".to_string(), SEH_BODY.to_string()),
                 ("named".to_string(), THUNK_BODY.to_string()),
                 ("raiser".to_string(), RAISE_BODY.to_string()),
+                ("coded".to_string(), CODED_RAISE_BODY.to_string()),
                 ("plain".to_string(), "  run();\n".to_string()),
                 ("api_only".to_string(), API_BODY.to_string()),
             ]),
@@ -1004,7 +1033,11 @@ mod tests {
             .expect("second scan must succeed");
         assert_eq!(first.findings, second.findings);
         let names: Vec<&str> = first.findings.iter().map(|f| f.function()).collect();
-        assert_eq!(names, vec!["spelled", "named", "raiser", "api_only"]);
+        assert_eq!(
+            names,
+            vec!["spelled", "named", "raiser", "coded", "coded", "api_only"],
+            "the coded function's raise finding and its one code record both key to it"
+        );
     }
 
     #[tokio::test]
@@ -1090,6 +1123,172 @@ mod tests {
         assert!(
             result.metadata.engine.is_none(),
             "a silent source must not get an invented stamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_record_per_code_at_its_strongest_site_across_a_whole_body() {
+        // The issue's dedup rule asserted at the engine seam: the
+        // same code at several sites lands once, at the site that
+        // carries the evidence most strongly; a second distinct
+        // code lands its own record beside it.
+        let source = FakeProgram {
+            functions: vec![summary("coded")],
+            bodies: HashMap::from([(
+                "coded".to_string(),
+                "  hr = 0x80070005;\n  if (hr == 0xc0000022 || hr == 0x80070005) goto cleanup;\n  *output = 1;\n  return 0x80070005;\n".to_string(),
+            )]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 2, "two distinct codes, two records");
+        let mut codes: Vec<u32> = result
+            .findings
+            .iter()
+            .map(|f| match f {
+                crate::ErrhandlingFinding::ErrorCode(c) => c.code,
+                other => panic!("only code records expected, got {other:?}"),
+            })
+            .collect();
+        codes.sort();
+        assert_eq!(codes, vec![0x8007_0005, 0xc000_0022]);
+        let guard = result
+            .findings
+            .iter()
+            .find(|f| matches!(f, crate::ErrhandlingFinding::ErrorCode(c) if c.code == 0xc000_0022))
+            .expect("the guard code rides along");
+        assert_eq!(guard.confidence(), crate::ERROR_CODE_GUARD_CONFIDENCE);
+        let returned = result
+            .findings
+            .iter()
+            .find(|f| matches!(f, crate::ErrhandlingFinding::ErrorCode(c) if c.code == 0x8007_0005))
+            .expect("the returned code lands");
+        assert_eq!(
+            returned.confidence(),
+            crate::ERROR_CODE_RETURN_CONFIDENCE,
+            "first sighted in a guard comparison, returned from the function later — the return reading wins the one record",
+        );
+    }
+
+    #[tokio::test]
+    async fn code_records_land_for_a_body_the_other_detectors_claim_nothing_about() {
+        // The issue's no-idiom-shape rule asserted at the engine
+        // seam: a function that hands back a shaped failure code but
+        // has no SEH frame, no raise, no ladder, and no cleanup
+        // goto still gets its code record — the code reading stands
+        // on its own — and nothing else. The returned expression
+        // carries a comparison, so the record honestly rides at the
+        // guard band: the literal names the function's failure code,
+        // the shape of the line keeps the claim modest.
+        let source = FakeProgram {
+            functions: vec![summary("coded")],
+            bodies: HashMap::from([(
+                "coded".to_string(),
+                "  hres = QuerySomething(&buffer);\n  return hres == S_OK ? 0 : 0x80070005;\n"
+                    .to_string(),
+            )]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(
+            result.findings.len(),
+            1,
+            "the code record lands without any idiom record riding with it"
+        );
+        let finding = &result.findings[0];
+        assert!(
+            matches!(finding, crate::ErrhandlingFinding::ErrorCode(_)),
+            "the finding is a code record, got {finding:?}"
+        );
+        assert_eq!(finding.function(), "coded");
+        assert_eq!(finding.confidence(), crate::ERROR_CODE_GUARD_CONFIDENCE);
+    }
+
+    #[tokio::test]
+    async fn codes_follow_the_listing_into_grouped_body_order() {
+        // The issue's ordering rule, asserted at the engine seam:
+        // every code-bearing function's records land keyed to the
+        // function in listing order, the codes within each function
+        // in body order — the property `two_scans_of_one_program_
+        // diff_cleanly` leans on, spelled out for the codes.
+        let source = FakeProgram {
+            functions: vec![summary("first"), summary("second")],
+            bodies: HashMap::from([
+                (
+                    "first".to_string(),
+                    "  if (a == 0xc0000022) return a;\n  return 0x80070057;\n".to_string(),
+                ),
+                ("second".to_string(), "  return 0x80070005;\n".to_string()),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        let shaped: Vec<(String, u32)> = result
+            .findings
+            .iter()
+            .map(|f| match f {
+                crate::ErrhandlingFinding::ErrorCode(c) => (f.function().to_string(), c.code),
+                other => panic!("only code records expected, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shaped,
+            vec![
+                ("first".to_string(), 0xc000_0022),
+                ("first".to_string(), 0x8007_0057),
+                ("second".to_string(), 0x8007_0005),
+            ],
+            "listing order across functions, body order within one"
+        );
+    }
+
+    #[tokio::test]
+    async fn code_records_ride_beside_idiom_findings_in_the_same_function() {
+        // The issue's grouping rule asserted at the engine seam: a
+        // function carrying an idiom finding AND its failure codes
+        // gets all of them, keyed to the function, codes in body
+        // order after the detector chain's own findings.
+        let source = FakeProgram {
+            functions: vec![summary("raiser")],
+            bodies: HashMap::from([(
+                "raiser".to_string(),
+                "  RaiseException(0x80070057, 0, NULL, 0);\n  *output = 1;\n  if (result == 0xc0000022) return result;\n  return 0x80070057;\n"
+                    .to_string(),
+            )]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(
+            result.findings.len(),
+            3,
+            "one raise finding, two code records"
+        );
+        let matches: Vec<&str> = result
+            .findings
+            .iter()
+            .map(|f| match f {
+                crate::ErrhandlingFinding::RaiseException(_) => "raise",
+                crate::ErrhandlingFinding::ErrorCode(c) if c.code == 0x8007_0057 => "invalid_arg",
+                crate::ErrhandlingFinding::ErrorCode(c) if c.code == 0xc000_0022 => "access_denied",
+                other => panic!("unexpected finding shape: {other:?}"),
+            })
+            .collect();
+        assert_eq!(matches, vec!["raise", "invalid_arg", "access_denied"]);
+        assert!(
+            result.findings.iter().all(|f| f.function() == "raiser"),
+            "every record is keyed to the one function"
         );
     }
 }

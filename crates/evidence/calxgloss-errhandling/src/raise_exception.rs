@@ -91,8 +91,10 @@ impl RaiseExceptionDetector {
 /// The call's first argument: the text from the open paren to the
 /// first top-level comma (or the close paren, or the line's end).
 /// Parenthesised and bracketed runs nest, so a cast or a nested call
-/// stays one argument.
-fn first_argument(args: &str) -> &str {
+/// stays one argument. The failure-code reading takes the same cut:
+/// for `RaiseException` only the first argument names a code, never
+/// the flags or parameter-array arguments behind it.
+pub(crate) fn first_argument(args: &str) -> &str {
     let mut depth = 0usize;
     for (idx, ch) in args.char_indices() {
         match ch {

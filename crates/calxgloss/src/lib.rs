@@ -278,8 +278,8 @@ pub use calxgloss_libmatch::types::{
 // here.
 pub use calxgloss_errhandling::ErrhandlingError;
 pub use calxgloss_errhandling::{
-    ErrhandlingFinding, ErrhandlingResult, ExceptionApiCall, GotoCleanup, NamedHandler,
-    RaiseException, SehFrame,
+    ErrhandlingFinding, ErrhandlingResult, ErrorCode, ErrorCodeSite, ExceptionApiCall, GotoCleanup,
+    NamedHandler, RaiseException, SehFrame,
 };
 
 // ============================================================

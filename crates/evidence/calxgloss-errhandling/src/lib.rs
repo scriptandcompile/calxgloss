@@ -1,6 +1,7 @@
 //! Error-handling idiom evidence: reading the try/catch frame, named
 //! handlers and failure codes from kept function bodies as
-//! decompile-level evidence, persisted per binary.
+//! decompile-level evidence, persisted per binary, alongside the
+//! failure codes a body hands back or guards against.
 //!
 //! This crate is the growing slice of P15 (the error-handling
 //! recovery pass): it detects the error-handling shapes kept body
@@ -10,9 +11,11 @@
 //! `RaiseException` call, and the goto-cleanup ladder of guarded
 //! forward gotos converging on one releasing join block — and
 //! persists the findings as an evidence document under
-//! `re/analysis/errhandling/`. It deliberately stops
-//! there: the remaining evidence family (the failure-code records),
-//! the cross-function propagation reading,
+//! `re/analysis/errhandling/`. A failure code the function returns,
+//! raises, or compares for is one record of its own per distinct code
+//! per function — the failure contract named without reading the
+//! body — keyed to the function beside the idiom findings. It
+//! deliberately stops there: the cross-function propagation reading,
 //! the whole-program pass and the prompt consumers are follow-up
 //! issues against this same artifact, and nothing here feeds an
 //! annotation prompt or a translation yet (ADR-0046).
@@ -46,6 +49,9 @@
 //! - [`goto_cleanup`] — the goto-cleanup ladder detector: guarded
 //!   forward gotos converging on one join block that releases or
 //!   returns a constant.
+//! - [`error_code`] — the failure-code detector: HRESULT- and
+//!   NTSTATUS-shaped literals at return, raise, and guard sites,
+//!   one record per distinct code per function at its strongest site.
 //! - [`identifier`] — the shared whole-identifier boundary rule the
 //!   name-based detectors read through.
 //! - [`engine`] — [`ErrhandlingEngine`]: decompiles every function
@@ -57,6 +63,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod error_code;
 pub mod exception_api;
 pub mod goto_cleanup;
 pub mod identifier;
@@ -68,6 +75,10 @@ pub mod types;
 
 pub use engine::ErrhandlingEngine;
 pub use error::{ErrhandlingError, Result};
+pub use error_code::{
+    ERROR_CODE_GUARD_CONFIDENCE, ERROR_CODE_RAISE_CONFIDENCE, ERROR_CODE_RETURN_CONFIDENCE,
+    ERROR_CODE_SUGGESTION, ErrorCodeDetector,
+};
 pub use exception_api::{EXCEPTION_API_NAMES, ExceptionApiDetector};
 pub use goto_cleanup::{
     GOTO_CLEANUP_RELEASE_CONFIDENCE, GOTO_CLEANUP_RETURN_CONFIDENCE, GOTO_CLEANUP_SUGGESTION,
@@ -80,6 +91,6 @@ pub use raise_exception::{
 };
 pub use seh_frame::{SEH_FRAME_SUGGESTION, SPELLED_FRAME_CONFIDENCE, SehFrameDetector};
 pub use types::{
-    ErrhandlingFinding, ErrhandlingResult, ExceptionApiCall, GotoCleanup, NamedHandler,
-    RaiseException, SehFrame,
+    ErrhandlingFinding, ErrhandlingResult, ErrorCode, ErrorCodeSite, ExceptionApiCall, GotoCleanup,
+    NamedHandler, RaiseException, SehFrame,
 };
