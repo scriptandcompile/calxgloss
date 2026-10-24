@@ -275,6 +275,32 @@ pub struct GlobalStateInfo {
     pub evidence: String,
 }
 
+/// A float/SIMD usage flag about one function, made by the
+/// `calxgloss-floatsimd` detector.
+///
+/// The module-context and escalate prompts show these so the LLM reads
+/// mangled vector pseudo-C — `CONCAT44`-style concatenations,
+/// `SUB4`-style extractions, undefined-typed arithmetic over `DAT_*`
+/// loads — as float math and translates it as float instead of integer
+/// or pointer logic. The kind names the shape the reading found —
+/// `scalar_float`, `vector_matrix`, or `mixed` — so the LLM picks the
+/// right Rust shape: plain `f32`/`f64` operations versus component
+/// arrays or small vector structs.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FloatsimdInfo {
+    /// The function the flag is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The shape the reading found, e.g. `scalar_float`,
+    /// `vector_matrix`, `mixed`.
+    pub kind: String,
+    /// The Rust shape the flag steers the translation toward.
+    pub suggestion: String,
+    /// Confidence that the reading is right, 0–100.
+    pub confidence: u8,
+    /// The body line quoted as the flag's evidence.
+    pub evidence: String,
+}
+
 /// A known-library identification of one function, made by the
 /// `calxgloss-libmatch` body-signature matcher.
 ///
@@ -819,6 +845,10 @@ pub struct EvidenceBundle {
     /// `calxgloss-errhandling` scan — the idiom the body guards its
     /// work with and the failure codes it states.
     pub error_handling_findings: Vec<ErrhandlingInfo>,
+    /// The float/SIMD usage flag for this function made by the
+    /// `calxgloss-floatsimd` scan — one record naming the shape the
+    /// body's float evidence spells.
+    pub floatsimd_findings: Vec<FloatsimdInfo>,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
@@ -885,6 +915,10 @@ pub struct EscalateTemplate {
     /// `calxgloss-errhandling` scan — the idiom the body guards its
     /// work with and the failure codes it states.
     pub error_handling_findings: Vec<ErrhandlingInfo>,
+    /// The float/SIMD usage flag for this function made by the
+    /// `calxgloss-floatsimd` scan — one record naming the shape the
+    /// body's float evidence spells.
+    pub floatsimd_findings: Vec<FloatsimdInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -940,6 +974,7 @@ impl EscalateTemplate {
             const_findings: evidence.const_findings,
             serialization_findings: evidence.serialization_findings,
             error_handling_findings: evidence.error_handling_findings,
+            floatsimd_findings: evidence.floatsimd_findings,
             failure_history,
             call_graph_context: evidence.call_graph_context,
         }
@@ -1298,6 +1333,10 @@ pub struct ModuleContextTemplate {
     /// `calxgloss-errhandling` scan — the idiom the body guards its
     /// work with and the failure codes it states.
     pub error_handling_findings: Vec<ErrhandlingInfo>,
+    /// The float/SIMD usage flag for this function made by the
+    /// `calxgloss-floatsimd` scan — one record naming the shape the
+    /// body's float evidence spells.
+    pub floatsimd_findings: Vec<FloatsimdInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -1323,6 +1362,7 @@ impl ModuleContextTemplate {
             parameter_direction_findings: data.parameter_direction_findings.clone(),
             data_table_findings: data.data_table_findings.clone(),
             error_handling_findings: data.error_handling_findings.clone(),
+            floatsimd_findings: data.floatsimd_findings.clone(),
         }
     }
 }

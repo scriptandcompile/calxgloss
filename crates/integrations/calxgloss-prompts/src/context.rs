@@ -13,8 +13,8 @@
 
 use super::templates::{
     CallGraphNeighbor, ControlFlowInfo, ConventionInfo, DataTableInfo, ErrhandlingInfo,
-    EvidenceBundle, FormattedTestResult, GlobalStateInfo, LibmatchInfo, NeighborFunction,
-    PalTraitDef, ParameterDirectionInfo, ShimCode, StructuredData,
+    EvidenceBundle, FloatsimdInfo, FormattedTestResult, GlobalStateInfo, LibmatchInfo,
+    NeighborFunction, PalTraitDef, ParameterDirectionInfo, ShimCode, StructuredData,
 };
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
@@ -204,6 +204,10 @@ pub struct ModuleContextPromptData {
     /// `calxgloss-errhandling` scan — the idiom the body guards its
     /// work with and the failure codes it states.
     pub error_handling_findings: Vec<ErrhandlingInfo>,
+    /// The float/SIMD usage flag for the target function made by the
+    /// `calxgloss-floatsimd` scan — one record naming the shape the
+    /// body's float evidence spells.
+    pub floatsimd_findings: Vec<FloatsimdInfo>,
 }
 
 impl ModuleContextPromptData {
@@ -243,6 +247,7 @@ impl ModuleContextPromptData {
             parameter_direction_findings: Vec::new(),
             data_table_findings: Vec::new(),
             error_handling_findings: Vec::new(),
+            floatsimd_findings: Vec::new(),
         }
     }
 
@@ -282,6 +287,7 @@ impl ModuleContextPromptData {
             parameter_direction_findings: evidence.parameter_direction_findings,
             data_table_findings: evidence.data_table_findings,
             error_handling_findings: evidence.error_handling_findings,
+            floatsimd_findings: evidence.floatsimd_findings,
         }
     }
 }

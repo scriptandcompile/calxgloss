@@ -56,8 +56,9 @@ pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ConstInfo, ControlFlowInfo, ConventionInfo, DataTableInfo, EdgeCaseTemplate, EdgeCaseTest,
-    ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate, FormattedTestResult,
-    FullModuleTemplate, GlobalStateInfo, LibmatchInfo, MemoryInfo, MinimalTemplate,
+    ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate, FloatsimdInfo,
+    FormattedTestResult, FullModuleTemplate, GlobalStateInfo, LibmatchInfo, MemoryInfo,
+    MinimalTemplate,
     ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod, ParameterDirectionInfo,
     SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData,
     TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
@@ -1399,6 +1400,90 @@ mod tests {
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
 
         assert!(!prompt.contains("GLOBAL STATE"));
+    }
+
+    fn floatsimd_fixture() -> FloatsimdInfo {
+        FloatsimdInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "vector_matrix".to_string(),
+            suggestion: "translate as a small vector struct or component array, not integer or \
+                         pointer arithmetic"
+                .to_string(),
+            confidence: 60,
+            evidence: "local_10 = CONCAT44(uVar2 >> 4, uVar2 & 0xfffffff);".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_escalate_template_with_floatsimd_findings() {
+        let findings = vec![floatsimd_fixture()];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00(param_1: i32) { /* CONCAT44 mangle */ }".to_string(),
+            "Wrong result".to_string(),
+            EvidenceBundle {
+                floatsimd_findings: findings,
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("FLOAT/SIMD"));
+        assert!(prompt.contains("small vector struct or component array"));
+        assert!(prompt.contains("vector_matrix shape"));
+        assert!(prompt.contains("confidence 60"));
+        assert!(prompt.contains("CONCAT44(uVar2 >> 4, uVar2 & 0xfffffff)"));
+        // The steering renders as the section's point: mangled vector
+        // pseudo-C is float math, never integer or pointer logic.
+        assert!(prompt.contains("Translate the math as float"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_floatsimd_findings_omits_the_section() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            EvidenceBundle::default(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(!prompt.contains("FLOAT/SIMD"));
+    }
+
+    #[test]
+    fn test_module_context_template_renders_floatsimd_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                floatsimd_findings: vec![floatsimd_fixture()],
+                ..Default::default()
+            },
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("FLOAT/SIMD"));
+        assert!(prompt.contains("small vector struct or component array"));
+        assert!(prompt.contains("vector_matrix shape"));
+        assert!(prompt.contains("confidence 60"));
+        assert!(prompt.contains("CONCAT44(uVar2 >> 4, uVar2 & 0xfffffff)"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_floatsimd_findings_omits_the_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(!prompt.contains("FLOAT/SIMD"));
     }
 
     fn libmatch_fixture() -> LibmatchInfo {
