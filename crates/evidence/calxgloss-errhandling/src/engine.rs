@@ -9,6 +9,7 @@
 //! engines run, with the detector set as its only difference. All
 //! findings are asserted at this seam, never inside a detector.
 
+use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
 use crate::error_code::ErrorCodeDetector;
 use crate::exception_api::ExceptionApiDetector;
@@ -17,6 +18,7 @@ use crate::named_handler::NamedHandlerDetector;
 use crate::raise_exception::RaiseExceptionDetector;
 use crate::seh_frame::SehFrameDetector;
 use crate::types::{ErrhandlingFinding, ErrhandlingResult};
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_kuna::KunaSource;
 use calxgloss_types::ScanMetadata;
 use std::time::Instant;
@@ -51,10 +53,15 @@ pub use calxgloss_decomp::ScanSource;
 /// One function therefore contributes at most three idiom findings,
 /// in rung order, plus its own failure-code records: one record per
 /// distinct code, keyed to the function beside the idioms (issue
-/// #290). Follow-up P15 bullets add detectors, not new control flow,
-/// so the scan-order, skip and breaker behaviour — the behaviour
-/// contract every evidence engine keeps — stays written in exactly
-/// one place.
+/// #290). After the loop one pass over the whole kept set propagates
+/// those codes along the call map onto the callers that guard on or
+/// re-return a callee's return (issue #291, ADR-0047): codes travel,
+/// idioms never, and the inherited findings append after every
+/// per-function record. The engine keeps each kept body for that
+/// pass, so it costs no second decompile. Follow-up P15 bullets add
+/// detectors, not new control flow, so the scan-order, skip and
+/// breaker behaviour — the behaviour contract every evidence engine
+/// keeps — stays written in exactly one place.
 /// The engine is generic over its [`ScanSource`], so tests can run
 /// the whole orchestration over canned bodies; [`new`](Self::new)
 /// builds one over a loaded [`KunaSource`]. The SEH and raise
@@ -75,6 +82,7 @@ pub struct ErrhandlingEngine<S = KunaSource> {
     raise_exception: RaiseExceptionDetector,
     goto_cleanup: GotoCleanupDetector,
     error_code: ErrorCodeDetector,
+    cross_function: CrossFunctionAnalyzer,
 }
 
 /// The detectors of a standard engine, spelled once so `new` and
@@ -113,6 +121,11 @@ impl ErrhandlingEngine<KunaSource> {
             raise_exception,
             goto_cleanup,
             error_code,
+            // The propagation pass names no detectors of its own to
+            // configure — it rides the configured code reading as
+            // its argument — so it is standard in every engine
+            // (issue #291).
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 }
@@ -131,6 +144,8 @@ impl<S> ErrhandlingEngine<S> {
             raise_exception,
             goto_cleanup,
             error_code,
+            // Standard here too; see `new` (issue #291).
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 
@@ -180,6 +195,16 @@ impl<S> ErrhandlingEngine<S> {
         self
     }
 
+    /// Replace the cross-function propagation pass. The pass carries
+    /// no detector names or bands of its own to configure — the
+    /// configured code reading above is handed to it as its
+    /// argument — so this setter exists for tests that want to drive
+    /// the propagation seam directly (issue #291).
+    pub fn with_cross_function(mut self, analyzer: CrossFunctionAnalyzer) -> Self {
+        self.cross_function = analyzer;
+        self
+    }
+
     /// Scan every listed function, one decompile each, and collect
     /// the findings in listing order.
     ///
@@ -194,7 +219,11 @@ impl<S> ErrhandlingEngine<S> {
     /// the wrong program, and skipping on would persist a
     /// phantom-clean record (issue #71). Findings ride in listing
     /// order, one function's findings grouped together, so two scans
-    /// of the same program diff cleanly.
+    /// of the same program diff cleanly; the cross-function
+    /// propagation pass runs once over the whole set after the loop
+    /// and its inherited findings append after every per-function
+    /// record — a caller's first-hand contract is read before its
+    /// second-hand codes ride on top (issue #291, ADR-0047).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<ErrhandlingResult>
     where
         S: ScanSource,
@@ -203,6 +232,11 @@ impl<S> ErrhandlingEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut findings: Vec<ErrhandlingFinding> = Vec::new();
+        // The kept bodies ride along for the propagation pass after
+        // the loop: the call map and every callee's code set come off
+        // this same text, so the pass costs no second decompile
+        // (issue #291).
+        let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -241,6 +275,13 @@ impl<S> ErrhandlingEngine<S> {
                     continue;
                 }
             };
+            // Keep the name and body for the detectors, and the
+            // whole entry for the propagation pass after the loop;
+            // the pass reads call edges and code sets off this same
+            // text, so it costs no second decompile (issue #291).
+            let name = decompiled.name.clone();
+            let body = decompiled.body.clone();
+            bodies.push(decompiled);
             // The strongest SEH family wins: the detectors run in
             // ADR-0046's rung order — spelled frame, named handler,
             // exception-API call — and the first that fires takes
@@ -256,22 +297,29 @@ impl<S> ErrhandlingEngine<S> {
             // claim (issue #289).
             for mut finding in self
                 .seh_frame
-                .detect(&decompiled.body)
-                .or_else(|| self.named_handler.detect(&decompiled.body))
-                .or_else(|| self.exception_api.detect(&decompiled.body))
+                .detect(&body)
+                .or_else(|| self.named_handler.detect(&body))
+                .or_else(|| self.exception_api.detect(&body))
                 .into_iter()
-                .chain(self.raise_exception.detect(&decompiled.body))
-                .chain(self.goto_cleanup.detect(&decompiled.body))
-                .chain(self.error_code.detect(&decompiled.body))
+                .chain(self.raise_exception.detect(&body))
+                .chain(self.goto_cleanup.detect(&body))
+                .chain(self.error_code.detect(&body))
                 .collect::<Vec<_>>()
             {
                 // The detectors fill no function name (they never
                 // see one); the engine owns the stamp, at the seam
                 // where every finding behaviour is asserted.
-                finding.set_function(&decompiled.name);
+                finding.set_function(&name);
                 findings.push(finding);
             }
         }
+
+        // The propagation pass runs once over the whole kept set, and
+        // its records append after every per-function finding: the
+        // caller's own contract was read first-hand, the second-hand
+        // codes ride on top of it, and two scans of one program still
+        // diff cleanly (issue #291, ADR-0047).
+        findings.extend(self.cross_function.analyze(&bodies, &self.error_code));
 
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
@@ -1289,6 +1337,241 @@ mod tests {
         assert!(
             result.findings.iter().all(|f| f.function() == "raiser"),
             "every record is keyed to the one function"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_guard_compare_carries_the_callees_code_onto_the_caller() {
+        // Issue #291 at the seam: the caller's own guard reading stays
+        // its first-hand record, and beside it rides the inherited
+        // one — same code, the penalised band, naming the callee as
+        // its partner and the call site as its evidence.
+        let source = FakeProgram {
+            functions: vec![summary("callee"), summary("caller")],
+            bodies: HashMap::from([
+                (
+                    "callee".to_string(),
+                    "  hr = NtQuery(handle);\n  if (hr == 0xc0000022) return hr;\n  return 0x80070057;\n"
+                        .to_string(),
+                ),
+                (
+                    "caller".to_string(),
+                    "  if (callee(param_1) == 0x80070057) {\n    fail();\n  }\n  return 0;\n"
+                        .to_string(),
+                ),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        let caller: Vec<&ErrhandlingFinding> = result
+            .findings
+            .iter()
+            .filter(|f| f.function() == "caller")
+            .collect();
+        let kinds: Vec<&str> = caller.iter().map(|f| f.kind()).collect();
+        assert_eq!(
+            kinds,
+            vec!["error_code", "inherited_error_code"],
+            "the caller's own guard record first, the inherited one appended behind it"
+        );
+        assert_eq!(
+            caller[1].confidence().value(),
+            crate::INHERITED_ERROR_CODE_CONFIDENCE
+        );
+        let record = match caller[1] {
+            ErrhandlingFinding::InheritedErrorCode(record) => record,
+            other => panic!("expected an inherited record, got {other:?}"),
+        };
+        assert_eq!(
+            record.partner, "callee",
+            "the record names the callee it came from"
+        );
+        assert_eq!(record.code, 0x8007_0057);
+        assert_eq!(
+            record.evidence, "if (callee(param_1) == 0x80070057) {",
+            "the call-site line the guard stands on is the evidence"
+        );
+        // The callee keeps its own two records under its own name.
+        assert_eq!(
+            result
+                .findings
+                .iter()
+                .filter(|f| f.function() == "callee")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn inherited_records_append_after_every_per_function_record() {
+        // The listing keeps the caller ahead of its callee, and the
+        // per-function block still follows the listing — but the
+        // caller's inherited record lands after the late callee's own
+        // findings: the propagation block is last, whatever the
+        // listing order, so two scans of one program diff cleanly.
+        let source = FakeProgram {
+            functions: vec![summary("caller"), summary("callee")],
+            bodies: HashMap::from([
+                (
+                    "caller".to_string(),
+                    "  hr = callee();\n  if (hr == 0x80070057) fail();\n  return 0;\n".to_string(),
+                ),
+                (
+                    "callee".to_string(),
+                    "  return 0x80070057;\n  return 0xc0000022;\n".to_string(),
+                ),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        let names: Vec<&str> = result.findings.iter().map(|f| f.function()).collect();
+        assert_eq!(
+            names,
+            vec!["caller", "callee", "callee", "caller"],
+            "per-function findings in listing order first, the inherited block after them"
+        );
+        assert_eq!(
+            result.findings.last().unwrap().kind(),
+            "inherited_error_code"
+        );
+        assert!(
+            result.findings[..result.findings.len() - 1]
+                .iter()
+                .all(|f| f.kind() != "inherited_error_code")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_inheritance_path_claims_a_code_and_the_second_stays_quiet() {
+        // Two paths would carry the same (caller, code) pair: the
+        // guard comparing a's code, and the re-return handing b's
+        // whole set back. One claim per code, first in scan order
+        // wins — the guard's partner stands, b's path adds nothing.
+        let source = FakeProgram {
+            functions: vec![summary("a"), summary("b"), summary("caller")],
+            bodies: HashMap::from([
+                ("a".to_string(), "  return 0x80070057;\n".to_string()),
+                ("b".to_string(), "  return 0x80070057;\n".to_string()),
+                (
+                    "caller".to_string(),
+                    "  if (a(param_1) == 0x80070057) { fail(); }\n  return b(param_1);\n"
+                        .to_string(),
+                ),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        let inherited: Vec<&str> = result
+            .findings
+            .iter()
+            .filter(|f| f.kind() == "inherited_error_code")
+            .map(|f| match f {
+                ErrhandlingFinding::InheritedErrorCode(record) => record.partner.as_str(),
+                _ => unreachable!("kind filter matched the wrong shape"),
+            })
+            .collect();
+        assert_eq!(
+            inherited,
+            vec!["a"],
+            "the guard path claimed the code first; the re-return of b claims nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unread_callee_contributes_nothing_to_its_caller() {
+        // A callee the scan could not decompile never enters the kept
+        // set, so it records nothing and inherits nothing follows:
+        // the caller still keeps its own first-hand guard record, the
+        // rest of the scan proceeds, and no inherited finding names
+        // the unread function.
+        let source = FakeProgram {
+            functions: vec![summary("caller"), summary("callee"), summary("spare")],
+            bodies: HashMap::from([
+                (
+                    "caller".to_string(),
+                    "  if (callee(param_1) == 0x80070057) { fail(); }\n  return 0;\n".to_string(),
+                ),
+                ("spare".to_string(), "  run();\n".to_string()),
+            ]),
+            fail_decompiles: vec!["callee".to_string()],
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("one skip of three must not trip the breaker");
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|f| f.kind() != "inherited_error_code"),
+            "nothing propagates from a callee the scan never read"
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.function() == "caller" && f.kind() == "error_code"),
+            "the caller's own reading stands untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_callees_idioms_never_join_the_caller() {
+        // Codes travel, idioms never: a callee spelling the frame,
+        // raising, and returning a code keeps all three readings
+        // under its own name, and the caller re-returning its value
+        // inherits only the code.
+        let source = FakeProgram {
+            functions: vec![summary("callee"), summary("caller")],
+            bodies: HashMap::from([
+                (
+                    "callee".to_string(),
+                    format!(
+                        "{}  RaiseException(0xe06d7363, 0, NULL, 0);\n  return 0x80070057;\n",
+                        SEH_BODY
+                    ),
+                ),
+                (
+                    "caller".to_string(),
+                    "  return callee(param_1);\n".to_string(),
+                ),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        let callee_kinds: Vec<&str> = result
+            .findings
+            .iter()
+            .filter(|f| f.function() == "callee")
+            .map(|f| f.kind())
+            .collect();
+        assert_eq!(
+            callee_kinds,
+            vec!["seh_frame", "raise_exception", "error_code"]
+        );
+        let caller_kinds: Vec<&str> = result
+            .findings
+            .iter()
+            .filter(|f| f.function() == "caller")
+            .map(|f| f.kind())
+            .collect();
+        assert_eq!(
+            caller_kinds,
+            vec!["inherited_error_code"],
+            "the caller inherits the code alone — the frame and raise stay with the body that spelled them"
         );
     }
 }

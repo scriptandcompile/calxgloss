@@ -277,9 +277,13 @@ pub use calxgloss_libmatch::types::{
 // `ScanMetadata` is the shared one from calxgloss-types, already named
 // here.
 pub use calxgloss_errhandling::ErrhandlingError;
+// The propagation analyzer type is deliberately not re-exported:
+// the facade's `CrossFunctionAnalyzer` name already belongs to the
+// string-context crate's pass, as it has since before the memory and
+// errhandling passes adopted the same in-crate name.
 pub use calxgloss_errhandling::{
     ErrhandlingFinding, ErrhandlingResult, ErrorCode, ErrorCodeSite, ExceptionApiCall, GotoCleanup,
-    NamedHandler, RaiseException, SehFrame,
+    InheritedErrorCode, NamedHandler, RaiseException, SehFrame,
 };
 
 // ============================================================

@@ -14,11 +14,14 @@
 //! `re/analysis/errhandling/`. A failure code the function returns,
 //! raises, or compares for is one record of its own per distinct code
 //! per function — the failure contract named without reading the
-//! body — keyed to the function beside the idiom findings. It
-//! deliberately stops there: the cross-function propagation reading,
-//! the whole-program pass and the prompt consumers are follow-up
-//! issues against this same artifact, and nothing here feeds an
-//! annotation prompt or a translation yet (ADR-0046).
+//! body — keyed to the function beside the idiom findings. Alongside
+//! them ride the second-hand records: the cross-function pass carries
+//! a callee's recorded codes onto the callers that guard on or
+//! re-return the call's result, codes only and idioms never, at a
+//! penalty below every band that saw the literal first-hand
+//! (ADR-0047). The whole-program pass and the prompt consumers are
+//! follow-up issues against this same artifact, and nothing here
+//! feeds an annotation prompt or a translation yet (ADR-0046).
 //!
 //! The SEH readings rank on ADR-0046's family ladder and the engine
 //! keeps one claim per function: the strongest SEH family that fires
@@ -33,7 +36,12 @@
 //! to the program (ADR-0020); an earlier draft of the pass was
 //! rejected for exactly those violations, and the catalog's
 //! whole-program frame rule (ADR-0023) stays a future reading this
-//! artifact prepares (ADR-0046).
+//! artifact prepares (ADR-0046). The cross-function pass is the one
+//! reading that relates two bodies: it reads the call edges off the
+//! kept bodies themselves — the shared `call_sites` scan, never a
+//! call-graph query — and stops after one hop, where the callee's
+//! record and the call-site evidence already let a reader chase the
+//! chain by hand (ADR-0047).
 //!
 //! Architecture:
 //! - [`types`] — the finding records, the tagged finding union, and
@@ -52,6 +60,9 @@
 //! - [`error_code`] — the failure-code detector: HRESULT- and
 //!   NTSTATUS-shaped literals at return, raise, and guard sites,
 //!   one record per distinct code per function at its strongest site.
+//! - [`cross_function`] — the propagation pass: carrying recorded
+//!   codes along the call map onto the guards and re-returns, one
+//!   claim per code per function, at the inherited band.
 //! - [`identifier`] — the shared whole-identifier boundary rule the
 //!   name-based detectors read through.
 //! - [`engine`] — [`ErrhandlingEngine`]: decompiles every function
@@ -61,6 +72,7 @@
 //!   `re/analysis/errhandling/<basename>.json` (ADR-0043).
 //! - [`error`] — the crate's error type.
 
+pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod error_code;
@@ -73,6 +85,7 @@ pub mod raise_exception;
 pub mod seh_frame;
 pub mod types;
 
+pub use cross_function::{CrossFunctionAnalyzer, INHERITED_ERROR_CODE_CONFIDENCE};
 pub use engine::ErrhandlingEngine;
 pub use error::{ErrhandlingError, Result};
 pub use error_code::{
@@ -92,5 +105,5 @@ pub use raise_exception::{
 pub use seh_frame::{SEH_FRAME_SUGGESTION, SPELLED_FRAME_CONFIDENCE, SehFrameDetector};
 pub use types::{
     ErrhandlingFinding, ErrhandlingResult, ErrorCode, ErrorCodeSite, ExceptionApiCall, GotoCleanup,
-    NamedHandler, RaiseException, SehFrame,
+    InheritedErrorCode, NamedHandler, RaiseException, SehFrame,
 };

@@ -98,6 +98,7 @@ fn print_errhandling_report(result: &ErrhandlingResult, path: &Path) {
         "raise_exception",
         "goto_cleanup",
         "error_code",
+        "inherited_error_code",
     ]
     .into_iter()
     .map(|kind| {

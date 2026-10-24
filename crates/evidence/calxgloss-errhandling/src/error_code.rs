@@ -69,7 +69,7 @@ pub const ERROR_CODE_RAISE_CONFIDENCE: u8 = 72;
 /// call's 60: unlike the API rung, which names only a facility the
 /// function talks to, the comparison names the exact contract value —
 /// but a guard witnesses a code the function *recognises*, and the
-/// #292 propagation reading is what turns a caller's comparison into
+/// #291 propagation reading is what turns a caller's comparison into
 /// an inherited contract, at that reading's own penalty off this band.
 pub const ERROR_CODE_GUARD_CONFIDENCE: u8 = 64;
 
@@ -231,8 +231,10 @@ fn is_shaped(value: u32) -> bool {
 /// A bare `0x`-hex or decimal literal standing in `argument`, when it
 /// spells an in-band failure code — the parse the raise site reads
 /// its first argument through, the code shape gate on top of the
-/// raise finding's own literal reading.
-fn shaped_code(argument: &str) -> Option<u32> {
+/// raise finding's own literal reading. The propagation reading
+/// ([`cross_function`](crate::cross_function)) parses the compared
+/// operand of a caller's guard through the same gate.
+pub(crate) fn shaped_code(argument: &str) -> Option<u32> {
     let argument = argument.trim();
     let value = match argument
         .strip_prefix("0x")

@@ -200,6 +200,44 @@ pub struct ErrorCode {
     pub suggestion: String,
 }
 
+/// A failure code one function inherits along the call map — the
+/// callee whose recorded code reaches the caller because the caller
+/// compares the callee's return against that literal, or hands the
+/// callee's return straight back to its own caller (issue #291,
+/// ADR-0047: propagation carries codes, never idioms).
+///
+/// The record names the *caller* as its function — the finding is
+/// about the caller's contract, which now includes a code the caller
+/// never spelled itself — and the callee as its `partner`, beside the
+/// same code value the callee's own record carries. Its evidence is
+/// the caller's own line: the call site where the comparison guards
+/// the callee's value, or where the callee's value is handed back.
+/// The band is propagation's own penalty, off the guard reading's
+/// ( [`INHERITED_ERROR_CODE_CONFIDENCE`](crate::cross_function)), so
+/// a second-hand contract never outranks a first-hand one. One
+/// (function, code) pair stands once — the first claim in scan order
+/// wins, per ADR-0028's precedent — and the caller's own [`ErrorCode`]
+/// records ride beside it, different readings of different facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InheritedErrorCode {
+    /// The caller inheriting the code — the function the finding is about.
+    pub function: String,
+    /// The callee the code travels from, named as the call map spells it.
+    pub partner: String,
+    /// Confidence that the code really rides this caller's failure
+    /// contract — propagation's own band, below every site reading
+    /// that saw the literal in the body itself.
+    pub confidence: Confidence,
+    /// The caller's call-site line carrying the comparison or the
+    /// hand-back — the claim's evidence.
+    pub evidence: String,
+    /// The code value, the same number the callee's own record carries.
+    pub code: u32,
+    /// The Rust pattern the finding steers a translation toward — the
+    /// code's contract reads the same inherited as spelled.
+    pub suggestion: String,
+}
+
 /// One error-handling evidence finding about one function.
 ///
 /// The union is what the persisted document carries, so the follow-up
@@ -232,6 +270,11 @@ pub enum ErrhandlingFinding {
     /// in a guard, or raised — one record per distinct code per
     /// function.
     ErrorCode(ErrorCode),
+    /// The function inherits a failure code along the call map — a
+    /// callee's recorded code, reaching the caller through a
+    /// comparison of the callee's return or a hand-back of it
+    /// (issue #291, ADR-0047). Codes travel; idioms never do.
+    InheritedErrorCode(InheritedErrorCode),
 }
 
 impl ErrhandlingFinding {
@@ -244,6 +287,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::RaiseException(record) => &record.function,
             ErrhandlingFinding::GotoCleanup(record) => &record.function,
             ErrhandlingFinding::ErrorCode(record) => &record.function,
+            ErrhandlingFinding::InheritedErrorCode(record) => &record.function,
         }
     }
 
@@ -256,6 +300,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::RaiseException(record) => &record.evidence,
             ErrhandlingFinding::GotoCleanup(record) => &record.evidence,
             ErrhandlingFinding::ErrorCode(record) => &record.evidence,
+            ErrhandlingFinding::InheritedErrorCode(record) => &record.evidence,
         }
     }
 
@@ -268,6 +313,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::RaiseException(record) => record.confidence,
             ErrhandlingFinding::GotoCleanup(record) => record.confidence,
             ErrhandlingFinding::ErrorCode(record) => record.confidence,
+            ErrhandlingFinding::InheritedErrorCode(record) => record.confidence,
         }
     }
 
@@ -280,6 +326,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::RaiseException(record) => &record.suggestion,
             ErrhandlingFinding::GotoCleanup(record) => &record.suggestion,
             ErrhandlingFinding::ErrorCode(record) => &record.suggestion,
+            ErrhandlingFinding::InheritedErrorCode(record) => &record.suggestion,
         }
     }
 
@@ -294,12 +341,13 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::RaiseException(_) => "RaiseException call",
             ErrhandlingFinding::GotoCleanup(_) => "goto-cleanup ladder",
             ErrhandlingFinding::ErrorCode(_) => "failure code",
+            ErrhandlingFinding::InheritedErrorCode(_) => "inherited failure code",
         }
     }
 
     /// The serde `kind` tag — `seh_frame`, `named_handler`,
-    /// `exception_api_call`, `raise_exception`, `goto_cleanup`, or
-    /// `error_code` — naming the finding kind.
+    /// `exception_api_call`, `raise_exception`, `goto_cleanup`,
+    /// `error_code`, or `inherited_error_code` — naming the finding kind.
     pub fn kind(&self) -> &'static str {
         match self {
             ErrhandlingFinding::SehFrame(_) => "seh_frame",
@@ -308,6 +356,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::RaiseException(_) => "raise_exception",
             ErrhandlingFinding::GotoCleanup(_) => "goto_cleanup",
             ErrhandlingFinding::ErrorCode(_) => "error_code",
+            ErrhandlingFinding::InheritedErrorCode(_) => "inherited_error_code",
         }
     }
 
@@ -322,6 +371,9 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::RaiseException(record) => record.function = function.to_string(),
             ErrhandlingFinding::GotoCleanup(record) => record.function = function.to_string(),
             ErrhandlingFinding::ErrorCode(record) => record.function = function.to_string(),
+            ErrhandlingFinding::InheritedErrorCode(record) => {
+                record.function = function.to_string()
+            }
         }
     }
 }
@@ -433,6 +485,17 @@ mod tests {
         }
     }
 
+    fn inherited() -> InheritedErrorCode {
+        InheritedErrorCode {
+            function: "FUN_1800014a0".into(),
+            partner: "FUN_1800412a0".into(),
+            confidence: Confidence::new(crate::cross_function::INHERITED_ERROR_CODE_CONFIDENCE),
+            evidence: "  iVar1 = FUN_1800412a0(param_1);".into(),
+            code: 0x8007_0057,
+            suggestion: crate::error_code::ERROR_CODE_SUGGESTION.into(),
+        }
+    }
+
     #[test]
     fn a_seh_frame_record_serde_round_trips() {
         let record = framed();
@@ -481,6 +544,10 @@ mod tests {
                     crate::error_code::ERROR_CODE_RETURN_CONFIDENCE,
                 )),
                 "\"kind\":\"error_code\"",
+            ),
+            (
+                ErrhandlingFinding::InheritedErrorCode(inherited()),
+                "\"kind\":\"inherited_error_code\"",
             ),
         ];
         for (finding, tag) in cases {
@@ -621,6 +688,31 @@ mod tests {
             }
             assert_eq!(back, finding);
         }
+    }
+
+    #[test]
+    fn an_inherited_record_names_its_partner_and_round_trips() {
+        // The callee is part of the claim on disk: a consumer reading
+        // the document can see which function's contract the code
+        // travelled from without re-deriving the call map.
+        let finding = ErrhandlingFinding::InheritedErrorCode(inherited());
+        let json = serde_json::to_string(&finding).unwrap();
+        assert!(json.contains("\"partner\":\"FUN_1800412a0\""));
+        assert!(json.contains(&format!(
+            "\"confidence\":{}",
+            crate::cross_function::INHERITED_ERROR_CODE_CONFIDENCE
+        )));
+        let back: ErrhandlingFinding = serde_json::from_str(&json).unwrap();
+        match &back {
+            ErrhandlingFinding::InheritedErrorCode(record) => {
+                assert_eq!(record.partner, "FUN_1800412a0");
+                assert_eq!(record.code, 0x8007_0057);
+            }
+            other => panic!("expected the inherited kind back, got {other:?}"),
+        }
+        assert_eq!(back, finding);
+        assert_eq!(finding.target(), "inherited failure code");
+        assert!(finding.suggestion().contains("failure contract"));
     }
 
     #[test]
