@@ -30,16 +30,19 @@
 //!   over two snapshots, documents in and pairing document out, with
 //!   the one-to-one resolution rule (strongest claim wins, ties first
 //!   seen in scan order).
+//! * [`persist`] — [`BdiffPersistor`], the JSON document store: one
+//!   pairing document per (binary identity, old bytes, new bytes) under
+//!   `re/analysis/bdiff/`, keyed on the hash pair so a stale document
+//!   is detectable and the file's existence is the pass's cache check.
 //! * [`error`] — [`BdiffError`], the crate's error type.
-//!
-//! The persistor for the pairing document lands with this track's
-//! plumbing follow-up.
 pub mod engine;
 pub mod error;
+pub mod persist;
 pub mod types;
 
 pub use engine::pair_versions;
 pub use error::{BdiffError, Result};
+pub use persist::BdiffPersistor;
 pub use types::{
     CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry, MatchFamily, NAME_IDENTITY_CONFIDENCE,
     PairingDocument, PairingRecord, ScanSnapshot,

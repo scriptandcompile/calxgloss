@@ -342,6 +342,7 @@ dependencies = [
  "calxgloss-algorithm",
  "calxgloss-analysis",
  "calxgloss-apidetect",
+ "calxgloss-bdiff",
  "calxgloss-callback",
  "calxgloss-callgraph",
  "calxgloss-config",

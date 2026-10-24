@@ -301,6 +301,22 @@ pub use calxgloss_errhandling::{
 };
 
 // ============================================================
+// calxgloss-bdiff — binary-version function pairing
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `PairingDocument` already names the per-version-pair document, and a
+// second alias spelled like a result would read as the same thing.
+// The pass and the persistor are named beside the types because the
+// pairing document has no engine — `pair_versions` is the whole scan.
+pub use calxgloss_bdiff::BdiffError;
+pub use calxgloss_bdiff::{BdiffPersistor, pair_versions};
+pub use calxgloss_bdiff::{
+    CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry, MatchFamily, NAME_IDENTITY_CONFIDENCE,
+    PairingDocument, PairingRecord, ScanSnapshot,
+};
+
+// ============================================================
 // calxgloss-serialize — endianness & serialization detection
 // ============================================================
 

@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
+| P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | 🔶 in progress | #296 normalized-body pairing family | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
@@ -67,4 +67,4 @@ command lists pairs, scores, families, and one-sided-only functions. The
 record shape — (function, function, confidence, family, evidence) — is chosen
 so the sibling-seeding follow-up (seeding a machine attempt from a
 near-identical accepted sibling within one scan) needs no re-derivation.
-Spec: #233. Tickets: not yet filed (`/to-tickets`).
+Spec: #233. Tickets: #294–#300 filed (`/to-tickets`); #294 and #295 shipped, #296 next.
