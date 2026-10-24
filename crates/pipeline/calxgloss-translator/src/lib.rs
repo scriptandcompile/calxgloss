@@ -21,6 +21,7 @@ pub mod retry;
 mod scan_job;
 mod translator;
 pub mod triage;
+mod version_pairing;
 
 pub mod batch;
 

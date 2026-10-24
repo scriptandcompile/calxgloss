@@ -15,6 +15,10 @@
 //!   Kuna answers these through its directive plane (issue #209).
 //! * [`CachedScanSource`] wraps the engine with the two-tier read cache
 //!   every scan reads through, keyed by the target binary's file bytes.
+//!   The module also carries the surviving-scan surface — [`is_surviving_scan`]
+//!   and the [`cached_functions`], [`cached_exports`], [`cached_body`] readers —
+//!   the read-only way to answer an older version's scan document set with no
+//!   engine in sight (track P18, issue #298).
 //! * [`EngineError`] is the seam's error vocabulary — a named miss, a
 //!   malformed answer, an engine-reported failure — into which every
 //!   engine-native error folds.
@@ -42,7 +46,10 @@ pub mod parse;
 mod scan_source;
 mod type_write_source;
 
-pub use cache::CachedScanSource;
+pub use cache::{
+    CACHE_FORMAT_VERSION, CacheManifest, CachedScanSource, cache_root, cached_body, cached_exports,
+    cached_functions, is_surviving_scan, sha256_of_file,
+};
 pub use error::{EngineError, Result};
 pub use model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionSummary,

@@ -15,6 +15,7 @@ calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }
 calxgloss-pal = { path = "../../integrations/calxgloss-pal" }
 calxgloss-testgen = { path = "../calxgloss-testgen" }
 calxgloss-analysis = { path = "../../evidence/calxgloss-analysis" }
+calxgloss-bdiff = { path = "../../evidence/calxgloss-bdiff" }
 calxgloss-callgraph = { path = "../../evidence/calxgloss-callgraph" }
 calxgloss-verify = { path = "../calxgloss-verify" }
 calxgloss-typesdb = { path = "../../evidence/calxgloss-typesdb" }

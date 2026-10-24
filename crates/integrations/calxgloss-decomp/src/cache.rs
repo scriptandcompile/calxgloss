@@ -54,6 +54,17 @@
 //! cache write is logged and the read still succeeds. Only the engine
 //! fetch's own errors reach the caller.
 //!
+//! **The surviving scans stay readable** (issue #298, track P18): when a
+//! binary's bytes change, the previous version's scan document set is the
+//! sibling hash directory this module keeps on disk. The binary-version
+//! pairing pass reads exactly two such document sets and no engine, so
+//! [`is_surviving_scan`] and the [`cached_functions`], [`cached_exports`],
+//! and [`cached_body`] readers are that pass's public surface: read-only,
+//! keyed by hash directory, answering the same shapes the seam answers.
+//! Unlike [`open_manifest`] they never wipe a directory — a sibling scan
+//! belongs to a different version's bytes, and this run's manifest has no
+//! claim on it.
+//!
 //! **What is never cached:** write-side calls (function tags, type
 //! write-back) never go through the cache, and `begin_pass`/`end_pass`
 //! heartbeat control passes through to the wrapped engine. The heartbeat
@@ -83,7 +94,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// Cache-format version, recorded in every manifest. Bump when a cached
 /// document's shape changes: every existing directory then reads as cold
@@ -95,20 +106,25 @@ use tracing::warn;
 /// listing without ambiguous names either — a v3 listing names both thunk
 /// veneers of an import an MSVC link emitted twice, and the engine settles
 /// on neither, so no `decompile` of that name can succeed.
-const CACHE_FORMAT_VERSION: u32 = 4;
+///
+/// Public because the surviving-scan readers below answer only directories
+/// written under the current version (#298), and a consumer assembling a
+/// manifest for one needs the live value, not a hand-copy.
+pub const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// The `manifest.json` beside a directory's cached documents. All three
 /// fields must match this run's facts for the directory to be warm; the
 /// binary hash duplicates the directory name on purpose, so a renamed or
-/// moved directory is detected rather than trusted.
+/// moved directory is detected rather than trusted. The surviving-scan
+/// readers expose the same record for reading (#298).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct CacheManifest {
+pub struct CacheManifest {
     /// SHA-256 (hex) of the target binary's file bytes.
-    binary_sha256: String,
+    pub binary_sha256: String,
     /// The [`CACHE_FORMAT_VERSION`] this directory was written under.
-    format_version: u32,
+    pub format_version: u32,
     /// The program name as the engine named it.
-    program: String,
+    pub program: String,
 }
 
 /// One cached read, identifying both its read and its argument.
@@ -541,7 +557,11 @@ impl ScanSource for CachedScanSource {
 /// cache-format version marker inside a directory invalidates anything an
 /// old name held, and a directory under an old name is never opened again —
 /// it stays in the workspace for its owner to delete.
-fn cache_root(workspace: impl AsRef<Path>) -> PathBuf {
+///
+/// Public because the surviving-scan readers below (#298) name their
+/// document sets by this convention, and a consumer needs to find the
+/// identity directory's sibling hash directories without restating the path.
+pub fn cache_root(workspace: impl AsRef<Path>) -> PathBuf {
     workspace.as_ref().join("re").join("cache")
 }
 
@@ -643,7 +663,9 @@ fn safe_key(name: &str) -> String {
 
 /// SHA-256 (hex) over `path`'s bytes. `Ok(None)` when the file does not
 /// exist — the missing-binary degradation the module docs promise.
-pub(crate) fn sha256_of_file(path: &Path) -> std::io::Result<Option<String>> {
+/// Public because the version-pairing trigger (#298) recomputes the
+/// current binary's hash to name the live hash directory.
+pub fn sha256_of_file(path: &Path) -> std::io::Result<Option<String>> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(sha256_hex(&bytes))),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -704,6 +726,76 @@ fn open_manifest(
             warn!(%err, "cache manifest is corrupt — treating the directory as cold");
             let _ = std::fs::remove_dir_all(dir);
             save_json(&path, manifest)
+        }
+    }
+}
+
+// ============================================================
+// Surviving-scan readers — the pairing trigger of track P18 (issue #298)
+// ============================================================
+
+/// Whether `dir` holds a surviving scan: a hash directory whose manifest
+/// names the very hash it is filed under, at the current cache format
+/// version, with its function listing still on disk — a document set the
+/// pairing pass can read without an engine.
+///
+/// The three checks are exactly the conditions [`open_manifest`] uses
+/// before replaying a directory warm, with one difference: a surviving
+/// scan is only read, never opened. A mismatched or corrupt sibling is not
+/// wiped — it stands for a different version's bytes, and this run's
+/// manifest has no claim on it.
+pub fn is_surviving_scan(dir: &Path) -> bool {
+    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    match load_json::<CacheManifest>(&dir.join("manifest.json")) {
+        Ok(manifest) => {
+            manifest.binary_sha256 == name
+                && manifest.format_version == CACHE_FORMAT_VERSION
+                && dir.join("functions.json").is_file()
+        }
+        Err(err) => {
+            debug!(path = %dir.display(), %err, "sibling scan directory carries no readable manifest");
+            false
+        }
+    }
+}
+
+/// The `functions.json` listing a scan document directory kept, in the scan's
+/// own listing order — the order the pairing pass ties on. `None` when the
+/// document is missing (an ordinary miss) or corrupt (logged, like every
+/// cache read degrades).
+pub fn cached_functions(dir: &Path) -> Option<Vec<FunctionSummary>> {
+    cached_doc(&doc_path(dir, &CacheKey::Functions))
+}
+
+/// The `exports.json` export listing the scan kept, with the same miss
+/// rules as [`cached_functions`].
+pub fn cached_exports(dir: &Path) -> Option<Vec<Symbol>> {
+    cached_doc(&doc_path(dir, &CacheKey::Exports))
+}
+
+/// The decompiled body kept for `function` — the engine's raw text, before
+/// the noise filter, exactly as write-through stored it (issue #271) — with
+/// the same miss rules as [`cached_functions`]. The decompiler names the
+/// document through the same [`safe_key`] spelling that wrote it.
+pub fn cached_body(dir: &Path, function: &str) -> Option<String> {
+    let document = cached_doc::<DecompiledFunction>(&doc_path(
+        dir,
+        &CacheKey::Decompile(function.to_string()),
+    ))?;
+    Some(document.body)
+}
+
+/// Reads one whole document out of a scan document directory: `None` on a
+/// miss, and a corrupt document is logged once, never fatal.
+fn cached_doc<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    match load_json::<T>(path) {
+        Ok(document) => Some(document),
+        Err(PersistError::NotFound { .. }) => None,
+        Err(err) => {
+            warn!(path = %path.display(), %err, "corrupt cached scan document");
+            None
         }
     }
 }
@@ -914,6 +1006,117 @@ mod tests {
         assert_eq!(
             load_json::<CacheManifest>(&cache.join("manifest.json")).expect("new manifest"),
             manifest
+        );
+    }
+
+    #[test]
+    fn a_warm_directory_reads_back_as_a_surviving_scan_with_its_documents() {
+        // The #298 surface: the same conditions a warm open replays on,
+        // and the readers answer the whole documents the write side kept,
+        // in the shapes the seam answers.
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let scan = root.path().join("eqmain.dll").join("abc");
+        open_manifest(&scan, &sample_manifest(), false).expect("manifest opened");
+        let listing = vec![
+            FunctionSummary {
+                name: "FUN_18003e750".into(),
+                address: 0x18003e750,
+            },
+            FunctionSummary {
+                name: "entry".into(),
+                address: 0x180040000,
+            },
+        ];
+        save_json(&doc_path(&scan, &CacheKey::Functions), &listing).expect("listing saved");
+
+        assert!(
+            is_surviving_scan(&scan),
+            "a manifest naming its own directory, at the current format version, with a listing"
+        );
+        assert_eq!(
+            cached_functions(&scan).expect("the listing reads back"),
+            listing,
+            "scan order rides through the round trip"
+        );
+        assert!(
+            cached_exports(&scan).is_none(),
+            "an absent document is an ordinary miss"
+        );
+        assert!(
+            cached_body(&scan, "FUN_18003e750").is_none(),
+            "a body the scan never kept is a miss"
+        );
+
+        let body = DecompiledFunction {
+            name: "FUN_18003e750".into(),
+            signature: "undefined FUN_18003e750(void)".into(),
+            body: "  return 1;".into(),
+        };
+        save_json(
+            &doc_path(&scan, &CacheKey::Decompile("FUN_18003e750".into())),
+            &body,
+        )
+        .expect("body saved");
+        assert_eq!(
+            cached_body(&scan, "FUN_18003e750").as_deref(),
+            Some("  return 1;"),
+            "the kept body reads back verbatim — the engine's raw text, not the filtered one"
+        );
+
+        let exports = vec![Symbol {
+            name: "entry".into(),
+            address: 0x180040000,
+            imported: false,
+        }];
+        save_json(&doc_path(&scan, &CacheKey::Exports), &exports).expect("exports saved");
+        assert_eq!(
+            cached_exports(&scan).expect("the export listing reads back"),
+            exports
+        );
+    }
+
+    #[test]
+    fn a_sibling_that_is_not_a_surviving_scan_is_refused() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+
+        // A renamed directory: the manifest names one version's hash, the
+        // directory stands under another's — detected, never trusted.
+        let moved = root.path().join("eqmain.dll").join("renamed");
+        open_manifest(&moved, &sample_manifest(), false).expect("manifest opened");
+        save_json(
+            &doc_path(&moved, &CacheKey::Functions),
+            &Vec::<FunctionSummary>::new(),
+        )
+        .expect("listing saved");
+        assert!(
+            !is_surviving_scan(&moved),
+            "a directory whose manifest disagrees with its name is not a surviving scan"
+        );
+
+        // A superseded format version: its documents are never read back,
+        // exactly as a warm open refuses to replay them.
+        let stale = root.path().join("eqmain.dll").join("stale-v3");
+        let outdated = CacheManifest {
+            format_version: CACHE_FORMAT_VERSION - 1,
+            ..sample_manifest()
+        };
+        save_json(&stale.join("manifest.json"), &outdated).expect("stale manifest filed");
+        save_json(
+            &doc_path(&stale, &CacheKey::Functions),
+            &Vec::<FunctionSummary>::new(),
+        )
+        .expect("listing saved");
+        assert!(
+            !is_surviving_scan(&stale),
+            "an old cache-format version's scan is not a surviving scan"
+        );
+
+        // A cold directory this run only minted: a manifest and nothing else.
+        let cold = root.path().join("eqmain.dll").join("abc");
+        open_manifest(&cold, &sample_manifest(), false).expect("cold open writes the manifest");
+        assert!(
+            !is_surviving_scan(&cold),
+            "a manifest without a scan listing is not a scan"
         );
     }
 }

@@ -2335,6 +2335,20 @@ impl TranslationPipeline {
             }
         }
         self.end_scan_pass();
+
+        // P18's version-change trigger (issue #298): the scan step has
+        // just written the current version's scan documents through. Pair
+        // this scan against any surviving scan of the same identity — the
+        // sibling hash directories under `re/cache/{identity}/` — exactly
+        // once per (old, new) hash pair; a later pass reuses the persisted
+        // document. Document-level only: no engine reads (ADR-0026), no
+        // LLM, milliseconds — and with no sibling directory it writes
+        // nothing, leaving the queue's behavior exactly as today.
+        if let (Some(workspace), Some(binary_path)) =
+            (self.workspace.as_deref(), self.binary_path.as_deref())
+        {
+            crate::version_pairing::pair_previous_versions(workspace, binary, binary_path);
+        }
     }
 
     /// The most evidence scans that ran at once during the latest scan
@@ -6078,6 +6092,21 @@ void SetCursor(void)
         found.pop().expect("one cache directory")
     }
 
+    /// Recursive directory copy — turning one version's warm scan cache
+    /// into a plausible surviving sibling of another version's (#298).
+    fn copy_dir_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).expect("copy destination");
+        for entry in std::fs::read_dir(from).expect("source directory readable") {
+            let entry = entry.expect("directory entry");
+            let target = to.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy_dir_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("document copied");
+            }
+        }
+    }
+
     /// An import listing the engine could never answer, filed where the
     /// real one was: if a batch's API findings carry it, that read came
     /// off disk — the only possible replay source.
@@ -6417,6 +6446,87 @@ void SetCursor(void)
             sorted.len(),
             calls.len(),
             "no function reached the engine twice across the fourteen scans: {calls:?}"
+        );
+    }
+
+    /// P18's version-change trigger (issue #298): once the scan step has
+    /// warmed this version's cache directory, a sibling hash directory — a
+    /// surviving scan of the previous version — pairs with it exactly once,
+    /// and the pairing document persists under the analysis-directory
+    /// convention, keyed on the (old, new) hash pair. A later pass reuses
+    /// the persisted document instead of recomputing.
+    #[tokio::test]
+    async fn a_surviving_sibling_scan_is_paired_once_after_the_scan_step() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+
+        // A scan of one version's bytes: no sibling, no pairing document.
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        assert!(
+            !dir.path().join("re/analysis/bdiff").exists(),
+            "no sibling hash directory — the diff pass stays invisible"
+        );
+
+        // The version change, simulated honestly: this scan's document set
+        // is itself a well-formed surviving scan — copy it under another
+        // hash name and let its manifest name the directory it stands in,
+        // the way every kept scan's manifest does.
+        let live = scan_cache_dir(dir.path());
+        let new_hash = live
+            .file_name()
+            .expect("hash directory")
+            .to_string_lossy()
+            .into_owned();
+        let old_hash = "a".repeat(64);
+        let sibling = live.with_file_name(&old_hash);
+        copy_dir_tree(&live, &sibling);
+        calxgloss_types::persist::save_json(
+            &sibling.join("manifest.json"),
+            &calxgloss_decomp::CacheManifest {
+                binary_sha256: old_hash.clone(),
+                format_version: calxgloss_decomp::CACHE_FORMAT_VERSION,
+                program: PROGRAM.into(),
+            },
+        )
+        .expect("the sibling manifest names its own directory");
+
+        // The new version's scan step pairs the two scans and persists one
+        // document for the (old, new) hash pair — reading only the two
+        // cached document sets.
+        pipeline.run_prebatch_scans(PROGRAM).await;
+
+        let persistor = calxgloss_bdiff::BdiffPersistor::new(dir.path());
+        let key = calxgloss_bdiff::BdiffPersistor::key_for(PROGRAM, &old_hash, &new_hash);
+        let document = persistor
+            .load(&key)
+            .expect("the scan step paired the version change");
+        assert_eq!(document.binary, PROGRAM);
+        assert_eq!(document.old_bytes_sha256, old_hash);
+        assert_eq!(document.new_bytes_sha256, new_hash);
+        assert_eq!(
+            document.old_functions, document.new_functions,
+            "both scans read the same bytes, so the two listings match"
+        );
+        assert!(
+            !document.pairings.is_empty(),
+            "kept bodies ride the snapshot, and equal bodies pair through the body family"
+        );
+
+        // A later run of the same version reuses the persisted document:
+        // mark it with a score no family can produce, and see the mark
+        // survive another scan step.
+        let mut marked = document;
+        marked.pairings[0].confidence = calxgloss_types::Confidence::new(1);
+        persistor
+            .save(&marked)
+            .expect("the marked document is filed");
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        let reused = persistor.load(&key).expect("the document still stands");
+        assert_eq!(
+            reused.pairings[0].confidence,
+            calxgloss_types::Confidence::new(1),
+            "the persisted document was reused, not recomputed"
         );
     }
 
