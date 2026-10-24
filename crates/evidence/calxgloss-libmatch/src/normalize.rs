@@ -10,9 +10,16 @@
 //! string literals, and control-flow keywords, the parts a library
 //! routine spells the same way every time it is compiled.
 //!
+//! This is the corpus-wide rule for what "same body shape" means: the
+//! known-library scan matches its signatures against this shape, and
+//! other crates — the binary-version diff pairing the body-equivalence
+//! family — consume the very same entry point rather than carrying
+//! their own normalizer. One shared rule, one owner.
+//!
 //! Normalization is never tested directly — signatures and scan
 //! findings are the test surface — but its contract is documented here
-//! because the built-in signatures are hand-authored against it.
+//! because the built-in signatures and downstream consumers are both
+//! hand-authored against it.
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -71,7 +78,13 @@ static ADDRESS_LITERALS: LazyLock<Regex> = LazyLock::new(|| {
 /// rather than the raw name. String literals are protected: the text
 /// inside double quotes is copied through untouched, so a signature's
 /// wildcards never rewrite a literal the routine carries.
-pub(crate) fn normalize_lines(body: &str) -> Vec<(String, String)> {
+///
+/// This is the shared normalizer's public entry point: the shape it
+/// produces is what "same body shape" means corpus-wide, so a
+/// cross-crate consumer pairs bodies through this function without
+/// re-testing the normalization contract, which stays pinned here
+/// through the scan's findings.
+pub fn normalize_lines(body: &str) -> Vec<(String, String)> {
     body.lines()
         .map(|line| {
             let normalized = normalize_line(line);

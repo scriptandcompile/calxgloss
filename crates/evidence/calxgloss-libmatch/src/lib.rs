@@ -37,8 +37,10 @@
 //!   signature set whole, per ADR-0023's pattern-database contract; a
 //!   supplied file replaces the built-in set.
 //! - [`normalize`] - Body normalization: the wildcards that make a body
-//!   shape comparable. Internal; never tested directly, only through
-//!   scan findings.
+//!   shape comparable. The corpus-wide shared normalizer: [`normalize`]
+//!   is a public, cross-crate entry point that downstream tracks
+//!   consume unchanged, never re-test; its contract is pinned here,
+//!   through scan findings.
 //! - [`matcher`] - Signature matching: `LibmatchMatcher` carries the
 //!   signature set a scan reads normalized bodies against.
 //! - [`cross_function`] - Cross-function propagation over the bodies
@@ -58,7 +60,7 @@ pub(crate) mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod matcher;
-pub(crate) mod normalize;
+pub mod normalize;
 pub mod persist;
 pub mod signature;
 pub mod signature_db;
