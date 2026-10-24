@@ -1,10 +1,10 @@
 //! The `errhandling` command — detect error-handling idioms for a binary.
 //!
-//! Runs the body-text detectors — reading each decompiled body for a
-//! spelled `try`/`catch` frame the decompiler recognized — against the
-//! loaded program and saves the result to `re/analysis/errhandling/{binary}.json`
-//! in the workspace. `--show` prints a cached result without running the
-//! scan.
+//! Runs the body-text detectors — reading each decompiled body for spelled
+//! `try`/`catch` frames, named personality-handler thunks, exception-API
+//! calls, and direct `RaiseException` sites — against the loaded program and
+//! saves the result to `re/analysis/errhandling/{binary}.json` in the
+//! workspace. `--show` prints a cached result without running the scan.
 
 use std::path::Path;
 
@@ -88,21 +88,26 @@ fn print_errhandling_report(result: &ErrhandlingResult, path: &Path) {
     println!();
 
     // Findings, broken down by the idiom kind the readings name.
-    let kind_breakdown: Vec<String> = ["seh_frame"]
-        .into_iter()
-        .map(|kind| {
-            (
-                kind,
-                result
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.kind() == kind)
-                    .count(),
-            )
-        })
-        .filter(|(_, count)| *count > 0)
-        .map(|(kind, count)| format!("{kind} {count}"))
-        .collect();
+    let kind_breakdown: Vec<String> = [
+        "seh_frame",
+        "named_handler",
+        "exception_api_call",
+        "raise_exception",
+    ]
+    .into_iter()
+    .map(|kind| {
+        (
+            kind,
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == kind)
+                .count(),
+        )
+    })
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| format!("{kind} {count}"))
+    .collect();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Findings:  "),
@@ -159,7 +164,7 @@ fn print_errhandling_report(result: &ErrhandlingResult, path: &Path) {
         );
     } else {
         println!(
-            "  {} Error-handling detection ready — spelled exception frames are named in the record.",
+            "  {} Error-handling detection ready — spelled frames and named handler sites are named in the record.",
             green_bold("✓")
         );
     }

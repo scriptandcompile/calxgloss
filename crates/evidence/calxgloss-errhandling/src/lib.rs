@@ -2,17 +2,25 @@
 //! handlers and failure codes from kept function bodies as
 //! decompile-level evidence, persisted per binary.
 //!
-//! This crate is the first slice of P15 (the error-handling recovery
-//! pass): it detects the one error-handling shape the decompiler
-//! spells outright — an SEH `try`/`catch` frame carried in kept body
-//! text — and persists the finding as an evidence document under
-//! `re/analysis/errhandling/`. It deliberately stops there: the
-//! remaining evidence families (hidden exception paths, named
-//! handlers, the RAII shape, failure codes), the cross-function
-//! propagation reading, the whole-program pass and the prompt
-//! consumers are follow-up issues against this same artifact, and
-//! nothing here feeds an annotation prompt or a translation yet
-//! (ADR-0046).
+//! This crate is the growing slice of P15 (the error-handling
+//! recovery pass): it detects the error-handling shapes kept body
+//! text carries — an SEH `try`/`catch` frame the decompiler spelled
+//! outright, a named personality-handler thunk registration where it
+//! left the frame undrawn, an exception-API call, and a direct
+//! `RaiseException` call — and persists the findings as an evidence
+//! document under `re/analysis/errhandling/`. It deliberately stops
+//! there: the remaining evidence families (the goto-cleanup ladder,
+//! the failure-code records), the cross-function propagation reading,
+//! the whole-program pass and the prompt consumers are follow-up
+//! issues against this same artifact, and nothing here feeds an
+//! annotation prompt or a translation yet (ADR-0046).
+//!
+//! The SEH readings rank on ADR-0046's family ladder and the engine
+//! keeps one claim per function: the strongest SEH family that fires
+//! wins, a `RaiseException` finding rides beside it as a different
+//! fact, and a GS stack-canary check — compiler noise, already
+//! stripped by the shipped decompiler-noise filter — never reads as
+//! exception handling.
 //!
 //! The reading is decompile-level only — per-function body text. No
 //! disassembly, no CFG, no call-fact reads, and nothing written back
@@ -26,8 +34,16 @@
 //!   the metadata-stamped per-binary result.
 //! - [`seh_frame`] — the spelled `try`/`catch` frame detector: pure
 //!   text analysis of one kept body.
+//! - [`named_handler`] — the named personality-handler thunk
+//!   detector, the frame read through its registered handler.
+//! - [`exception_api`] — the exception-API call detector, SEH
+//!   participation read through the API alone.
+//! - [`raise_exception`] — the direct `RaiseException` detector,
+//!   naming the raised code when the argument is a literal.
+//! - [`identifier`] — the shared whole-identifier boundary rule the
+//!   name-based detectors read through.
 //! - [`engine`] — [`ErrhandlingEngine`]: decompiles every function
-//!   listing entry once, detects the idiom on each kept body, and
+//!   listing entry once, detects the idioms on each kept body, and
 //!   assembles the metadata-stamped result.
 //! - [`persist`] — [`ErrhandlingPersistor`]: strict JSON at
 //!   `re/analysis/errhandling/<basename>.json` (ADR-0043).
@@ -35,12 +51,23 @@
 
 pub mod engine;
 pub mod error;
+pub mod exception_api;
+pub mod identifier;
+pub mod named_handler;
 pub mod persist;
+pub mod raise_exception;
 pub mod seh_frame;
 pub mod types;
 
 pub use engine::ErrhandlingEngine;
 pub use error::{ErrhandlingError, Result};
+pub use exception_api::{EXCEPTION_API_NAMES, ExceptionApiDetector};
+pub use named_handler::{NamedHandlerDetector, PERSONALITY_HANDLER_THUNKS};
 pub use persist::ErrhandlingPersistor;
+pub use raise_exception::{
+    RAISE_EXCEPTION_API, RAISE_EXCEPTION_SUGGESTION, RaiseExceptionDetector,
+};
 pub use seh_frame::{SEH_FRAME_SUGGESTION, SPELLED_FRAME_CONFIDENCE, SehFrameDetector};
-pub use types::{ErrhandlingFinding, ErrhandlingResult, SehFrame};
+pub use types::{
+    ErrhandlingFinding, ErrhandlingResult, ExceptionApiCall, NamedHandler, RaiseException, SehFrame,
+};

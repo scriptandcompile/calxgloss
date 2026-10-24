@@ -277,7 +277,9 @@ pub use calxgloss_libmatch::types::{
 // `ScanMetadata` is the shared one from calxgloss-types, already named
 // here.
 pub use calxgloss_errhandling::ErrhandlingError;
-pub use calxgloss_errhandling::{ErrhandlingFinding, ErrhandlingResult, SehFrame};
+pub use calxgloss_errhandling::{
+    ErrhandlingFinding, ErrhandlingResult, ExceptionApiCall, NamedHandler, RaiseException, SehFrame,
+};
 
 // ============================================================
 // calxgloss-serialize — endianness & serialization detection

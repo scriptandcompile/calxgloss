@@ -3,13 +3,16 @@
 //!
 //! [`ErrhandlingEngine`] follows the established evidence-engine
 //! shape: it borrows any [`ScanSource`], walks the function listing in
-//! order, decompiles each function once, runs the idiom detector over
-//! the kept body, and assembles an [`ErrhandlingResult`] stamped with
-//! the scan metadata — the same loop the libmatch and globalstate
-//! engines run, with the idiom detector as its only difference. All
+//! order, decompiles each function once, runs the idiom detectors
+//! over the kept body, and assembles an [`ErrhandlingResult`] stamped
+//! with the scan metadata — the same loop the libmatch and globalstate
+//! engines run, with the detector set as its only difference. All
 //! findings are asserted at this seam, never inside a detector.
 
 use crate::error::Result;
+use crate::exception_api::ExceptionApiDetector;
+use crate::named_handler::NamedHandlerDetector;
+use crate::raise_exception::RaiseExceptionDetector;
 use crate::seh_frame::SehFrameDetector;
 use crate::types::{ErrhandlingFinding, ErrhandlingResult};
 use calxgloss_kuna::KunaSource;
@@ -30,48 +33,109 @@ pub use calxgloss_decomp::ScanSource;
 /// Orchestrates the per-body idiom readings into one
 /// [`ErrhandlingResult`].
 ///
-/// One loop, one family for now: the follow-up P15 bullets add
-/// detectors and finding variants, not new control flow, so the
+/// One loop, four detectors, per the ADR-0046 family ladder: the
+/// spelled SEH frame, the named personality-handler thunk, the
+/// exception-API call, and the direct `RaiseException` call. The SEH
+/// detectors run in rung order and **the strongest family that fires
+/// takes the function's one SEH claim** — a body showing a spelled
+/// block beside a thunk registration lands one finding at the spelled
+/// band, never a stack of duplicates for the same frame (issue #288).
+/// The `RaiseException` reading is a different fact — the function
+/// *raising*, not being guarded — and rides beside the SEH claim, so
+/// one function contributes at most two findings, in rung order.
+/// Follow-up P15 bullets add detectors, not new control flow, so the
 /// scan-order, skip and breaker behaviour — the behaviour contract
 /// every evidence engine keeps — stays written in exactly one place.
 /// The engine is generic over its [`ScanSource`], so tests can run
 /// the whole orchestration over canned bodies; [`new`](Self::new)
-/// builds one over a loaded [`KunaSource`]. The detector carries no
-/// state, so one instance serves the whole scan, and
-/// [`with_detector`](Self::with_detector) swaps it for a configured
-/// one.
+/// builds one over a loaded [`KunaSource`]. The detectors carry no
+/// state, so one instance of each serves the whole scan, and
+/// [`with_seh_frame`](Self::with_seh_frame),
+/// [`with_named_handler`](Self::with_named_handler),
+/// [`with_exception_api`](Self::with_exception_api), and
+/// [`with_raise_exception`](Self::with_raise_exception) swap one
+/// detector for a configured one.
 #[derive(Debug, Clone)]
 pub struct ErrhandlingEngine<S = KunaSource> {
     source: S,
-    detector: SehFrameDetector,
+    seh_frame: SehFrameDetector,
+    named_handler: NamedHandlerDetector,
+    exception_api: ExceptionApiDetector,
+    raise_exception: RaiseExceptionDetector,
+}
+
+/// The detectors of a standard engine, spelled once so `new` and
+/// `with_source` cannot drift.
+fn standard_detectors() -> (
+    SehFrameDetector,
+    NamedHandlerDetector,
+    ExceptionApiDetector,
+    RaiseExceptionDetector,
+) {
+    (
+        SehFrameDetector,
+        NamedHandlerDetector,
+        ExceptionApiDetector,
+        RaiseExceptionDetector,
+    )
 }
 
 impl ErrhandlingEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, detecting the spelled
-    /// SEH frame — the family this slice implements.
+    /// An engine over a loaded Kuna program, detecting the SEH frame
+    /// across its three body-text families and the direct
+    /// `RaiseException` call.
     pub fn new(source: &KunaSource) -> ErrhandlingEngine<KunaSource> {
+        let (seh_frame, named_handler, exception_api, raise_exception) = standard_detectors();
         ErrhandlingEngine {
             source: source.clone(),
-            detector: SehFrameDetector,
+            seh_frame,
+            named_handler,
+            exception_api,
+            raise_exception,
         }
     }
 }
 
 impl<S> ErrhandlingEngine<S> {
-    /// An engine whose decompiles come from `source`, detecting the
-    /// spelled SEH frame.
+    /// An engine whose decompiles come from `source`, scanning with
+    /// the detectors' standard bands and name sets.
     pub fn with_source(source: S) -> Self {
+        let (seh_frame, named_handler, exception_api, raise_exception) = standard_detectors();
         ErrhandlingEngine {
             source,
-            detector: SehFrameDetector,
+            seh_frame,
+            named_handler,
+            exception_api,
+            raise_exception,
         }
     }
 
-    /// Read bodies with `detector` instead of the standard spelled-
-    /// frame one — the seam the follow-up families plug their own
-    /// detectors into without touching the loop.
-    pub fn with_detector(mut self, detector: SehFrameDetector) -> Self {
-        self.detector = detector;
+    /// Read spelled SEH frames with `detector` instead of the
+    /// standard one — the seam the follow-up families plug their own
+    /// configured detectors into without touching the loop.
+    pub fn with_seh_frame(mut self, detector: SehFrameDetector) -> Self {
+        self.seh_frame = detector;
+        self
+    }
+
+    /// Read named personality-handler thunks with `detector` instead
+    /// of the standard one.
+    pub fn with_named_handler(mut self, detector: NamedHandlerDetector) -> Self {
+        self.named_handler = detector;
+        self
+    }
+
+    /// Read exception-API calls with `detector` instead of the
+    /// standard one.
+    pub fn with_exception_api(mut self, detector: ExceptionApiDetector) -> Self {
+        self.exception_api = detector;
+        self
+    }
+
+    /// Read direct `RaiseException` calls with `detector` instead of
+    /// the standard one.
+    pub fn with_raise_exception(mut self, detector: RaiseExceptionDetector) -> Self {
+        self.raise_exception = detector;
         self
     }
 
@@ -136,15 +200,29 @@ impl<S> ErrhandlingEngine<S> {
                     continue;
                 }
             };
-            if let Some(mut finding) = self.detector.detect(&decompiled.body) {
-                // The detector fills no function name (it never sees
-                // one); the engine owns the stamp, at the seam where
-                // every finding behaviour is asserted.
-                match &mut finding {
-                    ErrhandlingFinding::SehFrame(record) => {
-                        record.function = decompiled.name.clone();
-                    }
-                }
+            // The strongest SEH family wins: the detectors run in
+            // ADR-0046's rung order — spelled frame, named handler,
+            // exception-API call — and the first that fires takes
+            // the function's one SEH claim, so a body showing a
+            // spelled block beside a thunk registration lands one
+            // finding at the spelled band, never a stack of
+            // duplicates for the same frame (issue #288). The
+            // RaiseException reading names a different fact — the
+            // function raising, not being guarded — and rides
+            // beside the SEH claim.
+            for mut finding in self
+                .seh_frame
+                .detect(&decompiled.body)
+                .or_else(|| self.named_handler.detect(&decompiled.body))
+                .or_else(|| self.exception_api.detect(&decompiled.body))
+                .into_iter()
+                .chain(self.raise_exception.detect(&decompiled.body))
+                .collect::<Vec<_>>()
+            {
+                // The detectors fill no function name (they never
+                // see one); the engine owns the stamp, at the seam
+                // where every finding behaviour is asserted.
+                finding.set_function(&decompiled.name);
                 findings.push(finding);
             }
         }
@@ -507,6 +585,255 @@ mod tests {
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].function(), "real");
         assert_eq!(source.decompiled(), vec!["real".to_string()]);
+    }
+
+    /// A body naming a personality-handler thunk registration — an
+    /// SEH frame the decompiler left undrawn (issue #288).
+    const THUNK_BODY: &str = "  _CxxFrameHandler3(1, 0, lookup, this_ptr, frame);\n  work();\n";
+
+    /// A body whose only exception evidence is an exception-API call.
+    const API_BODY: &str = "  code = GetExceptionCode();\n  return code;\n";
+
+    /// A body a direct `RaiseException` call with a literal code.
+    const RAISE_BODY: &str = "  RaiseException(0xe06d7363, 0, 0, NULL);\n  return 0;\n";
+
+    /// A GS stack-canary body — cookie save, cookie comparison, the
+    /// guard-runtime call, and join-label noise: compiler noise the
+    /// scan must never read as exception handling (issue #288's
+    /// guard rail).
+    const GS_BODY: &str = "  uVar = __security_cookie ^ (ulonglong)&stack0xfffffffffffffff4;\n  \
+                            if (uStack_8 == __security_cookie) {\n    goto joined_r0x140001337;\n  \
+                            }\n  x = __security_check_cookie(local_8);\n  thunk = \
+                            _guard_check_icall_fptr;\n";
+
+    #[tokio::test]
+    async fn a_named_handler_body_lands_the_named_finding_at_its_band() {
+        use crate::named_handler::NAMED_HANDLER_CONFIDENCE;
+        let source = FakeProgram {
+            functions: vec![summary("cpp_guarded")],
+            bodies: HashMap::from([("cpp_guarded".to_string(), THUNK_BODY.to_string())]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind(), "named_handler");
+        assert_eq!(result.findings[0].function(), "cpp_guarded");
+        assert_eq!(
+            result.findings[0].confidence().value(),
+            NAMED_HANDLER_CONFIDENCE
+        );
+        assert!(result.findings[0].evidence().contains("_CxxFrameHandler3"));
+    }
+
+    #[tokio::test]
+    async fn an_exception_api_body_lands_the_api_finding_at_its_band() {
+        use crate::exception_api::EXCEPTION_API_CONFIDENCE;
+        let source = FakeProgram {
+            functions: vec![summary("filter_fn")],
+            bodies: HashMap::from([("filter_fn".to_string(), API_BODY.to_string())]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind(), "exception_api_call");
+        assert_eq!(
+            result.findings[0].confidence().value(),
+            EXCEPTION_API_CONFIDENCE
+        );
+        assert!(result.findings[0].evidence().contains("GetExceptionCode"));
+    }
+
+    #[tokio::test]
+    async fn the_strongest_seh_family_wins_one_claim_per_function() {
+        // A body showing a spelled block beside a thunk registration
+        // beside an API call — plus a direct raise, a different fact
+        // — lands exactly two findings: the SEH claim at the spelled
+        // band, and the raise. Never a stack of duplicates for the
+        // same frame.
+        let body = format!(
+            "{}{}{}{}",
+            SEH_BODY,
+            "  _CxxFrameHandler3(1, 0, lookup, this_ptr, frame);\n",
+            "  code = GetExceptionCode();\n",
+            RAISE_BODY
+        );
+        let source = FakeProgram {
+            functions: vec![summary("everything")],
+            bodies: HashMap::from([("everything".to_string(), body)]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 2);
+        assert_eq!(result.findings[0].kind(), "seh_frame");
+        assert_eq!(result.findings[1].kind(), "raise_exception");
+        assert!(result.findings.iter().all(|f| f.function() == "everything"));
+    }
+
+    #[tokio::test]
+    async fn a_named_handler_beside_an_api_call_takes_the_named_band() {
+        // The rung order inside the union's SEH kinds: thunk
+        // registration outranks the API call, one finding.
+        let body = format!("{THUNK_BODY}{API_BODY}");
+        let source = FakeProgram {
+            functions: vec![summary("guarded_and_querying")],
+            bodies: HashMap::from([("guarded_and_querying".to_string(), body)]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind(), "named_handler");
+    }
+
+    #[tokio::test]
+    async fn a_raise_beside_no_seh_shape_stands_alone() {
+        // The raise needs no SEH finding beside it — a function can
+        // raise into a frame it does not itself carry.
+        let source = FakeProgram {
+            functions: vec![summary("raiser")],
+            bodies: HashMap::from([("raiser".to_string(), RAISE_BODY.to_string())]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind(), "raise_exception");
+        match &result.findings[0] {
+            ErrhandlingFinding::RaiseException(record) => {
+                assert_eq!(record.function, "raiser");
+                assert_eq!(record.code, Some(0xe06d_7363));
+            }
+            other => panic!("expected the raise kind, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn gs_canary_noise_claims_nothing_alone_or_beside_other_noise() {
+        // The guard rail asserted at the engine seam: the canary
+        // family — alone, and beside a real thunk registration it
+        // must not color — yields no SEH finding. The GS body itself
+        // claims nothing; the thunk function next to it keeps its
+        // honest one finding.
+        let alone = FakeProgram {
+            functions: vec![summary("gs_only")],
+            bodies: HashMap::from([("gs_only".to_string(), GS_BODY.to_string())]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(alone)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert!(result.is_empty(), "a canary check is not an SEH frame");
+
+        let source = FakeProgram {
+            functions: vec![summary("gs_only"), summary("guarded")],
+            bodies: HashMap::from([
+                ("gs_only".to_string(), GS_BODY.to_string()),
+                ("guarded".to_string(), THUNK_BODY.to_string()),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].function(), "guarded");
+    }
+
+    #[tokio::test]
+    async fn the_three_seh_bands_persist_ranked() {
+        // One function per SEH family: the persisted confidences
+        // carry the bands, and rank spelled block above named
+        // handler above API call — observable through the document,
+        // which is how a reviewer (and the future prompt section)
+        // ranks what it is shown.
+        let source = FakeProgram {
+            functions: vec![summary("spelled"), summary("named"), summary("api_only")],
+            bodies: HashMap::from([
+                ("spelled".to_string(), SEH_BODY.to_string()),
+                ("named".to_string(), THUNK_BODY.to_string()),
+                ("api_only".to_string(), API_BODY.to_string()),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("ranked.exe")
+            .await
+            .expect("scan must succeed");
+        let bands: Vec<(&str, u8)> = result
+            .findings
+            .iter()
+            .map(|f| (f.kind(), f.confidence().value()))
+            .collect();
+        assert_eq!(
+            bands,
+            vec![
+                ("seh_frame", crate::seh_frame::SPELLED_FRAME_CONFIDENCE),
+                (
+                    "named_handler",
+                    crate::named_handler::NAMED_HANDLER_CONFIDENCE
+                ),
+                (
+                    "exception_api_call",
+                    crate::exception_api::EXCEPTION_API_CONFIDENCE
+                ),
+            ]
+        );
+        // Persistence observability: the scores round-trip through
+        // the document unchanged.
+        let json = serde_json::to_string(&result).expect("the document serializes");
+        let back: crate::ErrhandlingResult =
+            serde_json::from_str(&json).expect("the document loads back");
+        assert_eq!(back, result);
+    }
+
+    #[tokio::test]
+    async fn two_scans_of_one_program_diff_cleanly() {
+        // The diffing contract, asserted over the grown finding set:
+        // every family in one program, scanned twice, lands the same
+        // findings in the same order.
+        let source = FakeProgram {
+            functions: vec![
+                summary("spelled"),
+                summary("named"),
+                summary("raiser"),
+                summary("plain"),
+                summary("api_only"),
+            ],
+            bodies: HashMap::from([
+                ("spelled".to_string(), SEH_BODY.to_string()),
+                ("named".to_string(), THUNK_BODY.to_string()),
+                ("raiser".to_string(), RAISE_BODY.to_string()),
+                ("plain".to_string(), "  run();\n".to_string()),
+                ("api_only".to_string(), API_BODY.to_string()),
+            ]),
+            ..FakeProgram::default()
+        };
+        let first = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("first scan must succeed");
+        let second = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("second scan must succeed");
+        assert_eq!(first.findings, second.findings);
+        let names: Vec<&str> = first.findings.iter().map(|f| f.function()).collect();
+        assert_eq!(names, vec!["spelled", "named", "raiser", "api_only"]);
     }
 
     #[tokio::test]
