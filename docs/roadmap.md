@@ -31,34 +31,9 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## P13.5 — Float/SIMD usage flagging (evidence + integrations + pipeline + interface)
-
-**Nothing detects float/SIMD use, yet the decompiler mangles vector math into
-garbage pseudo-C** — `CONCAT44`, `SUB4`, undefined-typed arithmetic over `DAT_*`
-loads — on `game_logic.dll`-style targets, so the LLM mistranslates it as
-integer/pointer logic and every retry chases a phantom divergence. A new
-evidence crate, `calxgloss-floatsimd`, reads only the bodies the scan already
-keeps — no new engine reads, no dependency on #226 — and lands one flag record
-per function naming the shape (scalar float math, vector/matrix idioms, or
-both) with evidence lines and Evidence-scale confidence; the evidence families
-are the decompiler's own float/double tokens, casts, and float literals, CRT
-math import calls, the CONCAT/SUB vector assembly idioms, and parallel
-same-operator reads over component-shaped variables, strongest family winning.
-No cross-function pass and nothing written back to the program (ADR-0020); the
-document persists per binary under the analysis-directory convention (ADR-0043)
-as a new file, so every existing artifact loads unchanged. Consumers: a
-FLOAT/SIMD findings section on the module-context and escalate prompts (the
-control-flow-findings pattern, omitted when the function has no flag) and a CLI
-breakdown command. The record's shape field is chosen so the follow-ups need no
-re-derivation: testgen swapping integer boundary sampling for rounding/NaN
-sampling on flagged functions, and disassembly corroboration against SSE/x87
-mnemonics — unblocked now, since #226 landed its machine-listing reads with
-P12.6. Spec: #229. Tickets: not yet filed (`/to-tickets`).
 
 ## P18 — Binary-version diffing (BinDiff-style) (evidence + pipeline + interface)
 
