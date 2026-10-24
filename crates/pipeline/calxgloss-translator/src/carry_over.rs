@@ -182,10 +182,7 @@ pub fn collect_seeds(
     let mut order: Vec<&str> = by_function.keys().copied().collect();
     order.sort_by_key(|f| {
         // deterministic batch order: the queued order, falling back to name
-        functions
-            .iter()
-            .position(|q| q == f)
-            .unwrap_or(usize::MAX)
+        functions.iter().position(|q| q == f).unwrap_or(usize::MAX)
     });
     let mut claimed: HashSet<String> = HashSet::new();
     let mut seeds = HashMap::new();
@@ -206,7 +203,9 @@ pub fn collect_seeds(
             // The old twin lives under the same binary key — branch names
             // keep the binary verbatim, and the previous-version scan that
             // produced this document ran under the same binary name.
-            let Some((old_attempt, rust_code)) = source.accepted_attempt(binary, &record.old_function) else {
+            let Some((old_attempt, rust_code)) =
+                source.accepted_attempt(binary, &record.old_function)
+            else {
                 continue;
             };
             if rust_code.trim().is_empty() {
@@ -269,13 +268,16 @@ mod tests {
     /// A pairing document for the (fake-old-hash, `new_sha`) pair carrying
     /// `records`, with listings that mention every named function.
     fn document(new_sha: &str, records: Vec<PairingRecord>) -> PairingDocument {
-        let mut old_functions: Vec<String> = records.iter().map(|r| r.old_function.clone()).collect();
-        let mut new_functions: Vec<String> = records.iter().map(|r| r.new_function.clone()).collect();
+        let mut old_functions: Vec<String> =
+            records.iter().map(|r| r.old_function.clone()).collect();
+        let mut new_functions: Vec<String> =
+            records.iter().map(|r| r.new_function.clone()).collect();
         old_functions.sort();
         new_functions.sort();
         PairingDocument {
             binary: BINARY.into(),
-            old_bytes_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            old_bytes_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
             new_bytes_sha256: new_sha.into(),
             old_functions,
             new_functions,
@@ -317,12 +319,20 @@ mod tests {
         Arc::new(fake)
     }
 
-    fn collect(ws: &Path, binary_path: &Path, functions: &[&str], source: &Arc<dyn AcceptedAttemptSource>) -> HashMap<String, CarryOverSeed> {
+    fn collect(
+        ws: &Path,
+        binary_path: &Path,
+        functions: &[&str],
+        source: &Arc<dyn AcceptedAttemptSource>,
+    ) -> HashMap<String, CarryOverSeed> {
         collect_seeds(
             ws,
             BINARY,
             binary_path,
-            &functions.iter().map(|f| f.to_string()).collect::<Vec<String>>(),
+            &functions
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<String>>(),
             source,
         )
     }
@@ -332,7 +342,10 @@ mod tests {
         // The happy path: confident pairing + merged branch → the seed
         // carries the accepted code verbatim and names the twin.
         let (ws, binary_path, new_sha) = workspace_with_binary(b"the new version");
-        file_document(ws.path(), document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]));
+        file_document(
+            ws.path(),
+            document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]),
+        );
         let src = source_with(&[("DrawSprite", 2, "fn draw_sprite() { /* accepted */ }")]);
 
         let seeds = collect(ws.path(), &binary_path, &["DrawSprite"], &src);
@@ -350,7 +363,17 @@ mod tests {
         // The floor gate: one point below 80 and the function queues fresh,
         // exactly as it does today.
         let (ws, binary_path, new_sha) = workspace_with_binary(b"the new version");
-        file_document(ws.path(), document(&new_sha, vec![record("DrawSprite", "DrawSprite", CARRY_OVER_CONFIDENCE_FLOOR - 1)]));
+        file_document(
+            ws.path(),
+            document(
+                &new_sha,
+                vec![record(
+                    "DrawSprite",
+                    "DrawSprite",
+                    CARRY_OVER_CONFIDENCE_FLOOR - 1,
+                )],
+            ),
+        );
         let src = source_with(&[("DrawSprite", 1, "fn draw_sprite() {}")]);
 
         let seeds = collect(ws.path(), &binary_path, &["DrawSprite"], &src);
@@ -364,12 +387,21 @@ mod tests {
         // bytes being translated now describes a different version
         // situation and is refused, never silently trusted.
         let (ws, binary_path, _new_sha) = workspace_with_binary(b"the current bytes");
-        file_document(ws.path(), document("beefstalebeefstalebeefstalebeefstalebeefstalebeefstalebeefstalebeefstal", vec![record("DrawSprite", "DrawSprite", 95)]));
+        file_document(
+            ws.path(),
+            document(
+                "beefstalebeefstalebeefstalebeefstalebeefstalebeefstalebeefstalebeefstal",
+                vec![record("DrawSprite", "DrawSprite", 95)],
+            ),
+        );
         let src = source_with(&[("DrawSprite", 1, "fn draw_sprite() {}")]);
 
         let seeds = collect(ws.path(), &binary_path, &["DrawSprite"], &src);
 
-        assert!(seeds.is_empty(), "a document naming other bytes claims nothing");
+        assert!(
+            seeds.is_empty(),
+            "a document naming other bytes claims nothing"
+        );
     }
 
     #[test]
@@ -394,16 +426,27 @@ mod tests {
             ws.path(),
             document(
                 &new_sha,
-                vec![record("DrawSprite", "DrawSprite", 95), record("DrawSprite", "DrawSpriteScaled", 85)],
+                vec![
+                    record("DrawSprite", "DrawSprite", 95),
+                    record("DrawSprite", "DrawSpriteScaled", 85),
+                ],
             ),
         );
         let src = source_with(&[("DrawSprite", 1, "fn draw_sprite() {}")]);
 
-        let seeds = collect(ws.path(), &binary_path, &["DrawSprite", "DrawSpriteScaled"], &src);
+        let seeds = collect(
+            ws.path(),
+            &binary_path,
+            &["DrawSprite", "DrawSpriteScaled"],
+            &src,
+        );
 
         assert_eq!(seeds.len(), 1);
         assert_eq!(seeds["DrawSprite"].old_function, "DrawSprite");
-        assert!(!seeds.contains_key("DrawSpriteScaled"), "the loser queues fresh");
+        assert!(
+            !seeds.contains_key("DrawSpriteScaled"),
+            "the loser queues fresh"
+        );
     }
 
     #[test]
@@ -411,12 +454,16 @@ mod tests {
         // Successive versions each left a pairing document; the strongest
         // confidence decides which twin the code rides in on.
         let (ws, binary_path, new_sha) = workspace_with_binary(b"the new version");
-        file_document(ws.path(), document(&new_sha, vec![record("DrawSpriteOld", "DrawSprite", 85)]));
+        file_document(
+            ws.path(),
+            document(&new_sha, vec![record("DrawSpriteOld", "DrawSprite", 85)]),
+        );
         file_document(
             ws.path(),
             PairingDocument {
                 // A different old version's document — its own key beside the first.
-                old_bytes_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                old_bytes_sha256:
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
                 new_bytes_sha256: new_sha.clone(),
                 ..document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)])
             },
@@ -439,7 +486,10 @@ mod tests {
         // absent) — there is no accepted translation to carry, so the
         // function goes to the LLM fresh like today.
         let (ws, binary_path, new_sha) = workspace_with_binary(b"the new version");
-        file_document(ws.path(), document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]));
+        file_document(
+            ws.path(),
+            document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]),
+        );
         let src = source_with(&[]);
 
         let seeds = collect(ws.path(), &binary_path, &["DrawSprite"], &src);
@@ -456,7 +506,10 @@ mod tests {
             .join("junk_document.json");
         std::fs::create_dir_all(junk.parent().expect("bdiff directory")).expect("bdiff directory");
         std::fs::write(&junk, "{ not json").expect("junk filed");
-        file_document(ws.path(), document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]));
+        file_document(
+            ws.path(),
+            document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]),
+        );
         let src = source_with(&[("DrawSprite", 1, "fn draw_sprite() {}")]);
 
         let seeds = collect(ws.path(), &binary_path, &["DrawSprite"], &src);
@@ -470,7 +523,10 @@ mod tests {
         // translation exists; seeding from nothing would only hide the
         // fresh chain that should run instead.
         let (ws, binary_path, new_sha) = workspace_with_binary(b"the new version");
-        file_document(ws.path(), document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]));
+        file_document(
+            ws.path(),
+            document(&new_sha, vec![record("DrawSprite", "DrawSprite", 95)]),
+        );
         let src = source_with(&[("DrawSprite", 1, "   \n")]);
 
         let seeds = collect(ws.path(), &binary_path, &["DrawSprite"], &src);
@@ -478,4 +534,3 @@ mod tests {
         assert!(seeds.is_empty());
     }
 }
-

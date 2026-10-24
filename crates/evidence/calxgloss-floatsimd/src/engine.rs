@@ -379,7 +379,10 @@ mod tests {
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
             "FUN_18003e750".into(),
-            function("FUN_18003e750", "  local_10 = CONCAT44(uVar2 >> 4, uVar2);\n"),
+            function(
+                "FUN_18003e750",
+                "  local_10 = CONCAT44(uVar2 >> 4, uVar2);\n",
+            ),
         );
         let result = scan(program).await;
 
@@ -457,7 +460,10 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(crate::FloatsimdError::DecompileBreaker { failed: 2, total: 2 })
+            Err(crate::FloatsimdError::DecompileBreaker {
+                failed: 2,
+                total: 2
+            })
         ));
     }
 
@@ -479,7 +485,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(crate::FloatsimdError::DecompileBreaker { failed: 2, total: 3 })
+            Err(crate::FloatsimdError::DecompileBreaker {
+                failed: 2,
+                total: 3
+            })
         ));
         assert_eq!(
             program.decompiled(),
@@ -528,7 +537,10 @@ mod tests {
         assert_eq!(result.metadata.binary, "game_logic.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
-        let engine = result.metadata.engine.expect("scan record names its engine");
+        let engine = result
+            .metadata
+            .engine
+            .expect("scan record names its engine");
         assert_eq!(engine.name, "fake-engine");
         assert_eq!(engine.version.as_deref(), Some("9.9"));
         assert_eq!(engine.fingerprint.as_deref(), Some("0123456"));

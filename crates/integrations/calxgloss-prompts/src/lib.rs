@@ -58,10 +58,9 @@ pub use templates::{
     ConstInfo, ControlFlowInfo, ConventionInfo, DataTableInfo, EdgeCaseTemplate, EdgeCaseTest,
     ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate, FloatsimdInfo,
     FormattedTestResult, FullModuleTemplate, GlobalStateInfo, LibmatchInfo, MemoryInfo,
-    MinimalTemplate,
-    ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod, ParameterDirectionInfo,
-    SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData,
-    TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod,
+    ParameterDirectionInfo, SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo,
+    StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors

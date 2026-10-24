@@ -3541,9 +3541,7 @@ mod tests {
 
     // ---- float/SIMD hint extraction ------------------------------------
 
-    fn float_flag(
-        function: &str,
-    ) -> calxgloss_floatsimd::types::FloatsimdFinding {
+    fn float_flag(function: &str) -> calxgloss_floatsimd::types::FloatsimdFinding {
         calxgloss_floatsimd::types::FloatsimdFinding::ScalarFloat(
             calxgloss_floatsimd::types::FloatsimdRecord {
                 function: function.into(),
@@ -3555,9 +3553,7 @@ mod tests {
         )
     }
 
-    fn vector_flag(
-        function: &str,
-    ) -> calxgloss_floatsimd::types::FloatsimdFinding {
+    fn vector_flag(function: &str) -> calxgloss_floatsimd::types::FloatsimdFinding {
         calxgloss_floatsimd::types::FloatsimdFinding::VectorMatrix(
             calxgloss_floatsimd::types::FloatsimdRecord {
                 function: function.into(),
@@ -3614,9 +3610,7 @@ mod tests {
         .expect("the cache directory should be creatable");
         std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
 
-        assert!(
-            extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
-        );
+        assert!(extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
     }
 
     #[test]
@@ -3970,7 +3964,8 @@ mod tests {
     fn a_missing_cache_yields_no_error_handling_findings() {
         let dir = TempDir::new().expect("temp dir should be created");
         assert!(
-            extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00")
+                .is_empty(),
             "a scan that has not run yet just means no error-handling context"
         );
     }
@@ -3992,7 +3987,8 @@ mod tests {
         std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
 
         assert!(
-            extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+            extract_error_handling_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00")
+                .is_empty()
         );
     }
 
@@ -4010,7 +4006,10 @@ mod tests {
         assert_eq!(found[0].function, "FUN_18003ab00");
         assert_eq!(found[0].kind, "seh_frame");
         assert_eq!(found[0].target, "try/catch frame");
-        assert_eq!(found[0].suggestion, calxgloss_errhandling::SEH_FRAME_SUGGESTION);
+        assert_eq!(
+            found[0].suggestion,
+            calxgloss_errhandling::SEH_FRAME_SUGGESTION
+        );
         assert_eq!(found[0].confidence, 80);
         assert_eq!(found[0].evidence, "  catch(...){");
     }
@@ -4034,7 +4033,12 @@ mod tests {
         let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
         assert_eq!(
             kinds,
-            vec!["seh_frame", "goto_cleanup", "error_code", "inherited_error_code"]
+            vec![
+                "seh_frame",
+                "goto_cleanup",
+                "error_code",
+                "inherited_error_code"
+            ]
         );
         // The code-bearing records carry their payload through the load:
         // the code spelled, the site named, the partner named.

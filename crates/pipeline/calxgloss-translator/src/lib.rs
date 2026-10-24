@@ -15,8 +15,8 @@
 // …), which overflows the default trait-resolution depth.
 #![recursion_limit = "256"]
 
-pub mod error;
 pub mod carry_over;
+pub mod error;
 mod pipeline;
 pub mod retry;
 mod scan_job;

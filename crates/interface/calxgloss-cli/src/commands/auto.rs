@@ -270,9 +270,10 @@ pub async fn run_translation_for_dll(
     // accepted (merged) translation to seed attempt 1 from. With `--skip-git`
     // there is no history to ask, and the queue translates fresh as today.
     if let Some(git_manager) = git.as_ref() {
-        pipeline = pipeline.with_accepted_attempt_source(std::sync::Arc::new(GitAcceptedAttempts {
-            workspace: git_manager.repo_path().to_path_buf(),
-        }));
+        pipeline =
+            pipeline.with_accepted_attempt_source(std::sync::Arc::new(GitAcceptedAttempts {
+                workspace: git_manager.repo_path().to_path_buf(),
+            }));
     }
 
     // Initialize verifier for retry loop

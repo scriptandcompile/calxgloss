@@ -183,9 +183,7 @@ mod tests {
     #[test]
     fn results_are_filed_under_re_analysis_floatsimd_in_the_workspace() {
         let dir = tempfile::tempdir().unwrap();
-        let expected = dir
-            .path()
-            .join("re/analysis/floatsimd/game_logic.dll.json");
+        let expected = dir.path().join("re/analysis/floatsimd/game_logic.dll.json");
         assert_eq!(
             FloatsimdPersistor::new(dir.path()).path_for("game_logic.dll"),
             expected

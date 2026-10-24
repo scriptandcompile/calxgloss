@@ -67,18 +67,19 @@ pub const COMPONENT_TRIPLET_CONFIDENCE: u8 = 40;
 /// The Rust shape a scalar-float flag steers a translation toward:
 /// plain float operations, never integer or pointer arithmetic over
 /// the mangled body.
-const SCALAR_SUGGESTION: &str = "translate as f32/f64 scalar float math, not integer or pointer arithmetic";
+const SCALAR_SUGGESTION: &str =
+    "translate as f32/f64 scalar float math, not integer or pointer arithmetic";
 
 /// The Rust shape a vector/matrix flag steers a translation toward:
 /// the packed-integer mangling is a vector read as integer — the
 /// translation should model the components, not the packing.
-const VECTOR_SUGGESTION: &str = "translate as a small vector struct or component array, not integer or pointer arithmetic";
+const VECTOR_SUGGESTION: &str =
+    "translate as a small vector struct or component array, not integer or pointer arithmetic";
 
 /// The Rust shapes a mixed flag steers a translation toward: both
 /// shapes in one body, scalars as floats and the mangled vector work
 /// as components.
-const MIXED_SUGGESTION: &str =
-    "translate the float math as f32/f64 scalars and the vector idioms as component arrays or small vector structs";
+const MIXED_SUGGESTION: &str = "translate the float math as f32/f64 scalars and the vector idioms as component arrays or small vector structs";
 
 // The band order is a contract, not a taste call: an explicit float
 // token outranks a CRT math call, which outranks a vector assembly
@@ -240,7 +241,8 @@ fn component_triplet(body: &str) -> Option<String> {
 fn explicit_floats() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
-        Regex::new(r"\b(float|double)\b|\b\d+\.\d+[fF]?\b").expect("a static float pattern compiles")
+        Regex::new(r"\b(float|double)\b|\b\d+\.\d+[fF]?\b")
+            .expect("a static float pattern compiles")
     })
 }
 
@@ -377,10 +379,8 @@ mod tests {
 
     #[test]
     fn an_xyz_component_triplet_fires_at_the_weakest_band() {
-        let flag = detect(
-            "  fVar1 = local_10.x;\n  fVar2 = local_10.y;\n  fVar3 = local_10.z;\n",
-        )
-        .expect("a parallel x/y/z triplet fires");
+        let flag = detect("  fVar1 = local_10.x;\n  fVar2 = local_10.y;\n  fVar3 = local_10.z;\n")
+            .expect("a parallel x/y/z triplet fires");
         assert_eq!(flag.kind(), "vector_matrix");
         assert_eq!(flag.confidence().value(), COMPONENT_TRIPLET_CONFIDENCE);
         assert_eq!(flag.evidence(), "fVar1 = local_10.x;");
@@ -410,7 +410,10 @@ mod tests {
     #[test]
     fn a_identifier_that_merely_holds_the_word_float_is_not_explicit_evidence() {
         let flag = detect("  uVar1 = floatVal + DAT_floatchart;\n");
-        assert!(flag.is_none(), "the word inside an identifier names no float");
+        assert!(
+            flag.is_none(),
+            "the word inside an identifier names no float"
+        );
     }
 
     #[test]
@@ -419,10 +422,8 @@ mod tests {
         // with explicit scalar evidence and vector mangling lands one
         // flag naming both, carrying the strongest family's band and
         // evidence line.
-        let flag = detect(
-            "  fVar1 = (float)uVar2;\n  local_10 = CONCAT44(uVar2 >> 4, uVar2);\n",
-        )
-        .expect("both families fire");
+        let flag = detect("  fVar1 = (float)uVar2;\n  local_10 = CONCAT44(uVar2 >> 4, uVar2);\n")
+            .expect("both families fire");
         assert_eq!(flag.kind(), "mixed");
         assert_eq!(flag.confidence().value(), EXPLICIT_FLOAT_CONFIDENCE);
         assert_eq!(flag.evidence(), "fVar1 = (float)uVar2;");

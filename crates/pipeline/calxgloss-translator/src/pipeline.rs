@@ -6818,7 +6818,11 @@ void SetCursor(void)
                 // A rename-aware pairing: the twin goes by another name.
                 pairing("legacy_status", &status, 95),
                 // One point under the floor — today's fresh queue, exactly.
-                pairing("old_describe", &describe, calxgloss_bdiff::CARRY_OVER_CONFIDENCE_FLOOR - 1),
+                pairing(
+                    "old_describe",
+                    &describe,
+                    calxgloss_bdiff::CARRY_OVER_CONFIDENCE_FLOOR - 1,
+                ),
             ],
         )
         .await;
@@ -6840,7 +6844,11 @@ void SetCursor(void)
             .expect("a unit that fails verification never fails the batch itself");
 
         assert_eq!(result.results.len(), 2);
-        let seeded = result.results.iter().find(|r| r.function == status).expect("status unit");
+        let seeded = result
+            .results
+            .iter()
+            .find(|r| r.function == status)
+            .expect("status unit");
         assert_eq!(
             seeded.retry_result.attempts.len(),
             1,
@@ -6879,7 +6887,11 @@ void SetCursor(void)
             "seeded from legacy_status attempt 3 (paired, 95% confidence)"
         );
 
-        let fresh = result.results.iter().find(|r| r.function == describe).expect("describe unit");
+        let fresh = result
+            .results
+            .iter()
+            .find(|r| r.function == describe)
+            .expect("describe unit");
         assert!(
             fresh.retry_result.attempts.is_empty(),
             "the below-floor pairing queued fresh: the unit went to the LLM \
@@ -6908,7 +6920,11 @@ void SetCursor(void)
 
         let (pipeline, _) = seeded_pipeline(
             dir.path(),
-            vec![("legacy_status".to_string(), 3, "fn carried_over() {}".to_string())],
+            vec![(
+                "legacy_status".to_string(),
+                3,
+                "fn carried_over() {}".to_string(),
+            )],
         );
         pipeline
             .carry_over_seeds
@@ -6926,23 +6942,30 @@ void SetCursor(void)
             );
         // A seed cannot smuggle a Skip-classified root past the refusal —
         // the known-library guard runs before any carry-over lookup.
-        pipeline.carry_over_seeds.lock().expect("seeds lock").insert(
-            "DelayLoad_ShellExecuteW".to_string(),
-            crate::carry_over::CarryOverSeed {
-                old_function: "old_thunk".into(),
-                old_attempt: 1,
-                family: "name_identity",
-                confidence: 95,
-                rust_code: "fn carried_over() {}".to_string(),
-            },
-        );
+        pipeline
+            .carry_over_seeds
+            .lock()
+            .expect("seeds lock")
+            .insert(
+                "DelayLoad_ShellExecuteW".to_string(),
+                crate::carry_over::CarryOverSeed {
+                    old_function: "old_thunk".into(),
+                    old_attempt: 1,
+                    family: "name_identity",
+                    confidence: 95,
+                    rust_code: "fn carried_over() {}".to_string(),
+                },
+            );
 
         let translation = pipeline
             .translate(PROGRAM, &status)
             .await
             .expect("the seeded unit needs no LLM to produce attempt 1");
         assert_eq!(translation.rust_code, "fn carried_over() {}");
-        assert_eq!(translation.model, "carry-over", "the record says where the code came from");
+        assert_eq!(
+            translation.model, "carry-over",
+            "the record says where the code came from"
+        );
         assert!(translation.tokens_used.is_none(), "no tokens were spent");
         assert!(
             translation.prompt_used.contains("legacy_status")
@@ -6951,9 +6974,7 @@ void SetCursor(void)
             translation.prompt_used
         );
 
-        let refused = pipeline
-            .translate(PROGRAM, "DelayLoad_ShellExecuteW")
-            .await;
+        let refused = pipeline.translate(PROGRAM, "DelayLoad_ShellExecuteW").await;
         assert!(
             matches!(refused, Err(TranslatorError::SkippedRoot { .. })),
             "pairing never overrides the known-library Skip classification: {refused:?}"
@@ -6991,10 +7012,15 @@ void SetCursor(void)
             None,
         );
         pipeline.attach_carry_over_provenance(&mut seeded_win);
-        let record = seeded_win.carry_over.expect("the seed won: provenance rides");
+        let record = seeded_win
+            .carry_over
+            .expect("the seed won: provenance rides");
         assert_eq!(record.old_function, "legacy_draw");
         assert_eq!(record.old_attempt, 2);
-        assert_eq!(record.commit_note(), "seeded from legacy_draw attempt 2 (paired, 95% confidence)");
+        assert_eq!(
+            record.commit_note(),
+            "seeded from legacy_draw attempt 2 (paired, 95% confidence)"
+        );
 
         let mut fresh_win = batch::FunctionResult::success(
             PROGRAM,
@@ -7004,7 +7030,10 @@ void SetCursor(void)
             None,
         );
         pipeline.attach_carry_over_provenance(&mut fresh_win);
-        assert!(fresh_win.carry_over.is_none(), "the fresh chain won: no carry-over claim");
+        assert!(
+            fresh_win.carry_over.is_none(),
+            "the fresh chain won: no carry-over claim"
+        );
 
         let mut failed = batch::FunctionResult::failure(
             PROGRAM,
@@ -7014,7 +7043,10 @@ void SetCursor(void)
         failed.rust_code = Some("fn carried() {}".to_string());
         failed.success = true;
         pipeline.attach_carry_over_provenance(&mut failed);
-        assert!(failed.carry_over.is_some(), "the check rides the final code, however it got there");
+        assert!(
+            failed.carry_over.is_some(),
+            "the check rides the final code, however it got there"
+        );
     }
 
     /// The fan-out's marquee: given the same cached reads, the

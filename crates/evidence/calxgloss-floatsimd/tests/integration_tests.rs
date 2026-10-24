@@ -140,7 +140,9 @@ async fn a_scan_persists_and_reads_back_the_same_document() {
         "the document rides the analysis-directory convention"
     );
 
-    let loaded = persistor.load("game_logic.dll").expect("the document loads");
+    let loaded = persistor
+        .load("game_logic.dll")
+        .expect("the document loads");
     assert_eq!(loaded, result, "the document reads back exactly as saved");
     let flag = loaded
         .for_function("FUN_18003ab00")

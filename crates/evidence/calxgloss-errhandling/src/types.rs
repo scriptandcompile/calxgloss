@@ -859,7 +859,10 @@ mod tests {
             .for_function("FUN_1800014a0")
             .map(|finding| finding.kind())
             .collect();
-        assert_eq!(kinds, vec!["seh_frame", "error_code", "inherited_error_code"]);
+        assert_eq!(
+            kinds,
+            vec!["seh_frame", "error_code", "inherited_error_code"]
+        );
     }
 
     #[test]
@@ -909,9 +912,9 @@ mod tests {
         assert!(with.site.is_none());
         assert!(with.partner.is_none());
         // A raise whose argument did not spell a code stays code-less.
-        let without = calxgloss_prompts::ErrhandlingInfo::from(&ErrhandlingFinding::RaiseException(
-            raised(None),
-        ));
+        let without = calxgloss_prompts::ErrhandlingInfo::from(
+            &ErrhandlingFinding::RaiseException(raised(None)),
+        );
         assert!(without.code.is_none());
     }
 }

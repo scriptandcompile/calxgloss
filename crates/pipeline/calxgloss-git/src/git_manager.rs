@@ -994,7 +994,8 @@ impl GitManager {
             best = Some((attempt, name));
         }
         let (attempt, branch_name) = best?;
-        let code = self.branch_file_content(branch_name, &Self::translated_module_path(function))?;
+        let code =
+            self.branch_file_content(branch_name, &Self::translated_module_path(function))?;
         Some((attempt, code))
     }
 
@@ -1008,7 +1009,10 @@ impl GitManager {
         let commit = branch.get().peel_to_commit().ok()?;
         let tree = commit.tree().ok()?;
         let entry = tree.get_path(Path::new(path)).ok()?;
-        let blob = entry.to_object(&self.repo).ok().and_then(|o| o.into_blob().ok())?;
+        let blob = entry
+            .to_object(&self.repo)
+            .ok()
+            .and_then(|o| o.into_blob().ok())?;
         std::str::from_utf8(blob.content()).ok().map(String::from)
     }
 

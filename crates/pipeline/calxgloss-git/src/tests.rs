@@ -780,7 +780,15 @@ fn file_translation_attempt(
 fn accepted_attempt_translation_returns_merged_code_verbatim() {
     let (tmp_dir, manager) = temp_git_repo();
     let code = "pub fn draw_sprite(target: u32) {\n    // accepted translation\n}\n";
-    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 2, code, true);
+    file_translation_attempt(
+        &manager,
+        &tmp_dir,
+        "game_logic.dll",
+        "DrawSprite",
+        2,
+        code,
+        true,
+    );
 
     let accepted = manager.accepted_attempt_translation("game_logic.dll", "DrawSprite");
 
@@ -793,20 +801,64 @@ fn accepted_attempt_translation_returns_merged_code_verbatim() {
 fn accepted_attempt_translation_skips_unmerged_and_other_binaries() {
     let (tmp_dir, manager) = temp_git_repo();
     // Committed but never merged: work in review, not an accepted translation.
-    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 1, "fn wip() {}", false);
+    file_translation_attempt(
+        &manager,
+        &tmp_dir,
+        "game_logic.dll",
+        "DrawSprite",
+        1,
+        "fn wip() {}",
+        false,
+    );
     // Merged, but under a different binary — branch names keep the binary verbatim.
-    file_translation_attempt(&manager, &tmp_dir, "other.dll", "DrawSprite", 1, "fn other() {}", true);
+    file_translation_attempt(
+        &manager,
+        &tmp_dir,
+        "other.dll",
+        "DrawSprite",
+        1,
+        "fn other() {}",
+        true,
+    );
 
-    assert!(manager.accepted_attempt_translation("game_logic.dll", "DrawSprite").is_none());
-    assert!(manager.accepted_attempt_translation("game_logic.dll", "Absent").is_none());
-    assert!(manager.accepted_attempt_translation("other.dll", "DrawSprite").is_some());
+    assert!(
+        manager
+            .accepted_attempt_translation("game_logic.dll", "DrawSprite")
+            .is_none()
+    );
+    assert!(
+        manager
+            .accepted_attempt_translation("game_logic.dll", "Absent")
+            .is_none()
+    );
+    assert!(
+        manager
+            .accepted_attempt_translation("other.dll", "DrawSprite")
+            .is_some()
+    );
 }
 
 #[test]
 fn accepted_attempt_translation_prefers_the_highest_merged_attempt() {
     let (tmp_dir, manager) = temp_git_repo();
-    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 1, "fn v1() {}", true);
-    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 2, "fn v2() {}", true);
+    file_translation_attempt(
+        &manager,
+        &tmp_dir,
+        "game_logic.dll",
+        "DrawSprite",
+        1,
+        "fn v1() {}",
+        true,
+    );
+    file_translation_attempt(
+        &manager,
+        &tmp_dir,
+        "game_logic.dll",
+        "DrawSprite",
+        2,
+        "fn v2() {}",
+        true,
+    );
 
     let (attempt, code) = manager
         .accepted_attempt_translation("game_logic.dll", "DrawSprite")
@@ -820,8 +872,24 @@ fn accepted_attempt_translation_is_none_when_a_higher_attempt_is_unmerged() {
     // v2 under review must not mask the accepted v1 — nor may v2's own
     // unmerged code seed. The accepted state is exactly what main holds.
     let (tmp_dir, manager) = temp_git_repo();
-    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 1, "fn v1() {}", true);
-    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 2, "fn v2_wip() {}", false);
+    file_translation_attempt(
+        &manager,
+        &tmp_dir,
+        "game_logic.dll",
+        "DrawSprite",
+        1,
+        "fn v1() {}",
+        true,
+    );
+    file_translation_attempt(
+        &manager,
+        &tmp_dir,
+        "game_logic.dll",
+        "DrawSprite",
+        2,
+        "fn v2_wip() {}",
+        false,
+    );
 
     let (attempt, code) = manager
         .accepted_attempt_translation("game_logic.dll", "DrawSprite")
@@ -843,9 +911,17 @@ fn accepted_attempt_translation_is_none_without_a_translated_module() {
     std::fs::create_dir_all(note.parent().unwrap()).unwrap();
     std::fs::write(&note, "work in progress").unwrap();
     manager
-        .commit(&branch, "re/auto/DrawSprite: notes only", &[note.to_str().unwrap()])
+        .commit(
+            &branch,
+            "re/auto/DrawSprite: notes only",
+            &[note.to_str().unwrap()],
+        )
         .unwrap();
     manager.merge_to_main(&branch).unwrap();
 
-    assert!(manager.accepted_attempt_translation("game_logic.dll", "DrawSprite").is_none());
+    assert!(
+        manager
+            .accepted_attempt_translation("game_logic.dll", "DrawSprite")
+            .is_none()
+    );
 }
