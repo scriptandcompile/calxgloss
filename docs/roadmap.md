@@ -32,7 +32,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
-| P15 | SEH and cleanup-on-failure idiom detection — name each function's error-handling idiom (SEH frame, RaiseException, goto-cleanup ladder) and the failure codes baseline tests must preserve | evidence (`calxgloss-errhandling` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | 🔶 in progress | next ticket: #293 | [#230](https://github.com/scriptandcompile/calxgloss/issues/230) |
 | P18 | Binary-version diffing (BinDiff-style) — pair functions across binary versions by structural similarity so accepted translations carry over and only changed functions re-enter the queue | evidence (`calxgloss-bdiff` (new)) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #233 | [#233](https://github.com/scriptandcompile/calxgloss/issues/233) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
@@ -60,42 +59,6 @@ re-derivation: testgen swapping integer boundary sampling for rounding/NaN
 sampling on flagged functions, and disassembly corroboration against SSE/x87
 mnemonics — unblocked now, since #226 landed its machine-listing reads with
 P12.6. Spec: #229. Tickets: not yet filed (`/to-tickets`).
-
-## P15 — SEH and cleanup-on-failure idiom detection (evidence + integrations + pipeline + interface)
-
-**MSVC binaries protect themselves two very different ways, and neither
-shape is visible to the translator.** SEH frames (`__try`/`__except`/
-`__finally`, `RaiseException`, filter-registration APIs) get translated as
-straight-line logic that drops the exception semantics, and the C
-cleanup-on-failure idiom — a ladder of guarded early gotos converging on one
-shared release block that returns a failure code — gets re-implemented as
-nested conditionals, while the HRESULT/NTSTATUS codes the original returns
-dissolve into ad-hoc Rust error values no baseline test pins. A new evidence
-crate, `calxgloss-errhandling`, reads only the bodies the scan already keeps
-— no new engine reads, no CFG dependency — and lands four finding families:
-`SehFrame` (spelled-out `try`/`catch` blocks, named personality-handler
-thunks, exception-API calls — strongest family wins), `RaiseException` (a
-direct call, naming the literal code argument), `GotoCleanup` (two or more
-guarded forward gotos converging on one label block that performs release
-calls or a common constant return — a lone goto claims nothing), and
-`ErrorCode` (per-function HRESULT/NTSTATUS literals from returns, guard
-comparisons, and `RaiseException` arguments — BOOL-shaped 0/1 returns claim
-nothing). A cross-function pass propagates error codes over the body-derived
-call map (ADR-0024's rails): a caller comparing against or re-returning a
-callee's code inherits it at a confidence penalty, scan order preserved,
-first claim wins (ADR-0028's precedent); the idioms themselves are not
-propagated. Nothing is written back to the program (ADR-0020); the document
-persists per binary under the analysis-directory convention (ADR-0043) as a
-new file, so every existing artifact loads unchanged. Consumers: an ERROR
-HANDLING findings section on the module-context and escalate prompts (the
-control-flow-findings pattern, omitted when the function has no findings)
-naming the idiom, its Rust mapping (`Result` + early returns + scope guards
-for ladders, an exception-mapped error type for SEH frames), and the
-function's failure codes; and a CLI breakdown command. GS stack-canary code
-is already stripped from the bodies this scan reads by the shipped
-decompiler-noise pre-filter (#232, #271–#273), so the canary-false-fire gate
-is redundant insurance against a filter miss, not a load-bearing guard.
-Spec: #230. Tickets: #287–#293 (#287–#292 shipped).
 
 ## P18 — Binary-version diffing (BinDiff-style) (evidence + pipeline + interface)
 
