@@ -1050,8 +1050,9 @@ mod tests {
     #[tokio::test]
     async fn two_scans_of_one_program_diff_cleanly() {
         // The diffing contract, asserted over the grown finding set:
-        // every family in one program, scanned twice, lands the same
-        // findings in the same order.
+        // every family in one program — a propagation pair included,
+        // so the inherited block rides the equality too (#291) —
+        // scanned twice, lands the same findings in the same order.
         let source = FakeProgram {
             functions: vec![
                 summary("spelled"),
@@ -1060,6 +1061,7 @@ mod tests {
                 summary("coded"),
                 summary("plain"),
                 summary("api_only"),
+                summary("carrier"),
             ],
             bodies: HashMap::from([
                 ("spelled".to_string(), SEH_BODY.to_string()),
@@ -1068,6 +1070,10 @@ mod tests {
                 ("coded".to_string(), CODED_RAISE_BODY.to_string()),
                 ("plain".to_string(), "  run();\n".to_string()),
                 ("api_only".to_string(), API_BODY.to_string()),
+                (
+                    "carrier".to_string(),
+                    "  return coded(param_1);\n".to_string(),
+                ),
             ]),
             ..FakeProgram::default()
         };
@@ -1083,8 +1089,20 @@ mod tests {
         let names: Vec<&str> = first.findings.iter().map(|f| f.function()).collect();
         assert_eq!(
             names,
-            vec!["spelled", "named", "raiser", "coded", "coded", "api_only"],
-            "the coded function's raise finding and its one code record both key to it"
+            vec![
+                "spelled", "named", "raiser", "coded", "coded", "api_only", "carrier"
+            ],
+            "the coded function's raise finding and its one code record both key to it, \
+             and the carrier's one inherited record lands last, after every per-function finding"
+        );
+        assert_eq!(
+            first
+                .findings
+                .last()
+                .expect("the inherited record rides last")
+                .kind(),
+            "inherited_error_code",
+            "the propagated record is in the compared set — two scans diff cleanly over it too"
         );
     }
 
