@@ -809,6 +809,7 @@ dependencies = [
  "calxgloss-consts",
  "calxgloss-controlflow",
  "calxgloss-decomp",
+ "calxgloss-errhandling",
  "calxgloss-globalstate",
  "calxgloss-kuna",
  "calxgloss-libmatch",

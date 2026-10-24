@@ -35,7 +35,7 @@ Build an agent harness that leverages GhidraMCP to reverse engineer project exec
   ┌───────────────────────────────────────────────────────────────────────────────────────────┐
   │                      calxgloss-translator — the translation pipeline                      │
   │ read cache ▸ evidence warmup ▸ fetch ▸ prompt ▸ translate ▸ verify ▸ retry ▸ commit       │
-  │ batch warmup: the 11 evidence scans · failure-informed retries · tier escalation          │
+  │ batch warmup: the 13 evidence scans · failure-informed retries · tier escalation          │
   │ Windows API calls mapped through calxgloss-pal                                            │
   └───────────────────────────────────────────────────────────────────────────────────────────┘
            ▲                          ▲                          ▲                    ▲

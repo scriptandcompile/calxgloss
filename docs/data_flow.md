@@ -173,18 +173,20 @@ pipeline.batch_translate(binary, functions, …)
 │       the directory. A failed cache build degrades to engine
 │       reads, never fails the batch.
 │
-└──► ensure_* warmup — the eleven analysis scans, in order:
+└──► ensure_* warmup — the thirteen analysis scans, fan-out four at a time:
      ensure_type_database          → re/analysis/typesdb/{binary}.json
      ensure_type_inference         → re/analysis/typeinfer/{binary}.json
      ensure_algorithm_recognition  → re/analysis/algorithm/{binary}.json
      ensure_memory_detection       → re/analysis/memory/{binary}.json
      ensure_sync_detection         → re/analysis/sync/{binary}.json
+     ensure_global_state_detection → re/analysis/globalstate/{binary}.json
      ensure_callback_detection     → re/analysis/callback/{binary}.json
      ensure_controlflow_detection  → re/analysis/controlflow/{binary}.json
      ensure_string_context         → re/analysis/stringctx/{binary}.json
      ensure_api_detection          → re/analysis/apidetect/{binary}.json
      ensure_const_detection        → re/analysis/consts/{binary}.json
      ensure_serialize_detection    → re/analysis/serialize/{binary}.json
+     ensure_error_handling_detection → re/analysis/errhandling/{binary}.json
 ```
 
 Each `ensure_*` follows the same rule: **the persisted JSON is the cache** —

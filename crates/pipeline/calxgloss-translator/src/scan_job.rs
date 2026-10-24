@@ -1,6 +1,6 @@
 //! One pre-batch evidence scan as an owned job (issue #237).
 //!
-//! The twelve `ensure_*` entry points on [`TranslationPipeline`](crate::TranslationPipeline)
+//! The thirteen `ensure_*` entry points on [`TranslationPipeline`](crate::TranslationPipeline)
 //! keep their signatures and their cached-document short-circuits, but the
 //! scan itself — the engine call, the document
 //! persist, and the warn-and-continue degradation — runs through [`ScanJob`],
@@ -31,6 +31,8 @@ use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_decomp::PipelineSource;
+use calxgloss_errhandling::engine::ErrhandlingEngine;
+use calxgloss_errhandling::persist::ErrhandlingPersistor;
 use calxgloss_globalstate::engine::GlobalStateEngine;
 use calxgloss_globalstate::persist::GlobalStatePersistor;
 use calxgloss_memory::engine::MemoryEngine;
@@ -607,6 +609,37 @@ impl ScanJob {
                     binary = %self.binary,
                     findings = result.findings.len(),
                     "Serialization detection complete"
+                );
+            },
+        )
+        .await
+    }
+
+    /// The error-handling idiom detection scan, unless its document is
+    /// already filed (issue #292).
+    pub(crate) async fn error_handling_detection(&self) -> bool {
+        let persistor = ErrhandlingPersistor::new(&self.workspace);
+        if persistor.exists(&self.binary) {
+            debug!(
+                binary = %self.binary,
+                path = %persistor.path_for(&self.binary).display(),
+                "Error-handling result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(binary = %self.binary, "Detecting error-handling idioms before batch translation");
+        let engine = ErrhandlingEngine::with_source(self.source.clone());
+        self.run_scan(
+            engine.scan(self.binary.as_str()),
+            |result| persistor.save(result),
+            "Error-handling idiom detection failed; continuing without error-handling context",
+            "Failed to persist error-handling result; continuing without error-handling context",
+            |result| {
+                info!(
+                    binary = %self.binary,
+                    findings = result.findings.len(),
+                    "Error-handling idiom detection complete"
                 );
             },
         )
