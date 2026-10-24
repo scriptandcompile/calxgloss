@@ -18,6 +18,7 @@ use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
 use calxgloss_llm::LlmClient;
 use calxgloss_llm::LlmConfig;
+use calxgloss_translator::AcceptedAttemptSource;
 use calxgloss_translator::RetryConfig;
 use calxgloss_translator::TranslationPipeline;
 use calxgloss_translator::build_hallucination_detector;
@@ -47,6 +48,24 @@ impl PassOutcome {
     /// run-level stop) cut it short at a unit boundary.
     pub fn ended_early(&self) -> bool {
         self.attempted < self.planned
+    }
+}
+
+/// The pipeline's window onto the git history for carry-over seeding
+/// (issue #299): where an accepted (merged) translation's code lives.
+///
+/// The translator crate never touches git, so the CLI layer implements the
+/// port — one `GitManager::open` per lookup keeps the handle short-lived
+/// (the auto pass itself holds its own manager and may have a branch
+/// checked out; opening fresh reads history without disturbing it).
+struct GitAcceptedAttempts {
+    workspace: PathBuf,
+}
+
+impl AcceptedAttemptSource for GitAcceptedAttempts {
+    fn accepted_attempt(&self, binary: &str, function: &str) -> Option<(u32, String)> {
+        let git = GitManager::open(&self.workspace).ok()?;
+        git.accepted_attempt_translation(binary, function)
     }
 }
 
@@ -172,8 +191,8 @@ pub async fn run_translation_for_dll(
     );
 
     // Initialize output directory
-    let modules_dir = workspace.join("src").join("modules");
-    std::fs::create_dir_all(&modules_dir).context("Failed to create modules directory")?;
+    std::fs::create_dir_all(workspace.join("src").join("modules"))
+        .context("Failed to create modules directory")?;
 
     // Initialize LLM client
     let mut llm_config = LlmConfig::new(llm_url, llm_model)
@@ -246,6 +265,16 @@ pub async fn run_translation_for_dll(
         None
     };
 
+    // Carry-over seeding (issue #299): with git in play, the pipeline can
+    // ask the branch history whether a paired previous-version twin has an
+    // accepted (merged) translation to seed attempt 1 from. With `--skip-git`
+    // there is no history to ask, and the queue translates fresh as today.
+    if let Some(git_manager) = git.as_ref() {
+        pipeline = pipeline.with_accepted_attempt_source(std::sync::Arc::new(GitAcceptedAttempts {
+            workspace: git_manager.repo_path().to_path_buf(),
+        }));
+    }
+
     // Initialize verifier for retry loop
     let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
 
@@ -274,9 +303,8 @@ pub async fn run_translation_for_dll(
                 let Some(rust_code) = func_result.rust_code.as_ref() else {
                     return true;
                 };
-                let output_path = modules_dir
-                    .join(&func_result.function)
-                    .join("translated.rs");
+                let output_path =
+                    workspace.join(GitManager::translated_module_path(&func_result.function));
                 if let Err(e) = std::fs::create_dir_all(output_path.parent().unwrap())
                     .context("Failed to create output directory")
                 {
@@ -310,10 +338,23 @@ pub async fn run_translation_for_dll(
                     if let Some(output_path_str) = output_path.to_str()
                         && let Ok(_commit) = git_manager.commit(
                             branch_info,
-                            &format!(
-                                "re/auto/{}: translate {} (batch attempt)",
-                                func_result.function, binary
-                            ),
+                            // Carry-over provenance (issue #299): when attempt
+                            // 1 rode in on an accepted translation of a paired
+                            // previous-version function, the commit says so and
+                            // names the source. A fresh unit's message is
+                            // unchanged, byte for byte.
+                            &match func_result.carry_over.as_ref() {
+                                Some(seed) => format!(
+                                    "re/auto/{}: translate {} (batch attempt, {})",
+                                    func_result.function,
+                                    binary,
+                                    seed.commit_note()
+                                ),
+                                None => format!(
+                                    "re/auto/{}: translate {} (batch attempt)",
+                                    func_result.function, binary
+                                ),
+                            },
                             &[output_path_str],
                         )
                         && let Ok(merge_result) = git_manager.merge_to_main(branch_info)

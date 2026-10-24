@@ -65,6 +65,13 @@ pub struct FunctionResult {
 
     /// The git branch created for this function (if git is enabled).
     pub branch: Option<GitBranch>,
+
+    /// Carry-over provenance (issue #299): when attempt 1 was seeded from
+    /// an accepted translation of a paired previous-version function, the
+    /// record names that function and the attempt branch the code rode in
+    /// on. `None` for a fresh translation — and for a seeded unit whose
+    /// fresh chain ultimately won, since then the winning code is the LLM's.
+    pub carry_over: Option<crate::carry_over::CarryOverRecord>,
 }
 
 impl FunctionResult {
@@ -82,6 +89,7 @@ impl FunctionResult {
             stub_code: None,
             retry_result,
             branch: None,
+            carry_over: None,
         }
     }
 
@@ -101,6 +109,7 @@ impl FunctionResult {
             stub_code: None,
             retry_result,
             branch,
+            carry_over: None,
         }
     }
 
@@ -114,6 +123,7 @@ impl FunctionResult {
             stub_code: None,
             retry_result: RetryResult::new(),
             branch: None,
+            carry_over: None,
         }
     }
 
@@ -131,6 +141,7 @@ impl FunctionResult {
             stub_code: Some(stub_code),
             retry_result: RetryResult::new(),
             branch: None,
+            carry_over: None,
         }
     }
 }

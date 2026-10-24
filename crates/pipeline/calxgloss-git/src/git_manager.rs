@@ -8,7 +8,7 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use calxgloss_types::{BinaryIdentity, GitBranch, GitCommit, TypesError};
+use calxgloss_types::{BinaryIdentity, GitBranch, GitCommit, TypesError, parse_branch_name};
 use chrono::Utc;
 use git2::build::CheckoutBuilder;
 use git2::{DiffOptions, Oid, Repository, ResetType};
@@ -943,6 +943,73 @@ impl GitManager {
             }
             _ => Ok(false),
         }
+    }
+
+    /// The repo-relative path a translated function's code rides at.
+    ///
+    /// The single spelling of the convention: the auto pipeline writes and
+    /// commits `src/modules/{function}/translated.rs`, and carry-over
+    /// seeding (issue #299) reads an accepted translation's code back from
+    /// exactly that path. Both sides name it here so the write and the read
+    /// can never drift apart.
+    pub fn translated_module_path(function: &str) -> String {
+        format!("src/modules/{function}/translated.rs")
+    }
+
+    /// The accepted (merged) translation for one function of one binary,
+    /// as `(attempt, rust_code)` — the carry-over seed's source (issue #299).
+    ///
+    /// A function's translation is *accepted* when its `re/{binary}/{function}v{N}`
+    /// branch is merged into `main` — the review overlay's Accepted
+    /// classification (ADR-0003) read straight off git. The highest merged
+    /// attempt wins (a later attempt that landed supersedes earlier ones),
+    /// and its `translated.rs` is returned **verbatim** from that branch's
+    /// tip tree — the same bytes the merge recorded, not a re-render.
+    ///
+    /// `None` when nothing qualifies: no branches for the pair, none merged
+    /// (work-in-progress and rejected branches are never a seed), or the
+    /// merged branch holds no translated module at its tip.
+    pub fn accepted_attempt_translation(
+        &self,
+        binary: &str,
+        function: &str,
+    ) -> Option<(u32, String)> {
+        let branches = self.list_translation_branches().ok()?;
+        let mut best: Option<(u32, &str)> = None;
+        for name in &branches {
+            let Some(parsed) = parse_branch_name(name) else {
+                continue;
+            };
+            if parsed.binary.as_str() != binary || parsed.function.as_deref() != Some(function) {
+                continue;
+            }
+            // Un-prefixed attempts are first attempts by convention.
+            let attempt = parsed.attempt.unwrap_or(1);
+            if best.is_some_and(|(best_attempt, _)| attempt <= best_attempt) {
+                continue;
+            }
+            if !self.is_branch_merged_into_main(name).unwrap_or(false) {
+                continue;
+            }
+            best = Some((attempt, name));
+        }
+        let (attempt, branch_name) = best?;
+        let code = self.branch_file_content(branch_name, &Self::translated_module_path(function))?;
+        Some((attempt, code))
+    }
+
+    /// The blob at `path` in `branch`'s tip commit, as UTF-8 text — `None`
+    /// when the branch, the path, or readable text isn't there.
+    fn branch_file_content(&self, branch: &str, path: &str) -> Option<String> {
+        let branch = self
+            .repo
+            .find_branch(branch, git2::BranchType::Local)
+            .ok()?;
+        let commit = branch.get().peel_to_commit().ok()?;
+        let tree = commit.tree().ok()?;
+        let entry = tree.get_path(Path::new(path)).ok()?;
+        let blob = entry.to_object(&self.repo).ok().and_then(|o| o.into_blob().ok())?;
+        std::str::from_utf8(blob.content()).ok().map(String::from)
     }
 
     /// Deletes a branch.

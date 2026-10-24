@@ -313,6 +313,25 @@ pub struct TranslationPipeline {
     /// cache existed.
     binary_path: Option<std::path::PathBuf>,
 
+    /// Port to the git history's accepted (merged) translations, for
+    /// carry-over seeding (issue #299).
+    ///
+    /// Set by the CLI when git is enabled; `None` everywhere else, which
+    /// keeps the queue exactly as it is today. The translator never touches
+    /// git itself — this trait object is the only window onto it, the same
+    /// port pattern the version-pairing trigger uses.
+    accepted_attempt_source: Option<Arc<dyn crate::carry_over::AcceptedAttemptSource>>,
+
+    /// The current batch's carry-over seeds, keyed by new-function name.
+    ///
+    /// Collected once per batch by
+    /// [`refresh_carry_over_seeds`](Self::refresh_carry_over_seeds) — right
+    /// after the pre-batch scans, when the pairing documents for this run's
+    /// bytes exist — and read by [`translate`](Self::translate) per unit.
+    /// Empty outside a seeded batch; one batch covers one binary, so the
+    /// keys cannot collide.
+    carry_over_seeds: Mutex<HashMap<String, crate::carry_over::CarryOverSeed>>,
+
     /// The batch's shared cached scan source, armed by
     /// [`begin_cached_source`](Self::begin_cached_source) at the top of a
     /// batch and read by every scan, the call-graph build, and the
@@ -431,6 +450,8 @@ impl TranslationPipeline {
             call_graph: None,
             callgraph_cache_dir: None,
             binary_path: None,
+            accepted_attempt_source: None,
+            carry_over_seeds: Mutex::new(HashMap::new()),
             cached_source: Mutex::new(None),
             type_inference_latch: Mutex::new(None),
             scan_window_high_water: Arc::new(AtomicUsize::new(0)),
@@ -814,6 +835,24 @@ impl TranslationPipeline {
         self
     }
 
+    /// Wire the port to the git history's accepted translations, enabling
+    /// carry-over seeding for this pipeline's batches (issue #299).
+    ///
+    /// A batch then seeds attempt 1 of every function that is confidently
+    /// paired (per the pairing documents the scan step leaves behind) with a
+    /// previous-version twin whose translation is accepted — the code rides
+    /// in verbatim and faces the same baseline capture and full
+    /// verification against the new bytes. Without this, or without a
+    /// workspace and binary path also set, batches translate fresh exactly
+    /// as today.
+    pub fn with_accepted_attempt_source(
+        mut self,
+        source: Arc<dyn crate::carry_over::AcceptedAttemptSource>,
+    ) -> Self {
+        self.accepted_attempt_source = Some(source);
+        self
+    }
+
     /// Force the batch's scan read cache cold for this pipeline's batches
     /// (issue #106).
     ///
@@ -1059,6 +1098,54 @@ impl TranslationPipeline {
                 }
             }
         };
+
+        // Carry-over seeding (issue #299): when a pairing document pairs
+        // this function confidently with a previous-version twin whose
+        // translation was *accepted* (a merged review branch), attempt 1
+        // carries that code — no prompt built, no LLM called, no tokens
+        // spent. Everything deterministic still runs: the scan fetch and
+        // root refusals above, the baseline tests and tier selection just
+        // above, and the full verification against the NEW binary's bytes
+        // in the retry loop ahead — the accepted translation is a
+        // hypothesis the new bytes get to reject, and a rejection hands the
+        // unit to the fresh attempt chain like any other failed attempt.
+        // Nothing here marks the unit verified; the review overlay's model
+        // (ADR-0003) is untouched — the new branch starts unmerged.
+        if let Some(seed) = self
+            .carry_over_seeds
+            .lock()
+            .expect("carry-over seeds lock")
+            .get(function)
+            .cloned()
+        {
+            info!(
+                binary,
+                function,
+                old_function = %seed.old_function,
+                old_attempt = seed.old_attempt,
+                family = seed.family,
+                confidence = seed.confidence,
+                "Seeding attempt 1 from the accepted translation of the paired previous-version function"
+            );
+            return Ok(Translation {
+                binary: binary.to_string().into(),
+                function: function.to_string(),
+                function_address: Some(function_info.address),
+                rust_code: seed.rust_code,
+                // No prompt was sent; the record says what rode in instead.
+                prompt_used: format!(
+                    "carry-over seed: {} attempt {} (paired, {} family, {}% confidence) — no prompt sent, no LLM call",
+                    seed.old_function, seed.old_attempt, seed.family, seed.confidence
+                ),
+                model: "carry-over".to_string(),
+                tokens_used: None,
+                baseline_tests,
+                call_graph: function_info.call_graph.clone(),
+                call_graph_context: enriched_context,
+                disassembly_hints: function_info.disassembly_hints.clone(),
+                context_tier: tier,
+            });
+        }
 
         // Step 5: Build a complexity-aware prompt and send to LLM
         self.emit(ProgressEvent::LlmCallStart {
@@ -2351,6 +2438,73 @@ impl TranslationPipeline {
         }
     }
 
+    /// Collect this batch's carry-over seeds (issue #299), immediately after
+    /// [`run_prebatch_scans`] wrote the pairing documents for the bytes being
+    /// translated now.
+    ///
+    /// One directory pass, one hash, and one accepted-code lookup per paired
+    /// candidate — milliseconds against an LLM batch. With no port wired, no
+    /// workspace or binary path, no eligible documents, or no accepted twin
+    /// for a function, the map stays empty and every unit translates fresh,
+    /// byte for byte like today. Never fails the batch: the documents are
+    /// context a consumer may use, not an input it requires.
+    fn refresh_carry_over_seeds(&self, binary: &str, functions: &[String]) {
+        let mut seeds = self.carry_over_seeds.lock().expect("carry-over seeds lock");
+        seeds.clear();
+        let (Some(source), Some(workspace), Some(binary_path)) = (
+            self.accepted_attempt_source.as_ref(),
+            self.workspace.as_deref(),
+            self.binary_path.as_deref(),
+        ) else {
+            return;
+        };
+        if functions.is_empty() {
+            return;
+        }
+        let collected =
+            crate::carry_over::collect_seeds(workspace, binary, binary_path, functions, source);
+        if !collected.is_empty() {
+            info!(
+                binary,
+                seeds = collected.len(),
+                "Carry-over: attempt 1 will seed from accepted translations of paired functions"
+            );
+        }
+        *seeds = collected;
+    }
+
+    /// Attach the carry-over provenance to a completed unit's result
+    /// (issue #299): the record names the old function and attempt branch
+    /// the winning code rode in on, so the batch callback's commit message
+    /// and any reader of the record can see where attempt 1's code came
+    /// from.
+    ///
+    /// Attached only when the unit succeeded **with the seed's code** — if
+    /// the fresh chain won, the code is the LLM's, and claiming a carry-over
+    /// would be false provenance.
+    fn attach_carry_over_provenance(&self, result: &mut batch::FunctionResult) {
+        if !result.success {
+            return;
+        }
+        let seed = self
+            .carry_over_seeds
+            .lock()
+            .expect("carry-over seeds lock")
+            .get(&result.function)
+            .cloned();
+        let (Some(seed), Some(code)) = (seed, result.rust_code.as_deref()) else {
+            return;
+        };
+        if code == seed.rust_code {
+            result.carry_over = Some(crate::carry_over::CarryOverRecord {
+                old_function: seed.old_function,
+                old_attempt: seed.old_attempt,
+                family: seed.family,
+                confidence: seed.confidence,
+            });
+        }
+    }
+
     /// The most evidence scans that ran at once during the latest scan
     /// phase (issue #241) — the fan-out window's high-water mark, recorded
     /// by [`run_scan_in_window`] as each scan enters the window. Zero when
@@ -2976,6 +3130,12 @@ impl TranslationPipeline {
         // priority functions sort to the front.
         let functions = self.apply_function_scope(binary, functions.to_vec(), |f| f.as_str());
 
+        // Carry-over seeding (issue #299): the scan step just persisted the
+        // pairing documents for these exact bytes; collect the seeds for
+        // this queue now, so the batch's inputs are fixed before its first
+        // unit starts.
+        self.refresh_carry_over_seeds(binary, &functions);
+
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
@@ -3147,6 +3307,11 @@ impl TranslationPipeline {
                 }
                 aborted = true;
             }
+
+            // Carry-over provenance (issue #299): when attempt 1 rode in on
+            // an accepted translation and that code is what succeeded, say
+            // so on the record — the git callback's commit message reads it.
+            self.attach_carry_over_provenance(&mut result);
 
             let success = result.success;
             // W2.5: charge the unit's token spend against the run budget.
@@ -3321,6 +3486,12 @@ impl TranslationPipeline {
         // W2.5: operator scope — skipped functions leave the plan before the
         // first unit starts, priority functions sort to the front.
         let plan = self.apply_function_scope(binary, plan, |p| p.name.as_str());
+
+        // Carry-over seeding (issue #299): pairing documents for these exact
+        // bytes were persisted by the scan step; collect the seeds for this
+        // plan before its first unit starts.
+        let queue_names: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
+        self.refresh_carry_over_seeds(binary, &queue_names);
 
         let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
 
@@ -3510,6 +3681,11 @@ impl TranslationPipeline {
                     }
                 }
             };
+
+            // Carry-over provenance (issue #299): when attempt 1 rode in on
+            // an accepted translation and that code is what succeeded, say
+            // so on the record — the git callback's commit message reads it.
+            self.attach_carry_over_provenance(&mut result);
 
             let success = result.success;
             // W2.5: charge the unit's token spend against the run budget.
@@ -6528,6 +6704,317 @@ void SetCursor(void)
             calxgloss_types::Confidence::new(1),
             "the persisted document was reused, not recomputed"
         );
+    }
+
+    // ─── Carry-over seeding (issue #299) ───────────────────────────────
+
+    /// The pipeline's carry-over track: a hand-filed pairing document for
+    /// the live bytes, plus a port answering which twins have accepted
+    /// (merged) translations. Mirrors the CLI's real wiring without git.
+    fn seeded_pipeline(
+        dir: &std::path::Path,
+        accepted: Vec<(String, u32, String)>,
+    ) -> (TranslationPipeline, std::path::PathBuf) {
+        struct Port {
+            accepted: std::collections::HashMap<String, (u32, String)>,
+        }
+        impl crate::carry_over::AcceptedAttemptSource for Port {
+            fn accepted_attempt(&self, binary: &str, function: &str) -> Option<(u32, String)> {
+                assert_eq!(binary, PROGRAM, "the port is keyed on the run's binary");
+                self.accepted.get(function).cloned()
+            }
+        }
+        let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
+        let binary_file = dir.join(calxgloss_testfixtures::TARGET_FILE_NAME);
+        std::fs::copy(fixture.path(), &binary_file).expect("fixture copied into the workspace");
+        // An LLM port nothing answers: a unit that reaches it proves the
+        // fresh chain ran, and only a seeded unit never reaches it.
+        let llm = LlmClient::from_url("http://127.0.0.1:1/v1", "qwen3").expect("llm config");
+        let accepted: std::collections::HashMap<String, (u32, String)> = accepted
+            .into_iter()
+            .map(|(function, attempt, code)| (function, (attempt, code)))
+            .collect();
+        let pipeline = TranslationPipeline::new(fixture_kuna(), llm, ApiMappings::default())
+            .with_workspace(dir.to_path_buf())
+            .with_binary_path(&binary_file)
+            .with_accepted_attempt_source(Arc::new(Port { accepted }));
+        (pipeline, binary_file)
+    }
+
+    /// File a pairing document for the live bytes under the analysis
+    /// convention — exactly where the #298 trigger leaves its documents,
+    /// so the carry-over step reads the real layout.
+    async fn file_pairing_document(
+        dir: &std::path::Path,
+        binary_file: &std::path::Path,
+        records: Vec<calxgloss_bdiff::PairingRecord>,
+    ) {
+        let new_hash = calxgloss_decomp::sha256_of_file(binary_file)
+            .expect("hashable")
+            .expect("the binary exists");
+        let listing = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let document = calxgloss_bdiff::PairingDocument {
+            binary: PROGRAM.into(),
+            old_bytes_sha256: "a".repeat(64),
+            new_bytes_sha256: new_hash,
+            old_functions: records.iter().map(|r| r.old_function.clone()).collect(),
+            new_functions: listing.iter().map(|f| f.name.clone()).collect(),
+            pairings: records,
+        };
+        calxgloss_bdiff::BdiffPersistor::new(dir)
+            .save(&document)
+            .expect("pairing document filed");
+    }
+
+    fn pairing(old: &str, new: &str, confidence: u8) -> calxgloss_bdiff::PairingRecord {
+        calxgloss_bdiff::PairingRecord {
+            old_function: old.into(),
+            new_function: new.into(),
+            family: calxgloss_bdiff::MatchFamily::NameIdentity,
+            confidence: calxgloss_types::Confidence::new(confidence),
+            evidence: vec![format!("{old} ↔ {new}")],
+        }
+    }
+
+    /// The marquee for issue #299: with a confident pairing document naming
+    /// the live bytes and a paired twin whose translation was accepted, the
+    /// unit's attempt 1 carries the accepted code verbatim — the LLM port
+    /// stays untouched — and the unit still runs through the retry loop's
+    /// full verification. A below-floor pairing queues fresh exactly as
+    /// today: it reaches the (closed) LLM port and fails like any unit the
+    /// engine cannot answer for.
+    #[tokio::test]
+    async fn a_batch_seeds_attempt_1_from_the_accepted_translation_of_a_paired_twin() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+        let seeded_code = "fn seeded_from_the_previous_version() {}".to_string();
+
+        // Kuna lists MinGW exports with the leading underscore; resolve the
+        // names the queue will use, as every fixture test does.
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let name_for = |plain: &str| {
+            listed
+                .iter()
+                .find(|f| f.name.trim_start_matches('_') == plain)
+                .unwrap_or_else(|| panic!("the fixture lists {plain}"))
+                .name
+                .clone()
+        };
+        let status = name_for("fixture_status");
+        let describe = name_for("fixture_describe");
+
+        let (pipeline, binary_file) = seeded_pipeline(
+            dir.path(),
+            vec![("legacy_status".to_string(), 3, seeded_code.clone())],
+        );
+        file_pairing_document(
+            dir.path(),
+            &binary_file,
+            vec![
+                // A rename-aware pairing: the twin goes by another name.
+                pairing("legacy_status", &status, 95),
+                // One point under the floor — today's fresh queue, exactly.
+                pairing("old_describe", &describe, calxgloss_bdiff::CARRY_OVER_CONFIDENCE_FLOOR - 1),
+            ],
+        )
+        .await;
+
+        let result = pipeline
+            .batch_translate(
+                PROGRAM,
+                &[status.clone(), describe.clone()],
+                &retry::RetryConfig {
+                    max_attempts: 1,
+                    strategy: retry::RetryStrategy::CompileFix,
+                    escalate_on_failure: false,
+                    max_context_tier: None,
+                },
+                &verifier,
+                None,
+            )
+            .await
+            .expect("a unit that fails verification never fails the batch itself");
+
+        assert_eq!(result.results.len(), 2);
+        let seeded = result.results.iter().find(|r| r.function == status).expect("status unit");
+        assert_eq!(
+            seeded.retry_result.attempts.len(),
+            1,
+            "the seeded code was verified as attempt 1, and max_attempts caps the chain"
+        );
+        let attempt = &seeded.retry_result.attempts[0];
+        assert_eq!(
+            attempt.rust_code, seeded_code,
+            "attempt 1 carries the accepted translation verbatim — the fresh \
+             chain never reached the closed LLM port"
+        );
+        assert_eq!(attempt.strategy, "initial", "the seed rides as attempt 1");
+        assert!(
+            attempt.tokens_used.is_none(),
+            "a seeded attempt spends no LLM tokens"
+        );
+        // The seed is a hypothesis the new bytes get to reject — and this one
+        // survives full verification (a real scaffolded compile and test run
+        // against the freshly captured baseline). Success here is the
+        // verifier's verdict, never a carry-over stamp: the review overlay
+        // model (ADR-0003) is untouched, and nothing marks the unit Verified.
+        assert!(
+            attempt.is_successful(),
+            "the seeded code faced the retry loop's full verification, and \
+             verification — not the pairing — decided the outcome"
+        );
+        let carry = seeded
+            .carry_over
+            .as_ref()
+            .expect("the winning seed code earns its provenance record");
+        assert_eq!(carry.old_function, "legacy_status");
+        assert_eq!(carry.old_attempt, 3);
+        assert_eq!(carry.confidence, 95);
+        assert_eq!(
+            carry.commit_note(),
+            "seeded from legacy_status attempt 3 (paired, 95% confidence)"
+        );
+
+        let fresh = result.results.iter().find(|r| r.function == describe).expect("describe unit");
+        assert!(
+            fresh.retry_result.attempts.is_empty(),
+            "the below-floor pairing queued fresh: the unit went to the LLM \
+             like today and failed there, never reaching verification"
+        );
+        assert!(!fresh.success);
+    }
+
+    /// The seeded attempt's own record names its source — the old function
+    /// and the attempt branch the code rode in on — and spends no tokens.
+    /// A known-library root's Skip classification also stands
+    /// independently of pairing: a seed for a delay-load thunk never gets
+    /// to translate it, refusal first.
+    #[tokio::test]
+    async fn a_seeded_attempt_names_its_source_and_never_overrides_a_root_refusal() {
+        let dir = TempDir::new().expect("temp workspace");
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let status = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists its status entry point")
+            .name
+            .clone();
+
+        let (pipeline, _) = seeded_pipeline(
+            dir.path(),
+            vec![("legacy_status".to_string(), 3, "fn carried_over() {}".to_string())],
+        );
+        pipeline
+            .carry_over_seeds
+            .lock()
+            .expect("seeds lock")
+            .insert(
+                status.clone(),
+                crate::carry_over::CarryOverSeed {
+                    old_function: "legacy_status".into(),
+                    old_attempt: 3,
+                    family: "name_identity",
+                    confidence: 95,
+                    rust_code: "fn carried_over() {}".to_string(),
+                },
+            );
+        // A seed cannot smuggle a Skip-classified root past the refusal —
+        // the known-library guard runs before any carry-over lookup.
+        pipeline.carry_over_seeds.lock().expect("seeds lock").insert(
+            "DelayLoad_ShellExecuteW".to_string(),
+            crate::carry_over::CarryOverSeed {
+                old_function: "old_thunk".into(),
+                old_attempt: 1,
+                family: "name_identity",
+                confidence: 95,
+                rust_code: "fn carried_over() {}".to_string(),
+            },
+        );
+
+        let translation = pipeline
+            .translate(PROGRAM, &status)
+            .await
+            .expect("the seeded unit needs no LLM to produce attempt 1");
+        assert_eq!(translation.rust_code, "fn carried_over() {}");
+        assert_eq!(translation.model, "carry-over", "the record says where the code came from");
+        assert!(translation.tokens_used.is_none(), "no tokens were spent");
+        assert!(
+            translation.prompt_used.contains("legacy_status")
+                && translation.prompt_used.contains("attempt 3"),
+            "the record names the source branch: {}",
+            translation.prompt_used
+        );
+
+        let refused = pipeline
+            .translate(PROGRAM, "DelayLoad_ShellExecuteW")
+            .await;
+        assert!(
+            matches!(refused, Err(TranslatorError::SkippedRoot { .. })),
+            "pairing never overrides the known-library Skip classification: {refused:?}"
+        );
+    }
+
+    /// The commit-message provenance rule: a carry-over record rides only
+    /// when the winning code **is** the seeded code — when the fresh chain
+    /// took over, the code is the LLM's and claiming a carry-over would be
+    /// false provenance.
+    #[test]
+    fn carry_over_provenance_rides_only_when_the_seed_code_won() {
+        let dir = TempDir::new().expect("temp workspace");
+        let pipeline = pipeline_over(Some(dir.path()));
+        pipeline
+            .carry_over_seeds
+            .lock()
+            .expect("seeds lock")
+            .insert(
+                "DrawSprite".to_string(),
+                crate::carry_over::CarryOverSeed {
+                    old_function: "legacy_draw".into(),
+                    old_attempt: 2,
+                    family: "name_identity",
+                    confidence: 95,
+                    rust_code: "fn carried() {}".to_string(),
+                },
+            );
+
+        let mut seeded_win = batch::FunctionResult::success(
+            PROGRAM,
+            "DrawSprite".to_string(),
+            "fn carried() {}".to_string(),
+            retry::RetryResult::new(),
+            None,
+        );
+        pipeline.attach_carry_over_provenance(&mut seeded_win);
+        let record = seeded_win.carry_over.expect("the seed won: provenance rides");
+        assert_eq!(record.old_function, "legacy_draw");
+        assert_eq!(record.old_attempt, 2);
+        assert_eq!(record.commit_note(), "seeded from legacy_draw attempt 2 (paired, 95% confidence)");
+
+        let mut fresh_win = batch::FunctionResult::success(
+            PROGRAM,
+            "DrawSprite".to_string(),
+            "fn the_llms_own_work() {}".to_string(),
+            retry::RetryResult::new(),
+            None,
+        );
+        pipeline.attach_carry_over_provenance(&mut fresh_win);
+        assert!(fresh_win.carry_over.is_none(), "the fresh chain won: no carry-over claim");
+
+        let mut failed = batch::FunctionResult::failure(
+            PROGRAM,
+            "DrawSprite".to_string(),
+            retry::RetryResult::new(),
+        );
+        failed.rust_code = Some("fn carried() {}".to_string());
+        failed.success = true;
+        pipeline.attach_carry_over_provenance(&mut failed);
+        assert!(failed.carry_over.is_some(), "the check rides the final code, however it got there");
     }
 
     /// The fan-out's marquee: given the same cached reads, the

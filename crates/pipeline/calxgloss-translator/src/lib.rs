@@ -16,6 +16,7 @@
 #![recursion_limit = "256"]
 
 pub mod error;
+pub mod carry_over;
 mod pipeline;
 pub mod retry;
 mod scan_job;
@@ -26,6 +27,7 @@ mod version_pairing;
 pub mod batch;
 
 pub use batch::{BatchTranslationResult, FunctionResult};
+pub use carry_over::{AcceptedAttemptSource, CarryOverRecord, CarryOverSeed};
 pub use error::{Result, TranslatorError};
 pub use pipeline::{TranslationPipeline, build_hallucination_detector, callback_signature_map};
 pub use retry::{

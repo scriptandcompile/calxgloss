@@ -737,3 +737,115 @@ fn test_create_branch_warn_continues_on_unmet() {
     assert!(result.is_ok());
     assert!(result.unwrap().created);
 }
+
+// ============================================================
+// Carry-over seeding: accepted translation lookups (issue #299)
+// ============================================================
+
+/// Commit one attempt's translated module on its branch, optionally merging
+/// it to main (a merged branch is the review overlay's Accepted state).
+fn file_translation_attempt(
+    manager: &GitManager,
+    tmp: &std::path::Path,
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    code: &str,
+    merge: bool,
+) {
+    let branch = manager
+        .create_branch(binary, function, attempt, None)
+        .unwrap()
+        .branch;
+    let path = tmp
+        .join("src")
+        .join("modules")
+        .join(function)
+        .join("translated.rs");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, code).unwrap();
+    manager
+        .commit(
+            &branch,
+            &format!("re/auto/{function}: translate {binary} (batch attempt)"),
+            &[path.to_str().unwrap()],
+        )
+        .unwrap();
+    if merge {
+        manager.merge_to_main(&branch).unwrap();
+    }
+}
+
+#[test]
+fn accepted_attempt_translation_returns_merged_code_verbatim() {
+    let (tmp_dir, manager) = temp_git_repo();
+    let code = "pub fn draw_sprite(target: u32) {\n    // accepted translation\n}\n";
+    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 2, code, true);
+
+    let accepted = manager.accepted_attempt_translation("game_logic.dll", "DrawSprite");
+
+    let (attempt, found) = accepted.expect("the merged attempt is the accepted translation");
+    assert_eq!(attempt, 2);
+    assert_eq!(found, code, "the seed carries the committed bytes verbatim");
+}
+
+#[test]
+fn accepted_attempt_translation_skips_unmerged_and_other_binaries() {
+    let (tmp_dir, manager) = temp_git_repo();
+    // Committed but never merged: work in review, not an accepted translation.
+    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 1, "fn wip() {}", false);
+    // Merged, but under a different binary — branch names keep the binary verbatim.
+    file_translation_attempt(&manager, &tmp_dir, "other.dll", "DrawSprite", 1, "fn other() {}", true);
+
+    assert!(manager.accepted_attempt_translation("game_logic.dll", "DrawSprite").is_none());
+    assert!(manager.accepted_attempt_translation("game_logic.dll", "Absent").is_none());
+    assert!(manager.accepted_attempt_translation("other.dll", "DrawSprite").is_some());
+}
+
+#[test]
+fn accepted_attempt_translation_prefers_the_highest_merged_attempt() {
+    let (tmp_dir, manager) = temp_git_repo();
+    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 1, "fn v1() {}", true);
+    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 2, "fn v2() {}", true);
+
+    let (attempt, code) = manager
+        .accepted_attempt_translation("game_logic.dll", "DrawSprite")
+        .expect("both attempts merged");
+    assert_eq!(attempt, 2);
+    assert_eq!(code, "fn v2() {}");
+}
+
+#[test]
+fn accepted_attempt_translation_is_none_when_a_higher_attempt_is_unmerged() {
+    // v2 under review must not mask the accepted v1 — nor may v2's own
+    // unmerged code seed. The accepted state is exactly what main holds.
+    let (tmp_dir, manager) = temp_git_repo();
+    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 1, "fn v1() {}", true);
+    file_translation_attempt(&manager, &tmp_dir, "game_logic.dll", "DrawSprite", 2, "fn v2_wip() {}", false);
+
+    let (attempt, code) = manager
+        .accepted_attempt_translation("game_logic.dll", "DrawSprite")
+        .expect("v1 stays accepted");
+    assert_eq!(attempt, 1);
+    assert_eq!(code, "fn v1() {}");
+}
+
+#[test]
+fn accepted_attempt_translation_is_none_without_a_translated_module() {
+    // A merged branch that never wrote src/modules/{function}/translated.rs
+    // holds no code to carry — the function seeds nothing.
+    let (tmp_dir, manager) = temp_git_repo();
+    let branch = manager
+        .create_branch("game_logic.dll", "DrawSprite", 1, None)
+        .unwrap()
+        .branch;
+    let note = tmp_dir.join("notes").join("draw.txt");
+    std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+    std::fs::write(&note, "work in progress").unwrap();
+    manager
+        .commit(&branch, "re/auto/DrawSprite: notes only", &[note.to_str().unwrap()])
+        .unwrap();
+    manager.merge_to_main(&branch).unwrap();
+
+    assert!(manager.accepted_attempt_translation("game_logic.dll", "DrawSprite").is_none());
+}
