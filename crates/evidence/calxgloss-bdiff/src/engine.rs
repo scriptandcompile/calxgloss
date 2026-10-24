@@ -4,10 +4,14 @@
 //! [`pair_versions`] is the crate's whole engine: it adds no `ScanSource`
 //! methods (ADR-0026 untouched), reads no engine, writes nothing back
 //! to any program (ADR-0020), and runs no LLM — a version diff costs
-//! milliseconds, not dollars. The pass opens the match ladder with its
-//! first family, name identity: an exported name or a demangled name
-//! present in both versions pairs the old function to the new at
-//! [`crate::types::NAME_IDENTITY_CONFIDENCE`]. A lone signal claims
+//! milliseconds, not dollars. The pass runs the match ladder's opening
+//! rungs (track #233). First, name identity: an exported name or a
+//! demangled name present in both versions pairs the old function to
+//! the new at [`crate::types::NAME_IDENTITY_CONFIDENCE`]. Second, the
+//! normalized-body family: kept bodies put through the shared libmatch
+//! normalizer (#294's public cross-crate rule — one shared rule, one
+//! owner, never a second normalizer), where byte-equal shapes pair at
+//! [`crate::types::BODY_EQUAL_CONFIDENCE`]. A lone signal claims
 //! nothing (ADR-0038): address equality pairs nothing on its own, and
 //! neither does a matching address-derived `FUN_…` spelling — that
 //! spelling *is* an address, so pairing on it would smuggle the
@@ -21,10 +25,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use calxgloss_libmatch::normalize::normalize_lines;
+
 use crate::error::{BdiffError, Result};
 use crate::types::{
-    FunctionEntry, MatchFamily, NAME_IDENTITY_CONFIDENCE, PairingDocument, PairingRecord,
-    ScanSnapshot,
+    BODY_EQUAL_CONFIDENCE, BODY_SIMILARITY_FLOOR, FunctionEntry, MatchFamily,
+    NAME_IDENTITY_CONFIDENCE, PairingDocument, PairingRecord, ScanSnapshot,
 };
 
 /// Pair the old scan snapshot against the new one of one binary
@@ -57,7 +63,8 @@ pub fn pair_versions(old: &ScanSnapshot, new: &ScanSnapshot) -> Result<PairingDo
         "Pairing binary versions"
     );
 
-    let candidates = name_identity_candidates(old, new);
+    let mut candidates = name_identity_candidates(old, new);
+    candidates.extend(body_candidates(old, new));
     let pairings = resolve_one_to_one(candidates, &old.functions, &new.functions);
     Ok(PairingDocument {
         binary: old.binary.as_str().to_string(),
@@ -159,6 +166,223 @@ fn carries_demangled_spelling(name: &str) -> bool {
         || (name.ends_with(')') && name.contains('('))
 }
 
+/// How many of a near-equal pair's line edits the evidence quotes:
+/// enough for an audit glance at the diff's character, never a wall
+/// of text in the pairing document. The summary line always names the
+/// full edit count.
+const MAX_QUOTED_EDITS: usize = 3;
+
+/// The shared normalizer's shape of one kept body: the normalized line
+/// sequence, whitespace-collapsed, that "same body shape" means corpus-
+/// wide. The pairing tests consume this rule without re-testing it —
+/// the normalizer's contract stays pinned where it lives, in libmatch
+/// (#294).
+fn normalized_shape(body: &str) -> Vec<String> {
+    normalize_lines(body)
+        .into_iter()
+        .map(|(_original, normalized)| normalized)
+        .collect()
+}
+
+/// Whether a normalized shape holds nothing: a kept body that is blank
+/// normalizes to blank lines, and blank-on-blank equality is vacuous —
+/// claiming it would pair on a lone structural coincidence (ADR-0038).
+fn is_blank(shape: &[String]) -> bool {
+    shape.iter().all(|line| line.is_empty())
+}
+
+/// Collect every normalized-body candidate pair, in scan order.
+///
+/// A pair is a candidate when the two kept bodies, put through the
+/// shared normalizer, come out one shape: byte-equal shapes pair at
+/// [`BODY_EQUAL_CONFIDENCE`], and a pair whose shapes differ only in
+/// line edits scores on its structural-diff ratio beside that band —
+/// every edit is a line that changed, was added, or was removed, and
+/// the evidence line summarizes the diff and quotes it. A pair below
+/// [`BODY_SIMILARITY_FLOOR`] similarity is a clearly different body,
+/// a coincidence of listing rather than a moved function, and claims
+/// nothing (ADR-0038 again).
+fn body_candidates(old: &ScanSnapshot, new: &ScanSnapshot) -> Vec<Candidate> {
+    let old_shapes: Vec<Vec<String>> = old
+        .functions
+        .iter()
+        .map(|entry| normalized_shape(&entry.body))
+        .collect();
+    let new_shapes: Vec<Vec<String>> = new
+        .functions
+        .iter()
+        .map(|entry| normalized_shape(&entry.body))
+        .collect();
+    let old_joined: Vec<String> = old_shapes.iter().map(|shape| shape.join("\n")).collect();
+    let new_joined: Vec<String> = new_shapes.iter().map(|shape| shape.join("\n")).collect();
+    let old_blank: Vec<bool> = old_shapes.iter().map(|shape| is_blank(shape)).collect();
+    let new_blank: Vec<bool> = new_shapes.iter().map(|shape| is_blank(shape)).collect();
+
+    let mut new_by_shape: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (new_index, joined) in new_joined.iter().enumerate() {
+        if new_blank[new_index] {
+            continue;
+        }
+        new_by_shape
+            .entry(joined.as_str())
+            .or_default()
+            .push(new_index);
+    }
+
+    let mut candidates = Vec::new();
+    for (old_index, joined) in old_joined.iter().enumerate() {
+        if old_blank[old_index] {
+            continue;
+        }
+        let Some(new_indexes) = new_by_shape.get(joined.as_str()) else {
+            continue;
+        };
+        for &new_index in new_indexes {
+            candidates.push(Candidate {
+                old: old_index,
+                new: new_index,
+                confidence: BODY_EQUAL_CONFIDENCE,
+                family: MatchFamily::NormalizedBody,
+                evidence: vec![format!(
+                    "normalized bodies are byte-equal ({} lines)",
+                    old_shapes[old_index].len()
+                )],
+            });
+        }
+    }
+
+    for (old_index, old_shape) in old_shapes.iter().enumerate() {
+        if old_blank[old_index] {
+            continue;
+        }
+        for (new_index, new_shape) in new_shapes.iter().enumerate() {
+            if new_blank[new_index] || old_joined[old_index] == new_joined[new_index] {
+                continue; // byte-equal pairs already claimed above
+            }
+            let max_lines = old_shape.len().max(new_shape.len());
+            // Cost model (the pass owes milliseconds, not dollars): an
+            // edit is at least a line-count gap, so a pair whose gap
+            // alone outruns the floor never reaches the diff matrix.
+            let gap = old_shape.len().abs_diff(new_shape.len());
+            if 100 - (100 * gap) / max_lines < BODY_SIMILARITY_FLOOR as usize {
+                continue;
+            }
+            let (edits, ops) = line_edits(old_shape, new_shape);
+            let similarity = 100 - (100 * edits) / max_lines;
+            if similarity < BODY_SIMILARITY_FLOOR as usize {
+                continue; // clearly different bodies claim nothing (ADR-0038)
+            }
+            // Round the penalty up so a near-equal pair can never land
+            // on the byte-equal 90 itself: one edit always costs a band.
+            let penalty = (10 * edits).div_ceil(max_lines);
+            let mut evidence = vec![format!(
+                "normalized body diff: {edits} of {max_lines} lines differ ({similarity}% similar)"
+            )];
+            for edit in ops.iter().take(MAX_QUOTED_EDITS) {
+                match edit {
+                    BodyEdit::Replace { old, new } => {
+                        evidence.push(format!("changed: {old} -> {new}"));
+                    }
+                    BodyEdit::Delete { old } => evidence.push(format!("removed: {old}")),
+                    BodyEdit::Insert { new } => evidence.push(format!("added: {new}")),
+                }
+            }
+            if ops.len() > MAX_QUOTED_EDITS {
+                evidence.push(format!("(+{} more edits)", ops.len() - MAX_QUOTED_EDITS));
+            }
+            candidates.push(Candidate {
+                old: old_index,
+                new: new_index,
+                confidence: BODY_EQUAL_CONFIDENCE - penalty as u8,
+                family: MatchFamily::NormalizedBody,
+                evidence,
+            });
+        }
+    }
+    candidates
+}
+
+/// One line edit between two normalized bodies: the diff an engineer
+/// reads to audit why a near-equal pair was called one function.
+enum BodyEdit {
+    /// One old line became one new line.
+    Replace { old: String, new: String },
+    /// One old line is gone from the new body.
+    Delete { old: String },
+    /// One new line is absent from the old body.
+    Insert { new: String },
+}
+
+/// Levenshtein edits between two normalized line sequences: the edit
+/// count beside the edits themselves, in body order — each changed,
+/// added, or removed line once. The full distance matrix, backtraced:
+/// bodies are decompiled functions, tens of lines, and the evidence
+/// quotes the edits, so the script rides with the count.
+fn line_edits(old: &[String], new: &[String]) -> (usize, Vec<BodyEdit>) {
+    let mut distance: Vec<Vec<usize>> = vec![vec![0; new.len() + 1]; old.len() + 1];
+    for (row, cell) in distance.iter_mut().enumerate() {
+        cell[0] = row;
+    }
+    distance[0] = (0..=new.len()).collect();
+    for (i, old_line) in old.iter().enumerate() {
+        for (j, new_line) in new.iter().enumerate() {
+            distance[i + 1][j + 1] = if old_line == new_line {
+                distance[i][j]
+            } else {
+                distance[i][j]
+                    .min(distance[i][j + 1])
+                    .min(distance[i + 1][j])
+                    + 1
+            };
+        }
+    }
+
+    let mut edits = Vec::new();
+    let (mut i, mut j) = (old.len(), new.len());
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && old[i - 1] == new[j - 1] {
+            i -= 1;
+            j -= 1;
+            continue;
+        }
+        let substitution = if i > 0 && j > 0 {
+            distance[i - 1][j - 1]
+        } else {
+            usize::MAX
+        };
+        let deletion = if i > 0 {
+            distance[i - 1][j]
+        } else {
+            usize::MAX
+        };
+        let insertion = if j > 0 {
+            distance[i][j - 1]
+        } else {
+            usize::MAX
+        };
+        if substitution <= deletion && substitution <= insertion {
+            edits.push(BodyEdit::Replace {
+                old: old[i - 1].clone(),
+                new: new[j - 1].clone(),
+            });
+            i -= 1;
+            j -= 1;
+        } else if deletion <= insertion {
+            edits.push(BodyEdit::Delete {
+                old: old[i - 1].clone(),
+            });
+            i -= 1;
+        } else {
+            edits.push(BodyEdit::Insert {
+                new: new[j - 1].clone(),
+            });
+            j -= 1;
+        }
+    }
+    edits.reverse();
+    (distance[old.len()][new.len()], edits)
+}
+
 /// Resolve candidate pairs down to one pairing per function per side.
 ///
 /// Highest score wins, and a tie keeps the first-seen pairing in scan
@@ -208,6 +432,7 @@ fn resolve_one_to_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::CARRY_OVER_CONFIDENCE_FLOOR;
     use calxgloss_types::BinaryIdentity;
 
     /// One listed function with a body that names itself, so body-
@@ -218,6 +443,72 @@ mod tests {
             address,
             body: format!("// body of {name}"),
         }
+    }
+
+    /// One listed function with a spelled-out decompiled body, for the
+    /// body-family fixtures that need real Ghidra spellings.
+    fn function_with_body(name: &str, address: u64, body: &str) -> FunctionEntry {
+        FunctionEntry {
+            name: name.into(),
+            address,
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn a_fun_renamed_function_with_byte_equal_normalized_bodies_pairs_at_90() {
+        // The function merely moved: the new address minted a new FUN_
+        // spelling and the rebuild re-lettered Ghidra's invented
+        // variables, but through the shared normalizer the two bodies
+        // are byte-equal shapes — the body family pairs them at 90
+        // (track #233's ladder, rung two).
+        let old_body = "\
+{
+   uint uVar1;
+   uVar1 = DAT_140045a68;
+   if (uVar1 != 0) {
+      FUN_140002000(uVar1);
+   }
+   return;
+}";
+        let new_body = "\
+{
+   uint iVar4;
+   iVar4 = DAT_140047120;
+   if (iVar4 != 0) {
+      FUN_140002000(iVar4);
+   }
+   return;
+}";
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![function_with_body("FUN_140001000", 0x140001000, old_body)],
+            &[],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![function_with_body("FUN_140009000", 0x140009000, new_body)],
+            &[],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(
+            document.pairings.len(),
+            1,
+            "the moved function pairs through the body family"
+        );
+        let record = &document.pairings[0];
+        assert_eq!(record.old_function, "FUN_140001000");
+        assert_eq!(record.new_function, "FUN_140009000");
+        assert_eq!(record.family, MatchFamily::NormalizedBody);
+        assert_eq!(record.confidence.value(), BODY_EQUAL_CONFIDENCE);
+        assert_eq!(
+            record.evidence,
+            ["normalized bodies are byte-equal (8 lines)"],
+            "the record carries the normalized-body summary as its evidence"
+        );
     }
 
     /// One version's snapshot with a stable stand-in hash.
@@ -321,17 +612,26 @@ mod tests {
     fn an_equal_address_derived_spelling_claims_nothing() {
         // A `FUN_…` name match means the address held — the address-
         // derived spelling is the relocation signal itself, and a lone
-        // signal claims nothing (ADR-0038).
+        // signal claims nothing (ADR-0038). The bodies stay unrelated so
+        // no body-family evidence corroborates the lone address claim.
         let old = snapshot(
             "game.dll",
             "old-hash",
-            vec![function("FUN_140001000", 0x140001000)],
+            vec![function_with_body(
+                "FUN_140001000",
+                0x140001000,
+                "{\n   return uVar1 + 1;\n}",
+            )],
             &[],
         );
         let new = snapshot(
             "game.dll",
             "new-hash",
-            vec![function("FUN_140001000", 0x140001000)],
+            vec![function_with_body(
+                "FUN_140001000",
+                0x140001000,
+                "{\n   DAT_140045a68 = 3;\n   return;\n}",
+            )],
             &[],
         );
 
@@ -369,20 +669,328 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_internal_name_match_claims_nothing_yet() {
-        // A stripped private symbol that kept its name across versions
-        // is not an export and not demangled: the ladder's first family
-        // is exported-or-demangled, and this ticket claims no wider.
+    fn a_near_equal_body_pairs_on_the_structural_diff_ratio() {
+        // Ten normalized lines, one changed statement between builds:
+        // the shapes are not byte-equal, so the pair scores on its
+        // structural-diff ratio — inside the band between the carry-
+        // over floor and the byte-equal 90 (ticket #296) — and the
+        // record carries the normalized-body diff as its evidence.
+        let old_body = "\
+{
+   uint uVar1;
+   uVar1 = DAT_140045a68;
+   if (uVar1 != 0) {
+      FUN_140002000(uVar1);
+   }
+   DAT_140045a70 = uVar1;
+   uVar1 = uVar1 + 1;
+   return;
+}";
+        // The rebuild stored the bumped counter instead: one normalized
+        // line replaced out of ten, everything else the same shape.
+        let new_body = "\
+{
+   uint iVar7;
+   iVar7 = DAT_140047120;
+   if (iVar7 != 0) {
+      FUN_140002000(iVar7);
+   }
+   DAT_140047200 = iVar7;
+   iVar7 = iVar7 + 2;
+   return;
+}";
         let old = snapshot(
             "game.dll",
             "old-hash",
-            vec![function("helper_parse", 0x1000)],
+            vec![function_with_body("FUN_140001000", 0x140001000, old_body)],
             &[],
         );
         let new = snapshot(
             "game.dll",
             "new-hash",
-            vec![function("helper_parse", 0x3000)],
+            vec![function_with_body("FUN_140009000", 0x140009000, new_body)],
+            &[],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(document.pairings.len(), 1, "the near-equal pair pairs");
+        let record = &document.pairings[0];
+        assert_eq!(record.family, MatchFamily::NormalizedBody);
+        assert!(
+            record.confidence.value() > CARRY_OVER_CONFIDENCE_FLOOR
+                && record.confidence.value() < BODY_EQUAL_CONFIDENCE,
+            "a near-equal score stands inside the band, got {}",
+            record.confidence.value()
+        );
+        // A worked example, not a recompute: one of ten normalized
+        // lines changed, so the ratio puts the score at 89.
+        assert_eq!(record.confidence.value(), 89);
+        assert_eq!(
+            record.evidence,
+            [
+                "normalized body diff: 1 of 10 lines differ (90% similar)",
+                "changed: VAR = VAR + 1; -> VAR = VAR + 2;",
+            ],
+            "the evidence line summarizes the normalized-body diff and quotes it"
+        );
+    }
+
+    #[test]
+    fn an_added_line_reads_as_an_added_line_in_the_evidence() {
+        // The new build's routine grew one extra call. The shapes still
+        // pair, but the evidence must spell the edit honestly: a line
+        // the new body has and the old one does not is *added*, not a
+        // change squeezed onto the wrong pair of lines.
+        let old_body = "\
+{
+   uint uVar1;
+   uVar1 = DAT_140045a68;
+   if (uVar1 != 0) {
+      FUN_140002000(uVar1);
+   }
+   DAT_140045a70 = uVar1;
+   uVar1 = uVar1 + 1;
+   return;
+}";
+        let new_body = "\
+{
+   uint iVar7;
+   iVar7 = DAT_140047120;
+   if (iVar7 != 0) {
+      FUN_140002000(iVar7);
+      FUN_140002100(iVar7);
+   }
+   DAT_140047200 = iVar7;
+   iVar7 = iVar7 + 1;
+   return;
+}";
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![function_with_body("FUN_140001000", 0x140001000, old_body)],
+            &[],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![function_with_body("FUN_140009000", 0x140009000, new_body)],
+            &[],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(document.pairings.len(), 1);
+        let record = &document.pairings[0];
+        // Eleven normalized lines, one added: 91% similar, score 89.
+        assert_eq!(record.confidence.value(), 89);
+        assert_eq!(
+            record.evidence,
+            [
+                "normalized body diff: 1 of 11 lines differ (91% similar)",
+                "added: FUN_140002100(VAR);",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_removed_line_reads_as_a_removed_line_in_the_evidence() {
+        // The mirror image: the update dropped a call. The evidence
+        // names it *removed*, from the old body's side.
+        let old_body = "\
+{
+   uint uVar1;
+   uVar1 = DAT_140045a68;
+   if (uVar1 != 0) {
+      FUN_140002000(uVar1);
+      FUN_140002100(uVar1);
+   }
+   DAT_140045a70 = uVar1;
+   uVar1 = uVar1 + 1;
+   return;
+}";
+        let new_body = "\
+{
+   uint iVar7;
+   iVar7 = DAT_140047120;
+   if (iVar7 != 0) {
+      FUN_140002000(iVar7);
+   }
+   DAT_140047200 = iVar7;
+   iVar7 = iVar7 + 1;
+   return;
+}";
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![function_with_body("FUN_140001000", 0x140001000, old_body)],
+            &[],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![function_with_body("FUN_140009000", 0x140009000, new_body)],
+            &[],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(document.pairings.len(), 1);
+        let record = &document.pairings[0];
+        assert_eq!(record.confidence.value(), 89);
+        assert_eq!(
+            record.evidence,
+            [
+                "normalized body diff: 1 of 11 lines differ (91% similar)",
+                "removed: FUN_140002100(VAR);",
+            ]
+        );
+    }
+
+    #[test]
+    fn many_changed_lines_quote_three_edits_and_say_so() {
+        // Five replaced statements in a 23-line shape: the summary
+        // counts every edit, but the quoted evidence stays auditable —
+        // the first few edits in body order, and a line naming the
+        // ones it left out.
+        let middle: Vec<String> = (0..20)
+            .map(|i| format!("   FUN_140002000(uVar1, {i});"))
+            .collect();
+        let mut changed: Vec<String> = middle.clone();
+        for i in [3usize, 7, 11, 15, 19] {
+            changed[i] = format!("   FUN_140002000(uVar1, {i}) + 1;");
+        }
+        let old_body = format!("{{\n{}\n   return;\n}}", middle.join("\n"));
+        let new_body = format!("{{\n{}\n   return;\n}}", changed.join("\n"));
+
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![function_with_body("FUN_140001000", 0x140001000, &old_body)],
+            &[],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![function_with_body("FUN_140009000", 0x140009000, &new_body)],
+            &[],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert_eq!(document.pairings.len(), 1);
+        let record = &document.pairings[0];
+        // 5 edits over 23 lines: 79% similar, score 87.
+        assert_eq!(record.confidence.value(), 87);
+        assert_eq!(
+            record.evidence,
+            [
+                "normalized body diff: 5 of 23 lines differ (79% similar)",
+                "changed: FUN_140002000(VAR, 3); -> FUN_140002000(VAR, 3) + 1;",
+                "changed: FUN_140002000(VAR, 7); -> FUN_140002000(VAR, 7) + 1;",
+                "changed: FUN_140002000(VAR, 11); -> FUN_140002000(VAR, 11) + 1;",
+                "(+2 more edits)",
+            ]
+        );
+    }
+
+    #[test]
+    fn two_blank_kept_bodies_pair_nothing() {
+        // A kept body that holds nothing — a decompile failure, a stub
+        // the scan listed without a body — normalizes to nothing. Two
+        // blanks are "byte-equal" only vacuously: a lone structural
+        // coincidence claims nothing (ADR-0038).
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![function_with_body("FUN_140001000", 0x140001000, "")],
+            &[],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![function_with_body("FUN_140009000", 0x140009000, "")],
+            &[],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert!(
+            document.pairings.is_empty(),
+            "blank bodies claiming a byte-equal pair is a lone-coincidence claim"
+        );
+    }
+
+    #[test]
+    fn two_clearly_different_bodies_pair_nothing() {
+        // An initializer and a parser share only Ghidra's boilerplate —
+        // the braces and the bare return — out of ten normalized lines
+        // each: about 30% similar, under the floor, and the body
+        // family (the only family in play here) claims nothing.
+        let old_body = "\
+{
+   uint uVar1;
+   uint uVar2;
+   uVar1 = DAT_140045a68;
+   uVar2 = DAT_140045a70;
+   FUN_140002000(uVar1, uVar2);
+   uVar2 = uVar1 & 0xff;
+   FUN_140002100(uVar2);
+   return;
+}";
+        let new_body = "\
+{
+   char cVar3;
+   int iVar4;
+   cVar3 = *(char *)0x1400460a0;
+   iVar4 = *(int *)0x1400460a8;
+   while (cVar3 != '\\0') {
+      FUN_140004400(cVar3, iVar4);
+      cVar3 = *(char *)(0x1400460a0 + 1);
+   }
+   return;
+}";
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![function_with_body("FUN_140001000", 0x140001000, old_body)],
+            &[],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![function_with_body("FUN_140009000", 0x140009000, new_body)],
+            &[],
+        );
+
+        let document = pair_versions(&old, &new).expect("one identity");
+        assert!(
+            document.pairings.is_empty(),
+            "a clearly different body pairs nothing, floor enforced"
+        );
+    }
+
+    #[test]
+    fn a_plain_internal_name_match_claims_nothing_yet() {
+        // A stripped private symbol that kept its name across versions
+        // is not an export and not demangled: no family pairs on that
+        // spelling alone. The bodies here are unrelated, so the body
+        // family that landed with #296 has nothing to corroborate —
+        // equal bodies under one internal name would pair through the
+        // body family, on the body evidence, never the name.
+        let old = snapshot(
+            "game.dll",
+            "old-hash",
+            vec![function_with_body(
+                "helper_parse",
+                0x1000,
+                "{\n   return uVar1 + 1;\n}",
+            )],
+            &[],
+        );
+        let new = snapshot(
+            "game.dll",
+            "new-hash",
+            vec![function_with_body(
+                "helper_parse",
+                0x3000,
+                "{\n   DAT_140045a68 = 3;\n   return;\n}",
+            )],
             &[],
         );
 

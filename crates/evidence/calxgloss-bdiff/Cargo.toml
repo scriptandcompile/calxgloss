@@ -2,16 +2,18 @@
 name = "calxgloss-bdiff"
 version.workspace = true
 edition.workspace = true
-description = "Binary-version function pairing: name-identity matching of two scan snapshots into one confidence-scored pairing document"
+description = "Binary-version function pairing: name-identity and normalized-body matching of two scan snapshots into one confidence-scored pairing document"
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
 # Document-level pass only: the snapshot vocabulary reuses the shared
-# identity and confidence types, and no analysis-engine crate is a
-# dependency — the pass reads documents, never a program (ADR-0026,
-# ADR-0020).
+# identity and confidence types, and the body family rides the shipped
+# shared normalizer through its public cross-crate entry point (#294) —
+# a pure text rule called on kept bodies, still no engine read and no
+# program mutation (ADR-0026, ADR-0020). One shared rule, one owner.
 calxgloss-types = { path = "../../shared/calxgloss-types" }
+calxgloss-libmatch = { path = "../calxgloss-libmatch" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

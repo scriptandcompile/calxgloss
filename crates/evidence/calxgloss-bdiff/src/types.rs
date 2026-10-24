@@ -25,6 +25,25 @@ use serde::{Deserialize, Serialize};
 /// and demangler rewrites can still rename the same code.
 pub const NAME_IDENTITY_CONFIDENCE: u8 = 95;
 
+/// Confidence of a byte-equal normalized body: two kept bodies that,
+/// put through the shared libmatch normalizer, come out the same shape
+/// are the same function moved — the address shift renamed its `FUN_…`
+/// spelling and the rebuild re-lettered its variables, but the shape
+/// survived (track #233's match ladder, rung two). One band below name
+/// identity, because an inlined identical body can still be two
+/// distinct functions; short of byte-proven, which nothing textual is.
+pub const BODY_EQUAL_CONFIDENCE: u8 = 90;
+
+/// The body family's similarity floor, in percent of normalized lines
+/// a near-equal pair must still share: below it the two bodies are
+/// clearly different shapes, and a pair that shares almost no line is
+/// a coincidence of listing, not a moved function — the lone-
+/// structural-coincidence refusal of ADR-0038 again. It is the band's
+/// lower edge for this family: the ratio maps a passing pair to a
+/// confidence strictly between the carry-over floor and 90, and
+/// anything below claims nothing.
+pub const BODY_SIMILARITY_FLOOR: u8 = 60;
+
 /// The carry-over confidence floor: only pairings at or above this
 /// score may seed a new-version unit from an old accepted translation
 /// (track #233). Named after the libmatch Skip-classification floor's
@@ -57,9 +76,10 @@ pub struct FunctionEntry {
     pub address: u64,
 
     /// The decompiled body the scan kept for this function, as the
-    /// scan wrote it. Unused by name-identity pairing; held for the
-    /// body-equivalence and call-map families that land with #296 and
-    /// #297.
+    /// scan wrote it. Read by the normalized-body family (#296), which
+    /// puts it through the shared libmatch normalizer; unused by
+    /// name-identity pairing and carried for the call-map family that
+    /// lands with #297.
     pub body: String,
 }
 
@@ -107,9 +127,9 @@ impl ScanSnapshot {
 /// strongest claim per function (ADR-0022), so a record names the one
 /// family that won.
 ///
-/// The ladder opens with name identity (this track's #295); the
-/// normalized-body and call-graph-topology families land with #296 and
-/// #297 and extend this enum.
+/// The ladder opens with name identity (#295) and adds the
+/// normalized-body family with #296; the call-graph-topology family
+/// lands with #297 and extends this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchFamily {
@@ -117,6 +137,11 @@ pub enum MatchFamily {
     /// two versions — the binary's own spelling for the function on
     /// both sides. Scores [`NAME_IDENTITY_CONFIDENCE`].
     NameIdentity,
+    /// The two kept bodies, put through the shared libmatch normalizer
+    /// (#294's cross-crate entry point), come out one shape — byte-
+    /// equal normalized bodies score [`BODY_EQUAL_CONFIDENCE`], and a
+    /// near-equal pair scores on its structural-diff ratio beside it.
+    NormalizedBody,
 }
 
 impl MatchFamily {
@@ -125,6 +150,7 @@ impl MatchFamily {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::NameIdentity => "name_identity",
+            Self::NormalizedBody => "normalized_body",
         }
     }
 }
@@ -213,6 +239,23 @@ mod tests {
         // drive carry-over; below it, today's fresh queue exactly.
         assert_eq!(CARRY_OVER_CONFIDENCE_FLOOR, 80);
         assert!(Confidence::new(NAME_IDENTITY_CONFIDENCE).at_least(CARRY_OVER_CONFIDENCE_FLOOR));
+    }
+
+    #[test]
+    fn the_byte_equal_body_band_is_90() {
+        // The body ladder's top rung: byte-equal normalized shapes are
+        // the moved function itself, a band below the binary's own
+        // spelling but still able to drive carry-over.
+        assert_eq!(BODY_EQUAL_CONFIDENCE, 90);
+        assert!(Confidence::new(BODY_EQUAL_CONFIDENCE).at_least(CARRY_OVER_CONFIDENCE_FLOOR));
+    }
+
+    #[test]
+    fn the_body_similarity_floor_is_sixty_percent_of_normalized_lines() {
+        // Below this share of shared normalized lines the bodies are
+        // clearly different shapes and the family claims nothing; at
+        // or above it the ratio maps the pair beside the 90.
+        assert_eq!(BODY_SIMILARITY_FLOOR, 60);
     }
 
     #[test]

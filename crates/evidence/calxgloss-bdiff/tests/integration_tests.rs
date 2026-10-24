@@ -1,9 +1,9 @@
-//! Cross-module flow for the binary-version pairing crate (issue #295,
-//! part of track #233): two in-memory scan snapshots go through the
-//! pairing pass and the pairing document comes back through the shared
-//! JSON persistor plumbing — documents in, pairing document out, with
-//! no engine reads (ADR-0026), no program mutation (ADR-0020), and no
-//! LLM anywhere in the crate.
+//! Cross-module flow for the binary-version pairing crate (issues #295
+//! and #296, part of track #233): two in-memory scan snapshots go
+//! through the pairing pass and the pairing document comes back
+//! through the shared JSON persistor plumbing — documents in, pairing
+//! document out, with no engine reads (ADR-0026), no program mutation
+//! (ADR-0020), and no LLM anywhere in the crate.
 
 use calxgloss_bdiff::{BdiffPersistor, FunctionEntry, MatchFamily, ScanSnapshot, pair_versions};
 use calxgloss_types::BinaryIdentity;
@@ -95,6 +95,73 @@ fn name_identity_pairs_the_named_functions_and_silences_the_rest() {
             "every pairing names its evidence"
         );
     }
+}
+
+#[test]
+fn a_moved_internal_function_pairs_through_the_body_family() {
+    // #296 end to end: the export and the demangled member still pair
+    // through name identity, and the moved internal — renamed FUN_
+    // spelling, re-lettered variables, byte-equal normalized body —
+    // pairs through the body family at 90 beside them, surviving the
+    // persistor round trip.
+    let mut old = old_snapshot();
+    let mut new = new_snapshot();
+    for entry in &mut old.functions {
+        if entry.name == "FUN_10001200" {
+            entry.body = "\
+{
+   uint uVar1;
+   uVar1 = DAT_140045a68;
+   if (uVar1 != 0) {
+      FUN_10002200(uVar1);
+   }
+   return;
+}"
+            .into();
+        }
+    }
+    for entry in &mut new.functions {
+        if entry.name == "FUN_10009000" {
+            entry.body = "\
+{
+   uint iVar4;
+   iVar4 = DAT_140049a68;
+   if (iVar4 != 0) {
+      FUN_10002200(iVar4);
+   }
+   return;
+}"
+            .into();
+        }
+    }
+
+    let document = pair_versions(&old, &new).expect("one binary identity");
+    assert_eq!(document.pairings.len(), 3, "two name pairs, one body pair");
+    let record = document
+        .pairings
+        .iter()
+        .find(|record| record.old_function == "FUN_10001200")
+        .expect("the moved internal pairs through the body family");
+    assert_eq!(record.new_function, "FUN_10009000");
+    assert_eq!(record.family, MatchFamily::NormalizedBody);
+    assert_eq!(record.confidence.value(), 90);
+    assert_eq!(
+        record.evidence,
+        ["normalized bodies are byte-equal (8 lines)"],
+        "the body-family record carries its normalized-body evidence line"
+    );
+
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let persistor = BdiffPersistor::new(workspace.path());
+    persistor.save(&document).expect("the save should work");
+    let loaded = persistor
+        .load(&BdiffPersistor::key_for(
+            "fixture.dll",
+            &"a".repeat(64),
+            &"b".repeat(64),
+        ))
+        .expect("the load should work");
+    assert_eq!(loaded, document, "the body-family record round-trips whole");
 }
 
 #[test]

@@ -310,11 +310,11 @@ pub use calxgloss_errhandling::{
 // The pass and the persistor are named beside the types because the
 // pairing document has no engine — `pair_versions` is the whole scan.
 pub use calxgloss_bdiff::BdiffError;
-pub use calxgloss_bdiff::{BdiffPersistor, pair_versions};
 pub use calxgloss_bdiff::{
-    CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry, MatchFamily, NAME_IDENTITY_CONFIDENCE,
-    PairingDocument, PairingRecord, ScanSnapshot,
+    BODY_EQUAL_CONFIDENCE, BODY_SIMILARITY_FLOOR, CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry,
+    MatchFamily, NAME_IDENTITY_CONFIDENCE, PairingDocument, PairingRecord, ScanSnapshot,
 };
+pub use calxgloss_bdiff::{BdiffPersistor, pair_versions};
 
 // ============================================================
 // calxgloss-serialize — endianness & serialization detection
