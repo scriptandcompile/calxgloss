@@ -46,6 +46,7 @@ pub fn gather_function_evidence(
         ),
         data_table_findings: data_table_hints_from(consts.as_ref(), function),
         error_handling_findings: extract_error_handling_hints(workspace, binary, function),
+        floatsimd_findings: extract_float_hints(workspace, binary, function),
         ..Default::default()
     }
 }
@@ -910,6 +911,48 @@ pub fn extract_global_state_hints(
     result
         .for_function(function)
         .map(calxgloss_prompts::GlobalStateInfo::from)
+        .collect()
+}
+
+/// Extract the float/SIMD usage flag for a function from the persisted
+/// float/SIMD scan result.
+///
+/// Reads the per-binary result produced by the `calxgloss-floatsimd`
+/// engine from `re/analysis/floatsimd/{binary}.json` and keeps the
+/// flag raised for the target function — the shape the reading named
+/// (scalar float math, vector/matrix idioms, or both), the evidence
+/// that carried it, and the confidence band it was scored on. One
+/// function carries at most one flag.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `binary` (the scan has not run), or the document is
+/// corrupt: missing float/SIMD context degrades the prompt, it never
+/// fails it.
+pub fn extract_float_hints(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::FloatsimdInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_floatsimd::persist::FloatsimdPersistor::new(workspace);
+    let result = match persistor.load(binary) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                binary,
+                error = %e,
+                "No usable float/SIMD result; continuing without float/SIMD context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::FloatsimdInfo::from)
         .collect()
 }
 
@@ -3493,6 +3536,112 @@ mod tests {
         assert_eq!(
             found[1].suggestion,
             "read the program global through shared state, not an invented local"
+        );
+    }
+
+    // ---- float/SIMD hint extraction ------------------------------------
+
+    fn float_flag(
+        function: &str,
+    ) -> calxgloss_floatsimd::types::FloatsimdFinding {
+        calxgloss_floatsimd::types::FloatsimdFinding::ScalarFloat(
+            calxgloss_floatsimd::types::FloatsimdRecord {
+                function: function.into(),
+                evidence: "fVar1 = (float)uVar2 * 1.5f;".into(),
+                confidence: calxgloss_types::Confidence::new(90),
+                suggestion: "translate this body with f32/f64 scalars, not integer or pointer math"
+                    .into(),
+            },
+        )
+    }
+
+    fn vector_flag(
+        function: &str,
+    ) -> calxgloss_floatsimd::types::FloatsimdFinding {
+        calxgloss_floatsimd::types::FloatsimdFinding::VectorMatrix(
+            calxgloss_floatsimd::types::FloatsimdRecord {
+                function: function.into(),
+                evidence: "uVar3 = CONCAT44(uVar2, uVar1);".into(),
+                confidence: calxgloss_types::Confidence::new(60),
+                suggestion: "translate this body as a small vector or component array, not scalar integer math"
+                    .into(),
+            },
+        )
+    }
+
+    fn persist_floatsimd_findings(
+        dir: &TempDir,
+        findings: Vec<calxgloss_floatsimd::types::FloatsimdFinding>,
+    ) {
+        let mut result =
+            calxgloss_floatsimd::types::FloatsimdResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_floatsimd::persist::FloatsimdPersistor::new(dir.path())
+            .save(&result)
+            .expect("the float/SIMD result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_floatsimd_findings() {
+        assert!(
+            extract_float_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no float/SIMD context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_floatsimd_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no float/SIMD context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_floatsimd_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("floatsimd")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+        );
+    }
+
+    #[test]
+    fn the_functions_floatsimd_flag_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_floatsimd_findings(
+            &dir,
+            vec![
+                float_flag("FUN_18003ab00"),
+                // A flag raised for another function never answers the
+                // by-function lookup.
+                vector_flag("FUN_zzz"),
+            ],
+        );
+
+        let found = extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's flag");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "scalar_float");
+        assert_eq!(found[0].confidence, 90);
+        assert_eq!(found[0].evidence, "fVar1 = (float)uVar2 * 1.5f;");
+        assert_eq!(
+            found[0].suggestion,
+            "translate this body with f32/f64 scalars, not integer or pointer math"
         );
     }
 

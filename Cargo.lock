@@ -829,6 +829,7 @@ dependencies = [
  "calxgloss-controlflow",
  "calxgloss-decomp",
  "calxgloss-errhandling",
+ "calxgloss-floatsimd",
  "calxgloss-globalstate",
  "calxgloss-kuna",
  "calxgloss-libmatch",
