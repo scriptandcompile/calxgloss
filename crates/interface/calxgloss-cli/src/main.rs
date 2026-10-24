@@ -17,6 +17,7 @@
 //! - `memory` — Detect memory lifecycles (allocation/release pairs, handle lifetimes, reference counting) for the open binary and cache the result
 //! - `sync` — Detect concurrency constructs (mutex pairings, atomic operations, thread spawns) for the open binary and cache the result
 //! - `globalstate` — Record the global-state reference sets (which functions read and write which program globals) for the open binary and cache the result
+//! - `floatsimd` — Flag float/SIMD usage (which functions do float math, and whether it reads as scalar or vector/matrix shapes) for the open binary and cache the result
 //! - `stringctx` — Map program strings to functions (classification, format-string types) for the open binary and cache the result
 //! - `apidetect` — Identify the libraries and APIs of the open binary (import table, per-function API summaries) and cache the result
 //! - `verify` — Verify a previously translated function
@@ -72,6 +73,7 @@ use commands::dashboard::{
 };
 use commands::doctor::handle_doctor;
 use commands::errhandling::handle_errhandling;
+use commands::floatsimd::handle_floatsimd;
 use commands::gc::handle_gc;
 use commands::globalstate::handle_global_state;
 use commands::init::handle_init;
@@ -386,6 +388,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_errhandling(&binary, &workspace, show, &settings))
+        }
+        Command::Floatsimd { binary, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_floatsimd(&binary, &workspace, show, &settings))
         }
         Command::Verify {
             binary,

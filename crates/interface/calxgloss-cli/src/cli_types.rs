@@ -722,6 +722,37 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Flag float/SIMD usage (which functions do float math, and what
+    /// shape it takes) for a binary by reading each decompiled body for
+    /// the evidence that spells it.
+    ///
+    /// One flag per flagged function — scalar float math, vector/matrix
+    /// idioms, or both — is persisted per binary to
+    /// `re/analysis/floatsimd/<binary>.json` in the workspace — the same
+    /// file batch translation will read as prompt context. `--show`
+    /// prints a cached result without running the scan.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss floatsimd --binary eqmain.dll --show
+    /// ```
+    Floatsimd {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is

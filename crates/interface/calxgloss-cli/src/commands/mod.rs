@@ -12,6 +12,7 @@ pub mod controlflow;
 pub mod dashboard;
 pub mod doctor;
 pub mod errhandling;
+pub mod floatsimd;
 pub mod gc;
 pub mod globalstate;
 pub mod init;
