@@ -21,7 +21,7 @@
 │  │      ├─ Kuna engine load  │    │  start endpoints drive   │  │
 │  │      │  (in-process)      │    │  the shared pipeline     │  │
 │  │      ├─ analysis warmup   │    │  state machine           │  │
-│  │      │  (11 evidence      │    │                          │  │
+│  │      │  (14 evidence      │    │                          │  │
 │  │      │   scans per binary)│    │                          │  │
 │  │      └─ per-function      │    │                          │  │
 │  │          translation      │    │                          │  │
@@ -173,7 +173,7 @@ pipeline.batch_translate(binary, functions, …)
 │       the directory. A failed cache build degrades to engine
 │       reads, never fails the batch.
 │
-└──► ensure_* warmup — the fourteen analysis scans, fan-out four at a time:
+├──► ensure_* warmup — the fourteen analysis scans, fan-out four at a time:
      ensure_type_database          → re/analysis/typesdb/{binary}.json
      ensure_type_inference         → re/analysis/typeinfer/{binary}.json
      ensure_algorithm_recognition  → re/analysis/algorithm/{binary}.json
@@ -188,6 +188,19 @@ pipeline.batch_translate(binary, functions, …)
      ensure_serialize_detection    → re/analysis/serialize/{binary}.json
      ensure_error_handling_detection → re/analysis/errhandling/{binary}.json
      ensure_floatsimd_detection      → re/analysis/floatsimd/{binary}.json
+│
+└──► pair_previous_versions — binary-version pairing, run by the same
+     scan step right after the scan pass closes (issue #298): when a
+     surviving scan cache from an earlier version of the same binary
+     sits beside the fresh one (the read cache keys on identity +
+     SHA-256, so changed bytes leave the old directory standing),
+     `calxgloss-bdiff` pairs the two scans and persists
+     re/analysis/bdiff/{binary}-{old-sha256}-{new-sha256}.json.
+     Document-level only — the two directories' cached function listings,
+     exports, and kept bodies, read back through the surviving-scan
+     surface: zero engine reads, milliseconds, never a failure path.
+     With no sibling directory nothing is written and the queue behaves
+     exactly as before.
 ```
 
 Each `ensure_*` follows the same rule: **the persisted JSON is the cache** —
@@ -204,6 +217,24 @@ instead of one per scan (issue #239).
 
 Every methodology also has a manual CLI entry point (§4) that runs the same
 scan and can print a cached result with `--show`.
+
+**Carry-over seeding from the pairing documents** (issue #299): before the
+batch queues functions, the pipeline loads the pairing documents left in
+`re/analysis/bdiff/` for the binary's *current* bytes. A new-version function
+paired at **≥ 80** confidence (`CARRY_OVER_CONFIDENCE_FLOOR`) to an
+old-version function whose translation is *accepted* (a merged
+`re/{binary}/{function}…` branch) gets its first attempt **seeded** from that
+merged `translated.rs` — no prompt built, no LLM called, no token spent — and
+then rides the ordinary pipeline: baseline re-capture from the new binary,
+full verification against the new bytes, review as usual. Guards: a pairing
+document that does not self-name the binary and hash its current bytes as
+`new_bytes_sha256` seeds nothing (staleness gate); one accepted translation
+seeds at most one new function, strongest pairing wins; below-floor pairings
+persist but queue fresh. Seeded results keep provenance — old function,
+attempt branch, pairing family, confidence — and the seeded branch's commit
+reads `seeded from {old} attempt {n} (paired, {conf}% confidence)`. No pairing
+documents, unreadable documents, and functions without an accepted twin all
+degrade to the fresh queue, never a failed run.
 
 #### 3.2.2 Translation Pipeline — One Function
 
@@ -263,8 +294,21 @@ pipeline.translate(binary, function)
 │  methodology documents and keep the records tied to this function:
 │    └─ extract_data_structures  ← re/analysis/typesdb/{binary}.json
 │    └─ extract_control_flow_hints ← re/analysis/controlflow/{binary}.json
+│    └─ (module-context also reads the globalstate, floatsimd,
+│        errhandling, typeinfer (parameter directions), consts
+│        (data tables) and libmatch (matched *callees*, never the
+│        target) documents — §4 for the prompt sections)
 │    └─ (FullModule adds shim-layer code from re/shims/ and PAL
 │        trait definitions for the function's API categories)
+│
+│  Step 4d: Carry-Over Seed Check (issue #299)
+│  ────────────────────────────────────────────
+│  If a fresh bdiff pairing document pairs this function to an
+│  accepted previous-version twin at ≥ 80 confidence, the function
+│  returns a seeded Translation right here: model "carry-over",
+│  no LLM call, provenance in prompt_used — and Step 5 never runs.
+│  The retry/verification loop below still judges the seed against
+│  the new bytes.
 │
 │  Step 5: Build Prompt & Send to LLM
 │  ─────────────────────────────────
@@ -335,9 +379,11 @@ retry::try_translate_with_retry(initial_translation, context)
 │  escalate ──► add more context: the FULL evidence base —
 │       │         every methodology's findings for this function
 │       │         (types, inferred types, algorithms, memory,
-│       │         concurrency, callbacks, control flow, strings,
-│       │         APIs, constants, serialization) plus call graph,
-│       │         neighboring bodies, and failure history
+│       │         concurrency, global state, callbacks, control
+│       │         flow, strings, APIs, constants, serialization,
+│       │         float/SIMD arithmetic, error-handling idioms
+│       │         and failure codes) plus call graph, neighboring
+│       │         bodies, and failure history
 │       │
 │       └─► LLM re-translates with more context
 │       │
@@ -409,8 +455,9 @@ If git is skipped (`--skip-git`), these steps are bypassed but the code is still
 
 ## 4. Analysis Methodologies — The Evidence Crates
 
-Eleven methodology crates under `crates/evidence/` (beside the call-graph and
-orchestration crates) each implement a **methodology**: a per-binary scan that reads engine facts through
+Fifteen methodology crates under `crates/evidence/` (beside the call-graph,
+version-pairing, and orchestration crates) each implement a
+**methodology**: a per-binary scan that reads engine facts through
 the shared `ScanSource` seam, detects structured findings, persists them as one
 JSON document per binary under `re/analysis/{methodology}/{binary}.json`, and
 feeds the findings tied to a function into its translation prompts.
@@ -447,25 +494,40 @@ feeds the findings tied to a function into its translation prompts.
 | Algorithm recognition | `calxgloss-algorithm` | Control-flow signature matching (sort, search, hash lookup, state machine…); string-guided hints (CRC, md5, sha, gzip…); callback-shape patterns; multi-function correlation (divide-and-conquer, sort+comparator); a JSON pattern database can replace the built-in sets (`--patterns`) | `RECOGNIZED ALGORITHMS` |
 | Memory lifecycle | `calxgloss-memory` | `malloc`/`free` pairs → `Box`; handle pairs (`CreateFileW`/`CloseHandle`, `fopen`/`fclose`) → RAII guard with `Drop`; ref-count patterns (`AddRef`/`Release`) → `Rc`/`Arc`; cross-function allocation tracking, leaks, ownership moves, per-type Drop suggestions | `MEMORY LIFECYCLE` |
 | Concurrency | `calxgloss-sync` | Mutex/lock pairs → `std::sync::Mutex`/`RwLock`; atomics → `AtomicU32`/`U64`; thread spawns + joins → `std::thread`/`tokio`; thread-local storage families; async-runtime shapes; futex syscall shapes; cross-function lock orders; data-race claims on shared globals | `CONCURRENCY` |
+| Global state | `calxgloss-globalstate` | Per-function global accesses — which globals (`DAT_*` names) each function reads and writes, with the evidence line and a confidence band — rolled up into a shared-globals index; the sync engine consumes the rollup instead of re-deriving the same reading, and the call-graph orderer takes its state-sharing edges (`with_state_sharing`) from it | `GLOBAL STATE` (module-context and escalate) |
 | Callbacks | `calxgloss-callback` | Function-pointer array calls → `Vec<Box<dyn Fn>>`; registration sites → stored closures; jump tables → `match`; plugin architectures (`LoadLibrary`/`GetProcAddress` + entry point) → `Box<dyn Plugin>`; cross-function register-then-call chains; event-system reconstruction; closure contracts filled from the typeinfer cache | `CALLBACKS` |
 | Control flow | `calxgloss-controlflow` | Switch-shaped if/else-if chains → `match`/dispatch table; self-recursion (+ tail calls, loop-nested depth); state machines (`STATE_*` chains); per-body CFG with loop nesting depth; branch density (dispatch-table vs sequential); mutual-recursion cycles | `CONTROL FLOW` (escalate) / `CONTROL FLOW PATTERNS` (module tiers) |
 | String context | `calxgloss-stringctx` | Nine string categories (error, path, resource, log, format…); format-specifier → Rust argument types; string→function mapping via body parsing with xref fallback; localization signals; cross-function string hand-offs | `STRINGS` |
 | API detection | `calxgloss-apidetect` | Import-table classification (DirectX 9, SDL2, Win32, POSIX, PNG, zlib, stdio, STL) → crate suggestions with feature flags; per-function API reachability through the call graph; category enrichment; platform divergence (Win32+POSIX mix) → cfg-gated translation; COM interface claims | `LIBRARIES AND APIS` |
 | Constants | `calxgloss-consts` | Bitflag groups (power-of-two literals in bitwise contexts, composite-mask decomposition) → `bitflags!`; switch-run enum candidates → `enum`; program-wide repeated values → named `const`s with context-derived names; program-level flag-family merges; known protocol magics; RGB-shaped color groups | `CONSTANTS` |
 | Serialization | `calxgloss-serialize` | Byte-swap calls (`ntohs`, `__builtin_bswap*`) → `byteorder`; shift-and-or pack/unpack chains → `bitvec`/named-field masking; magic-byte comparisons (PNG/gzip/ZIP) → decoder crates; cross-field validation (checksum + length framing); composed field layouts; protocol message identification; program-wide per-type endianness map | `SERIALIZATION` |
-| Known-library identification | `calxgloss-libmatch` | Normalized decompiled bodies (Ghidra variable names, register temporaries, and volatile addresses become wildcards; calls, operators, constants, string literals, and control-flow keywords stand) matched against a signature set of statically linked CRT/STL code (`memcpy` idiom, `strlen` scan) → findings naming the matched symbol and its family (CRT/STL); competing claims resolve to the strongest | — (not yet rendered into prompts) |
-| Error-handling idioms | `calxgloss-errhandling` | Per-function readings over the bodies the scan keeps — no extra engine reads: a body spelling a whole `try {` … `catch(...){` SEH frame → one finding quoting the `catch` clause line, at the strongest body-text band 80, suggesting an exception-mapped Rust error type over the straight-line logic that would drop the frame; a named personality-handler thunk (`__except_handler3`/`__except_handler4`) → band 70; an exception-API call (`SetUnhandledExceptionFilter`, `AddVectoredExceptionHandler(Ex)`, `SetWindowLongPtrA(GWLP_EXCEPTIONHANDLER)`) → band 60; a direct `RaiseException` site → its own finding, naming the raised exception code when the source spells one; a goto-cleanup ladder — two or more guarded forward gotos converging on one label block that releases a resource (`free`/`CloseHandle`/… vocabulary, builder-extensible) or returns a bare constant → one finding naming the join block by its printed label, at band 55 (release) or 45 (constant return), the release line as evidence, never outranking a spelled frame; a spelled frame beside a named handler or API call stays one finding — the strongest SEH family wins; failure codes of HRESULT (`0x8…`) or NTSTATUS (`0xC…`) shape landing in returns, guard comparisons, or `RaiseException` arguments → one record per distinct code per function naming the code, its site kind, and the band 74 (returned) / 72 (raised) / 64 (compared), strongest site winning the one record; BOOL-shaped `0`/`1` returns, small-integer comparisons, and out-of-band values like the C++ eh code `0xE06D7363` claim nothing — codes ride the same document under their own kind tag | — (not yet rendered into prompts) |
+| Float/SIMD | `calxgloss-floatsimd` | Per-function float-usage flags read off the kept bodies — scalar float math, vector/matrix idioms (the `CONCAT44`/`SUB4`-style mangled spellings), or both — one flag per flagged function naming the shape, its strongest evidence line, and a confidence band, so mangled vector pseudo-C stops being mistranslated as integer or pointer logic | `FLOAT/SIMD` (module-context and escalate) |
+| Known-library identification | `calxgloss-libmatch` | Normalized decompiled bodies (Ghidra variable names, register temporaries, and volatile addresses become wildcards; calls, operators, constants, string literals, and control-flow keywords stand) matched against a signature set of statically linked CRT/STL code (`memcpy` idiom, `strlen` scan) → findings naming the matched symbol and its family (CRT/STL); competing claims resolve to the strongest; identical normalized bodies (linker folding, COMDAT/ICF) and bare tail-call thunks inherit a match — thunks pay one confidence penalty per chain, not per hop; `--signatures <file>` replaces the built-in set wholesale under the pattern-database contract | `KNOWN LIBRARY FUNCTIONS` (module-context: joins the matched **callees**, never the target) and keeps the matched functions out of the queue as `Skip` at the 80 confidence floor |
+| Error-handling idioms | `calxgloss-errhandling` | Per-function readings over the bodies the scan keeps — no extra engine reads: a body spelling a whole `try {` … `catch(...){` SEH frame → one finding quoting the `catch` clause line, at the strongest body-text band 80, suggesting an exception-mapped Rust error type over the straight-line logic that would drop the frame; a named personality-handler thunk (`__except_handler3`/`__except_handler4`) → band 70; an exception-API call (`SetUnhandledExceptionFilter`, `AddVectoredExceptionHandler(Ex)`, `SetWindowLongPtrA(GWLP_EXCEPTIONHANDLER)`) → band 60; a direct `RaiseException` site → its own finding, naming the raised exception code when the source spells one; a goto-cleanup ladder — two or more guarded forward gotos converging on one label block that releases a resource (`free`/`CloseHandle`/… vocabulary, builder-extensible) or returns a bare constant → one finding naming the join block by its printed label, at band 55 (release) or 45 (constant return), the release line as evidence, never outranking a spelled frame; a spelled frame beside a named handler or API call stays one finding — the strongest SEH family wins; failure codes of HRESULT (`0x8…`) or NTSTATUS (`0xC…`) shape landing in returns, guard comparisons, or `RaiseException` arguments → one record per distinct code per function naming the code, its site kind, and the band 74 (returned) / 72 (raised) / 64 (compared), strongest site winning the one record; BOOL-shaped `0`/`1` returns, small-integer comparisons, and out-of-band values like the C++ eh code `0xE06D7363` claim nothing — codes ride the same document under their own kind tag, and a callee's failure codes travel one hop onto the caller's record at a confidence penalty (inherited codes) | `ERROR HANDLING` (module-context and escalate) |
 | Call graph | `calxgloss-callgraph` (+ `calxgloss-analysis` orchestration) | Full-program call graph with Root/Leaf/Middle classification (VB6/.NET/MinGW/MSVC runtime roots, third-party-API leaves); `ContextEnricher` prompt context; `TranslationOrderer` priority plans | call-graph context in every tiered prompt |
+| Binary-version pairing | `calxgloss-bdiff` | Pairs two versions of one binary through a confidence ladder, over the scan documents only — no engine read: exported or demangled names matching exactly pair at 95 (`name_identity`); byte-equal *normalized* bodies (libmatch's normalization, shared rule) pair at 90 and a non-equal body scores on its line-diff ratio between the 60 floor and 90 (`normalized_body`, diff evidence quoted); renamed bodies that moved pair when at least two distinct paired neighbors agree in the same direction (`call_topology`, 70, iterating to a fixed point), and a body pair the topology corroborates gets +5, never past 95. Pairs resolve one-to-one, best score wins, ties keep scan order | not rendered — the pairing document drives **carry-over seeding** (§3.2.1) instead of a prompt section |
 
 **Where the findings enter the prompts:**
 
 - **Initial translation:** the `ModuleContext` and `FullModule` context tiers
   read the **typesdb** and **controlflow** documents (plus call-graph context,
   neighboring bodies, and — at FullModule — shim-layer code and PAL traits).
-- **Escalate retry:** the escalate prompt pulls **all eleven** methodologies'
-  findings for the target function, joined from the persisted documents by
-  `retry/helpers::extract_*` (each keeps only the records whose evidence lives
-  in this function's body, vtable, xrefs, or call path).
+  The `ModuleContext` tier also gains `GLOBAL STATE`, `FLOAT/SIMD`,
+  `ERROR HANDLING`, `PARAMETER DIRECTIONS` (typeinfer), `DATA TABLES`
+  (consts), and `KNOWN LIBRARY FUNCTIONS` (libmatch matches joined against the
+  target's **callees**, never the target itself — the section is omitted when
+  a function has no matched callees).
+- **Escalate retry:** the escalate prompt pulls the fourteen scan
+  methodologies' findings for the target function — data structures,
+  inferred types, algorithms, memory, concurrency, global state, callbacks,
+  control flow, strings, APIs, constants, serialization, float/SIMD, error
+  handling — joined from the persisted documents by `retry/helpers::extract_*`
+  (each keeps only the records whose evidence lives in this function's body,
+  vtable, xrefs, or call path; the escalate path's module-context prompt also
+  rides the libmatch loader).
+- **Queue shaping:** libmatch marks best-match-at-or-above-80 functions
+  `Skip` in the call graph's classification pass, so statically linked
+  `memcpy` bodies never enter the translation queue at all.
 
 **Manual entry points** — every methodology is also a CLI command running the
 same engine against a target binary loaded in-process:
@@ -476,12 +538,18 @@ calxgloss typeinfer   --binary eqmain.dll [--show] [--write-back] [--confidence-
 calxgloss algorithm   --binary eqmain.dll [--show] [--patterns my-patterns.json]
 calxgloss memory      --binary eqmain.dll [--show]
 calxgloss sync        --binary eqmain.dll [--show]
+calxgloss globalstate --binary eqmain.dll [--show]
 calxgloss consts      --binary eqmain.dll [--show]
 calxgloss callback    --binary eqmain.dll [--show]
 calxgloss controlflow --binary eqmain.dll [--show]
 calxgloss stringctx   --binary eqmain.dll [--show]
 calxgloss apidetect   --binary eqmain.dll [--show]
 calxgloss serialize   --binary eqmain.dll [--show]
+calxgloss errhandling --binary eqmain.dll [--show]
+calxgloss floatsimd   --binary eqmain.dll [--show]
+calxgloss libmatch    --binary eqmain.dll [--show] [--signatures my-signatures.json]
+calxgloss bdiff       --binary eqmain.dll    ← report the version pairing; pure
+                          report, no scan, no engine read, no write-back
 ```
 
 **Write-back into the program** — the read cache never implements the write side;
@@ -516,6 +584,7 @@ A `TranslationEvents` broadcast channel (capacity 256) carries progress events f
 |-------|-------------|
 | `PipelineStateChanged { previous, state }` | Any pipeline-control transition (start/pause/resume/stop/complete/fail) |
 | `QueuePlanned { binaries }` | The live loop's ordered run plan, once before the first pass |
+| `BinaryPauseChanged { binary, paused }` | A per-binary pause/resume/start press changes the paused set; fans out to every WS client so all dashboards show the same pause state |
 | `ClassificationComplete { binary, category, strategy, crate_replacement, exported_symbols, imported_symbols }` | After binary classification |
 | `BatchStarted { binary }` | The per-binary pass begins (before any unit exists) |
 | `BatchProgress { binary, pass, function, index, total }` | Heartbeat of a pre-translation pass (call graph, the evidence scans), throttled to 500 ms |
@@ -625,6 +694,14 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 │   │   │   ├── {binary}.rs          ← rendered extern "C" bindings
 │   │   │   └── {binary}.toml        ← rendered dependency manifest
 │   │   ├── serialize/{binary}.json  ← endianness, packing, formats
+│   │   ├── globalstate/{binary}.json← which globals each function reads/writes
+│   │   ├── errhandling/{binary}.json← SEH frames, goto ladders, failure codes
+│   │   ├── floatsimd/{binary}.json  ← float/vector/SIMD usage flags
+│   │   ├── libmatch/{binary}.json   ← statically linked CRT/STL matches
+│   │   ├── bdiff/                   ← binary-version pairing documents,
+│   │   │   └── {binary}-{old-sha256}-{new-sha256}.json
+│   │   │        ←   keyed by the hash triple; the document names both
+│   │   │            hashes so a stale pairing is detectable, never trusted
 │   │   ├── {binary}_call_graph.json ← enriched call graph
 │   │   ├── unit_overrides.json      ← reviewer per-unit overrides
 │   │   ├── token_usage.json         ← per-attempt token log
@@ -688,6 +765,8 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 | POST | `/api/pipeline/cancel-current` | Abort the unit in flight at the next safe point |
 | POST | `/api/pipeline/restart` | Re-run a stopped pipeline in the same process |
 | POST | `/api/pipeline/binaries/{binary}/pause` / `resume` | Per-binary pause: hold a discovered binary out of the auto run's queue (live router only) |
+| POST | `/api/pipeline/binaries/{binary}/focus` | Park a binary in the scope record's single focus slot — the running worklist hoists it to the front at the next unit boundary and consumes the slot (live router only, issue #284) |
+| POST | `/api/pipeline/binaries/{binary}/start` | One press composes the swap: pause the in-flight binary, resume and focus the pressed one at the front of the queue plan (live router only, issue #285) |
 | GET/POST/DELETE | `/api/units/{id}/override` | Reviewer override for one unit's next attempt (forced tier/strategy, hints, skip) |
 | GET/POST | `/api/binaries/{name}/classification` | View/override a binary's classification (analyzer honors it before strategy dispatch) |
 | GET | `/api/units/{id}` | Single unit detail (justification, diff, tests, history, persisted analysis context: API mappings + call graph) |
@@ -732,16 +811,19 @@ The web UI can act on translation units:
 
 ### 7.3 Dashboard States
 
-Each unit in the review dashboard has one of these statuses:
+Each unit in the review dashboard has one of these statuses (`ReviewStatus`):
 
 | Status | Meaning |
 |--------|---------|
-| `Queued` | Translation complete, awaiting review |
-| `PendingReview` | Currently being reviewed |
+| `Queued` | Queued, waiting to be processed |
+| `PendingReview` | Translation complete, awaiting human review |
+| `InProgress` | A human is currently reviewing this unit |
 | `Accepted` | Branch merged into main |
-| `Merged` | Same as Accepted (historical) |
-| `Blocked` | Waiting on dependency |
-| `SendBack` | Sent back for fixes |
+| `SendBack` | Sent back to the LLM with reviewer comments |
+| `PatchRequested` | A patch was requested for a specific issue |
+| `Blocked` | Waiting on a dependency not in a passing state |
+| `Skipped` | Reviewer explicitly skipped the unit — out of the active queue, still visible, unskippable back in; a reviewer decision, not a pipeline verdict |
+| `DoNotTranslate` | The unit's binary was classified `DoNotTranslate` (a .NET managed assembly, issue #235) — a pipeline verdict derived from the classification record: cannot be unskipped, never overwritten by the blocking cascade, sorts last |
 
 ---
 
@@ -760,11 +842,12 @@ When a translation attempt fails verification, the strategy determines how the L
 3. Verified again with test runner
 
 ### `escalate`
-1. LLM gets the original prompt + the **full evidence base**: all eleven
+1. LLM gets the original prompt + the **full evidence base**: all fourteen
    methodology documents filtered to this function — data structures,
    inferred types, recognized algorithms, memory lifecycles, concurrency,
-   callbacks, control-flow patterns, string context, API identifications,
-   constants, serialization findings — plus call-graph neighbors,
+   global state, callbacks, control-flow patterns, string context, API
+   identifications, constants, serialization findings, float/SIMD shapes,
+   error-handling idioms and failure codes — plus call-graph neighbors,
    neighboring function bodies, and the unit's failure history
 2. Full re-translation with richer context
 
@@ -816,24 +899,31 @@ calxgloss live --port 3000
 │     │         │
 │     │         ├──► batch_translate warmup
 │     │         │     ├──► Open scan read cache (re/cache/)
-│     │         │     └──► ensure_* the 11 analysis scans
-│     │         │           (typesdb, typeinfer, algorithm, memory,
-│     │         │            sync, callback, controlflow, stringctx,
-│     │         │            apidetect, consts, serialize)
-│     │         │           each: cached JSON → skip; else scan
-│     │         │           (heartbeat → BatchProgress) → save
+│     │         │     ├──► ensure_* the 14 analysis scans
+│     │         │     │     (typesdb, typeinfer, algorithm, memory,
+│     │         │     │      sync, globalstate, callback, controlflow,
+│     │         │     │      stringctx, apidetect, consts, serialize,
+│     │         │     │      errhandling, floatsimd)
+│     │         │     │     each: cached JSON → skip; else scan
+│     │         │     │     (heartbeat → BatchProgress) → save
+│     │         │     └──► pair_previous_versions — pair the fresh scan
+│     │         │           with any surviving scan of an earlier version
+│     │         │           (documents only, zero engine reads) →
+│     │         │           re/analysis/bdiff/{bin}-{old}-{new}.json
 │     │         │
 │     │         └──► For each function:
 │     │               │
 │     │               ├──► TranslationPipeline::translate()
 │     │               │     └─ Steps: fetch → tag → testgen → tier
 │     │               │        → call-graph enrichment → findings
+│     │               │        → carry-over seed check (paired accepted
+│     │               │           twin ≥80 → seeded attempt, no LLM)
 │     │               │        → prompt → LLM
 │     │               │     └─ Returns Translation { rust_code, ... }
 │     │               │
 │     │               ├──► retry::try_translate_with_retry()
 │     │               │     └─ Verifier → compile → test → retry loop
-│     │               │     └─ escalate pulls all 11 findings
+│     │               │     └─ escalate pulls all 14 findings
 │     │               │     └─ Emits progress events at each milestone
 │     │               │     └─ Returns RetryResult { success, attempts[] }
 │     │               │
@@ -853,7 +943,7 @@ calxgloss live --port 3000
 1. **Engine scan** → disassembly, decompiler pseudo-C, call graph, imports
 2. **PAL mappings** → Windows API tags attached to disassembly tokens
 3. **Baseline tests** → 10-20+ test cases with input patterns (no expected output yet)
-4. **Evidence base** → the eleven methodology documents (recovered once per binary, cached under `re/analysis/`) supply per-function context: types, inferred types, algorithms, memory, concurrency, callbacks, control flow, strings, APIs, constants, serialization
+4. **Evidence base** → the fourteen methodology documents (recovered once per binary, cached under `re/analysis/`) supply per-function context: types, inferred types, algorithms, memory, concurrency, global state, callbacks, control flow, strings, APIs, constants, serialization, error handling, float/SIMD — with libmatch matches naming the *callees* and the `re/analysis/bdiff/` pairing documents able to seed a first attempt instead of asking the LLM cold
 5. **LLM** → prompt sized by context tier, findings injected where they apply → Rust code (with token usage tracking)
 6. **Verifier** → sandboxed `cargo check` + `cargo run` against baseline
 7. **Git** → branch → commit → merge to main (on success)

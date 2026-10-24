@@ -9,14 +9,16 @@ references so you can open the span and edit it.*
 
 ## 0. How to read this document
 
-Calxgloss is a Cargo workspace of 27 crates in five contexts:
+Calxgloss is a Cargo workspace of thirty-four crates in five contexts:
 
 ```
 crates/
 ├── calxgloss/          the meta-lib (one file of re-exports)
 ├── shared/             calxgloss-types, calxgloss-config
-├── integrations/       calxgloss-decomp, -kuna, -llm, -pal, -prompts
-├── evidence/           13 analysis engines (analysis, callgraph, typesdb, …)
+├── integrations/       calxgloss-decomp, -kuna, -llm, -pal, -prompts,
+│                       -testfixtures
+├── evidence/           18 crates: 15 methodology scan engines, bdiff,
+│                       callgraph, analysis
 ├── pipeline/           calxgloss-translator, -verify, -testgen, -git
 └── interface/          calxgloss-cli, -web, -reports
 ```
@@ -39,7 +41,7 @@ marked `…`.
 Everything the harness does is a flow of serializable values between crates
 that never call each other directly. That vocabulary lives in
 `crates/shared/calxgloss-types`, re-exported flat at the crate root
-(`src/lib.rs:L56-L82`) so consumers write `calxgloss_types::FunctionInfo`.
+(`src/lib.rs:L56-L146`) so consumers write `calxgloss_types::FunctionInfo`.
 It deliberately contains **no analysis logic and no service calls** — the
 engine, the LLM, and test runners live in crates that only exchange these
 records.
@@ -155,12 +157,15 @@ The project's core principle is *functional equivalence over binary
 precision*. That contract is a data type:
 
 ```rust
-// crates/shared/calxgloss-types/src/test.rs:L77-L87
+// crates/shared/calxgloss-types/src/test.rs:L96-L106
 pub struct TestCase {
-    /// The test inputs as a JSON value.
+    /// The test inputs as a JSON value. Parameters are serialized according to
+    /// their types (integers, strings, booleans, or null for pointers).
     pub inputs: serde_json::Value,
+
     /// The expected return value from the original function, as JSON.
     pub expected_return: serde_json::Value,
+
     /// Expected side effects the function produces when called with these inputs.
     pub expected_side_effects: Vec<SideEffect>,
 }
@@ -237,7 +242,7 @@ cache. Every read is a command to the engine thread; name-based lookups
 resolve inside the engine:
 
 ```rust
-// crates/integrations/calxgloss-kuna/src/source.rs:L514-L528
+// crates/integrations/calxgloss-kuna/src/source.rs:L548-L569
 pub async fn decompile_function(&self, name: &str) -> Result<KunaDecompiled> {
     let (reply, answer) = oneshot::channel();
     self.send(Command::Decompile {
@@ -250,6 +255,14 @@ pub async fn decompile_function(&self, name: &str) -> Result<KunaDecompiled> {
     // tripped a budget or refused still consumed its slot, so the
     // pass's progress must move (issue #211).
     self.tick(name);
+    // Engine-call accounting (issue #240): one entry per completed
+    // round trip, same rule as the tick — a function that tripped a
+    // budget still paid the engine and still shows in the log.
+    self.inner
+        .decompile_calls
+        .lock()
+        .expect("decompile accounting lock")
+        .push(name.to_string());
     outcome
 }
 ```
@@ -257,8 +270,12 @@ pub async fn decompile_function(&self, name: &str) -> Result<KunaDecompiled> {
 A subtlety worth noticing: long scans (a full decompile pass over a DLL can
 take minutes) would look like a hang on the web dashboard. The engine source
 carries a *heartbeat* — `begin_pass`/`end_pass` plus a `tick` per decompile
-(`source.rs:L440-L500`) — that beats into the progress-event channel so the
-UI can show *which function* the engine is chewing on.
+(`source.rs:L462-L532`) — that beats into the progress-event channel so the
+UI can show *which function* the engine is chewing on. And since issue #240
+the source keeps its own ledger of every completed decompile round trip, in
+call order — Kuna is the scan phase's one serial resource, and the read
+cache's per-key cell means a body is paid for at most once per key, so the
+ledger is the record of what the engine was actually asked to do.
 
 ### 2.2 The PAL — a static Windows-API → Rust mapping table
 
@@ -290,7 +307,7 @@ Tests must record what the original function actually does. The obvious
 approach — generate an `extern "C"` block and link against the DLL — fails
 for the functions that matter. The module header of
 `crates/pipeline/calxgloss-testgen/src/wine.rs:L1-L45` is the clearest
-statement of the problem in the codebase, quoted in full:
+statement of the problem in the codebase; its opening sections, verbatim:
 
 ```rust
 //! Cross-compile and run a Windows harness under Wine to capture a ground-truth
@@ -334,16 +351,16 @@ types to Rust types with pointer depth and bit width
 ## 4. The act of translation: `TranslationPipeline::translate`
 
 The heart is one function:
-`crates/pipeline/calxgloss-translator/src/pipeline.rs:L709-L1071`. The
+`crates/pipeline/calxgloss-translator/src/pipeline.rs:L906-L1329`. The
 pipeline itself is a struct of clients and optional controls
-(`pipeline.rs:L108-L266`) assembled with builder methods —
+(`pipeline.rs:L223-L422`) assembled with builder methods —
 `with_workspace`, `with_events`, `with_call_graph`, `with_fault_logger`,
 `with_stop_signal`, and about a dozen more. `translate` runs seven steps.
 
 **Step 0 — refuse what has no logic.** Before spending a token:
 
 ```rust
-// crates/pipeline/calxgloss-translator/src/pipeline.rs:L712-L719
+// crates/pipeline/calxgloss-translator/src/pipeline.rs:L909-L916
 // Root symbols — entry points and import thunks — own no logic to
 // translate. … a `DelayLoad_` thunk is the classic trap: its resolved-import
 // jump decompiles to an unrecovered jumptable plus a bare `return`, and
@@ -352,11 +369,18 @@ pipeline itself is a struct of clients and optional controls
 self.refuse_root_function(binary, function)?;
 ```
 
+The same refusal has a body-shaped twin (#269): a thunk the symbol table
+named *after its import* — `SetCursor` carrying only `SetCursor(); return;` —
+matches no name pattern, but its body is one unconditional call to its own
+name, so `refuse_self_call_thunk` (call at `pipeline.rs:L935`, the function at
+`L1603-L1647`) turns it away right after the scan fetch, before a prompt is
+built.
+
 **Step 1 — fetch, then triage the decompiler's own failures.** Ghidra's
 analysis failures ride inside the pseudo-C as `WARNING` comments:
 
 ```rust
-// pipeline.rs:L740-L745
+// pipeline.rs:L937-L942
 // Triage: Ghidra's analysis failures ride inside the pseudo-C as
 // WARNING comments. Name them before the LLM sees the body — an
 // unrecovered jump table otherwise becomes a plausible, hollow
@@ -367,26 +391,31 @@ self.triage_decompiler_warnings(binary, function, &function_info.decompiler_outp
 
 **Steps 2–3 — tag APIs, generate baseline tests.** Imports are fetched once
 per binary and intersected with the function's call sites
-(`tag_windows_apis`, `pipeline.rs:L1423`); baseline test inputs come from the
-testgen crate of Chapter 3 (`generate_baseline_tests`, `pipeline.rs:L1440`).
+(`tag_windows_apis`, `pipeline.rs:L1727`); baseline test inputs come from the
+testgen crate of Chapter 3 (`generate_baseline_tests`, `pipeline.rs:L1747`).
 
 **Step 4 — size the prompt.** Complexity detection picks a tier, and a
 reviewer override can force one:
 
 ```rust
-// pipeline.rs:L794-L814
+// pipeline.rs:L1011-L1030
 let auto_tier = calxgloss_types::select_context_tier(
-    &complexity, api_call_count, calxgloss_types::SuccessRate::default(),
+    &complexity,
+    api_call_count,
+    calxgloss_types::SuccessRate::default(),
 );
 // W2.7: a reviewer override forces the tier — the automatic selector
 // is bypassed for this unit (issue #96).
 let tier = match self.forced_context_tier(binary, function) {
-    Some(forced) => forced,
+    Some(forced) => {
+        info!(… "Reviewer override forces the context tier");
+        forced
+    }
     None => auto_tier,
 };
 ```
 
-Then a `match tier` (`pipeline.rs:L894-L986`) builds the prompt from the
+Then a `match tier` (`pipeline.rs:L1158-L1245`) builds the prompt from the
 corresponding template in `calxgloss-prompts`. The tiers nest:
 `ModuleContext` adds call-graph neighbors, neighboring function bodies, and
 recovered data structures; `FullModule` additionally extracts shim-layer code
@@ -394,13 +423,44 @@ and PAL trait definitions from the workspace. Every tier path enriches with
 the same `helpers::extract_*` functions the retry loop uses for escalation —
 one context-extraction vocabulary, two callers.
 
+**Step 4b — the carry-over seed short-circuits the LLM call.** Just before
+the prompt is built, one deterministic check can end the whole generation
+(issue #299; data-flow doc §3.2.1):
+
+```rust
+// pipeline.rs:L1102-L1156
+// Carry-over seeding (issue #299): when a pairing document pairs
+// this function confidently with a previous-version twin whose
+// translation was *accepted* (a merged review branch), attempt 1
+// carries that code — no prompt built, no LLM called, no tokens
+// spent. … the accepted translation is a
+// hypothesis the new bytes get to reject, and a rejection hands the
+// unit to the fresh attempt chain like any other failed attempt.
+// Nothing here marks the unit verified; the review overlay's model
+// (ADR-0003) is untouched — the new branch starts unmerged.
+if let Some(seed) = self.carry_over_seeds.lock()… .get(function).cloned() {
+    return Ok(Translation { rust_code: seed.rust_code,
+                            model: "carry-over".to_string(),
+                            tokens_used: None, … });
+}
+```
+
+Everything deterministic still ran: the scan fetch and refusals, baseline
+tests, tier selection — and the full verification against the *new* binary's
+bytes follows in the retry loop. The seed arrives from `carry_over::collect_seeds`
+(`carry_over.rs:L107`), which reads the bdiff pairing document plus the review
+branches; the pipeline refreshes its seed table between binaries
+(`refresh_carry_over_seeds`, `pipeline.rs:L2451`) and stamps the accepted
+attempt's provenance onto the review overlay
+(`attach_carry_over_provenance`, `pipeline.rs:L2485`).
+
 **Steps 5–7 — send, check, return.** The prompt goes to the LLM
-(`send_to_llm`, `pipeline.rs:L1649`); an empty response is an error, not a
+(`send_to_llm`, `pipeline.rs:L2053`); an empty response is an error, not a
 result; and the returned `Translation` carries everything downstream stages
 need — code, prompt, tier, baseline tests, token count:
 
 ```rust
-// pipeline.rs:L1057-L1070
+// pipeline.rs:L1315-L1329
 Ok(Translation {
     binary: binary.to_string().into(),
     function: function.to_string(),
@@ -426,7 +486,7 @@ Notice what is *not* here: no compilation, no test execution, no git.
 serve. Two details encode hard-won experience:
 
 ```rust
-// crates/integrations/calxgloss-llm/src/client.rs:L340-L348
+// crates/integrations/calxgloss-llm/src/client.rs:L353-L361
 fn output_budget(&self, messages: &[LlmMessage]) -> usize {
     const CHARS_PER_TOKEN: usize = 3;
     let prompt_chars: usize = messages.iter().map(|m| m.content().len()).sum();
@@ -440,12 +500,15 @@ fn output_budget(&self, messages: &[LlmMessage]) -> usize {
 
 Every request caps `max_tokens` to what's left of the window — an
 uncapped request is how a local server gets OOM-killed. And in `complete`
-(`client.rs:L367-L438`), HTTP 429/503/507 are mapped to a typed
+(`client.rs:L380-L451`), HTTP 429/503/507 are mapped to a typed
 `LlmError::ResourceExhausted` rather than a generic server error, because the
 retry loop treats overload differently from a bad prompt (Chapter 6). The
 response content comes back with markdown fences stripped
-(`strip_code_fences`, `client.rs:L589`) — the LLM's habit of wrapping code in
-rust code blocks is normalized at the boundary, not in every consumer.
+(`strip_code_fences`, `client.rs:L602`) — the LLM's habit of wrapping code in
+rust code blocks is normalized at the boundary, not in every consumer. And
+the request itself carries a wall-clock deadline: `LlmConfig::timeout_secs`
+(`client.rs:L81`, `with_timeout_secs` at `L120`) becomes the reqwest client's
+`.timeout()` (`L314`), so a wedged local server cannot park a batch forever.
 
 ---
 
@@ -509,7 +572,7 @@ the shim mapping tests.
 ## 6. The persistence loop: `try_translate_with_retry`
 
 One LLM call rarely produces passing code. The retry loop —
-`crates/pipeline/calxgloss-translator/src/retry/retry_loop.rs:L72-L1353` —
+`crates/pipeline/calxgloss-translator/src/retry/retry_loop.rs:L72-L1344` —
 is where the harness earns its keep. Its shape:
 
 **Attempt 1** is verified as-is (compile, run tests). If it passes, return.
@@ -519,17 +582,27 @@ sources and escalates both a *strategy* and a *context tier* on each failure.
 ### 6.1 Strategies that feed the failure back into the prompt
 
 ```rust
-// retry_loop.rs:L697-L737 (abridged)
+// retry_loop.rs:L698-L890 (abridged)
 let (prompt, strategy_name) = match &current_strategy {
-    RetryStrategy::Default => { /* skip — re-sending an identical prompt wastes tokens */ }
+    RetryStrategy::Default => {
+        // Re-send original prompt — skip (would be identical to initial)
+        result.add_attempt(… "skip_default" …);
+        continue;
+    }
     RetryStrategy::CompileFix => {
+        let fix_ctx = FixPromptCtx {
+            function_name: initial_translation.function.clone(),
+            dll_name: initial_translation.binary.to_string(),
+            original_rust_code: initial_translation.rust_code.clone(),
+            compilation_errors: initial_errors.clone(),
+            failed_tests: Vec::new(),
+            history: failure_history.clone(),
+        };
+        // Use failure-informed prompts after first retry
         let prompt = if failure_history.is_empty() {
-            build_compile_fix_prompt(&initial_translation.function, &initial_translation.binary,
-                &initial_translation.rust_code, &initial_errors)
+            build_compile_fix_prompt(&fix_ctx)
         } else {
-            build_failure_informed_compile_fix_prompt(&initial_translation.function,
-                &initial_translation.binary, &initial_translation.rust_code,
-                &initial_errors, &failure_history)
+            build_failure_informed_compile_fix_prompt(&fix_ctx)
         };
         (prompt, "compile_fix".to_string())
     }
@@ -547,14 +620,14 @@ The `failure_history: Vec<FailureHint>` accumulates one entry per failed
 attempt — attempt number, strategy, human-readable failure — and after the
 first retry every fix prompt is *failure-informed*: the LLM sees what has
 already been tried and why it failed. Reviewer hints from the web UI seed the
-history as attempt 0 with strategy `"reviewer"` (`retry_loop.rs:L88-L94`),
+history as attempt 0 with strategy `"reviewer"` (`retry_loop.rs:L88-L95`),
 so a steered unit's very first fix prompt already carries the reviewer's
 knowledge.
 
 ### 6.2 Escalation is a ratchet, not a random walk
 
 ```rust
-// retry_loop.rs:L1313-L1348 (abridged)
+// retry_loop.rs:L1304-L1340 (abridged)
 if ctx.config.escalate_on_failure {
     current_strategy = match current_strategy {
         RetryStrategy::CompileFix => RetryStrategy::TestFix,
@@ -566,6 +639,10 @@ if ctx.config.escalate_on_failure {
     // W2.5: an operator `max_context_tier` constraint caps the walk —
     // escalation stops at the cap instead of going past it.
     if let Some(next_tier) = ctx.config.next_tier_within_cap(current_tier) {
+        warn!(… "Context tier escalated");
+        if let Some(em) = ctx.events {
+            let _ = em.emit(ProgressEvent::ContextTierSelected { … });
+        }
         current_tier = next_tier;
         tier_escalated = true;
     }
@@ -573,7 +650,7 @@ if ctx.config.escalate_on_failure {
 ```
 
 When `tier_escalated` is set, the next iteration takes a different branch at
-the top of the loop (`retry_loop.rs:L262-L694`): it rebuilds the prompt from
+the top of the loop (`retry_loop.rs:L262-L696`): it rebuilds the prompt from
 the *next* context tier — pulling in more neighbors, data structures, shim
 layers — instead of just re-feeding errors. Strategy cycles; tier only ever
 walks up, and only within the operator's cap.
@@ -604,14 +681,14 @@ fed from the same signal.
 After each attempt the loop (in order): records the loop detector, appends a
 `TranslationAttempt` to the result, emits
 `TranslationAttemptCompleted`, writes a token-usage entry with wall-clock
-duration (`log_token_usage`, `retry_loop.rs:L1256-L1270` — the dashboard's
+duration (`log_token_usage`, `retry_loop.rs:L1247-L1262` — the dashboard's
 time estimates come from these), pushes a `FailureHint`, logs a prompt-variant
-experiment (`log_prompt_variant_experiment`, `retry_loop.rs:L1304` — the A/B
+experiment (`log_prompt_variant_experiment`, `retry_loop.rs:L1295` — the A/B
 data behind "which strategy actually works"), and only then decides whether
 to break or escalate.
 
 The public entry point composes generation and this loop
-(`pipeline.rs:L1195-L1291`): `translate` once, then `try_translate_with_retry`
+(`pipeline.rs:L1462-L1558`): `translate` once, then `try_translate_with_retry`
 around it. (The futures are boxed at that boundary for a compiler reason, not
 a design one — recursive `Send` evaluation through the whole pipeline
 overflows rustc's trait recursion limit, rust-lang/rust#159228.)
@@ -626,7 +703,7 @@ pass or fail, lands as a commit on its own branch.
 ### 7.1 Branch creation is a dependency gate
 
 ```rust
-// crates/pipeline/calxgloss-git/src/git_manager.rs:L254-L348 (abridged)
+// crates/pipeline/calxgloss-git/src/git_manager.rs:L269-L363 (abridged)
 pub fn create_branch(&self, binary: &str, function: &str, attempt: u32,
                      policy: Option<&BranchCreationPolicy>) -> Result<BranchResult, TypesError> {
     let branch = GitBranch::new(binary, function, attempt)?;
@@ -679,10 +756,10 @@ historical record of what didn't work, diffable against the branch that did.
 ### 7.3 Acceptance is a merge, with a race guard
 
 The web UI's accept button ends in `accept_unit`
-(`crates/interface/calxgloss-web/src/server/actions.rs:L232-L290`):
+(`crates/interface/calxgloss-web/src/server/actions.rs:L249-L307`):
 
 ```rust
-// actions.rs:L236-L267 (abridged)
+// actions.rs:L253-L283 (abridged)
 let (captured, _action_guard) = state.begin_action(unit_id).await;
 …
 // Re-check before merging: the lock guarantees nothing lands between here
@@ -691,18 +768,19 @@ let (captured, _action_guard) = state.begin_action(unit_id).await;
 check_action_conflict(state.repo_path(), unit_id, captured)?;
 
 let merge_result = git.accept_branch(&branch)?;
-match &merge_result {
-    MergeResult::Merged { merge_hash } => …,
-    MergeResult::AlreadyUpToDate => …,
+let merge_hash = match &merge_result {
+    calxgloss_git::MergeResult::Merged { merge_hash } => Some(merge_hash.clone()),
+    calxgloss_git::MergeResult::AlreadyUpToDate => None,
     // A conflicted merge landed nothing on main — fail before persisting
     // any action state so the unit keeps its pre-accept status (issue #83).
-    MergeResult::Conflicts { conflicted_files, error } => return Err(anyhow!(…)),
-}
+    calxgloss_git::MergeResult::Conflicts { conflicted_files, error } =>
+        return Err(anyhow::anyhow!(…)),
+};
 ```
 
 A per-unit async lock plus a captured-state re-check makes accept/send-back
 races resolve to exactly one winner (a test proves it:
-`actions.rs:L922-L980`). The action itself is persisted as a JSON record
+`actions.rs:L956-L1014`). The action itself is persisted as a JSON record
 under the workspace, separate from the git state — reviewer intent lives in
 overlay files, never derived from artifacts (ADR-0003).
 
@@ -717,7 +795,7 @@ node `Root`/`Leaf`/`Middle`/`Skip` (root_detector, leaf_detector), and the
 orderer turns it into a work queue:
 
 ```rust
-// crates/evidence/calxgloss-callgraph/src/ordering.rs:L66-L94 (abridged)
+// crates/evidence/calxgloss-callgraph/src/ordering.rs:L104-L132 (abridged)
 pub enum TranslationPriority { … }
 
 impl From<NodeCategory> for TranslationPriority {
@@ -725,14 +803,19 @@ impl From<NodeCategory> for TranslationPriority {
 }
 ```
 
-`TranslationOrderer::order` (`ordering.rs:L170-L269`) produces a
+`TranslationOrderer::order` (`ordering.rs:L230-L334`) produces a
 `VecDeque<FunctionTranslationPlan>` in three tiers — roots and skips first
 (they're stubbed or skipped cheaply), then middles, then leaves — and within
-each tier a topological sort (`topological_sort_tier`, `ordering.rs:L276`)
+each tier a topological sort (`topological_sort_tier`, `ordering.rs:L343`)
 puts callees before callers, so a function is translated only after the
-functions it calls already have Rust translations to reference. Cycles don't
-hang the sort; cyclic functions are appended at the end of their tier
-(test: `ordering.rs:L794-L832`).
+functions it calls already have Rust translations to reference. The sort
+takes one more input than pure call edges: a `StateSharingEdges` set
+(`ordering.rs:L86-L99`) of pairs of functions that touch the same global,
+supplied through `with_state_sharing` (`ordering.rs:L217`) from the
+global-state scan's rollup — a writer is ordered before its readers just like
+a callee before its caller, because the reader's translation needs the
+writer's Rust already in place. Cycles don't hang the sort; cyclic functions
+are appended at the end of their tier (test: `ordering.rs:L886-L925`).
 
 Why are leaves *last*, then? Because "Leaf" is not the known third-party
 function — it's the application function that *calls* one (`create_display`
@@ -747,23 +830,35 @@ already-translated Rust of their internal neighbors.
 
 ### 8.2 The batch loop is an operator-facing state machine
 
-`batch_translate` (`pipeline.rs:L2801-L3045`) and
-`batch_translate_from_callgraph` (`pipeline.rs:L3149-L3381`) walk the plan,
-calling `try_translate_with_retry` per function. Around that core sits a
-surprising amount of control machinery — all of it tested from the pipeline's
-own `mod tests`:
+`batch_translate` (`pipeline.rs:L3109-L3365`) and
+`batch_translate_from_callgraph` (`pipeline.rs:L3459-L3731`) walk the plan,
+calling `try_translate_with_retry` per function. Before either walks, the
+carry-over machinery gets its chance: the pre-batch scan runner ends with a
+version-pairing step (`pair_previous_versions`, `version_pairing.rs:L45`,
+called from `run_prebatch_scans` at `pipeline.rs:L2380-L2439`), and each
+binary's function list then gets a fresh seed table
+(`refresh_carry_over_seeds`, `pipeline.rs:L2451`) built by
+`carry_over::collect_seeds` (`carry_over.rs:L107`) from the bdiff pairing
+document and the previous branch's merged review records; the pipeline learns
+which attempts were accepted through the injectable
+`with_accepted_attempt_source` port (`pipeline.rs:L848`). After a unit
+finishes, `attach_carry_over_provenance` (`pipeline.rs:L2485`) stamps the
+seeded commit onto the review overlay, and the seeded function's own
+translate call never reaches the LLM (Chapter 4's Step 4b). Around the batch
+core sits a surprising amount of control machinery — all of it tested from
+the pipeline's own `mod tests`:
 
 - **Stop** breaks at the next unit boundary, never mid-LLM-call
-  (`pipeline.rs:L3473-L3504`).
+  (`pipeline.rs:L3988-L4019`).
 - **Pause/park** halts the loop and resumes exactly where it stopped
-  (`pipeline.rs:L3876-L3938`); a stop during a pause releases the park
-  (`pipeline.rs:L3988-L4033`).
+  (`pipeline.rs:L4541-L4603`); a stop during a pause releases the park
+  (`pipeline.rs:L4653-L4698`).
 - **Cancel-current** aborts the in-flight unit's future and continues with
-  the next (`pipeline.rs:L4062-L4137`).
+  the next (`pipeline.rs:L4820-L4902`).
 - **Token budget**: a spent budget ends the batch before any unit runs
-  (`pipeline.rs:L3802-L3832`).
-- **Skips**: operator-skipped and reviewer-skipped functions are never queued
-  (`pipeline.rs:L3511-L3582`).
+  (`pipeline.rs:L4467-L4497`).
+- **Skips**: operator-skipped functions (`pipeline.rs:L4026-L4053`) and
+  reviewer-skipped functions (`pipeline.rs:L4097-L4131`) are never queued.
 
 The control objects (`StopSignal`, `PipelineControl`, `UnitCancellation`)
 are shared-state types in `calxgloss-types` that both the CLI and the web
@@ -777,7 +872,7 @@ run. Each `ensure_*` follows one pattern — check the workspace cache, else
 scan, else *degrade*:
 
 ```rust
-// crates/pipeline/calxgloss-translator/src/pipeline.rs:L1923+ (pattern, abridged)
+// crates/pipeline/calxgloss-translator/src/pipeline.rs:L2537+ (pattern, abridged)
 pub async fn ensure_type_database(&self, binary: &str) -> bool {
     // cached re/analysis/typesdb/<binary>.json? reuse it.
     // else run the three recovery scans against the loaded program,
@@ -787,11 +882,16 @@ pub async fn ensure_type_database(&self, binary: &str) -> bool {
 }
 ```
 
-There are eleven of these (`ensure_type_database` through
-`ensure_serialize_detection`, `pipeline.rs:L1917-L2661`), one per evidence
-engine, and each has the same trio of tests: *cached result reused without
-rescanning*, *cache miss scans and saves through the engine*, *no workspace
-skips the recovery*. A test that tampers the cached scan documents and
+There are fourteen of these (`ensure_type_database` through
+`ensure_floatsimd_detection`, `pipeline.rs:L2537-L2939`), one per pre-batch
+evidence scan, and each has the same trio of tests: *cached result reused
+without rescanning*, *cache miss scans and saves through the engine*, *no
+workspace skips the recovery*. A single preamble, `run_prebatch_scans`
+(`pipeline.rs:L2380-L2439`), runs all fourteen as `JoinSet` tasks through a
+concurrency window — `MAX_CONCURRENT_EVIDENCE_SCANS = 4`, one named decision,
+high-water-mark recorded so the fan-out cap is provable — under one
+heartbeat pass armed around the whole group rather than one per scan (issue
+#239). A test that tampers the cached scan documents and
 re-runs the batch proves the second batch replays the tampered bytes back
 into its results — the cache is load-bearing, not decorative.
 
@@ -801,12 +901,12 @@ into its results — the cache is load-bearing, not decorative.
 
 ### 9.1 `main` is configuration layering plus dispatch
 
-`crates/interface/calxgloss-cli/src/main.rs:L86-L536` does three things
+`crates/interface/calxgloss-cli/src/main.rs:L94-L595` does three things
 before any command runs: initialize reloadable logging, layer configuration,
 and dispatch. The layering is explicit and ordered:
 
 ```rust
-// main.rs:L110-L160 (abridged)
+// main.rs:L111-L151 (abridged)
 // Layer configuration once, so every command sees the same values and a
 // malformed file is reported before any work starts rather than halfway
 // through a translation.
@@ -824,17 +924,21 @@ Flags > environment (`CALXGLOSS_LLM_URL`, …) > config file
 (`./calxgloss.toml`) > built-in defaults. Secrets load but never print —
 `calxgloss config` shows `<set>`.
 
-The `Command` enum (`cli_types.rs:L224-L924`) is the full surface: `init`,
-`doctor` (checks the Kuna engine loads the target; `--fix` has nothing to install), `classify`,
+The `Command` enum (`cli_types.rs:L197-L1041`) is the full surface: `init`,
+`doctor` (checks the Kuna engine loads the target; `--fix` is accepted for
+compatibility but has nothing to install), `classify`,
 `translate`, `batch-translate`, `auto`, `serve`, `live`, `verify`,
 `dashboard` — whose `view`/`accept`/`reject`/`accept-all` subcommands live in
-`DashboardSubcommand` (`cli_types.rs:L928-L1018`) — `auto-shim`, `gc`,
+`DashboardSubcommand` (`cli_types.rs:L1045-L1135`) — `auto-shim`, `gc`,
 `config`, and one command per evidence engine (`typesdb`, `typeinfer`,
-`algorithm`, `memory`, `sync`, `consts`, `callback`, `controlflow`,
-`stringctx`, `apidetect`, `serialize`). The doc comments on the enum variants
-are themselves documentation — e.g. `doctor --fix`'s plugin-first pairing and
-sha256-verified downloads are specified in the variant's comment
-(`cli_types.rs:L236-L256`).
+`algorithm`, `memory`, `sync`, `globalstate`, `consts`, `callback`,
+`controlflow`, `stringctx`, `apidetect`, `serialize`, `errhandling`,
+`floatsimd`, `libmatch`, and the version comparison, `bdiff`). The doc
+comments on the enum variants are themselves documentation — e.g. the
+`Doctor` variant's comment specifies the whole command contract: one
+read-only pass, nothing to install because Kuna is compiled in, every
+failure carrying a remediation hint and exiting non-zero so CI can gate on
+it (`cli_types.rs:L204-L218`).
 
 `live` is the flagship: it runs the auto pipeline and the web review server
 as two tasks in one process, joined by the progress-event broadcast channel —
@@ -846,9 +950,9 @@ Every stage emits `ProgressEvent`s into a `TranslationEvents` broadcast
 channel (capacity 256). The same events feed:
 
 1. the web dashboard's in-memory `ProgressState`
-   (`server/mod.rs:L475-L755` — `on_event` folds the stream into per-unit
+   (`server/mod.rs:L476-L737` — `on_event` folds the stream into per-unit
    entries),
-2. the WebSocket fan-out (`events.rs`, the 307-incoming-edge hotspot of the
+2. the WebSocket fan-out (`events.rs`, the most depended-upon module in the
    repo), and
 3. the heartbeat/scan-pass machinery (Chapter 2.1).
 
@@ -859,11 +963,11 @@ observability defaults can mask failure — which is why the *persisted* logs
 
 ### 9.3 The web server is two routers over one state
 
-`build_router` (`server/mod.rs:L1139-L1147`) composes `shared_routes` and
-`live_only_routes` (`server/mod.rs:L866-L1115`) behind an axum `Router` with
+`build_router` (`server/mod.rs:L1149-L1157`) composes `shared_routes` and
+`live_only_routes` (`server/mod.rs:L848-L1125`) behind an axum `Router` with
 a `CombinedState`. `serve` mode is read-only over existing artifacts
 (ADR-0006); `live` mode adds the action routes — `accept_unit`,
-`send_back_unit`, `request_patch` (`actions.rs:L232-L513`) — where
+`send_back_unit`, `request_patch` (`actions.rs:L249-L545`) — where
 `request_patch` spawns a reviewer-steered retry: the reviewer's hints seed
 the retry loop's failure history (Chapter 6.1) and the new attempt lands on a
 fresh attempt branch.
@@ -872,10 +976,11 @@ fresh attempt branch.
 
 ## 10. The evidence engines
 
-Thirteen crates under `crates/evidence/` each answer one question about the
+Eighteen crates under `crates/evidence/` each answer one question about the
 binary, all reading the *loaded program* through the `ScanSource` seam and
-writing JSON documents into the workspace's `re/analysis/` tree. In the
-Cargo.toml's words:
+writing JSON documents into the workspace's `re/analysis/` tree — with one
+exception, `calxgloss-bdiff`, which reads the scan *cache* instead and gets
+its own section below. In the Cargo.toml's words:
 
 | Crate | Question it answers |
 |---|---|
@@ -886,17 +991,20 @@ Cargo.toml's words:
 | `calxgloss-algorithm` | Which known algorithms is this code? (control-flow signatures) |
 | `calxgloss-memory` | How is memory managed? (alloc/free pairs, handles, refcounting) |
 | `calxgloss-sync` | Where is concurrency? (mutex pairs, atomics, threads) |
+| `calxgloss-globalstate` | Which functions read and write which globals? (per-function access records quoting the access statement at a confidence band, rolled up into a shared-globals index the sync engine and the call-graph orderer both consume) |
 | `calxgloss-consts` | Which constants and enums are real? (bitflags, magic numbers) |
 | `calxgloss-callback` | Where are function-pointer tables and jump-table dispatches? |
 | `calxgloss-controlflow` | Which if-else chains are switches or state machines? |
 | `calxgloss-stringctx` | What do the strings mean? (nine-category classification, format strings) |
 | `calxgloss-apidetect` | Which third-party library is this? (import-table fingerprinting → crate mapping) |
 | `calxgloss-serialize` | Where is endianness/serialization logic? (byte swaps, magic bytes) |
+| `calxgloss-floatsimd` | Which functions use float, and what shape? (four evidence families over the kept bodies — explicit float tokens, CRT math calls, `CONCAT44`/`SUB4` vector idioms, x/y/z component triplets — one flag per function spelling `scalar_float`, `vector_matrix`, or `mixed`) |
 | `calxgloss-libmatch` | Which functions are statically linked library code? (body-shape signatures → CRT/STL symbols) |
 | `calxgloss-errhandling` | Which functions guard their work in an exception frame, raise directly, or clean up through a goto ladder, and what failure codes do they trade in? (spelled `try`/`catch` blocks, named handler thunks, exception-API calls, `RaiseException` sites, guarded forward gotos converging on one releasing join block, and HRESULT/NTSTATUS-shaped literals in returns, guard comparisons, or raise arguments → the error-handling idiom, its Rust mapping, and the codes a baseline test must preserve) |
+| `calxgloss-bdiff` | Which functions in an older version of this binary are the *same function* here? (name identity → byte-equal normalized bodies → call topology, at 95 / 90 / 70; near-equal bodies score on a diff ratio with a 60 floor; a lone address equality claims nothing) |
 
 They share two pieces of plumbing from `calxgloss-types`: `ScanMetadata` —
-the provenance header stamped on every cached scan JSON (`scan.rs:L19-L48`) —
+the provenance header stamped on every cached scan JSON (`scan.rs:L21-L58`) —
 and the JSON persistence helpers (`persist.rs`). Their findings ride into
 prompts through the tier machinery of Chapter 1.4: data structures, control
 flow findings, and shim layers are extracted from the cached JSON at prompt
@@ -909,6 +1017,112 @@ Rust crate plus a thin adapter layer. The contract is positional —
 `parameter_transforms` index-synchronized (`shim.rs:L56-L96`) — and the
 adapter is verified with the same `Verifier` machinery (Chapter 5,
 `verify_shim`).
+
+`calxgloss-bdiff` is the odd one out: not a methodology scan, never fanned
+out by an `ensure_*`, and it reads nothing from the engine. It answers the
+question the carry-over story (§8.2) would otherwise have to assume —
+*which function of the older version is the same function here?* — over the
+two versions' **scan-cache documents**. The scan step mints its read cache
+under `re/cache/{identity}/{sha256}` (ADR-0043), and when the binary's
+bytes change the previous version's directory survives beside the new one;
+`pair_previous_versions` (issue #298, `version_pairing.rs`) assembles both
+document sets into two `ScanSnapshot`s and calls `pair_versions`
+(`engine.rs`) — documents in, one pairing document out, milliseconds and no
+dollars (ADR-0026 untouched, no program mutation, no LLM).
+
+The match ladder is the artifact. First, **name identity**: an exported
+name or a demangled name present on both sides pairs at band 95 — one band
+below certainty, because stripped exports and demangler rewrites can still
+rename the same code. Second, the **normalized-body family**: kept bodies
+put through the shared libmatch normalizer (#294's public cross-crate rule
+— one normalizer, one owner, never a second) pair byte-equal at 90 — *the
+address shift renamed the `FUN_…` spelling and the rebuild re-lettered the
+variables, but the shape survived* — while a near-equal pair scores on its
+structural-diff ratio with a floor of 60: below 60% shared normalized lines
+a pair claims nothing. Third, **call topology**: a function neither of the
+first two rungs claimed pairs when at least two already-paired callers
+and/or callees reach it on both sides through call edges of a call map
+derived purely from the kept bodies, iterated to a fixed point so chains
+of renamed functions pair through neighbors that converged themselves; it
+scores 70 and names its paired-neighbor evidence lines. The lone-signal
+gate (ADR-0038) is the design: address equality pairs nothing on its own,
+and neither does a matching address-derived `FUN_…` spelling — that
+spelling *is* an address, and pairing on it would smuggle back the
+relocation signal the gate exists to refuse. Topology corroborating a
+body-family pair is not a new rung: on the flag-family agreement precedent
+(agreement beats any single reading) the record rides a 5-point bump — a
+corroborated byte-equal pair reaches 95, never past it. Pairings resolve
+one-to-one, strongest claim wins, ties keep the first-seen.
+
+The confidence floor lives downstream by design: `CARRY_OVER_CONFIDENCE_
+FLOOR = 80` is an instruction to the consumer, not a filter on the record —
+the pass persists every resolved pairing, and a below-floor or unpaired
+function queues fresh exactly as before, so a wrong pairing can never
+silently seed a wrong translation. A lone topology pair (70) cannot drive
+carry-over; name identity and byte-equal bodies clear the floor, and a
+ratio-scored body pair clears it only where the ratio lands it at 80 or
+above. The document is keyed by both versions' file-bytes SHA-256
+(`re/analysis/bdiff/{binary}-{old}-{new}.json`), pairing runs exactly once
+per (old, new) hash pair, and a persisted document that does not name the
+live hash pair is detected as stale and recomputed — never silently
+trusted. `carry_over::collect_seeds` (`carry_over.rs:L107`) adds its own
+staleness gate: only a document whose `new_bytes_sha256` *is* the exact
+bytes being translated right now can seed. The accepted code arrives
+through the `AcceptedAttemptSource` port — the translator never touches
+git itself — reading the highest merged `re/{binary}/{function}…` branch's
+`translated.rs`, one branch per seed. Provenance survives into the record:
+the seed names the old function and the attempt branch its code came from,
+the commit on the new branch says *seeded from*, and nothing carries a
+Verified mark — carry-over is the hypothesis, deterministic verification
+against the new bytes is the verdict. And `bdiff --binary` is the pure
+report over these documents: every pair with its confidence and family
+(`name_identity` / `normalized_body` / `call_topology`), plus the
+functions paired on neither side — old-only and new-only — with the live
+document told apart from stale ones.
+
+Three of the sections the escalate and module-context prompts now carry were
+the blind spots issue #278 named, and each gained its scan in this batch.
+**`## GLOBAL STATE`** shows the global-state scan's readings: per-function
+access records naming which program globals (`DAT_*` names as the decompiler
+spells them) the function *reads* and which it *writes*, each quoting the
+access statement as its evidence — an exact `DAT_*` spelling scores 85, a
+shape-only sighting 60 — and each carrying a suggestion the prompt renders
+verbatim: give the global's storage a home in a struct the translation
+threads through its units rather than in a Rust `static`. The same document
+appends the rollup's shared-globals index — every reader and writer of one
+global grouped — and that index is what feeds two consumers: the sync engine
+reads it instead of re-deriving the same access reading, and the call-graph
+orderer derives its `with_state_sharing` override (§8.2) from
+`state_sharing_pairs`. **`## FLOAT/SIMD`** shows the float/SIMD scan's one
+flag per flagged function, and the reading answers four families keyed on
+shapes in the pseudo-C: an explicit `float`/`double` token or float literal
+at 90, a CRT math call (`sqrt`, `sin`, `floor`) at 75, `CONCAT44`-style
+concatenations and `SUB4` extractions — the shapes the decompiler mangles
+SIMD register work into — at 60, and parallel `x`/`y`/`z` member reads as
+the weakest family. The strongest family sets the confidence; which families
+fired spells the shape — `scalar_float`, `vector_matrix`, or one `mixed`
+flag naming both — so the translator is told to render the math as floats or
+component arrays instead of reading mangled vector pseudo-C as integer and
+pointer logic. **`## ERROR HANDLING`** shows the error-handling scan's
+readings from §3.2.2 — spelled frames, personality handlers, exception APIs,
+goto-cleanup ladders, failure codes — and the failure-code entries
+distinguish codes the function itself returned, raised or compared from
+*inherited* codes that travelled one hop from a callee, both to be surfaced
+as the numeric codes of the Rust error values the function hands back rather
+than collapsed into ad-hoc variants. The module-context prompt gained two
+more sections from the same batch: **KNOWN LIBRARY FUNCTIONS** — the calls
+this function makes that the libmatch scan identified as statically linked
+CRT/STL code, naming the matched symbol, so the translator maps each call
+onto the suggested Rust equivalent instead of re-implementing a `memcpy`
+body it doesn't own. The module-context prompt renders **PARAMETER
+DIRECTIONS**, too — the type-inference scan's per-pointer-parameter reading
+of which way data flows (an `in` parameter becomes a shared borrow, an `out`
+parameter a mutable borrow or a value handed back, an `inout` parameter a
+read-modify-write), with no mutability a direction reading does not claim —
+and **DATA TABLES**: data objects whose bytes decode coherently at one
+element width and nothing writes, each rendered as a named `const` array of
+element type and entry count instead of re-scattered match arms, from the
+consts scan's `ConstFinding::DataTable` records.
 
 ---
 
@@ -931,8 +1145,8 @@ analyzed *on demand* rather than incrementally (ADR-0005):
 All three cap retained entries (`MAX_LOG_ENTRIES = 10_000`,
 `lib.rs:L54`) by *trimming into a summary block* rather than dropping data —
 `compute_stats` covers trimmed entries, so a truncated file still yields
-honest statistics (tests at `fault.rs:L996-L1058`,
-`experiment_log.rs:L553-L616`).
+honest statistics (tests at `fault.rs:L1033-L1059`,
+`experiment_log.rs:L590-L615`).
 
 ---
 
@@ -955,6 +1169,6 @@ honest statistics (tests at `fault.rs:L996-L1058`,
    git merge with conflict detection. The machine proposes; `main` decides.
 
 *Further reading:* `docs/Calxgloss.md` (design), `docs/data_flow.md`
-(the `live` workflow end to end), `docs/adr/` (the thirty-eight decisions),
+(the `live` workflow end to end), `docs/adr/` (the forty-seven decisions),
 `GLOSSARY-MAP.md` (the domain vocabulary per context), and `graft/` (the
 generated per-file wiring cards this tour was built from).
