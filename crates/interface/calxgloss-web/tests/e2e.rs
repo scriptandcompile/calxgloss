@@ -1053,15 +1053,18 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
     // flight. c.dll's row shows Start Translation; pressing it swaps the
     // run onto c.dll.
     events.emit(ProgressEvent::QueuePlanned {
-        binaries: vec!["a.dll".to_string(), "b.dll".to_string(), "c.dll".to_string()],
+        binaries: vec![
+            "a.dll".to_string(),
+            "b.dll".to_string(),
+            "c.dll".to_string(),
+        ],
     });
     events.emit(ProgressEvent::BatchStarted {
         binary: "a.dll".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/start").await;
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/start").await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["binary"], "c.dll");
     assert_eq!(body["paused"], false);
@@ -1101,9 +1104,15 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
     // Both answers rode the persisted scope record — a handle re-opened
     // over the same workspace honors them on the #107 match rule.
     let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
-    assert!(reopened.is_paused("A.DLL"), "the previous leader stays paused");
+    assert!(
+        reopened.is_paused("A.DLL"),
+        "the previous leader stays paused"
+    );
     assert!(!reopened.is_paused("C.DLL"), "the target is admitted");
-    assert!(reopened.is_focus("C.DLL"), "the target holds the focus slot");
+    assert!(
+        reopened.is_focus("C.DLL"),
+        "the target holds the focus slot"
+    );
 
     // And the swap steered, never lifecycle-walked: the run stayed live.
     assert!(
@@ -1167,7 +1176,8 @@ async fn test_pipeline_binary_start_refusals() {
     // The stale press: discovered, but this run already had its pass —
     // 409 naming the reason and the fix, because re-running a finished
     // pass is restart's verb, not the row button's.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/done.dll/start").await;
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/done.dll/start").await;
     assert_eq!(status, 409);
     let message = body["message"].as_str().unwrap_or_default();
     assert!(
@@ -1210,8 +1220,7 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
     // Idle: the press begins translating with the pressed binary first —
     // 200, the machine walked Running, the default full-scope request
     // queued on the shared channel exactly as the run endpoint queues it.
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["paused"], false);
     let message = body["message"].as_str().unwrap_or_default();
@@ -1236,8 +1245,7 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
     let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["state"], "paused");
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
     assert_eq!(status, 200, "{body}");
     assert!(
         matches!(control.state(), PipelineState::Running),
@@ -1251,8 +1259,7 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
     // Terminal: the machine itself refuses, and its message is carried
     // through verbatim — restarting a finished run is a different verb.
     control.complete().expect("running -> complete");
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/a.dll/start").await;
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/a.dll/start").await;
     assert_eq!(status, 409);
     assert!(
         body["message"]

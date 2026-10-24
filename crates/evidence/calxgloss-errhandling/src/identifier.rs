@@ -1,11 +1,12 @@
 //! Identifier-boundary matching shared by the body-text detectors.
 //!
-//! The named-handler, exception-API, and `RaiseException` readings all
-//! ask the same question of one body line: does it name a known API or
-//! thunk *as an identifier*, not as a fragment of some longer name? A
-//! plain substring search would read `my_except_handler3_wrapper` or a
-//! `RaiseExceptionFilter` call as the sighting it wants; this module
-//! gives all three detectors one boundary rule instead of three
+//! The named-handler, exception-API, `RaiseException`, and goto-
+//! cleanup readings all ask the same question of one body line: does
+//! it name a known API or thunk *as an identifier*, not as a fragment
+//! of some longer name? A plain substring search would read
+//! `my_except_handler3_wrapper` or a `RaiseExceptionFilter` call as
+//! the sighting it wants; this module gives the name-based detectors
+//! one boundary rule and one call-shape rule instead of four
 //! near-identical ones.
 
 /// Whether `line` names `name` as a whole identifier, returning the
@@ -53,6 +54,16 @@ pub(crate) fn named_token<'a>(line: &'a str, name: &str) -> Option<&'a str> {
         return Some(&line[end..]);
     }
     None
+}
+
+/// Whether the text following a name opens its call — the `(` after
+/// any run of spaces and tabs (and a line-ending carriage return
+/// left behind by a CRLF body). A wrapped call whose paren opens on
+/// the *next* line is a miss the line-local reading accepts: the
+/// decompiler spells calls on one line, and the pinned contract is
+/// that a bare name sighting claims nothing.
+pub(crate) fn starts_call(after: &str) -> bool {
+    after.trim_start_matches([' ', '\t', '\r']).starts_with('(')
 }
 
 #[cfg(test)]
@@ -107,5 +118,17 @@ mod tests {
         // leave the occurrence standing as a whole identifier.
         assert!(named_token("  filter = _CxxFrameHandler3;", "_CxxFrameHandler3").is_some());
         assert!(named_token("  RaiseException (0x1);", "RaiseException").is_some());
+    }
+
+    #[test]
+    fn a_call_paren_opens_after_the_spacing_the_decompiler_spells() {
+        assert!(starts_call("(param_1);"));
+        assert!(starts_call(" (param_1);"));
+        assert!(starts_call("  \t(x);"));
+        assert!(starts_call("\r(x);"));
+        // The name standing alone, or a paren spelled on the next
+        // line by a wrapped call, is not the call shape.
+        assert!(!starts_call(";"));
+        assert!(!starts_call(" = &handler;"));
     }
 }

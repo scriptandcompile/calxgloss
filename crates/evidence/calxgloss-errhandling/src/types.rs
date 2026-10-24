@@ -113,19 +113,48 @@ pub struct RaiseException {
     pub suggestion: String,
 }
 
+/// A function body whose guarded forward gotos converge on one
+/// shared cleanup block — the C cleanup-on-failure ladder, kept as
+/// pure control flow where the decompiler never drew a frame
+/// (issue #289).
+///
+/// The record names the join label — the label whose block the
+/// rungs converge on *is* the ladder's shared cleanup — and quotes
+/// the line inside that block that decides the claim: the release
+/// call witnessing the cleanup, or the shared constant return the
+/// ladder fails to. The suggestion steers the translation to early
+/// returns plus RAII or scope guards, the shape the ladder already
+/// is, instead of the nested conditionals a re-implementation
+/// tends to produce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GotoCleanup {
+    /// The function whose body converges on the shared block.
+    pub function: String,
+    /// Confidence that the body really runs a cleanup ladder, on
+    /// the shared 0–100 Evidence scale.
+    pub confidence: Confidence,
+    /// The join block line carrying the claim — the claim's evidence.
+    pub evidence: String,
+    /// The label whose block the guarded gotos converge on, as the
+    /// body spells it (`LAB_*`, `joined_r0x*`, or a hand-named one).
+    pub join_label: String,
+    /// The Rust pattern the finding steers a translation toward.
+    pub suggestion: String,
+}
+
 /// One error-handling evidence finding about one function.
 ///
 /// The union is what the persisted document carries, so the follow-up
-/// families (the goto-cleanup ladder and the RAII shape, failure
-/// codes) land as new variants without reshaping the artifact. The
-/// serde `kind` tag names the finding kind in the persisted JSON; the
-/// tag *is* the idiom kind, so a record can never disagree with its
-/// own kind by carrying a redundant label. The three SEH kinds —
-/// spelled frame, named handler, exception-API call — stand one per
-/// function at most, the strongest family winning the one claim (the
-/// engine takes the first family that fires, in ADR-0046's rung
-/// order); a `RaiseException` finding rides beside them, a different
-/// fact about the same function.
+/// families (the per-code failure codes) land as new variants without
+/// reshaping the artifact. The serde `kind` tag names the finding
+/// kind in the persisted JSON; the tag *is* the idiom kind, so a
+/// record can never disagree with its own kind by carrying a redundant
+/// label. The three SEH kinds — spelled frame, named handler,
+/// exception-API call — stand one per function at most, the strongest
+/// family winning the one claim (the engine takes the first family
+/// that fires, in ADR-0046's rung order); a `RaiseException` finding
+/// and a `GotoCleanup` finding each ride beside them, different facts
+/// about the same function.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ErrhandlingFinding {
@@ -137,6 +166,9 @@ pub enum ErrhandlingFinding {
     ExceptionApiCall(ExceptionApiCall),
     /// The body calls `RaiseException` directly.
     RaiseException(RaiseException),
+    /// The body's guarded forward gotos converge on one shared
+    /// cleanup block — the C cleanup-on-failure ladder.
+    GotoCleanup(GotoCleanup),
 }
 
 impl ErrhandlingFinding {
@@ -147,6 +179,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::NamedHandler(record) => &record.function,
             ErrhandlingFinding::ExceptionApiCall(record) => &record.function,
             ErrhandlingFinding::RaiseException(record) => &record.function,
+            ErrhandlingFinding::GotoCleanup(record) => &record.function,
         }
     }
 
@@ -157,6 +190,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::NamedHandler(record) => &record.evidence,
             ErrhandlingFinding::ExceptionApiCall(record) => &record.evidence,
             ErrhandlingFinding::RaiseException(record) => &record.evidence,
+            ErrhandlingFinding::GotoCleanup(record) => &record.evidence,
         }
     }
 
@@ -167,6 +201,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::NamedHandler(record) => record.confidence,
             ErrhandlingFinding::ExceptionApiCall(record) => record.confidence,
             ErrhandlingFinding::RaiseException(record) => record.confidence,
+            ErrhandlingFinding::GotoCleanup(record) => record.confidence,
         }
     }
 
@@ -177,6 +212,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::NamedHandler(record) => &record.suggestion,
             ErrhandlingFinding::ExceptionApiCall(record) => &record.suggestion,
             ErrhandlingFinding::RaiseException(record) => &record.suggestion,
+            ErrhandlingFinding::GotoCleanup(record) => &record.suggestion,
         }
     }
 
@@ -189,18 +225,20 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::NamedHandler(_) => "named handler",
             ErrhandlingFinding::ExceptionApiCall(_) => "exception-API call",
             ErrhandlingFinding::RaiseException(_) => "RaiseException call",
+            ErrhandlingFinding::GotoCleanup(_) => "goto-cleanup ladder",
         }
     }
 
     /// The serde `kind` tag — `seh_frame`, `named_handler`,
-    /// `exception_api_call`, or `raise_exception` — naming the
-    /// finding kind.
+    /// `exception_api_call`, `raise_exception`, or `goto_cleanup` —
+    /// naming the finding kind.
     pub fn kind(&self) -> &'static str {
         match self {
             ErrhandlingFinding::SehFrame(_) => "seh_frame",
             ErrhandlingFinding::NamedHandler(_) => "named_handler",
             ErrhandlingFinding::ExceptionApiCall(_) => "exception_api_call",
             ErrhandlingFinding::RaiseException(_) => "raise_exception",
+            ErrhandlingFinding::GotoCleanup(_) => "goto_cleanup",
         }
     }
 
@@ -213,6 +251,7 @@ impl ErrhandlingFinding {
             ErrhandlingFinding::NamedHandler(record) => record.function = function.to_string(),
             ErrhandlingFinding::ExceptionApiCall(record) => record.function = function.to_string(),
             ErrhandlingFinding::RaiseException(record) => record.function = function.to_string(),
+            ErrhandlingFinding::GotoCleanup(record) => record.function = function.to_string(),
         }
     }
 }
@@ -259,6 +298,9 @@ impl ErrhandlingResult {
 mod tests {
     use super::*;
     use crate::exception_api::EXCEPTION_API_CONFIDENCE;
+    use crate::goto_cleanup::{
+        GOTO_CLEANUP_RELEASE_CONFIDENCE, GOTO_CLEANUP_RETURN_CONFIDENCE, GOTO_CLEANUP_SUGGESTION,
+    };
     use crate::named_handler::NAMED_HANDLER_CONFIDENCE;
     use crate::raise_exception::{RAISE_EXCEPTION_CONFIDENCE, RAISE_EXCEPTION_SUGGESTION};
     use crate::seh_frame::{SEH_FRAME_SUGGESTION, SPELLED_FRAME_CONFIDENCE};
@@ -300,6 +342,16 @@ mod tests {
         }
     }
 
+    fn laddered(band: u8) -> GotoCleanup {
+        GotoCleanup {
+            function: "FUN_1800014a0".into(),
+            confidence: Confidence::new(band),
+            evidence: "  CloseHandle(hFile);".into(),
+            join_label: "LAB_140001a2c".into(),
+            suggestion: GOTO_CLEANUP_SUGGESTION.into(),
+        }
+    }
+
     #[test]
     fn a_seh_frame_record_serde_round_trips() {
         let record = framed();
@@ -337,6 +389,10 @@ mod tests {
             (
                 ErrhandlingFinding::RaiseException(raised(Some(0xe06d_7363))),
                 "\"kind\":\"raise_exception\"",
+            ),
+            (
+                ErrhandlingFinding::GotoCleanup(laddered(GOTO_CLEANUP_RELEASE_CONFIDENCE)),
+                "\"kind\":\"goto_cleanup\"",
             ),
         ];
         for (finding, tag) in cases {
@@ -402,6 +458,38 @@ mod tests {
             Confidence::new(RAISE_EXCEPTION_CONFIDENCE)
         );
         assert!(finding.suggestion().contains("error value"));
+
+        let finding = ErrhandlingFinding::GotoCleanup(laddered(GOTO_CLEANUP_RETURN_CONFIDENCE));
+        assert_eq!(finding.kind(), "goto_cleanup");
+        assert_eq!(finding.target(), "goto-cleanup ladder");
+        assert_eq!(
+            finding.confidence(),
+            Confidence::new(GOTO_CLEANUP_RETURN_CONFIDENCE)
+        );
+        assert!(finding.evidence().contains("CloseHandle"));
+        assert!(finding.suggestion().contains("scope guard"));
+    }
+
+    #[test]
+    fn a_ladder_record_names_its_join_label_through_the_round_trip() {
+        // The join label is part of the claim on disk: a consumer
+        // reading the document can point at the shared cleanup block
+        // without re-reading the body.
+        let finding = ErrhandlingFinding::GotoCleanup(laddered(GOTO_CLEANUP_RELEASE_CONFIDENCE));
+        let json = serde_json::to_string(&finding).unwrap();
+        assert!(json.contains("\"join_label\":\"LAB_140001a2c\""));
+        assert!(json.contains(&format!(
+            "\"confidence\":{}",
+            GOTO_CLEANUP_RELEASE_CONFIDENCE
+        )));
+        let back: ErrhandlingFinding = serde_json::from_str(&json).unwrap();
+        match &back {
+            ErrhandlingFinding::GotoCleanup(record) => {
+                assert_eq!(record.join_label, "LAB_140001a2c");
+            }
+            other => panic!("expected the ladder kind back, got {other:?}"),
+        }
+        assert_eq!(back.confidence(), finding.confidence());
     }
 
     #[test]
@@ -411,12 +499,16 @@ mod tests {
         // above API call, the raise in high between, and every round
         // trip preserving the score the scan wrote.
         // ADR-0046's ladder: each follow-up anchors its own band as
-        // it lands, strictly below the family above it.
+        // it lands, strictly below the family above it — issue #289
+        // adds the ladder's two rungs at the bottom, so neither can
+        // outrank a spelled SEH block.
         const {
             assert!(
                 SPELLED_FRAME_CONFIDENCE > RAISE_EXCEPTION_CONFIDENCE
                     && RAISE_EXCEPTION_CONFIDENCE > NAMED_HANDLER_CONFIDENCE
                     && NAMED_HANDLER_CONFIDENCE > EXCEPTION_API_CONFIDENCE
+                    && EXCEPTION_API_CONFIDENCE > GOTO_CLEANUP_RELEASE_CONFIDENCE
+                    && GOTO_CLEANUP_RELEASE_CONFIDENCE > GOTO_CLEANUP_RETURN_CONFIDENCE
             )
         };
         let finding = ErrhandlingFinding::ExceptionApiCall(api_call());

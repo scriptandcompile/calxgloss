@@ -11,6 +11,7 @@
 
 use crate::error::Result;
 use crate::exception_api::ExceptionApiDetector;
+use crate::goto_cleanup::GotoCleanupDetector;
 use crate::named_handler::NamedHandlerDetector;
 use crate::raise_exception::RaiseExceptionDetector;
 use crate::seh_frame::SehFrameDetector;
@@ -33,28 +34,33 @@ pub use calxgloss_decomp::ScanSource;
 /// Orchestrates the per-body idiom readings into one
 /// [`ErrhandlingResult`].
 ///
-/// One loop, four detectors, per the ADR-0046 family ladder: the
+/// One loop, five detectors, per the ADR-0046 family ladder: the
 /// spelled SEH frame, the named personality-handler thunk, the
-/// exception-API call, and the direct `RaiseException` call. The SEH
-/// detectors run in rung order and **the strongest family that fires
-/// takes the function's one SEH claim** — a body showing a spelled
-/// block beside a thunk registration lands one finding at the spelled
-/// band, never a stack of duplicates for the same frame (issue #288).
-/// The `RaiseException` reading is a different fact — the function
-/// *raising*, not being guarded — and rides beside the SEH claim, so
-/// one function contributes at most two findings, in rung order.
-/// Follow-up P15 bullets add detectors, not new control flow, so the
-/// scan-order, skip and breaker behaviour — the behaviour contract
-/// every evidence engine keeps — stays written in exactly one place.
+/// exception-API call, the direct `RaiseException` call, and the
+/// goto-cleanup ladder. The SEH detectors run in rung order and
+/// **the strongest family that fires takes the function's one SEH
+/// claim** — a body showing a spelled block beside a thunk
+/// registration lands one finding at the spelled band, never a stack
+/// of duplicates for the same frame (issue #288). The `RaiseException`
+/// reading is a different fact — the function *raising*, not being
+/// guarded — and rides beside the SEH claim, and so does the
+/// `GotoCleanup` reading — the function *cleaning up on failure*,
+/// whether or not any exception mechanism is involved (issue #289).
+/// One function therefore contributes at most three findings, in
+/// rung order. Follow-up P15 bullets add detectors, not new control
+/// flow, so the scan-order, skip and breaker behaviour — the
+/// behaviour contract every evidence engine keeps — stays written in
+/// exactly one place.
 /// The engine is generic over its [`ScanSource`], so tests can run
 /// the whole orchestration over canned bodies; [`new`](Self::new)
-/// builds one over a loaded [`KunaSource`]. The detectors carry no
-/// state, so one instance of each serves the whole scan, and
-/// [`with_seh_frame`](Self::with_seh_frame),
+/// builds one over a loaded [`KunaSource`]. The SEH and raise
+/// detectors carry no state, so one instance of each serves the
+/// whole scan, and [`with_seh_frame`](Self::with_seh_frame),
 /// [`with_named_handler`](Self::with_named_handler),
-/// [`with_exception_api`](Self::with_exception_api), and
-/// [`with_raise_exception`](Self::with_raise_exception) swap one
-/// detector for a configured one.
+/// [`with_exception_api`](Self::with_exception_api),
+/// [`with_raise_exception`](Self::with_raise_exception), and
+/// [`with_goto_cleanup`](Self::with_goto_cleanup) swap one detector
+/// for a configured one.
 #[derive(Debug, Clone)]
 pub struct ErrhandlingEngine<S = KunaSource> {
     source: S,
@@ -62,6 +68,7 @@ pub struct ErrhandlingEngine<S = KunaSource> {
     named_handler: NamedHandlerDetector,
     exception_api: ExceptionApiDetector,
     raise_exception: RaiseExceptionDetector,
+    goto_cleanup: GotoCleanupDetector,
 }
 
 /// The detectors of a standard engine, spelled once so `new` and
@@ -71,27 +78,31 @@ fn standard_detectors() -> (
     NamedHandlerDetector,
     ExceptionApiDetector,
     RaiseExceptionDetector,
+    GotoCleanupDetector,
 ) {
     (
         SehFrameDetector,
         NamedHandlerDetector,
         ExceptionApiDetector,
         RaiseExceptionDetector,
+        GotoCleanupDetector::new(),
     )
 }
 
 impl ErrhandlingEngine<KunaSource> {
     /// An engine over a loaded Kuna program, detecting the SEH frame
-    /// across its three body-text families and the direct
-    /// `RaiseException` call.
+    /// across its three body-text families, the direct
+    /// `RaiseException` call, and the goto-cleanup ladder.
     pub fn new(source: &KunaSource) -> ErrhandlingEngine<KunaSource> {
-        let (seh_frame, named_handler, exception_api, raise_exception) = standard_detectors();
+        let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup) =
+            standard_detectors();
         ErrhandlingEngine {
             source: source.clone(),
             seh_frame,
             named_handler,
             exception_api,
             raise_exception,
+            goto_cleanup,
         }
     }
 }
@@ -100,13 +111,15 @@ impl<S> ErrhandlingEngine<S> {
     /// An engine whose decompiles come from `source`, scanning with
     /// the detectors' standard bands and name sets.
     pub fn with_source(source: S) -> Self {
-        let (seh_frame, named_handler, exception_api, raise_exception) = standard_detectors();
+        let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup) =
+            standard_detectors();
         ErrhandlingEngine {
             source,
             seh_frame,
             named_handler,
             exception_api,
             raise_exception,
+            goto_cleanup,
         }
     }
 
@@ -136,6 +149,15 @@ impl<S> ErrhandlingEngine<S> {
     /// the standard one.
     pub fn with_raise_exception(mut self, detector: RaiseExceptionDetector) -> Self {
         self.raise_exception = detector;
+        self
+    }
+
+    /// Read goto-cleanup ladders with `detector` instead of the
+    /// standard one — the seam a binary's own release names plug
+    /// into through [`GotoCleanupDetector::with_releases`] without
+    /// touching the loop.
+    pub fn with_goto_cleanup(mut self, detector: GotoCleanupDetector) -> Self {
+        self.goto_cleanup = detector;
         self
     }
 
@@ -208,8 +230,11 @@ impl<S> ErrhandlingEngine<S> {
             // finding at the spelled band, never a stack of
             // duplicates for the same frame (issue #288). The
             // RaiseException reading names a different fact — the
-            // function raising, not being guarded — and rides
-            // beside the SEH claim.
+            // function raising, not being guarded — and the
+            // GotoCleanup reading names a third — the function
+            // cleaning up on failure, an idiom no exception
+            // mechanism is part of — and both ride beside the SEH
+            // claim (issue #289).
             for mut finding in self
                 .seh_frame
                 .detect(&decompiled.body)
@@ -217,6 +242,7 @@ impl<S> ErrhandlingEngine<S> {
                 .or_else(|| self.exception_api.detect(&decompiled.body))
                 .into_iter()
                 .chain(self.raise_exception.detect(&decompiled.body))
+                .chain(self.goto_cleanup.detect(&decompiled.body))
                 .collect::<Vec<_>>()
             {
                 // The detectors fill no function name (they never
@@ -597,6 +623,15 @@ mod tests {
     /// A body a direct `RaiseException` call with a literal code.
     const RAISE_BODY: &str = "  RaiseException(0xe06d7363, 0, 0, NULL);\n  return 0;\n";
 
+    /// A body with the goto-cleanup ladder: two guarded forward gotos
+    /// converging on one `LAB_` join block that closes the handle on
+    /// the cleanup path (issue #289).
+    const LADDER_BODY: &str = "  handle = CreateFileW(name);\n  \
+                               if (handle == 0) {\n    goto LAB_140001350;\n  \
+                               }\n  if (bad) {\n    goto LAB_140001350;\n  \
+                               }\n  use(handle);\nLAB_140001350: // code ref\n  \
+                               CloseHandle(handle);\n  return 0;\n";
+
     /// A GS stack-canary body — cookie save, cookie comparison, the
     /// guard-runtime call, and join-label noise: compiler noise the
     /// scan must never read as exception handling (issue #288's
@@ -752,6 +787,142 @@ mod tests {
             .expect("scan must succeed");
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].function(), "guarded");
+    }
+
+    #[tokio::test]
+    async fn a_ladder_body_lands_the_goto_cleanup_finding_at_its_band() {
+        use crate::goto_cleanup::GOTO_CLEANUP_RELEASE_CONFIDENCE;
+        let source = FakeProgram {
+            functions: vec![summary("cleanup_fn")],
+            bodies: HashMap::from([("cleanup_fn".to_string(), LADDER_BODY.to_string())]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind(), "goto_cleanup");
+        assert_eq!(result.findings[0].function(), "cleanup_fn");
+        assert_eq!(
+            result.findings[0].confidence().value(),
+            GOTO_CLEANUP_RELEASE_CONFIDENCE
+        );
+        // The finding names the join block it converged on — the label
+        // Ghidra printed — both in the record and through the accessor.
+        match &result.findings[0] {
+            ErrhandlingFinding::GotoCleanup(record) => {
+                assert_eq!(record.join_label, "LAB_140001350");
+            }
+            other => panic!("expected the ladder kind, got {other:?}"),
+        }
+        assert!(result.findings[0].evidence().contains("CloseHandle"));
+    }
+
+    #[tokio::test]
+    async fn a_ladder_with_only_a_constant_join_lands_quietly_low() {
+        use crate::goto_cleanup::GOTO_CLEANUP_RETURN_CONFIDENCE;
+        let body = "  if (a) {\n    goto LAB_1;\n  }\n  if (b) {\n    goto LAB_1;\n  \
+                    }\n  work();\nLAB_1:\n  return 0;\n";
+        let source = FakeProgram {
+            functions: vec![summary("const_exit")],
+            bodies: HashMap::from([("const_exit".to_string(), body.to_string())]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind(), "goto_cleanup");
+        assert_eq!(
+            result.findings[0].confidence().value(),
+            GOTO_CLEANUP_RETURN_CONFIDENCE
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ladder_beside_a_spelled_frame_never_outranks_it() {
+        // The AC ladder: one function, both readings fire — the spelled
+        // frame and the cleanup ladder ride beside each other as two
+        // findings, and the frame's 80 stays the strongest claim.
+        let body = format!("{SEH_BODY}{LADDER_BODY}");
+        let source = FakeProgram {
+            functions: vec![summary("frame_and_ladder")],
+            bodies: HashMap::from([("frame_and_ladder".to_string(), body)]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert_eq!(result.findings.len(), 2);
+        let kinds: Vec<(&str, u8)> = result
+            .findings
+            .iter()
+            .map(|f| (f.kind(), f.confidence().value()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("seh_frame", crate::seh_frame::SPELLED_FRAME_CONFIDENCE),
+                (
+                    "goto_cleanup",
+                    crate::goto_cleanup::GOTO_CLEANUP_RELEASE_CONFIDENCE
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reconfigured_ladder_detector_lands_the_custom_release_band() {
+        // The extensible vocabulary at the engine seam: an engine
+        // configured with a custom release name reads a ladder whose
+        // join block releases through that name.
+        let body = "  if (a) {\n    goto LAB_9;\n  }\n  if (b) {\n    goto LAB_9;\n  \
+                    }\n  p = allocate();\nLAB_9:\n  MyPoolFree(p);\n  return 0;\n";
+        let source = FakeProgram {
+            functions: vec![summary("pooled")],
+            bodies: HashMap::from([("pooled".to_string(), body.to_string())]),
+            ..FakeProgram::default()
+        };
+        let plain = ErrhandlingEngine::with_source(source.clone())
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        let kinds: Vec<&str> = plain.findings.iter().map(|f| f.kind()).collect();
+        assert_eq!(
+            kinds,
+            vec!["goto_cleanup"],
+            "the standard ladder sees a plain forward-goto join; the \
+             builder test below shows the release-name gate changes the band"
+        );
+        let engine = ErrhandlingEngine::with_source(source)
+            .with_goto_cleanup(crate::GotoCleanupDetector::new().with_releases(["MyPoolFree"]));
+        let result = engine.scan("test.exe").await.expect("scan must succeed");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].kind(), "goto_cleanup");
+    }
+
+    #[tokio::test]
+    async fn ordinary_flow_and_gs_noise_claim_no_ladder() {
+        // The guard rails at the engine seam: the canary body's single
+        // guarded forward goto has no join block behind it, and plain
+        // straight-line flow claims nothing — the ladder stays quiet
+        // where the old readings already stay quiet.
+        let source = FakeProgram {
+            functions: vec![summary("gs_only"), summary("plain")],
+            bodies: HashMap::from([
+                ("gs_only".to_string(), GS_BODY.to_string()),
+                ("plain".to_string(), "  run();\n".to_string()),
+            ]),
+            ..FakeProgram::default()
+        };
+        let result = ErrhandlingEngine::with_source(source)
+            .scan("test.exe")
+            .await
+            .expect("scan must succeed");
+        assert!(result.is_empty(), "no finding without a cleanup join block");
     }
 
     #[tokio::test]

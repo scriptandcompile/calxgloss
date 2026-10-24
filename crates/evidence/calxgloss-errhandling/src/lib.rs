@@ -6,11 +6,13 @@
 //! recovery pass): it detects the error-handling shapes kept body
 //! text carries — an SEH `try`/`catch` frame the decompiler spelled
 //! outright, a named personality-handler thunk registration where it
-//! left the frame undrawn, an exception-API call, and a direct
-//! `RaiseException` call — and persists the findings as an evidence
-//! document under `re/analysis/errhandling/`. It deliberately stops
-//! there: the remaining evidence families (the goto-cleanup ladder,
-//! the failure-code records), the cross-function propagation reading,
+//! left the frame undrawn, an exception-API call, a direct
+//! `RaiseException` call, and the goto-cleanup ladder of guarded
+//! forward gotos converging on one releasing join block — and
+//! persists the findings as an evidence document under
+//! `re/analysis/errhandling/`. It deliberately stops
+//! there: the remaining evidence family (the failure-code records),
+//! the cross-function propagation reading,
 //! the whole-program pass and the prompt consumers are follow-up
 //! issues against this same artifact, and nothing here feeds an
 //! annotation prompt or a translation yet (ADR-0046).
@@ -18,7 +20,8 @@
 //! The SEH readings rank on ADR-0046's family ladder and the engine
 //! keeps one claim per function: the strongest SEH family that fires
 //! wins, a `RaiseException` finding rides beside it as a different
-//! fact, and a GS stack-canary check — compiler noise, already
+//! fact, a goto-cleanup ladder rides beside both as a third fact,
+//! and a GS stack-canary check — compiler noise, already
 //! stripped by the shipped decompiler-noise filter — never reads as
 //! exception handling.
 //!
@@ -40,6 +43,9 @@
 //!   participation read through the API alone.
 //! - [`raise_exception`] — the direct `RaiseException` detector,
 //!   naming the raised code when the argument is a literal.
+//! - [`goto_cleanup`] — the goto-cleanup ladder detector: guarded
+//!   forward gotos converging on one join block that releases or
+//!   returns a constant.
 //! - [`identifier`] — the shared whole-identifier boundary rule the
 //!   name-based detectors read through.
 //! - [`engine`] — [`ErrhandlingEngine`]: decompiles every function
@@ -52,6 +58,7 @@
 pub mod engine;
 pub mod error;
 pub mod exception_api;
+pub mod goto_cleanup;
 pub mod identifier;
 pub mod named_handler;
 pub mod persist;
@@ -62,6 +69,10 @@ pub mod types;
 pub use engine::ErrhandlingEngine;
 pub use error::{ErrhandlingError, Result};
 pub use exception_api::{EXCEPTION_API_NAMES, ExceptionApiDetector};
+pub use goto_cleanup::{
+    GOTO_CLEANUP_RELEASE_CONFIDENCE, GOTO_CLEANUP_RETURN_CONFIDENCE, GOTO_CLEANUP_SUGGESTION,
+    GotoCleanupDetector, RELEASE_API_NAMES,
+};
 pub use named_handler::{NamedHandlerDetector, PERSONALITY_HANDLER_THUNKS};
 pub use persist::ErrhandlingPersistor;
 pub use raise_exception::{
@@ -69,5 +80,6 @@ pub use raise_exception::{
 };
 pub use seh_frame::{SEH_FRAME_SUGGESTION, SPELLED_FRAME_CONFIDENCE, SehFrameDetector};
 pub use types::{
-    ErrhandlingFinding, ErrhandlingResult, ExceptionApiCall, NamedHandler, RaiseException, SehFrame,
+    ErrhandlingFinding, ErrhandlingResult, ExceptionApiCall, GotoCleanup, NamedHandler,
+    RaiseException, SehFrame,
 };

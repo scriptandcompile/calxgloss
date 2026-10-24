@@ -2,7 +2,8 @@
 //!
 //! Runs the body-text detectors — reading each decompiled body for spelled
 //! `try`/`catch` frames, named personality-handler thunks, exception-API
-//! calls, and direct `RaiseException` sites — against the loaded program and
+//! calls, direct `RaiseException` sites, and goto-cleanup ladders (guarded
+//! forward gotos converging on one releasing join block) — against the loaded program and
 //! saves the result to `re/analysis/errhandling/{binary}.json` in the
 //! workspace. `--show` prints a cached result without running the scan.
 

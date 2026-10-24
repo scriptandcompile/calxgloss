@@ -15,7 +15,7 @@
 //! filter strips canary bodies, this is the insurance against a
 //! filter miss).
 
-use crate::identifier::named_token;
+use crate::identifier::{named_token, starts_call};
 use crate::seh_frame::SEH_FRAME_SUGGESTION;
 use crate::types::{ErrhandlingFinding, ExceptionApiCall};
 use calxgloss_types::Confidence;
@@ -80,16 +80,6 @@ impl ExceptionApiDetector {
         }
         None
     }
-}
-
-/// Whether the text following an API name opens its call — the `(`
-/// after any run of spaces and tabs (and a line-ending carriage
-/// return left behind by a CRLF body). A wrapped call whose paren
-/// opens on the *next* line is a miss the line-local reading accepts:
-/// the decompiler spells calls on one line, and the pinned contract
-/// is that a bare name sighting claims nothing.
-fn starts_call(after: &str) -> bool {
-    after.trim_start_matches([' ', '\t', '\r']).starts_with('(')
 }
 
 #[cfg(test)]
