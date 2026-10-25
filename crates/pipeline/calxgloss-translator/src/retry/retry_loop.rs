@@ -330,7 +330,8 @@ pub async fn try_translate_with_retry(
             let response = match llm_call_with_keepalive(
                 ctx.llm,
                 &[LlmMessage::user(&escalated_prompt)],
-                &initial_translation,
+                &initial_translation.binary,
+                &initial_translation.function,
                 attempt_num,
                 &format!("escalated({tier_label})"),
                 ctx.events,
@@ -916,7 +917,8 @@ pub async fn try_translate_with_retry(
         let response = match llm_call_with_keepalive(
             ctx.llm,
             &messages,
-            &initial_translation,
+            &initial_translation.binary,
+            &initial_translation.function,
             attempt_num,
             &strategy_name,
             ctx.events,
@@ -1347,16 +1349,17 @@ pub async fn try_translate_with_retry(
 ///
 /// While the HTTP request is in flight, emits `LlmCallInProgress` events every
 /// 30 seconds so the caller (and the web UI) know the request hasn't hung.
-fn llm_call_with_keepalive<'a>(
+pub(crate) fn llm_call_with_keepalive<'a>(
     llm: &'a LlmClient,
     messages: &'a [LlmMessage],
-    initial_translation: &'a Translation,
+    binary: &'a calxgloss_types::BinaryIdentity,
+    function: &'a str,
     attempt_num: u32,
     strategy: &str,
     events: Option<&'a TranslationEvents>,
 ) -> impl std::future::Future<Output = Result<calxgloss_llm::LlmResponse, LlmError>> + 'a {
-    let binary = initial_translation.binary.clone();
-    let function = initial_translation.function.clone();
+    let binary = binary.clone();
+    let function = function.to_string();
     let messages = messages.to_vec();
     let events = events.cloned();
     let attempt = attempt_num;
