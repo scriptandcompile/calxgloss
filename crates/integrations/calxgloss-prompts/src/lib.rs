@@ -2256,4 +2256,223 @@ mod tests {
 
         assert!(!prompt.contains("ERROR HANDLING"));
     }
+
+    // ============================================================
+    // Shared section includes — parametrized section suite and
+    // (template × section) include roster (issue #317)
+    // ============================================================
+
+    /// The verbatim steering paragraph of the shared global-state section,
+    /// pinned byte-for-byte from the pre-include renders: the lift into
+    /// `templates/sections/global_state.j2` may not drift a character.
+    const GLOBAL_STATE_STEERING: &str = "The program globals this function reads and writes, recorded by static\n\
+        analysis. This function does not own this state — it shares it with the\n\
+        rest of the binary. Give each global's storage a home in a struct the\n\
+        translation threads through its units rather than in a Rust `static`, and\n\
+        read or update it through that shared state instead of inventing a local\n\
+        for it:";
+
+    /// The global-state entry lines rendered from `global_state_fixture()`,
+    /// verbatim.
+    const GLOBAL_STATE_ENTRY: &str = "- **model the program global as shared struct state, not a Rust static** \
+        (global_write of `DAT_180064e80`, confidence 85)\n  Evidence: `DAT_180064e80 = param_1`";
+
+    /// The global-state section exactly as it must render: heading line,
+    /// blank line, steering paragraph, blank line, entry lines.
+    fn expected_global_state_section(heading: &str) -> String {
+        format!("## {heading}\n\n{GLOBAL_STATE_STEERING}\n\n{GLOBAL_STATE_ENTRY}")
+    }
+
+    /// Renders the escalate template with only the global-state findings
+    /// populated — its own call site of the shared include.
+    fn render_escalate_with_global_state(findings: &[GlobalStateInfo]) -> String {
+        build_escalate_prompt(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00(param_1: i32) { /* DAT store */ }".to_string(),
+            "Wrong result".to_string(),
+            EvidenceBundle {
+                global_state_findings: findings.to_vec(),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render")
+    }
+
+    /// Renders the module-context template with only the global-state
+    /// findings populated — its own call site of the shared include.
+    fn render_module_context_with_global_state(findings: &[GlobalStateInfo]) -> String {
+        let req = sample_request();
+        build_module_context_prompt(&ModuleContextPromptData::from_request_with_context(
+            &req,
+            EvidenceBundle {
+                global_state_findings: findings.to_vec(),
+                ..Default::default()
+            },
+        ))
+        .expect("the module-context prompt should render")
+    }
+
+    /// One (section × consuming template) pair of the parametrized section
+    /// suite (issue #317). A new engine that includes a shared section
+    /// registers one row here and is covered by both halves of the suite
+    /// test and by the include roster automatically.
+    struct SectionRow {
+        /// The shared section include, template-dir relative.
+        section: &'static str,
+        /// The consuming engine template, template-dir relative.
+        template: &'static str,
+        /// The heading text the template passes to the include.
+        heading: &'static str,
+        /// Builds the populated fixture the row renders.
+        fixture: fn() -> GlobalStateInfo,
+        /// Renders the consuming template with the given findings injected
+        /// and every other section left empty.
+        render: fn(&[GlobalStateInfo]) -> String,
+        /// The verbatim rendered section, given the heading.
+        expected: fn(heading: &str) -> String,
+    }
+
+    static SECTION_SUITE_ROWS: &[SectionRow] = &[
+        SectionRow {
+            section: "sections/global_state.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — GLOBAL STATE",
+            fixture: global_state_fixture,
+            render: render_escalate_with_global_state,
+            expected: expected_global_state_section,
+        },
+        SectionRow {
+            section: "sections/global_state.j2",
+            template: "module_context_translate.j2",
+            heading: "GLOBAL STATE",
+            fixture: global_state_fixture,
+            render: render_module_context_with_global_state,
+            expected: expected_global_state_section,
+        },
+    ];
+
+    /// The parametrized section suite: every row's populated findings must
+    /// render its heading and entries verbatim, and an empty findings list
+    /// must omit the section without leaving stray blank lines at the seam.
+    #[test]
+    fn the_section_suite_renders_populated_findings_and_omits_empty_ones() {
+        for row in SECTION_SUITE_ROWS {
+            let finding = (row.fixture)();
+
+            let populated = (row.render)(std::slice::from_ref(&finding));
+            let expected = (row.expected)(row.heading);
+            assert!(
+                populated.contains(&format!("\n\n{expected}\n\n")),
+                "{} renders the {} section verbatim under '{}'",
+                row.template,
+                row.section,
+                row.heading
+            );
+            assert!(
+                !populated.contains("\n\n\n"),
+                "{} leaves no stray blank lines with populated {}",
+                row.template,
+                row.section
+            );
+
+            let empty = (row.render)(&[]);
+            assert!(
+                !empty.contains(&format!("## {}", row.heading)),
+                "{} omits the {} section for an empty findings list",
+                row.template,
+                row.section
+            );
+            assert!(
+                !empty.contains("\n\n\n"),
+                "{} leaves no stray blank lines at the omitted {}",
+                row.template,
+                row.section
+            );
+        }
+    }
+
+    /// Scans template source for `{% import "<path>" as <scope> %}`
+    /// directives, returning each (path, scope) pair.
+    fn imported_sections(source: &str) -> Vec<(&str, &str)> {
+        let mut found = Vec::new();
+        let mut rest = source;
+        while let Some(start) = rest.find("{%") {
+            let tag = &rest[start + 2..];
+            let Some(end) = tag.find("%}") else {
+                break;
+            };
+            let inner = tag[..end].trim().trim_start_matches(['-', '+', '~']).trim();
+            if let Some(after) = inner.strip_prefix("import").map(str::trim) {
+                let mut parts = after.split_whitespace();
+                let path = parts
+                    .next()
+                    .and_then(|p| p.strip_prefix('"').and_then(|p| p.strip_suffix('"')));
+                let scope = parts
+                    .next()
+                    .filter(|p| *p == "as")
+                    .and_then(|_| parts.next());
+                if let (Some(path), Some(scope)) = (path, scope) {
+                    found.push((path, scope));
+                }
+            }
+            rest = &rest[start + 2..];
+        }
+        found
+    }
+
+    /// The include roster — P35's projector-roster pattern moved to the
+    /// render side: the (template × section) include set across the template
+    /// tree is exactly the rows of the section suite above, and every
+    /// imported scope must actually be called. A forgotten or
+    /// accidentally-dropped include fails here loudly instead of silently
+    /// shrinking a prompt.
+    #[test]
+    fn the_template_section_include_set_is_exactly_the_registered_rows() {
+        let templates_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates"));
+        let mut discovered: Vec<(String, String)> = Vec::new();
+        let mut dangling: Vec<(String, String)> = Vec::new();
+        let mut dirs = vec![templates_dir.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("the templates dir is readable") {
+                let path = entry.expect("a readable template entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("j2") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("a readable template file");
+                let template = path
+                    .strip_prefix(templates_dir)
+                    .expect("the template lives under templates/")
+                    .to_string_lossy()
+                    .into_owned();
+                for (section, scope) in imported_sections(&source) {
+                    discovered.push((template.clone(), section.to_string()));
+                    if !source.contains(&format!("{scope}::")) {
+                        dangling.push((template.clone(), section.to_string()));
+                    }
+                }
+            }
+        }
+        assert!(
+            dangling.is_empty(),
+            "every imported section must be called by its importing template: {dangling:?}"
+        );
+        discovered.sort();
+        let mut expected: Vec<(String, String)> = SECTION_SUITE_ROWS
+            .iter()
+            .map(|row| (row.template.to_string(), row.section.to_string()))
+            .collect();
+        expected.sort();
+        assert_eq!(
+            discovered, expected,
+            "the (template × section) include roster changed — a section joins a \
+             template by adding an import/call pair in the template and a section-\
+             suite row together, and this roster moves only with them"
+        );
+    }
 }

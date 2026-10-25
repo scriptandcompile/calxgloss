@@ -1,3 +1,4 @@
+{%- import "sections/global_state.j2" as sections -%}
 You are a reverse engineering specialist. You previously translated a function to Rust, but earlier attempts failed. This time, additional Ghidra context has been injected to help you succeed.
 
 ## FUNCTION: {{ function_name }}
@@ -230,22 +231,7 @@ that leaves none:
 {% endfor %}
 
 {% endif %}
-{% if !global_state_findings.is_empty() %}
-## ADDITIONAL CONTEXT — GLOBAL STATE
-
-The program globals this function reads and writes, recorded by static
-analysis. This function does not own this state — it shares it with the
-rest of the binary. Give each global's storage a home in a struct the
-translation threads through its units rather than in a Rust `static`, and
-read or update it through that shared state instead of inventing a local
-for it:
-
-{% for finding in global_state_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} of `{{ finding.global }}`, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
+{% call sections::global_state_section(global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE") %}{% endcall %}
 {% if !floatsimd_findings.is_empty() %}
 ## ADDITIONAL CONTEXT — FLOAT/SIMD
 

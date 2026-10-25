@@ -1,3 +1,4 @@
+{%- import "sections/global_state.j2" as sections -%}
 You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
 
 ## FUNCTION: {{ function_name }}
@@ -151,22 +152,7 @@ that leaves none:
 {% endfor %}
 
 {% endif %}
-{% if !global_state_findings.is_empty() %}
-## GLOBAL STATE
-
-The program globals this function reads and writes, recorded by static
-analysis. This function does not own this state — it shares it with the
-rest of the binary. Give each global's storage a home in a struct the
-translation threads through its units rather than in a Rust `static`, and
-read or update it through that shared state instead of inventing a local
-for it:
-
-{% for finding in global_state_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} of `{{ finding.global }}`, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
+{% call sections::global_state_section(global_state_findings, "GLOBAL STATE") %}{% endcall %}
 {% if !floatsimd_findings.is_empty() %}
 ## FLOAT/SIMD
 

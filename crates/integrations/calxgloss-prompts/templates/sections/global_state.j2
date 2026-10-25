@@ -1,0 +1,22 @@
+{# The GLOBAL STATE section, shared by every engine template that feeds the #}
+{# global-state findings. Parameterized by (findings list, heading text) so #}
+{# each template passes its own heading prefix. The body is verbatim-pinned #}
+{# by the section suite in src/lib.rs — wording or formatting drift fails CI.#}
+{% macro global_state_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The program globals this function reads and writes, recorded by static
+analysis. This function does not own this state — it shares it with the
+rest of the binary. Give each global's storage a home in a struct the
+translation threads through its units rather than in a Rust `static`, and
+read or update it through that shared state instead of inventing a local
+for it:
+
+{% for finding in findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} of `{{ finding.global }}`, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}
