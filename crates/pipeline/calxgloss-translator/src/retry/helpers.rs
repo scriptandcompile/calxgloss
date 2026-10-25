@@ -1,6 +1,7 @@
 //! Context extraction helpers used by prompt builders.
 
 use crate::Translation;
+use crate::evidence_projector::project_into;
 use calxgloss_callgraph::FunctionContext;
 use calxgloss_decomp::ScanSource;
 use calxgloss_prompts::{
@@ -13,10 +14,16 @@ use tracing::debug;
 /// in a single pass — the bundle the escalate and module-context prompts
 /// read (issue #268).
 ///
-/// Each analyzer cache is read exactly once. The call-graph lists stay
-/// out of the gather: they come from the live scan source or an enriched
-/// context, not the persisted analyzer caches, so callers set them on the
-/// returned bundle themselves.
+/// Each analyzer cache is read exactly once. The six single-field
+/// engines migrated onto the evidence projector (issue #312) arrive by
+/// folding the registered [`PROJECTION_ROWS`] — one row per document,
+/// its selection and conversion spelled once in its adapter — while the
+/// documents not yet migrated (and the shared loads below) keep their
+/// explicit extraction until they follow (the shared consts and
+/// type-inference documents in #314). The call-graph lists stay out of
+/// the gather: they come from the live scan source or an enriched
+/// context, not the persisted analyzer caches, so callers set them on
+/// the returned bundle themselves.
 pub fn gather_function_evidence(
     workspace: Option<&std::path::Path>,
     binary: &str,
@@ -26,18 +33,13 @@ pub fn gather_function_evidence(
     // The constant document serves two readers — the union findings and
     // the data-table records — from one load.
     let consts = load_consts_result(workspace, binary);
-    EvidenceBundle {
+    let mut evidence = EvidenceBundle {
         data_structures: extract_data_structures(workspace, binary, function),
         type_info: extract_type_info(workspace, binary, function),
-        recognized_algorithms: extract_algorithm_hints(workspace, binary, function),
-        memory_findings: extract_memory_hints(workspace, binary, function),
-        concurrency_findings: extract_concurrency_hints(workspace, binary, function),
         callback_findings: extract_callback_hints(workspace, binary, function),
         control_flow_findings: extract_control_flow_hints(workspace, binary, function),
         convention_findings: extract_convention_hints(workspace, binary, function),
         global_state_findings: extract_global_state_hints(workspace, binary, function),
-        string_findings: extract_string_context(workspace, binary, function),
-        api_findings: extract_api_hints(workspace, binary, function),
         const_findings: constant_hints_from(consts.as_ref(), function),
         serialization_findings: extract_serialization_hints(workspace, binary, function),
         libmatch_findings: extract_libmatch_hints(workspace, binary, function, call_graph),
@@ -46,9 +48,19 @@ pub fn gather_function_evidence(
         ),
         data_table_findings: data_table_hints_from(consts.as_ref(), function),
         error_handling_findings: extract_error_handling_hints(workspace, binary, function),
-        floatsimd_findings: extract_float_hints(workspace, binary, function),
         ..Default::default()
-    }
+    };
+    // The fold fills the migrated engines' fields; row order is the
+    // prompts' order, and every row degrades on its own without ever
+    // failing the gather (see the projector module docs).
+    project_into(
+        crate::evidence_projector::adapters::PROJECTION_ROWS,
+        workspace,
+        binary,
+        function,
+        &mut evidence,
+    );
+    evidence
 }
 
 /// Extract call graph neighbor details from an enriched context list.
@@ -281,166 +293,6 @@ pub fn extract_type_info(
     result
         .for_function(function)
         .map(calxgloss_prompts::TypeInfo::from)
-        .collect()
-}
-
-/// Extract recognized algorithm hints from the persisted recognition result.
-///
-/// Reads the per-binary result produced by the `calxgloss-algorithm`
-/// engine from `re/analysis/algorithm/{binary}.json` and keeps the hints
-/// made for the target function — the algorithms whose evidence lives in
-/// `function`'s decompiled body or whose name the function carries.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing algorithm context degrades the prompt, it never
-/// fails it.
-pub fn extract_algorithm_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::AlgorithmInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_algorithm::persist::AlgorithmPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable algorithm recognition result; continuing without algorithm context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::AlgorithmInfo::from)
-        .collect()
-}
-
-/// Extract memory lifecycle findings for a function from the persisted
-/// detection result.
-///
-/// Reads the per-binary result produced by the `calxgloss-memory`
-/// engine from `re/analysis/memory/{binary}.json` and keeps the findings
-/// made for the target function — the lifecycles whose pairing lives in
-/// `function`'s decompiled body.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing memory context degrades the prompt, it never fails
-/// it.
-pub fn extract_memory_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::MemoryInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_memory::persist::MemoryPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable memory lifecycle result; continuing without memory context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::MemoryInfo::from)
-        .collect()
-}
-
-/// Extract concurrency findings for a function from the persisted
-/// detection result.
-///
-/// Reads the per-binary result produced by the `calxgloss-sync` engine
-/// from `re/analysis/sync/{binary}.json` and keeps the findings made for
-/// the target function — the lock pairings, atomic calls, and thread
-/// spawns whose calls live in `function`'s decompiled body.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing concurrency context degrades the prompt, it never
-/// fails it.
-pub fn extract_concurrency_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::ConcurrencyInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_sync::persist::SyncPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable concurrency result; continuing without concurrency context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::ConcurrencyInfo::from)
-        .collect()
-}
-
-/// Extract library/API findings for a function from the persisted
-/// detection result.
-///
-/// Reads the per-binary result produced by the `calxgloss-apidetect`
-/// engine from `re/analysis/apidetect/{binary}.json` and keeps the usages
-/// recorded for the target function — the identified APIs the function
-/// calls directly or reaches through its call graph. Binary-level
-/// import entries belong to the binary, not to any function, and do not
-/// appear here.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing API context degrades the prompt, it never fails it.
-pub fn extract_api_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::ApiInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_apidetect::persist::ApiPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable API result; continuing without library/API context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::ApiInfo::from)
         .collect()
 }
 
@@ -914,48 +766,6 @@ pub fn extract_global_state_hints(
         .collect()
 }
 
-/// Extract the float/SIMD usage flag for a function from the persisted
-/// float/SIMD scan result.
-///
-/// Reads the per-binary result produced by the `calxgloss-floatsimd`
-/// engine from `re/analysis/floatsimd/{binary}.json` and keeps the
-/// flag raised for the target function — the shape the reading named
-/// (scalar float math, vector/matrix idioms, or both), the evidence
-/// that carried it, and the confidence band it was scored on. One
-/// function carries at most one flag.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing float/SIMD context degrades the prompt, it never
-/// fails it.
-pub fn extract_float_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::FloatsimdInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_floatsimd::persist::FloatsimdPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable float/SIMD result; continuing without float/SIMD context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::FloatsimdInfo::from)
-        .collect()
-}
-
 /// Load the persisted known-library identification document for a binary.
 ///
 /// Reads the per-binary result produced by the `calxgloss-libmatch`
@@ -1044,47 +854,6 @@ pub fn extract_libmatch_hints(
         function,
         neighbors,
     )
-}
-
-/// Extract string-context findings for a function from the persisted
-/// scan result.
-///
-/// Reads the per-binary result produced by the `calxgloss-stringctx`
-/// engine from `re/analysis/stringctx/{binary}.json` and keeps the findings
-/// made for the target function — the classified strings the function
-/// references and the format-string calls it makes, with the argument
-/// types those calls imply.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing string context degrades the prompt, it never fails
-/// it.
-pub fn extract_string_context(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::StringContextInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_stringctx::persist::StringContextPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable string context result; continuing without string context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::StringContextInfo::from)
-        .collect()
 }
 
 // ============================================================
@@ -1927,84 +1696,6 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn no_workspace_configured_yields_no_algorithm_hints() {
-        assert!(extract_algorithm_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_algorithm_hints() {
-        let dir = TempDir::new().unwrap();
-        assert!(
-            extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no algorithm context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_algorithm_hints() {
-        let dir = TempDir::new().unwrap();
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("algorithm")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "{ not json").unwrap();
-
-        assert!(
-            extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
-        );
-    }
-
-    #[test]
-    fn hints_of_other_functions_are_dropped() {
-        let dir = TempDir::new().unwrap();
-        persist_hints(
-            &dir,
-            vec![
-                algorithm_hint("FUN_18003ab00", "comparison_sort"),
-                algorithm_hint("FUN_zzz", "binary_search"),
-            ],
-        );
-
-        let found = extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's hint");
-        assert_eq!(found[0].algorithm, "comparison_sort");
-        assert_eq!(found[0].category, "sorting");
-        assert_eq!(found[0].method, "cfg_pattern");
-        assert_eq!(found[0].confidence, 60);
-        assert!(found[0].evidence.starts_with("for (local_10 = 0;"));
-    }
-
-    #[test]
-    fn every_hint_of_the_function_lands_in_the_prompt() {
-        let dir = TempDir::new().unwrap();
-        persist_hints(
-            &dir,
-            vec![
-                algorithm_hint("FUN_18003ab00", "comparison_sort"),
-                calxgloss_algorithm::types::AlgorithmHint {
-                    function: "FUN_18003ab00".into(),
-                    algorithm: "crc".into(),
-                    category: calxgloss_algorithm::types::AlgorithmCategory::Checksum,
-                    method: calxgloss_algorithm::types::DetectionMethod::StringHint,
-                    confidence: calxgloss_algorithm::types::Confidence::new(30),
-                    evidence: "crc_table".into(),
-                },
-            ],
-        );
-
-        let found = extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        let algorithms: Vec<&str> = found.iter().map(|a| a.algorithm.as_str()).collect();
-        assert_eq!(algorithms, vec!["comparison_sort", "crc"]);
-        assert_eq!(found[1].category, "checksum");
-        assert_eq!(found[1].method, "string_hint");
-    }
-
     fn allocation_hint(function: &str, suggestion: &str) -> calxgloss_memory::types::MemoryHint {
         calxgloss_memory::types::MemoryHint {
             function: function.to_string(),
@@ -2035,90 +1726,6 @@ mod tests {
         calxgloss_memory::persist::MemoryPersistor::new(dir.path())
             .save(&result)
             .expect("the memory result should be saved");
-    }
-
-    #[test]
-    fn no_workspace_configured_yields_no_memory_findings() {
-        assert!(extract_memory_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_memory_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no memory context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_memory_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("memory")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn findings_of_other_functions_are_dropped() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_findings(
-            &dir,
-            vec![
-                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
-                    "FUN_18003ab00",
-                    "Box<T>",
-                )),
-                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
-                    "FUN_zzz", "Box<T>",
-                )),
-            ],
-        );
-
-        let found = extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's finding");
-        assert_eq!(found[0].function, "FUN_18003ab00");
-        assert_eq!(found[0].kind, "allocation");
-        assert_eq!(found[0].suggestion, "Box<T>");
-        assert_eq!(found[0].confidence, 70);
-        assert_eq!(found[0].evidence, "pvVar1 = malloc(0x20); free(pvVar1);");
-    }
-
-    #[test]
-    fn every_finding_of_the_function_lands_in_the_prompt() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_findings(
-            &dir,
-            vec![
-                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
-                    "FUN_18003ab00",
-                    "stack allocation",
-                )),
-                calxgloss_memory::types::MemoryFinding::Handle(handle_record("FUN_18003ab00")),
-                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
-                    "FUN_zzz", "Box<T>",
-                )),
-            ],
-        );
-
-        let found = extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["allocation", "handle"]);
-        assert_eq!(found[0].suggestion, "stack allocation");
-        assert_eq!(found[1].suggestion, "RAII guard struct with Drop impl");
     }
 
     // ---- concurrency hints ----
@@ -2164,99 +1771,6 @@ mod tests {
             .expect("the concurrency result should be saved");
     }
 
-    #[test]
-    fn no_workspace_configured_yields_no_concurrency_findings() {
-        assert!(
-            extract_concurrency_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "no workspace means no concurrency context"
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_concurrency_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no concurrency context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_concurrency_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("sync")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(
-            extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
-        );
-    }
-
-    #[test]
-    fn concurrency_findings_of_other_functions_are_dropped() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_sync_findings(
-            &dir,
-            vec![
-                calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
-                    "FUN_18003ab00",
-                    "std::sync::Mutex<T>",
-                )),
-                calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
-                    "FUN_zzz",
-                    "std::sync::Mutex<T>",
-                )),
-            ],
-        );
-
-        let found = extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's finding");
-        assert_eq!(found[0].function, "FUN_18003ab00");
-        assert_eq!(found[0].kind, "mutex");
-        assert_eq!(found[0].suggestion, "std::sync::Mutex<T>");
-        assert_eq!(found[0].confidence, 70);
-        assert_eq!(
-            found[0].evidence,
-            "EnterCriticalSection(&local_20); LeaveCriticalSection(&local_20);"
-        );
-    }
-
-    #[test]
-    fn every_concurrency_finding_of_the_function_lands_in_the_prompt() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_sync_findings(
-            &dir,
-            vec![
-                calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
-                    "FUN_18003ab00",
-                    "std::sync::Mutex<T>",
-                )),
-                calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_18003ab00")),
-                calxgloss_sync::types::SyncFinding::Thread(thread_record("FUN_18003ab00")),
-                calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_zzz")),
-            ],
-        );
-
-        let found = extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["mutex", "atomic", "thread"]);
-        assert_eq!(found[0].suggestion, "std::sync::Mutex<T>");
-        assert_eq!(found[1].suggestion, "std::sync::atomic::AtomicU32");
-        assert_eq!(found[2].suggestion, "std::thread::spawn");
-    }
-
     fn api_usage(
         function: &str,
         api: &str,
@@ -2284,102 +1798,6 @@ mod tests {
         calxgloss_apidetect::persist::ApiPersistor::new(dir.path())
             .save(&result)
             .expect("the API result should be saved");
-    }
-
-    #[test]
-    fn no_workspace_configured_yields_no_api_findings() {
-        assert!(
-            extract_api_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "no workspace means no library/API context"
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_api_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no library/API context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_api_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("apidetect")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn api_findings_of_other_functions_and_import_entries_are_dropped() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_api_findings(
-            &dir,
-            vec![
-                calxgloss_apidetect::types::ApiFinding::Import(
-                    calxgloss_apidetect::types::ApiSignature {
-                        api: "inflate".to_string(),
-                        library: Some("zlib".to_string()),
-                        rust_crate: Some("flate2".to_string()),
-                        category: None,
-                        features: Vec::new(),
-                        confidence: calxgloss_apidetect::types::Confidence::new(90),
-                    },
-                ),
-                api_usage("FUN_18003ab00", "inflate", "zlib", "flate2", true),
-                api_usage("FUN_zzz", "inflate", "zlib", "flate2", true),
-            ],
-        );
-
-        let found = extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's usage");
-        assert_eq!(found[0].function, "FUN_18003ab00");
-        assert_eq!(found[0].api, "inflate");
-        assert_eq!(found[0].library, "zlib");
-        assert_eq!(found[0].suggestion, "flate2");
-        assert_eq!(found[0].kind, "direct");
-        assert_eq!(found[0].confidence, 80);
-        assert_eq!(found[0].evidence, "FUN_18003ab00 → inflate");
-    }
-
-    #[test]
-    fn direct_and_transitive_usages_of_the_function_land_in_the_prompt() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_api_findings(
-            &dir,
-            vec![
-                api_usage("FUN_18003ab00", "inflate", "zlib", "flate2", true),
-                api_usage(
-                    "FUN_18003ab00",
-                    "CreateFileA",
-                    "Win32",
-                    "windows / std::fs",
-                    false,
-                ),
-                api_usage("FUN_zzz", "malloc", "POSIX", "std::fs / std::io", true),
-            ],
-        );
-
-        let found = extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["direct", "transitive"]);
-        assert_eq!(found[0].suggestion, "flate2");
-        assert_eq!(found[1].suggestion, "windows / std::fs");
-        assert_eq!(found[1].confidence, 60);
     }
 
     fn fp_array_hint(function: &str) -> calxgloss_callback::types::CallbackFinding {
@@ -3577,68 +2995,6 @@ mod tests {
             .expect("the float/SIMD result should be saved");
     }
 
-    #[test]
-    fn no_workspace_configured_yields_no_floatsimd_findings() {
-        assert!(
-            extract_float_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "no workspace means no float/SIMD context"
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_floatsimd_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no float/SIMD context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_floatsimd_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("floatsimd")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn the_functions_floatsimd_flag_lands_in_the_prompt() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_floatsimd_findings(
-            &dir,
-            vec![
-                float_flag("FUN_18003ab00"),
-                // A flag raised for another function never answers the
-                // by-function lookup.
-                vector_flag("FUN_zzz"),
-            ],
-        );
-
-        let found = extract_float_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's flag");
-        assert_eq!(found[0].function, "FUN_18003ab00");
-        assert_eq!(found[0].kind, "scalar_float");
-        assert_eq!(found[0].confidence, 90);
-        assert_eq!(found[0].evidence, "fVar1 = (float)uVar2 * 1.5f;");
-        assert_eq!(
-            found[0].suggestion,
-            "translate this body with f32/f64 scalars, not integer or pointer math"
-        );
-    }
-
     fn convention_inference(
         function: &str,
         callee: Option<&str>,
@@ -4155,5 +3511,319 @@ mod tests {
         assert!(none.parameter_direction_findings.is_empty());
         assert!(none.data_table_findings.is_empty());
         assert!(none.error_handling_findings.is_empty());
+    }
+
+    // --- the projection-row suite (issue #312) -----------------------------
+    //
+    // The parametrized suite replacing the per-engine trio tests: for
+    // every row registered in `PROJECTION_ROWS`, driven through
+    // `gather_function_evidence` exactly as the pipeline calls it — no
+    // workspace configured, the field stays empty; the document missing,
+    // the field stays empty rather than failing the gather; the document
+    // corrupt, the field degrades to empty like a missing one; the
+    // document persisted, exactly the records naming the function land
+    // in the field, in scan order, with other functions' records and
+    // program-level records not naming it (the API import entry) left
+    // out. Each kit asserts record *identity and order*, never how an
+    // adapter converts a record — conversion is pinned by the engine
+    // crates' own `From` tests. A registered row without a kit here
+    // panics: registering a row is what pulls an engine into this
+    // suite, and the roster test in the adapters module pins the set of
+    // registered rows.
+
+    /// One row's test kit: how to place its document, how to corrupt it,
+    /// which identities its bundle field carries (in order), and what a
+    /// persisted document must project — the target function's records
+    /// only, in scan order, from a document that also names another
+    /// function and, where the engine has them, program-level records.
+    struct RowKit {
+        kind: &'static str,
+        persist: fn(&TempDir),
+        corrupt: fn(&TempDir),
+        projected: fn(&EvidenceBundle) -> Vec<String>,
+        expected: &'static [&'static str],
+    }
+
+    /// The shared row shape: each document carries two records naming
+    /// the target function and one naming `FUN_zzz`, so the persisted
+    /// case pins selection *and* order in one pass.
+    const ROW_KITS: &[RowKit] = &[
+        RowKit {
+            kind: "algorithm recognition result",
+            persist: |dir| {
+                persist_hints(
+                    dir,
+                    vec![
+                        algorithm_hint("FUN_18003ab00", "comparison_sort"),
+                        algorithm_hint("FUN_zzz", "binary_search"),
+                        algorithm_hint("FUN_18003ab00", "crc"),
+                    ],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    calxgloss_algorithm::persist::AlgorithmPersistor::new(dir.path())
+                        .path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| {
+                bundle
+                    .recognized_algorithms
+                    .iter()
+                    .map(|a| a.algorithm.clone())
+                    .collect()
+            },
+            expected: &["comparison_sort", "crc"],
+        },
+        RowKit {
+            kind: "memory lifecycle result",
+            persist: |dir| {
+                persist_findings(
+                    dir,
+                    vec![
+                        calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
+                            "FUN_18003ab00",
+                            "Box<T>",
+                        )),
+                        calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
+                            "FUN_zzz", "Box<T>",
+                        )),
+                        calxgloss_memory::types::MemoryFinding::Handle(handle_record(
+                            "FUN_18003ab00",
+                        )),
+                    ],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    calxgloss_memory::persist::MemoryPersistor::new(dir.path())
+                        .path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| {
+                bundle
+                    .memory_findings
+                    .iter()
+                    .map(|f| f.kind.clone())
+                    .collect()
+            },
+            expected: &["allocation", "handle"],
+        },
+        RowKit {
+            kind: "concurrency result",
+            persist: |dir| {
+                persist_sync_findings(
+                    dir,
+                    vec![
+                        calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
+                            "FUN_18003ab00",
+                            "std::sync::Mutex<T>",
+                        )),
+                        calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_zzz")),
+                        calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_18003ab00")),
+                        calxgloss_sync::types::SyncFinding::Thread(thread_record("FUN_18003ab00")),
+                    ],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    calxgloss_sync::persist::SyncPersistor::new(dir.path()).path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| {
+                bundle
+                    .concurrency_findings
+                    .iter()
+                    .map(|f| f.kind.clone())
+                    .collect()
+            },
+            expected: &["mutex", "atomic", "thread"],
+        },
+        RowKit {
+            kind: "string context result",
+            persist: |dir| {
+                let mut result = calxgloss_stringctx::types::StringContextResult::new(
+                    ScanMetadata::new("eqmain.dll"),
+                );
+                result.findings = vec![
+                    classified_string("FUN_18003ab00", "Journal.txt", "config file path"),
+                    classified_string("FUN_zzz", "settings.ini", "config file path"),
+                    classified_string("FUN_18003ab00", "Failed to open", "error message"),
+                ];
+                calxgloss_stringctx::persist::StringContextPersistor::new(dir.path())
+                    .save(&result)
+                    .expect("the string-context result should be saved");
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    calxgloss_stringctx::persist::StringContextPersistor::new(dir.path())
+                        .path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| {
+                bundle
+                    .string_findings
+                    .iter()
+                    .map(|f| f.suggestion.clone())
+                    .collect()
+            },
+            expected: &["config file path", "error message"],
+        },
+        RowKit {
+            kind: "API result",
+            persist: |dir| {
+                persist_api_findings(
+                    dir,
+                    vec![
+                        // A binary-level import entry: program-level, names
+                        // no function, and must not project.
+                        calxgloss_apidetect::types::ApiFinding::Import(
+                            calxgloss_apidetect::types::ApiSignature {
+                                api: "inflate".to_string(),
+                                library: Some("zlib".to_string()),
+                                rust_crate: Some("flate2".to_string()),
+                                category: None,
+                                features: Vec::new(),
+                                confidence: calxgloss_apidetect::types::Confidence::new(90),
+                            },
+                        ),
+                        api_usage("FUN_18003ab00", "inflate", "zlib", "flate2", true),
+                        api_usage("FUN_zzz", "inflate", "zlib", "flate2", true),
+                        api_usage(
+                            "FUN_18003ab00",
+                            "CreateFileA",
+                            "Win32",
+                            "windows / std::fs",
+                            false,
+                        ),
+                    ],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    calxgloss_apidetect::persist::ApiPersistor::new(dir.path())
+                        .path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| bundle.api_findings.iter().map(|f| f.api.clone()).collect(),
+            expected: &["inflate", "CreateFileA"],
+        },
+        RowKit {
+            // The float/SIMD document carries at most one flag per
+            // function, so the shared shape shrinks to one other
+            // function's flag before the target's.
+            kind: "float/SIMD result",
+            persist: |dir| {
+                persist_floatsimd_findings(
+                    dir,
+                    vec![float_flag("FUN_zzz"), vector_flag("FUN_18003ab00")],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    calxgloss_floatsimd::persist::FloatsimdPersistor::new(dir.path())
+                        .path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| {
+                bundle
+                    .floatsimd_findings
+                    .iter()
+                    .map(|f| f.kind.clone())
+                    .collect()
+            },
+            expected: &["vector_matrix"],
+        },
+    ];
+
+    /// Write an unparseable document where `path` would hold the real one.
+    fn corrupt_at(path: std::path::PathBuf) {
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+    }
+
+    /// A classified-string record for the string-context row's shared
+    /// shape — the row's own engine record built the same way the engine
+    /// persists it.
+    fn classified_string(
+        function: &str,
+        value: &str,
+        purpose: &str,
+    ) -> calxgloss_stringctx::types::StringFinding {
+        calxgloss_stringctx::types::StringFinding::Classified(
+            calxgloss_stringctx::types::ClassifiedString {
+                function: function.to_string(),
+                string_address: 0x180127cd8,
+                string_value: value.to_string(),
+                classification: calxgloss_stringctx::types::StringClassification::FilePath,
+                purpose: purpose.to_string(),
+                source: calxgloss_stringctx::types::StringSource::BodyParse,
+                confidence: calxgloss_stringctx::types::Confidence::new(60),
+                evidence: "lpszVar1 = \"Journal.txt\";".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn every_registered_projection_row_gathers_the_document_quartet() {
+        for row in crate::evidence_projector::adapters::PROJECTION_ROWS {
+            let kit = ROW_KITS
+                .iter()
+                .find(|kit| kit.kind == row.kind)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "projection row '{}' has no test kit — every registered row is \
+                         driven through the gather here, so add one",
+                        row.kind
+                    )
+                });
+
+            // No workspace configured: the field stays empty.
+            let bundle = gather_function_evidence(None, "eqmain.dll", "FUN_18003ab00", &[]);
+            assert!(
+                (kit.projected)(&bundle).is_empty(),
+                "no workspace leaves the `{}` field empty",
+                row.kind
+            );
+
+            // Document missing: a scan that has not run yet is an empty
+            // field, not a failed gather.
+            let dir = TempDir::new().expect("temp workspace should be created");
+            let bundle =
+                gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+            assert!(
+                (kit.projected)(&bundle).is_empty(),
+                "no persisted `{}` means an empty field, not a failure",
+                row.kind
+            );
+
+            // Document corrupt: degrades to empty exactly like a missing one.
+            let dir = TempDir::new().expect("temp workspace should be created");
+            (kit.corrupt)(&dir);
+            let bundle =
+                gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+            assert!(
+                (kit.projected)(&bundle).is_empty(),
+                "an unusable `{}` degrades to the empty field",
+                row.kind
+            );
+
+            // Document persisted: only the function's own records, in
+            // scan order.
+            let dir = TempDir::new().expect("temp workspace should be created");
+            (kit.persist)(&dir);
+            let bundle =
+                gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+            assert_eq!(
+                (kit.projected)(&bundle),
+                kit.expected,
+                "`{}` projects only the function's records, in scan order",
+                row.kind
+            );
+        }
     }
 }

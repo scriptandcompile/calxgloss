@@ -35,12 +35,19 @@
 //! row: a single load feeds both fields, so they can never disagree
 //! about what the workspace holds.
 //!
-//! This seam stands *beside* the existing gather: nothing in
-//! `gather_function_evidence` moves onto rows until issue #312, and
-//! the shared documents not until #314. What is proven here is the
-//! fold itself, pinned against a fake in-memory adapter — the real
-//! adapters arrive with the migration, and the parametrized suite
-//! driven through `gather_function_evidence` covers them there.
+//! The seam is live: issue #312 migrated the first six single-field
+//! engines onto it, their adapters and the
+//! [`PROJECTION_ROWS`](adapters::PROJECTION_ROWS) table living in
+//! [`adapters`], and `gather_function_evidence` now fills those fields
+//! by folding the registered rows. The remaining engines follow, and
+//! the shared consts and type-inference documents join as multi-field
+//! rows in #314; libmatch's call-graph correlation and the whole-DLL
+//! extractions stay bespoke outside this seam, exactly as specced
+//! (#310). Every registered row is covered by the parametrized suite
+//! driven through `gather_function_evidence`; what is pinned *here* is
+//! the fold itself, against a fake in-memory adapter.
+
+pub mod adapters;
 
 use std::error::Error;
 use std::path::Path;
@@ -217,12 +224,15 @@ impl ProjectionRow {
     /// selection, and its field fills monomorphized behind
     /// [`load_and_project`], so a registered row adds no per-engine
     /// spelling of its own.
-    pub fn of<D: AnalysisDoc>() -> Self {
+    ///
+    /// `const` because the registration table is a `static`: rows must
+    /// be constructible in a static initializer, which the plain
+    /// function-item-to-fn-pointer coercion of `load_and_project::<D>`
+    /// provides without needing a closure.
+    pub const fn of<D: AnalysisDoc>() -> Self {
         Self {
             kind: D::KIND,
-            step: |workspace, binary, function, bundle| {
-                load_and_project::<D>(workspace, binary, function, bundle)
-            },
+            step: load_and_project::<D>,
         }
     }
 
@@ -239,9 +249,9 @@ impl ProjectionRow {
 }
 
 /// Assemble an evidence bundle by folding the rows in their
-/// registered order — the shape `gather_function_evidence` takes over
-/// as the single-field engines migrate onto rows (issue #312) and the
-/// shared documents follow (#314).
+/// registered order — the one-call shape of [`project_into`] over an
+/// empty bundle, kept for readers (and tests) that want the whole
+/// bundle from the table alone.
 ///
 /// Row order is projection order: a field fed by several rows receives
 /// them in table order, keeping prompt diffs between attempts diffable.
@@ -252,10 +262,26 @@ pub fn project_bundle(
     function: &str,
 ) -> EvidenceBundle {
     let mut bundle = EvidenceBundle::default();
-    for row in rows {
-        row.project(workspace, binary, function, &mut bundle);
-    }
+    project_into(rows, workspace, binary, function, &mut bundle);
     bundle
+}
+
+/// The fold itself, into a bundle that may already carry fields from
+/// bespoke extraction: `gather_function_evidence` runs the registered
+/// rows through it after the shared loads and before returning, so the
+/// migrated engines contribute their fields and nothing else (issue
+/// #312). Rows run in table order; a row's degradation is confined to
+/// its own field.
+pub fn project_into(
+    rows: &[ProjectionRow],
+    workspace: Option<&Path>,
+    binary: &str,
+    function: &str,
+    bundle: &mut EvidenceBundle,
+) {
+    for row in rows {
+        row.project(workspace, binary, function, bundle);
+    }
 }
 
 // ============================================================
