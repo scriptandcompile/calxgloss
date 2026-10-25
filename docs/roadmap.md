@@ -44,15 +44,16 @@ nothing above them.
 
 **P34–P39 are architecture deepening tracks from the 2026-10-24 codebase
 review, pinned to the top by decision: they are to be worked before anything
-else in this matrix.** Only P39 is blocked inside the group (by P34's
-descriptor); together they pay for themselves by making every later Evidence
-track (P19–P21, P28) and the retry-loop hypothesis ledger (P27) cheaper to
-land — one place to add an engine, one place to read one, one place to
-assemble the pipeline.
+else in this matrix.** Only P39 was ever blocked inside the group (by P34's
+descriptor) — P34 (evidence-scan registry) shipped through tickets #302–#308
+with follow-up #309 closed and was pruned from this matrix when spec #301
+closed (2026-10-24), leaving P39 unblocked. Together they pay for themselves
+by making every later Evidence track (P19–P21, P28) and the retry-loop
+hypothesis ledger (P27) cheaper to land — one place to add an engine, one
+place to read one, one place to assemble the pipeline.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P34 | Evidence-scan registry — one descriptor behind the pre-batch scan phase: an engine contributes one table row (name, persistor, engine ctor, count-for-log) and the 14 hand-copied scan methods, wrappers, registry thunks, and `ensure_*` test wrappers collapse into it; register `libmatch` or justify leaving it manual | pipeline (`calxgloss-translator`) + evidence (all scan crates) | — | ✅ done | closed by [`#308`](https://github.com/scriptandcompile/calxgloss/issues/308); follow-up [`#309`](https://github.com/scriptandcompile/calxgloss/issues/309) closed 2026-10-24 (Kuna dialect folded into the shared normalizer) | [`#301`](https://github.com/scriptandcompile/calxgloss/issues/301) |
 | P35 | Evidence-bundle projector — one `AnalysisDoc` seam (persistor load + `for_function`) behind a generic load-and-project that fills the prompt bundle by fold; the 19 hand-copied `extract_*`/`load_*` functions in `retry/helpers` and their 49 trio tests collapse to one parametrized suite | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P36 | Prompt bundle through the templates — `EscalateTemplate` and the module-context renderers take `&EvidenceBundle` (or a section list); per-engine template sections become `.j2` includes and the four near-duplicate prompt-data structs die with the ~8–10 field re-declarations they force per engine | integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P37 | Assemble the pipeline once, from settings — one `PipelineSpec` seam; CLI and review UI become adapters over it, and the four divergent builder dances — including web patch-retry's quiet *lesser* pipeline (no events, no overrides) — are deleted | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
@@ -76,77 +77,6 @@ assemble the pipeline.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
-## P34 — Evidence-scan registry: one descriptor behind the pre-batch scan phase (pipeline + evidence)
-
-**Every new Evidence engine pays the same four hand-copied edits, and the
-convention has already drifted.** The pre-batch scan phase runs fourteen
-engines, each hand-wired at four sites: a ~28-line `ScanJob` scan method, a
-pipeline wrapper fn, a one-line registry thunk, and a public `ensure_*`
-wrapper with zero production callers — 56 shallow interface members total,
-while `run_scan` already proves the shape is uniform and only the names,
-persistor, engine ctor, and two bespoke log strings differ. `libmatch` has an
-engine, persistor, and CLI yet never joined the registry, so the pipeline
-consumes a document only the manual CLI produces — the concrete cost of a
-hand-maintained convention. This track deepens the scan phase behind one
-interface: an engine contributes a single descriptor row, and the window,
-latch, heartbeat, and persist-or-skip machinery stay inside the module. The
-`ensure_*` wrappers disappear; the test surface becomes one generic pass over
-the registry. Registering `libmatch` — or recording why it stays
-CLI-only — is part of the definition of done. Source: architecture review
-(2026-10-24), candidate 1.
-
-**Progress (#306, 2026-10-24):** `libmatch` is registered — the scan phase
-now runs fifteen engines, and a cold batch files `re/analysis/libmatch/
-<binary>.json` itself, so the escalation prompt's read and a call-graph build
-after the phase find the pipeline's own document instead of nothing. Two
-limits travel with the registration, recorded rather than hidden: the
-call-graph *batch* path receives a pre-built graph, so its Skip
-classification still benefits only when a document already existed from an
-earlier run (re-ordering the build is out of scope per spec #301); and the
-built-in starter signatures are hand-authored against Ghidra pseudo-C
-spellings that Kuna — the only engine — does not emit, so today's cold-run
-documents carry metadata and no findings, and `BODY_MATCH_CONFIDENCE` (60)
-sits under the Skip floor (80) anyway — real identifications and end-to-end
-Skip rides on [#309](https://github.com/scriptandcompile/calxgloss/issues/309).
-
-**Done (#308, 2026-10-24):** the four hand-copied sites are deleted — the
-fourteen scan methods on the scan handle, their fourteen pipeline
-wrappers, the fourteen thunks of the phase's legacy task list, and the
-fourteen public `ensure_*` entry points production never called. A scan
-now reaches the phase only through its row, and the roster test names all
-fifteen registered rows, so a row joining or leaving the phase fails the
-test until the list is edited on purpose. The operator-visible behavior
-is unchanged byte-for-byte — degradation wording, cached-hit debug lines,
-success-log counts, and every document location — and the window cap,
-measured high-water mark, scan-phase heartbeat, cached-document
-short-circuit, join-everything / cancel-nothing rule, and the declared
-type-inference→callback edge all stay pinned by tests. Of the two
-`libmatch` limits recorded above, the signature dialect gap is since
-closed by [#309](https://github.com/scriptandcompile/calxgloss/issues/309)
-(below); the call-graph pre-build one stays open.
-Tickets #302–#307 are merged — #307 retargets the fanned-versus-sequential
-equivalence check onto the table itself: the sequential leg runs the registry
-in table order one scan at a time over the warmed read cache, and the
-comparison iterates the rows, so every registered scan (the known-library
-row included) is compared with no hand-written list of engines. #308 (delete
-the hand-copied scan sites, grow the table's completeness guard) remains
-before the track closes.
-
-**Dialect gap closed (#309, 2026-10-24):** the corpus question was answered
-first — the whole fixture listing dumped through the real Kuna decompile —
-and the answer rode the shared rule, not a second matcher: the normalizer's
-new dialect layer folds only engine-invented spellings (`v1`, `DAT_`,
-`lab_`) onto the same wildcard tokens, debug-info-carried names and function
-names stay operator territory, and the bundles that genuinely differ per
-engine carry corpus-quoted Kuna alternatives inside one entry per symbol.
-A real-engine corpus test over the fixture listing pins the identifications
-that land and what stays silent, and the cold-batch pipeline test now
-asserts its document carries `strnlen`→`strlen` rather than an empty
-findings list. What still keeps end-to-end Skip open: `BODY_MATCH_CONFIDENCE`
-(60) sits under the Skip floor (80) by design — cold-run Skip needs a
-supplied database at the floor regardless — and the call-graph batch path
-still receives a pre-built graph.
-
 ## P35 — Evidence-bundle projector: one seam from analysis documents to the prompt bundle (pipeline)
 
 **One new Evidence engine re-spells its cache read nineteen times, and every
@@ -161,8 +91,8 @@ behind one interface: an `AnalysisDoc` seam — persistor load + `for_function`
 generic load-and-project filling the bundle by fold. Only genuinely
 engine-specific projection logic survives in helpers; the trio tests collapse
 into one parametrized suite. Source: architecture review (2026-10-24),
-candidate 2. Pairs with: P34 — the same descriptor seam later feeds the CLI
-scan commands and a generic analysis-document persistor.
+candidate 2. Pairs with: P34 (shipped — the descriptor seam that later feeds
+the CLI scan commands and a generic analysis-document persistor).
 
 ## P36 — Prompt bundle through the templates: render the bundle once (integrations + pipeline)
 
@@ -222,7 +152,9 @@ over P34's descriptor (load · scan · persist · show), each engine
 contributing its report printer and flag block only. One descriptor pays
 back at two interfaces — pipeline and CLI — leverage made real; the match
 arms and the 35-line skeletons are deleted. Source: architecture review
-(2026-10-24), candidate 6. Blocked by: P34 (the descriptor it drives).
+(2026-10-24), candidate 6. Blocked by: P34 — shipped through #302–#308
+(#301 closed 2026-10-24), so the descriptor it drives is the scan registry's
+row table, and the track stands unblocked.
 
 ## P19 — Admitted semantics: coverage + limits on every evidence finding (evidence + shared + pipeline + interface)
 
