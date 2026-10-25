@@ -13,7 +13,7 @@
 > its shipped history lives in `CHANGELOG.md` and its key decisions are
 > recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
 > ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008,
-> P1.5 → ADR-0009–0013, X5 → ADR-0041).
+> P1.5 → ADR-0009–0013, X5 → ADR-0041, P35 → ADR-0048).
 
 ## How a track gets built
 
@@ -47,14 +47,16 @@ review, pinned to the top by decision: they are to be worked before anything
 else in this matrix.** Only P39 was ever blocked inside the group (by P34's
 descriptor) — P34 (evidence-scan registry) shipped through tickets #302–#308
 with follow-up #309 closed and was pruned from this matrix when spec #301
-closed (2026-10-24), leaving P39 unblocked. Together they pay for themselves
-by making every later Evidence track (P19–P21, P28) and the retry-loop
-hypothesis ledger (P27) cheaper to land — one place to add an engine, one
-place to read one, one place to assemble the pipeline.
+closed (2026-10-24), and P35 (evidence-bundle projector) shipped through
+tickets #311–#314 with the verification close #315 and was pruned when spec
+#310 closed (2026-10-25), leaving P36 at the head and P39 unblocked. Together
+they pay for themselves by making every later Evidence track (P19–P21, P28)
+and the retry-loop hypothesis ledger (P27) cheaper to land — one place to add
+an engine, one place to read one (shipped — P35, ADR-0048), one place to
+assemble the pipeline.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P35 | Evidence-bundle projector — one `AnalysisDoc` seam (persistor load + `for_function`) behind a generic load-and-project that fills the prompt bundle by fold; the 19 hand-copied `extract_*`/`load_*` functions in `retry/helpers` and their 49 trio tests collapse to one parametrized suite | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P36 | Prompt bundle through the templates — `EscalateTemplate` and the module-context renderers take `&EvidenceBundle` (or a section list); per-engine template sections become `.j2` includes and the four near-duplicate prompt-data structs die with the ~8–10 field re-declarations they force per engine | integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P37 | Assemble the pipeline once, from settings — one `PipelineSpec` seam; CLI and review UI become adapters over it, and the four divergent builder dances — including web patch-retry's quiet *lesser* pipeline (no events, no overrides) — are deleted | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
 | P38 | Attempt as a deep module — one attempt = prompt → LLM → verification → record, returning a verdict; the 1,272-line retry-loop body becomes attempt-selection and cancellation policy, with retry strategies as adapters at the existing internal seam | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
@@ -77,23 +79,6 @@ place to read one, one place to assemble the pipeline.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
-## P35 — Evidence-bundle projector: one seam from analysis documents to the prompt bundle (pipeline)
-
-**One new Evidence engine re-spells its cache read nineteen times, and every
-spelling gets its own trio of tests.** `gather_function_evidence` assembles
-the prompt bundle from nineteen near-identical `extract_*`/`load_*` functions
-in `retry/helpers` (4,159 lines, two-thirds of them tests): persistor →
-miss-log → `for_function` → `Info::from`, differing only in crate name,
-persistor name, and log string; 49 trio tests each rebuild a temp workspace
-to re-assert "missing cache ⇒ empty hints". This track deepens the projection
-behind one interface: an `AnalysisDoc` seam — persistor load + `for_function`
-— with seventeen adapters making it real rather than hypothetical, and one
-generic load-and-project filling the bundle by fold. Only genuinely
-engine-specific projection logic survives in helpers; the trio tests collapse
-into one parametrized suite. Source: architecture review (2026-10-24),
-candidate 2. Pairs with: P34 (shipped — the descriptor seam that later feeds
-the CLI scan commands and a generic analysis-document persistor).
-
 ## P36 — Prompt bundle through the templates: render the bundle once (integrations + pipeline)
 
 **A new engine's `*Info` field is re-declared ~8–10 times before a template
@@ -107,9 +92,10 @@ rendering: templates take `&EvidenceBundle` (or the section list it
 projects), per-engine sections become `.j2` includes, and the prompt-data
 twins lose their reason to exist. The bundle becomes the seam; the
 templates adapt at it. Source: architecture review (2026-10-24), candidate
-3. Pairs with: P35 — the projector fills the bundle this renders over;
-together a new engine's prompt surface shrinks to its own crate plus one
-include.
+3. Pairs with: P35 — shipped through #311–#315 (spec #310 closed
+2026-10-25, ADR-0048) — the projector fills the bundle this renders
+over; together a new engine's prompt surface shrinks to its own crate
+plus one include.
 
 ## P37 — Assemble the pipeline once, from settings (pipeline + interface)
 

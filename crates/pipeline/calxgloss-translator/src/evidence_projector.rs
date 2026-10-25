@@ -1,12 +1,13 @@
 //! The evidence-bundle projector — one `AnalysisDoc` seam between the
 //! persisted analysis documents and the prompt bundle (issue #311, spec #310).
 //!
-//! Nineteen near-identical `extract_*`/`load_*` functions in
-//! [`retry::helpers`](crate::retry) currently spell the same three steps
-//! per engine: load the engine's persisted analysis document for the
-//! binary, keep the records for the target function, convert them
-//! through the prompts crate's `From` impls. This module spells those
-//! steps once, behind one interface: [`AnalysisDoc`] is the seam (load,
+//! The bundle's read path used to spell the same three steps per
+//! engine — nineteen near-identical `extract_*`/`load_*` functions in
+//! [`retry::helpers`](crate::retry) held the copies: load the engine's
+//! persisted analysis document for the binary, keep the records for the
+//! target function, convert them through the prompts crate's `From`
+//! impls. This module spells those steps once, behind one interface:
+//! [`AnalysisDoc`] is the seam (load,
 //! per-function selection, conversion), [`load_and_project`] is the
 //! generic contract, and [`ProjectionRow`] pairs an adapter with the
 //! bundle field(s) it fills so [`project_bundle`] can assemble the
@@ -101,9 +102,9 @@ pub enum DocLoadError {
 /// An implementor is a unit struct, one per analysis document, named
 /// once by a [`ProjectionRow`] — all the shared machinery (the
 /// workspace check, the miss logs, the degradation) belongs to
-/// [`load_and_project`], never to the adapter. The nineteen documents
-/// `gather_function_evidence` reads get their adapters as the gather
-/// migrates (issues #312–#314); the libmatch document's call-graph
+/// [`load_and_project`], never to the adapter. The fourteen per-function
+/// documents `gather_function_evidence` reads all have their adapters
+/// here (issues #312–#314); the libmatch document's call-graph
 /// correlation and the whole-DLL extractions stay bespoke outside
 /// this seam, exactly as specced (#310).
 pub trait AnalysisDoc {
@@ -142,7 +143,8 @@ pub trait AnalysisDoc {
 }
 
 /// The fold's step for one row, type-erased: each engine's document is
-/// its own type and the seventeen cannot sit in one list unboxed, so
+/// its own type and the registered documents cannot sit in one list
+/// unboxed, so
 /// [`ProjectionRow::of`] monomorphizes the whole seam into this one
 /// function pointer.
 type ProjectStep = fn(Option<&Path>, &str, &str, &mut EvidenceBundle);

@@ -20,10 +20,10 @@
 //! same way it is today.
 //!
 //! [`PROJECTION_ROWS`] is the registration point: the fold
-//! [`gather_function_evidence`](crate::retry::helpers::gather_function_evidence)
-//! runs fills its fields, the parametrized suite in the helpers' test
-//! module iterates these rows through the gather, and
-//! [`the_registered_rows_are_the_migrated_engines`] pins the set — an
+//! `gather_function_evidence` runs fills its fields, the parametrized
+//! suite in the helpers' test module iterates these rows through the
+//! gather, and the test `the_registered_rows_are_the_migrated_engines`
+//! pins the set — an
 //! engine that forgets its row fails CI instead of silently vanishing
 //! from prompts. All fourteen documents that feed the bundle per
 //! function are migrated: the twelve single-field ones (first batch in
@@ -429,10 +429,9 @@ impl AnalysisDoc for CallbackDoc {
 /// inventory keeps its projection shape on this path. What the branch
 /// inventory means for test generation stays outside this seam:
 /// baseline generation consumes the `branch_site` records in their own
-/// shape through [`load_control_flow_result`] and
-/// [`branch_inventory_of`](crate::retry::helpers::branch_inventory_of),
-/// which keep their one-load-per-unit role inside `translate` (issue
-/// #261).
+/// shape through the helpers' `load_control_flow_result` and
+/// `branch_inventory_of`, which keep their one-load-per-unit role
+/// inside `translate` (issue #261).
 pub struct ControlFlowDoc;
 
 impl AnalysisDoc for ControlFlowDoc {

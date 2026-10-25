@@ -2490,11 +2490,7 @@ mod tests {
                     ],
                 );
             },
-            corrupt: |dir| {
-                corrupt_at(
-                    TypeInferPersistor::new(dir.path()).path_for("eqmain.dll"),
-                )
-            },
+            corrupt: |dir| corrupt_at(TypeInferPersistor::new(dir.path()).path_for("eqmain.dll")),
             projected: |bundle| {
                 let mut ids: Vec<String> = bundle
                     .type_info
