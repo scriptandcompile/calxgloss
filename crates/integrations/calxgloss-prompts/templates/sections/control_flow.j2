@@ -1,0 +1,20 @@
+{# The control-flow section, shared by every engine template that feeds the #}
+{# control-flow findings. Parameterized by (findings list, heading text) so #}
+{# each template passes its own heading text. The body is verbatim-pinned by #}
+{# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{% macro control_flow_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The following control-flow patterns were recognized in this function by static
+analysis. Where a finding is credible, express the construct with the suggested
+Rust pattern instead of transliterating the raw conditional chain or recursive
+call:
+
+{% for finding in findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

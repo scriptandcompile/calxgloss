@@ -1,0 +1,22 @@
+{# The data-table section, shared by every engine template that feeds the #}
+{# data table findings. Parameterized by (findings list, heading text) so #}
+{# each template passes its own heading text. The body is verbatim-pinned by #}
+{# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{% macro data_tables_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The defined data objects this function indexes that static analysis has
+recognized as constant data tables — objects whose bytes decode coherently
+at one element width and that nothing in the program writes. Where a
+finding is credible, render each lookup of one of these objects as a named
+`const` array of the element type and entry count shown, indexed where the
+original offsets the object — do not re-scatter the decoded entries as
+match arms or magic numbers:
+
+{% for table in findings %}
+- **{{ table.name }}**: `const [{{ table.element_type }}; {{ table.count }}]` (confidence {{ table.confidence }})
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

@@ -1,0 +1,21 @@
+{# The serialization section, shared by every engine template that feeds the #}
+{# serialization findings. Parameterized by (findings list, heading text) so #}
+{# each template passes its own heading text. The body is verbatim-pinned by #}
+{# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{% macro serialization_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The following endianness and serialization patterns were recognized in this
+function by static analysis — byte-swap calls, hand-rolled bit-packing chains,
+and file-format signature comparisons. Where a finding is credible, express
+the format with the suggested Rust type or crate instead of transliterating
+the manual swaps, shifts, and masks:
+
+{% for finding in findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} pattern, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

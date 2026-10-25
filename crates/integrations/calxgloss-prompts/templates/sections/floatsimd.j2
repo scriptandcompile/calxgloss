@@ -1,0 +1,23 @@
+{# The float/SIMD section, shared by every engine template that feeds the #}
+{# float/SIMD findings. Parameterized by (findings list, heading text) so #}
+{# each template passes its own heading text. The body is verbatim-pinned by #}
+{# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{% macro floatsimd_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+This function's body carries float/SIMD evidence, recorded by static
+analysis — the decompiler mangles vector math into concatenations,
+extractions, and undefined-typed arithmetic, and reading it as integer
+or pointer logic mistranslates it. Translate the math as float: for a
+scalar shape use plain `f32`/`f64` operations; for a vector/matrix
+shape use component arrays or small vector structs, never packed
+integers:
+
+{% for finding in findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} shape, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

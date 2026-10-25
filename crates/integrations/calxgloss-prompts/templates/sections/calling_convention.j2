@@ -1,0 +1,23 @@
+{# The calling-convention section, shared by every engine template that feeds #}
+{# the calling-convention readings. Parameterized by (findings list, heading #}
+{# text) so each template passes its own heading text. The body is #}
+{# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
+{# drift fails CI. #}
+{% macro calling_convention_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The calling conventions detected for this function and its callees by
+static analysis — mangled-name letters, `@N` import decorations, callee
+epilogues, caller stack cleanup, and the x64 call shape. Spell extern
+declarations and any stack cleanup with the detected convention instead
+of assuming `__stdcall`, and do not invent stack cleanup for a convention
+that leaves none:
+
+{% for finding in findings %}
+- **{{ finding.convention|safe }}** {% if finding.callee.is_some() %}for `{{ finding.callee.as_ref().unwrap() }}` {% endif %}(via {{ finding.method }}, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

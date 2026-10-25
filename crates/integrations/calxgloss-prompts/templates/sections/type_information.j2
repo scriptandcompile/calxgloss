@@ -1,0 +1,17 @@
+{# The type-information section, shared by every engine template that feeds #}
+{# the decompiler type records. Parameterized by (findings list, heading #}
+{# text) so each template passes its own heading text. The body is #}
+{# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
+{# drift fails CI. #}
+{% macro type_information_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The following types were inferred by Ghidra's type database:
+
+{% for ti in findings %}
+- `{{ ti.name }}`: {% if ti.description.len() > 0 %}{{ ti.description }}{% else %}inferred type{% endif %}
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

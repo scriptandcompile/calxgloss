@@ -1,3 +1,4 @@
+{%- import "sections/control_flow.j2" as control_flow -%}
 You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
 
 ## FUNCTION: {{ function_name }}
@@ -121,20 +122,7 @@ Fields:
 {% endfor %}
 
 {% endif %}
-{% if !control_flow_findings.is_empty() %}
-## CONTROL FLOW PATTERNS
-
-The following control-flow patterns were recognized in this function by static
-analysis. Where a finding is credible, express the construct with the suggested
-Rust pattern instead of transliterating the raw conditional chain or recursive
-call:
-
-{% for finding in control_flow_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
+{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
 {% if !shim_layers.is_empty() %}
 ## SHIM LAYER CODE (crate-replacement DLLs)
 

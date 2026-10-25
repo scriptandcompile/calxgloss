@@ -1,0 +1,20 @@
+{# The recognized-algorithm section, shared by every engine template that #}
+{# feeds the algorithm-recognition findings. Parameterized by (findings list, #}
+{# heading text) so each template passes its own heading text. The body is #}
+{# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
+{# drift fails CI. #}
+{% macro recognized_algorithms_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The following known algorithms were recognized in this function by static
+analysis. Where a recognition is credible, implement the known algorithm
+idiomatically in Rust instead of transliterating the pseudo-C line by line:
+
+{% for algo in findings %}
+- **{{ algo.algorithm }}** ({{ algo.category }}; via {{ algo.method }}, confidence {{ algo.confidence }})
+  Evidence: `{{ algo.evidence }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

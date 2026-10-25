@@ -1,4 +1,16 @@
 {%- import "sections/global_state.j2" as sections -%}
+{%- import "sections/type_information.j2" as type_information -%}
+{%- import "sections/recognized_algorithms.j2" as recognized_algorithms -%}
+{%- import "sections/memory_lifecycle.j2" as memory_lifecycle -%}
+{%- import "sections/concurrency.j2" as concurrency -%}
+{%- import "sections/serialization.j2" as serialization -%}
+{%- import "sections/constants.j2" as constants -%}
+{%- import "sections/callbacks.j2" as callbacks -%}
+{%- import "sections/control_flow.j2" as control_flow -%}
+{%- import "sections/calling_convention.j2" as calling_convention -%}
+{%- import "sections/floatsimd.j2" as floatsimd -%}
+{%- import "sections/string_context.j2" as string_context -%}
+{%- import "sections/libraries_apis.j2" as libraries_apis -%}
 You are a reverse engineering specialist. You previously translated a function to Rust, but earlier attempts failed. This time, additional Ghidra context has been injected to help you succeed.
 
 ## FUNCTION: {{ function_name }}
@@ -107,179 +119,19 @@ Fields:
 {% endfor %}
 
 {% endif %}
-{% if type_info.len() > 0 %}
-## ADDITIONAL CONTEXT — TYPE INFORMATION
-
-The following types were inferred by Ghidra's type database:
-
-{% for ti in type_info %}
-- `{{ ti.name }}`: {% if ti.description.len() > 0 %}{{ ti.description }}{% else %}inferred type{% endif %}
-{% endfor %}
-
-{% endif %}
-{% if !recognized_algorithms.is_empty() %}
-## ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS
-
-The following known algorithms were recognized in this function by static
-analysis. Where a recognition is credible, implement the known algorithm
-idiomatically in Rust instead of transliterating the pseudo-C line by line:
-
-{% for algo in recognized_algorithms %}
-- **{{ algo.algorithm }}** ({{ algo.category }}; via {{ algo.method }}, confidence {{ algo.confidence }})
-  Evidence: `{{ algo.evidence }}`
-{% endfor %}
-
-{% endif %}
-{% if !memory_findings.is_empty() %}
-## ADDITIONAL CONTEXT — MEMORY LIFECYCLE
-
-The following memory lifecycles were recognized in this function by static
-analysis. Where a finding is credible, express the resource with the suggested
-Rust ownership pattern instead of transliterating the manual allocate/free or
-open/close pairs:
-
-{% for finding in memory_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} lifecycle, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !concurrency_findings.is_empty() %}
-## ADDITIONAL CONTEXT — CONCURRENCY
-
-The following concurrency constructs were recognized in this function by static
-analysis. Where a finding is credible, express the synchronization with the
-suggested Rust type instead of transliterating the manual lock/unlock or
-spawn/join calls:
-
-{% for finding in concurrency_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !serialization_findings.is_empty() %}
-## ADDITIONAL CONTEXT — SERIALIZATION
-
-The following endianness and serialization patterns were recognized in this
-function by static analysis — byte-swap calls, hand-rolled bit-packing chains,
-and file-format signature comparisons. Where a finding is credible, express
-the format with the suggested Rust type or crate instead of transliterating
-the manual swaps, shifts, and masks:
-
-{% for finding in serialization_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} pattern, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !const_findings.is_empty() %}
-## ADDITIONAL CONTEXT — CONSTANTS
-
-The following constant structures were recognized in this function by static
-analysis — flag-bit groups, enumerated dispatch runs, and values repeated
-across the program. Where a finding is credible, express it with the suggested
-Rust shape instead of scattering the bare integer literals:
-
-{% for finding in const_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }}, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !callback_findings.is_empty() %}
-## ADDITIONAL CONTEXT — CALLBACKS
-
-The following callback and function-pointer patterns were recognized in this
-function by static analysis. Where a finding is credible, express the callback
-boundary with the suggested Rust pattern instead of transliterating the raw
-table indexing or registration call:
-
-{% for finding in callback_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} pattern, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !control_flow_findings.is_empty() %}
-## ADDITIONAL CONTEXT — CONTROL FLOW
-
-The following control-flow patterns were recognized in this function by static
-analysis. Where a finding is credible, express the construct with the suggested
-Rust pattern instead of transliterating the raw conditional chain or recursive
-call:
-
-{% for finding in control_flow_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !convention_findings.is_empty() %}
-## ADDITIONAL CONTEXT — CALLING CONVENTION
-
-The calling conventions detected for this function and its callees by
-static analysis — mangled-name letters, `@N` import decorations, callee
-epilogues, caller stack cleanup, and the x64 call shape. Spell extern
-declarations and any stack cleanup with the detected convention instead
-of assuming `__stdcall`, and do not invent stack cleanup for a convention
-that leaves none:
-
-{% for finding in convention_findings %}
-- **{{ finding.convention|safe }}** {% if finding.callee.is_some() %}for `{{ finding.callee.as_ref().unwrap() }}` {% endif %}(via {{ finding.method }}, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
+{% call type_information::type_information_section(type_info, "ADDITIONAL CONTEXT — TYPE INFORMATION") %}{% endcall %}
+{% call recognized_algorithms::recognized_algorithms_section(recognized_algorithms, "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS") %}{% endcall %}
+{% call memory_lifecycle::memory_lifecycle_section(memory_findings, "ADDITIONAL CONTEXT — MEMORY LIFECYCLE") %}{% endcall %}
+{% call concurrency::concurrency_section(concurrency_findings, "ADDITIONAL CONTEXT — CONCURRENCY") %}{% endcall %}
+{% call serialization::serialization_section(serialization_findings, "ADDITIONAL CONTEXT — SERIALIZATION") %}{% endcall %}
+{% call constants::constants_section(const_findings, "ADDITIONAL CONTEXT — CONSTANTS") %}{% endcall %}
+{% call callbacks::callbacks_section(callback_findings, "ADDITIONAL CONTEXT — CALLBACKS") %}{% endcall %}
+{% call control_flow::control_flow_section(control_flow_findings, "ADDITIONAL CONTEXT — CONTROL FLOW") %}{% endcall %}
+{% call calling_convention::calling_convention_section(convention_findings, "ADDITIONAL CONTEXT — CALLING CONVENTION") %}{% endcall %}
 {% call sections::global_state_section(global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE") %}{% endcall %}
-{% if !floatsimd_findings.is_empty() %}
-## ADDITIONAL CONTEXT — FLOAT/SIMD
-
-This function's body carries float/SIMD evidence, recorded by static
-analysis — the decompiler mangles vector math into concatenations,
-extractions, and undefined-typed arithmetic, and reading it as integer
-or pointer logic mistranslates it. Translate the math as float: for a
-scalar shape use plain `f32`/`f64` operations; for a vector/matrix
-shape use component arrays or small vector structs, never packed
-integers:
-
-{% for finding in floatsimd_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} shape, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !string_findings.is_empty() %}
-## ADDITIONAL CONTEXT — STRINGS
-
-The following strings were mapped to this function by static analysis —
-classified into their role, and for format-string calls the Rust argument
-types the specifiers imply. Where a finding is credible, name the string's
-role in the translation instead of transliterating the raw literal or
-`DAT_` reference:
-
-{% for finding in string_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} string, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !api_findings.is_empty() %}
-## ADDITIONAL CONTEXT — LIBRARIES AND APIS
-
-The following library APIs were identified by static analysis — from the
-binary's import table and from the call paths reaching them out of this
-function. Where a finding is credible, call the API through the suggested
-Rust crate instead of transliterating the raw import or declaring it as an
-`extern "C"` stub:
-
-{% for finding in api_findings %}
-- **{{ finding.suggestion|safe }}** for `{{ finding.api }}` ({{ finding.library }} {{ finding.kind }}, confidence {{ finding.confidence }})
-{% if !finding.function.is_empty() %}  Reached by: `{{ finding.function }}`
-{% endif %}  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
+{% call floatsimd::floatsimd_section(floatsimd_findings, "ADDITIONAL CONTEXT — FLOAT/SIMD") %}{% endcall %}
+{% call string_context::string_context_section(string_findings, "ADDITIONAL CONTEXT — STRINGS") %}{% endcall %}
+{% call libraries_apis::libraries_apis_section(api_findings, "ADDITIONAL CONTEXT — LIBRARIES AND APIS") %}{% endcall %}
 {% if !error_handling_findings.is_empty() %}
 ## ADDITIONAL CONTEXT — ERROR HANDLING
 

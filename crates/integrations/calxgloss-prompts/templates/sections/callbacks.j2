@@ -1,0 +1,20 @@
+{# The callback section, shared by every engine template that feeds the #}
+{# callback findings. Parameterized by (findings list, heading text) so each #}
+{# template passes its own heading text. The body is verbatim-pinned by the #}
+{# section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{% macro callbacks_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The following callback and function-pointer patterns were recognized in this
+function by static analysis. Where a finding is credible, express the callback
+boundary with the suggested Rust pattern instead of transliterating the raw
+table indexing or registration call:
+
+{% for finding in findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} pattern, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

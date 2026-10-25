@@ -1,4 +1,10 @@
 {%- import "sections/global_state.j2" as sections -%}
+{%- import "sections/control_flow.j2" as control_flow -%}
+{%- import "sections/calling_convention.j2" as calling_convention -%}
+{%- import "sections/floatsimd.j2" as floatsimd -%}
+{%- import "sections/libmatch.j2" as libmatch -%}
+{%- import "sections/parameter_direction.j2" as parameter_direction -%}
+{%- import "sections/data_tables.j2" as data_tables -%}
 You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
 
 ## FUNCTION: {{ function_name }}
@@ -122,100 +128,13 @@ Fields:
 {% endfor %}
 
 {% endif %}
-{% if !control_flow_findings.is_empty() %}
-## CONTROL FLOW PATTERNS
-
-The following control-flow patterns were recognized in this function by static
-analysis. Where a finding is credible, express the construct with the suggested
-Rust pattern instead of transliterating the raw conditional chain or recursive
-call:
-
-{% for finding in control_flow_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !convention_findings.is_empty() %}
-## CALLING CONVENTION
-
-The calling conventions detected for this function and its callees by
-static analysis — mangled-name letters, `@N` import decorations, callee
-epilogues, caller stack cleanup, and the x64 call shape. Spell extern
-declarations and any stack cleanup with the detected convention instead
-of assuming `__stdcall`, and do not invent stack cleanup for a convention
-that leaves none:
-
-{% for finding in convention_findings %}
-- **{{ finding.convention|safe }}** {% if finding.callee.is_some() %}for `{{ finding.callee.as_ref().unwrap() }}` {% endif %}(via {{ finding.method }}, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
+{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
+{% call calling_convention::calling_convention_section(convention_findings, "CALLING CONVENTION") %}{% endcall %}
 {% call sections::global_state_section(global_state_findings, "GLOBAL STATE") %}{% endcall %}
-{% if !floatsimd_findings.is_empty() %}
-## FLOAT/SIMD
-
-This function's body carries float/SIMD evidence, recorded by static
-analysis — the decompiler mangles vector math into concatenations,
-extractions, and undefined-typed arithmetic, and reading it as integer
-or pointer logic mistranslates it. Translate the math as float: for a
-scalar shape use plain `f32`/`f64` operations; for a vector/matrix
-shape use component arrays or small vector structs, never packed
-integers:
-
-{% for finding in floatsimd_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} shape, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !libmatch_findings.is_empty() %}
-## KNOWN LIBRARY FUNCTIONS
-
-The functions this one calls that static analysis has identified as
-statically linked known-library code — the C runtime or the C++ standard
-library. Do NOT re-implement these bodies: map each call onto the
-suggested Rust equivalent instead:
-
-{% for finding in libmatch_findings %}
-- **{{ finding.suggestion|safe }}** — `{{ finding.function }}` matches `{{ finding.symbol }}` ({{ finding.family }} library, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !parameter_direction_findings.is_empty() %}
-## PARAMETER DIRECTIONS
-
-Which way data flows through this function's pointer parameters, read from
-its body by static analysis. Give each parameter the Rust shape its
-direction names — an `in` parameter a shared borrow, an `out` parameter a
-mutable borrow or a value handed back to the caller, an `inout` parameter
-a read-modify-write through a mutable borrow — and add no mutability a
-direction reading does not claim:
-
-{% for finding in parameter_direction_findings %}
-- **{{ finding.parameter }} is {{ finding.direction|safe }}** (via {{ finding.method }}, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
-{% if !data_table_findings.is_empty() %}
-## DATA TABLES
-
-The defined data objects this function indexes that static analysis has
-recognized as constant data tables — objects whose bytes decode coherently
-at one element width and that nothing in the program writes. Where a
-finding is credible, render each lookup of one of these objects as a named
-`const` array of the element type and entry count shown, indexed where the
-original offsets the object — do not re-scatter the decoded entries as
-match arms or magic numbers:
-
-{% for table in data_table_findings %}
-- **{{ table.name }}**: `const [{{ table.element_type }}; {{ table.count }}]` (confidence {{ table.confidence }})
-{% endfor %}
-
-{% endif %}
+{% call floatsimd::floatsimd_section(floatsimd_findings, "FLOAT/SIMD") %}{% endcall %}
+{% call libmatch::libmatch_section(libmatch_findings, "KNOWN LIBRARY FUNCTIONS") %}{% endcall %}
+{% call parameter_direction::parameter_direction_section(parameter_direction_findings, "PARAMETER DIRECTIONS") %}{% endcall %}
+{% call data_tables::data_tables_section(data_table_findings, "DATA TABLES") %}{% endcall %}
 {% if !error_handling_findings.is_empty() %}
 ## ERROR HANDLING
 

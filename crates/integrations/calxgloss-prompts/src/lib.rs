@@ -2259,7 +2259,7 @@ mod tests {
 
     // ============================================================
     // Shared section includes — parametrized section suite and
-    // (template × section) include roster (issue #317)
+    // (template × section) include roster (issues #317, #318)
     // ============================================================
 
     /// The verbatim steering paragraph of the shared global-state section,
@@ -2283,41 +2283,295 @@ mod tests {
         format!("## {heading}\n\n{GLOBAL_STATE_STEERING}\n\n{GLOBAL_STATE_ENTRY}")
     }
 
-    /// Renders the escalate template with only the global-state findings
-    /// populated — its own call site of the shared include.
-    fn render_escalate_with_global_state(findings: &[GlobalStateInfo]) -> String {
+    // Fixtures for the sections lifted onto shared includes by #318. Each
+    // one feeds a single finding (or pair) of the matching bundle list so
+    // the section suite renders one section per template run.
+
+    fn algorithm_fixture() -> AlgorithmInfo {
+        AlgorithmInfo {
+            algorithm: "comparison_sort".to_string(),
+            category: "sorting".to_string(),
+            method: "cfg_pattern".to_string(),
+            confidence: 70,
+            evidence:
+                "for (iVar1 = 0; iVar1 < count; iVar1++) { if (puVar2[iVar1] > puVar2[iVar1 + 1]) {"
+                    .to_string(),
+        }
+    }
+
+    fn memory_fixture() -> MemoryInfo {
+        MemoryInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "handle".to_string(),
+            suggestion: "RAII guard struct with Drop impl".to_string(),
+            confidence: 70,
+            evidence: "hFile = CreateFileW(...); CloseHandle(hFile);".to_string(),
+        }
+    }
+
+    fn concurrency_fixture() -> ConcurrencyInfo {
+        ConcurrencyInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "mutex".to_string(),
+            suggestion: "std::sync::Mutex<T>".to_string(),
+            confidence: 70,
+            evidence: "pthread_mutex_lock(&mtx); ... pthread_mutex_unlock(&mtx);".to_string(),
+        }
+    }
+
+    fn serialization_fixture() -> SerializationInfo {
+        SerializationInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "byteswap".to_string(),
+            suggestion: "byteorder::BE::read_u32".to_string(),
+            confidence: 70,
+            evidence: "uVar1 = (uVar4 << 24) | ((uVar4 >> 8) & 0xff00);".to_string(),
+        }
+    }
+
+    fn const_fixture() -> ConstInfo {
+        ConstInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "bitflag_group".to_string(),
+            suggestion: "bitflags! struct Flags: u32".to_string(),
+            confidence: 70,
+            evidence: "if ((uVar1 & 0x10) != 0) { ... } uVar1 = uVar1 | 0x20;".to_string(),
+        }
+    }
+
+    fn callback_fixture() -> CallbackInfo {
+        CallbackInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "fp_array".to_string(),
+            suggestion: "Vec<Box<dyn Fn(i32)>>".to_string(),
+            confidence: 70,
+            evidence: "handlers[uVar2](iVar3);".to_string(),
+        }
+    }
+
+    fn string_fixture() -> StringContextInfo {
+        StringContextInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "file_path".to_string(),
+            suggestion: "config file path".to_string(),
+            confidence: 70,
+            evidence: "lFile = CreateFileA(\"Journal.txt\",...);".to_string(),
+        }
+    }
+
+    fn api_fixture() -> ApiInfo {
+        ApiInfo {
+            function: String::new(),
+            api: "inflate".to_string(),
+            library: "zlib".to_string(),
+            suggestion: "flate2".to_string(),
+            kind: "import".to_string(),
+            confidence: 90,
+            evidence: "inflate".to_string(),
+        }
+    }
+
+    /// Renders the escalate template against an arbitrary bundle — the
+    /// escalate call sites of the shared includes all live in this one
+    /// template, so one render helper drives every escalate row.
+    fn render_escalate_full(bundle: &EvidenceBundle) -> String {
         build_escalate_prompt(
             "FUN_18003ab00".to_string(),
             "eqmain.dll".to_string(),
             "fn fun_18003ab00(param_1: i32) { /* DAT store */ }".to_string(),
             "Wrong result".to_string(),
-            EvidenceBundle {
-                global_state_findings: findings.to_vec(),
-                ..Default::default()
-            },
+            bundle.clone(),
             Vec::new(),
         )
         .expect("the escalate prompt should render")
     }
 
-    /// Renders the module-context template with only the global-state
-    /// findings populated — its own call site of the shared include.
-    fn render_module_context_with_global_state(findings: &[GlobalStateInfo]) -> String {
+    /// Renders the module-context template against an arbitrary bundle.
+    fn render_module_context_full(bundle: &EvidenceBundle) -> String {
         let req = sample_request();
         build_module_context_prompt(&ModuleContextPromptData::from_request_with_context(
             &req,
-            EvidenceBundle {
-                global_state_findings: findings.to_vec(),
-                ..Default::default()
-            },
+            bundle.clone(),
         ))
         .expect("the module-context prompt should render")
     }
 
-    /// One (section × consuming template) pair of the parametrized section
-    /// suite (issue #317). A new engine that includes a shared section
-    /// registers one row here and is covered by both halves of the suite
-    /// test and by the include roster automatically.
+    /// Renders the full-module template against an arbitrary bundle.
+    fn render_full_module_full(bundle: &EvidenceBundle) -> String {
+        let req = sample_request();
+        let data = FullModulePromptData::from_request_with_full_context(
+            &req,
+            bundle.clone(),
+            Vec::new(),
+            Vec::new(),
+        );
+        build_full_module_prompt(&data).expect("the full-module prompt should render")
+    }
+
+    /// The type information section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const TYPE_INFORMATION_SECTION_BODY: &str = "The following types were inferred by Ghidra's type database:\n\n- `param_1`: char * (via string_function, confidence 70)\n\n- `param_1`: out parameter (via param_direction, confidence 75)";
+
+    fn expected_type_information_section(heading: &str) -> String {
+        format!("## {heading}\n\n{TYPE_INFORMATION_SECTION_BODY}")
+    }
+
+    /// The recognized algorithms section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const RECOGNIZED_ALGORITHMS_SECTION_BODY: &str = "The following known algorithms were recognized in this function by static\nanalysis. Where a recognition is credible, implement the known algorithm\nidiomatically in Rust instead of transliterating the pseudo-C line by line:\n\n- **comparison_sort** (sorting; via cfg_pattern, confidence 70)\n  Evidence: `for (iVar1 = 0; iVar1 &#60; count; iVar1++) { if (puVar2[iVar1] &#62; puVar2[iVar1 + 1]) {`";
+
+    fn expected_recognized_algorithms_section(heading: &str) -> String {
+        format!("## {heading}\n\n{RECOGNIZED_ALGORITHMS_SECTION_BODY}")
+    }
+
+    /// The memory lifecycle section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const MEMORY_LIFECYCLE_SECTION_BODY: &str = "The following memory lifecycles were recognized in this function by static\nanalysis. Where a finding is credible, express the resource with the suggested\nRust ownership pattern instead of transliterating the manual allocate/free or\nopen/close pairs:\n\n- **RAII guard struct with Drop impl** (handle lifecycle, confidence 70)\n  Evidence: `hFile = CreateFileW(...); CloseHandle(hFile);`";
+
+    fn expected_memory_lifecycle_section(heading: &str) -> String {
+        format!("## {heading}\n\n{MEMORY_LIFECYCLE_SECTION_BODY}")
+    }
+
+    /// The concurrency section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const CONCURRENCY_SECTION_BODY: &str = "The following concurrency constructs were recognized in this function by static\nanalysis. Where a finding is credible, express the synchronization with the\nsuggested Rust type instead of transliterating the manual lock/unlock or\nspawn/join calls:\n\n- **std::sync::Mutex<T>** (mutex construct, confidence 70)\n  Evidence: `pthread_mutex_lock(&mtx); ... pthread_mutex_unlock(&mtx);`";
+
+    fn expected_concurrency_section(heading: &str) -> String {
+        format!("## {heading}\n\n{CONCURRENCY_SECTION_BODY}")
+    }
+
+    /// The serialization section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const SERIALIZATION_SECTION_BODY: &str = "The following endianness and serialization patterns were recognized in this\nfunction by static analysis — byte-swap calls, hand-rolled bit-packing chains,\nand file-format signature comparisons. Where a finding is credible, express\nthe format with the suggested Rust type or crate instead of transliterating\nthe manual swaps, shifts, and masks:\n\n- **byteorder::BE::read_u32** (byteswap pattern, confidence 70)\n  Evidence: `uVar1 = (uVar4 << 24) | ((uVar4 >> 8) & 0xff00);`";
+
+    fn expected_serialization_section(heading: &str) -> String {
+        format!("## {heading}\n\n{SERIALIZATION_SECTION_BODY}")
+    }
+
+    /// The constants section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const CONSTANTS_SECTION_BODY: &str = "The following constant structures were recognized in this function by static\nanalysis — flag-bit groups, enumerated dispatch runs, and values repeated\nacross the program. Where a finding is credible, express it with the suggested\nRust shape instead of scattering the bare integer literals:\n\n- **bitflags! struct Flags: u32** (bitflag_group, confidence 70)\n  Evidence: `if ((uVar1 & 0x10) != 0) { ... } uVar1 = uVar1 | 0x20;`";
+
+    fn expected_constants_section(heading: &str) -> String {
+        format!("## {heading}\n\n{CONSTANTS_SECTION_BODY}")
+    }
+
+    /// The callbacks section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const CALLBACKS_SECTION_BODY: &str = "The following callback and function-pointer patterns were recognized in this\nfunction by static analysis. Where a finding is credible, express the callback\nboundary with the suggested Rust pattern instead of transliterating the raw\ntable indexing or registration call:\n\n- **Vec<Box<dyn Fn(i32)>>** (fp_array pattern, confidence 70)\n  Evidence: `handlers[uVar2](iVar3);`";
+
+    fn expected_callbacks_section(heading: &str) -> String {
+        format!("## {heading}\n\n{CALLBACKS_SECTION_BODY}")
+    }
+
+    /// The control flow section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate and full-module); the
+    /// section suite re-renders each consuming template against it.
+    const CONTROL_FLOW_SECTION_BODY: &str = "The following control-flow patterns were recognized in this function by static\nanalysis. Where a finding is credible, express the construct with the suggested\nRust pattern instead of transliterating the raw conditional chain or recursive\ncall:\n\n- **enum State + match state { /* 3 states */ }** (state_machine construct, confidence 70)\n  Evidence: `state variable state with 3 states idle: STATE_IDLE`";
+
+    fn expected_control_flow_section(heading: &str) -> String {
+        format!("## {heading}\n\n{CONTROL_FLOW_SECTION_BODY}")
+    }
+
+    /// The control flow branch section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (module-context, driven by `branch_site_fixture`); the
+    /// section suite re-renders each consuming template against it.
+    const CONTROL_FLOW_BRANCH_SECTION_BODY: &str = "The following control-flow patterns were recognized in this function by static\nanalysis. Where a finding is credible, express the construct with the suggested\nRust pattern instead of transliterating the raw conditional chain or recursive\ncall:\n\n- **keep the early return behind param_1 == 0** (branch_site construct, confidence 80)\n  Evidence: `if (param_1 == 0) {`";
+
+    fn expected_control_flow_branch_section(heading: &str) -> String {
+        format!("## {heading}\n\n{CONTROL_FLOW_BRANCH_SECTION_BODY}")
+    }
+
+    /// The calling convention section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate and module-context); the
+    /// section suite re-renders each consuming template against it.
+    const CALLING_CONVENTION_SECTION_BODY: &str = "The calling conventions detected for this function and its callees by\nstatic analysis — mangled-name letters, `@N` import decorations, callee\nepilogues, caller stack cleanup, and the x64 call shape. Spell extern\ndeclarations and any stack cleanup with the detected convention instead\nof assuming `__stdcall`, and do not invent stack cleanup for a convention\nthat leaves none:\n\n- **stdcall** (via callee_epilogue, confidence 80)\n  Evidence: `00401007  RET 0xC`";
+
+    fn expected_calling_convention_section(heading: &str) -> String {
+        format!("## {heading}\n\n{CALLING_CONVENTION_SECTION_BODY}")
+    }
+
+    /// The floatsimd section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate and module-context); the
+    /// section suite re-renders each consuming template against it.
+    const FLOATSIMD_SECTION_BODY: &str = "This function's body carries float/SIMD evidence, recorded by static\nanalysis — the decompiler mangles vector math into concatenations,\nextractions, and undefined-typed arithmetic, and reading it as integer\nor pointer logic mistranslates it. Translate the math as float: for a\nscalar shape use plain `f32`/`f64` operations; for a vector/matrix\nshape use component arrays or small vector structs, never packed\nintegers:\n\n- **translate as a small vector struct or component array, not integer or pointer arithmetic** (vector_matrix shape, confidence 60)\n  Evidence: `local_10 = CONCAT44(uVar2 >> 4, uVar2 & 0xfffffff);`";
+
+    fn expected_floatsimd_section(heading: &str) -> String {
+        format!("## {heading}\n\n{FLOATSIMD_SECTION_BODY}")
+    }
+
+    /// The string context section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const STRING_CONTEXT_SECTION_BODY: &str = "The following strings were mapped to this function by static analysis —\nclassified into their role, and for format-string calls the Rust argument\ntypes the specifiers imply. Where a finding is credible, name the string's\nrole in the translation instead of transliterating the raw literal or\n`DAT_` reference:\n\n- **config file path** (file_path string, confidence 70)\n  Evidence: `lFile = CreateFileA(\"Journal.txt\",...);`";
+
+    fn expected_string_context_section(heading: &str) -> String {
+        format!("## {heading}\n\n{STRING_CONTEXT_SECTION_BODY}")
+    }
+
+    /// The libraries apis section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (escalate); the
+    /// section suite re-renders each consuming template against it.
+    const LIBRARIES_APIS_SECTION_BODY: &str = "The following library APIs were identified by static analysis — from the\nbinary's import table and from the call paths reaching them out of this\nfunction. Where a finding is credible, call the API through the suggested\nRust crate instead of transliterating the raw import or declaring it as an\n`extern \"C\"` stub:\n\n- **flate2** for `inflate` (zlib import, confidence 90)\n  Evidence: `inflate`";
+
+    fn expected_libraries_apis_section(heading: &str) -> String {
+        format!("## {heading}\n\n{LIBRARIES_APIS_SECTION_BODY}")
+    }
+
+    /// The libmatch section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (module-context); the
+    /// section suite re-renders each consuming template against it.
+    const LIBMATCH_SECTION_BODY: &str = "The functions this one calls that static analysis has identified as\nstatically linked known-library code — the C runtime or the C++ standard\nlibrary. Do NOT re-implement these bodies: map each call onto the\nsuggested Rust equivalent instead:\n\n- **slice copy / std::ptr::copy_nonoverlapping** — `FUN_18003ab00` matches `memcpy` (crt library, confidence 90)\n  Evidence: `  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);`";
+
+    fn expected_libmatch_section(heading: &str) -> String {
+        format!("## {heading}\n\n{LIBMATCH_SECTION_BODY}")
+    }
+
+    /// The parameter direction section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (module-context); the
+    /// section suite re-renders each consuming template against it.
+    const PARAMETER_DIRECTION_SECTION_BODY: &str = "Which way data flows through this function's pointer parameters, read from\nits body by static analysis. Give each parameter the Rust shape its\ndirection names — an `in` parameter a shared borrow, an `out` parameter a\nmutable borrow or a value handed back to the caller, an `inout` parameter\na read-modify-write through a mutable borrow — and add no mutability a\ndirection reading does not claim:\n\n- **param_2 is out** (via param_direction, confidence 75)\n  Evidence: `*param_2 = 0;`";
+
+    fn expected_parameter_direction_section(heading: &str) -> String {
+        format!("## {heading}\n\n{PARAMETER_DIRECTION_SECTION_BODY}")
+    }
+
+    /// The data tables section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its consumers (module-context); the
+    /// section suite re-renders each consuming template against it.
+    const DATA_TABLES_SECTION_BODY: &str = "The defined data objects this function indexes that static analysis has\nrecognized as constant data tables — objects whose bytes decode coherently\nat one element width and that nothing in the program writes. Where a\nfinding is credible, render each lookup of one of these objects as a named\n`const` array of the element type and entry count shown, indexed where the\noriginal offsets the object — do not re-scatter the decoded entries as\nmatch arms or magic numbers:\n\n- **DAT_1400a1b60**: `const [u16; 12]` (confidence 70)";
+
+    fn expected_data_tables_section(heading: &str) -> String {
+        format!("## {heading}\n\n{DATA_TABLES_SECTION_BODY}")
+    }
+
+    /// One (section × consuming template) pair of the parametrized
+    /// section suite (issues #317, #318). A new engine that includes a
+    /// shared section registers one row here and is covered by both
+    /// halves of the suite test and by the include roster automatically.
     struct SectionRow {
         /// The shared section include, template-dir relative.
         section: &'static str,
@@ -2325,11 +2579,10 @@ mod tests {
         template: &'static str,
         /// The heading text the template passes to the include.
         heading: &'static str,
-        /// Builds the populated fixture the row renders.
-        fixture: fn() -> GlobalStateInfo,
-        /// Renders the consuming template with the given findings injected
-        /// and every other section left empty.
-        render: fn(&[GlobalStateInfo]) -> String,
+        /// Injects this section's findings into an otherwise-empty bundle.
+        populate: fn(&mut EvidenceBundle),
+        /// Renders the consuming template against the populated bundle.
+        render: fn(&EvidenceBundle) -> String,
         /// The verbatim rendered section, given the heading.
         expected: fn(heading: &str) -> String,
     }
@@ -2339,17 +2592,172 @@ mod tests {
             section: "sections/global_state.j2",
             template: "escalate.j2",
             heading: "ADDITIONAL CONTEXT — GLOBAL STATE",
-            fixture: global_state_fixture,
-            render: render_escalate_with_global_state,
+            populate: |b| b.global_state_findings.push(global_state_fixture()),
+            render: render_escalate_full,
             expected: expected_global_state_section,
+        },
+        SectionRow {
+            section: "sections/type_information.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — TYPE INFORMATION",
+            populate: |b| b.type_info.extend(type_info_pair()),
+            render: render_escalate_full,
+            expected: expected_type_information_section,
+        },
+        SectionRow {
+            section: "sections/recognized_algorithms.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS",
+            populate: |b| b.recognized_algorithms.push(algorithm_fixture()),
+            render: render_escalate_full,
+            expected: expected_recognized_algorithms_section,
+        },
+        SectionRow {
+            section: "sections/memory_lifecycle.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — MEMORY LIFECYCLE",
+            populate: |b| b.memory_findings.push(memory_fixture()),
+            render: render_escalate_full,
+            expected: expected_memory_lifecycle_section,
+        },
+        SectionRow {
+            section: "sections/concurrency.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — CONCURRENCY",
+            populate: |b| b.concurrency_findings.push(concurrency_fixture()),
+            render: render_escalate_full,
+            expected: expected_concurrency_section,
+        },
+        SectionRow {
+            section: "sections/serialization.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — SERIALIZATION",
+            populate: |b| b.serialization_findings.push(serialization_fixture()),
+            render: render_escalate_full,
+            expected: expected_serialization_section,
+        },
+        SectionRow {
+            section: "sections/constants.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — CONSTANTS",
+            populate: |b| b.const_findings.push(const_fixture()),
+            render: render_escalate_full,
+            expected: expected_constants_section,
+        },
+        SectionRow {
+            section: "sections/callbacks.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — CALLBACKS",
+            populate: |b| b.callback_findings.push(callback_fixture()),
+            render: render_escalate_full,
+            expected: expected_callbacks_section,
+        },
+        SectionRow {
+            section: "sections/control_flow.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — CONTROL FLOW",
+            populate: |b| b.control_flow_findings.push(control_flow_fixture()),
+            render: render_escalate_full,
+            expected: expected_control_flow_section,
+        },
+        SectionRow {
+            section: "sections/calling_convention.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — CALLING CONVENTION",
+            populate: |b| b.convention_findings.push(convention_fixture()),
+            render: render_escalate_full,
+            expected: expected_calling_convention_section,
+        },
+        SectionRow {
+            section: "sections/floatsimd.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — FLOAT/SIMD",
+            populate: |b| b.floatsimd_findings.push(floatsimd_fixture()),
+            render: render_escalate_full,
+            expected: expected_floatsimd_section,
+        },
+        SectionRow {
+            section: "sections/string_context.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — STRINGS",
+            populate: |b| b.string_findings.push(string_fixture()),
+            render: render_escalate_full,
+            expected: expected_string_context_section,
+        },
+        SectionRow {
+            section: "sections/libraries_apis.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — LIBRARIES AND APIS",
+            populate: |b| b.api_findings.push(api_fixture()),
+            render: render_escalate_full,
+            expected: expected_libraries_apis_section,
         },
         SectionRow {
             section: "sections/global_state.j2",
             template: "module_context_translate.j2",
             heading: "GLOBAL STATE",
-            fixture: global_state_fixture,
-            render: render_module_context_with_global_state,
+            populate: |b| b.global_state_findings.push(global_state_fixture()),
+            render: render_module_context_full,
             expected: expected_global_state_section,
+        },
+        SectionRow {
+            section: "sections/control_flow.j2",
+            template: "module_context_translate.j2",
+            heading: "CONTROL FLOW PATTERNS",
+            populate: |b| b.control_flow_findings.push(branch_site_fixture()),
+            render: render_module_context_full,
+            expected: expected_control_flow_branch_section,
+        },
+        SectionRow {
+            section: "sections/calling_convention.j2",
+            template: "module_context_translate.j2",
+            heading: "CALLING CONVENTION",
+            populate: |b| b.convention_findings.push(convention_fixture()),
+            render: render_module_context_full,
+            expected: expected_calling_convention_section,
+        },
+        SectionRow {
+            section: "sections/floatsimd.j2",
+            template: "module_context_translate.j2",
+            heading: "FLOAT/SIMD",
+            populate: |b| b.floatsimd_findings.push(floatsimd_fixture()),
+            render: render_module_context_full,
+            expected: expected_floatsimd_section,
+        },
+        SectionRow {
+            section: "sections/libmatch.j2",
+            template: "module_context_translate.j2",
+            heading: "KNOWN LIBRARY FUNCTIONS",
+            populate: |b| b.libmatch_findings.push(libmatch_fixture()),
+            render: render_module_context_full,
+            expected: expected_libmatch_section,
+        },
+        SectionRow {
+            section: "sections/parameter_direction.j2",
+            template: "module_context_translate.j2",
+            heading: "PARAMETER DIRECTIONS",
+            populate: |b| {
+                b.parameter_direction_findings
+                    .push(parameter_direction_fixture())
+            },
+            render: render_module_context_full,
+            expected: expected_parameter_direction_section,
+        },
+        SectionRow {
+            section: "sections/data_tables.j2",
+            template: "module_context_translate.j2",
+            heading: "DATA TABLES",
+            populate: |b| b.data_table_findings.push(data_table_fixture()),
+            render: render_module_context_full,
+            expected: expected_data_tables_section,
+        },
+        SectionRow {
+            section: "sections/control_flow.j2",
+            template: "full_module_translate.j2",
+            heading: "CONTROL FLOW PATTERNS",
+            populate: |b| b.control_flow_findings.push(control_flow_fixture()),
+            render: render_full_module_full,
+            expected: expected_control_flow_section,
         },
     ];
 
@@ -2359,9 +2767,10 @@ mod tests {
     #[test]
     fn the_section_suite_renders_populated_findings_and_omits_empty_ones() {
         for row in SECTION_SUITE_ROWS {
-            let finding = (row.fixture)();
+            let mut bundle = EvidenceBundle::default();
+            (row.populate)(&mut bundle);
 
-            let populated = (row.render)(std::slice::from_ref(&finding));
+            let populated = (row.render)(&bundle);
             let expected = (row.expected)(row.heading);
             assert!(
                 populated.contains(&format!("\n\n{expected}\n\n")),
@@ -2377,7 +2786,7 @@ mod tests {
                 row.section
             );
 
-            let empty = (row.render)(&[]);
+            let empty = (row.render)(&EvidenceBundle::default());
             assert!(
                 !empty.contains(&format!("## {}", row.heading)),
                 "{} omits the {} section for an empty findings list",

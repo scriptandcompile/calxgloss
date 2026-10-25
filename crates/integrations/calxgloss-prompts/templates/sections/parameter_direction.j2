@@ -1,0 +1,23 @@
+{# The parameter-direction section, shared by every engine template that #}
+{# feeds the parameter-direction readings. Parameterized by (findings list, #}
+{# heading text) so each template passes its own heading text. The body is #}
+{# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
+{# drift fails CI. #}
+{% macro parameter_direction_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+Which way data flows through this function's pointer parameters, read from
+its body by static analysis. Give each parameter the Rust shape its
+direction names — an `in` parameter a shared borrow, an `out` parameter a
+mutable borrow or a value handed back to the caller, an `inout` parameter
+a read-modify-write through a mutable borrow — and add no mutability a
+direction reading does not claim:
+
+{% for finding in findings %}
+- **{{ finding.parameter }} is {{ finding.direction|safe }}** (via {{ finding.method }}, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}

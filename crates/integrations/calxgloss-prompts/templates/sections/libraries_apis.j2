@@ -1,0 +1,22 @@
+{# The library-API section, shared by every engine template that feeds the #}
+{# library/API findings. Parameterized by (findings list, heading text) so #}
+{# each template passes its own heading text. The body is verbatim-pinned by #}
+{# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{% macro libraries_apis_section(findings, heading) %}
+{% if !findings.is_empty() %}
+## {{ heading }}
+
+The following library APIs were identified by static analysis — from the
+binary's import table and from the call paths reaching them out of this
+function. Where a finding is credible, call the API through the suggested
+Rust crate instead of transliterating the raw import or declaring it as an
+`extern "C"` stub:
+
+{% for finding in findings %}
+- **{{ finding.suggestion|safe }}** for `{{ finding.api }}` ({{ finding.library }} {{ finding.kind }}, confidence {{ finding.confidence }})
+{% if !finding.function.is_empty() %}  Reached by: `{{ finding.function }}`
+{% endif %}  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+
+{% endif %}
+{% endmacro %}
