@@ -17,14 +17,13 @@ use askama::Template;
 use calxgloss_types::{FunctionComplexity, TranslationRequest};
 
 use super::context::{
-    ComplexityPromptData, DisassemblyPromptData, FullModulePromptData, ModuleContextPromptData,
-    SignaturePromptData, WithTestsPromptData,
+    ComplexityPromptData, DisassemblyPromptData, SignaturePromptData, WithTestsPromptData,
 };
 use super::error::PromptError;
 use super::templates::{
     BoundaryValue, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, EvidenceBundle,
-    FullModuleTemplate, MinimalTemplate, ModuleContextTemplate, RichTemplate, SignatureTemplate,
-    TranslateTemplate, WithTestsTemplate,
+    FullModuleTemplate, MinimalTemplate, ModuleContextTemplate, PalTraitDef, RichTemplate,
+    ShimCode, SignatureTemplate, TranslateTemplate, WithTestsTemplate,
 };
 
 // ============================================================
@@ -247,15 +246,21 @@ pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, Pro
 /// and shared data structures.
 ///
 /// Contains full disassembly, decompiler output, tagged Windows API calls,
-/// call graph neighbors, baseline test results with pass/fail status, and
-/// full context from neighboring functions (disassembly + decompiler output)
-/// plus any data structures referenced near the target function.
+/// baseline test results with pass/fail status, and — through the one
+/// [`EvidenceBundle`] the gathered finding lists ride in as (issue #320) —
+/// full context from neighboring functions (disassembly + decompiler
+/// output), any data structures referenced near the target function, and
+/// the shared evidence sections the template includes. Callers with no
+/// gathered context pass [`EvidenceBundle::default()`].
 ///
 /// This tier is used for complex functions whose translation requires
 /// understanding shared calling conventions, data layouts, or helper
 /// patterns from adjacent functions in the same module.
-pub fn build_module_context_prompt(data: &ModuleContextPromptData) -> Result<String, PromptError> {
-    let template = ModuleContextTemplate::from_data(data);
+pub fn build_module_context_prompt(
+    req: &TranslationRequest,
+    evidence: EvidenceBundle,
+) -> Result<String, PromptError> {
+    let template = ModuleContextTemplate::from_request(req, evidence);
 
     render_prompt(&template)
 }
@@ -268,16 +273,23 @@ pub fn build_module_context_prompt(data: &ModuleContextPromptData) -> Result<Str
 /// definitions on top of module context.
 ///
 /// Contains full disassembly, decompiler output, tagged Windows API calls,
-/// call graph neighbors, baseline test results with pass/fail status, full
-/// context from neighboring functions, shared data structures, generated
-/// shim layer code for crate-replacement DLLs, and PAL trait definitions.
+/// baseline test results with pass/fail status, generated shim layer code
+/// for crate-replacement DLLs, and PAL trait definitions — plus the full
+/// gathered context, which rides in as one [`EvidenceBundle`] exactly as
+/// the module-context builder takes it (issue #320). Callers with no
+/// gathered context pass [`EvidenceBundle::default()`].
 ///
 /// This tier is used when translating functions that call through shim
 /// layers (e.g., DirectX → wgpu) and need the full translation-layer
 /// context — including the shim source code and PAL trait interfaces —
 /// to map correctly to the cross-platform Rust equivalents.
-pub fn build_full_module_prompt(data: &FullModulePromptData) -> Result<String, PromptError> {
-    let template = FullModuleTemplate::from_data(data);
+pub fn build_full_module_prompt(
+    req: &TranslationRequest,
+    evidence: EvidenceBundle,
+    shim_layers: Vec<ShimCode>,
+    pal_traits: Vec<PalTraitDef>,
+) -> Result<String, PromptError> {
+    let template = FullModuleTemplate::from_request(req, evidence, shim_layers, pal_traits);
 
     render_prompt(&template)
 }

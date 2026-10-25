@@ -27,21 +27,21 @@ You are a reverse engineering specialist. Translate the following function from 
 {% endfor %}
 
 {% endif %}
-{% if !call_graph_neighbors.is_empty() %}
+{% if !evidence.call_graph_neighbors.is_empty() %}
 ## CALL GRAPH NEIGHBORS
 
 Functions directly called by or calling this function.
 
-{% for neighbor in call_graph_neighbors %}
+{% for neighbor in evidence.call_graph_neighbors %}
 - **{{ neighbor.name }}** ({{ neighbor.role }})
   {% if neighbor.signature != "" %}Signature: {{ neighbor.signature }}{% else %}Signature: (not available){% endif %}
 {% endfor %}
 
 {% endif %}
-{% if !call_graph_context.is_empty() %}
+{% if !evidence.call_graph_context.is_empty() %}
 ## CALL GRAPH CONTEXT
 
-{% for ctx in call_graph_context %}
+{% for ctx in evidence.call_graph_context %}
 ### {{ ctx.name }} ({{ ctx.address }})
 
 {% if ctx.callers != [] %}
@@ -83,13 +83,13 @@ Test #{{ test.index }}{% if test.passed %} — PASSED{% else %} — FAILED{% end
 {% endfor %}
 
 {% endif %}
-{% if !neighboring_functions.is_empty() %}
+{% if !evidence.neighboring_functions.is_empty() %}
 ## NEIGHBORING FUNCTION CONTEXT
 
 The following functions share code patterns, data structures, or call conventions
 with this function. Review them for context when translating:
 
-{% for neighbor in neighboring_functions %}
+{% for neighbor in evidence.neighboring_functions %}
 ### Function: {{ neighbor.name }} ({{ neighbor.binary }})
 Address: {{ neighbor.address }}
 
@@ -106,12 +106,12 @@ Pseudo-C:
 {% endfor %}
 
 {% endif %}
-{% if !data_structures.is_empty() %}
+{% if !evidence.data_structures.is_empty() %}
 ## SHARED DATA STRUCTURES
 
 The following data structures are used in or near this function:
 
-{% for ds in data_structures %}
+{% for ds in evidence.data_structures %}
 ### {{ ds.name }}
 Size: {{ ds.size }} bytes
 Fields:
@@ -122,7 +122,7 @@ Fields:
 {% endfor %}
 
 {% endif %}
-{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
+{% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
 {% if !shim_layers.is_empty() %}
 ## SHIM LAYER CODE (crate-replacement DLLs)
 

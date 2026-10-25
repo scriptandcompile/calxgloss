@@ -49,8 +49,7 @@ pub use build::{
     build_with_tests_prompt, extract_signature_from_decompiler,
 };
 pub use context::{
-    ComplexityPromptData, DisassemblyPromptData, FullModulePromptData, ModuleContextPromptData,
-    SignaturePromptData, WithTestsPromptData,
+    ComplexityPromptData, DisassemblyPromptData, SignaturePromptData, WithTestsPromptData,
 };
 pub use error::PromptError;
 pub use templates::{
@@ -1209,15 +1208,14 @@ mod tests {
     #[test]
     fn test_module_context_template_renders_control_flow_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 control_flow_findings: vec![control_flow_fixture()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("CONTROL FLOW PATTERNS"));
         assert!(prompt.contains("enum State + match state { /* 3 states */ }"));
@@ -1233,15 +1231,14 @@ mod tests {
         // what it guards and the condition behind it, beside the
         // switch/loop/recursion readings.
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 control_flow_findings: vec![control_flow_fixture(), branch_site_fixture()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("CONTROL FLOW PATTERNS"));
         assert!(prompt.contains("keep the early return behind param_1 == 0"));
@@ -1256,9 +1253,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_control_flow_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
     }
@@ -1275,15 +1271,14 @@ mod tests {
     #[test]
     fn test_module_context_template_renders_data_tables_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 data_table_findings: vec![data_table_fixture()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("DATA TABLES"));
         assert!(prompt.contains("DAT_1400a1b60"));
@@ -1295,9 +1290,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_data_table_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("DATA TABLES"));
     }
@@ -1316,15 +1310,14 @@ mod tests {
     #[test]
     fn test_module_context_template_renders_calling_convention_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 convention_findings: vec![convention_fixture()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("CALLING CONVENTION"));
         assert!(prompt.contains("stdcall"));
@@ -1340,15 +1333,14 @@ mod tests {
         finding.callee = Some("FUN_1800412a0".to_string());
         finding.convention = "microsoft_x64".to_string();
         finding.method = "call_site_convention".to_string();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 convention_findings: vec![finding],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("CALLING CONVENTION"));
         assert!(prompt.contains("microsoft_x64"));
@@ -1359,9 +1351,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_convention_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("CALLING CONVENTION"));
     }
@@ -1369,15 +1360,14 @@ mod tests {
     #[test]
     fn test_module_context_template_renders_global_state_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 global_state_findings: vec![global_state_fixture()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("GLOBAL STATE"));
         assert!(
@@ -1394,9 +1384,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_global_state_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("GLOBAL STATE"));
     }
@@ -1458,15 +1447,14 @@ mod tests {
     #[test]
     fn test_module_context_template_renders_floatsimd_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 floatsimd_findings: vec![floatsimd_fixture()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("FLOAT/SIMD"));
         assert!(prompt.contains("small vector struct or component array"));
@@ -1478,9 +1466,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_floatsimd_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("FLOAT/SIMD"));
     }
@@ -1502,15 +1489,14 @@ mod tests {
         // The section names the matched callee by symbol, family, and
         // confidence, and steers the call onto the Rust equivalent.
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 libmatch_findings: vec![libmatch_fixture()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("KNOWN LIBRARY FUNCTIONS"));
         assert!(prompt.contains("`FUN_18003ab00` matches `memcpy`"));
@@ -1524,9 +1510,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_libmatch_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("KNOWN LIBRARY FUNCTIONS"));
     }
@@ -1553,15 +1538,14 @@ mod tests {
         inout.direction = "inout".to_string();
         inout.confidence = 70;
         inout.evidence = "  param_3[0] = 3;".to_string();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 parameter_direction_findings: vec![parameter_direction_fixture(), inout],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("PARAMETER DIRECTIONS"));
         assert!(prompt.contains("param_2 is out"));
@@ -1578,9 +1562,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_parameter_direction_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("PARAMETER DIRECTIONS"));
     }
@@ -1588,7 +1571,7 @@ mod tests {
     #[test]
     fn test_full_module_template_renders_control_flow_section() {
         let req = sample_request();
-        let data = FullModulePromptData::from_request_with_full_context(
+        let prompt = build_full_module_prompt(
             &req,
             EvidenceBundle {
                 control_flow_findings: vec![control_flow_fixture()],
@@ -1596,9 +1579,8 @@ mod tests {
             },
             Vec::new(),
             Vec::new(),
-        );
-
-        let prompt = build_full_module_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("CONTROL FLOW PATTERNS"));
         assert!(prompt.contains("enum State + match state { /* 3 states */ }"));
@@ -1609,9 +1591,9 @@ mod tests {
     #[test]
     fn test_full_module_template_without_control_flow_findings_omits_the_section() {
         let req = sample_request();
-        let data = FullModulePromptData::from_request(&req);
-
-        let prompt = build_full_module_prompt(&data).expect("the prompt should render");
+        let prompt =
+            build_full_module_prompt(&req, EvidenceBundle::default(), Vec::new(), Vec::new())
+                .expect("the prompt should render");
 
         assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
     }
@@ -2098,15 +2080,14 @@ mod tests {
     #[test]
     fn test_module_context_template_renders_error_handling_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 error_handling_findings: vec![seh_finding(), code_finding()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("ERROR HANDLING"));
         // The idiom bullet states its suggestion, target, and band.
@@ -2124,9 +2105,8 @@ mod tests {
     #[test]
     fn test_module_context_template_without_error_handling_findings_omits_the_section() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request(&req);
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        let prompt = build_module_context_prompt(&req, EvidenceBundle::default())
+            .expect("the prompt should render");
 
         assert!(!prompt.contains("ERROR HANDLING"));
     }
@@ -2136,15 +2116,14 @@ mod tests {
         // Codes without idioms steer the error mapping but claim no frame
         // to translate.
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 error_handling_findings: vec![code_finding()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("ERROR HANDLING"));
         assert!(prompt.contains("failure code 0x80070057"));
@@ -2156,15 +2135,14 @@ mod tests {
     #[test]
     fn test_module_context_template_error_handling_idioms_only_omit_the_code_line() {
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 error_handling_findings: vec![seh_finding()],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         assert!(prompt.contains("ERROR HANDLING"));
         assert!(prompt.contains("try/catch frame"));
@@ -2180,15 +2158,14 @@ mod tests {
         finding.suggestion = "surface the raise as the matching Rust panic".to_string();
         finding.code = Some("0xe06d7363".to_string());
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 error_handling_findings: vec![finding],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         // The raise idiom bullet names the code it raises inline.
         assert!(prompt.contains("raised exception idiom"));
@@ -2203,15 +2180,14 @@ mod tests {
         finding.site = None;
         finding.partner = Some("FUN_1800412a0".to_string());
         let req = sample_request();
-        let data = ModuleContextPromptData::from_request_with_context(
+        let prompt = build_module_context_prompt(
             &req,
             EvidenceBundle {
                 error_handling_findings: vec![finding],
                 ..Default::default()
             },
-        );
-
-        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+        )
+        .expect("the prompt should render");
 
         // The inherited-code bullet names the code and the partner that
         // hands it up.
@@ -2389,23 +2365,15 @@ mod tests {
     /// Renders the module-context template against an arbitrary bundle.
     fn render_module_context_full(bundle: &EvidenceBundle) -> String {
         let req = sample_request();
-        build_module_context_prompt(&ModuleContextPromptData::from_request_with_context(
-            &req,
-            bundle.clone(),
-        ))
-        .expect("the module-context prompt should render")
+        build_module_context_prompt(&req, bundle.clone())
+            .expect("the module-context prompt should render")
     }
 
     /// Renders the full-module template against an arbitrary bundle.
     fn render_full_module_full(bundle: &EvidenceBundle) -> String {
         let req = sample_request();
-        let data = FullModulePromptData::from_request_with_full_context(
-            &req,
-            bundle.clone(),
-            Vec::new(),
-            Vec::new(),
-        );
-        build_full_module_prompt(&data).expect("the full-module prompt should render")
+        build_full_module_prompt(&req, bundle.clone(), Vec::new(), Vec::new())
+            .expect("the full-module prompt should render")
     }
 
     /// Renders the rich template against an arbitrary bundle — the tier
@@ -2430,6 +2398,70 @@ mod tests {
         data.control_flow_findings = bundle.control_flow_findings.clone();
         build_complexity_prompt(&FunctionComplexity::Detailed, &data)
             .expect("the detailed prompt should render")
+    }
+
+    /// #320: with a wholly empty bundle the escalate template shows no
+    /// evidence section at all — every one of its headings carries the
+    /// `## ADDITIONAL CONTEXT — ` prefix — and leaves no stray blank line
+    /// where the sections used to be.
+    #[test]
+    fn empty_bundle_escalate_omits_every_evidence_section() {
+        let prompt = render_escalate_full(&EvidenceBundle::default());
+        assert!(!prompt.contains("## ADDITIONAL CONTEXT"));
+        assert!(prompt.contains("## TRANSLATION REQUIREMENTS"));
+        assert!(!prompt.contains("\n\n\n"));
+    }
+
+    /// #320: the same empty-bundle contract for the module-context
+    /// template — every bundle-fed heading is absent, the request-fed
+    /// sections still render, and the seams between them stay clean.
+    #[test]
+    fn empty_bundle_module_context_omits_every_evidence_section() {
+        let prompt = render_module_context_full(&EvidenceBundle::default());
+        for heading in [
+            "## CALL GRAPH NEIGHBORS",
+            "## CALL GRAPH CONTEXT",
+            "## NEIGHBORING FUNCTION CONTEXT",
+            "## SHARED DATA STRUCTURES",
+            "## CONTROL FLOW PATTERNS",
+            "## CALLING CONVENTION",
+            "## GLOBAL STATE",
+            "## FLOAT/SIMD",
+            "## KNOWN LIBRARY FUNCTIONS",
+            "## PARAMETER DIRECTIONS",
+            "## DATA TABLES",
+            "## ERROR HANDLING",
+        ] {
+            assert!(
+                !prompt.contains(heading),
+                "the module-context prompt rendered {heading} with an empty bundle"
+            );
+        }
+        assert!(prompt.contains("## TRANSLATION REQUIREMENTS"));
+        assert!(prompt.contains("## BASELINE TESTS"));
+        assert!(!prompt.contains("\n\n\n"));
+    }
+
+    /// #320: the full-module template's five bundle-fed sections all
+    /// disappear with an empty bundle while its tier-fixed sections remain.
+    #[test]
+    fn empty_bundle_full_module_omits_every_evidence_section() {
+        let prompt = render_full_module_full(&EvidenceBundle::default());
+        for heading in [
+            "## CALL GRAPH NEIGHBORS",
+            "## CALL GRAPH CONTEXT",
+            "## NEIGHBORING FUNCTION CONTEXT",
+            "## SHARED DATA STRUCTURES",
+            "## CONTROL FLOW PATTERNS",
+        ] {
+            assert!(
+                !prompt.contains(heading),
+                "the full-module prompt rendered {heading} with an empty bundle"
+            );
+        }
+        assert!(prompt.contains("## TRANSLATION REQUIREMENTS"));
+        assert!(prompt.contains("## BASELINE TESTS"));
+        assert!(!prompt.contains("\n\n\n"));
     }
 
     /// The type information section

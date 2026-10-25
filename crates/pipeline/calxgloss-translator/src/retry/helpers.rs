@@ -736,10 +736,8 @@ pub async fn build_escalated_prompt<S: ScanSource>(
                 extract_neighboring_context(source, &translation.call_graph).await;
             evidence.call_graph_context = translation.call_graph_context.clone();
 
-            let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
-                &request, evidence,
-            );
-            calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
+            calxgloss_prompts::build_module_context_prompt(&request, evidence)
+                .map_err(|e| e.to_string())
         }
         ContextTier::FullModule => {
             // Tier 4: full module + shim layer code + PAL trait definitions
@@ -779,13 +777,8 @@ pub async fn build_escalated_prompt<S: ScanSource>(
             let shim_layers = extract_shim_layers(workspace, binary);
             let pal_traits = Vec::<PalTraitDef>::new();
 
-            let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
-                &request,
-                evidence,
-                shim_layers,
-                pal_traits,
-            );
-            calxgloss_prompts::build_full_module_prompt(&data).map_err(|e| e.to_string())
+            calxgloss_prompts::build_full_module_prompt(&request, evidence, shim_layers, pal_traits)
+                .map_err(|e| e.to_string())
         }
     }
 }

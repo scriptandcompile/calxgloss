@@ -37,23 +37,23 @@ Fix attempted: {{ hint.fix_attempted.as_ref().unwrap() }}
 {% endfor %}
 
 {% endif %}
-{% if !call_graph_neighbors.is_empty() %}
+{% if !evidence.call_graph_neighbors.is_empty() %}
 ## ADDITIONAL CONTEXT — CALL GRAPH NEIGHBORS
 
 The following functions are directly called by or call this function.
 Their signatures have been resolved from Ghidra analysis:
 
-{% for neighbor in call_graph_neighbors %}
+{% for neighbor in evidence.call_graph_neighbors %}
 - **{{ neighbor.name }}** (address: {{ neighbor.address }})
   Signature: `{{ neighbor.signature }}`
   Role: {% if neighbor.role == "caller" %}This function calls {{ neighbor.name }}{% elif neighbor.role == "callee" %}{{ neighbor.name }} is called by this function{% else %}{{ neighbor.name }}{% endif %}
 {% endfor %}
 
 {% endif %}
-{% if !call_graph_context.is_empty() %}
+{% if !evidence.call_graph_context.is_empty() %}
 ## ADDITIONAL CONTEXT — CALL GRAPH ANALYSIS
 
-{% for ctx in call_graph_context %}
+{% for ctx in evidence.call_graph_context %}
 ### {{ ctx.name }} ({{ ctx.address }})
 
 {% if ctx.callers != [] %}
@@ -80,13 +80,13 @@ Their signatures have been resolved from Ghidra analysis:
 {% endfor %}
 
 {% endif %}
-{% if !neighboring_functions.is_empty() %}
+{% if !evidence.neighboring_functions.is_empty() %}
 ## ADDITIONAL CONTEXT — NEIGHBORING FUNCTIONS
 
 The following functions share code patterns, data structures, or call conventions
 with this function. Review them for context:
 
-{% for neighbor in neighboring_functions %}
+{% for neighbor in evidence.neighboring_functions %}
 ### Function: {{ neighbor.name }} ({{ neighbor.binary }})
 Address: {{ neighbor.address }}
 
@@ -103,12 +103,12 @@ Pseudo-C:
 {% endfor %}
 
 {% endif %}
-{% if !data_structures.is_empty() %}
+{% if !evidence.data_structures.is_empty() %}
 ## ADDITIONAL CONTEXT — DATA STRUCTURES
 
 The following data structures are used in or near this function:
 
-{% for ds in data_structures %}
+{% for ds in evidence.data_structures %}
 ### {{ ds.name }}
 Size: {{ ds.size }} bytes
 Fields:
@@ -119,20 +119,20 @@ Fields:
 {% endfor %}
 
 {% endif %}
-{% call type_information::type_information_section(type_info, "ADDITIONAL CONTEXT — TYPE INFORMATION") %}{% endcall %}
-{% call recognized_algorithms::recognized_algorithms_section(recognized_algorithms, "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS") %}{% endcall %}
-{% call memory_lifecycle::memory_lifecycle_section(memory_findings, "ADDITIONAL CONTEXT — MEMORY LIFECYCLE") %}{% endcall %}
-{% call concurrency::concurrency_section(concurrency_findings, "ADDITIONAL CONTEXT — CONCURRENCY") %}{% endcall %}
-{% call serialization::serialization_section(serialization_findings, "ADDITIONAL CONTEXT — SERIALIZATION") %}{% endcall %}
-{% call constants::constants_section(const_findings, "ADDITIONAL CONTEXT — CONSTANTS") %}{% endcall %}
-{% call callbacks::callbacks_section(callback_findings, "ADDITIONAL CONTEXT — CALLBACKS") %}{% endcall %}
-{% call control_flow::control_flow_section(control_flow_findings, "ADDITIONAL CONTEXT — CONTROL FLOW") %}{% endcall %}
-{% call calling_convention::calling_convention_section(convention_findings, "ADDITIONAL CONTEXT — CALLING CONVENTION") %}{% endcall %}
-{% call sections::global_state_section(global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE") %}{% endcall %}
-{% call floatsimd::floatsimd_section(floatsimd_findings, "ADDITIONAL CONTEXT — FLOAT/SIMD") %}{% endcall %}
-{% call string_context::string_context_section(string_findings, "ADDITIONAL CONTEXT — STRINGS") %}{% endcall %}
-{% call libraries_apis::libraries_apis_section(api_findings, "ADDITIONAL CONTEXT — LIBRARIES AND APIS") %}{% endcall %}
-{% if !error_handling_findings.is_empty() %}
+{% call type_information::type_information_section(evidence.type_info, "ADDITIONAL CONTEXT — TYPE INFORMATION") %}{% endcall %}
+{% call recognized_algorithms::recognized_algorithms_section(evidence.recognized_algorithms, "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS") %}{% endcall %}
+{% call memory_lifecycle::memory_lifecycle_section(evidence.memory_findings, "ADDITIONAL CONTEXT — MEMORY LIFECYCLE") %}{% endcall %}
+{% call concurrency::concurrency_section(evidence.concurrency_findings, "ADDITIONAL CONTEXT — CONCURRENCY") %}{% endcall %}
+{% call serialization::serialization_section(evidence.serialization_findings, "ADDITIONAL CONTEXT — SERIALIZATION") %}{% endcall %}
+{% call constants::constants_section(evidence.const_findings, "ADDITIONAL CONTEXT — CONSTANTS") %}{% endcall %}
+{% call callbacks::callbacks_section(evidence.callback_findings, "ADDITIONAL CONTEXT — CALLBACKS") %}{% endcall %}
+{% call control_flow::control_flow_section(evidence.control_flow_findings, "ADDITIONAL CONTEXT — CONTROL FLOW") %}{% endcall %}
+{% call calling_convention::calling_convention_section(evidence.convention_findings, "ADDITIONAL CONTEXT — CALLING CONVENTION") %}{% endcall %}
+{% call sections::global_state_section(evidence.global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE") %}{% endcall %}
+{% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "ADDITIONAL CONTEXT — FLOAT/SIMD") %}{% endcall %}
+{% call string_context::string_context_section(evidence.string_findings, "ADDITIONAL CONTEXT — STRINGS") %}{% endcall %}
+{% call libraries_apis::libraries_apis_section(evidence.api_findings, "ADDITIONAL CONTEXT — LIBRARIES AND APIS") %}{% endcall %}
+{% if !evidence.error_handling_findings.is_empty() %}
 ## ADDITIONAL CONTEXT — ERROR HANDLING
 
 The error-handling contract this function's body carries, read by static
@@ -143,7 +143,7 @@ surface the failure codes below as the numeric codes of the Rust error values
 the function hands back; a divergence here is usually the translation dropping
 or reshaping this contract:
 
-{% for finding in error_handling_findings %}
+{% for finding in evidence.error_handling_findings %}
 {% if finding.kind == "error_code" %}- **failure code {{ finding.code.as_ref().unwrap() }}** ({{ finding.target }} from a `{{ finding.site.as_ref().unwrap() }}` site, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% elif finding.kind == "inherited_error_code" %}- **failure code {{ finding.code.as_ref().unwrap() }}** ({{ finding.target }} carried from `{{ finding.partner.as_ref().unwrap() }}`, confidence {{ finding.confidence }})

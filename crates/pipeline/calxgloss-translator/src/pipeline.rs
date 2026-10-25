@@ -1152,10 +1152,7 @@ impl TranslationPipeline {
                 evidence.call_graph_context = enriched_context.clone();
                 evidence.control_flow_findings =
                     crate::retry::helpers::control_flow_hints_from(control_flow.as_ref(), function);
-                let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
-                    &request, evidence,
-                );
-                calxgloss_prompts::build_module_context_prompt(&data)?
+                calxgloss_prompts::build_module_context_prompt(&request, evidence)?
             }
             ContextTier::FullModule => {
                 // Tier 4: Full module context + shim layer code + PAL trait definitions
@@ -1190,13 +1187,7 @@ impl TranslationPipeline {
                 let pal_traits =
                     crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
 
-                let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
-                    &request,
-                    evidence,
-                    shim_layers,
-                    pal_traits,
-                );
-                calxgloss_prompts::build_full_module_prompt(&data)?
+                calxgloss_prompts::build_full_module_prompt(&request, evidence, shim_layers, pal_traits)?
             }
         };
 

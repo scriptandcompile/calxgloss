@@ -860,6 +860,12 @@ pub struct EvidenceBundle {
 /// Template for "add more context and retry" prompts.
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
+/// The gathered evidence rides in as one [`EvidenceBundle`] — the single
+/// render input of every bundle-fed template (issue #320) — so the template
+/// carries only what is genuinely escalate-tier: the function identity, the
+/// failing code and its failure description, and the failure history. Which
+/// evidence sections the prompt shows is a property of the includes
+/// `escalate.j2` calls, not of this struct's fields.
 #[derive(Template)]
 #[template(path = "escalate.j2")]
 pub struct EscalateTemplate {
@@ -871,58 +877,11 @@ pub struct EscalateTemplate {
     pub original_rust_code: String,
     /// A description of what went wrong during verification.
     pub failure_description: String,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-    /// Other functions sharing context with this function.
-    pub neighboring_functions: Vec<NeighborFunction>,
-    /// Data structures referenced near this function.
-    pub data_structures: Vec<StructuredData>,
-    /// Type information inferred by the decompiler.
-    pub type_info: Vec<TypeInfo>,
-    /// Algorithms recognized in this function by the analysis pipeline.
-    pub recognized_algorithms: Vec<AlgorithmInfo>,
-    /// Memory lifecycle findings about this function made by the analysis
-    /// pipeline.
-    pub memory_findings: Vec<MemoryInfo>,
-    /// Concurrency findings about this function made by the analysis
-    /// pipeline.
-    pub concurrency_findings: Vec<ConcurrencyInfo>,
-    /// Callback and function-pointer-table findings about this function
-    /// made by the analysis pipeline.
-    pub callback_findings: Vec<CallbackInfo>,
-    /// Control-flow findings about this function made by the analysis
-    /// pipeline.
-    pub control_flow_findings: Vec<ControlFlowInfo>,
-    /// Calling-convention readings about this function and its callees
-    /// made by the type-inference engine.
-    pub convention_findings: Vec<ConventionInfo>,
-    /// Global-state access records about this function made by the
-    /// global-state scan.
-    pub global_state_findings: Vec<GlobalStateInfo>,
-    /// String-context findings about this function made by the analysis
-    /// pipeline.
-    pub string_findings: Vec<StringContextInfo>,
-    /// Library/API findings about this function and its binary made by
-    /// the analysis pipeline.
-    pub api_findings: Vec<ApiInfo>,
-    /// Constant and enum findings about this function made by the
-    /// analysis pipeline.
-    pub const_findings: Vec<ConstInfo>,
-    /// Endianness and serialization findings about this function made
-    /// by the analysis pipeline.
-    pub serialization_findings: Vec<SerializationInfo>,
-    /// Error-handling findings about this function made by the
-    /// `calxgloss-errhandling` scan — the idiom the body guards its
-    /// work with and the failure codes it states.
-    pub error_handling_findings: Vec<ErrhandlingInfo>,
-    /// The float/SIMD usage flag for this function made by the
-    /// `calxgloss-floatsimd` scan — one record naming the shape the
-    /// body's float evidence spells.
-    pub floatsimd_findings: Vec<FloatsimdInfo>,
+    /// The gathered decompiler evidence, rendered through the template's
+    /// shared section includes as one bundle.
+    pub evidence: EvidenceBundle,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
-    /// Enriched call graph context with caller/callee/leaf-API details.
-    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl EscalateTemplate {
@@ -958,25 +917,8 @@ impl EscalateTemplate {
             dll_name,
             original_rust_code,
             failure_description,
-            call_graph_neighbors: evidence.call_graph_neighbors,
-            neighboring_functions: evidence.neighboring_functions,
-            data_structures: evidence.data_structures,
-            type_info: evidence.type_info,
-            recognized_algorithms: evidence.recognized_algorithms,
-            memory_findings: evidence.memory_findings,
-            concurrency_findings: evidence.concurrency_findings,
-            callback_findings: evidence.callback_findings,
-            control_flow_findings: evidence.control_flow_findings,
-            convention_findings: evidence.convention_findings,
-            global_state_findings: evidence.global_state_findings,
-            string_findings: evidence.string_findings,
-            api_findings: evidence.api_findings,
-            const_findings: evidence.const_findings,
-            serialization_findings: evidence.serialization_findings,
-            error_handling_findings: evidence.error_handling_findings,
-            floatsimd_findings: evidence.floatsimd_findings,
+            evidence,
             failure_history,
-            call_graph_context: evidence.call_graph_context,
         }
     }
 }
@@ -1282,8 +1224,11 @@ impl WithTestsTemplate {
 /// + neighboring function context + shared data structures).
 ///
 /// Contains full disassembly, decompiler pseudo-C, tagged Windows API calls,
-/// call graph neighbors, baseline test results, neighboring function code
-/// and decompiler output, and shared data structure definitions.
+/// baseline test results, and — through the one [`EvidenceBundle`] it renders
+/// over (issue #320) — call graph neighbors, neighboring function code and
+/// decompiler output, shared data structure definitions, and the shared
+/// evidence sections its includes call. The bundle is the single render
+/// input; this struct keeps only the tier's own fields.
 #[derive(Template)]
 #[template(path = "module_context_translate.j2")]
 pub struct ModuleContextTemplate {
@@ -1301,68 +1246,36 @@ pub struct ModuleContextTemplate {
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     /// Whether there are no Windows API calls.
     pub no_windows_apis: bool,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
     /// Baseline test results with pass/fail status and error details.
     pub test_results: Vec<FormattedTestResult>,
-    /// Neighboring functions with full disassembly and decompiler output.
-    pub neighboring_functions: Vec<NeighborFunction>,
-    /// Data structures referenced near the target function.
-    pub data_structures: Vec<StructuredData>,
-    /// Enriched call graph context with caller/callee/leaf-API details.
-    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
-    /// Control-flow findings about this function made by the analysis
-    /// pipeline.
-    pub control_flow_findings: Vec<ControlFlowInfo>,
-    /// Calling-convention readings about this function and its callees
-    /// made by the type-inference engine.
-    pub convention_findings: Vec<ConventionInfo>,
-    /// Global-state access records about this function made by the
-    /// global-state scan.
-    pub global_state_findings: Vec<GlobalStateInfo>,
-    /// Known-library identifications of this function's callees made by
-    /// the libmatch body-signature matcher.
-    pub libmatch_findings: Vec<LibmatchInfo>,
-    /// Pointer-parameter direction readings about this function made by
-    /// the type-inference direction detector.
-    pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
-    /// Data tables the function reads, made by the `calxgloss-consts`
-    /// table reader.
-    pub data_table_findings: Vec<DataTableInfo>,
-    /// Error-handling findings about this function made by the
-    /// `calxgloss-errhandling` scan — the idiom the body guards its
-    /// work with and the failure codes it states.
-    pub error_handling_findings: Vec<ErrhandlingInfo>,
-    /// The float/SIMD usage flag for this function made by the
-    /// `calxgloss-floatsimd` scan — one record naming the shape the
-    /// body's float evidence spells.
-    pub floatsimd_findings: Vec<FloatsimdInfo>,
+    /// The gathered decompiler evidence, rendered through the template's
+    /// shared section includes as one bundle.
+    pub evidence: EvidenceBundle,
 }
 
 impl ModuleContextTemplate {
-    /// Create a new module context template from tier-3 data.
-    pub fn from_data(data: &super::context::ModuleContextPromptData) -> Self {
+    /// Create a new module context template from a [`TranslationRequest`]
+    /// and the gathered [`EvidenceBundle`] — the builder's
+    /// `(request, bundle)` seam (issue #320). The finding lists move into
+    /// the template as one bundle; nothing copies them field by field.
+    pub fn from_request(req: &TranslationRequest, evidence: EvidenceBundle) -> Self {
+        let test_results: Vec<FormattedTestResult> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
+            .collect();
+
         ModuleContextTemplate {
-            function_name: data.function_name.clone(),
-            dll_name: data.dll_name.clone(),
-            address: data.address,
-            disassembly: data.disassembly.clone(),
-            decompiler_output: data.decompiler_output.clone(),
-            windows_apis: data.windows_apis.clone(),
-            no_windows_apis: data.no_windows_apis,
-            call_graph_neighbors: data.call_graph_neighbors.clone(),
-            test_results: data.test_results.clone(),
-            neighboring_functions: data.neighboring_functions.clone(),
-            data_structures: data.data_structures.clone(),
-            call_graph_context: data.call_graph_context.clone(),
-            control_flow_findings: data.control_flow_findings.clone(),
-            convention_findings: data.convention_findings.clone(),
-            global_state_findings: data.global_state_findings.clone(),
-            libmatch_findings: data.libmatch_findings.clone(),
-            parameter_direction_findings: data.parameter_direction_findings.clone(),
-            data_table_findings: data.data_table_findings.clone(),
-            error_handling_findings: data.error_handling_findings.clone(),
-            floatsimd_findings: data.floatsimd_findings.clone(),
+            function_name: req.function.clone(),
+            dll_name: req.binary.to_string(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis: req.windows_apis.clone(),
+            no_windows_apis: req.windows_apis.is_empty(),
+            test_results,
+            evidence,
         }
     }
 }
@@ -1421,12 +1334,12 @@ pub struct PalTraitMethod {
 
 /// Template for Tier 4 translation prompts (full module context).
 ///
-/// Contains everything from Tier 3 (disassembly, decompiler, tests,
-/// neighboring functions, data structures) plus shim layer code for
-/// crate-replacement DLLs and PAL trait definitions for platform
-/// abstraction. This tier is used when translating functions that
-/// call through shim layers and need the full translation-layer
-/// context to map correctly.
+/// Contains everything from Tier 3 — rendered through the one
+/// [`EvidenceBundle`] it builds over alongside [`ModuleContextTemplate`]
+/// (issue #320) — plus shim layer code for crate-replacement DLLs and PAL
+/// trait definitions for platform abstraction. This tier is used when
+/// translating functions that call through shim layers and need the full
+/// translation-layer context to map correctly.
 #[derive(Template)]
 #[template(path = "full_module_translate.j2")]
 pub struct FullModuleTemplate {
@@ -1444,44 +1357,48 @@ pub struct FullModuleTemplate {
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     /// Whether there are no Windows API calls.
     pub no_windows_apis: bool,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
     /// Baseline test results with pass/fail status and error details.
     pub test_results: Vec<FormattedTestResult>,
-    /// Neighboring functions with full disassembly and decompiler output.
-    pub neighboring_functions: Vec<NeighborFunction>,
-    /// Data structures referenced near the target function.
-    pub data_structures: Vec<StructuredData>,
     /// Shim layer code for crate-replacement DLLs (e.g., d3d9 → wgpu).
     pub shim_layers: Vec<ShimCode>,
     /// PAL trait definitions for platform abstraction.
     pub pal_traits: Vec<PalTraitDef>,
-    /// Enriched call graph context with caller/callee/leaf-API details.
-    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
-    /// Control-flow findings about this function made by the analysis
-    /// pipeline.
-    pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// The gathered decompiler evidence, rendered through the template's
+    /// shared section includes as one bundle.
+    pub evidence: EvidenceBundle,
 }
 
 impl FullModuleTemplate {
-    /// Create a new full module template from tier-4 data.
-    pub fn from_data(data: &super::context::FullModulePromptData) -> Self {
+    /// Create a new full module template from a [`TranslationRequest`], the
+    /// gathered [`EvidenceBundle`], and the workspace's shim layers and PAL
+    /// traits — the builder's `(request, bundle)` seam (issue #320). The
+    /// finding lists move into the template as one bundle; nothing copies
+    /// them field by field.
+    pub fn from_request(
+        req: &TranslationRequest,
+        evidence: EvidenceBundle,
+        shim_layers: Vec<ShimCode>,
+        pal_traits: Vec<PalTraitDef>,
+    ) -> Self {
+        let test_results: Vec<FormattedTestResult> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
+            .collect();
+
         FullModuleTemplate {
-            function_name: data.function_name.clone(),
-            dll_name: data.dll_name.clone(),
-            address: data.address,
-            disassembly: data.disassembly.clone(),
-            decompiler_output: data.decompiler_output.clone(),
-            windows_apis: data.windows_apis.clone(),
-            no_windows_apis: data.no_windows_apis,
-            call_graph_neighbors: data.call_graph_neighbors.clone(),
-            test_results: data.test_results.clone(),
-            neighboring_functions: data.neighboring_functions.clone(),
-            data_structures: data.data_structures.clone(),
-            shim_layers: data.shim_layers.clone(),
-            pal_traits: data.pal_traits.clone(),
-            call_graph_context: data.call_graph_context.clone(),
-            control_flow_findings: data.control_flow_findings.clone(),
+            function_name: req.function.clone(),
+            dll_name: req.binary.to_string(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis: req.windows_apis.clone(),
+            no_windows_apis: req.windows_apis.is_empty(),
+            test_results,
+            shim_layers,
+            pal_traits,
+            evidence,
         }
     }
 }
