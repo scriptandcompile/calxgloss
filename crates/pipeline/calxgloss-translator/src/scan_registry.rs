@@ -40,13 +40,23 @@
 //! yet, joining every one of them. Control-flow detection was the first
 //! scan to run from its row end to end (issue #302); the six body-reading
 //! scans — memory lifecycle, concurrency, global state, constants,
-//! error handling, and float/SIMD — followed (issue #303).
+//! error handling, and float/SIMD — followed (issue #303); then the five
+//! that read whole-binary structure rather than per-function bodies —
+//! type-database recovery, algorithm recognition, string-context
+//! mapping, library/API identification, and serialization-pattern
+//! detection (issue #304). Only the two latch-coupled scans — parameter-
+//! type inference and callback detection — stay on the legacy path until
+//! the ordering edge becomes a declared row dependency (issue #305).
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use calxgloss_algorithm::engine::AlgorithmEngine;
+use calxgloss_algorithm::persist::AlgorithmPersistor;
+use calxgloss_apidetect::engine::ApiEngine;
+use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
@@ -60,8 +70,14 @@ use calxgloss_globalstate::engine::GlobalStateEngine;
 use calxgloss_globalstate::persist::GlobalStatePersistor;
 use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
+use calxgloss_serialize::engine::SerializeEngine;
+use calxgloss_serialize::persist::SerializePersistor;
+use calxgloss_stringctx::engine::StringContextEngine;
+use calxgloss_stringctx::persist::StringContextPersistor;
 use calxgloss_sync::engine::SyncEngine;
 use calxgloss_sync::persist::SyncPersistor;
+use calxgloss_typesdb::engine::TypesDBEngine;
+use calxgloss_typesdb::persist::TypeDatabasePersistor;
 use tracing::{debug, info, warn};
 
 /// A future with nothing borrowed from its caller, ready to cross onto a
@@ -370,6 +386,11 @@ pub fn scan_rows() -> Vec<ScanDescriptor> {
         constants_row(),
         error_handling_row(),
         floatsimd_row(),
+        type_database_row(),
+        algorithm_row(),
+        string_context_row(),
+        library_api_row(),
+        serialization_row(),
     ]
 }
 
@@ -582,6 +603,195 @@ fn floatsimd_row() -> ScanDescriptor {
                 binary = %ctx.binary,
                 findings = result.findings.len(),
                 "Float/SIMD usage detection complete"
+            );
+        }),
+        pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// Type-database recovery, running from its row (issue #304). The wording
+/// matches the legacy [`type_database`](crate::scan_job::ScanJob) scan
+/// method byte-for-byte, and the document lands at
+/// `re/analysis/typesdb/<binary>.json` through the engine's own
+/// persistor. This row is the proof that no engine needs its own scan
+/// body for a richer success log: it reports named types, vtables, and
+/// inferred structs as three separate counts, and `on_saved` is the row's
+/// own closure over the engine's result type — the module holds no
+/// engine-specific code. No hooks — the scan orders with nothing.
+fn type_database_row() -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name: "type-database",
+        messages: ScanMessages {
+            scan_started: "Recovering type database before batch translation",
+            cached_hit: "Type database already cached; skipping recovery",
+            scan_failed: "Type database recovery failed; continuing without data structure context",
+            save_failed: "Failed to persist recovered type database; continuing without data structure context",
+        },
+        persistor: Arc::new(|workspace| TypeDatabasePersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| {
+            TypeDatabasePersistor::new(workspace).path_for(binary)
+        }),
+        save: Arc::new(|persistor, db| persistor.save(db)),
+        build_and_scan: Arc::new(|source, binary| {
+            let engine = TypesDBEngine::with_source(source);
+            Box::pin(async move { engine.scan(binary).await })
+        }),
+        on_saved: Arc::new(|ctx, db| {
+            info!(
+                binary = %ctx.binary,
+                named_types = db.named_types.len(),
+                vtables = db.vtables.len(),
+                inferred_structs = db.inferred_structs.len(),
+                "Type database recovered"
+            );
+        }),
+        pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// Algorithm recognition, running from its row (issue #304). The wording
+/// matches the legacy [`algorithm_recognition`](crate::scan_job::ScanJob)
+/// scan method byte-for-byte, and the document lands at
+/// `re/analysis/algorithm/<binary>.json` through the engine's own
+/// persistor. The engine and the binary name move into the scan future —
+/// the recognition pass is deeply nested (its own concurrent pass inside)
+/// and rustc cannot prove a borrowed nested future `'static`
+/// (rust#100013), the same shape the legacy method ran. No hooks — the
+/// scan orders with nothing.
+fn algorithm_row() -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name: "algorithm-recognition",
+        messages: ScanMessages {
+            scan_started: "Recognizing algorithms before batch translation",
+            cached_hit: "Algorithm recognition result already cached; skipping scan",
+            scan_failed: "Algorithm recognition failed; continuing without algorithm context",
+            save_failed: "Failed to persist algorithm recognition result; continuing without algorithm context",
+        },
+        persistor: Arc::new(|workspace| AlgorithmPersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| {
+            AlgorithmPersistor::new(workspace).path_for(binary)
+        }),
+        save: Arc::new(|persistor, result| persistor.save(result)),
+        build_and_scan: Arc::new(|source, binary| {
+            let engine = AlgorithmEngine::with_source(source);
+            Box::pin(async move { engine.scan(binary).await })
+        }),
+        on_saved: Arc::new(|ctx, result| {
+            info!(
+                binary = %ctx.binary,
+                hints = result.hints.len(),
+                "Algorithm recognition complete"
+            );
+        }),
+        pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// String-context mapping, running from its row (issue #304). The wording
+/// matches the legacy [`string_context`](crate::scan_job::ScanJob) scan
+/// method byte-for-byte, and the document lands at
+/// `re/analysis/stringctx/<binary>.json` through the engine's own
+/// persistor. No hooks — the scan orders with nothing.
+fn string_context_row() -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name: "string-context",
+        messages: ScanMessages {
+            scan_started: "Mapping program strings before batch translation",
+            cached_hit: "String context result already cached; skipping scan",
+            scan_failed: "String context scan failed; continuing without string context",
+            save_failed: "Failed to persist string context result; continuing without string context",
+        },
+        persistor: Arc::new(|workspace| StringContextPersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| {
+            StringContextPersistor::new(workspace).path_for(binary)
+        }),
+        save: Arc::new(|persistor, result| persistor.save(result)),
+        build_and_scan: Arc::new(|source, binary| {
+            let engine = StringContextEngine::with_source(source);
+            Box::pin(async move { engine.scan(binary).await })
+        }),
+        on_saved: Arc::new(|ctx, result| {
+            info!(
+                binary = %ctx.binary,
+                findings = result.findings.len(),
+                "String context scan complete"
+            );
+        }),
+        pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// Library/API identification, running from its row (issue #304). The
+/// wording matches the legacy [`api_detection`](crate::scan_job::ScanJob)
+/// scan method byte-for-byte, and the document lands at
+/// `re/analysis/apidetect/<binary>.json` through the engine's own
+/// persistor. No hooks — the scan orders with nothing.
+fn library_api_row() -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name: "library-api",
+        messages: ScanMessages {
+            scan_started: "Identifying libraries and APIs before batch translation",
+            cached_hit: "API result already cached; skipping scan",
+            scan_failed: "API detection failed; continuing without API context",
+            save_failed: "Failed to persist API result; continuing without API context",
+        },
+        persistor: Arc::new(|workspace| ApiPersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| ApiPersistor::new(workspace).path_for(binary)),
+        save: Arc::new(|persistor, result| persistor.save(result)),
+        build_and_scan: Arc::new(|source, binary| {
+            let engine = ApiEngine::with_source(source);
+            Box::pin(async move { engine.scan(binary).await })
+        }),
+        on_saved: Arc::new(|ctx, result| {
+            info!(
+                binary = %ctx.binary,
+                findings = result.findings.len(),
+                "API detection complete"
+            );
+        }),
+        pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// Serialization-pattern detection, running from its row (issue #304).
+/// The wording matches the legacy
+/// [`serialize_detection`](crate::scan_job::ScanJob) scan method
+/// byte-for-byte, and the document lands at
+/// `re/analysis/serialize/<binary>.json` through the engine's own
+/// persistor. No hooks — the scan orders with nothing.
+fn serialization_row() -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name: "serialization",
+        messages: ScanMessages {
+            scan_started: "Detecting serialization patterns before batch translation",
+            cached_hit: "Serialization result already cached; skipping scan",
+            scan_failed: "Serialization detection failed; continuing without serialization context",
+            save_failed: "Failed to persist serialization result; continuing without serialization context",
+        },
+        persistor: Arc::new(|workspace| SerializePersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| {
+            SerializePersistor::new(workspace).path_for(binary)
+        }),
+        save: Arc::new(|persistor, result| persistor.save(result)),
+        build_and_scan: Arc::new(|source, binary| {
+            let engine = SerializeEngine::with_source(source);
+            Box::pin(async move { engine.scan(binary).await })
+        }),
+        on_saved: Arc::new(|ctx, result| {
+            info!(
+                binary = %ctx.binary,
+                findings = result.findings.len(),
+                "Serialization detection complete"
             );
         }),
         pre_scan: None,

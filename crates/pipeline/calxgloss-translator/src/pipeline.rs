@@ -110,12 +110,21 @@ type EvidenceScanTask =
 // while a named async fn's future is `'static` by signature. The scans
 // that have migrated to a registry row leave this list, one at a time,
 // while the migration runs (issue #302).
+/// The type-database scan's legacy wrapper: its registry row (issue #304)
+/// now runs the scan inside the phase, so nothing in the phase reaches
+/// this; it stays until the migration deletes the legacy scan plumbing,
+/// which is why it is kept compiling rather than removed here.
+#[allow(dead_code)]
 async fn scan_type_database(job: ScanJob) {
     job.type_database().await;
 }
 async fn scan_type_inference(job: ScanJob) {
     job.type_inference().await;
 }
+/// The algorithm-recognition scan's legacy wrapper: its registry row
+/// (issue #304) now runs the scan inside the phase; kept compiling for
+/// the same reason as [`scan_type_database`].
+#[allow(dead_code)]
 async fn scan_algorithm_recognition(job: ScanJob) {
     job.algorithm_recognition().await;
 }
@@ -150,9 +159,17 @@ async fn scan_callback_detection(job: ScanJob) {
 async fn scan_controlflow_detection(job: ScanJob) {
     job.controlflow_detection().await;
 }
+/// The string-context scan's legacy wrapper: its registry row (issue
+/// #304) now runs the scan inside the phase; kept compiling for the same
+/// reason as [`scan_type_database`].
+#[allow(dead_code)]
 async fn scan_string_context(job: ScanJob) {
     job.string_context().await;
 }
+/// The library/API scan's legacy wrapper: its registry row (issue #304)
+/// now runs the scan inside the phase; kept compiling for the same
+/// reason as [`scan_type_database`].
+#[allow(dead_code)]
 async fn scan_api_detection(job: ScanJob) {
     job.api_detection().await;
 }
@@ -162,6 +179,10 @@ async fn scan_api_detection(job: ScanJob) {
 async fn scan_const_detection(job: ScanJob) {
     job.const_detection().await;
 }
+/// The serialization scan's legacy wrapper: its registry row (issue
+/// #304) now runs the scan inside the phase; kept compiling for the same
+/// reason as [`scan_type_database`].
+#[allow(dead_code)]
 async fn scan_serialize_detection(job: ScanJob) {
     job.serialize_detection().await;
 }
@@ -196,24 +217,22 @@ async fn run_scan_in_window(
 }
 
 /// The legacy evidence scans that have not migrated to a registry row
-/// yet, in today's spawn order — type database, type inference, algorithm
-/// recognition, callback, string context, api, and serialize (control
-/// flow migrated to its row in issue #302; the six body-reading scans —
-/// memory, sync, global state, const, error handling, and float/SIMD —
-/// in issue #303). The order is only the order they
+/// yet, in today's spawn order — type inference and callback detection,
+/// the two latch-coupled scans that stay on the legacy path until the
+/// completion-latch edge becomes a declared row dependency (issue #305).
+/// Control flow migrated to its row in issue #302; the six body-reading
+/// scans — memory, sync, global state, const, error handling, and
+/// float/SIMD — in issue #303; and the five whole-structure scans — type
+/// database, algorithm recognition, string context, api, and serialize —
+/// in issue #304. The order is only the order they
 /// enter the window: the scans no longer run in a fixed order, and the
 /// one real ordering edge — callback detection awaiting type inference's
 /// completion latch — rides the latch itself, not this list (issue #238,
 /// fan-out issue #240, errhandling join #292).
 fn evidence_scan_tasks() -> Vec<EvidenceScanTask> {
     vec![
-        Box::new(|job| Box::pin(scan_type_database(job))),
         Box::new(|job| Box::pin(scan_type_inference(job))),
-        Box::new(|job| Box::pin(scan_algorithm_recognition(job))),
         Box::new(|job| Box::pin(scan_callback_detection(job))),
-        Box::new(|job| Box::pin(scan_string_context(job))),
-        Box::new(|job| Box::pin(scan_api_detection(job))),
-        Box::new(|job| Box::pin(scan_serialize_detection(job))),
     ]
 }
 
@@ -3981,9 +4000,7 @@ fn compose_signature_map(result: &TypeInferenceResult) -> SignatureMap {
 mod tests {
     use super::*;
     use calxgloss_algorithm::persist::AlgorithmPersistor;
-    use calxgloss_algorithm::types::AlgorithmRecognitionResult;
     use calxgloss_apidetect::persist::ApiPersistor;
-    use calxgloss_apidetect::types::ApiDetectionResult;
     use calxgloss_callback::persist::CallbackPersistor;
     use calxgloss_callback::types::CallbackResult;
     use calxgloss_consts::persist::ConstPersistor;
@@ -3995,9 +4012,7 @@ mod tests {
     use calxgloss_globalstate::types::{GlobalAccess, GlobalStateFinding, GlobalStateResult};
     use calxgloss_memory::persist::MemoryPersistor;
     use calxgloss_serialize::persist::SerializePersistor;
-    use calxgloss_serialize::types::SerializeResult;
     use calxgloss_stringctx::persist::StringContextPersistor;
-    use calxgloss_stringctx::types::StringContextResult;
     use calxgloss_sync::persist::SyncPersistor;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::{
@@ -4007,7 +4022,7 @@ mod tests {
     use calxgloss_types::Confidence;
     use calxgloss_types::TranslationConstraints;
     use calxgloss_typesdb::persist::TypeDatabasePersistor;
-    use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
+    use calxgloss_typesdb::types::ScanMetadata;
     use tempfile::TempDir;
 
     /// The fixture target loaded under the Kuna engine — the only engine
@@ -4949,33 +4964,6 @@ void SetCursor(void)
     }
 
     #[tokio::test]
-    async fn a_cached_database_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = TypeDatabasePersistor::new(dir.path());
-        persistor
-            .save(&TypeDatabase::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_type_database("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_recovery() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_type_database("eqmain.dll").await);
-    }
-
-    #[tokio::test]
     async fn a_cached_inference_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
         let persistor = TypeInferPersistor::new(dir.path());
@@ -5000,35 +4988,6 @@ void SetCursor(void)
     async fn no_workspace_skips_the_inference() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_type_inference("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_cached_algorithm_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = AlgorithmPersistor::new(dir.path());
-        persistor
-            .save(&AlgorithmRecognitionResult::new(ScanMetadata::new(
-                "eqmain.dll",
-            )))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_algorithm_recognition("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_algorithm_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_algorithm_recognition("eqmain.dll").await);
     }
 
     /// A pipeline over a caller-supplied engine source, workspace included
@@ -5305,69 +5264,6 @@ void SetCursor(void)
             "the suite probes the recorded immediates: {:?}",
             tests.iter().map(|t| &t.inputs).collect::<Vec<_>>()
         );
-    }
-
-    #[tokio::test]
-    async fn a_cached_serialization_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = SerializePersistor::new(dir.path());
-        persistor
-            .save(&SerializeResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_serialize_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_serialization_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_serialize_detection("eqmain.dll").await);
-
-        let persistor = SerializePersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("serialize")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/serialize"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_serialization_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_serialize_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_serialization_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_serialize_detection("eqmain.dll").await);
     }
 
     #[tokio::test]
@@ -5679,154 +5575,6 @@ void SetCursor(void)
     async fn no_workspace_skips_the_controlflow_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_cached_string_context_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = StringContextPersistor::new(dir.path());
-        persistor
-            .save(&StringContextResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_string_context("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_string_context_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_string_context("eqmain.dll").await);
-
-        let persistor = StringContextPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("stringctx")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/stringctx"
-        );
-        let saved = persistor.load("eqmain.dll").expect("saved document");
-        assert!(
-            !saved.findings.is_empty(),
-            "the fixture's referenced literals should tie to their functions"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_string_context_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_string_context("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_string_context_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_string_context("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_cached_api_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = ApiPersistor::new(dir.path());
-        persistor
-            .save(&ApiDetectionResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_api_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_api_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_api_detection("eqmain.dll").await);
-
-        let persistor = ApiPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("apidetect")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/apidetect"
-        );
-        let saved = persistor.load("eqmain.dll").expect("saved document");
-        // The fixture's import table is identified through the seam; the
-        // fixture-named callees the call graph extracts map to no PAL
-        // library, so the usage path stays quiet here — it is covered by
-        // the apidetect crate's own tests.
-        assert!(
-            saved
-                .findings
-                .iter()
-                .any(|f| f.kind() == "import" && f.target().contains("puts")),
-            "the fixture's `puts` import should be identified, got {:?}",
-            saved
-                .findings
-                .iter()
-                .map(|f| (f.kind(), f.target()))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_api_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_api_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
     }
 
     // ============================================================
@@ -6892,43 +6640,26 @@ void SetCursor(void)
     }
 
     // ============================================================
-    // The scan-descriptor registry (issues #302, #303)
+    // The scan-descriptor registry (issues #302–#304)
     // ============================================================
 
     /// The not-yet-migrated scans' document locations: the roster that
-    /// must stay filed while a registered row degrades.
+    /// must stay filed while a registered row degrades. Only the two
+    /// latch-coupled scans remain on the legacy path (issue #304); they
+    /// join the table when the ordering edge becomes a declared row
+    /// dependency (issue #305).
     fn unmigrated_scan_documents(
         workspace: &std::path::Path,
         binary: &str,
     ) -> Vec<(&'static str, std::path::PathBuf)> {
         vec![
             (
-                "type database",
-                TypeDatabasePersistor::new(workspace).path_for(binary),
-            ),
-            (
                 "type inference",
                 TypeInferPersistor::new(workspace).path_for(binary),
             ),
             (
-                "algorithm recognition",
-                AlgorithmPersistor::new(workspace).path_for(binary),
-            ),
-            (
                 "callback detection",
                 CallbackPersistor::new(workspace).path_for(binary),
-            ),
-            (
-                "string context",
-                StringContextPersistor::new(workspace).path_for(binary),
-            ),
-            (
-                "api detection",
-                ApiPersistor::new(workspace).path_for(binary),
-            ),
-            (
-                "serialize detection",
-                SerializePersistor::new(workspace).path_for(binary),
             ),
         ]
     }
@@ -6951,6 +6682,11 @@ void SetCursor(void)
                 "constants",
                 "error-handling",
                 "float-simd",
+                "type-database",
+                "algorithm-recognition",
+                "string-context",
+                "library-api",
+                "serialization",
             ],
             "the registry roster changed — a scan joins the phase by adding \
              its row to the table, and never by being forgotten"
@@ -6981,6 +6717,15 @@ void SetCursor(void)
                 path.is_file(),
                 "the registered {} row filed its document on a cold phase",
                 row.name()
+            );
+        }
+        // The rows and the legacy scans together are the whole phase:
+        // twelve registered documents plus the two latch-coupled legacy
+        // scans' documents are all fourteen, filed by one cold phase.
+        for (name, path) in unmigrated_scan_documents(dir.path(), PROGRAM) {
+            assert!(
+                path.is_file(),
+                "the legacy {name} scan filed its document on a cold phase"
             );
         }
     }
