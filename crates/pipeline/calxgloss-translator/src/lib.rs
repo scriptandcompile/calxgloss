@@ -1,7 +1,11 @@
 //! Translation pipeline — engine scan + LLM + prompt orchestration.
 //!
 //! This crate provides the [`TranslationPipeline`] struct, which wires together
-//! all the pieces needed to translate a disassembled function to Rust:
+//! all the pieces needed to translate a disassembled function to Rust. A pass
+//! is never hand-built: it is described with a
+//! [`PipelineSpec`](assembly::PipelineSpec) and wired once by the
+//! [`assembly`](assembly) module — the constructor and `with_*` setters are
+//! assembly-internal (issue #328). The steps an assembled pass runs:
 //!
 //! 1. Pull function data from the engine (disassembly, decompiler output)
 //! 2. Tag Windows API calls with their PAL mappings
@@ -50,7 +54,6 @@ mod tests {
     use calxgloss_llm::LlmClient;
     use calxgloss_pal::ApiMappings;
     use calxgloss_types::ContextTier;
-    use calxgloss_types::Export;
     use calxgloss_types::FunctionInfo;
 
     /// The fixture target loaded under the Kuna engine — the only engine
@@ -76,23 +79,6 @@ mod tests {
         let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
-
-        assert!(!pipeline.api_mappings().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_pipeline_with_exports() {
-        let kuna = fixture_kuna();
-        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let exports = vec![Export {
-            name: "DrawSprite".to_string(),
-            address: 0x1000,
-            signature: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)"
-                .to_string(),
-        }];
-
-        let pipeline =
-            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_exports(exports);
 
         assert!(!pipeline.api_mappings().is_empty());
     }

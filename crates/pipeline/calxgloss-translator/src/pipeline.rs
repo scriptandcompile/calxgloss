@@ -12,18 +12,27 @@
 //!
 //! # Example
 //!
+//! A pass is described by [`PipelineSpec`](assembly::PipelineSpec) and wired
+//! by [`assemble`](assembly::assemble) — the pipeline's constructor is
+//! assembly-internal, so a hand-built pipeline does not compile outside the
+//! seam (issue #328).
+//!
 //! ```no_run
-//! use calxgloss_translator::TranslationPipeline;
 //! use calxgloss_kuna::KunaSource;
 //! use calxgloss_llm::LlmClient;
-//! use calxgloss_pal::ApiMappings;
+//! use calxgloss_translator::assembly::{LlmSelection, PipelineSpec, assemble};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let kuna = KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
+//! let engine = KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
 //! let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-//! let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
+//! let spec = PipelineSpec {
+//!     llm: Some(LlmSelection::Client(llm)),
+//!     workspace: std::env::current_dir()?,
+//!     ..PipelineSpec::default()
+//! };
+//! let pass = assemble(&spec, &engine).await?;
 //!
-//! let translation = pipeline.translate("game_logic.dll", "DrawSprite").await?;
+//! let translation = pass.pipeline.translate("game_logic.dll", "DrawSprite").await?;
 //! println!("Translated code:\n{}", translation.rust_code);
 //! # Ok(())
 //! # }
@@ -38,7 +47,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use calxgloss_analysis::Analyzer;
-use calxgloss_analysis::FaultLogger;
 use calxgloss_callback::signatures::{CallableSignature, SignatureMap};
 use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
 use calxgloss_decomp::{CachedScanSource, PipelineSource, ScanSource};
@@ -53,9 +61,8 @@ use calxgloss_typeinfer::error::TypeInferError;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{InferredType, TypeInferenceResult};
 use calxgloss_types::{
-    BinaryIdentity, ContextTier, Export, FunctionInfo, PipelineControl, PipelineState,
-    ProgressEvent, ScopeControl, StopSignal, TestCase, TranslationEvents, TranslationRequest,
-    UnitCancellation,
+    BinaryIdentity, ContextTier, FunctionInfo, PipelineControl, PipelineState, ProgressEvent,
+    ScopeControl, StopSignal, TestCase, TranslationEvents, TranslationRequest, UnitCancellation,
 };
 use calxgloss_verify::Verifier;
 use tokio::task::JoinSet;
@@ -180,16 +187,13 @@ fn registered_scan_tasks() -> Vec<EvidenceScanTask> {
 ///
 /// # Construction
 ///
-/// ```no_run
-/// use calxgloss_translator::TranslationPipeline;
-/// use calxgloss_kuna::KunaSource;
-/// use calxgloss_llm::LlmClient;
-/// use calxgloss_pal::ApiMappings;
-///
-/// let kuna = KunaSource::load(std::path::Path::new("target/game_logic.dll")).unwrap();
-/// let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-/// let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
-/// ```
+/// The constructor is assembly-internal: the only way to bring a pipeline
+/// into existence is to describe the pass — a
+/// [`PipelineSpec`](crate::assembly::PipelineSpec) — and assemble it with
+/// [`assemble`](crate::assembly::assemble) (or
+/// [`assemble_patch`](crate::assembly::assemble_patch) for a pass that
+/// loads its own engine). Hand-building one outside the pipeline
+/// context's assembly does not compile (issue #328).
 pub struct TranslationPipeline {
     /// The loaded Kuna program every seam read goes through.
     kuna: KunaSource,
@@ -213,9 +217,6 @@ pub struct TranslationPipeline {
     /// Optional test generator for baseline test input creation.
     testgen: Option<TestGenerator>,
 
-    /// Optional exports for signature extraction during test generation.
-    exports: Vec<Export>,
-
     /// Optional binary name override for test generation context.
     target_binary: Option<BinaryIdentity>,
 
@@ -237,13 +238,6 @@ pub struct TranslationPipeline {
     /// no engine source is available.
     hallucination_detector: Option<HallucinationDetector>,
 
-    /// Persistent fault event logger.  When present, every detected fault
-    /// (context-window exceeded, hallucination, infinite loop, behavior
-    /// divergence, resource exhaustion) is persisted to
-    /// `<workspace>/re/analysis/fault_log.json` for post-hoc analysis.
-    #[allow(dead_code)]
-    fault_logger: Option<FaultLogger>,
-
     /// When `true`, skip call-graph extraction in `fetch_function`.
     ///
     /// The call graph (caller/callee names) is used by higher context tiers
@@ -258,13 +252,6 @@ pub struct TranslationPipeline {
     /// translation begins.  The summary includes function count, root/middle/leaf
     /// distribution, call-type breakdown, and external API count.
     callgraph_verbose: bool,
-
-    /// Optional pre-built call graph.
-    ///
-    /// When set, [`translate`](Self::translate) reuses this graph for
-    /// all enrichment and neighbor extraction instead of rebuilding it
-    /// from the engine for every function.
-    call_graph: Option<calxgloss_callgraph::CallGraph>,
 
     /// Explicit cache directory for call graph JSON files.
     ///
@@ -380,13 +367,21 @@ pub struct TranslationPipeline {
 }
 
 impl TranslationPipeline {
-    /// Create a new translation pipeline over a loaded Kuna program and an
-    /// LLM client.
+    /// Create a new translation pipeline over a loaded Kuna program, an LLM
+    /// client, and a PAL mapping table.
     ///
-    /// This sets up the full pipeline with default analyzer and empty exports/tests.
-    /// A context-window detector is initialized with the LLM client's `context_window`
-    /// setting for automatic fault detection.
-    pub fn new(kuna: KunaSource, llm: LlmClient, api_mappings: ApiMappings) -> Self {
+    /// This sets up the full pipeline with the default analyzer.
+    /// A context-window detector is initialized with the LLM client's
+    /// `context_window` setting for automatic fault detection.
+    ///
+    /// **Assembly-internal** (issue #328): this constructor and every
+    /// `with_*` setter below it form the wiring surface of the
+    /// [`assembly`](crate::assembly) module — [`wire_pass`](crate::assembly)
+    /// is the only production caller across the workspace, pinned at source
+    /// level by the seam's own test suite. Outside this crate the compiler
+    /// refuses a hand-built pipeline; in-crate tests may wire one directly
+    /// to pin behavior around the seam.
+    pub(crate) fn new(kuna: KunaSource, llm: LlmClient, api_mappings: ApiMappings) -> Self {
         let analyzer = Analyzer::new(PipelineSource::Kuna(kuna.clone()), api_mappings.clone());
         let context_detector = ContextWindowDetector::new(llm.context_window());
         Self {
@@ -396,16 +391,13 @@ impl TranslationPipeline {
             analyzer,
             root_detector: calxgloss_callgraph::RootDetector::new(),
             testgen: None,
-            exports: Vec::new(),
             target_binary: None,
             workspace: None,
             events: None,
             context_detector,
             hallucination_detector: None,
-            fault_logger: None,
             no_callgraph: AtomicBool::new(false),
             callgraph_verbose: false,
-            call_graph: None,
             callgraph_cache_dir: None,
             binary_path: None,
             accepted_attempt_source: None,
@@ -426,7 +418,7 @@ impl TranslationPipeline {
     /// When set, `fetch_function` returns an empty call graph (no caller or
     /// callee names).  This speeds up translation when call-graph-derived
     /// context is not needed.
-    pub fn with_no_callgraph(self) -> Self {
+    pub(crate) fn with_no_callgraph(self) -> Self {
         self.no_callgraph.store(true, Ordering::Relaxed);
         self
     }
@@ -436,7 +428,7 @@ impl TranslationPipeline {
     /// When set, [`translate`](Self::translate) prints a summary of call graph
     /// statistics (function count, root/middle/leaf breakdown, call-type
     /// distribution, external API count) after the graph is built.
-    pub fn with_callgraph_verbose(mut self) -> Self {
+    pub(crate) fn with_callgraph_verbose(mut self) -> Self {
         self.callgraph_verbose = true;
         self
     }
@@ -445,7 +437,7 @@ impl TranslationPipeline {
     ///
     /// When set, every translation attempt is recorded to
     /// `<workspace>/re/analysis/prompt_strategy_log.json`.
-    pub fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
+    pub(crate) fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = Some(workspace.into());
         self
     }
@@ -455,7 +447,7 @@ impl TranslationPipeline {
     /// When set, the pipeline emits [`ProgressEvent`] instances at every
     /// major milestone. Subscribers to the channel (typically a WebSocket
     /// server) can relay these events to connected clients in real time.
-    pub fn with_events(mut self, events: TranslationEvents) -> Self {
+    pub(crate) fn with_events(mut self, events: TranslationEvents) -> Self {
         self.events = Some(events);
         self
     }
@@ -466,7 +458,7 @@ impl TranslationPipeline {
     /// endpoint), the batch loops break at the next **unit boundary**: the
     /// unit in flight completes and its result is persisted before the run
     /// stops.
-    pub fn with_stop_signal(mut self, stop: StopSignal) -> Self {
+    pub(crate) fn with_stop_signal(mut self, stop: StopSignal) -> Self {
         self.stop = Some(stop);
         self
     }
@@ -478,7 +470,7 @@ impl TranslationPipeline {
     /// loops observe it at each **unit boundary** — a pause parks the loop
     /// (no unit is interrupted mid-LLM-call), a stop lets the unit in
     /// flight finish and then halts the batch.
-    pub fn with_pipeline_control(mut self, control: PipelineControl) -> Self {
+    pub(crate) fn with_pipeline_control(mut self, control: PipelineControl) -> Self {
         self.pipeline_control = Some(control);
         self
     }
@@ -491,7 +483,7 @@ impl TranslationPipeline {
     /// mid-LLM-call, since nothing an aborted attempt produced is
     /// persisted. The cancelled unit is recorded as a failure and the run
     /// continues with the next unit.
-    pub fn with_unit_cancellation(mut self, cancellation: UnitCancellation) -> Self {
+    pub(crate) fn with_unit_cancellation(mut self, cancellation: UnitCancellation) -> Self {
         self.unit_cancellation = Some(cancellation);
         self
     }
@@ -505,7 +497,7 @@ impl TranslationPipeline {
     /// a binary the operator has paused ends its batch there rather than
     /// parking it. Its constraints bound the retry config, tier escalation,
     /// and the run's token budget.
-    pub fn with_scope(mut self, scope: ScopeControl) -> Self {
+    pub(crate) fn with_scope(mut self, scope: ScopeControl) -> Self {
         self.scope = Some(scope);
         self
     }
@@ -517,7 +509,7 @@ impl TranslationPipeline {
     /// selection, a forced retry strategy replaces the configured one, and
     /// custom hints reach the unit's prompts — while the batch loops drop
     /// override-skipped units at queue selection.
-    pub fn with_overrides(mut self, overrides: calxgloss_types::OverrideControl) -> Self {
+    pub(crate) fn with_overrides(mut self, overrides: calxgloss_types::OverrideControl) -> Self {
         self.overrides = Some(overrides);
         self
     }
@@ -721,19 +713,13 @@ impl TranslationPipeline {
     }
 
     /// Set the test generator for baseline test creation.
-    pub fn with_testgen(mut self, testgen: TestGenerator) -> Self {
+    pub(crate) fn with_testgen(mut self, testgen: TestGenerator) -> Self {
         self.testgen = Some(testgen);
         self
     }
 
-    /// Set exports to use for function signature extraction.
-    pub fn with_exports(mut self, exports: Vec<Export>) -> Self {
-        self.exports = exports;
-        self
-    }
-
     /// Set the target binary name for test generation context.
-    pub fn with_target_binary(mut self, binary: impl Into<BinaryIdentity>) -> Self {
+    pub(crate) fn with_target_binary(mut self, binary: impl Into<BinaryIdentity>) -> Self {
         self.target_binary = Some(binary.into());
         self
     }
@@ -741,33 +727,8 @@ impl TranslationPipeline {
     /// Attach a pre-built hallucination detector for validating LLM
     /// responses.  Call this after `new()` when a runtime context is
     /// available; skip it in unit tests that don't need detection.
-    pub fn with_hallucination_detector(mut self, detector: HallucinationDetector) -> Self {
+    pub(crate) fn with_hallucination_detector(mut self, detector: HallucinationDetector) -> Self {
         self.hallucination_detector = Some(detector);
-        self
-    }
-
-    /// Attach a fault event logger for persisting detected faults to disk.
-    ///
-    /// When set, every detected fault (context-window exceeded, hallucination,
-    /// infinite loop, behavior divergence, resource exhaustion) is recorded to
-    /// `<workspace>/re/analysis/fault_log.json`.
-    pub fn with_fault_logger(mut self, logger: FaultLogger) -> Self {
-        self.fault_logger = Some(logger);
-        self
-    }
-
-    /// Attach a pre-built call graph for reuse across multiple translations.
-    ///
-    /// When set, [`translate`](Self::translate) reuses this graph instead of
-    /// building one from the engine for every function call. This avoids
-    /// redundant analysis and guarantees that all prompt enrichment data
-    /// comes from the same graph snapshot.
-    ///
-    /// The graph is also used by
-    /// [`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph)
-    /// to derive priority ordering and per-function context.
-    pub fn with_call_graph(mut self, graph: calxgloss_callgraph::CallGraph) -> Self {
-        self.call_graph = Some(graph);
         self
     }
 
@@ -775,7 +736,7 @@ impl TranslationPipeline {
     ///
     /// When set, call graphs are saved to and loaded from this directory
     /// instead of the default `{workspace}/re/analysis/` path.
-    pub fn with_callgraph_cache_dir(mut self, cache_dir: impl Into<std::path::PathBuf>) -> Self {
+    pub(crate) fn with_callgraph_cache_dir(mut self, cache_dir: impl Into<std::path::PathBuf>) -> Self {
         self.callgraph_cache_dir = Some(cache_dir.into());
         self
     }
@@ -787,7 +748,7 @@ impl TranslationPipeline {
     /// the call-graph build, and the retry/escalation helpers read through
     /// it — a second batch over the same workspace and unchanged binary
     /// costs no live engine reads. Without it, batches read live.
-    pub fn with_binary_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+    pub(crate) fn with_binary_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.binary_path = Some(path.into());
         self
     }
@@ -802,7 +763,7 @@ impl TranslationPipeline {
     /// verification against the new bytes. Without this, or without a
     /// workspace and binary path also set, batches translate fresh exactly
     /// as today.
-    pub fn with_accepted_attempt_source(
+    pub(crate) fn with_accepted_attempt_source(
         mut self,
         source: Arc<dyn crate::carry_over::AcceptedAttemptSource>,
     ) -> Self {
@@ -819,7 +780,7 @@ impl TranslationPipeline {
     /// on the binary's bytes, so a hand-edited cache is the one staleness
     /// it cannot detect — this is the escape hatch for that case.
     /// Without this, warm batches replay from the cache unchanged.
-    pub fn with_refresh_cache(mut self) -> Self {
+    pub(crate) fn with_refresh_cache(mut self) -> Self {
         self.refresh_cache = true;
         self
     }
@@ -844,17 +805,20 @@ impl TranslationPipeline {
     /// # Example
     ///
     /// ```no_run
-    /// use calxgloss_translator::TranslationPipeline;
     /// use calxgloss_kuna::KunaSource;
     /// use calxgloss_llm::LlmClient;
-    /// use calxgloss_pal::ApiMappings;
+    /// use calxgloss_translator::assembly::{LlmSelection, PipelineSpec, assemble};
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let kuna = KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
+    /// let engine = KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
+    /// let spec = PipelineSpec {
+    ///     llm: Some(LlmSelection::Client(llm)),
+    ///     ..PipelineSpec::default()
+    /// };
+    /// let pass = assemble(&spec, &engine).await?;
     ///
-    /// let translation = pipeline.translate("game_logic.dll", "DrawSprite").await?;
+    /// let translation = pass.pipeline.translate("game_logic.dll", "DrawSprite").await?;
     /// println!("Generated {} lines of Rust code", translation.rust_code.lines().count());
     /// # Ok(())
     /// # }
@@ -1011,16 +975,13 @@ impl TranslationPipeline {
 
         // Enrich the prompt data with call graph context when available.
         //
-        // If a pre-built graph was attached via `with_call_graph`, reuse it.
-        // Otherwise, build and enrich from the engine.
+        // Build and enrich from the engine — the auto/translate/batch passes
+        // that own a pre-built graph route it through
+        // `batch_translate_from_callgraph`, which takes the graph as an
+        // argument; the pipeline never carried one (issue #328 retired the
+        // never-called `with_call_graph`).
         let enriched_context: Vec<FunctionContext> = if self.no_callgraph.load(Ordering::Relaxed) {
             Vec::new()
-        } else if let Some(ref graph) = self.call_graph {
-            if self.callgraph_verbose {
-                calxgloss_analysis::print_call_graph_stats(graph);
-            }
-            let enricher = ContextEnricher::new();
-            enricher.enrich(graph)
         } else {
             let workspace = self
                 .workspace
@@ -1382,21 +1343,25 @@ impl TranslationPipeline {
     /// # Example
     ///
     /// ```no_run
-    /// use calxgloss_translator::{TranslationPipeline, RetryConfig, RetryStrategy};
     /// use calxgloss_verify::Verifier;
+    /// use calxgloss_translator::assembly::{LlmSelection, PipelineSpec, assemble};
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
+    /// let engine = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
+    /// let spec = PipelineSpec {
+    ///     llm: Some(LlmSelection::Client(llm)),
+    ///     workspace: Path::new("/tmp/calxgloss-work").to_path_buf(),
+    ///     ..PipelineSpec::default()
+    /// };
+    /// let pass = assemble(&spec, &engine).await?;
     /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
-    /// let config = RetryConfig::default();
     ///
-    /// let result = pipeline.try_translate_with_retry(
+    /// let result = pass.pipeline.try_translate_with_retry(
     ///     "game_logic.dll",
     ///     "DrawSprite",
-    ///     &config,
+    ///     &pass.retry,
     ///     &verifier,
     /// ).await?;
     ///
@@ -2092,18 +2057,11 @@ impl TranslationPipeline {
                 "Context window exceeded — function should be split into {} chunks",
                 fault.suggested_chunk_count(),
             );
-            if let Some(logger) = &self.fault_logger {
-                let event = calxgloss_types::FaultEvent::context_window_exceeded(
-                    binary, function, attempt, strategy, &fault,
-                );
-                logger.record(event);
-            }
         }
 
         // Hallucination detection: scan the generated code for non-existent
         // API/function references.  When hallucinations are found, log a
-        // warning and emit a progress event so the caller can react.  Also
-        // persist a fault event for post-hoc analysis.
+        // warning and emit a progress event so the caller can react.
         let hallucinations = self
             .hallucination_detector
             .as_ref()
@@ -2128,17 +2086,6 @@ impl TranslationPipeline {
                     strategy: strategy.to_string(),
                     hallucinated_apis: names.clone(),
                 });
-            }
-            if let Some(logger) = &self.fault_logger {
-                let names_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-                let event = calxgloss_types::FaultEvent::hallucination(
-                    binary,
-                    function,
-                    attempt,
-                    strategy,
-                    &names_refs,
-                );
-                logger.record(event);
             }
         }
 
@@ -2488,22 +2435,26 @@ impl TranslationPipeline {
     /// # Example
     ///
     /// ```no_run
-    /// use calxgloss_translator::TranslationPipeline;
     /// use calxgloss_verify::Verifier;
+    /// use calxgloss_translator::assembly::{LlmSelection, PipelineSpec, assemble};
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
+    /// let engine = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
+    /// let spec = PipelineSpec {
+    ///     llm: Some(LlmSelection::Client(llm)),
+    ///     workspace: Path::new("/tmp/calxgloss-work").to_path_buf(),
+    ///     ..PipelineSpec::default()
+    /// };
+    /// let pass = assemble(&spec, &engine).await?;
     /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
-    /// let config = calxgloss_translator::RetryConfig::default();
     ///
     /// let functions = vec!["DrawSprite".to_string(), "UpdatePosition".to_string()];
-    /// let results = pipeline.batch_translate(
+    /// let results = pass.pipeline.batch_translate(
     ///     "game_logic.dll",
     ///     &functions,
-    ///     &config,
+    ///     &pass.retry,
     ///     &verifier,
     ///     Some(&mut |_dll, _function, _result| true), // keep going
     /// ).await?;
@@ -2533,19 +2484,23 @@ impl TranslationPipeline {
     /// # Example
     ///
     /// ```no_run
-    /// use calxgloss_translator::TranslationPipeline;
     /// use calxgloss_callgraph::CallGraph;
+    /// use calxgloss_translator::assembly::{LlmSelection, PipelineSpec, assemble};
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
+    /// let engine = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
+    /// let spec = PipelineSpec {
+    ///     llm: Some(LlmSelection::Client(llm)),
+    ///     ..PipelineSpec::default()
+    /// };
+    /// let pass = assemble(&spec, &engine).await?;
     ///
     /// // Build or load the call graph first (e.g. via Analyzer::build_call_graph)
     /// let call_graph = /* CallGraph */ todo!();
     ///
     /// // Get a priority-ordered plan (max 100 functions)
-    /// let plan = pipeline.plan_from_callgraph(&call_graph, Some(100))?;
+    /// let plan = pass.pipeline.plan_from_callgraph(&call_graph, Some(100))?;
     ///
     /// for function in plan {
     ///     println!("{:?} {} ({} callers, {} callees)",
@@ -2919,30 +2874,33 @@ impl TranslationPipeline {
     /// # Example
     ///
     /// ```no_run
-    /// use calxgloss_translator::TranslationPipeline;
     /// use calxgloss_verify::Verifier;
     /// use calxgloss_analysis::build_enriched_call_graph;
+    /// use calxgloss_translator::assembly::{LlmSelection, PipelineSpec, assemble};
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
+    /// let engine = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let config = calxgloss_translator::RetryConfig::default();
     /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
     ///
     /// // Build or load the enriched call graph first (reads through the seam)
     /// let call_graph = build_enriched_call_graph(
-    ///     &calxgloss_decomp::PipelineSource::from(kuna.clone()),
+    ///     &calxgloss_decomp::PipelineSource::from(engine.clone()),
     ///     "game_logic.dll",
     ///     Path::new("/tmp/calxgloss-work"),
     ///     None,
     /// ).await?;
     ///
-    /// let pipeline = TranslationPipeline::new(kuna.clone(), llm, calxgloss_pal::ApiMappings::default());
+    /// let spec = PipelineSpec {
+    ///     llm: Some(LlmSelection::Client(llm)),
+    ///     ..PipelineSpec::default()
+    /// };
+    /// let pass = assemble(&spec, &engine).await?;
     ///
-    /// let results = pipeline.batch_translate_from_callgraph(
+    /// let results = pass.pipeline.batch_translate_from_callgraph(
     ///     &call_graph,
-    ///     &config,
+    ///     &pass.retry,
     ///     &verifier,
     ///     Some(&mut |_dll, _function, _result| true), // keep going
     /// ).await?;

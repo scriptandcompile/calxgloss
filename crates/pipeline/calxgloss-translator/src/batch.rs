@@ -8,22 +8,26 @@
 //! # Example
 //!
 //! ```no_run
-//! use calxgloss_translator::TranslationPipeline;
 //! use calxgloss_verify::Verifier;
+//! use calxgloss_translator::assembly::{LlmSelection, PipelineSpec, assemble};
 //! use std::path::Path;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let kuna = calxgloss_kuna::KunaSource::load(Path::new("target/game_logic.dll"))?;
+//! let engine = calxgloss_kuna::KunaSource::load(Path::new("target/game_logic.dll"))?;
 //! let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-//! let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
+//! let spec = PipelineSpec {
+//!     llm: Some(LlmSelection::Client(llm)),
+//!     workspace: Path::new("/tmp/calxgloss-work").to_path_buf(),
+//!     ..PipelineSpec::default()
+//! };
+//! let pass = assemble(&spec, &engine).await?;
 //! let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
-//! let config = calxgloss_translator::RetryConfig::default();
 //!
 //! let functions = vec!["DrawSprite".to_string(), "UpdatePosition".to_string()];
-//! let results = pipeline.batch_translate(
+//! let results = pass.pipeline.batch_translate(
 //!     "game_logic.dll",
 //!     &functions,
-//!     &config,
+//!     &pass.retry,
 //!     &verifier,
 //!     None, // git handled by caller via callback
 //! ).await?;
