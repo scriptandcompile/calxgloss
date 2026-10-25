@@ -39,8 +39,9 @@
 //! single-field engines onto it, their adapters and the
 //! [`PROJECTION_ROWS`](adapters::PROJECTION_ROWS) table living in
 //! [`adapters`], and `gather_function_evidence` now fills those fields
-//! by folding the registered rows. The shared consts and type-inference
-//! documents join as multi-field rows in #314; libmatch's call-graph
+//! by folding the registered rows — fourteen documents, the shared
+//! consts and type-inference ones as multi-field rows that load once
+//! and feed every field they touch (#314). libmatch's call-graph
 //! correlation and the whole-DLL extractions stay bespoke outside this
 //! seam, exactly as specced (#310). Every registered row is covered by
 //! the parametrized suite driven through `gather_function_evidence`;

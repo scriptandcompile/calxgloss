@@ -25,11 +25,11 @@
 //! module iterates these rows through the gather, and
 //! [`the_registered_rows_are_the_migrated_engines`] pins the set — an
 //! engine that forgets its row fails CI instead of silently vanishing
-//! from prompts. All twelve single-field documents are migrated (the
-//! first batch in #312, the second in #313); the shared consts and
-//! type-inference documents join as multi-field rows in #314, and
-//! libmatch's call-graph correlation stays bespoke outside this seam
-//! (#310).
+//! from prompts. All fourteen documents that feed the bundle per
+//! function are migrated: the twelve single-field ones (first batch in
+//! #312, second in #313) and the shared consts and type-inference
+//! documents as multi-field rows (#314); libmatch's call-graph
+//! correlation stays bespoke outside this seam (#310).
 
 use std::path::Path;
 
@@ -549,18 +549,127 @@ impl AnalysisDoc for GlobalStateDoc {
 }
 
 // ============================================================
+// The two shared multi-field adapters (#314)
+// ============================================================
+
+/// The constant document, `re/analysis/consts/{binary}.json`: every
+/// finding naming the function rides the union `const_findings` — the
+/// escalate CONSTANTS section reads the whole union, table included —
+/// while a table record *also* fills `data_table_findings` for the
+/// module-context DATA TABLES section. One row, one load, two fields:
+/// the union and the table records can never disagree about what the
+/// workspace holds.
+pub struct ConstsDoc;
+
+impl AnalysisDoc for ConstsDoc {
+    const KIND: &'static str = "constant result";
+
+    type Doc = calxgloss_consts::types::ConstResult;
+    type Record<'a> = &'a calxgloss_consts::types::ConstFinding;
+
+    fn load(workspace: &Path, binary: &str) -> Result<Self::Doc, DocLoadError> {
+        calxgloss_consts::persist::ConstPersistor::new(workspace)
+            .load(binary)
+            .map_err(|error| match error {
+                calxgloss_consts::ConstError::NotFound { path } => {
+                    DocLoadError::Missing(path.display().to_string())
+                }
+                other => DocLoadError::Corrupt(other.into()),
+            })
+    }
+
+    fn for_function<'a>(
+        doc: &'a Self::Doc,
+        function: &str,
+    ) -> impl Iterator<Item = Self::Record<'a>> {
+        doc.for_function(function)
+    }
+
+    fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
+        // The table record fans out to its own field first; the union
+        // entry it also rides keeps the escalate CONSTANTS section in
+        // the same single pass.
+        if let calxgloss_consts::types::ConstFinding::DataTable(table) = record {
+            bundle
+                .data_table_findings
+                .push(calxgloss_prompts::DataTableInfo::from(table));
+        }
+        bundle
+            .const_findings
+            .push(calxgloss_prompts::ConstInfo::from(record));
+    }
+}
+
+/// The type-inference document, `re/analysis/typeinfer/{binary}.json`:
+/// every inference naming the function rides `type_info` — parameter,
+/// local, call-site, return, and convention and direction readings
+/// alike, each through the existing type-info conversion — while a
+/// convention record *also* fills `convention_findings` and a direction
+/// record *also* fills `parameter_direction_findings`. One row, one
+/// load, three fields: the convention extraction no longer re-reads the
+/// document a third time (issue #314).
+pub struct TypeInferDoc;
+
+impl AnalysisDoc for TypeInferDoc {
+    const KIND: &'static str = "type inference result";
+
+    type Doc = calxgloss_typeinfer::types::TypeInferenceResult;
+    type Record<'a> = &'a calxgloss_typeinfer::types::InferredType;
+
+    fn load(workspace: &Path, binary: &str) -> Result<Self::Doc, DocLoadError> {
+        calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace)
+            .load(binary)
+            .map_err(|error| match error {
+                calxgloss_typeinfer::TypeInferError::NotFound { path } => {
+                    DocLoadError::Missing(path.display().to_string())
+                }
+                other => DocLoadError::Corrupt(other.into()),
+            })
+    }
+
+    fn for_function<'a>(
+        doc: &'a Self::Doc,
+        function: &str,
+    ) -> impl Iterator<Item = Self::Record<'a>> {
+        doc.for_function(function)
+    }
+
+    fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
+        // Every reading lands in type_info exactly as the type-info
+        // seam converted it before — the direction line rides this
+        // section on the escalate side (issue #276). The two kinds with
+        // a module-context section of their own fan out beside it.
+        bundle
+            .type_info
+            .push(calxgloss_prompts::TypeInfo::from(record));
+        match record {
+            calxgloss_typeinfer::types::InferredType::Convention(reading) => {
+                bundle
+                    .convention_findings
+                    .push(calxgloss_prompts::ConventionInfo::from(reading));
+            }
+            calxgloss_typeinfer::types::InferredType::Direction(reading) => {
+                bundle
+                    .parameter_direction_findings
+                    .push(calxgloss_prompts::ParameterDirectionInfo::from(reading));
+            }
+            _ => {}
+        }
+    }
+}
+
+// ============================================================
 // The registered projection table
 // ============================================================
 
 /// The projection rows the gather folds, in registered order: the six
-/// single-field engines of the first migration batch (issue #312) and
-/// the six of the second (issue #313). A field fed by several rows
-/// receives them in table order, so this order is the prompts' order —
-/// changing it rewrites prompt sections for no reason and must be a
-/// deliberate edit.
-///
-/// The shared consts and type-inference documents join here as
-/// multi-field rows when #314 migrates them.
+/// single-field engines of the first migration batch (issue #312), the
+/// six of the second (issue #313), and the two shared documents as
+/// multi-field rows last (issue #314 — the fields they feed belong to
+/// those rows alone, so their table position fixes nothing). A field
+/// fed by several rows receives them in table order, so this order is
+/// the prompts' order — changing it rewrites prompt sections for no
+/// reason and must be a deliberate edit.
 pub static PROJECTION_ROWS: &[ProjectionRow] = &[
     ProjectionRow::of::<AlgorithmDoc>(),
     ProjectionRow::of::<MemoryDoc>(),
@@ -574,6 +683,8 @@ pub static PROJECTION_ROWS: &[ProjectionRow] = &[
     ProjectionRow::of::<ControlFlowDoc>(),
     ProjectionRow::of::<ErrorHandlingDoc>(),
     ProjectionRow::of::<GlobalStateDoc>(),
+    ProjectionRow::of::<ConstsDoc>(),
+    ProjectionRow::of::<TypeInferDoc>(),
 ];
 
 // ============================================================
@@ -603,6 +714,7 @@ mod tests {
                 "algorithm recognition result",
                 "callback result",
                 "concurrency result",
+                "constant result",
                 "control-flow result",
                 "error-handling result",
                 "float/SIMD result",
@@ -611,8 +723,10 @@ mod tests {
                 "serialization result",
                 "string context result",
                 "type database",
+                "type inference result",
             ],
-            "exactly the twelve engines of the two migration batches (issues #312, #313) are registered"
+            "exactly the fourteen engines of the three migration batches \
+             (issues #312, #313, #314) are registered"
         );
     }
 }

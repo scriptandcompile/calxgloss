@@ -14,14 +14,18 @@ use tracing::debug;
 /// in a single pass — the bundle the escalate and module-context prompts
 /// read (issue #268).
 ///
-/// Each analyzer cache is read exactly once. The twelve single-field
-/// engines migrated onto the evidence projector (issues #312 and #313)
-/// arrive by folding the registered [`PROJECTION_ROWS`] — one row per
-/// document, its selection and conversion spelled once in its adapter
-/// — while the documents not yet migrated (and the shared loads below)
-/// keep their explicit extraction until they follow (the shared consts
-/// and type-inference documents in #314). The call-graph lists stay out of
-/// the gather: they come from the live scan source or an enriched
+/// Each analyzer document is read exactly once. The fourteen documents
+/// migrated onto the evidence projector — the twelve single-field
+/// engines (issues #312 and #313) and the shared consts and
+/// type-inference documents as multi-field rows (issue #314) — arrive
+/// by folding the registered [`PROJECTION_ROWS`]: a multi-field row
+/// loads its document once and fills every field it feeds from that
+/// single pass, so two fields can never disagree about what the
+/// workspace holds. Only the libmatch document stays outside the fold —
+/// its call-graph correlation consumes the live call graph, not just
+/// the function name — and the shim and PAL-trait extractions stay
+/// bespoke whole-DLL reads (issue #310). The call-graph lists stay out
+/// of the gather: they come from the live scan source or an enriched
 /// context, not the persisted analyzer caches, so callers set them on
 /// the returned bundle themselves.
 pub fn gather_function_evidence(
@@ -30,23 +34,15 @@ pub fn gather_function_evidence(
     function: &str,
     call_graph: &[String],
 ) -> EvidenceBundle {
-    // The constant document serves two readers — the union findings and
-    // the data-table records — from one load.
-    let consts = load_consts_result(workspace, binary);
     let mut evidence = EvidenceBundle {
-        type_info: extract_type_info(workspace, binary, function),
-        convention_findings: extract_convention_hints(workspace, binary, function),
-        const_findings: constant_hints_from(consts.as_ref(), function),
         libmatch_findings: extract_libmatch_hints(workspace, binary, function, call_graph),
-        parameter_direction_findings: extract_parameter_direction_hints(
-            workspace, binary, function,
-        ),
-        data_table_findings: data_table_hints_from(consts.as_ref(), function),
         ..Default::default()
     };
-    // The fold fills the migrated engines' fields; row order is the
-    // prompts' order, and every row degrades on its own without ever
-    // failing the gather (see the projector module docs).
+    // The fold fills every other persisted-document field, the shared
+    // consts and type-inference documents included — each is one
+    // multi-field row, so its load happens exactly once per gather.
+    // Row order is the prompts' order, and every row degrades on its
+    // own without ever failing the gather (see the projector module docs).
     project_into(
         crate::evidence_projector::adapters::PROJECTION_ROWS,
         workspace,
@@ -181,119 +177,6 @@ pub async fn extract_neighboring_context<S: ScanSource>(
     neighbors
 }
 
-/// Extract inferred type information from the persisted inference cache.
-///
-/// Reads the per-binary result produced by the `calxgloss-typeinfer`
-/// engine from `re/analysis/typeinfer/{binary}.json` and keeps the
-/// inferences made for the target function — the parameter, local
-/// variable, and call-site readings whose evidence lives in
-/// `function`'s decompiled body.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing type context degrades the prompt, it never fails it.
-pub fn extract_type_info(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::TypeInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable type inference result; continuing without type context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::TypeInfo::from)
-        .collect()
-}
-
-/// Load the per-binary constant result produced by the
-/// `calxgloss-consts` engine from `re/analysis/consts/{binary}.json`.
-///
-/// Returns `None` when no workspace is configured, no result is
-/// persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing constant context degrades the prompt, it never
-/// fails it. One load feeds every reader of the document — the constant
-/// findings and the data-table records — so the gather reads the cache
-/// exactly once.
-pub fn load_consts_result(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-) -> Option<calxgloss_consts::types::ConstResult> {
-    let workspace = workspace?;
-
-    let persistor = calxgloss_consts::persist::ConstPersistor::new(workspace);
-    match persistor.load(binary) {
-        Ok(result) => Some(result),
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable constant result; continuing without constant context"
-            );
-            None
-        }
-    }
-}
-
-/// The constant findings of one function from an already-loaded constant
-/// result — the bitflag groups and enum candidates made in `function`'s
-/// decompiled body, plus the program-level findings that name
-/// `function`: the named constants whose value it repeats, the flag
-/// families it contributes bits to, the protocol constants whose
-/// matched magic it uses, and the data tables it reads — the union's
-/// prompt conversion reaching every kind, so the escalate prompt's
-/// CONSTANTS section carries the table shape on a retry.
-pub fn constant_hints_from(
-    result: Option<&calxgloss_consts::types::ConstResult>,
-    function: &str,
-) -> Vec<calxgloss_prompts::ConstInfo> {
-    let Some(result) = result else {
-        return Vec::new();
-    };
-
-    result
-        .for_function(function)
-        .map(calxgloss_prompts::ConstInfo::from)
-        .collect()
-}
-
-/// The data tables one function reads from an already-loaded constant
-/// result — each table record whose referencing functions name
-/// `function`, so every function that touches the table is told its
-/// shape. The record carries the listing label, element type, and entry
-/// count the module-context DATA TABLES section names.
-pub fn data_table_hints_from(
-    result: Option<&calxgloss_consts::types::ConstResult>,
-    function: &str,
-) -> Vec<calxgloss_prompts::DataTableInfo> {
-    let Some(result) = result else {
-        return Vec::new();
-    };
-
-    result
-        .for_function(function)
-        .filter_map(|finding| match finding {
-            calxgloss_consts::types::ConstFinding::DataTable(record) => Some(record),
-            _ => None,
-        })
-        .map(calxgloss_prompts::DataTableInfo::from)
-        .collect()
-}
-
 /// Load the persisted control-flow document for a binary.
 ///
 /// Reads the per-binary result produced by the `calxgloss-controlflow`
@@ -365,101 +248,6 @@ pub fn branch_inventory_of(
         .filter_map(|finding| match finding {
             calxgloss_controlflow::types::ControlFlowFinding::BranchSite(record) => {
                 Some(record.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Extract calling-convention findings for a function from the persisted
-/// type-inference result.
-///
-/// Reads the per-binary result produced by the `calxgloss-typeinfer`
-/// engine from `re/analysis/typeinfer/{binary}.json` and keeps the
-/// convention records made for the target function — the function's own
-/// detected convention and the call-site views its listings hold of the
-/// callees it calls.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing convention context degrades the prompt, it never
-/// fails it.
-pub fn extract_convention_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::ConventionInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable type inference result; continuing without calling-convention context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .filter_map(|inference| match inference {
-            calxgloss_typeinfer::types::InferredType::Convention(record) => {
-                Some(calxgloss_prompts::ConventionInfo::from(record))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Extract parameter-direction readings for a function from the persisted
-/// type-inference result.
-///
-/// Reads the per-binary result produced by the `calxgloss-typeinfer`
-/// engine from `re/analysis/typeinfer/{binary}.json` and keeps the
-/// direction records made for the target function — which way each
-/// pointer parameter's data flows, each naming the body line that
-/// decided it — in scan order. The document's other record kinds
-/// contribute nothing: they already reach the prompts through their own
-/// seams, and on the escalate path the direction lines ride the
-/// type-info section instead (issue #276).
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing direction context degrades the prompt, it never
-/// fails it.
-pub fn extract_parameter_direction_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-) -> Vec<calxgloss_prompts::ParameterDirectionInfo> {
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-
-    let persistor = calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace);
-    let result = match persistor.load(binary) {
-        Ok(result) => result,
-        Err(e) => {
-            debug!(
-                binary,
-                error = %e,
-                "No usable type inference result; continuing without parameter-direction context"
-            );
-            return Vec::new();
-        }
-    };
-
-    result
-        .for_function(function)
-        .filter_map(|inference| match inference {
-            calxgloss_typeinfer::types::InferredType::Direction(record) => {
-                Some(calxgloss_prompts::ParameterDirectionInfo::from(record))
             }
             _ => None,
         })
@@ -1217,125 +1005,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn no_workspace_configured_yields_no_type_info() {
-        assert!(extract_type_info(None, "eqmain.dll", "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_type_info() {
-        let dir = TempDir::new().unwrap();
-        assert!(
-            extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no type context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_type_info() {
-        let dir = TempDir::new().unwrap();
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("typeinfer")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "{ not json").unwrap();
-
-        assert!(extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn inferences_of_other_functions_are_dropped() {
-        let dir = TempDir::new().unwrap();
-        persist_inferences(
-            &dir,
-            vec![
-                param_inference("FUN_18003ab00", 0, "Widget *"),
-                param_inference("FUN_zzz", 0, "char *"),
-            ],
-        );
-
-        let found = extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's inference");
-        assert_eq!(found[0].name, "param_1");
-        assert_eq!(
-            found[0].description,
-            "Widget * (via vtable_call, confidence 85)"
-        );
-    }
-
-    #[test]
-    fn every_record_kind_of_the_function_lands_in_the_prompt() {
-        let dir = TempDir::new().unwrap();
-        persist_inferences(
-            &dir,
-            vec![
-                param_inference("FUN_18003ab00", 0, "Widget *"),
-                InferredType::Local(InferredLocalType {
-                    function: "FUN_18003ab00".into(),
-                    variable_name: "local_8".into(),
-                    inferred_type: "char *".into(),
-                    method: InferenceMethod::KnownSignature,
-                    scope: InferenceScope::Function,
-                    confidence: Confidence::new(60),
-                    evidence: "local_8 = (char *)malloc(0x10);".into(),
-                }),
-                InferredType::CallSite(InferredCallType {
-                    function: "FUN_18003ab00".into(),
-                    callee: "CloseHandle".into(),
-                    arg_index: 0,
-                    arg_name: None,
-                    inferred_type: "void *".into(),
-                    method: InferenceMethod::KnownSignature,
-                    scope: InferenceScope::Program,
-                    confidence: Confidence::new(75),
-                    evidence: "CloseHandle(0x1234);".into(),
-                }),
-            ],
-        );
-
-        let found = extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        let names: Vec<&str> = found.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, vec!["param_1", "local_8", "CloseHandle arg 1"]);
-        assert_eq!(
-            found[2].description,
-            "void * (via known_signature, confidence 75)"
-        );
-    }
-
-    #[test]
-    fn a_direction_reading_lands_beside_its_parameter_s_type_reading() {
-        // Issue #276: the persisted artifact's direction record converts
-        // through the same type-info seam as the type record, under the
-        // same parameter name — the full hypothesis, what the parameter
-        // is and which way it flows, stands side by side for the retry.
-        let dir = TempDir::new().unwrap();
-        persist_inferences(
-            &dir,
-            vec![
-                param_inference("FUN_18003ab00", 0, "char *"),
-                direction_inference("FUN_18003ab00", 0, Direction::Out),
-            ],
-        );
-
-        let found = extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 2, "the type and direction readings coexist");
-        assert_eq!(found[0].name, found[1].name, "both name param_1");
-        assert_eq!(
-            found[0].description,
-            "char * (via vtable_call, confidence 85)"
-        );
-        assert_eq!(
-            found[1].description,
-            "out parameter (via param_direction, confidence 75)"
-        );
-    }
-
     fn algorithm_hint(
         function: &str,
         algorithm: &str,
@@ -1573,205 +1242,6 @@ mod tests {
         calxgloss_consts::persist::ConstPersistor::new(dir.path())
             .save(&result)
             .expect("the constant result should be saved");
-    }
-
-    fn constant_hints_of(dir: &TempDir, function: &str) -> Vec<calxgloss_prompts::ConstInfo> {
-        constant_hints_from(
-            load_consts_result(Some(dir.path()), "eqmain.dll").as_ref(),
-            function,
-        )
-    }
-
-    fn data_table_hints_of(dir: &TempDir, function: &str) -> Vec<calxgloss_prompts::DataTableInfo> {
-        data_table_hints_from(
-            load_consts_result(Some(dir.path()), "eqmain.dll").as_ref(),
-            function,
-        )
-    }
-
-    #[test]
-    fn no_workspace_configured_yields_no_constant_findings() {
-        assert!(
-            constant_hints_from(None, "FUN_18003ab00").is_empty(),
-            "no workspace means no constant context"
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_constant_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            constant_hints_of(&dir, "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no constant context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_constant_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("consts")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(constant_hints_of(&dir, "FUN_18003ab00").is_empty());
-    }
-
-    #[test]
-    fn constant_findings_of_other_functions_are_dropped() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_const_findings(
-            &dir,
-            vec![
-                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record(
-                    "FUN_18003ab00",
-                )),
-                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record("FUN_zzz")),
-            ],
-        );
-
-        let found = constant_hints_of(&dir, "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's finding");
-        assert_eq!(found[0].function, "FUN_18003ab00");
-        assert_eq!(found[0].kind, "bitflag_group");
-        assert_eq!(
-            found[0].suggestion,
-            "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400 */ }"
-        );
-        assert_eq!(found[0].confidence, 70);
-        assert_eq!(
-            found[0].evidence,
-            "if ((uVar1 & 0x400) != 0) { uVar1 |= 0x100; }"
-        );
-    }
-
-    #[test]
-    fn every_constant_finding_of_the_function_lands_in_the_prompt() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_const_findings(
-            &dir,
-            vec![
-                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record(
-                    "FUN_18003ab00",
-                )),
-                calxgloss_consts::types::ConstFinding::EnumCandidate(enum_record("FUN_18003ab00")),
-                calxgloss_consts::types::ConstFinding::EnumCandidate(enum_record("FUN_zzz")),
-                calxgloss_consts::types::ConstFinding::NamedConstant(named_record(&[
-                    "FUN_18003ab00",
-                    "FUN_zzz",
-                ])),
-                table_record(&["FUN_18003ab00", "FUN_zzz"]),
-            ],
-        );
-
-        let found = constant_hints_of(&dir, "FUN_18003ab00");
-
-        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                "bitflag_group",
-                "enum_candidate",
-                "named_constant",
-                "data_table"
-            ]
-        );
-        assert_eq!(
-            found[0].suggestion,
-            "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400 */ }"
-        );
-        assert_eq!(
-            found[1].suggestion,
-            "enum State { /* variants for 0..=3 */ }"
-        );
-        assert_eq!(found[2].suggestion, "const VALUE_0x400: u32 = 0x400;");
-        assert_eq!(found[2].confidence, 60);
-        // The table rides the escalate CONSTANTS section through the
-        // union's prompt conversion — a retry after a divergence does
-        // not re-scatter the table.
-        assert_eq!(found[3].kind, "data_table");
-        assert_eq!(found[3].suggestion, "const DAT_1400A1B60: [u16; 12];");
-        assert_eq!(found[3].confidence, 70);
-    }
-
-    #[test]
-    fn no_workspace_configured_yields_no_data_table_hints() {
-        assert!(
-            data_table_hints_from(None, "FUN_18003ab00").is_empty(),
-            "no workspace means no table context"
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_data_table_hints() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            data_table_hints_of(&dir, "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no table context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_data_table_hints() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("consts")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(
-            data_table_hints_of(&dir, "FUN_18003ab00").is_empty(),
-            "a corrupt document degrades the prompt, it never fails it"
-        );
-    }
-
-    #[test]
-    fn every_function_that_references_a_table_gets_its_shape() {
-        // The table is program-level: its cross-references name every
-        // reader, and each reader's lookup surfaces it — so the
-        // module-context prompt of every function that indexes the
-        // table renders the DATA TABLES section.
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_const_findings(
-            &dir,
-            vec![
-                table_record(&["FUN_18003ab00", "FUN_180099998"]),
-                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record(
-                    "FUN_18003ab00",
-                )),
-            ],
-        );
-
-        for function in ["FUN_18003ab00", "FUN_180099998"] {
-            let found = data_table_hints_of(&dir, function);
-            assert_eq!(found.len(), 1, "{function} reads the table");
-            assert_eq!(found[0].name, "DAT_1400a1b60");
-            assert_eq!(found[0].element_type, "u16");
-            assert_eq!(found[0].count, 12);
-            assert_eq!(found[0].confidence, 70);
-        }
-
-        assert!(
-            data_table_hints_of(&dir, "FUN_000000000").is_empty(),
-            "a function that never touches the table pays no table context"
-        );
     }
 
     // ---- serialization hint extraction --------------------------------
@@ -2318,238 +1788,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn no_workspace_configured_yields_no_convention_findings() {
-        assert!(
-            extract_convention_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "no workspace means no calling-convention context"
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_convention_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a scan that has not run yet just means no calling-convention context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_convention_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("typeinfer")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(
-            extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "a corrupt document degrades the prompt, it never fails it"
-        );
-    }
-
-    #[test]
-    fn convention_records_of_other_functions_are_dropped() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_inferences(
-            &dir,
-            vec![
-                convention_inference(
-                    "FUN_18003ab00",
-                    None,
-                    calxgloss_typeinfer::types::CallingConvention::Stdcall,
-                    InferenceMethod::CalleeEpilogue,
-                    80,
-                    "00401007  RET 0xC",
-                ),
-                convention_inference(
-                    "FUN_zzz",
-                    None,
-                    calxgloss_typeinfer::types::CallingConvention::Cdecl,
-                    InferenceMethod::MangledConvention,
-                    90,
-                    "?draw@Canvas@@IAXXZ",
-                ),
-            ],
-        );
-
-        let found = extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's record");
-        assert_eq!(found[0].function, "FUN_18003ab00");
-        assert_eq!(found[0].callee, None);
-        assert_eq!(found[0].convention, "stdcall");
-        assert_eq!(found[0].method, "callee_epilogue");
-        assert_eq!(found[0].confidence, 80);
-        assert_eq!(found[0].evidence, "00401007  RET 0xC");
-    }
-
-    #[test]
-    fn every_convention_record_of_the_function_lands_and_other_kinds_stay_out() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_inferences(
-            &dir,
-            vec![
-                param_inference("FUN_18003ab00", 0, "Widget *"),
-                convention_inference(
-                    "FUN_18003ab00",
-                    None,
-                    calxgloss_typeinfer::types::CallingConvention::Thiscall,
-                    InferenceMethod::MangledConvention,
-                    90,
-                    "?paint@Widget@@QAEXXZ",
-                ),
-                convention_inference(
-                    "FUN_18003ab00",
-                    Some("FUN_1800412a0"),
-                    calxgloss_typeinfer::types::CallingConvention::Stdcall,
-                    InferenceMethod::CallSiteConvention,
-                    80,
-                    "00401103  CALL FUN_1800412a0",
-                ),
-            ],
-        );
-
-        let found = extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 2, "only the convention records");
-        assert_eq!(found[0].convention, "thiscall");
-        assert_eq!(found[0].method, "mangled_convention");
-        assert_eq!(found[0].confidence, 90);
-        assert_eq!(found[1].convention, "stdcall");
-        assert_eq!(found[1].callee.as_deref(), Some("FUN_1800412a0"));
-        assert_eq!(found[1].method, "call_site_convention");
-        assert_eq!(found[1].evidence, "00401103  CALL FUN_1800412a0");
-    }
-
-    #[test]
-    fn no_workspace_configured_yields_no_parameter_direction_findings() {
-        assert!(
-            extract_parameter_direction_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
-            "no workspace means no parameter-direction context"
-        );
-    }
-
-    #[test]
-    fn a_missing_cache_yields_no_parameter_direction_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        assert!(
-            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00")
-                .is_empty(),
-            "a scan that has not run yet just means no parameter-direction context"
-        );
-    }
-
-    #[test]
-    fn a_corrupt_cache_degrades_to_no_parameter_direction_findings() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        let path = dir
-            .path()
-            .join("re")
-            .join("analysis")
-            .join("typeinfer")
-            .join("eqmain.dll.json");
-        std::fs::create_dir_all(
-            path.parent()
-                .expect("the document path should have a parent"),
-        )
-        .expect("the cache directory should be creatable");
-        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
-
-        assert!(
-            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00")
-                .is_empty(),
-            "a corrupt document degrades the prompt, it never fails it"
-        );
-    }
-
-    #[test]
-    fn direction_records_of_other_functions_are_dropped() {
-        let dir = TempDir::new().expect("temp dir should be created");
-        persist_inferences(
-            &dir,
-            vec![
-                direction_inference("FUN_18003ab00", 0, Direction::Out),
-                direction_inference("FUN_zzz", 0, Direction::In),
-            ],
-        );
-
-        let found =
-            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        assert_eq!(found.len(), 1, "only the target function's record");
-        assert_eq!(found[0].function, "FUN_18003ab00");
-        assert_eq!(found[0].parameter, "param_1");
-        assert_eq!(found[0].direction, "out");
-        assert_eq!(found[0].method, "param_direction");
-        assert_eq!(found[0].confidence, 75);
-        assert_eq!(found[0].evidence, "*param_1 = 0;");
-    }
-
-    #[test]
-    fn every_direction_record_of_the_function_lands_in_scan_order_and_other_kinds_stay_out() {
-        // The section carries the function's direction records in scan
-        // order — the contract that keeps two scans' prompts diffing
-        // cleanly — and nothing else from the document: type and
-        // convention records reach the prompts through their own seams,
-        // and an unnamed parameter falls back to the positional spelling
-        // the type-info seam uses for the same parameter.
-        let dir = TempDir::new().expect("temp dir should be created");
-        let unnamed = InferredType::Direction(InferredParamDirection {
-            function: "FUN_18003ab00".to_string(),
-            param_index: 2,
-            param_name: None,
-            direction: Direction::InOut,
-            method: InferenceMethod::ParamDirection,
-            scope: InferenceScope::Function,
-            confidence: Confidence::new(70),
-            evidence: "  param_3[0] = 3;".to_string(),
-        });
-        persist_inferences(
-            &dir,
-            vec![
-                param_inference("FUN_18003ab00", 0, "char *"),
-                direction_inference("FUN_18003ab00", 0, Direction::In),
-                convention_inference(
-                    "FUN_18003ab00",
-                    None,
-                    calxgloss_typeinfer::types::CallingConvention::Thiscall,
-                    InferenceMethod::MangledConvention,
-                    90,
-                    "?paint@Widget@@QAEXXZ",
-                ),
-                direction_inference("FUN_18003ab00", 1, Direction::Out),
-                direction_inference("FUN_zzz", 0, Direction::Out),
-                unnamed,
-            ],
-        );
-
-        let found =
-            extract_parameter_direction_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
-
-        let named: Vec<(&str, &str)> = found
-            .iter()
-            .map(|f| (f.parameter.as_str(), f.direction.as_str()))
-            .collect();
-        assert_eq!(
-            named,
-            vec![("param_1", "in"), ("param_2", "out"), ("param_3", "inout")],
-            "the direction records in document order, and only they"
-        );
-        assert_eq!(found[1].confidence, 75);
-        assert_eq!(found[2].confidence, 70);
-        assert_eq!(found[2].evidence, "  param_3[0] = 3;");
-    }
-
     // --- error-handling findings (issue #293) ------------------------------
 
     fn seh_finding(function: &str) -> calxgloss_errhandling::types::ErrhandlingFinding {
@@ -2722,7 +1960,7 @@ mod tests {
         assert!(none.error_handling_findings.is_empty());
     }
 
-    // --- the projection-row suite (issues #312 and #313) ------------------
+    // --- the projection-row suite (issues #312, #313, and #314) ---------
     //
     // The parametrized suite replacing the per-engine trio tests: for
     // every row registered in `PROJECTION_ROWS`, driven through
@@ -2741,10 +1979,13 @@ mod tests {
     // registered rows.
 
     /// One row's test kit: how to place its document, how to corrupt it,
-    /// which identities its bundle field carries (in order), and what a
+    /// which identities its bundle field(s) carry (in order), and what a
     /// persisted document must project — the target function's records
     /// only, in scan order, from a document that also names another
     /// function and, where the engine has them, program-level records.
+    /// A multi-field row's kit (the shared consts and type-inference
+    /// rows, #314) concatenates the identities of every field the row
+    /// feeds, so one kit degrades or projects all of them together.
     struct RowKit {
         kind: &'static str,
         persist: fn(&TempDir),
@@ -3134,6 +2375,157 @@ mod tests {
                     .collect()
             },
             expected: &["global_write:DAT_180064e80", "global_read:g_counter"],
+        },
+        RowKit {
+            // The shared constant document is one load feeding two fields
+            // (issue #314): every finding naming the function rides the
+            // union, and a table record *also* lands in the module-context
+            // table field — the same record in both fields from the single
+            // pass. Program-level findings answer to every function they
+            // name; a table naming only the other function stays out of
+            // both fields, and the union entry keeps the escalate
+            // CONSTANTS section riding.
+            kind: "constant result",
+            persist: |dir| {
+                persist_const_findings(
+                    dir,
+                    vec![
+                        calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record(
+                            "FUN_18003ab00",
+                        )),
+                        calxgloss_consts::types::ConstFinding::EnumCandidate(enum_record(
+                            "FUN_zzz",
+                        )),
+                        calxgloss_consts::types::ConstFinding::NamedConstant(named_record(&[
+                            "FUN_18003ab00",
+                            "FUN_zzz",
+                        ])),
+                        table_record(&["FUN_18003ab00", "FUN_zzz"]),
+                        table_record(&["FUN_zzz"]),
+                    ],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    calxgloss_consts::persist::ConstPersistor::new(dir.path())
+                        .path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| {
+                let mut ids: Vec<String> = bundle
+                    .const_findings
+                    .iter()
+                    .map(|f| f.kind.clone())
+                    .collect();
+                ids.extend(
+                    bundle
+                        .data_table_findings
+                        .iter()
+                        .map(|t| format!("table:{}", t.name)),
+                );
+                ids
+            },
+            expected: &[
+                "bitflag_group",
+                "named_constant",
+                "data_table",
+                "table:DAT_1400a1b60",
+            ],
+        },
+        RowKit {
+            // The shared type-inference document is one load feeding three
+            // fields (issue #314): every reading naming the function rides
+            // type_info — parameter, local, call-site, convention, and
+            // direction alike — while the convention reading *also* fans
+            // out to its module-context section and the direction reading
+            // to the directions section. The collapsed convention re-read
+            // and the per-field loads leave this one projection behind:
+            // other functions' records stay out of all three fields.
+            kind: "type inference result",
+            persist: |dir| {
+                persist_inferences(
+                    dir,
+                    vec![
+                        param_inference("FUN_18003ab00", 0, "Widget *"),
+                        param_inference("FUN_zzz", 0, "char *"),
+                        InferredType::Local(InferredLocalType {
+                            function: "FUN_18003ab00".into(),
+                            variable_name: "local_8".into(),
+                            inferred_type: "char *".into(),
+                            method: InferenceMethod::KnownSignature,
+                            scope: InferenceScope::Function,
+                            confidence: Confidence::new(60),
+                            evidence: "local_8 = (char *)malloc(0x10);".into(),
+                        }),
+                        InferredType::CallSite(InferredCallType {
+                            function: "FUN_18003ab00".into(),
+                            callee: "CloseHandle".into(),
+                            arg_index: 0,
+                            arg_name: None,
+                            inferred_type: "void *".into(),
+                            method: InferenceMethod::KnownSignature,
+                            scope: InferenceScope::Program,
+                            confidence: Confidence::new(75),
+                            evidence: "CloseHandle(0x1234);".into(),
+                        }),
+                        convention_inference(
+                            "FUN_18003ab00",
+                            None,
+                            calxgloss_typeinfer::types::CallingConvention::Thiscall,
+                            InferenceMethod::MangledConvention,
+                            90,
+                            "?paint@Widget@@QAEXXZ",
+                        ),
+                        convention_inference(
+                            "FUN_zzz",
+                            None,
+                            calxgloss_typeinfer::types::CallingConvention::Cdecl,
+                            InferenceMethod::MangledConvention,
+                            90,
+                            "?draw@Canvas@@IAXXZ",
+                        ),
+                        direction_inference("FUN_18003ab00", 0, Direction::In),
+                        direction_inference("FUN_18003ab00", 1, Direction::Out),
+                        direction_inference("FUN_zzz", 0, Direction::Out),
+                    ],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(
+                    TypeInferPersistor::new(dir.path()).path_for("eqmain.dll"),
+                )
+            },
+            projected: |bundle| {
+                let mut ids: Vec<String> = bundle
+                    .type_info
+                    .iter()
+                    .map(|t| format!("type:{}", t.name))
+                    .collect();
+                ids.extend(
+                    bundle
+                        .convention_findings
+                        .iter()
+                        .map(|c| format!("conv:{}", c.convention)),
+                );
+                ids.extend(
+                    bundle
+                        .parameter_direction_findings
+                        .iter()
+                        .map(|d| format!("dir:{}:{}", d.parameter, d.direction)),
+                );
+                ids
+            },
+            expected: &[
+                "type:param_1",
+                "type:local_8",
+                "type:CloseHandle arg 1",
+                "type:convention",
+                "type:param_1",
+                "type:param_2",
+                "conv:thiscall",
+                "dir:param_1:in",
+                "dir:param_2:out",
+            ],
         },
     ];
 
