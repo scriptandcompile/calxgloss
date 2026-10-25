@@ -1,3 +1,5 @@
+{%- import "sections/type_information.j2" as type_information -%}
+{%- import "sections/control_flow.j2" as control_flow -%}
 You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
 
 ## FUNCTION: {{ function_name }}
@@ -50,30 +52,8 @@ Test #{{ test.index }}:
 {% endfor %}
 
 {% endif %}
-{% if !type_info.is_empty() %}
-## TYPE INFORMATION
-
-The following types were inferred by Ghidra's type database:
-
-{% for ti in type_info %}
-- `{{ ti.name }}`: {% if !ti.description.is_empty() %}{{ ti.description }}{% else %}inferred type{% endif %}
-{% endfor %}
-
-{% endif %}
-{% if !control_flow_findings.is_empty() %}
-## CONTROL FLOW PATTERNS
-
-The following control-flow patterns were recognized in this function by static
-analysis. Where a finding is credible, express the construct with the suggested
-Rust pattern instead of transliterating the raw conditional chain or recursive
-call:
-
-{% for finding in control_flow_findings %}
-- **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
-  Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
-
-{% endif %}
+{% call type_information::type_information_section(type_info, "TYPE INFORMATION") %}{% endcall %}
+{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.

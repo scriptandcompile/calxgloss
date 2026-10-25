@@ -2259,7 +2259,7 @@ mod tests {
 
     // ============================================================
     // Shared section includes — parametrized section suite and
-    // (template × section) include roster (issues #317, #318)
+    // (template × section) include roster (issues #317, #318, #319)
     // ============================================================
 
     /// The verbatim steering paragraph of the shared global-state section,
@@ -2408,9 +2408,35 @@ mod tests {
         build_full_module_prompt(&data).expect("the full-module prompt should render")
     }
 
+    /// Renders the rich template against an arbitrary bundle — the tier
+    /// templates render from their request-sourced finding lists rather
+    /// than from a gathered bundle, so this helper carries the include-fed
+    /// lists out of the bundle into the tier's prompt data (#319).
+    fn render_rich_full(bundle: &EvidenceBundle) -> String {
+        let req = sample_request();
+        let mut data = ComplexityPromptData::from_request(&req);
+        data.type_info = bundle.type_info.clone();
+        data.control_flow_findings = bundle.control_flow_findings.clone();
+        build_complexity_prompt(&FunctionComplexity::Rich, &data)
+            .expect("the rich prompt should render")
+    }
+
+    /// Renders the detailed template against an arbitrary bundle, fed the
+    /// same way as the rich one.
+    fn render_detailed_full(bundle: &EvidenceBundle) -> String {
+        let req = sample_request();
+        let mut data = ComplexityPromptData::from_request(&req);
+        data.type_info = bundle.type_info.clone();
+        data.control_flow_findings = bundle.control_flow_findings.clone();
+        build_complexity_prompt(&FunctionComplexity::Detailed, &data)
+            .expect("the detailed prompt should render")
+    }
+
     /// The type information section
     /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
+    /// the pre-include renders, shared by its consumers (escalate, rich and
+    /// detailed — the tier bodies were checked against the escalate body for
+    /// identity before merging onto this one include); the
     /// section suite re-renders each consuming template against it.
     const TYPE_INFORMATION_SECTION_BODY: &str = "The following types were inferred by Ghidra's type database:\n\n- `param_1`: char * (via string_function, confidence 70)\n\n- `param_1`: out parameter (via param_direction, confidence 75)";
 
@@ -2480,7 +2506,9 @@ mod tests {
 
     /// The control flow section
     /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate and full-module); the
+    /// the pre-include renders, shared by its consumers (escalate, full-module,
+    /// rich and detailed — the tier bodies were identical to the escalate body
+    /// before merging); the
     /// section suite re-renders each consuming template against it.
     const CONTROL_FLOW_SECTION_BODY: &str = "The following control-flow patterns were recognized in this function by static\nanalysis. Where a finding is credible, express the construct with the suggested\nRust pattern instead of transliterating the raw conditional chain or recursive\ncall:\n\n- **enum State + match state { /* 3 states */ }** (state_machine construct, confidence 70)\n  Evidence: `state variable state with 3 states idle: STATE_IDLE`";
 
@@ -2569,7 +2597,7 @@ mod tests {
     }
 
     /// One (section × consuming template) pair of the parametrized
-    /// section suite (issues #317, #318). A new engine that includes a
+    /// section suite (issues #317, #318, #319). A new engine that includes a
     /// shared section registers one row here and is covered by both
     /// halves of the suite test and by the include roster automatically.
     struct SectionRow {
@@ -2757,6 +2785,38 @@ mod tests {
             heading: "CONTROL FLOW PATTERNS",
             populate: |b| b.control_flow_findings.push(control_flow_fixture()),
             render: render_full_module_full,
+            expected: expected_control_flow_section,
+        },
+        SectionRow {
+            section: "sections/type_information.j2",
+            template: "rich_translate.j2",
+            heading: "TYPE INFORMATION",
+            populate: |b| b.type_info.extend(type_info_pair()),
+            render: render_rich_full,
+            expected: expected_type_information_section,
+        },
+        SectionRow {
+            section: "sections/control_flow.j2",
+            template: "rich_translate.j2",
+            heading: "CONTROL FLOW PATTERNS",
+            populate: |b| b.control_flow_findings.push(control_flow_fixture()),
+            render: render_rich_full,
+            expected: expected_control_flow_section,
+        },
+        SectionRow {
+            section: "sections/type_information.j2",
+            template: "detailed_translate.j2",
+            heading: "TYPE INFORMATION",
+            populate: |b| b.type_info.extend(type_info_pair()),
+            render: render_detailed_full,
+            expected: expected_type_information_section,
+        },
+        SectionRow {
+            section: "sections/control_flow.j2",
+            template: "detailed_translate.j2",
+            heading: "CONTROL FLOW PATTERNS",
+            populate: |b| b.control_flow_findings.push(control_flow_fixture()),
+            render: render_detailed_full,
             expected: expected_control_flow_section,
         },
     ];
