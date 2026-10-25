@@ -5455,68 +5455,11 @@ void SetCursor(void)
         );
     }
 
-    #[tokio::test]
-    async fn a_cached_controlflow_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = ControlFlowPersistor::new(dir.path());
-        persistor
-            .save(&ControlFlowResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_controlflow_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_controlflow_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_controlflow_detection("eqmain.dll").await);
-
-        let persistor = ControlFlowPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("controlflow")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/controlflow"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_controlflow_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_controlflow_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
-    }
+    // The control-flow seam quads (cached hit, cache miss, failed save,
+    // no workspace) left with the `ensure_*` entry points they drove:
+    // the registry's generic four-shape pass now runs every registered
+    // row — control-flow included — through the same shapes at the
+    // phase seam (issues #302–#305, retargeted by #307).
 
     // ============================================================
     // The scan cache through the batch pipeline (issue #105)
@@ -6340,10 +6283,37 @@ void SetCursor(void)
         );
     }
 
+    /// Every registered row's filed document, read from the location
+    /// its descriptor names, as parsed JSON keyed by the row's name —
+    /// the registry-driven form the equivalence legs compare, so a row
+    /// added to the table later is compared with no test edit
+    /// (issue #307).
+    fn registered_documents(workspace: &std::path::Path) -> Vec<(&'static str, serde_json::Value)> {
+        scan_rows()
+            .iter()
+            .map(|row| {
+                let path = row.document_path(workspace, PROGRAM);
+                let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                    panic!(
+                        "the {} row's document at {}: {e}",
+                        row.name(),
+                        path.display()
+                    )
+                });
+                (
+                    row.name(),
+                    serde_json::from_slice(&bytes).expect("the filed document is JSON"),
+                )
+            })
+            .collect()
+    }
+
     /// The fan-out's marquee: given the same cached reads, the
-    /// concurrent phase and the sequential preamble persist the same
-    /// fourteen documents — findings, order, and callback enrichment
-    /// alike (issue #240).
+    /// concurrent phase and the same registry run one scan at a time
+    /// persist the same documents — findings, order, and callback
+    /// enrichment alike — for every registered row, the comparison
+    /// driven by the table rather than a hand-written list of engines
+    /// (issue #240, retargeted onto the registry by issue #307).
     ///
     /// Both compared runs replay one read cache, warmed by a cold
     /// phase first: the Kuna engine folds each decompile's recovered
@@ -6353,7 +6323,7 @@ void SetCursor(void)
     /// thing that differs between the compared runs is the schedule —
     /// exactly what the fan-out must not let matter.
     #[tokio::test]
-    async fn the_fanned_scan_phase_persists_what_the_sequential_preamble_persisted() {
+    async fn the_fanned_scan_phase_persists_what_the_sequential_registry_run_persists() {
         let dir = TempDir::new().expect("temp workspace");
         let (pipeline, _) = cached_pipeline(dir.path());
         pipeline.begin_cached_source(PROGRAM).await;
@@ -6367,97 +6337,64 @@ void SetCursor(void)
 
         // The fanned run: the same phase, warm.
         pipeline.run_prebatch_scans(PROGRAM).await;
-        macro_rules! filed {
-            ($persistor:ty) => {{
-                let loaded = <$persistor>::new(dir.path())
-                    .load(PROGRAM)
-                    .expect("the scan filed its document");
-                serde_json::to_value(loaded).expect("the document serializes for comparison")
-            }};
-        }
-        let fanned = [
-            filed!(TypeDatabasePersistor),
-            filed!(TypeInferPersistor),
-            filed!(AlgorithmPersistor),
-            filed!(MemoryPersistor),
-            filed!(SyncPersistor),
-            filed!(GlobalStatePersistor),
-            filed!(CallbackPersistor),
-            filed!(ControlFlowPersistor),
-            filed!(StringContextPersistor),
-            filed!(ApiPersistor),
-            filed!(ConstPersistor),
-            filed!(SerializePersistor),
-            filed!(ErrhandlingPersistor),
-            filed!(FloatsimdPersistor),
-        ];
+        let fanned = registered_documents(dir.path());
 
-        // The sequential preamble: the same fourteen scans one after the
-        // other, in the order they used to run — the inference scan
-        // before callback detection, so the enrichment rides in on the
-        // workspace document exactly as it did when the scans shared a
-        // call order.
+        // The sequential leg: the same registry run one scan at a time,
+        // in table order, over the read cache the cold phase warmed —
+        // the guarantee the old sequential preamble pinned, now driven
+        // by the table instead of a hand-written list of entry points,
+        // so every registered row is compared and a row added later is
+        // compared with no test edit. The completion latches are armed
+        // and wired onto each row's context exactly as
+        // `registered_scan_tasks` wires the phase's, so the declared
+        // edge holds here too: the inference row sits directly before
+        // the callback row in the table, publishes its latch on the way
+        // out, and the callback row composes its closure contracts from
+        // the inference document the sequential leg just filed
+        // (issue #307).
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
             .expect("fanned documents cleared");
-        assert!(pipeline.ensure_type_database(PROGRAM).await);
-        assert!(pipeline.ensure_type_inference(PROGRAM).await);
-        assert!(pipeline.ensure_algorithm_recognition(PROGRAM).await);
-        assert!(pipeline.ensure_memory_detection(PROGRAM).await);
-        assert!(pipeline.ensure_sync_detection(PROGRAM).await);
-        assert!(pipeline.ensure_global_state_detection(PROGRAM).await);
-        assert!(pipeline.ensure_callback_detection(PROGRAM).await);
-        assert!(pipeline.ensure_controlflow_detection(PROGRAM).await);
-        assert!(pipeline.ensure_string_context(PROGRAM).await);
-        assert!(pipeline.ensure_api_detection(PROGRAM).await);
-        assert!(pipeline.ensure_const_detection(PROGRAM).await);
-        assert!(pipeline.ensure_serialize_detection(PROGRAM).await);
-        assert!(pipeline.ensure_error_handling_detection(PROGRAM).await);
-        assert!(pipeline.ensure_floatsimd_detection(PROGRAM).await);
-        let in_sequence = [
-            filed!(TypeDatabasePersistor),
-            filed!(TypeInferPersistor),
-            filed!(AlgorithmPersistor),
-            filed!(MemoryPersistor),
-            filed!(SyncPersistor),
-            filed!(GlobalStatePersistor),
-            filed!(CallbackPersistor),
-            filed!(ControlFlowPersistor),
-            filed!(StringContextPersistor),
-            filed!(ApiPersistor),
-            filed!(ConstPersistor),
-            filed!(SerializePersistor),
-            filed!(ErrhandlingPersistor),
-            filed!(FloatsimdPersistor),
-        ];
+        let job = pipeline
+            .scan_job(PROGRAM)
+            .expect("the workspace is configured, so the job exists");
+        let rows = scan_rows();
+        let armed = arm_completion_latches(&rows);
+        for row in &rows {
+            let publish = armed
+                .iter()
+                .find(|(name, _)| *name == row.name())
+                .map(|(_, latch)| latch.clone());
+            let wait = row.waits_for().and_then(|producer| {
+                armed
+                    .iter()
+                    .find(|(name, _)| *name == producer)
+                    .map(|(_, latch)| latch.clone())
+            });
+            let mut ctx = job.scan_context();
+            ctx.latches = ScanLatches { publish, wait };
+            assert!(
+                row.run(ctx).await,
+                "the sequential {} row must file its document over the fixture",
+                row.name()
+            );
+        }
+        let in_sequence = registered_documents(dir.path());
 
-        let names = [
-            "type database",
-            "type inference",
-            "algorithm recognition",
-            "memory lifecycle",
-            "sync detection",
-            "global state",
-            "callback detection",
-            "control flow",
-            "string context",
-            "api detection",
-            "const detection",
-            "serialize detection",
-            "error handling",
-            "float/SIMD",
-        ];
-        for ((name, fanned), in_sequence) in names.into_iter().zip(fanned).zip(in_sequence) {
+        for ((name, fanned), (same_name, in_sequence)) in fanned.into_iter().zip(in_sequence) {
+            assert_eq!(name, same_name, "both legs read the same registry table");
             assert_eq!(
                 stamped_document(fanned),
                 stamped_document(in_sequence),
-                "the fanned {name} document must equal the sequential preamble's"
+                "the fanned {name} document must equal the sequential registry run's"
             );
         }
 
         // The equality above only means something if the callback scan
         // was enriched on both sides: the fixture's inference records
         // compose real contracts (the #238 precedent), so the callback
-        // documents match as enriched documents, not as two degraded ones.
+        // documents match as enriched documents, not as two degraded
+        // ones — and in the sequential leg it is the declared edge, not
+        // a call-order accident, that put the enrichment there.
         assert!(
             !callback_signature_map(dir.path(), PROGRAM).is_empty(),
             "the inference document composes real contracts — the callback scan \
@@ -6634,9 +6571,19 @@ void SetCursor(void)
         assert!(!rows.is_empty(), "the registry must drive the phase");
         for row in &rows {
             let path = row.document_path(dir.path(), PROGRAM);
-            assert!(
-                path.starts_with(dir.path().join("re").join("analysis")),
+            assert_eq!(
+                path.parent()
+                    .and_then(|domain| domain.parent())
+                    .expect("the document rides re/analysis/<domain>/<binary>.json"),
+                dir.path().join("re").join("analysis"),
                 "the {} row's document rides the analysis-document convention: {}",
+                row.name(),
+                path.display()
+            );
+            assert_eq!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(format!("{PROGRAM}.json").as_str()),
+                "the {} row's document is named after its binary: {}",
                 row.name(),
                 path.display()
             );
@@ -6985,15 +6932,22 @@ void SetCursor(void)
         assert_handle::<ScanJob>();
     }
 
-    /// The prefactor the fan-out needs: a scan handed to a spawned task
-    /// answers exactly like the inline call — same verdict, and the same
-    /// persisted document once the wall-clock scan stamp is set aside
-    /// (issue #237).
+    /// The prefactor the fan-out needs: a registered row's scan handed
+    /// to a spawned task answers exactly like the inline run — same
+    /// verdict, and the same persisted document once the wall-clock
+    /// scan stamp is set aside (issue #237, held at the registry seam
+    /// since issue #307).
     #[tokio::test]
     async fn a_scan_job_handed_to_a_spawned_task_matches_the_inline_call() {
+        let row_location = |workspace: &std::path::Path| {
+            find_row("type-database").document_path(workspace, "eqmain.dll")
+        };
         let inline_dir = TempDir::new().expect("temp workspace");
-        let inline = pipeline_over(Some(inline_dir.path()))
-            .ensure_type_database("eqmain.dll")
+        let inline_job = pipeline_over(Some(inline_dir.path()))
+            .scan_job("eqmain.dll")
+            .expect("the workspace is configured, so the job exists");
+        let inline = find_row("type-database")
+            .run(inline_job.scan_context())
             .await;
         assert!(inline, "the inline scan succeeds over the fixture");
 
@@ -7001,28 +6955,26 @@ void SetCursor(void)
         let job = pipeline_over(Some(job_dir.path()))
             .scan_job("eqmain.dll")
             .expect("the workspace is configured, so the job exists");
-        let spawned = tokio::spawn(async move { job.type_database().await })
-            .await
-            .expect("the scan task runs to completion");
+        let spawned =
+            tokio::spawn(async move { find_row("type-database").run(job.scan_context()).await })
+                .await
+                .expect("the scan task runs to completion");
         assert_eq!(
             spawned, inline,
             "the job on a task answers like the inline call"
         );
 
-        let mut from_task = TypeDatabasePersistor::new(job_dir.path())
-            .load("eqmain.dll")
-            .expect("the task's document");
-        let mut from_inline = TypeDatabasePersistor::new(inline_dir.path())
-            .load("eqmain.dll")
-            .expect("the inline call's document");
         // The scan stamp is wall-clock, not a finding: zero it so the
         // comparison is over what the scan actually recovered.
-        for doc in [&mut from_task, &mut from_inline] {
-            doc.metadata.scanned_at = 0;
-            doc.metadata.duration_secs = 0;
-        }
+        let document = |workspace: &std::path::Path| {
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(row_location(workspace)).expect("the scan's document"),
+            )
+            .expect("the document is JSON")
+        };
         assert_eq!(
-            from_task, from_inline,
+            stamped_document(document(job_dir.path())),
+            stamped_document(document(inline_dir.path())),
             "the task's persisted document must match the inline call's"
         );
     }

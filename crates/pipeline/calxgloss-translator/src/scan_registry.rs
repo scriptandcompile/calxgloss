@@ -49,8 +49,10 @@
 //!
 //! The legacy scan plumbing — the scan methods, their wrappers, the
 //! thunks, and the `ensure_*` entry points — is now unreachable from the
-//! phase; it stays compiling, exercised only by one-at-a-time `ensure_*`
-//! callers, until the contract ticket deletes it.
+//! phase and no longer reached from the tests either: the sequential
+//! leg of the fanned-versus-sequential equivalence check runs the
+//! registry itself (issue #307). It stays compiling, unexercised, until
+//! the contract ticket deletes it.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};

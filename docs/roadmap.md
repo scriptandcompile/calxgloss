@@ -52,7 +52,7 @@ assemble the pipeline.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P34 | Evidence-scan registry — one descriptor behind the pre-batch scan phase: an engine contributes one table row (name, persistor, engine ctor, count-for-log) and the 14 hand-copied scan methods, wrappers, registry thunks, and `ensure_*` test wrappers collapse into it; register `libmatch` or justify leaving it manual | pipeline (`calxgloss-translator`) + evidence (all scan crates) | — | 🔶 in progress | frontier: [`#307`](https://github.com/scriptandcompile/calxgloss/issues/307) · [`#308`](https://github.com/scriptandcompile/calxgloss/issues/308) (registry spine done; `libmatch` registered in [#306](https://github.com/scriptandcompile/calxgloss/issues/306), dialect gap follow-up [#309](https://github.com/scriptandcompile/calxgloss/issues/309)) | [`#301`](https://github.com/scriptandcompile/calxgloss/issues/301) |
+| P34 | Evidence-scan registry — one descriptor behind the pre-batch scan phase: an engine contributes one table row (name, persistor, engine ctor, count-for-log) and the 14 hand-copied scan methods, wrappers, registry thunks, and `ensure_*` test wrappers collapse into it; register `libmatch` or justify leaving it manual | pipeline (`calxgloss-translator`) + evidence (all scan crates) | — | 🔶 in progress | frontier: [`#308`](https://github.com/scriptandcompile/calxgloss/issues/308) (registry spine done; fanned-vs-sequential equivalence retargeted onto the registry in [#307](https://github.com/scriptandcompile/calxgloss/issues/307); `libmatch` registered in [#306](https://github.com/scriptandcompile/calxgloss/issues/306), dialect gap follow-up [#309](https://github.com/scriptandcompile/calxgloss/issues/309)) | [`#301`](https://github.com/scriptandcompile/calxgloss/issues/301) |
 | P35 | Evidence-bundle projector — one `AnalysisDoc` seam (persistor load + `for_function`) behind a generic load-and-project that fills the prompt bundle by fold; the 19 hand-copied `extract_*`/`load_*` functions in `retry/helpers` and their 49 trio tests collapse to one parametrized suite | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P36 | Prompt bundle through the templates — `EscalateTemplate` and the module-context renderers take `&EvidenceBundle` (or a section list); per-engine template sections become `.j2` includes and the four near-duplicate prompt-data structs die with the ~8–10 field re-declarations they force per engine | integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P37 | Assemble the pipeline once, from settings — one `PipelineSpec` seam; CLI and review UI become adapters over it, and the four divergent builder dances — including web patch-retry's quiet *lesser* pipeline (no events, no overrides) — are deleted | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
@@ -108,9 +108,13 @@ spellings that Kuna — the only engine — does not emit, so today's cold-run
 documents carry metadata and no findings, and `BODY_MATCH_CONFIDENCE` (60)
 sits under the Skip floor (80) anyway — real identifications and end-to-end
 Skip rides on [#309](https://github.com/scriptandcompile/calxgloss/issues/309).
-Tickets #302–#306 are merged; #307 (registry-driven fanned-vs-sequential
-equivalence) and #308 (delete the hand-copied scan sites, grow the table's
-completeness guard) remain before the track closes.
+Tickets #302–#307 are merged — #307 retargets the fanned-versus-sequential
+equivalence check onto the table itself: the sequential leg runs the registry
+in table order one scan at a time over the warmed read cache, and the
+comparison iterates the rows, so every registered scan (the known-library
+row included) is compared with no hand-written list of engines. #308 (delete
+the hand-copied scan sites, grow the table's completeness guard) remains
+before the track closes.
 
 ## P35 — Evidence-bundle projector: one seam from analysis documents to the prompt bundle (pipeline)
 
