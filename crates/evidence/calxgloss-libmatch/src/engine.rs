@@ -511,6 +511,135 @@ mod tests {
   return pVar2;
 ";
 
+    // The same shapes as Kuna (the only engine, ADR-0041) renders them:
+    // every spelling below is one observed in the fixture target's Kuna
+    // decompiles (issue #309) — `a0`-family parameters and `v1`-family
+    // temporaries, the truth test `} while (v2);` and `while (v1) {`
+    // beside the `!= 0` form, the countdown `v2 = v2 - 1`, the indexed
+    // pointer step `v1 = &v1[1]`, the `uint1` byte type, the falseness
+    // test `if (!a0)`, and the `sub_…` name for an unnamed routine. The
+    // dialect layer folds the invented names onto the same wildcard
+    // tokens, and the corpus test in `tests/kuna_corpus.rs` pins the
+    // shapes Kuna really emits; these fakes pin the rest of the set
+    // speaking the dialect too.
+
+    const KUNA_MEMCPY_BODY: &str = "\
+  uint8 *v1; // rax | rdi
+  uint8 *v2; // rdx | rsi
+
+  v1 = a0;
+  v2 = a1;
+  do {
+    a2 = a2 + -1;
+    *(uint8 *)((uint8 *)v1 + a2) = *(uint8 *)((uint8 *)v2 + a2);
+  } while (a2);
+  return a0;
+";
+
+    const KUNA_MEMSET_BODY: &str = "\
+  char *v1; // rax | rdi
+
+  v1 = (char *)a0;
+  do {
+    a1 = a1 + -1;
+    *v1 = (char)a2;
+    v1 = &v1[1];
+  } while (a1);
+  return a0;
+";
+
+    const KUNA_MEMCMP_BODY: &str = "\
+  uint1 v1; // r8
+  uint1 v2; // r9
+
+  do {
+    v1 = *(uint1 *)a0;
+    v2 = *(uint1 *)a1;
+    if (v1 != v2)
+      return (int4)v1 - (int4)v2;
+    a0 = &a0[1];
+    a1 = &a1[1];
+    a2 = a2 - 1;
+  } while (a2);
+  return 0;
+";
+
+    const KUNA_STRLEN_BODY: &str = "\
+  uint8 v1; // rax
+
+  v1 = 0;
+  while (*a0) {
+    a0 = &a0[1];
+    v1 = v1 + 1;
+  }
+  return v1;
+";
+
+    const KUNA_STRCPY_BODY: &str = "\
+  char v1; // dl
+
+  v1 = *a1;
+  *a0 = v1;
+  while (v1) {
+    a1 = &a1[1];
+    v1 = *a1;
+    a0 = &a0[1];
+    *a0 = v1;
+  }
+  return a0;
+";
+
+    const KUNA_OPERATOR_NEW_BODY: &str = "\
+  void *v1; // rax
+
+  v1 = malloc(a0);
+  if (!v1) {
+    sub_293061e00();
+    v1 = malloc(a0);
+  }
+  return v1;
+";
+
+    const KUNA_OPERATOR_DELETE_BODY: &str = "\
+  if (!a0)
+    return;
+  free(a0); // tail-call
+  return;
+";
+
+    const KUNA_TREE_ROTATE_BODY: &str = "\
+  struct_7 *v1; // rcx
+  struct_7 *v2; // rdx
+
+  v1 = a0->_Right;
+  a0->_Right = v1->_Left;
+  v1->_Left = a0;
+  v2 = a0->_Parent;
+  if (a0 == v2->_Right)
+    v2->_Right = v1;
+  else
+    v2->_Left = v1;
+  v1->_Parent = v2;
+  a0->_Parent = v1;
+  return;
+";
+
+    const KUNA_TREE_SEARCH_BODY: &str = "\
+  bool v1; // zf
+  struct_7 *v2; // rbx
+
+  v2 = a0;
+  v1 = v2->_Isnil;
+  while (!v1) {
+    if (*(uint8 *)a1 < *(uint8 *)&v2->_Left)
+      v2 = v2->_Left;
+    else
+      v2 = v2->_Right;
+    v1 = v2->_Isnil;
+  }
+  return v2;
+";
+
     /// The canned program: one function whose body is the memcpy idiom,
     /// one plain function that matches nothing, and one guarded copy
     /// the starter set vetoes.
@@ -763,6 +892,107 @@ mod tests {
                 findings[0].confidence().value(),
                 crate::confidence::BODY_MATCH_CONFIDENCE
             );
+        }
+    }
+
+    /// A program carrying one body per built-in starter-set shape, each
+    /// spelled as Kuna renders it: the dialect the only engine emits,
+    /// with every invented name folded by the normalizer's Kuna layer
+    /// (issue #309).
+    fn kuna_starter_set_program() -> FakeProgram {
+        let mut program = FakeProgram::default();
+        for (name, signature, body) in [
+            (
+                "sub_293061a00",
+                "void * sub_293061a00(void *a0,void *a1,uint8 a2)",
+                KUNA_MEMCPY_BODY,
+            ),
+            (
+                "sub_293061b00",
+                "void * sub_293061b00(void *a0,int4 a1,uint8 a2)",
+                KUNA_MEMSET_BODY,
+            ),
+            (
+                "sub_293061c00",
+                "int4 sub_293061c00(void *a0,void *a1,uint8 a2)",
+                KUNA_MEMCMP_BODY,
+            ),
+            (
+                "sub_293061d00",
+                "uint8 sub_293061d00(char *a0)",
+                KUNA_STRLEN_BODY,
+            ),
+            (
+                "sub_293061e00",
+                "char * sub_293061e00(char *a0,char *a1)",
+                KUNA_STRCPY_BODY,
+            ),
+            (
+                "sub_293061f00",
+                "void * sub_293061f00(uint8 a0)",
+                KUNA_OPERATOR_NEW_BODY,
+            ),
+            (
+                "sub_293061f40",
+                "void sub_293061f40(void *a0)",
+                KUNA_OPERATOR_DELETE_BODY,
+            ),
+            (
+                "sub_2930620a0",
+                "void sub_2930620a0(struct_7 *a0)",
+                KUNA_TREE_ROTATE_BODY,
+            ),
+            (
+                "sub_293062120",
+                "struct_7 * sub_293062120(struct_7 *a0,uint8 *a1)",
+                KUNA_TREE_SEARCH_BODY,
+            ),
+        ] {
+            program.listing.push(summary(name));
+            program
+                .bodies
+                .insert(name.into(), function(name, signature, body));
+        }
+        program
+    }
+
+    #[tokio::test]
+    async fn kuna_dialect_bodies_land_the_same_symbols_as_the_ghidra_ones() {
+        // One shared shape rule, one signature set: every starter-set
+        // entry must also speak Kuna, the only engine (issue #309).
+        // Each Kuna-spelled body lands exactly one finding naming the
+        // same symbol and family as its Ghidra twin — the dialect
+        // layer folds the invented names, and the corpus-grounded
+        // bundle alternatives land the loop tests and steps.
+        let result = scan(kuna_starter_set_program()).await;
+        for (name, symbol, family) in [
+            ("sub_293061a00", "memcpy", LibraryFamily::Crt),
+            ("sub_293061b00", "memset", LibraryFamily::Crt),
+            ("sub_293061c00", "memcmp", LibraryFamily::Crt),
+            ("sub_293061d00", "strlen", LibraryFamily::Crt),
+            ("sub_293061e00", "strcpy", LibraryFamily::Crt),
+            ("sub_293061f00", "operator new", LibraryFamily::Crt),
+            ("sub_293061f40", "operator delete", LibraryFamily::Crt),
+            (
+                "sub_2930620a0",
+                "std::_Tree::_Rotate_left",
+                LibraryFamily::Stl,
+            ),
+            (
+                "sub_293062120",
+                "std::_Tree::_Lower_bound",
+                LibraryFamily::Stl,
+            ),
+        ] {
+            let findings: Vec<&LibmatchFinding> = result.for_function(name).collect();
+            assert_eq!(findings.len(), 1, "{name} lands exactly one claim");
+            assert_eq!(findings[0].target(), symbol, "{name} names its symbol");
+            assert_eq!(findings[0].family(), family);
+            let expected_score = match symbol {
+                "operator new" | "operator delete" => 50,
+                _ => crate::confidence::BODY_MATCH_CONFIDENCE,
+            };
+            assert_eq!(findings[0].confidence().value(), expected_score);
         }
     }
 

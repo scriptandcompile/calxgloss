@@ -1119,19 +1119,21 @@ fn callback_row() -> ScanDescriptor {
 /// the console report stay command-only — a batch never guesses at a
 /// curated set, and `calxgloss libmatch` behaves exactly as before.
 ///
-/// Two limitations are recorded here rather than hidden:
+/// One limitation is recorded here rather than hidden:
 ///
 /// * The call-graph *batch* path receives a pre-built graph, so its
 ///   Skip classification still benefits only when a document already
 ///   existed from an earlier run; re-ordering the graph build ahead of
 ///   the batch is out of scope for this track (spec #301).
-/// * The built-in starter signatures are hand-authored against Ghidra
-///   pseudo-C spellings, and the shapes Kuna emits (the only engine) do
-///   not fold onto those wildcards — a cold run today therefore files a
-///   metadata-carrying, findings-empty document, and the readers see
-///   real identifications only once signatures can speak Kuna's dialect
-///   (issue #309). The wiring this row adds is what makes that payoff
-///   land without another pipeline change.
+///
+/// The dialect gap #306 recorded as this row's second limit is closed
+/// (#309): the normalizer folds Kuna's invented spellings onto the same
+/// wildcard tokens and the starter bundles carry Kuna alternatives
+/// grounded in the fixture corpus, so a cold run's document carries
+/// real identifications. End-to-end `Skip` from a cold batch still
+/// awaits the first limit's fix — and a body signature's 60 sits under
+/// the Skip floor of 80 by design, so cold-run Skip needs a supplied
+/// database at the floor regardless.
 fn known_library_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "known-library",

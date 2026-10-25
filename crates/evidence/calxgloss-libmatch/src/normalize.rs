@@ -1,14 +1,30 @@
 //! Body normalization: the wildcards that make a body shape comparable.
 //!
 //! A signature matches the *normalized* decompiled body, not the raw
-//! text: the parts of a Ghidra decompile that vary between builds,
-//! decompiler versions, and neighboring functions — the variable names
-//! Ghidra invents (`uVar1`, `param_2`), register temporaries (`in_EAX`,
-//! `unaff_RBX`), and the addresses that shift with the image layout
-//! (`DAT_180045a68`, `0x180045a68`) — all collapse to fixed wildcard
-//! tokens. What survives is the shape: calls, operators, constants,
-//! string literals, and control-flow keywords, the parts a library
-//! routine spells the same way every time it is compiled.
+//! text: the parts of a decompile that vary between builds, decompiler
+//! versions, and neighboring functions — the variable names the engine
+//! invents (Ghidra's `uVar1`, `param_2`, Kuna's `v1`, `a0`), register
+//! temporaries (`in_EAX`, `unaff_RBX`), and the addresses that shift
+//! with the image layout (`DAT_180045a68`, `dat_293099630`,
+//! `0x180045a68`) — all collapse to fixed wildcard tokens. What survives
+//! is the shape: calls, operators, constants, string literals, and
+//! control-flow keywords, the parts a library routine spells the same
+//! way every time it is compiled.
+//!
+//! The fold is a **dialect layer**: each engine's invented spellings are
+//! a dialect of the same body shape, and every dialect folds its names,
+//! globals, and addresses onto the same tokens below — so one
+//! signature speaks the shape whichever engine emitted it. Ghidra's
+//! families arrived with the scan; Kuna's (issue #309, its corpus the
+//! fixture-target decompiles) join them here, never as a second rule.
+//!
+//! What a dialect layer deliberately does *not* fold: names the engine
+//! carried from the binary's own debug information (a Kuna body's
+//! `width`, `stream->precision`, a `b` parameter) and function names
+//! (`FUN_…`, `sub_…`), which carry source facts rather than
+//! engine-invented spellings — a signature that claims a shape written
+//! through source-named operands is the operator-supplied database's
+//! territory, not the starter set's.
 //!
 //! This is the corpus-wide rule for what "same body shape" means: the
 //! known-library scan matches its signatures against this shape, and
@@ -24,17 +40,18 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// The token every Ghidra-invented variable name collapses to: the
-/// `uVar1`/`iVar2`-family temporaries, the `param_N` parameters, the
-/// `local_N` stack slots, the register temporaries (`in_EAX`,
-/// `unaff_RBX`, `extraout_ECX`, `register0x00000007`), and the `CONCAT`
-/// joins — all of them spellings the decompiler picks for the same
-/// register or slot, not facts about the source.
+/// The token every engine-invented variable name collapses to: Ghidra's
+/// `uVar1`/`iVar2`-family temporaries, `param_N` parameters, `local_N`
+/// stack slots, register temporaries (`in_EAX`, `unaff_RBX`,
+/// `extraout_ECX`, `register0x00000007`), and `CONCAT` joins, and
+/// Kuna's `v1`-family temporaries, `a0`-family parameters, and `b_00`
+/// flag temporaries — all of them spellings the decompiler picks for
+/// the same register or slot, not facts about the source.
 pub const VARIABLE_TOKEN: &str = "VAR";
 
 /// The token every named program-data reference collapses to: Ghidra's
-/// `DAT_180045a68` spelling of a global, whose name is its address and
-/// so moves with every rebuild.
+/// `DAT_180045a68` and Kuna's `dat_293099630` spellings of a global,
+/// whose name is its address and so moves with every rebuild.
 pub const DATA_TOKEN: &str = "DATA";
 
 /// The token every address-shaped hex literal collapses to: a `0x…`
@@ -52,15 +69,36 @@ static GHIDRA_NAMES: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the Ghidra-name pattern is a valid regex")
 });
 
-/// Ghidra's `DAT_` spelling of a named program-data address.
-static DATA_SYMBOLS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bDAT_[0-9a-fA-F]+").expect("the DAT_ pattern is a valid regex"));
+/// Ghidra's and Kuna's spellings of a named program-data address: the
+/// `DAT_…`/`dat_…` form whose name is the address itself.
+static DATA_SYMBOLS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:DAT|dat)_[0-9a-fA-F]+").expect("the DAT_/dat_ pattern is a valid regex")
+});
 
 /// A hex literal long enough to be an image address rather than a
 /// constant. Five digits is the floor: the smallest value a typical
 /// image base reaches, so sizes and offsets keep their value.
 static ADDRESS_LITERALS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b0x[0-9a-fA-F]{5,}\b").expect("the address-literal pattern is a valid regex")
+});
+
+/// Kuna's spelling of a jump target by address (`label_2930944d0`):
+/// like the `DAT_`/`dat_` globals, the name is the address and moves
+/// with every rebuild, so it folds to the address token rather than
+/// standing as a name.
+static LABEL_SYMBOLS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\blabel_[0-9a-fA-F]+\b").expect("the label_ pattern is a valid regex")
+});
+
+/// Kuna's invented names, in the spellings its decompiler emits: the
+/// `v1`-family temporaries (one per register or slot, exactly
+/// Ghidra's `uVar1` role), the `a0`-family parameters, and the `b_00`
+/// flag temporaries. Names Kuna carried from the binary's debug
+/// information (`width`, `s`, `stream`) are deliberately *not* here:
+/// they are source facts, not engine spellings, and folding arbitrary
+/// source identifiers would fold call targets and fields with them.
+static KUNA_NAMES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:[av][0-9]+|b_[0-9]+)\b").expect("the Kuna-name pattern is a valid regex")
 });
 
 /// Normalize the body keeping the pairing to the original lines, so a
@@ -107,7 +145,9 @@ fn normalize_line(line: &str) -> String {
         }
         let dataless = DATA_SYMBOLS.replace_all(segment, DATA_TOKEN);
         let addressed = ADDRESS_LITERALS.replace_all(&dataless, ADDRESS_TOKEN);
-        let replaced = GHIDRA_NAMES.replace_all(&addressed, VARIABLE_TOKEN);
+        let labeled = LABEL_SYMBOLS.replace_all(&addressed, ADDRESS_TOKEN);
+        let ghidra_named = GHIDRA_NAMES.replace_all(&labeled, VARIABLE_TOKEN);
+        let replaced = KUNA_NAMES.replace_all(&ghidra_named, VARIABLE_TOKEN);
         out.push_str(&replaced);
     }
     // Trim and collapse whitespace runs: the decompiler's indentation

@@ -6172,18 +6172,25 @@ void SetCursor(void)
             calxgloss_testfixtures::TARGET_FILE_NAME,
             "the document is keyed to the batch's binary"
         );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.function() == "strnlen" && finding.target() == "strlen"),
+            "the document says something, not just metadata: the Kuna-dialect starter set \
+             identifies the fixture's statically linked scan loops ({})",
+            result.findings.len()
+        );
     }
 
     /// The payoff the escalation prompt path waited for: after that cold
     /// batch, the per-attempt known-library read over the batch's binary
     /// finds a document — the scan's real record, not the absence of one
-    /// (issue #306). What the record carries today is no identifications:
-    /// the built-in starter signatures speak the Ghidra spelling, and the
-    /// Kuna dialect — the only engine — does not fold onto those
-    /// wildcards (issue #309). The empty-findings assertion is a canary
-    /// for that gap: when the signatures learn to speak Kuna, this test
-    /// strengthens to real findings for the scan order's callees, never
-    /// loosens.
+    /// (issue #306). What the record carries is now identifications: the
+    /// starter set learned to speak Kuna's dialect (#309 closed the gap
+    /// #306 recorded), so the canary this test used to be has strengthened
+    /// to pinning a real finding for one of the scan order's callees, and
+    /// must never loosen back to an empty document.
     #[tokio::test]
     async fn the_escalation_prompt_reads_the_known_library_document_the_batch_filed() {
         let dir = TempDir::new().expect("temp workspace");
@@ -6212,9 +6219,14 @@ void SetCursor(void)
             "the reader lands on the pipeline's own document for this binary"
         );
         assert!(
-            document.findings.is_empty(),
-            "canary (issue #309): the built-in set matches nothing in the Kuna dialect \
-             yet, so the pipeline document carries no identifications"
+            document
+                .findings
+                .iter()
+                .any(|finding| finding.function() == "strnlen" && finding.target() == "strlen"),
+            "the pipeline's own document carries real identifications — the \
+             starter set speaks Kuna now (#309), and this test strengthens, \
+             never loosens: {:?}",
+            document.findings
         );
     }
 
@@ -6226,10 +6238,11 @@ void SetCursor(void)
     /// `build_enriched_call_graph` loads for that binary (issue #306).
     /// Two limits travel with the join, recorded rather than hidden: the
     /// built-in set's body match scores 60 below the Skip floor of 80,
-    /// so end-to-end `Skip` never fires on pipeline findings (issue
-    /// #309 keeps even that score off cold runs for now), and the
-    /// call-graph batch path receives a pre-built graph, so that path
-    /// still only benefits when a document already existed (spec #301).
+    /// so end-to-end `Skip` never fires on pipeline findings — cold runs
+    /// carry real identifications now (#309), but none at the floor —
+    /// and the call-graph batch path receives a pre-built graph, so that
+    /// path still only benefits when a document already existed (spec
+    /// #301).
     #[tokio::test]
     async fn a_call_graph_built_after_the_phase_finds_the_known_library_document() {
         let dir = TempDir::new().expect("temp workspace");

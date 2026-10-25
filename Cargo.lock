@@ -672,6 +672,7 @@ dependencies = [
  "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
+ "calxgloss-testfixtures",
  "calxgloss-types",
  "regex",
  "serde",

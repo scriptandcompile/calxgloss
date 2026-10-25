@@ -113,19 +113,32 @@ impl LibmatchSignature {
 /// sloppier entries: a `malloc`/`free` call with a null test is a thin
 /// shape any allocation helper reads alike, so they claim a lower score
 /// through the per-entry override.
+///
+/// Each bundle speaks the shape in **every dialect the engine emits**:
+/// where two engines spell one shape differently, the line's source
+/// carries the alternation, and every Kuna alternative is grounded in a
+/// spelling observed in the fixture target's Kuna decompiles (issue
+/// #309), not imagined — the corpus comment at each entry quotes it.
+/// Shapes Kuna has not been observed to emit (its rendering of the MSVC
+/// allocator wrappers and the `strcmp` equality carry, say) stay
+/// single-dialect rather than guessed at; the operator-supplied
+/// [signature database](crate::signature_db) is the path for those.
 pub fn default_signatures() -> Vec<LibmatchSignature> {
     vec![
         // The CRT byte/word copy loop: a countdown, a dereference
-        // assignment, and a `!= 0` loop test, with no guard branch —
+        // assignment, and a nonzero loop test, with no guard branch —
         // an overlap check would make it a memmove shape, and allocator
-        // calls would make it something that allocates.
+        // calls would make it something that allocates. Kuna spells the
+        // countdown `v7 = v7 - 1` beside Ghidra's `lVar2 = lVar2 + -1`
+        // and tests the loop `} while (v2);` (`__pformat_putchars`)
+        // beside Ghidra's `while (param_3 != 0)`.
         LibmatchSignature::new(
             "memcpy",
             LibraryFamily::Crt,
             [
                 r"\*\([^;]*\) = \*\(",
-                r"VAR = VAR \+ -1",
-                r"while \(VAR != 0\)",
+                r"VAR = VAR (?:\+ -1|- 1)",
+                r"while \((?:VAR != 0|VAR)\)",
             ],
             "slice copy — `copy_nonoverlapping` / `clone_from_slice`",
         )
@@ -133,47 +146,60 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
         // The CRT byte-fill loop: the same countdown and loop test as
         // the copy loop, but the store carries a cast byte instead of a
         // source read — no `*(...) = *(...)` line fits the copy shape.
+        // The cast token admits Kuna's digit-suffixed type names
+        // (`(int8)stream.count` in the corpus) beside Ghidra's `(char)`.
         LibmatchSignature::new(
             "memset",
             LibraryFamily::Crt,
             [
-                r"\*VAR = \([a-z]+\)VAR",
-                r"VAR = VAR \+ -1",
-                r"while \(VAR != 0\)",
+                r"\*VAR = \([a-z][a-z0-9]*\)VAR",
+                r"VAR = VAR (?:\+ -1|- 1)",
+                r"while \((?:VAR != 0|VAR)\)",
             ],
             "`[0u8; N]` fill / `slice::fill`",
         )
         .with_exclusions([r"\bif \(", r"\bmalloc\b", r"\bfree\b"]),
         // The CRT byte-compare loop: unsigned byte loads from two
         // pointers, the same countdown as the copy loop, and no store
-        // line — the loads are `(uchar *)`-cast because the comparison
-        // is unsigned.
+        // line — the loads are `(uchar *)`-cast in Ghidra because the
+        // comparison is unsigned; Kuna names the byte type `uint1`
+        // (`v1 = *(uint1 *)v16;` in the relocation loop).
         LibmatchSignature::new(
             "memcmp",
             LibraryFamily::Crt,
             [
-                r"VAR = \*\(uchar \*\)VAR",
-                r"VAR = VAR \+ -1",
-                r"while \(VAR != 0\)",
+                r"VAR = \*\((?:uchar|uint1) \*\)VAR",
+                r"VAR = VAR (?:\+ -1|- 1)",
+                r"while \((?:VAR != 0|VAR)\)",
             ],
             "slice compare — `slice::eq` / `Ord` on byte slices",
         )
         .with_exclusions([r"\bmalloc\b", r"\bfree\b"]),
         // The CRT string-length scan: walk the pointer itself until the
-        // NUL byte, count as you go, return the count. The
-        // `while (*VAR != '\0')` spelling is what separates the scan
-        // from the compare and copy loops, which test a loaded byte
-        // variable instead of the dereferenced pointer.
+        // NUL byte, count as you go, return the count. The test on the
+        // dereferenced pointer is what separates the scan from the
+        // compare and copy loops, which test a loaded byte variable
+        // instead: Ghidra spells it `while (*VAR != '\0')`, Kuna tests
+        // the byte's truth (`while (*v1) {`, the fixture's `strnlen`).
+        // The walk is `VAR = VAR + 1` in Ghidra and Kuna's indexed
+        // pointer step `v1 = &v1[1]`. A `strnlen` reads the same scan
+        // plus a bound check — the same routine's bounded sibling — and
+        // the entry's malloc/free exclusions stand either way.
         LibmatchSignature::new(
             "strlen",
             LibraryFamily::Crt,
-            [r"while \(\*VAR != '\\0'", r"VAR = VAR \+ 1"],
+            [
+                r"while \(\*VAR( != '\\0')?\)",
+                r"VAR = (?:VAR \+ 1|&VAR\[1\])",
+            ],
             "`str::len` / `CStr` count",
         )
         .with_exclusions([r"\bmalloc\b", r"\bfree\b"]),
         // The CRT string compare: byte loads from both strings, an
         // equality carry line, and the loop test that keeps going while
-        // the bytes match and stop on the NUL byte.
+        // the bytes match and stop on the NUL byte. The Kuna rendering
+        // of this MSVC shape has no observed corpus sample, so the
+        // bundle stays single-dialect rather than guessed.
         LibmatchSignature::new(
             "strcmp",
             LibraryFamily::Crt,
@@ -187,11 +213,19 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
         .with_exclusions([r"\bmalloc\b", r"\bfree\b"]),
         // The CRT string copy: a byte load, a bare byte store, and the
         // NUL-terminated loop — the copy that carries the terminator,
-        // with no guard branch.
+        // with no guard branch. The load/store statements are spelled
+        // alike by both engines (`v1 = *b;` / `cVar1 = *param_2;`); the
+        // loop test is Ghidra's `while (VAR != '\0')` or Kuna's truth
+        // test on the loaded byte (`while (v1) {`, the fixture's
+        // `__strcp_D2A`).
         LibmatchSignature::new(
             "strcpy",
             LibraryFamily::Crt,
-            [r"VAR = \*VAR;", r"\*VAR = VAR;", r"while \(VAR != '\\0'\)"],
+            [
+                r"VAR = \*VAR;",
+                r"\*VAR = VAR;",
+                r"while \((?:VAR != '\\0'|VAR)\)",
+            ],
             "string copy — `CStr` to `String` / `str` copy",
         )
         .with_exclusions([r"\bif \(", r"\bmalloc\b", r"\bfree\b"]),
@@ -199,27 +233,43 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
         // with a null test, `operator delete` a guarded `free`. The
         // shapes are thin — any allocation helper reads alike — so both
         // entries deliberately claim a sloppier score than the standard
-        // body-evidence one.
+        // body-evidence one. Kuna tests the pointer's falseness (`if
+        // (!a0)`, seen throughout the fixture's CRT code) beside
+        // Ghidra's explicit compare to `(void *)0x0`. The exclusion
+        // bundles keep the wrappers apart from each other and from any
+        // routine that both allocates and frees: the fixture's own
+        // `fixture_describe` (malloc, null test, free) reads both
+        // wrapper shapes, and neither claim should stand — a body that
+        // calls `free` is not the `new` wrapper, a body that calls
+        // `malloc` is not the `delete` wrapper.
         LibmatchSignature::new(
             "operator new",
             LibraryFamily::Crt,
-            [r"VAR = malloc\(VAR\)", r"if \(VAR == \(void \*\)0x0\)"],
+            [
+                r"VAR = malloc\(VAR\)",
+                r"if \((?:VAR == \(void \*\)0x0|!VAR)\)",
+            ],
             "heap allocation — `Box::new` / `Vec` growth",
         )
+        .with_exclusions([r"\bfree\b"])
         .with_confidence(50),
         LibmatchSignature::new(
             "operator delete",
             LibraryFamily::Crt,
-            [r"free\(VAR\);", r"if \(VAR != \(void \*\)0x0\)"],
+            [r"free\(VAR\);", r"if \((?:VAR != \(void \*\)0x0|!VAR)\)"],
             "heap deallocation — `drop` / `Box::from_raw`",
         )
+        .with_exclusions([r"\bmalloc\b"])
         .with_confidence(50),
         // The STL associative-container tree idioms, spelled by the
         // MSVC node fields (`_Left`, `_Right`, `_Parent`, `_Isnil`) that
         // survive normalization: the red-black rotation the rebalancing
         // pass compiles to — the three-line child rehang — and the
         // search descent that walks `_Left`/`_Right` while testing
-        // `_Isnil`.
+        // `_Isnil`. The node fields are debug-carried facts the dialect
+        // layer never folds, and the pointers around them are ordinary
+        // temporaries it folds whole — so one bundle reads the field
+        // walk whichever engine named the pointers.
         LibmatchSignature::new(
             "std::_Tree::_Rotate_left",
             LibraryFamily::Stl,
