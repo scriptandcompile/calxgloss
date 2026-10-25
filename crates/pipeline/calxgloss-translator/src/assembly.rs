@@ -2,12 +2,13 @@
 //!
 //! This is the expand step of epic #322 (issue #323): the vocabulary
 //! ([`PipelineSpec`]), the single assembly function ([`assemble`]), and the
-//! assembled-pass outcome ([`AssembledPass`]). It is a *seam*, not a feature:
-//! no production command calls `assemble` yet — the four hand-built
-//! constructions (translate, auto, batch, web patch-retry) keep using
-//! [`TranslationPipeline::new`] and the `with_*` setters untouched. Later
-//! slices of the epic fold the CLI/Web option types into this vocabulary and
-//! move the call sites through it one at a time.
+//! assembled-pass outcome ([`AssembledPass`]). `auto` runs through the seam
+//! (issue #325): the CLI folds its resolved settings into the vocabulary and
+//! calls assembly once per pass. The remaining hand-built constructions
+//! (`translate`, `batch-translate`, web's patch-retry) keep using
+//! [`TranslationPipeline::new`] and the `with_*` setters until the epic's
+//! later slices fold their option types in and move those call sites through
+//! one at a time.
 //!
 //! Reachability follows the epic's rule: the module is public on the crate
 //! path (`calxgloss_translator::assembly`) but the seam types are *not*
@@ -18,8 +19,10 @@
 //! # Scope of the vocabulary (real knobs only)
 //!
 //! Every field here corresponds to a knob that exists in the codebase today —
-//! the hand-built dance in `interface/calxgloss-cli/src/commands/auto.rs` is
-//! the reference. The epic's prose names spec fields with no implementation
+//! the reference is the hand-built dance `interface/calxgloss-cli/src/
+//! commands/auto.rs` carried until issue #325 moved it through `assemble`
+//! (the same dance still verbatim in `commands/translate.rs` and
+//! `commands/batch_translate.rs`). The epic's prose names spec fields with no implementation
 //! counterpart anywhere (a target dialect, an LLM-call budget, context-
 //! trimming limits beyond the LLM context window, toolchain paths, a testgen
 //! timeout, a `no_tests` toggle, git policy and author); those are
@@ -256,10 +259,11 @@ impl std::fmt::Debug for AssembledPass {
 /// the configured budget for its engine; the passed engine is used only when
 /// no binary path is on the spec.
 ///
-/// The wiring mirrors the reference dance in `commands/auto.rs`: detector
-/// built from the engine and the mapping table before the pipeline consumes
-/// them, testgen and detector wired first, then the call-graph flags, the
-/// injected handles, workspace, and the binary identity/path.
+/// The wiring mirrors the reference dance `commands/auto.rs` carried until
+/// issue #325: detector built from the engine and the mapping table before
+/// the pipeline consumes them, testgen and detector wired first, then the
+/// call-graph flags, the injected handles, workspace, and the binary
+/// identity/path.
 pub async fn assemble(spec: &PipelineSpec, engine: &KunaSource) -> Result<AssembledPass> {
     let llm = match spec.llm.as_ref() {
         None => {

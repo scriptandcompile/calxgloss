@@ -16,12 +16,9 @@ use calxgloss::RunTarget;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
-use calxgloss_llm::LlmClient;
-use calxgloss_llm::LlmConfig;
 use calxgloss_translator::AcceptedAttemptSource;
-use calxgloss_translator::RetryConfig;
-use calxgloss_translator::TranslationPipeline;
-use calxgloss_translator::build_hallucination_detector;
+use calxgloss_translator::assembly::BinaryTarget;
+use calxgloss_translator::assembly::assemble;
 use tracing::{info, warn};
 
 use crate::commands::classify::handle_classify;
@@ -71,9 +68,10 @@ impl AcceptedAttemptSource for GitAcceptedAttempts {
 
 /// Run batch translation for a single DLL.
 ///
-/// This function encapsulates all the plumbing needed to translate one DLL:
-/// engine load, LLM client, test generator, pipeline, git operations, and
-/// result reporting.  Both `handle_auto` and `handle_live` call this.
+/// This function runs one binary's pass: engine load, function enumeration
+/// and scope filtering, git operations, assembling the complete pass from
+/// the plumbing's description (issue #325), and result reporting. `handle_auto`
+/// calls it — `live` reaches it through `handle_auto`.
 ///
 /// The Kuna engine is loaded per pass from `binary_path` (issue #214) —
 /// the file named for the pass is the program the scan reads, so there is
@@ -96,21 +94,10 @@ pub async fn run_translation_for_dll(
         workspace,
         settings,
         skip_git,
-        no_callgraph,
-        callgraph_cache,
-        callgraph_verbose,
-        refresh_cache,
+        spec: base_spec,
         run,
     } = plumbing;
-    let RunControls {
-        events,
-        stop,
-        control,
-        cancellation,
-        scope_control,
-        override_control,
-        classification_overrides: _,
-    } = *run;
+    let events = run.events;
     let workspace = *workspace;
     let settings = *settings;
 
@@ -172,18 +159,6 @@ pub async fn run_translation_for_dll(
         });
     }
 
-    // Get LLM settings
-    let llm_url = settings.require_llm_url()?;
-    let llm_model = settings.require_llm_model()?;
-    let context_window = settings.context_window.value;
-    let temperature = settings.temperature.value;
-    let max_retries = settings.max_retries.value;
-
-    let retry_strategy = match &settings.retry_strategy {
-        Some(r) => parse_retry_strategy(&r.value)?,
-        None => RetryStrategy::CompileFix,
-    };
-
     info!(
         binary = %binary,
         function_count = function_names.len(),
@@ -194,63 +169,16 @@ pub async fn run_translation_for_dll(
     std::fs::create_dir_all(workspace.join("src").join("modules"))
         .context("Failed to create modules directory")?;
 
-    // Initialize LLM client
-    let mut llm_config = LlmConfig::new(llm_url, llm_model)
-        .with_context(|| format!("Failed to parse LLM URL: {}", llm_url))?;
-    if let Some(key) = &settings.llm_api_key {
-        llm_config = llm_config.with_api_key(key.value.clone());
-    }
-    llm_config = llm_config
-        .with_context_window(context_window)
-        .with_temperature(temperature)
-        .with_timeout_secs(settings.llm_timeout_secs.value);
-    let llm = LlmClient::new(llm_config).context("Failed to create LLM client")?;
-
-    // Initialize analyzer, test generator
-    let testgen = calxgloss_testgen::TestGenerator::new(workspace);
-
-    // Build translation pipeline
-    let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = build_hallucination_detector(&kuna, &api_mappings).await;
-    let mut pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
-        .with_testgen(testgen)
-        .with_hallucination_detector(detector);
-    if *no_callgraph {
-        pipeline = pipeline.with_no_callgraph();
-    }
-    if let Some(cache_dir) = callgraph_cache {
-        pipeline = pipeline.with_callgraph_cache_dir(cache_dir);
-    }
-    if *callgraph_verbose {
-        pipeline = pipeline.with_callgraph_verbose();
-    }
-    if let Some(events) = events {
-        pipeline = pipeline.with_events((*events).clone());
-    }
-    if let Some(stop) = stop {
-        pipeline = pipeline.with_stop_signal((*stop).clone());
-    }
-    if let Some(control) = control {
-        pipeline = pipeline.with_pipeline_control((*control).clone());
-    }
-    if let Some(cancellation) = cancellation {
-        pipeline = pipeline.with_unit_cancellation((*cancellation).clone());
-    }
-    if let Some(scope_control) = scope_control {
-        pipeline = pipeline.with_scope((*scope_control).clone());
-    }
-    if let Some(override_control) = override_control {
-        pipeline = pipeline.with_overrides((*override_control).clone());
-    }
-    pipeline = pipeline.with_workspace(workspace);
-    // The batch's shared scan read cache keys on the target binary's
-    // file bytes (issue #105).
-    pipeline = pipeline.with_binary_path(binary_path);
-    // The refresh escape hatch (issue #106): force the cache cold when the
-    // operator says the cached reads are stale.
-    if *refresh_cache {
-        pipeline = pipeline.with_refresh_cache();
-    }
+    // The pass description (issue #325): `handle_auto` folded the resolved
+    // settings once and layered this run's flags and live control handles
+    // on; the only thing separating one pass from another is the binary it
+    // names — its identity for reports and the read-cache key for the batch
+    // (issues #105, #106 ride the spec fields now).
+    let mut spec = base_spec.clone();
+    spec.target_binary = Some(BinaryTarget {
+        name: binary.to_string(),
+        path: binary_path.to_path_buf(),
+    });
 
     // Git setup
     let mut git = if !*skip_git {
@@ -270,21 +198,18 @@ pub async fn run_translation_for_dll(
     // accepted (merged) translation to seed attempt 1 from. With `--skip-git`
     // there is no history to ask, and the queue translates fresh as today.
     if let Some(git_manager) = git.as_ref() {
-        pipeline =
-            pipeline.with_accepted_attempt_source(std::sync::Arc::new(GitAcceptedAttempts {
-                workspace: git_manager.repo_path().to_path_buf(),
-            }));
+        spec.accepted_attempt_source = Some(std::sync::Arc::new(GitAcceptedAttempts {
+            workspace: git_manager.repo_path().to_path_buf(),
+        }));
     }
 
-    // Initialize verifier for retry loop
-    let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
-
-    let retry_config = RetryConfig {
-        max_attempts: max_retries,
-        strategy: retry_strategy,
-        escalate_on_failure: true,
-        max_context_tier: None,
-    };
+    // Assemble the complete pass once from the description (issue #325):
+    // the LLM client from the folded endpoint description, the detector,
+    // testgen, the verifier, the retry ladder, and every injected handle are
+    // wired by the seam — the `with_*` dance is no longer the command's.
+    let pass = assemble(&spec, &kuna)
+        .await
+        .with_context(|| format!("Failed to assemble the translation pass for {binary}"))?;
 
     // Run batch translation with an inline callback that handles git operations
     // for each function immediately after it completes.
@@ -292,12 +217,13 @@ pub async fn run_translation_for_dll(
     // This enables incremental git commits: as soon as a function's translation
     // pipeline finishes (including retries), the result is written, committed,
     // and merged — before the next function even starts.
-    let batch_result = pipeline
+    let batch_result = pass
+        .pipeline
         .batch_translate(
             binary,
             &function_names,
-            &retry_config,
-            &verifier,
+            &pass.retry,
+            &pass.verifier,
             Some(&mut |_dll, _function, func_result| {
                 // A unit with no translated code — failed, or a refused
                 // root recorded skipped — has nothing to write or commit.
@@ -661,6 +587,30 @@ pub async fn handle_auto(
         guard_managed_binary(&workspace, binary, &target_dir.join(binary))?;
     }
 
+    // The pass description every translation pass runs on (issue #325):
+    // the resolved settings folded once (issue #324), this run's call-graph
+    // flags, the resolved workspace, and the live control handles layered
+    // on. Each pass clones this description, adds the binary it names, and
+    // assembles once — the `with_*` builder dance and the per-knob `if let`
+    // ladder no longer appear in the command body.
+    let mut pass_spec = crate::settings::pipeline_spec(settings)?;
+    if pass_spec.llm.is_none() {
+        // A translation pass always needs an LLM; when the record holds no
+        // endpoint pair, the settings layer's "not configured" guidance —
+        // naming every layer that can supply one — beats the assembly
+        // seam's internal `MissingLlm` wording.
+        settings.require_llm_url()?;
+        settings.require_llm_model()?;
+    }
+    // The resolved workspace (--workspace > settings > CWD) wins over the
+    // record's own value: the flag layer is what the command was handed.
+    pass_spec.workspace = workspace.clone();
+    pass_spec.no_callgraph = no_callgraph;
+    pass_spec.callgraph_cache_dir = callgraph_cache;
+    pass_spec.callgraph_verbose = callgraph_verbose;
+    pass_spec.refresh_cache = refresh_cache;
+    run_controls.apply(&mut pass_spec);
+
     if continue_mode {
         // W2.5: the operator's binary scope filters the queue before the
         // plan is published — an excluded binary never enters the queue,
@@ -699,10 +649,7 @@ pub async fn handle_auto(
             settings,
             workspace: &workspace,
             skip_git,
-            no_callgraph,
-            callgraph_cache: callgraph_cache.clone(),
-            callgraph_verbose,
-            refresh_cache,
+            spec: pass_spec.clone(),
             run: &run_controls,
         };
         run_binary_worklist(classified, &run_controls, |binary| {
@@ -760,10 +707,7 @@ pub async fn handle_auto(
                 settings,
                 workspace: &workspace,
                 skip_git,
-                no_callgraph,
-                callgraph_cache,
-                callgraph_verbose,
-                refresh_cache,
+                spec: pass_spec,
                 run: &run_controls,
             },
         )

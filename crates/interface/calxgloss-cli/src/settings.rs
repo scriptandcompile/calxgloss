@@ -242,10 +242,10 @@ impl Settings {
 /// introduce them, for the same reason `PipelineSpec` left them out (see
 /// that module's docs).
 ///
-/// No production command reads through the fold yet — the ticket's scope is
-/// the conversion itself; the follow-up slices move the four hand-built
-/// dances onto `assemble` one at a time.
-#[allow(dead_code)]
+/// `auto` reads through the fold and hands the description to assembly
+/// (issue #325). The remaining hand-built dances — `translate`,
+/// `batch-translate`, and web's patch retry — move onto `assemble` one at a
+/// time in the follow-up slices of epic #322.
 pub fn pipeline_spec(s: &Settings) -> Result<PipelineSpec> {
     let llm = match (s.llm_url.as_ref(), s.llm_model.as_ref()) {
         (Some(url), Some(model)) => Some(LlmSelection::Description(LlmDescription {

@@ -11,9 +11,12 @@
 //! - [`LiveRunOptions`] — the `live` command's flags plus the log controls.
 //! - [`RunControls`] — the optional live run state (events, control,
 //!   cancellation, scope and override handles) that the web server drives;
-//!   `RunControls::default()` is a plain batch run with none of it.
+//!   `RunControls::default()` is a plain batch run with none of it, and
+//!   [`RunControls::apply`] layers whichever handles exist onto a pass
+//!   description for assembly to wire.
 //! - [`PassPlumbing`] — one binary's translation pass: workspace, settings,
-//!   git flag, call-graph flags, and the [`RunControls`] it observes.
+//!   git flag, the [`PipelineSpec`] description assembly consumes, and the
+//!   [`RunControls`] it observes.
 
 use std::path::PathBuf;
 
@@ -21,6 +24,7 @@ use calxgloss::{
     ClassificationOverrideControl, OverrideControl, PipelineControl, ScopeControl, StopSignal,
     TranslationEvents, UnitCancellation,
 };
+use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_web::LogLevelControl;
 
 use crate::Settings;
@@ -107,24 +111,123 @@ pub struct RunControls<'a> {
     pub classification_overrides: Option<&'a ClassificationOverrideControl>,
 }
 
+impl RunControls<'_> {
+    /// Layer the live run state onto a pass description (issue #325): the
+    /// handles the `with_*` setters used to carry ride the description as
+    /// plain data now, and `assemble` wires them onto the pipeline. The
+    /// description ends up mirroring exactly what this bundle holds —
+    /// handles set, handles absent cleared (the fold leaves the injection
+    /// fields unset, so in practice this only ever sets).
+    ///
+    /// The classification handle is deliberately not layered: the pipeline
+    /// never sees it — the classification phase reads it directly.
+    pub fn apply(&self, spec: &mut PipelineSpec) {
+        let RunControls {
+            events,
+            stop,
+            control,
+            cancellation,
+            scope_control,
+            override_control,
+            classification_overrides: _,
+        } = *self;
+        spec.events = events.cloned();
+        spec.stop = stop.cloned();
+        spec.pipeline_control = control.cloned();
+        spec.unit_cancellation = cancellation.cloned();
+        spec.scope = scope_control.cloned();
+        spec.overrides = override_control.cloned();
+    }
+}
+
 /// One binary's translation pass: the workspace and settings it runs against,
-/// the flags that configure its pipeline, and the live run state it observes.
+/// the git flag, the [`PipelineSpec`] description its assembly consumes, and
+/// the live run state it observes.
+///
+/// The call-graph flags it used to carry (issue #268) are knob-set data the
+/// description now carries: `handle_auto` folds them into the spec once per
+/// run, and each pass clones the spec rather than re-deciding per knob
+/// (issue #325).
 #[derive(Clone)]
 pub struct PassPlumbing<'a> {
-    /// Settings the engine and LLM client are built from.
+    /// Settings the engine load is made from (its budgets); the pass
+    /// description carries what assembly needs beyond the binary the pass
+    /// names.
     pub settings: &'a Settings,
     /// The workspace — git, src/, scratch all live here.
     pub workspace: &'a std::path::Path,
     /// Skip git operations.
     pub skip_git: bool,
-    /// Skip call-graph analysis.
-    pub no_callgraph: bool,
-    /// Directory holding the cached call graph.
-    pub callgraph_cache: Option<PathBuf>,
-    /// Log call-graph diagnostics.
-    pub callgraph_verbose: bool,
-    /// Force the batch's shared scan read cache cold.
-    pub refresh_cache: bool,
+    /// The pass description assembled once per pass: resolved settings
+    /// folded, run flags and live control handles layered on.
+    pub spec: PipelineSpec,
     /// The live run state this pass observes, if any.
     pub run: &'a RunControls<'a>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_control_handles_layer_onto_the_pass_description() {
+        // Issue #325: bundle to description is a pure data move — every
+        // pipeline-facing handle in the bundle lands on the spec for
+        // assembly to wire, and the classification handle stays off it
+        // (the pipeline never sees it).
+        let events = TranslationEvents::new(16);
+        let stop = StopSignal::new();
+        let control = PipelineControl::new();
+        let cancellation = UnitCancellation::new();
+        let scope = ScopeControl::new();
+        let overrides = OverrideControl::new();
+        let classification = ClassificationOverrideControl::new();
+        let controls = RunControls {
+            events: Some(&events),
+            stop: Some(&stop),
+            control: Some(&control),
+            cancellation: Some(&cancellation),
+            scope_control: Some(&scope),
+            override_control: Some(&overrides),
+            classification_overrides: Some(&classification),
+        };
+        let mut spec = PipelineSpec::default();
+        controls.apply(&mut spec);
+        assert!(spec.events.is_some(), "events reach the description");
+        assert!(
+            spec.stop.is_some(),
+            "the stop signal reaches the description"
+        );
+        assert!(
+            spec.pipeline_control.is_some(),
+            "the lifecycle control reaches the description"
+        );
+        assert!(
+            spec.unit_cancellation.is_some(),
+            "per-unit cancellation reaches the description"
+        );
+        assert!(
+            spec.scope.is_some(),
+            "the scope handle reaches the description"
+        );
+        assert!(
+            spec.overrides.is_some(),
+            "the reviewer overrides reach the description"
+        );
+    }
+
+    #[test]
+    fn a_plain_batch_layers_nothing_onto_the_description() {
+        // `RunControls::default()` is a plain batch run: after apply every
+        // injection field stays unset, so the pass assembles with pipeline
+        // defaults — no quietly attached live state.
+        let mut spec = PipelineSpec::default();
+        RunControls::default().apply(&mut spec);
+        assert!(spec.events.is_none());
+        assert!(spec.stop.is_none());
+        assert!(spec.pipeline_control.is_none());
+        assert!(spec.unit_cancellation.is_none());
+        assert!(spec.scope.is_none());
+        assert!(spec.overrides.is_none());
+    }
 }
