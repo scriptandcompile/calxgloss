@@ -64,7 +64,7 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P38 | Attempt as a deep module — one attempt = prompt → LLM → verification → record, returning a verdict; the 1,272-line retry-loop body becomes attempt-selection and cancellation policy, with retry strategies as adapters at the existing internal seam | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
+| P38 | Attempt as a deep module — one attempt = prompt → LLM → verification → record, returning a verdict; the 1,272-line retry-loop body becomes attempt-selection and cancellation policy, with retry strategies as adapters at the existing internal seam | pipeline (`calxgloss-translator`) | — | ⬜ not started | specced — `/to-tickets` next | [`#330`](https://github.com/scriptandcompile/calxgloss/issues/330) |
 | P39 | One CLI scan command, sixteen report printers — a generic `ScanCommand` driven by P34's descriptor (load · scan · persist · show); each engine contributes its report printer and flag block only; 16 command-module skeletons and `main.rs` match arms deleted | interface (`calxgloss-cli`) + evidence (all scan crates) | — | ⬜ not started | not specced | — |
 | P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
 | P20 | Seam capability report + engine-identity cache key — the seam advertises which questions Kuna can currently answer, and the scan cache keys on the engine build digest instead of a hand-bumped format version | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
@@ -103,7 +103,9 @@ P27 — the hypothesis ledger lands on this loop; the deepening gives it
 per-attempt verdict records instead of log lines. Pairs with: P37 —
 shipped through #323–#329 (spec #322 closed 2026-10-25, ADR-0050) — the
 deepening starts from the complete assembled pass that seam hands over,
-not from four hand-built ones.
+not from four hand-built ones. Specced 2026-10-25: spec
+[#330](https://github.com/scriptandcompile/calxgloss/issues/330) —
+`/to-tickets` is the next step.
 
 ## P39 — One CLI scan command, sixteen report printers (interface + evidence)
 
