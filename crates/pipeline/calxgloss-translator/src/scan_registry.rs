@@ -25,7 +25,7 @@
 //! only place the scan's shape — short-circuit, engine call, persist,
 //! degrade, completion log — is written down. Rows are stored type-erased
 //! in the table because each engine's result is its own type and the
-//! fourteen (soon more) cannot sit in one list unboxed.
+//! fifteen cannot sit in one list unboxed.
 //!
 //! The table is `pub` on purpose: the later generic CLI scan command
 //! (P39) iterates these same rows. The descriptor is a pipeline-side
@@ -75,6 +75,8 @@ use calxgloss_floatsimd::engine::FloatsimdEngine;
 use calxgloss_floatsimd::persist::FloatsimdPersistor;
 use calxgloss_globalstate::engine::GlobalStateEngine;
 use calxgloss_globalstate::persist::GlobalStatePersistor;
+use calxgloss_libmatch::engine::LibmatchEngine;
+use calxgloss_libmatch::persist::LibmatchPersistor;
 use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_serialize::engine::SerializeEngine;
@@ -530,6 +532,7 @@ pub fn scan_rows() -> Vec<ScanDescriptor> {
         serialization_row(),
         type_inference_row(),
         callback_row(),
+        known_library_row(),
     ]
 }
 
@@ -1092,6 +1095,65 @@ fn callback_row() -> ScanDescriptor {
                 })
             }))
         },
+        post_scan: None,
+    })
+}
+
+/// Known-library identification, joining the phase as the fifteenth row
+/// (issue #306, the drift spec #301 records: the engine, its persistor,
+/// and its CLI existed while nothing in a run ever filed its document).
+/// The document lands where its two readers already look —
+/// `re/analysis/libmatch/<binary>.json` through the engine's own
+/// persistor — so the escalation prompt path finally finds a document
+/// on a cold run, and a call graph built after the phase finds it for
+/// Skip classification. No hooks — the scan orders with nothing.
+///
+/// The batch's engine is built with the built-in starter signature set;
+/// the operator-supplied signature database, the cached-report view, and
+/// the console report stay command-only — a batch never guesses at a
+/// curated set, and `calxgloss libmatch` behaves exactly as before.
+///
+/// Two limitations are recorded here rather than hidden:
+///
+/// * The call-graph *batch* path receives a pre-built graph, so its
+///   Skip classification still benefits only when a document already
+///   existed from an earlier run; re-ordering the graph build ahead of
+///   the batch is out of scope for this track (spec #301).
+/// * The built-in starter signatures are hand-authored against Ghidra
+///   pseudo-C spellings, and the shapes Kuna emits (the only engine) do
+///   not fold onto those wildcards — a cold run today therefore files a
+///   metadata-carrying, findings-empty document, and the readers see
+///   real identifications only once signatures can speak Kuna's dialect
+///   (issue #309). The wiring this row adds is what makes that payoff
+///   land without another pipeline change.
+fn known_library_row() -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name: "known-library",
+        waits_for: None,
+        messages: ScanMessages {
+            scan_started: "Identifying known-library functions before batch translation",
+            cached_hit: "Known-library result already cached; skipping scan",
+            scan_failed: "Known-library identification failed; continuing without known-library context",
+            save_failed: "Failed to persist known-library result; continuing without known-library context",
+        },
+        persistor: Arc::new(|workspace| LibmatchPersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| {
+            LibmatchPersistor::new(workspace).path_for(binary)
+        }),
+        save: Arc::new(|persistor, result| persistor.save(result)),
+        build_and_scan: Arc::new(|source, binary| {
+            let engine = LibmatchEngine::with_source(source);
+            Box::pin(async move { engine.scan(binary).await })
+        }),
+        on_saved: Arc::new(|ctx, result| {
+            info!(
+                binary = %ctx.binary,
+                findings = result.findings.len(),
+                "Known-library identification complete"
+            );
+        }),
+        pre_scan: None,
         post_scan: None,
     })
 }

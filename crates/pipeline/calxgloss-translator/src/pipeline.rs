@@ -69,7 +69,7 @@ use crate::scan_job::ScanJob;
 use crate::scan_registry::{ScanDescriptor, ScanLatches, arm_completion_latches, scan_rows};
 
 /// The pass name the scan phase's heartbeat carries: one honest
-/// "n of m functions consumed" row for the whole group of fourteen
+/// "n of m functions consumed" row for the whole group of fifteen
 /// pre-batch evidence scans, instead of one row per scan that restarts
 /// with each scan (issue #239).
 const SCAN_PHASE: &str = "evidence scans";
@@ -2403,7 +2403,7 @@ impl TranslationPipeline {
         Some(ScanJob::new(binary, workspace, self.scan_source()))
     }
 
-    /// Run the fourteen pre-batch evidence scans, the shared scan-phase
+    /// Run the fifteen pre-batch evidence scans, the shared scan-phase
     /// preamble both batch entry points drive — the function-list path
     /// ([`batch_translate`](Self::batch_translate)) and the call-graph path
     /// ([`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph))
@@ -2426,7 +2426,7 @@ impl TranslationPipeline {
     /// Each scan keeps its own shape: a cached document short-circuits it
     /// before any engine read, and a failed scan or save only warns and
     /// continues — one detector's failure never takes down the batch. The
-    /// The group joins all fourteen and never cancels its siblings.
+    /// The group joins all fifteen and never cancels its siblings.
     ///
     /// The one real ordering edge between the scans — callback detection
     /// composing its closure contracts from the type-inference
@@ -2439,7 +2439,7 @@ impl TranslationPipeline {
     /// The phase also arms the engine heartbeat once around the whole
     /// group, under the phase name, and disarms it when the group ends:
     /// the dashboard shows one honest "n of m functions consumed" row
-    /// for the scan phase instead of fourteen that restart with each
+    /// for the scan phase instead of fifteen that restart with each
     /// scan. Beats count unique functions consumed — a body pulled cold
     /// from the engine and replayed warm by the read cache counts once —
     /// so a warm run still shows life and the row stays honest while the
@@ -2468,7 +2468,7 @@ impl TranslationPipeline {
             ));
         }
         // Sliding window: every completion frees a permit for the next
-        // scan, and the group joins all fourteen — a failing or panicking
+        // scan, and the group joins all fifteen — a failing or panicking
         // scan never cancels its siblings (issue #240).
         while let Some(outcome) = set.join_next().await {
             if let Err(e) = outcome {
@@ -3014,7 +3014,7 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the fourteen evidence scans run through
+    /// memory, and concurrency context — the fifteen evidence scans run through
     /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
@@ -3448,7 +3448,7 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the fourteen evidence scans run through
+    /// memory, and concurrency context — the fifteen evidence scans run through
     /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
@@ -4773,7 +4773,7 @@ void SetCursor(void)
         // The timeout is the "never parks" assertion: a run-level pause
         // would hold here until a resume that never arrives, while a binary
         // pause ends the batch on its own. The bound is generous because the
-        // fourteen pre-analysis scans over the fixture run inside it.
+        // fifteen pre-analysis scans over the fixture run inside it.
         let batch = tokio::time::timeout(
             std::time::Duration::from_secs(300),
             pipeline.batch_translate(
@@ -5599,7 +5599,7 @@ void SetCursor(void)
         let (pipeline, _) = cached_pipeline(dir.path());
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
-        // Batch 1, cold: the fourteen scans read live through the engine and
+        // Batch 1, cold: the fifteen scans read live through the engine and
         // write every answer through to the scan cache.
         pipeline
             .batch_translate(
@@ -5623,7 +5623,7 @@ void SetCursor(void)
         );
 
         // Wipe the engine-result documents so the second batch re-runs all
-        // fourteen scans — only the scan cache may answer them.
+        // fifteen scans — only the scan cache may answer them.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
             .expect("clear engine-result documents");
 
@@ -5802,7 +5802,7 @@ void SetCursor(void)
         assert_phase_beats(&cold);
 
         // Wipe the engine-result documents so the second batch re-runs
-        // all fourteen scans — every body now arrives warm from the read
+        // all fifteen scans — every body now arrives warm from the read
         // cache, and a warm replay of an already-counted function counts
         // once in the fresh phase's count.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
@@ -5890,7 +5890,7 @@ void SetCursor(void)
     }
 
     /// The fan-out keeps the engine the serial resource it has always
-    /// been: across a cold phase's fourteen concurrent scans the engine
+    /// been: across a cold phase's fifteen concurrent scans the engine
     /// call log shows every function of the listing exactly once — the
     /// read cache's per-key cell collapses concurrent misses of one
     /// body into a single round trip (issue #240).
@@ -5912,7 +5912,7 @@ void SetCursor(void)
         assert_eq!(
             sorted.len(),
             calls.len(),
-            "no function reached the engine twice across the fourteen scans: {calls:?}"
+            "no function reached the engine twice across the fifteen scans: {calls:?}"
         );
     }
 
@@ -6467,12 +6467,12 @@ void SetCursor(void)
 
     /// One scan's failure stays its own: with the memory document's
     /// directory sabotaged, the memory scan degrades at its save while
-    /// the other thirteen documents are still filed and the phase still
-    /// ends — the group joins all fourteen and never cancels a sibling
-    /// (issue #240, roster grown by errhandling in #292 and float/SIMD
-    /// in #229).
+    /// the other fourteen documents are still filed and the phase still
+    /// ends — the group joins all fifteen and never cancels a sibling
+    /// (issue #240, roster grown by errhandling in #292, float/SIMD in
+    /// #229, and known-library identification in #306).
     #[tokio::test]
-    async fn one_failing_scan_leaves_the_other_thirteen_persisted() {
+    async fn one_failing_scan_leaves_the_other_fourteen_persisted() {
         let dir = TempDir::new().expect("temp workspace");
         let (pipeline, _) = cached_pipeline(dir.path());
         // `re/analysis/memory` as a plain file makes the memory
@@ -6546,6 +6546,10 @@ void SetCursor(void)
                 "float/SIMD",
                 FloatsimdPersistor::new(workspace).exists(PROGRAM),
             ),
+            (
+                "known libraries",
+                calxgloss_libmatch::persist::LibmatchPersistor::new(workspace).exists(PROGRAM),
+            ),
         ] {
             assert!(
                 filed,
@@ -6609,6 +6613,7 @@ void SetCursor(void)
                 "serialization",
                 "type-inference",
                 "callback-detection",
+                "known-library",
             ],
             "the registry roster changed — a scan joins the phase by adding \
              its row to the table, and never by being forgotten"
@@ -6641,7 +6646,7 @@ void SetCursor(void)
                 row.name()
             );
         }
-        // The table is the whole phase: all fourteen scans' documents
+        // The table is the whole phase: all fifteen scans' documents
         // are filed by one cold phase, every one of them from a row.
     }
 
@@ -6727,7 +6732,139 @@ void SetCursor(void)
         assert_eq!(
             pipeline.scan_window_high_water(),
             0,
-            "the phase skipped before any scan entered the window"
+            "the phase skipped before any window permit was taken"
+        );
+    }
+
+    /// The drift spec #301 records, closed: a batch that has never had
+    /// `calxgloss libmatch` run still leaves a known-library document
+    /// behind — the fifteenth row runs the scan from the batch preamble,
+    /// on the batch's shared read source with the built-in starter
+    /// signature set, and files it exactly where the two readers — the
+    /// retry/escalation prompt path and the call-graph Skip
+    /// classification — already look (issue #306).
+    #[tokio::test]
+    async fn a_cold_batch_that_never_ran_the_command_files_a_known_library_document() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        pipeline
+            .batch_translate(
+                calxgloss_testfixtures::TARGET_FILE_NAME,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("cold batch over the fixture engine");
+
+        let persistor = calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path());
+        let document = persistor.path_for(calxgloss_testfixtures::TARGET_FILE_NAME);
+        assert!(
+            document.starts_with(dir.path().join("re").join("analysis").join("libmatch")),
+            "the known-library document rides the analysis-document convention: {}",
+            document.display()
+        );
+        assert!(
+            document.is_file(),
+            "a cold batch that never ran the command still leaves a known-library document"
+        );
+
+        let result = persistor
+            .load(calxgloss_testfixtures::TARGET_FILE_NAME)
+            .expect("the batch filed a loadable known-library document");
+        assert_eq!(
+            result.metadata.binary,
+            calxgloss_testfixtures::TARGET_FILE_NAME,
+            "the document is keyed to the batch's binary"
+        );
+    }
+
+    /// The payoff the escalation prompt path waited for: after that cold
+    /// batch, the per-attempt known-library read over the batch's binary
+    /// finds a document — the scan's real record, not the absence of one
+    /// (issue #306). What the record carries today is no identifications:
+    /// the built-in starter signatures speak the Ghidra spelling, and the
+    /// Kuna dialect — the only engine — does not fold onto those
+    /// wildcards (issue #309). The empty-findings assertion is a canary
+    /// for that gap: when the signatures learn to speak Kuna, this test
+    /// strengthens to real findings for the scan order's callees, never
+    /// loosens.
+    #[tokio::test]
+    async fn the_escalation_prompt_reads_the_known_library_document_the_batch_filed() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        pipeline
+            .batch_translate(
+                calxgloss_testfixtures::TARGET_FILE_NAME,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("cold batch over the fixture engine");
+
+        let document = crate::retry::helpers::load_libmatch_result(
+            Some(dir.path()),
+            calxgloss_testfixtures::TARGET_FILE_NAME,
+        )
+        .expect("the escalation read finds the document the batch filed, not nothing");
+        assert_eq!(
+            document.metadata.binary,
+            calxgloss_testfixtures::TARGET_FILE_NAME,
+            "the reader lands on the pipeline's own document for this binary"
+        );
+        assert!(
+            document.findings.is_empty(),
+            "canary (issue #309): the built-in set matches nothing in the Kuna dialect \
+             yet, so the pipeline document carries no identifications"
+        );
+    }
+
+    /// The other reader's seam: a call graph built after the phase finds
+    /// the known-library document where the phase filed it, under the
+    /// same binary key. The floor behavior itself stays pinned in the
+    /// analysis crate's classification tests (issue #265); what is pinned
+    /// here is the join — the batch preamble files the very document
+    /// `build_enriched_call_graph` loads for that binary (issue #306).
+    /// Two limits travel with the join, recorded rather than hidden: the
+    /// built-in set's body match scores 60 below the Skip floor of 80,
+    /// so end-to-end `Skip` never fires on pipeline findings (issue
+    /// #309 keeps even that score off cold runs for now), and the
+    /// call-graph batch path receives a pre-built graph, so that path
+    /// still only benefits when a document already existed (spec #301).
+    #[tokio::test]
+    async fn a_call_graph_built_after_the_phase_finds_the_known_library_document() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+
+        assert!(
+            calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path()).exists(PROGRAM),
+            "the phase filed the document under the batch's binary key"
+        );
+
+        let kuna = fixture_kuna();
+        let graph = calxgloss_analysis::build_enriched_call_graph(&kuna, PROGRAM, dir.path(), None)
+            .await
+            .expect("the graph build runs over the workspace the phase produced");
+        assert!(
+            !graph.functions.is_empty(),
+            "the graph build classifies the fixture's listing"
+        );
+        assert!(
+            graph.functions.iter().all(|function| !matches!(
+                function.node_category,
+                calxgloss_types::NodeCategory::Skip
+            )),
+            "nothing in the pipeline's document meets the Skip floor of 80, so the \
+             structural cascade alone decides — the floor gate holds"
         );
     }
 

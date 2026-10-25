@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Evidence scans
+
+- **Known-library identification runs in every batch (#306)** — every batch's pre-analysis scan pass now identifies known-library functions itself, as its fifteenth scan, and files the record where the pipeline's two readers already look: `re/analysis/libmatch/<binary>.json`. Until now that document existed only after an operator ran `calxgloss libmatch` by hand, so a cold run's escalated retry prompts and call-graph classification saw the absence of a record rather than a record saying nothing; from here, every run leaves one behind, on the batch's own shared read source, using the built-in starter signature set — no operator step, no new configuration, and the `calxgloss libmatch` command and its reports behave exactly as before. A failed scan or save degrades to a warning and the batch continues, and a cached document short-circuits the scan like every other row's. One honest limit recorded rather than hidden: the built-in starter signatures are hand-authored against Ghidra pseudo-C spellings, and Kuna — the only engine — spells those shapes its own way, so today's cold runs file a metadata-carrying, findings-empty document; the readers see real identifications, and the call graph's Skip classification finally fires from pipeline-produced records, as soon as signatures can speak Kuna's dialect (issue #309). This closes the registration half of track P34.
+
 ## [0.4.0] — 2026-10-24
 
 ### Added
