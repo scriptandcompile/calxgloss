@@ -60,7 +60,7 @@ assemble the pipeline.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P37 | Assemble the pipeline once, from settings — one `PipelineSpec` seam; CLI and review UI become adapters over it, and the four divergent builder dances — including web patch-retry's quiet *lesser* pipeline (no events, no overrides) — are deleted | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
+| P37 | Assemble the pipeline once, from settings — one `PipelineSpec` seam; CLI and review UI become adapters over it, and the four divergent builder dances — including web patch-retry's quiet *lesser* pipeline (no events, no overrides) — are deleted | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | specced — `/to-tickets` next | [`#322`](https://github.com/scriptandcompile/calxgloss/issues/322) |
 | P38 | Attempt as a deep module — one attempt = prompt → LLM → verification → record, returning a verdict; the 1,272-line retry-loop body becomes attempt-selection and cancellation policy, with retry strategies as adapters at the existing internal seam | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P39 | One CLI scan command, sixteen report printers — a generic `ScanCommand` driven by P34's descriptor (load · scan · persist · show); each engine contributes its report printer and flag block only; 16 command-module skeletons and `main.rs` match arms deleted | interface (`calxgloss-cli`) + evidence (all scan crates) | — | ⬜ not started | not specced | — |
 | P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
@@ -92,7 +92,9 @@ one assembly fixes none of the others. This track closes one seam:
 settings → `PipelineSpec` → one assembly. The CLI and the review UI become
 adapters over it — two adapters make the seam real, not hypothetical — and
 the lesser-pipeline bug class is deleted rather than tracked. Source:
-architecture review (2026-10-24), candidate 4.
+architecture review (2026-10-24), candidate 4. Specced 2026-10-25: spec
+[#322](https://github.com/scriptandcompile/calxgloss/issues/322) —
+`/to-tickets` is the next step.
 
 ## P38 — Attempt as a deep module: the retry loop becomes policy (pipeline)
 
