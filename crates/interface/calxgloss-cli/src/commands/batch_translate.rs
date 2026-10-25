@@ -1,20 +1,20 @@
 //! The `batch-translate` command — translate multiple functions at once.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
-use calxgloss_translator::RetryConfig;
-use calxgloss_translator::TranslationPipeline;
-use calxgloss_translator::build_hallucination_detector;
-use calxgloss_verify::Verifier;
+use calxgloss_translator::assembly::assemble;
 use tracing::{info, warn};
 
 use crate::Settings;
 use crate::cli_types::BatchTranslateArgs;
+use crate::commands::auto::GitAcceptedAttempts;
+use crate::commands::run_options::{PassFlags, command_pass_spec};
 use crate::utils::*;
 
 /// Handle the `batch-translate` subcommand: translate multiple functions from a DLL.
@@ -44,17 +44,27 @@ pub async fn handle_batch_translate(
     // LLM is contacted — the same guard `translate` runs (issue #235).
     guard_managed_binary(&workspace, binary, target)?;
 
-    let llm_url = settings.require_llm_url()?;
-    let llm_model = settings.require_llm_model()?;
-    let context_window = settings.context_window.value;
-    let temperature = settings.temperature.value;
-    let max_retries = settings.max_retries.value;
-
-    // Parse the retry strategy from the CLI flag or config.
-    let retry_strategy = match &settings.retry_strategy {
-        Some(r) => parse_retry_strategy(&r.value)?,
-        None => RetryStrategy::CompileFix, // default
-    };
+    // The pass description (issue #326): the resolved settings folded once
+    // and this command's flags — call-graph knobs, the read-cache refresh
+    // hatch, the resolved workspace, and the named target — layered on. The
+    // batch's pass assembles from the same description shape an auto run
+    // folds, so batch results are comparable to auto results knob-for-knob:
+    // one construction, not a second builder dance. The fold refuses an
+    // unknown retry strategy up front, and a record holding no endpoint pair
+    // meets the settings layer's "not configured" guidance before any
+    // engine load.
+    let mut spec = command_pass_spec(
+        settings,
+        &workspace,
+        binary,
+        target,
+        PassFlags {
+            no_callgraph,
+            callgraph_cache,
+            callgraph_verbose,
+            refresh_cache,
+        },
+    )?;
 
     info!(
         target = ?target,
@@ -111,48 +121,6 @@ pub async fn handle_batch_translate(
     let (_, crate_src_dir) =
         setup_translation_crate(&workspace, binary).context("Failed to create output crate")?;
 
-    // Initialize LLM client
-    let mut llm_config = calxgloss_llm::LlmConfig::new(llm_url, llm_model)
-        .with_context(|| format!("Failed to parse LLM URL: {}", llm_url))?;
-
-    if let Some(key) = &settings.llm_api_key {
-        llm_config = llm_config.with_api_key(key.value.clone());
-    }
-    llm_config = llm_config
-        .with_context_window(context_window)
-        .with_temperature(temperature)
-        .with_timeout_secs(settings.llm_timeout_secs.value);
-
-    let llm = calxgloss_llm::LlmClient::new(llm_config).context("Failed to create LLM client")?;
-
-    // Initialize analyzer and test generator
-    let testgen = calxgloss_testgen::TestGenerator::new(&workspace);
-
-    // Build translation pipeline
-    let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = build_hallucination_detector(&kuna, &api_mappings).await;
-    let mut pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
-        .with_testgen(testgen)
-        .with_hallucination_detector(detector);
-    if no_callgraph {
-        pipeline = pipeline.with_no_callgraph();
-    }
-    if let Some(cache_dir) = callgraph_cache {
-        pipeline = pipeline.with_callgraph_cache_dir(cache_dir);
-    }
-    if callgraph_verbose {
-        pipeline = pipeline.with_callgraph_verbose();
-    }
-    pipeline = pipeline.with_workspace(&workspace);
-    // The batch's shared scan read cache keys on the target binary's
-    // file bytes (issue #105) — hand the pipeline the file it was given.
-    pipeline = pipeline.with_binary_path(target);
-    // The refresh escape hatch (issue #106): force the cache cold when the
-    // operator says the cached reads are stale.
-    if refresh_cache {
-        pipeline = pipeline.with_refresh_cache();
-    }
-
     // Git setup
     let mut git = if !skip_git {
         info!("Initializing git repository");
@@ -166,25 +134,36 @@ pub async fn handle_batch_translate(
         None
     };
 
-    // Initialize verifier for retry loop
-    let verifier = Verifier::new(&workspace).context("Failed to create verifier")?;
+    // Carry-over seeding (issue #299), wired exactly as the auto pass wires
+    // it (issue #326): with git in play, the pipeline can ask the branch
+    // history whether a paired previous-version twin has an accepted
+    // (merged) translation to seed attempt 1 from. With `--skip-git` there
+    // is no history to ask, and the batch translates fresh as today.
+    if let Some(git_manager) = git.as_ref() {
+        spec.accepted_attempt_source = Some(Arc::new(GitAcceptedAttempts {
+            workspace: git_manager.repo_path().to_path_buf(),
+        }));
+    }
 
-    // Configure retry behavior
-    let retry_config = RetryConfig {
-        max_attempts: max_retries,
-        strategy: retry_strategy,
-        escalate_on_failure: true,
-        max_context_tier: None,
-    };
+    // Assemble the complete pass once from the description (issue #326): the
+    // LLM client from the folded endpoint description, the detector,
+    // testgen, the verifier, and the retry policy all arrive through the
+    // seam — including the batch's read-cache key (issue #105) and the
+    // refresh escape hatch (issue #106), which the description carries now.
+    // The `with_*` builder dance is no longer the command's.
+    let pass = assemble(&spec, &kuna)
+        .await
+        .with_context(|| format!("Failed to assemble the translation pass for {binary}"))?;
 
     // Run batch translation with an inline callback that handles git operations
     // for each function immediately after it completes.
-    let batch_result = pipeline
+    let batch_result = pass
+        .pipeline
         .batch_translate(
             binary,
             &function_list,
-            &retry_config,
-            &verifier,
+            &pass.retry,
+            &pass.verifier,
             Some(&mut |_dll, _function, func_result| {
                 // A unit with no translated code — failed, or a refused
                 // root recorded skipped — has nothing to write or commit.
@@ -223,10 +202,24 @@ pub async fn handle_batch_translate(
                     if let Some(output_path_str) = output_path.to_str()
                         && let Ok(_commit) = git_manager.commit(
                             branch_info,
-                            &format!(
-                                "re/batch/{}: translate {} (batch attempt)",
-                                func_result.function, binary
-                            ),
+                            // Carry-over provenance (issue #299): when attempt
+                            // 1 rode in on an accepted translation of a paired
+                            // previous-version function, the commit says so and
+                            // names the source — the same note the auto pass
+                            // writes (issue #326). A fresh unit's message is
+                            // unchanged, byte for byte.
+                            &match func_result.carry_over.as_ref() {
+                                Some(seed) => format!(
+                                    "re/batch/{}: translate {} (batch attempt, {})",
+                                    func_result.function,
+                                    binary,
+                                    seed.commit_note()
+                                ),
+                                None => format!(
+                                    "re/batch/{}: translate {} (batch attempt)",
+                                    func_result.function, binary
+                                ),
+                            },
                             &[output_path_str],
                         )
                         && let Ok(merge_result) = git_manager.merge_to_main(branch_info)

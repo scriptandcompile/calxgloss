@@ -3,12 +3,12 @@
 //! This is the expand step of epic #322 (issue #323): the vocabulary
 //! ([`PipelineSpec`]), the single assembly function ([`assemble`]), and the
 //! assembled-pass outcome ([`AssembledPass`]). `auto` runs through the seam
-//! (issue #325): the CLI folds its resolved settings into the vocabulary and
-//! calls assembly once per pass. The remaining hand-built constructions
-//! (`translate`, `batch-translate`, web's patch-retry) keep using
+//! (issue #325), and so do `translate` and `batch-translate` (issue #326):
+//! the CLI folds its resolved settings into the vocabulary, layers each
+//! command's run options on, and calls assembly once per pass. The one
+//! remaining hand-built construction — web's patch-retry — still uses
 //! [`TranslationPipeline::new`] and the `with_*` setters until the epic's
-//! later slices fold their option types in and move those call sites through
-//! one at a time.
+//! closing slice moves that call site through.
 //!
 //! Reachability follows the epic's rule: the module is public on the crate
 //! path (`calxgloss_translator::assembly`) but the seam types are *not*
@@ -20,9 +20,10 @@
 //!
 //! Every field here corresponds to a knob that exists in the codebase today —
 //! the reference is the hand-built dance `interface/calxgloss-cli/src/
-//! commands/auto.rs` carried until issue #325 moved it through `assemble`
-//! (the same dance still verbatim in `commands/translate.rs` and
-//! `commands/batch_translate.rs`). The epic's prose names spec fields with no implementation
+//! commands/auto.rs` carried until issue #325 moved it through `assemble`,
+//! with the same dance its `commands/translate.rs` and
+//! `commands/batch_translate.rs` twins carried until issue #326 moved them
+//! through too. The epic's prose names spec fields with no implementation
 //! counterpart anywhere (a target dialect, an LLM-call budget, context-
 //! trimming limits beyond the LLM context window, toolchain paths, a testgen
 //! timeout, a `no_tests` toggle, git policy and author); those are

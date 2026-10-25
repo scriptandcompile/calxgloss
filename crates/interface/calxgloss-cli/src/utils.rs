@@ -6,7 +6,6 @@ pub use calxgloss_reports::{
     print_verification_results,
 };
 pub use calxgloss_translator::RetryStrategy;
-pub use calxgloss_verify::Verifier;
 use std::path::{Path, PathBuf};
 pub use tracing::{debug, warn};
 

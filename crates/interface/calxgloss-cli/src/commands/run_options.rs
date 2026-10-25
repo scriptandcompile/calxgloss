@@ -1,10 +1,10 @@
-//! The bundles that carry the run-wide options of the `auto` and `live`
-//! entry points.
+//! The bundles that carry the run-wide options of the translation entry
+//! points.
 //!
-//! Both commands accept the same flag surface, and both end up in the same
-//! run plumbing — `handle_auto`, `handle_live`, and `run_translation_for_dll`
-//! each used to take 14–20 positional parameters (issue #268). These structs
-//! group them by what they are:
+//! `auto` and `live` accept the same flag surface, and both end up in the
+//! same run plumbing — `handle_auto`, `handle_live`, and
+//! `run_translation_for_dll` each used to take 14–20 positional parameters
+//! (issue #268). These structs group them by what they are:
 //!
 //! - [`AutoRunOptions`] — the `auto` command's flags plus the settings and
 //!   workspace every phase needs.
@@ -17,13 +17,19 @@
 //! - [`PassPlumbing`] — one binary's translation pass: workspace, settings,
 //!   git flag, the [`PipelineSpec`] description assembly consumes, and the
 //!   [`RunControls`] it observes.
+//! - [`command_pass_spec`] — the one-target commands' pass description:
+//!   settings folded once, the command's [`PassFlags`] and named target
+//!   layered on (issue #326).
 
 use std::path::PathBuf;
+
+use anyhow::Result;
 
 use calxgloss::{
     ClassificationOverrideControl, OverrideControl, PipelineControl, ScopeControl, StopSignal,
     TranslationEvents, UnitCancellation,
 };
+use calxgloss_translator::assembly::BinaryTarget;
 use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_web::LogLevelControl;
 
@@ -165,9 +171,182 @@ pub struct PassPlumbing<'a> {
     pub run: &'a RunControls<'a>,
 }
 
+/// The call-graph and read-cache flags a single-target translation command
+/// layers onto its pass description — the same four fields `AutoRunOptions`
+/// carries per run (issue #268's bundle convention), as one group (issue
+/// #326).
+#[derive(Clone, Default)]
+pub struct PassFlags {
+    /// Skip call-graph analysis for this run.
+    pub no_callgraph: bool,
+    /// Directory holding the cached call graph.
+    pub callgraph_cache: Option<PathBuf>,
+    /// Log call-graph diagnostics.
+    pub callgraph_verbose: bool,
+    /// Force the batch's shared scan read cache cold (issue #106).
+    pub refresh_cache: bool,
+}
+
+/// Build the pass description one single-target command run assembles (issue
+/// #326): the resolved settings folded once (issue #324), then this command's
+/// run options layered on — the resolved workspace, its call-graph and cache
+/// flags, and the binary it names.
+///
+/// This is the same data move `handle_auto` performs inline on its base
+/// description (issue #325), minus the live control handles only `auto` and
+/// `live` carry: the three commands end up with descriptions folded from the
+/// one fold, so an assembled pass honors the settings knobs identically
+/// whichever command typed the run.
+///
+/// A record with no endpoint pair is refused here with the settings layer's
+/// "not configured" guidance — naming every layer that can supply one —
+/// rather than the assembly seam's internal `MissingLlm` wording, exactly as
+/// `handle_auto` refuses.
+pub fn command_pass_spec(
+    settings: &Settings,
+    workspace: &std::path::Path,
+    binary: &str,
+    target: &std::path::Path,
+    flags: PassFlags,
+) -> Result<PipelineSpec> {
+    let mut spec = crate::settings::pipeline_spec(settings)?;
+    if spec.llm.is_none() {
+        settings.require_llm_url()?;
+        settings.require_llm_model()?;
+    }
+    // The resolved workspace (--workspace > settings > CWD) wins over the
+    // record's own value: the flag layer is what the command was handed.
+    spec.workspace = workspace.to_path_buf();
+    spec.no_callgraph = flags.no_callgraph;
+    spec.callgraph_cache_dir = flags.callgraph_cache;
+    spec.callgraph_verbose = flags.callgraph_verbose;
+    spec.refresh_cache = flags.refresh_cache;
+    spec.target_binary = Some(BinaryTarget {
+        name: binary.to_string(),
+        path: target.to_path_buf(),
+    });
+    Ok(spec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_config::{AnalysisSection, LlmSection};
+    use calxgloss_translator::assembly::LlmSelection;
+
+    /// Resolve a record from the file and flag layers, bypassing env and the
+    /// real config search (the settings module's fold tests are the prior
+    /// art for this helper).
+    fn settings_from(
+        flags: calxgloss_config::FileConfig,
+        file: calxgloss_config::FileConfig,
+    ) -> Settings {
+        let layers = calxgloss_config::Layers {
+            file,
+            ..Default::default()
+        };
+        let loaded = calxgloss_config::LoadedConfig {
+            file: layers.file.clone(),
+            path: None,
+            searched: vec![PathBuf::from("calxgloss.toml")],
+        };
+        Settings::resolve(&layers, flags, &loaded)
+    }
+
+    #[test]
+    fn the_command_description_carries_the_settings_knobs_and_the_command_flags() {
+        // Issue #326: `translate` and `batch-translate` build their pass from the
+        // same fold `auto` reads — every knob the record resolved rides the
+        // description verbatim, and the command's own flags layer on top. The
+        // pass assembled from this description honors those knobs whichever
+        // command typed the run.
+        let file = calxgloss_config::FileConfig {
+            workspace: Some("/home/dev/from-settings".into()),
+            llm: LlmSection {
+                url: Some("http://127.0.0.1:1919/v1".into()),
+                model: Some("Qwen".into()),
+                api_key: Some("sk-secret".into()),
+                max_retries: Some(9),
+                strategy: Some("test_fix".into()),
+                ..Default::default()
+            },
+            analysis: AnalysisSection {
+                max_fn_instructions: Some(5000),
+                max_fn_seconds: Some(30),
+                max_fn_memory_mib: Some(512),
+            },
+            ..Default::default()
+        };
+        let s = settings_from(Default::default(), file);
+        let spec = command_pass_spec(
+            &s,
+            std::path::Path::new("/run/workspace"),
+            "fixture_target.dll",
+            std::path::Path::new("/targets/fixture_target.dll"),
+            PassFlags {
+                no_callgraph: true,
+                callgraph_cache: Some(PathBuf::from("/tmp/cg-cache")),
+                callgraph_verbose: true,
+                refresh_cache: true,
+            },
+        )
+        .expect("a resolved record folds without complaint");
+        let Some(LlmSelection::Description(desc)) = spec.llm.as_ref() else {
+            panic!("the fold hands over the endpoint description the record resolved");
+        };
+        assert_eq!(desc.endpoint, "http://127.0.0.1:1919/v1");
+        assert_eq!(desc.model, "Qwen");
+        assert_eq!(desc.api_key.as_deref(), Some("sk-secret"));
+        assert_eq!(spec.retry_max_attempts, Some(9));
+        assert_eq!(
+            spec.retry_strategy,
+            Some(calxgloss_types::RetryStrategy::TestFix)
+        );
+        assert_eq!(spec.kuna_budget.max_instructions, Some(5000));
+        // The workspace the command resolved wins over the record's own value.
+        assert_eq!(spec.workspace, PathBuf::from("/run/workspace"));
+        // Command-specific flags layer on top of the record's description.
+        assert!(spec.no_callgraph, "--no-callgraph reaches the description");
+        assert_eq!(
+            spec.callgraph_cache_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/cg-cache")),
+            "--callgraph-cache reaches the description"
+        );
+        assert!(
+            spec.callgraph_verbose,
+            "--callgraph-verbose reaches the description"
+        );
+        assert!(
+            spec.refresh_cache,
+            "--refresh-cache reaches the description"
+        );
+        // The binary the command names rides as one target: report identity
+        // and read-cache key together.
+        let target = spec.target_binary.expect("the command names its target");
+        assert_eq!(target.name, "fixture_target.dll");
+        assert_eq!(target.path, PathBuf::from("/targets/fixture_target.dll"));
+    }
+
+    #[test]
+    fn a_record_without_an_endpoint_pair_is_refused_with_settings_guidance() {
+        // A translation pass always needs an LLM. The command's description
+        // build refuses with the settings layer's guidance wording — naming
+        // the flag, the env var, and the config table — before any engine
+        // load, exactly like `auto` and the old inline `require_*` ladders.
+        let s = settings_from(Default::default(), Default::default());
+        let err = match command_pass_spec(
+            &s,
+            std::path::Path::new("/run/workspace"),
+            "fixture_target.dll",
+            std::path::Path::new("/targets/fixture_target.dll"),
+            PassFlags::default(),
+        ) {
+            Ok(_) => panic!("no LLM must not fold into a runnable pass description"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("--llm-url"), "{err}");
+        assert!(err.contains("CALXGLOSS_LLM_URL"), "{err}");
+    }
 
     #[test]
     fn run_control_handles_layer_onto_the_pass_description() {

@@ -1,6 +1,7 @@
 //! The `translate` command — translate a single function.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use calxgloss::ContextTier;
@@ -10,15 +11,16 @@ use calxgloss_config::Resolved;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
-use calxgloss_translator::RetryConfig;
 use calxgloss_translator::Translation;
-use calxgloss_translator::TranslationPipeline;
-use calxgloss_translator::build_hallucination_detector;
+use calxgloss_translator::assembly::LlmSelection;
+use calxgloss_translator::assembly::assemble;
 use calxgloss_verify::VerificationResult;
 use tracing::{error, info, warn};
 
 use crate::Settings;
 use crate::cli_types::TranslateArgs;
+use crate::commands::auto::GitAcceptedAttempts;
+use crate::commands::run_options::{PassFlags, command_pass_spec};
 use crate::utils::*;
 
 /// Handle the `translate` subcommand: translate a single function from disassembly.
@@ -46,20 +48,26 @@ pub async fn handle_translate(
     // assembly's IL is not in the disassembly the translator reads (#235).
     guard_managed_binary(&workspace, binary, target)?;
 
-    // Demanded here rather than at startup: `classify` and `verify` never talk
-    // to the LLM, so making the endpoint mandatory for them would force users
-    // to configure something they do not use.
-    let llm_url = settings.require_llm_url()?;
-    let llm_model = settings.require_llm_model()?;
-    let context_window = settings.context_window.value;
-    let temperature = settings.temperature.value;
-    let max_retries = settings.max_retries.value;
-
-    // Parse the retry strategy from the CLI flag or config.
-    let retry_strategy = match &settings.retry_strategy {
-        Some(r) => parse_retry_strategy(&r.value)?,
-        None => RetryStrategy::CompileFix, // default
-    };
+    // The pass description (issue #326): the resolved settings folded once
+    // and this command's flags, the resolved workspace, and the named binary
+    // layered on — the same fold-and-assembly route an auto run takes, minus
+    // the run's stop/pause controls, which stay command-side. The fold
+    // refuses an unknown retry strategy up front, and a record holding no
+    // endpoint pair meets the settings layer's "not configured" guidance
+    // here — demanded at the command that talks to the LLM, before any
+    // engine load, since `classify` and `verify` never do.
+    let mut spec = command_pass_spec(
+        settings,
+        &workspace,
+        binary,
+        target,
+        PassFlags {
+            no_callgraph,
+            callgraph_cache,
+            callgraph_verbose,
+            refresh_cache: false,
+        },
+    )?;
 
     // Logging the layer that supplied the endpoint is what makes a surprising
     // model name diagnosable from a log alone.
@@ -68,16 +76,27 @@ pub async fn handle_translate(
             .map_or_else(|| "unset".to_string(), |r| r.source.to_string())
     };
 
-    info!(
-        target = ?target,
-        binary = %binary,
-        function = %function,
-        llm_url = %llm_url,
-        llm_url_source = source_of(&settings.llm_url),
-        llm_model = %llm_model,
-        llm_model_source = source_of(&settings.llm_model),
-        "Starting translation"
-    );
+    let Some(llm) = spec.llm.as_ref() else {
+        // `command_pass_spec` refuses a record without an endpoint pair, so
+        // this is already unreachable; say so as an error, not a panic.
+        anyhow::bail!("the pass description carries no LLM selection");
+    };
+    let llm_model_name = match llm {
+        LlmSelection::Description(desc) => {
+            info!(
+                target = ?target,
+                binary = %binary,
+                function = %function,
+                llm_url = %desc.endpoint,
+                llm_url_source = source_of(&settings.llm_url),
+                llm_model = %desc.model,
+                llm_model_source = source_of(&settings.llm_model),
+                "Starting translation"
+            );
+            desc.model.clone()
+        }
+        LlmSelection::Client(client) => client.model().to_string(),
+    };
 
     // `target` is the path the function is being translated out of: the
     // Kuna engine loads the file itself, so the same path feeds both the
@@ -93,42 +112,6 @@ pub async fn handle_translate(
     // command line is the program the scan reads.
     let kuna = load_kuna_at(settings, target)?;
 
-    // Initialize LLM client
-    let mut llm_config = calxgloss_llm::LlmConfig::new(llm_url, llm_model)
-        .with_context(|| format!("Failed to parse LLM URL: {}", llm_url))?;
-
-    if let Some(key) = &settings.llm_api_key {
-        llm_config = llm_config.with_api_key(key.value.clone());
-    }
-    llm_config = llm_config
-        .with_context_window(context_window)
-        .with_temperature(temperature)
-        .with_timeout_secs(settings.llm_timeout_secs.value);
-
-    let llm = calxgloss_llm::LlmClient::new(llm_config).context("Failed to create LLM client")?;
-
-    // Initialize analyzer and test generator
-    let testgen = calxgloss_testgen::TestGenerator::new(&workspace);
-
-    let llm_model_name = llm.model().to_string();
-
-    // Build translation pipeline
-    let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = build_hallucination_detector(&kuna, &api_mappings).await;
-    let mut pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
-        .with_testgen(testgen)
-        .with_hallucination_detector(detector);
-    if no_callgraph {
-        pipeline = pipeline.with_no_callgraph();
-    }
-    if let Some(cache_dir) = callgraph_cache {
-        pipeline = pipeline.with_callgraph_cache_dir(cache_dir);
-    }
-    if callgraph_verbose {
-        pipeline = pipeline.with_callgraph_verbose();
-    }
-    pipeline = pipeline.with_workspace(&workspace);
-
     // Git setup
     let mut git = if !skip_git {
         info!("Initializing git repository");
@@ -142,18 +125,29 @@ pub async fn handle_translate(
         None
     };
 
-    // Initialize verifier for retry loop
-    let verifier = Verifier::new(&workspace).context("Failed to create verifier")?;
+    // Carry-over seeding (issue #299), wired exactly as the auto pass wires
+    // it (issue #326): with git in play, the pipeline can ask the branch
+    // history whether a paired previous-version twin has an accepted
+    // (merged) translation to seed attempt 1 from. With `--skip-git` there
+    // is no history to ask, and the unit translates fresh as today.
+    if let Some(git_manager) = git.as_ref() {
+        spec.accepted_attempt_source = Some(Arc::new(GitAcceptedAttempts {
+            workspace: git_manager.repo_path().to_path_buf(),
+        }));
+    }
 
-    // Configure retry behavior
-    let retry_config = RetryConfig {
-        max_attempts: max_retries,
-        strategy: retry_strategy,
-        escalate_on_failure: true,
-        max_context_tier: None,
-    };
-    let retry_result = pipeline
-        .try_translate_with_retry(binary, function, &retry_config, &verifier)
+    // Assemble the complete pass once from the description (issue #326): the
+    // LLM client from the folded endpoint description, the detector,
+    // testgen, the verifier, and the retry policy all arrive through the
+    // seam — the `with_*` builder dance and the hand-built retry-config
+    // ladder are no longer the command's.
+    let pass = assemble(&spec, &kuna)
+        .await
+        .with_context(|| format!("Failed to assemble the translation pass for {binary}"))?;
+
+    let retry_result = pass
+        .pipeline
+        .try_translate_with_retry(binary, function, &pass.retry, &pass.verifier)
         .await
         .with_context(|| format!("Translation with retry failed for {}", function))?;
 
@@ -182,7 +176,7 @@ pub async fn handle_translate(
             yellow_bold(&format!(
                 "Attempt {}/{} (strategy: {}) — {}",
                 attempt.attempt,
-                retry_config.max_attempts,
+                pass.retry.max_attempts,
                 attempt.strategy,
                 if attempt.is_successful() {
                     green_bold("PASS")
@@ -291,7 +285,7 @@ pub async fn handle_translate(
                     context_tier: ContextTier::WithTests,
                 });
                 break;
-            } else if attempt.attempt >= retry_config.max_attempts {
+            } else if attempt.attempt >= pass.retry.max_attempts {
                 // Last attempt failed — show failure status
                 print_failure(
                     branch_info,
@@ -335,7 +329,7 @@ pub async fn handle_translate(
             );
             return Err(anyhow::anyhow!(
                 "All {} translation attempts failed for {} ({})",
-                max_retries,
+                pass.retry.max_attempts,
                 b.function,
                 b.binary
             ));

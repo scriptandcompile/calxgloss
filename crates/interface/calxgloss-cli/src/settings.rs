@@ -243,9 +243,9 @@ impl Settings {
 /// that module's docs).
 ///
 /// `auto` reads through the fold and hands the description to assembly
-/// (issue #325). The remaining hand-built dances — `translate`,
-/// `batch-translate`, and web's patch retry — move onto `assemble` one at a
-/// time in the follow-up slices of epic #322.
+/// (issue #325), and `translate` and `batch-translate` follow through
+/// `command_pass_spec` (issue #326). The one hand-built dance left — web's
+/// patch retry — moves onto `assemble` in epic #322's closing slice.
 pub fn pipeline_spec(s: &Settings) -> Result<PipelineSpec> {
     let llm = match (s.llm_url.as_ref(), s.llm_model.as_ref()) {
         (Some(url), Some(model)) => Some(LlmSelection::Description(LlmDescription {

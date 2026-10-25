@@ -49,14 +49,15 @@ impl PassOutcome {
 }
 
 /// The pipeline's window onto the git history for carry-over seeding
-/// (issue #299): where an accepted (merged) translation's code lives.
+/// (issue #326): where an accepted (merged) translation's code lives.
 ///
 /// The translator crate never touches git, so the CLI layer implements the
 /// port — one `GitManager::open` per lookup keeps the handle short-lived
-/// (the auto pass itself holds its own manager and may have a branch
-/// checked out; opening fresh reads history without disturbing it).
-struct GitAcceptedAttempts {
-    workspace: PathBuf,
+/// (the pass itself holds its own manager and may have a branch checked
+/// out; opening fresh reads history without disturbing it). Every command
+/// that wires the seam attaches this port when git is in play (issue #299).
+pub(crate) struct GitAcceptedAttempts {
+    pub(crate) workspace: PathBuf,
 }
 
 impl AcceptedAttemptSource for GitAcceptedAttempts {
