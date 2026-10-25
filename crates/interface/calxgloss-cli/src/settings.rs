@@ -11,6 +11,9 @@ use anyhow::{Result, bail};
 use calxgloss_config::{
     AnalysisSection, EXAMPLE, FileConfig, Layers, LlmSection, LoadedConfig, Resolved, defaults,
 };
+use calxgloss_translator::assembly::{LlmDescription, LlmSelection, PipelineSpec};
+
+use crate::utils::parse_retry_strategy;
 
 /// Every setting the commands need, after layering.
 ///
@@ -214,6 +217,64 @@ impl Settings {
             max_fn_memory_mib: self.max_fn_memory_mib.as_ref().map(|r| r.value),
         }
     }
+}
+
+/// Fold the resolved record into the pipeline description: the single place
+/// settings are read for pipeline purposes (issue #324).
+///
+/// The fold is pure data in, description out — no engine loading, no LLM
+/// client construction (the spec's endpoint description defers the client to
+/// assembly, per the seam's `MissingLlm` contract), no I/O. It is a named
+/// function rather than a `From`/`Into` impl because the conversion is
+/// fallible — an unknown retry-strategy name is refused, and `From`/`Into`
+/// must be infallible — and it lives in the CLI, never in the settings
+/// crate, which as a leaf cannot name pipeline types at all (issue #322's
+/// dependency-direction rule).
+///
+/// The record carries exactly the knobs it resolves: the LLM selection, the
+/// Kuna budgets, the retry policy, and the workspace. Two more spec knobs —
+/// patch mode and the target binary — name the *run*, not the settings, and
+/// belong to whichever facade drives the pass. And the epic's remaining
+/// names (testgen toggle and timeout, dialect, max LLM calls, trimming
+/// limits, toolchain paths, API mappings, git policy and author) have no
+/// settings counterpart — the config schema never grew them — so there is
+/// nothing to carry; they join the fold alongside the settings keys that
+/// introduce them, for the same reason `PipelineSpec` left them out (see
+/// that module's docs).
+///
+/// No production command reads through the fold yet — the ticket's scope is
+/// the conversion itself; the follow-up slices move the four hand-built
+/// dances onto `assemble` one at a time.
+#[allow(dead_code)]
+pub fn pipeline_spec(s: &Settings) -> Result<PipelineSpec> {
+    let llm = match (s.llm_url.as_ref(), s.llm_model.as_ref()) {
+        (Some(url), Some(model)) => Some(LlmSelection::Description(LlmDescription {
+            endpoint: url.value.clone(),
+            model: model.value.clone(),
+            api_key: s.llm_api_key.as_ref().map(|r| r.value.clone()),
+            context_window: Some(s.context_window.value),
+            temperature: Some(s.temperature.value),
+            timeout_secs: Some(s.llm_timeout_secs.value),
+        })),
+        _ => None,
+    };
+    let retry_strategy = s
+        .retry_strategy
+        .as_ref()
+        .map(|r| parse_retry_strategy(&r.value))
+        .transpose()?;
+    Ok(PipelineSpec {
+        llm,
+        workspace: s
+            .workspace
+            .as_ref()
+            .map(|r| PathBuf::from(&r.value))
+            .unwrap_or_default(),
+        kuna_budget: s.kuna_budget(),
+        retry_max_attempts: Some(s.max_retries.value),
+        retry_strategy,
+        ..PipelineSpec::default()
+    })
 }
 
 /// How to describe a setting that no layer supplied.
@@ -542,6 +603,193 @@ mod tests {
         assert!(out.contains("max_fn_instructions <not set>"), "{out}");
         assert!(out.contains("max_fn_seconds <not set>"), "{out}");
         assert!(out.contains("max_fn_memory_mib <not set>"), "{out}");
+    }
+
+    #[test]
+    fn test_the_fold_carries_a_configured_llm_as_an_endpoint_description() {
+        // Issue #324: the fold hands over what the record *resolved*, as data —
+        // never a built client. Even the defaulted knobs (window, temperature,
+        // timeout) ride along verbatim: the user's resolved record is what
+        // runs, not the llm crate's own defaults.
+        let file = FileConfig {
+            llm: LlmSection {
+                url: Some("http://127.0.0.1:1919/v1".into()),
+                model: Some("Qwen".into()),
+                api_key: Some("sk-secret".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
+        let Some(LlmSelection::Description(desc)) = spec.llm.as_ref() else {
+            panic!("the fold must hand over an endpoint description, not a client");
+        };
+        assert_eq!(desc.endpoint, "http://127.0.0.1:1919/v1");
+        assert_eq!(desc.model, "Qwen");
+        assert_eq!(desc.api_key.as_deref(), Some("sk-secret"));
+        assert_eq!(desc.context_window, Some(8192));
+        assert_eq!(desc.temperature, Some(0.1));
+        assert_eq!(desc.timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn test_an_llm_missing_its_model_folds_to_no_selection() {
+        // A url without a model (or the reverse) cannot describe an endpoint
+        // pair. The fold stays silent rather than inventing half a selection:
+        // assembly then fails with `MissingLlm`, loudly, instead of a pass
+        // quietly talking to a half-configured endpoint.
+        let s = settings_from(
+            FileConfig::default(),
+            FileConfig {
+                llm: LlmSection {
+                    url: Some("http://127.0.0.1:1919/v1".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
+        assert!(spec.llm.is_none());
+    }
+
+    #[test]
+    fn test_the_fold_carries_configured_kuna_budgets_into_the_description() {
+        // Issue #211's budgets must bind the patch pass's engine load: the
+        // spec carries them verbatim, unset knobs included, so `assemble`
+        // honors exactly what the record resolved.
+        let file = FileConfig {
+            analysis: AnalysisSection {
+                max_fn_instructions: Some(5000),
+                max_fn_seconds: Some(30),
+                max_fn_memory_mib: Some(512),
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
+        assert_eq!(spec.kuna_budget.max_instructions, Some(5000));
+        assert_eq!(spec.kuna_budget.max_fn_seconds, Some(30));
+        assert_eq!(spec.kuna_budget.max_fn_memory_mib, Some(512));
+    }
+
+    #[test]
+    fn test_the_fold_carries_the_retry_policy_into_the_description() {
+        // The hand-built `RetryConfig` ladder read these two fields at three
+        // call sites; the fold now carries them once. The strategy string is
+        // folded into the domain type so the parse ladder — including its
+        // rejection of unknown names — appears once too.
+        let file = FileConfig {
+            llm: LlmSection {
+                max_retries: Some(9),
+                strategy: Some("test_fix".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
+        assert_eq!(spec.retry_max_attempts, Some(9));
+        assert_eq!(
+            spec.retry_strategy,
+            Some(calxgloss_types::RetryStrategy::TestFix)
+        );
+    }
+
+    #[test]
+    fn test_an_unset_strategy_stays_unset_for_the_ladder_default() {
+        // Today's ladder defaults an absent strategy to compile-fix; the
+        // fold leaves the knob unset rather than pre-applying that default,
+        // so assembly (whose default is the same) owns the fallback once.
+        let s = settings_from(FileConfig::default(), FileConfig::default());
+        let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
+        assert_eq!(spec.retry_strategy, None);
+    }
+
+    #[test]
+    fn test_an_unknown_strategy_is_a_fold_error_not_a_dropped_setting() {
+        // The commands reject unknown strategy names today (three copies of
+        // the same bail); the fold keeps that refusal rather than quietly
+        // falling back to the default and dropping what the user wrote.
+        let s = settings_from(
+            FileConfig::default(),
+            FileConfig {
+                llm: LlmSection {
+                    strategy: Some("wing_it".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let err = match pipeline_spec(&s) {
+            Ok(_) => panic!("an unknown strategy must not fold into a default"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("wing_it"), "{err}");
+    }
+
+    #[test]
+    fn test_the_fold_carries_a_configured_workspace_into_the_description() {
+        // The workspace roots the pipeline's testgen, verifier, and caches;
+        // when the record resolved one, the description carries it. An
+        // unconfigured record leaves the field default — `resolve_workspace`
+        // still supplies the fallback at the call sites until they move.
+        let s = settings_from(
+            FileConfig::default(),
+            FileConfig {
+                workspace: Some("/home/dev/glossed".into()),
+                ..Default::default()
+            },
+        );
+        let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
+        assert_eq!(
+            spec.workspace,
+            std::path::PathBuf::from("/home/dev/glossed")
+        );
+
+        let unset = settings_from(FileConfig::default(), FileConfig::default());
+        let spec = pipeline_spec(&unset).expect("the fold is total for a resolved record");
+        assert_eq!(spec.workspace, std::path::PathBuf::new());
+    }
+
+    #[test]
+    fn test_the_fold_fabricates_no_knob_the_record_does_not_carry() {
+        // Per-pass knobs belong to the facade that runs the pass — a settings
+        // record cannot say "this run is a patch retry" or name a binary.
+        // A fully-populated record still leaves every one of them unset.
+        let file = FileConfig {
+            target_dir: Some("/home/dev/targets".into()),
+            workspace: Some("/home/dev/glossed".into()),
+            llm: LlmSection {
+                url: Some("http://127.0.0.1:1919/v1".into()),
+                model: Some("Qwen".into()),
+                api_key: Some("sk-secret".into()),
+                max_retries: Some(9),
+                strategy: Some("escalate".into()),
+                ..Default::default()
+            },
+            analysis: AnalysisSection {
+                max_fn_instructions: Some(5000),
+                max_fn_seconds: Some(30),
+                max_fn_memory_mib: Some(512),
+            },
+        };
+        let s = settings_from(FileConfig::default(), file);
+        let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
+        assert!(!spec.patch_mode);
+        assert!(spec.target_binary.is_none());
+        assert!(spec.api_mappings.is_none());
+        assert!(!spec.no_callgraph);
+        assert!(!spec.callgraph_verbose);
+        assert!(spec.callgraph_cache_dir.is_none());
+        assert!(!spec.refresh_cache);
+        assert!(spec.accepted_attempt_source.is_none());
+        assert!(spec.events.is_none());
+        assert!(spec.stop.is_none());
+        assert!(spec.pipeline_control.is_none());
+        assert!(spec.unit_cancellation.is_none());
+        assert!(spec.scope.is_none());
+        assert!(spec.overrides.is_none());
     }
 
     #[test]

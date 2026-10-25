@@ -181,6 +181,44 @@ pub struct PipelineSpec {
     pub overrides: Option<OverrideControl>,
 }
 
+/// Field view: one injected port (`AcceptedAttemptSource`) is a trait object
+/// without `Debug`, so it prints as set-or-unset rather than inline; the
+/// mapping table prints the same way because the table itself is noise next
+/// to the question "did the caller supply one?" (precedent: the manual
+/// `Debug` on [`AssembledPass`]). Enumerates every field: add new fields to
+/// this impl when adding them to the struct.
+impl std::fmt::Debug for PipelineSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PipelineSpec")
+            .field("llm", &self.llm)
+            .field("workspace", &self.workspace)
+            .field("patch_mode", &self.patch_mode)
+            .field("target_binary", &self.target_binary)
+            .field("kuna_budget", &self.kuna_budget)
+            .field(
+                "api_mappings",
+                &self.api_mappings.as_ref().map(|_| "custom"),
+            )
+            .field("retry_max_attempts", &self.retry_max_attempts)
+            .field("retry_strategy", &self.retry_strategy)
+            .field("no_callgraph", &self.no_callgraph)
+            .field("callgraph_verbose", &self.callgraph_verbose)
+            .field("callgraph_cache_dir", &self.callgraph_cache_dir)
+            .field("refresh_cache", &self.refresh_cache)
+            .field(
+                "accepted_attempt_source",
+                &self.accepted_attempt_source.as_ref().map(|_| "port"),
+            )
+            .field("events", &self.events)
+            .field("stop", &self.stop)
+            .field("pipeline_control", &self.pipeline_control)
+            .field("unit_cancellation", &self.unit_cancellation)
+            .field("scope", &self.scope)
+            .field("overrides", &self.overrides)
+            .finish()
+    }
+}
+
 /// A pass ready to run: the wired pipeline, its verifier, and its retry
 /// configuration — what a facade's command body reaches for once assembly is
 /// done, and what the retry loop consumes.
