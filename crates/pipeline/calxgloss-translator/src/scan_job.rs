@@ -173,6 +173,19 @@ impl ScanJob {
         }
     }
 
+    /// The registry's view of this job: the same owned reads without the
+    /// scan phase's completion latch (issue #302). A row that must order
+    /// with another scan will get the latch through its hooks when that
+    /// edge migrates, not through the handle, so the phase can hand a
+    /// registered scan exactly what its descriptor consumes.
+    pub(crate) fn scan_context(&self) -> crate::scan_registry::ScanContext {
+        crate::scan_registry::ScanContext {
+            binary: self.binary.clone(),
+            workspace: self.workspace.clone(),
+            source: self.source.clone(),
+        }
+    }
+
     /// Run one scan's engine call, persist its document, and degrade to a
     /// warning when either step fails — the shape every evidence scan
     /// shares. Returns whether the document is in place afterwards.

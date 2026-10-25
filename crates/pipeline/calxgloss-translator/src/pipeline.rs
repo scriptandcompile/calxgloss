@@ -66,6 +66,7 @@ use crate::batch;
 use crate::error::{Result, TranslatorError};
 use crate::retry;
 use crate::scan_job::{ScanJob, TypeInferenceLatch};
+use crate::scan_registry::{ScanDescriptor, scan_rows};
 
 /// The pass name the scan phase's heartbeat carries: one honest
 /// "n of m functions consumed" row for the whole group of fourteen
@@ -96,15 +97,19 @@ const SCAN_PHASE: &str = "evidence scans";
 const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 
 /// One evidence scan as the fan-out's unit of work: takes its owned
-/// [`ScanJob`] and hands back the boxed scan future. The fourteen scans'
-/// futures are fourteen distinct types, so the window boxes them to move
-/// them onto tasks (issue #240).
-type EvidenceScanTask = fn(ScanJob) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+/// [`ScanJob`] and hands back the boxed scan future. The scans' futures
+/// are distinct types, so the window boxes them to move them onto tasks
+/// (issue #240). Registered rows enter as capturing thunks, hence the
+/// boxed `FnOnce` rather than the plain `fn` pointer this was (issue #302).
+type EvidenceScanTask =
+    Box<dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'static>;
 
-// The fourteen scans as task-ready async fns. Their futures are boxed at
+// The legacy scans as task-ready async fns. Their futures are boxed at
 // spawn time rather than in closure position — the compiler cannot prove
 // a boxed `async` block inside a closure is `'static` (rust#100013),
-// while a named async fn's future is `'static` by signature.
+// while a named async fn's future is `'static` by signature. The scans
+// that have migrated to a registry row leave this list, one at a time,
+// while the migration runs (issue #302).
 async fn scan_type_database(job: ScanJob) {
     job.type_database().await;
 }
@@ -114,18 +119,34 @@ async fn scan_type_inference(job: ScanJob) {
 async fn scan_algorithm_recognition(job: ScanJob) {
     job.algorithm_recognition().await;
 }
+/// The memory scan's legacy wrapper: its registry row (issue #303) now
+/// runs the scan inside the phase, so nothing in the phase reaches this;
+/// it stays until the migration deletes the legacy scan plumbing, which
+/// is why it is kept compiling rather than removed here.
+#[allow(dead_code)]
 async fn scan_memory_detection(job: ScanJob) {
     job.memory_detection().await;
 }
+/// The concurrency scan's legacy wrapper, kept compiling for the same
+/// reason as [`scan_memory_detection`] (issue #303).
+#[allow(dead_code)]
 async fn scan_sync_detection(job: ScanJob) {
     job.sync_detection().await;
 }
+/// The global-state scan's legacy wrapper, kept compiling for the same
+/// reason as [`scan_memory_detection`] (issue #303).
+#[allow(dead_code)]
 async fn scan_global_state_detection(job: ScanJob) {
     job.global_state_detection().await;
 }
 async fn scan_callback_detection(job: ScanJob) {
     job.callback_detection().await;
 }
+/// The control-flow scan's legacy wrapper: its registry row (issue #302)
+/// now runs the scan inside the phase, so nothing in the phase reaches
+/// this; it stays until the migration deletes the legacy scan plumbing,
+/// which is why it is kept compiling rather than removed here.
+#[allow(dead_code)]
 async fn scan_controlflow_detection(job: ScanJob) {
     job.controlflow_detection().await;
 }
@@ -135,15 +156,24 @@ async fn scan_string_context(job: ScanJob) {
 async fn scan_api_detection(job: ScanJob) {
     job.api_detection().await;
 }
+/// The constants scan's legacy wrapper, kept compiling for the same
+/// reason as [`scan_memory_detection`] (issue #303).
+#[allow(dead_code)]
 async fn scan_const_detection(job: ScanJob) {
     job.const_detection().await;
 }
 async fn scan_serialize_detection(job: ScanJob) {
     job.serialize_detection().await;
 }
+/// The error-handling scan's legacy wrapper, kept compiling for the same
+/// reason as [`scan_memory_detection`] (issue #303).
+#[allow(dead_code)]
 async fn scan_error_handling_detection(job: ScanJob) {
     job.error_handling_detection().await;
 }
+/// The float/SIMD scan's legacy wrapper, kept compiling for the same
+/// reason as [`scan_memory_detection`] (issue #303).
+#[allow(dead_code)]
 async fn scan_floatsimd_detection(job: ScanJob) {
     job.floatsimd_detection().await;
 }
@@ -165,31 +195,53 @@ async fn run_scan_in_window(
     in_flight.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// The fourteen evidence scans in today's spawn order — type database,
-/// type inference, algorithm recognition, memory, sync, global state,
-/// callback, control flow, string context, api, const, serialize, error
-/// handling, and float/SIMD. The order is only the order they enter the window: the
-/// scans no longer run in a fixed order, and the one real ordering edge —
-/// callback detection awaiting type inference's completion latch — rides
-/// the latch itself, not this list (issue #238, fan-out issue #240,
-/// errhandling join #292).
+/// The legacy evidence scans that have not migrated to a registry row
+/// yet, in today's spawn order — type database, type inference, algorithm
+/// recognition, callback, string context, api, and serialize (control
+/// flow migrated to its row in issue #302; the six body-reading scans —
+/// memory, sync, global state, const, error handling, and float/SIMD —
+/// in issue #303). The order is only the order they
+/// enter the window: the scans no longer run in a fixed order, and the
+/// one real ordering edge — callback detection awaiting type inference's
+/// completion latch — rides the latch itself, not this list (issue #238,
+/// fan-out issue #240, errhandling join #292).
 fn evidence_scan_tasks() -> Vec<EvidenceScanTask> {
     vec![
-        |job| Box::pin(scan_type_database(job)),
-        |job| Box::pin(scan_type_inference(job)),
-        |job| Box::pin(scan_algorithm_recognition(job)),
-        |job| Box::pin(scan_memory_detection(job)),
-        |job| Box::pin(scan_sync_detection(job)),
-        |job| Box::pin(scan_global_state_detection(job)),
-        |job| Box::pin(scan_callback_detection(job)),
-        |job| Box::pin(scan_controlflow_detection(job)),
-        |job| Box::pin(scan_string_context(job)),
-        |job| Box::pin(scan_api_detection(job)),
-        |job| Box::pin(scan_const_detection(job)),
-        |job| Box::pin(scan_serialize_detection(job)),
-        |job| Box::pin(scan_error_handling_detection(job)),
-        |job| Box::pin(scan_floatsimd_detection(job)),
+        Box::new(|job| Box::pin(scan_type_database(job))),
+        Box::new(|job| Box::pin(scan_type_inference(job))),
+        Box::new(|job| Box::pin(scan_algorithm_recognition(job))),
+        Box::new(|job| Box::pin(scan_callback_detection(job))),
+        Box::new(|job| Box::pin(scan_string_context(job))),
+        Box::new(|job| Box::pin(scan_api_detection(job))),
+        Box::new(|job| Box::pin(scan_serialize_detection(job))),
     ]
+}
+
+/// One registered row as the phase runs it: the row reads the batch
+/// through the job's owned context and reports its own outcome; the
+/// phase's window, heartbeat, and joins wrap it from outside (issue #302).
+async fn run_registered_scan(row: ScanDescriptor, job: ScanJob) {
+    row.run(job.scan_context()).await;
+}
+
+/// The registered rows as task-ready thunks: each row moves into its own
+/// thunk, exactly the way a legacy scan's future moves onto its task.
+fn registered_scan_tasks() -> Vec<EvidenceScanTask> {
+    scan_rows()
+        .into_iter()
+        .map(|row| -> EvidenceScanTask {
+            Box::new(move |job: ScanJob| Box::pin(run_registered_scan(row, job)))
+        })
+        .collect()
+}
+
+/// The phase's full task queue while the migration runs: the registered
+/// rows first, then the legacy scans that have not migrated yet — the
+/// group still joins every scan and cancels nothing (issue #302).
+fn scan_task_queue() -> Vec<EvidenceScanTask> {
+    let mut queue = registered_scan_tasks();
+    queue.extend(evidence_scan_tasks());
+    queue
 }
 
 // ============================================================
@@ -2388,7 +2440,7 @@ impl TranslationPipeline {
             self.end_scan_pass();
             return;
         };
-        let mut scans = evidence_scan_tasks().into_iter();
+        let mut scans = scan_task_queue().into_iter();
         let mut set = JoinSet::new();
         self.scan_window_high_water.store(0, Ordering::SeqCst);
         let in_flight = Arc::new(AtomicUsize::new(0));
@@ -3935,23 +3987,18 @@ mod tests {
     use calxgloss_callback::persist::CallbackPersistor;
     use calxgloss_callback::types::CallbackResult;
     use calxgloss_consts::persist::ConstPersistor;
-    use calxgloss_consts::types::ConstResult;
     use calxgloss_controlflow::persist::ControlFlowPersistor;
     use calxgloss_controlflow::types::ControlFlowResult;
     use calxgloss_errhandling::persist::ErrhandlingPersistor;
-    use calxgloss_errhandling::types::ErrhandlingResult;
     use calxgloss_floatsimd::persist::FloatsimdPersistor;
-    use calxgloss_floatsimd::types::FloatsimdResult;
     use calxgloss_globalstate::persist::GlobalStatePersistor;
     use calxgloss_globalstate::types::{GlobalAccess, GlobalStateFinding, GlobalStateResult};
     use calxgloss_memory::persist::MemoryPersistor;
-    use calxgloss_memory::types::MemoryResult;
     use calxgloss_serialize::persist::SerializePersistor;
     use calxgloss_serialize::types::SerializeResult;
     use calxgloss_stringctx::persist::StringContextPersistor;
     use calxgloss_stringctx::types::StringContextResult;
     use calxgloss_sync::persist::SyncPersistor;
-    use calxgloss_sync::types::SyncResult;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::{
         InferenceMethod, InferenceScope, InferredLocalType, InferredParamType, InferredReturnType,
@@ -4999,153 +5046,6 @@ void SetCursor(void)
     }
 
     #[tokio::test]
-    async fn a_cached_memory_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = MemoryPersistor::new(dir.path());
-        persistor
-            .save(&MemoryResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_memory_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_memory_detection("eqmain.dll").await);
-
-        let persistor = MemoryPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("memory")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/memory"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_memory_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_memory_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_cached_concurrency_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = SyncPersistor::new(dir.path());
-        persistor
-            .save(&SyncResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_sync_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_concurrency_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_sync_detection("eqmain.dll").await);
-
-        let persistor = SyncPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("sync")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/sync"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_concurrency_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_concurrency_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_cached_global_state_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = GlobalStatePersistor::new(dir.path());
-        persistor
-            .save(&GlobalStateResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_global_state_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
     async fn baseline_test_expectations_name_globals_with_the_typed_kinds() {
         // The global-state artifact supplies the side-effect
         // expectations (issue #257): a function with persisted access
@@ -5408,48 +5308,6 @@ void SetCursor(void)
     }
 
     #[tokio::test]
-    async fn a_global_state_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_global_state_detection("eqmain.dll").await);
-
-        let persistor = GlobalStatePersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("globalstate")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/globalstate"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_global_state_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_global_state_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_global_state_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_global_state_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
     async fn a_cached_serialization_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
         let persistor = SerializePersistor::new(dir.path());
@@ -5510,262 +5368,6 @@ void SetCursor(void)
     async fn no_workspace_skips_the_serialization_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_serialize_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_cached_error_handling_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = ErrhandlingPersistor::new(dir.path());
-        persistor
-            .save(&ErrhandlingResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_error_handling_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_error_handling_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_error_handling_detection("eqmain.dll").await);
-
-        let persistor = ErrhandlingPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("errhandling")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/errhandling"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_error_handling_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_error_handling_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_error_handling_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_error_handling_detection("eqmain.dll").await);
-    }
-
-    /// The all-decompiles-fail breaker, asserted at the batch seam: with
-    /// every decompile tripping the engine's per-function instruction
-    /// budget — the shape a wrong-program or unreadable-listing run takes
-    /// — the scan aborts instead of claiming a binary it never read,
-    /// warns, and leaves no phantom-clean document behind.
-    #[tokio::test]
-    async fn an_error_handling_scan_aborted_by_the_breaker_persists_nothing() {
-        let dir = TempDir::new().unwrap();
-        let target = calxgloss_testfixtures::load_target()
-            .expect("fixture target should build and validate");
-        let kuna = calxgloss_kuna::KunaSource::load_with_budget(
-            target.path(),
-            None,
-            calxgloss_kuna::KunaBudget {
-                // One instruction per function: every decompile trips the
-                // watchdog, exactly the all-failing shape the skip-rate
-                // breaker guards against (issue #211 armed the knob).
-                max_instructions: Some(1),
-                ..Default::default()
-            },
-        )
-        .expect("the fixture must load with the budget armed");
-        let pipeline = pipeline_with(kuna, Some(dir.path()));
-
-        assert!(
-            !pipeline.ensure_error_handling_detection("eqmain.dll").await,
-            "a scan aborted by the breaker must degrade to false"
-        );
-        assert!(
-            !ErrhandlingPersistor::new(dir.path()).exists("eqmain.dll"),
-            "the aborted scan must leave no phantom-clean document behind"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_cached_floatsimd_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = FloatsimdPersistor::new(dir.path());
-        persistor
-            .save(&FloatsimdResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_floatsimd_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_floatsimd_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_floatsimd_detection("eqmain.dll").await);
-
-        let persistor = FloatsimdPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("floatsimd")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/floatsimd"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_floatsimd_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_floatsimd_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_floatsimd_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_floatsimd_detection("eqmain.dll").await);
-    }
-
-    /// The all-decompiles-fail breaker, asserted at the batch seam: with
-    /// every decompile tripping the engine's per-function instruction
-    /// budget, the float/SIMD scan aborts instead of claiming a binary it
-    /// never read, warns, and leaves no phantom-clean document behind.
-    #[tokio::test]
-    async fn a_floatsimd_scan_aborted_by_the_breaker_persists_nothing() {
-        let dir = TempDir::new().unwrap();
-        let target = calxgloss_testfixtures::load_target()
-            .expect("fixture target should build and validate");
-        let kuna = calxgloss_kuna::KunaSource::load_with_budget(
-            target.path(),
-            None,
-            calxgloss_kuna::KunaBudget {
-                // One instruction per function: every decompile trips the
-                // watchdog, exactly the all-failing shape the breaker
-                // guards against (issue #211 armed the knob).
-                max_instructions: Some(1),
-                ..Default::default()
-            },
-        )
-        .expect("the fixture must load with the budget armed");
-        let pipeline = pipeline_with(kuna, Some(dir.path()));
-
-        assert!(
-            !pipeline.ensure_floatsimd_detection("eqmain.dll").await,
-            "a scan aborted by the breaker must degrade to false"
-        );
-        assert!(
-            !FloatsimdPersistor::new(dir.path()).exists("eqmain.dll"),
-            "the aborted scan must leave no phantom-clean document behind"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_cached_constant_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = ConstPersistor::new(dir.path());
-        persistor
-            .save(&ConstResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_const_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_constant_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_const_detection("eqmain.dll").await);
-
-        let persistor = ConstPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("consts")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/consts"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_constant_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_const_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_constant_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_const_detection("eqmain.dll").await);
     }
 
     #[tokio::test]
@@ -7286,6 +6888,194 @@ void SetCursor(void)
             high_water <= MAX_CONCURRENT_EVIDENCE_SCANS,
             "at most {MAX_CONCURRENT_EVIDENCE_SCANS} scans may hold a window \
              permit at once; the phase peaked at {high_water}"
+        );
+    }
+
+    // ============================================================
+    // The scan-descriptor registry (issues #302, #303)
+    // ============================================================
+
+    /// The not-yet-migrated scans' document locations: the roster that
+    /// must stay filed while a registered row degrades.
+    fn unmigrated_scan_documents(
+        workspace: &std::path::Path,
+        binary: &str,
+    ) -> Vec<(&'static str, std::path::PathBuf)> {
+        vec![
+            (
+                "type database",
+                TypeDatabasePersistor::new(workspace).path_for(binary),
+            ),
+            (
+                "type inference",
+                TypeInferPersistor::new(workspace).path_for(binary),
+            ),
+            (
+                "algorithm recognition",
+                AlgorithmPersistor::new(workspace).path_for(binary),
+            ),
+            (
+                "callback detection",
+                CallbackPersistor::new(workspace).path_for(binary),
+            ),
+            (
+                "string context",
+                StringContextPersistor::new(workspace).path_for(binary),
+            ),
+            (
+                "api detection",
+                ApiPersistor::new(workspace).path_for(binary),
+            ),
+            (
+                "serialize detection",
+                SerializePersistor::new(workspace).path_for(binary),
+            ),
+        ]
+    }
+
+    /// Registry-completeness is a test, not a comment: every row the
+    /// phase runs from a descriptor is named here, so adding or dropping
+    /// a row fails this test until the roster is edited on purpose. That
+    /// is what keeps the `libmatch` drift — an engine the phase silently
+    /// never ran — from returning (spec #301).
+    #[test]
+    fn the_registered_rows_are_exactly_the_named_roster() {
+        let names: Vec<&str> = scan_rows().iter().map(ScanDescriptor::name).collect();
+        assert_eq!(
+            names,
+            [
+                "control-flow",
+                "memory-lifecycle",
+                "concurrency",
+                "global-state",
+                "constants",
+                "error-handling",
+                "float-simd",
+            ],
+            "the registry roster changed — a scan joins the phase by adding \
+             its row to the table, and never by being forgotten"
+        );
+    }
+
+    /// Every registered row, through one generic pass: a cold phase files
+    /// each row's document at the location its descriptor names, under the
+    /// `re/analysis/<domain>/` convention.
+    #[tokio::test]
+    async fn every_registered_row_files_its_document_on_a_cold_phase() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+
+        let rows = scan_rows();
+        assert!(!rows.is_empty(), "the registry must drive the phase");
+        for row in &rows {
+            let path = row.document_path(dir.path(), PROGRAM);
+            assert!(
+                path.starts_with(dir.path().join("re").join("analysis")),
+                "the {} row's document rides the analysis-document convention: {}",
+                row.name(),
+                path.display()
+            );
+            assert!(
+                path.is_file(),
+                "the registered {} row filed its document on a cold phase",
+                row.name()
+            );
+        }
+    }
+
+    /// Every registered row, second shape: a pre-filed document is left
+    /// byte-identical. The row's short-circuit sits ahead of any engine
+    /// read, and a rescan would rewrite the wall-clock stamps — so
+    /// unchanged bytes, not a returned flag, are the proof.
+    #[tokio::test]
+    async fn a_pre_filed_registered_document_is_left_byte_identical() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+
+        let filed: Vec<(&str, std::path::PathBuf, Vec<u8>)> = scan_rows()
+            .iter()
+            .map(|row| {
+                let path = row.document_path(dir.path(), PROGRAM);
+                (
+                    row.name(),
+                    path.clone(),
+                    std::fs::read(&path).expect("the row's filed document"),
+                )
+            })
+            .collect();
+
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        for (name, path, bytes) in filed {
+            assert_eq!(
+                std::fs::read(&path).expect("the document is still in place"),
+                bytes,
+                "the second phase must leave the pre-filed {name} document untouched"
+            );
+        }
+    }
+
+    /// Every registered row, third shape: with its document directory
+    /// sabotaged the row warns and files nothing — and every other scan,
+    /// registered or legacy, still files its own. One detector's trouble
+    /// never takes down the group.
+    #[tokio::test]
+    async fn a_sabotaged_registered_row_degrades_without_taking_the_group_down() {
+        for row in scan_rows() {
+            let dir = TempDir::new().expect("temp workspace");
+            // A plain file where the persistor needs its domain
+            // directory: the scan succeeds and only the save fails.
+            let document = row.document_path(dir.path(), PROGRAM);
+            let domain_dir = document
+                .parent()
+                .expect("the document path names its domain directory");
+            std::fs::create_dir_all(dir.path().join("re").join("analysis")).expect("analysis dir");
+            std::fs::write(domain_dir, "not a directory").expect("sabotage filed");
+
+            let (pipeline, _) = cached_pipeline(dir.path());
+            pipeline.begin_cached_source(PROGRAM).await;
+            pipeline.run_prebatch_scans(PROGRAM).await;
+
+            assert!(
+                !document.exists(),
+                "the sabotaged {} row left no document behind",
+                row.name()
+            );
+            for other in scan_rows() {
+                if other.name() != row.name() {
+                    assert!(
+                        other.document_path(dir.path(), PROGRAM).is_file(),
+                        "the sabotaged {} row never took down the {} row",
+                        row.name(),
+                        other.name()
+                    );
+                }
+            }
+            for (name, path) in unmigrated_scan_documents(dir.path(), PROGRAM) {
+                assert!(
+                    path.is_file(),
+                    "the sabotaged {} row never took down the {} scan",
+                    row.name(),
+                    name
+                );
+            }
+        }
+    }
+
+    /// Every registered row, fourth shape: with no workspace configured
+    /// the whole phase is skipped — no scan enters the window, nothing is
+    /// filed, and nothing panics.
+    #[tokio::test]
+    async fn no_workspace_skips_the_phase_without_panic_or_documents() {
+        let pipeline = pipeline_over(None);
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        assert_eq!(
+            pipeline.scan_window_high_water(),
+            0,
+            "the phase skipped before any scan entered the window"
         );
     }
 

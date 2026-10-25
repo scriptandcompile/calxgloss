@@ -20,6 +20,7 @@ pub mod error;
 mod pipeline;
 pub mod retry;
 mod scan_job;
+pub mod scan_registry;
 mod translator;
 pub mod triage;
 mod version_pairing;
