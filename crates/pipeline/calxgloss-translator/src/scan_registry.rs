@@ -33,7 +33,7 @@
 //! no evidence crate gains a dependency on, or implements, a
 //! pipeline-owned abstraction, and there is no shared persistor interface:
 //! each row names its location through its own concrete `JsonStore`-based
-//! persistor, exactly as the legacy path does.
+//! persistor, exactly as the deleted legacy path did.
 //!
 //! Every scan now runs from its row (issue #305): the ordering edge that
 //! once kept parameter-type inference and callback detection on the
@@ -47,12 +47,16 @@
 //! the handle or the module, and a second ordering edge added later is
 //! one more pair of rows, not new mechanism.
 //!
-//! The legacy scan plumbing — the scan methods, their wrappers, the
-//! thunks, and the `ensure_*` entry points — is now unreachable from the
-//! phase and no longer reached from the tests either: the sequential
-//! leg of the fanned-versus-sequential equivalence check runs the
-//! registry itself (issue #307). It stays compiling, unexercised, until
-//! the contract ticket deletes it.
+//! The legacy scan plumbing — the fourteen scan methods on `ScanJob`,
+//! their pipeline wrappers, the table thunks, and the fourteen `ensure_*`
+//! entry points — was deleted by issue #308: the registry is the only way
+//! a scan enters the phase, and the operator-visible wording and document
+//! locations the legacy path produced are pinned by the registry's own
+//! tests, not by keeping dead code compiling. A new Evidence engine joins
+//! with exactly one row: a `fn x_row() -> ScanDescriptor` built through
+//! [`ScanDescriptor::new`], added to [`scan_rows`]' table — and the
+//! roster test names every row, so joining or leaving the phase is always
+//! a deliberate, reviewed edit (the `libmatch` drift, spec #301).
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -243,7 +247,7 @@ pub struct ScanContext {
     pub workspace: PathBuf,
 
     /// The batch's shared read source: the armed cached source or the
-    /// loaded engine, exactly as [`ScanJob`](crate::scan_job::ScanJob)
+    /// loaded engine, exactly as `ScanJob`
     /// carries it.
     pub source: PipelineSource,
 
@@ -254,7 +258,8 @@ pub struct ScanContext {
 }
 
 /// The operator-visible wording a row carries so degradation and progress
-/// read exactly as they do in the legacy path. Each message matches the
+/// read exactly as the deleted legacy scan methods logged them (issue
+/// #308 keeps the wording, drops the plumbing). Each message matches the
 /// tracing fields the generic pass logs around it: the cached-hit debug
 /// carries `binary` and `path`, the started info carries `binary`, and
 /// both failures warn with `binary` and `error`.
@@ -471,7 +476,7 @@ impl ScanDescriptor {
 
 /// Control-flow pattern detection, the first scan to run from a row
 /// (issue #302). The wording matches the legacy
-/// [`controlflow_detection`](crate::scan_job::ScanJob) scan method
+/// `controlflow_detection` scan method
 /// byte-for-byte, and the document lands where that method filed it:
 /// `re/analysis/controlflow/<binary>.json` through the engine's own
 /// persistor. No hooks — control-flow detection orders with nothing.
@@ -511,9 +516,8 @@ fn controlflow_row() -> ScanDescriptor {
     })
 }
 
-/// The registered scan rows: every scan the phase runs from its
-/// descriptor, run ahead of the legacy scans that once followed them —
-/// a legacy list now empty of un-migrated scans (issue #305). Adding a
+/// The registered scan rows: every scan the phase runs, and the only way
+/// a scan reaches the phase (issue #308). Adding a
 /// scan to (or dropping one from) the phase means editing this table —
 /// and the translator suite's roster test names the rows explicitly, so
 /// the edit is deliberate, never an accident of a list someone forgot
@@ -560,7 +564,7 @@ pub fn arm_completion_latches(rows: &[ScanDescriptor]) -> Vec<(&'static str, Com
 }
 
 /// Memory lifecycle detection, running from its row (issue #303). The
-/// wording matches the legacy [`memory_detection`](crate::scan_job::ScanJob)
+/// wording matches the legacy `memory_detection`
 /// scan method byte-for-byte, and the document lands where that method
 /// filed it: `re/analysis/memory/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
@@ -597,7 +601,7 @@ fn memory_row() -> ScanDescriptor {
 }
 
 /// Concurrency detection, running from its row (issue #303). The wording
-/// matches the legacy [`sync_detection`](crate::scan_job::ScanJob) scan
+/// matches the legacy `sync_detection` scan
 /// method byte-for-byte, and the document lands at
 /// `re/analysis/sync/<binary>.json` through the engine's own persistor.
 /// No hooks — the scan orders with nothing.
@@ -633,7 +637,7 @@ fn concurrency_row() -> ScanDescriptor {
 
 /// Global-state reference-set detection, running from its row
 /// (issue #303). The wording matches the legacy
-/// [`global_state_detection`](crate::scan_job::ScanJob) scan method
+/// `global_state_detection` scan method
 /// byte-for-byte, and the document lands at
 /// `re/analysis/globalstate/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
@@ -670,7 +674,7 @@ fn global_state_row() -> ScanDescriptor {
 }
 
 /// Constant structure detection, running from its row (issue #303). The
-/// wording matches the legacy [`const_detection`](crate::scan_job::ScanJob)
+/// wording matches the legacy `const_detection`
 /// scan method byte-for-byte, and the document lands at
 /// `re/analysis/consts/<binary>.json` through the engine's own persistor.
 /// No hooks — the scan orders with nothing.
@@ -708,7 +712,7 @@ fn constants_row() -> ScanDescriptor {
 
 /// Error-handling idiom detection, running from its row (issue #303). The
 /// wording matches the legacy
-/// [`error_handling_detection`](crate::scan_job::ScanJob) scan method
+/// `error_handling_detection` scan method
 /// byte-for-byte, and the document lands at
 /// `re/analysis/errhandling/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
@@ -745,7 +749,7 @@ fn error_handling_row() -> ScanDescriptor {
 }
 
 /// Float/SIMD usage detection, running from its row (issue #303). The
-/// wording matches the legacy [`floatsimd_detection`](crate::scan_job::ScanJob)
+/// wording matches the legacy `floatsimd_detection`
 /// scan method byte-for-byte, and the document lands at
 /// `re/analysis/floatsimd/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
@@ -782,7 +786,7 @@ fn floatsimd_row() -> ScanDescriptor {
 }
 
 /// Type-database recovery, running from its row (issue #304). The wording
-/// matches the legacy [`type_database`](crate::scan_job::ScanJob) scan
+/// matches the legacy `type_database` scan
 /// method byte-for-byte, and the document lands at
 /// `re/analysis/typesdb/<binary>.json` through the engine's own
 /// persistor. This row is the proof that no engine needs its own scan
@@ -825,7 +829,7 @@ fn type_database_row() -> ScanDescriptor {
 }
 
 /// Algorithm recognition, running from its row (issue #304). The wording
-/// matches the legacy [`algorithm_recognition`](crate::scan_job::ScanJob)
+/// matches the legacy `algorithm_recognition`
 /// scan method byte-for-byte, and the document lands at
 /// `re/analysis/algorithm/<binary>.json` through the engine's own
 /// persistor. The engine and the binary name move into the scan future —
@@ -866,7 +870,7 @@ fn algorithm_row() -> ScanDescriptor {
 }
 
 /// String-context mapping, running from its row (issue #304). The wording
-/// matches the legacy [`string_context`](crate::scan_job::ScanJob) scan
+/// matches the legacy `string_context` scan
 /// method byte-for-byte, and the document lands at
 /// `re/analysis/stringctx/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
@@ -903,7 +907,7 @@ fn string_context_row() -> ScanDescriptor {
 }
 
 /// Library/API identification, running from its row (issue #304). The
-/// wording matches the legacy [`api_detection`](crate::scan_job::ScanJob)
+/// wording matches the legacy `api_detection`
 /// scan method byte-for-byte, and the document lands at
 /// `re/analysis/apidetect/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
@@ -939,7 +943,7 @@ fn library_api_row() -> ScanDescriptor {
 
 /// Serialization-pattern detection, running from its row (issue #304).
 /// The wording matches the legacy
-/// [`serialize_detection`](crate::scan_job::ScanJob) scan method
+/// `serialize_detection` scan method
 /// byte-for-byte, and the document lands at
 /// `re/analysis/serialize/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
@@ -976,7 +980,7 @@ fn serialization_row() -> ScanDescriptor {
 }
 
 /// Parameter-type inference, running from its row (issue #305). The
-/// wording matches the legacy [`type_inference`](crate::scan_job::ScanJob)
+/// wording matches the legacy `type_inference`
 /// scan method byte-for-byte, and the document lands where that method
 /// filed it: `re/analysis/typeinfer/<binary>.json` through the engine's
 /// own persistor. No hooks: publishing the completion latch its waiter
@@ -1024,7 +1028,7 @@ fn type_inference_row() -> ScanDescriptor {
 /// then compose the closure-contract signatures from the filed
 /// type-inference document into the cell the engine step reads back.
 /// The wording matches the legacy
-/// [`callback_detection`](crate::scan_job::ScanJob) scan method
+/// `callback_detection` scan method
 /// byte-for-byte, and the document lands where that method filed it:
 /// `re/analysis/callback/<binary>.json` through the engine's own
 /// persistor.

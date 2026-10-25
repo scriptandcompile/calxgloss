@@ -173,21 +173,25 @@ pipeline.batch_translate(binary, functions, …)
 │       the directory. A failed cache build degrades to engine
 │       reads, never fails the batch.
 │
-├──► ensure_* warmup — the fourteen analysis scans, fan-out four at a time:
-     ensure_type_database          → re/analysis/typesdb/{binary}.json
-     ensure_type_inference         → re/analysis/typeinfer/{binary}.json
-     ensure_algorithm_recognition  → re/analysis/algorithm/{binary}.json
-     ensure_memory_detection       → re/analysis/memory/{binary}.json
-     ensure_sync_detection         → re/analysis/sync/{binary}.json
-     ensure_global_state_detection → re/analysis/globalstate/{binary}.json
-     ensure_callback_detection     → re/analysis/callback/{binary}.json
-     ensure_controlflow_detection  → re/analysis/controlflow/{binary}.json
-     ensure_string_context         → re/analysis/stringctx/{binary}.json
-     ensure_api_detection          → re/analysis/apidetect/{binary}.json
-     ensure_const_detection        → re/analysis/consts/{binary}.json
-     ensure_serialize_detection    → re/analysis/serialize/{binary}.json
-     ensure_error_handling_detection → re/analysis/errhandling/{binary}.json
-     ensure_floatsimd_detection      → re/analysis/floatsimd/{binary}.json
+├──► run_prebatch_scans — the fifteen registered scan rows, fan-out four at a time:
+     control-flow            → re/analysis/controlflow/{binary}.json
+     memory-lifecycle        → re/analysis/memory/{binary}.json
+     concurrency             → re/analysis/sync/{binary}.json
+     global-state            → re/analysis/globalstate/{binary}.json
+     constants               → re/analysis/consts/{binary}.json
+     error-handling          → re/analysis/errhandling/{binary}.json
+     float-simd              → re/analysis/floatsimd/{binary}.json
+     type-database           → re/analysis/typesdb/{binary}.json
+     algorithm-recognition   → re/analysis/algorithm/{binary}.json
+     string-context          → re/analysis/stringctx/{binary}.json
+     library-api             → re/analysis/apidetect/{binary}.json
+     serialization           → re/analysis/serialize/{binary}.json
+     type-inference          → re/analysis/typeinfer/{binary}.json
+     callback-detection      → re/analysis/callback/{binary}.json
+     known-library           → re/analysis/libmatch/{binary}.json
+     (one descriptor row per scan in scan_registry's table — name, document
+     location, engine constructor, log wording; the roster test names all
+     fifteen, issue #308)
 │
 └──► pair_previous_versions — binary-version pairing, run by the same
      scan step right after the scan pass closes (issue #298): when a
@@ -203,9 +207,9 @@ pipeline.batch_translate(binary, functions, …)
      exactly as before.
 ```
 
-Each `ensure_*` follows the same rule: **the persisted JSON is the cache** —
+Each registered scan row follows the same rule: **the persisted JSON is the cache** —
 if a result is already saved for the binary, the scan is skipped entirely;
-otherwise the engine runs over the batch's `ScanSource` (live or cached), and
+otherwise the row's engine runs over the batch's `ScanSource` (live or cached), and
 its result is saved. A failed scan or failed save only logs a warning: missing
 analysis context degrades the prompts, it never fails the batch. While the
 scan phase runs, the engine's heartbeat is armed once around the whole
@@ -899,11 +903,11 @@ calxgloss live --port 3000
 │     │         │
 │     │         ├──► batch_translate warmup
 │     │         │     ├──► Open scan read cache (re/cache/)
-│     │         │     ├──► ensure_* the 14 analysis scans
+│     │         │     ├──► run_prebatch_scans — the 15 registered scan rows
 │     │         │     │     (typesdb, typeinfer, algorithm, memory,
 │     │         │     │      sync, globalstate, callback, controlflow,
 │     │         │     │      stringctx, apidetect, consts, serialize,
-│     │         │     │      errhandling, floatsimd)
+│     │         │     │      errhandling, floatsimd, libmatch)
 │     │         │     │     each: cached JSON → skip; else scan
 │     │         │     │     (heartbeat → BatchProgress) → save
 │     │         │     └──► pair_previous_versions — pair the fresh scan

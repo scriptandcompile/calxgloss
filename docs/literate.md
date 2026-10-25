@@ -868,28 +868,38 @@ server hold — the same pipeline can be steered from a terminal or a browser
 ### 8.3 Evidence is recovered lazily, cached, and failure is survivable
 
 Before a batch translates, the pipeline ensures the evidence engines have
-run. Each `ensure_*` follows one pattern — check the workspace cache, else
-scan, else *degrade*:
+run. Every scan reaches the phase through exactly one door: a descriptor
+row in the evidence-scan registry (`scan_rows`,
+`scan_registry.rs:L525-L543`), and each row follows one pattern the
+generic pass owns — check the workspace cache, else scan, else *degrade*:
 
 ```rust
-// crates/pipeline/calxgloss-translator/src/pipeline.rs:L2537+ (pattern, abridged)
-pub async fn ensure_type_database(&self, binary: &str) -> bool {
-    // cached re/analysis/typesdb/<binary>.json? reuse it.
-    // else run the three recovery scans against the loaded program,
-    //     save the JSON + generated #[repr(C)] declarations.
-    // on scan or save failure: warn! and return false — the batch continues
-    //     with less context rather than dying.
+// crates/pipeline/calxgloss-translator/src/scan_registry.rs:L360+ (the shape, abridged)
+pub fn new<T, P, ScanError, SaveError>(row: ScanRow<T, P, ScanError, SaveError>) -> Self {
+    // cached re/analysis/<domain>/<binary>.json? log the cached-hit debug, done.
+    // else build the row's engine from the batch's shared read source,
+    //     run its scan, save through the row's persistor.
+    // on scan or save failure: warn! with the row's own wording — the batch
+    //     continues with less context rather than dying.
 }
 ```
 
-There are fourteen of these (`ensure_type_database` through
-`ensure_floatsimd_detection`, `pipeline.rs:L2537-L2939`), one per pre-batch
-evidence scan, and each has the same trio of tests: *cached result reused
-without rescanning*, *cache miss scans and saves through the engine*, *no
-workspace skips the recovery*. A single preamble, `run_prebatch_scans`
-(`pipeline.rs:L2380-L2439`), runs all fourteen as `JoinSet` tasks through a
+The row contributes only what differs per engine — document location,
+engine constructor, log wording, success counts, and any declared
+ordering edge; the scan shape is written once, in `ScanDescriptor::new`
+(`scan_registry.rs:L360-L475`). The fourteen hand-written scan methods,
+their wrappers, and the fourteen public `ensure_*` entry points the
+pipeline once carried per scan were deleted by issue #308 — the registry
+is the only way a scan enters the phase, and a roster test names all
+fifteen rows, so a row joining or leaving is a deliberate edit. The same
+trio of shapes each old seam-quad pinned is pinned generically at the
+phase seam: *cached result reused without rescanning*, *cold phase files
+each row's document where its descriptor names*, *save failure degrades
+without losing the batch*. A single preamble, `run_prebatch_scans`
+(`pipeline.rs:L2316-L2374`), runs all fifteen as `JoinSet` tasks through a
 concurrency window — `MAX_CONCURRENT_EVIDENCE_SCANS = 4`, one named decision,
-high-water-mark recorded so the fan-out cap is provable — under one
+high-water-mark recorded so the fan-out cap is provable (`registered_scan_tasks`,
+`pipeline.rs:L143-L163`) — under one
 heartbeat pass armed around the whole group rather than one per scan (issue
 #239). A test that tampers the cached scan documents and
 re-runs the batch proves the second batch replays the tampered bytes back
