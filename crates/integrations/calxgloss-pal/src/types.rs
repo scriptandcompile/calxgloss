@@ -195,6 +195,26 @@ impl Default for ApiMappings {
     }
 }
 
+impl ApiMappings {
+    /// Builds a table from caller-provided mappings (issue #323).
+    ///
+    /// `ApiMapping` fields are `&'static str` (the default table is compiled
+    /// in), so the owned values behind `mappings` are leaked into a leaked
+    /// boxed slice — the same convention [`ApiMapping::new`] already applies
+    /// to its own string fields. A custom table is built at startup or per
+    /// agent session, not per call, so one leak per table is bounded.
+    ///
+    /// The custom table drives every **instance-based** read: `lookup`,
+    /// `iter`, and the analyzer's API tagging. Note the known limitation:
+    /// [`for_category`](Self::for_category) (and `for_categories` through it)
+    /// indexes the static default data regardless of the instance, so the
+    /// prompt's category-grouped mapping rows still come from the default
+    /// table.
+    pub fn from_custom(mappings: Vec<ApiMapping>) -> Self {
+        ApiMappings(Box::leak(mappings.into_boxed_slice()))
+    }
+}
+
 /// Returns the number of API mappings in the default table.
 ///
 /// This is useful for tests and diagnostics.

@@ -15,6 +15,7 @@
 // …), which overflows the default trait-resolution depth.
 #![recursion_limit = "256"]
 
+pub mod assembly;
 pub mod carry_over;
 pub mod error;
 pub mod evidence_projector;

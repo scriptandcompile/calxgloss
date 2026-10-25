@@ -56,6 +56,28 @@ pub enum TranslatorError {
     /// Failed to plan translation order from the call graph.
     #[error("call graph planning failed: {0}")]
     CallGraph(String),
+
+    /// A pass spec carried no LLM at all — neither a prebuilt client nor an
+    /// endpoint and model to build one from (issue #323). Assembly refuses
+    /// rather than handing back a pipeline that would quietly run without an
+    /// LLM; a description that names an endpoint which cannot produce a
+    /// client arrives through [`Self::Llm`] instead.
+    #[error("cannot assemble a pass without an LLM: {reason}")]
+    MissingLlm {
+        /// What the spec was missing, in words.
+        reason: String,
+    },
+
+    /// Assembling a patch-mode pass loaded the engine itself and the load
+    /// failed — the binary path was unreadable, or a budget knob the
+    /// platform cannot enforce was armed (issue #323).
+    #[error("failed to load the Kuna engine for the pass: {0}")]
+    EngineLoad(#[from] calxgloss_kuna::KunaError),
+
+    /// Assembling the pass's verifier failed (its working directory could
+    /// not be created).
+    #[error("verifier setup failed: {0}")]
+    VerifierSetup(anyhow::Error),
 }
 
 pub type Result<T> = std::result::Result<T, TranslatorError>;
