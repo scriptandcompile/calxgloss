@@ -601,10 +601,10 @@ impl From<&ConstFinding> for calxgloss_prompts::ConstInfo {
     }
 }
 
-/// Render a table record as module-context prompt data: the object's
-/// listing label, its element type, and its full entry count — enough
-/// for the first translation attempt to name the array and index it
-/// where the original offsets the object.
+/// Render a table record as the module-context prompt's data-tables
+/// record: the object's listing label, its element type, and its full
+/// entry count — enough for the first translation attempt to name the
+/// array and index it where the original offsets the object.
 impl From<&DataTable> for calxgloss_prompts::DataTableInfo {
     fn from(record: &DataTable) -> Self {
         Self {

@@ -778,13 +778,16 @@ impl FixTemplate {
 // Evidence bundle — the finding lists a fix prompt is built from
 // ============================================================
 
-/// The decompiler-derived evidence an escalate prompt is built from.
+/// The decompiler-derived evidence every bundle-fed prompt template renders from.
 ///
-/// Every finding list the escalate builders and prompt-data constructors
-/// read, grouped into one struct so those constructors take a bundle
-/// instead of a dozen same-typed positional lists (issue #268). Each
-/// list is optional: a bundle that populates only some findings renders
-/// exactly what the old call with empty lists elsewhere rendered.
+/// Every finding list a template may read, grouped into one struct so the
+/// builders take a bundle instead of a dozen same-typed positional lists
+/// (issue #268). The bundle is the single render input of the bundle-fed
+/// templates (issue #320) — which evidence sections a template shows is a
+/// property of which shared section includes that template calls, never of
+/// this struct's shape. Each list is optional: a bundle that populates only
+/// some findings renders exactly what the old call with empty lists
+/// elsewhere rendered.
 #[derive(Debug, Clone, Default)]
 pub struct EvidenceBundle {
     /// Functions directly called by or calling this function.
@@ -828,18 +831,22 @@ pub struct EvidenceBundle {
     /// by the analysis pipeline.
     pub serialization_findings: Vec<SerializationInfo>,
     /// Library-match findings about this function and its call graph —
-    /// read by the module-context prompt data, not the escalate template.
+    /// shown where the module-context template's known-library include
+    /// renders them; the escalate template calls no include for this list.
     pub libmatch_findings: Vec<LibmatchInfo>,
     /// Parameter-direction readings about this function made by the
-    /// type-inference direction detector — read by the module-context
-    /// prompt data, not the escalate template, whose direction lines
-    /// ride the type-info section instead.
+    /// type-inference direction detector — shown where the module-context
+    /// template's parameter-directions include renders them; the escalate
+    /// template calls no include for this list, its direction lines ride
+    /// the type-information include through the finding union's prompt
+    /// conversion instead.
     pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
     /// Data tables the target function reads, made by the
-    /// `calxgloss-consts` table reader — read by the module-context
-    /// prompt data, not the escalate template, whose table facts ride
-    /// the CONSTANTS section through the constant findings' union
-    /// prompt conversion.
+    /// `calxgloss-consts` table reader — shown where the module-context
+    /// template's data-tables include renders them; the escalate template
+    /// calls no include for this list, whose table facts ride the
+    /// constants include through the constant findings' union prompt
+    /// conversion.
     pub data_table_findings: Vec<DataTableInfo>,
     /// Error-handling findings about this function made by the
     /// `calxgloss-errhandling` scan — the idiom the body guards its
