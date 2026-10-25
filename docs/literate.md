@@ -351,11 +351,14 @@ types to Rust types with pointer depth and bit width
 ## 4. The act of translation: `TranslationPipeline::translate`
 
 The heart is one function:
-`crates/pipeline/calxgloss-translator/src/pipeline.rs:L906-L1329`. The
+`crates/pipeline/calxgloss-translator/src/pipeline.rs:L827-L1238`. The
 pipeline itself is a struct of clients and optional controls
-(`pipeline.rs:L223-L422`) assembled with builder methods —
-`with_workspace`, `with_events`, `with_call_graph`, `with_fault_logger`,
-`with_stop_signal`, and about a dozen more. `translate` runs seven steps.
+(`pipeline.rs:L197-L367`) that is **never built by hand**: the constructor
+and its `with_*` setter surface are assembly-internal, and every pass
+comes into existence through the assembly seam — a `PipelineSpec` pass
+description assembled by `assemble` (`assembly.rs:L270-L285`) — with the
+CLI folding its resolved settings into that description once (ADR-0050).
+`translate` runs seven steps.
 
 **Step 0 — refuse what has no logic.** Before spending a token:
 
@@ -841,7 +844,9 @@ binary's function list then gets a fresh seed table
 `carry_over::collect_seeds` (`carry_over.rs:L107`) from the bdiff pairing
 document and the previous branch's merged review records; the pipeline learns
 which attempts were accepted through the injectable
-`with_accepted_attempt_source` port (`pipeline.rs:L848`). After a unit
+`with_accepted_attempt_source` port (`pipeline.rs:L766`), which assembly
+now wires from the pass description's accepted-attempt field (issue #326).
+After a unit
 finishes, `attach_carry_over_provenance` (`pipeline.rs:L2485`) stamps the
 seeded commit onto the review overlay, and the seeded function's own
 translate call never reaches the LLM (Chapter 4's Step 4b). Around the batch
@@ -975,12 +980,23 @@ observability defaults can mask failure — which is why the *persisted* logs
 
 `build_router` (`server/mod.rs:L1149-L1157`) composes `shared_routes` and
 `live_only_routes` (`server/mod.rs:L848-L1125`) behind an axum `Router` with
-a `CombinedState`. `serve` mode is read-only over existing artifacts
-(ADR-0006); `live` mode adds the action routes — `accept_unit`,
-`send_back_unit`, `request_patch` (`actions.rs:L249-L545`) — where
-`request_patch` spawns a reviewer-steered retry: the reviewer's hints seed
-the retry loop's failure history (Chapter 6.1) and the new attempt lands on a
-fresh attempt branch.
+a `CombinedState`. The review-action routes — `accept_unit`,
+`send_back_unit`, `request_patch` — live in the shared table, so `serve`
+mode is read-only over existing artifacts (ADR-0006) apart from them, and
+`live` mode adds the live-pipeline and WebSocket endpoints on top. Since
+issue #327 both servers wire a settings-backed action backend
+(`build_router_with_actions`, `build_router_with_ws`): the server folds its
+resolved settings into a `PipelineSpec` once at startup, and `request_patch`
+(`actions.rs:L424`, spawning retry at `L441`) layers the request's
+run-scoped fields (the repo as workspace, patch mode, the unit's binary)
+on that description and assembles the whole retry pass through
+`assemble_patch` before anything is created — the LLM first, so a server
+started without LLM settings meets the assembly refusal at request time
+with no branch record or task left behind. The reviewer's hints seed the
+retry loop's failure history (Chapter 6.1) and the new attempt lands on a
+fresh attempt branch. Before that, a router could be built without any
+action backend at all and the patch endpoint answered with a fabricated
+stub "Patch requested" response — the retry machinery never ran (ADR-0050).
 
 ---
 

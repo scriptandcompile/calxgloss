@@ -13,7 +13,8 @@
 > its shipped history lives in `CHANGELOG.md` and its key decisions are
 > recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
 > ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008,
-> P1.5 → ADR-0009–0013, X5 → ADR-0041, P35 → ADR-0048, P36 → ADR-0049).
+> P1.5 → ADR-0009–0013, X5 → ADR-0041, P35 → ADR-0048, P36 → ADR-0049,
+> P37 → ADR-0050).
 
 ## How a track gets built
 
@@ -51,16 +52,18 @@ closed (2026-10-24), and P35 (evidence-bundle projector) shipped through
 tickets #311–#314 with the verification close #315 and was pruned when spec
 #310 closed (2026-10-25), and P36 (prompt bundle through the templates)
 shipped through tickets #317–#320 with the verification close #321 and was
-pruned when spec #316 closed (2026-10-25), leaving P37 at the head and P39
-unblocked. Together they pay for themselves by making every later Evidence
-track (P19–P21, P28) and the retry-loop hypothesis ledger (P27) cheaper to
-land — one place to add an engine, one place to read one (shipped — P35,
-ADR-0048), one place to render one (shipped — P36, ADR-0049), one place to
-assemble the pipeline.
+pruned when spec #316 closed (2026-10-25), and P37 (pipeline assembly from
+settings) shipped through tickets #323–#327 with the contract close #328
+and the record close #329, and was pruned when spec #322 closed
+(2026-10-25), leaving P38 at the head and P39 unblocked. Together they pay
+for themselves by making every later Evidence track (P19–P21, P28) and the
+retry-loop hypothesis ledger (P27) cheaper to land — one place to add an
+engine, one place to read one (shipped — P35, ADR-0048), one place to
+render one (shipped — P36, ADR-0049), one place to assemble the pipeline
+(shipped — P37, ADR-0050).
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P37 | Assemble the pipeline once, from settings — one `PipelineSpec` seam; CLI and review UI become adapters over it, and the four divergent builder dances — including web patch-retry's quiet *lesser* pipeline (no events, no overrides) — are deleted | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | specced — `/to-tickets` next | [`#322`](https://github.com/scriptandcompile/calxgloss/issues/322) |
 | P38 | Attempt as a deep module — one attempt = prompt → LLM → verification → record, returning a verdict; the 1,272-line retry-loop body becomes attempt-selection and cancellation policy, with retry strategies as adapters at the existing internal seam | pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P39 | One CLI scan command, sixteen report printers — a generic `ScanCommand` driven by P34's descriptor (load · scan · persist · show); each engine contributes its report printer and flag block only; 16 command-module skeletons and `main.rs` match arms deleted | interface (`calxgloss-cli`) + evidence (all scan crates) | — | ⬜ not started | not specced | — |
 | P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
@@ -81,21 +84,6 @@ assemble the pipeline.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
-## P37 — Assemble the pipeline once, from settings (pipeline + interface)
-
-**The pipeline's interface includes its own assembly.** 29 fields, ~25
-`with_*` builders, and four call sites each redo the builder dance:
-`auto.rs` chains 13 conditional `with_*`, `batch_translate.rs` and
-`translate.rs` build their own, and web's `run_patch_retry` constructs a
-quietly *lesser* pipeline — no event stream, no overrides — so a fix in
-one assembly fixes none of the others. This track closes one seam:
-settings → `PipelineSpec` → one assembly. The CLI and the review UI become
-adapters over it — two adapters make the seam real, not hypothetical — and
-the lesser-pipeline bug class is deleted rather than tracked. Source:
-architecture review (2026-10-24), candidate 4. Specced 2026-10-25: spec
-[#322](https://github.com/scriptandcompile/calxgloss/issues/322) —
-`/to-tickets` is the next step.
-
 ## P38 — Attempt as a deep module: the retry loop becomes policy (pipeline)
 
 **The retry loop hides an attempt inside one 1,272-line async fn.** Attempt
@@ -112,7 +100,10 @@ attempt selection and cancellation policy only, and retry strategies
 internal seam — `escalate.rs` and `retry/config` are already two of them,
 waiting. Source: architecture review (2026-10-24), candidate 5. Pairs with:
 P27 — the hypothesis ledger lands on this loop; the deepening gives it
-per-attempt verdict records instead of log lines.
+per-attempt verdict records instead of log lines. Pairs with: P37 —
+shipped through #323–#329 (spec #322 closed 2026-10-25, ADR-0050) — the
+deepening starts from the complete assembled pass that seam hands over,
+not from four hand-built ones.
 
 ## P39 — One CLI scan command, sixteen report printers (interface + evidence)
 

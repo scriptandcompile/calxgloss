@@ -133,7 +133,7 @@ install step, and no wrong-program guard: the engine answers from the exact
 file the run hashes for its read cache.
 
 ```
-run_translation_for_dll(binary, binary_path, workspace, skip_git, settings, …)
+run_translation_for_dll(binary, binary_path, scope, plumbing, …)
 │
 ├──► emit BatchStarted { binary }
 │
@@ -143,16 +143,24 @@ run_translation_for_dll(binary, binary_path, workspace, skip_git, settings, …)
 │    └─ Returns FunctionSummary[] (name only — the engine lists
 │       one program at a time)
 │
-├──► TranslationPipeline::new(kuna, llm, api_mappings)
-│    └─ Also creates: TestGenerator, Analyzer
-│
 ├──► GitManager::init_repo(workspace)
-│    └─ Creates .git, README, initial "main" commit
+│    └─ Creates .git, README, initial "main" commit; when git is in
+│       play, the pass description carries the git accepted-attempt
+│       port for carry-over seeding
 │
-├──► Verifier::new(workspace)
-│    └─ Creates scratch/ directory for sandboxed builds
+├──► assemble(&pass_spec, &kuna) → AssembledPass        (P37, ADR-0050)
+│    └─ The pipeline is assembled, never hand-built: pass_spec is the
+│       resolved settings folded once into a pass description (LLM
+│       endpoint/model/key, context window, temperature, timeout,
+│       workspace, Kuna budgets, retry policy) with the run's flags,
+│       live control handles, and this binary's identity layered on.
+│       Assembly wires the LLM client, Analyzer, hallucination
+│       detector, TestGenerator, Verifier (scratch/ for sandboxed
+│       builds), and RetryConfig; the pass hands them over as
+│       { pipeline, verifier, retry }.
 │
-└──► pipeline.batch_translate(binary, functions, retry_config, verifier)
+└──► pass.pipeline.batch_translate(binary, functions,
+                                   &pass.retry, &pass.verifier, …)
 ```
 
 #### 3.2.1 Batch Warmup — Scan Read Cache + Analysis Methodologies
