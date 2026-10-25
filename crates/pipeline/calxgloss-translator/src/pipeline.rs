@@ -65,8 +65,8 @@ use crate::Translation;
 use crate::batch;
 use crate::error::{Result, TranslatorError};
 use crate::retry;
-use crate::scan_job::{ScanJob, TypeInferenceLatch};
-use crate::scan_registry::{ScanDescriptor, scan_rows};
+use crate::scan_job::ScanJob;
+use crate::scan_registry::{ScanDescriptor, ScanLatches, arm_completion_latches, scan_rows};
 
 /// The pass name the scan phase's heartbeat carries: one honest
 /// "n of m functions consumed" row for the whole group of fourteen
@@ -118,6 +118,11 @@ type EvidenceScanTask =
 async fn scan_type_database(job: ScanJob) {
     job.type_database().await;
 }
+/// The type-inference scan's legacy wrapper: its registry row (issue
+/// #305) now runs the scan inside the phase, so nothing in the phase reaches
+/// this; it stays until the migration deletes the legacy scan plumbing,
+/// which is why it is kept compiling rather than removed here.
+#[allow(dead_code)]
 async fn scan_type_inference(job: ScanJob) {
     job.type_inference().await;
 }
@@ -148,6 +153,11 @@ async fn scan_sync_detection(job: ScanJob) {
 async fn scan_global_state_detection(job: ScanJob) {
     job.global_state_detection().await;
 }
+/// The callback-detection scan's legacy wrapper: its registry row (issue
+/// #305) now runs the scan inside the phase, so nothing in the phase
+/// reaches this; it stays until the migration deletes the legacy scan
+/// plumbing, which is why it is kept compiling rather than removed here.
+#[allow(dead_code)]
 async fn scan_callback_detection(job: ScanJob) {
     job.callback_detection().await;
 }
@@ -217,45 +227,65 @@ async fn run_scan_in_window(
 }
 
 /// The legacy evidence scans that have not migrated to a registry row
-/// yet, in today's spawn order — type inference and callback detection,
-/// the two latch-coupled scans that stay on the legacy path until the
-/// completion-latch edge becomes a declared row dependency (issue #305).
-/// Control flow migrated to its row in issue #302; the six body-reading
-/// scans — memory, sync, global state, const, error handling, and
-/// float/SIMD — in issue #303; and the five whole-structure scans — type
-/// database, algorithm recognition, string context, api, and serialize —
-/// in issue #304. The order is only the order they
-/// enter the window: the scans no longer run in a fixed order, and the
+/// yet, in today's spawn order — empty, as of issue #305, because type
+/// inference and callback detection, the last two, now run from their
+/// rows and the completion-latch edge between them is a declared row
+/// dependency. Control flow migrated to its row in issue #302; the six
+/// body-reading scans — memory, sync, global state, const, error handling,
+/// and float/SIMD — in issue #303; and the five whole-structure scans —
+/// type database, algorithm recognition, string context, api, and
+/// serialize — in issue #304. The order was only the order they
+/// entered the window: the scans never ran in a fixed order, and the
 /// one real ordering edge — callback detection awaiting type inference's
-/// completion latch — rides the latch itself, not this list (issue #238,
+/// completion — rode the declared dependency (issue #238,
 /// fan-out issue #240, errhandling join #292).
 fn evidence_scan_tasks() -> Vec<EvidenceScanTask> {
-    vec![
-        Box::new(|job| Box::pin(scan_type_inference(job))),
-        Box::new(|job| Box::pin(scan_callback_detection(job))),
-    ]
+    Vec::new()
 }
 
 /// One registered row as the phase runs it: the row reads the batch
-/// through the job's owned context and reports its own outcome; the
-/// phase's window, heartbeat, and joins wrap it from outside (issue #302).
-async fn run_registered_scan(row: ScanDescriptor, job: ScanJob) {
-    row.run(job.scan_context()).await;
+/// through the job's owned context, carries the completion latches the
+/// phase armed for its declared dependency edge, and reports its own
+/// outcome; the phase's window, heartbeat, and joins wrap it from
+/// outside (issues #302, #305).
+async fn run_registered_scan(row: ScanDescriptor, job: ScanJob, latches: ScanLatches) {
+    let mut ctx = job.scan_context();
+    ctx.latches = latches;
+    row.run(ctx).await;
 }
 
 /// The registered rows as task-ready thunks: each row moves into its own
 /// thunk, exactly the way a legacy scan's future moves onto its task.
+/// The phase's completion latches are wired onto each row's context from
+/// the table's own declarations — the latch armed for this row's name is
+/// the one its run publishes on every exit, and the latch named by its
+/// `waits_for` is the one its pre-scan hook waits on (issue #305). No
+/// row names a latch field of its own; the edge is table data.
 fn registered_scan_tasks() -> Vec<EvidenceScanTask> {
-    scan_rows()
-        .into_iter()
+    let rows = scan_rows();
+    let armed = arm_completion_latches(&rows);
+    rows.into_iter()
         .map(|row| -> EvidenceScanTask {
-            Box::new(move |job: ScanJob| Box::pin(run_registered_scan(row, job)))
+            let publish = armed
+                .iter()
+                .find(|(name, _)| *name == row.name())
+                .map(|(_, latch)| latch.clone());
+            let wait = row.waits_for().and_then(|producer| {
+                armed
+                    .iter()
+                    .find(|(name, _)| *name == producer)
+                    .map(|(_, latch)| latch.clone())
+            });
+            Box::new(move |job: ScanJob| {
+                Box::pin(run_registered_scan(row, job, ScanLatches { publish, wait }))
+            })
         })
         .collect()
 }
 
 /// The phase's full task queue while the migration runs: the registered
-/// rows first, then the legacy scans that have not migrated yet — the
+/// rows, then the legacy scans that have not migrated yet — currently
+/// only the rows, since the legacy list is empty (issue #305). The
 /// group still joins every scan and cancels nothing (issue #302).
 fn scan_task_queue() -> Vec<EvidenceScanTask> {
     let mut queue = registered_scan_tasks();
@@ -412,18 +442,6 @@ pub struct TranslationPipeline {
     /// from the disk tier with zero live reads.
     cached_source: Mutex<Option<CachedScanSource>>,
 
-    /// The scan phase's type-inference completion latch, armed by
-    /// [`run_prebatch_scans`](Self::run_prebatch_scans) and carried by
-    /// the [`ScanJob`]s [`scan_job`](Self::scan_job) builds (issue #238).
-    ///
-    /// The type-inference scan publishes it whether the scan succeeds
-    /// or fails; callback detection awaits it before composing its
-    /// closure contracts from the type-inference document, so the one
-    /// real ordering edge between the scans survives the fan-out
-    /// (#240). `None` outside a scan phase — a scan asked for directly
-    /// has no phase to order within.
-    type_inference_latch: Mutex<Option<TypeInferenceLatch>>,
-
     /// The scan phase's fan-out window high-water mark: the most evidence
     /// scans that ran at once during the latest
     /// [`run_prebatch_scans`](Self::run_prebatch_scans), recorded as each
@@ -524,7 +542,6 @@ impl TranslationPipeline {
             accepted_attempt_source: None,
             carry_over_seeds: Mutex::new(HashMap::new()),
             cached_source: Mutex::new(None),
-            type_inference_latch: Mutex::new(None),
             scan_window_high_water: Arc::new(AtomicUsize::new(0)),
             refresh_cache: false,
             stop: None,
@@ -2375,38 +2392,15 @@ impl TranslationPipeline {
 
     /// Build the owned handle one evidence scan runs as (issue #237):
     /// clones of everything the scan reads — the workspace, the batch's
-    /// shared read source as currently armed, and the scan phase's
-    /// type-inference completion latch when one is armed (issue
-    /// #238) — so the scan borrows nothing from the batch and a caller
-    /// can move the job onto a task. `None` when no workspace is
-    /// configured, which is every scan's skip condition. The pass
-    /// heartbeat is the phase's, not the job's (issue #239).
+    /// shared read source as currently armed — so the scan borrows
+    /// nothing from the batch and a caller can move the job onto a task.
+    /// `None` when no workspace is configured, which is every scan's skip
+    /// condition. The pass heartbeat is the phase's, not the job's (issue
+    /// #239), and the scan-phase ordering lives on the registry's rows,
+    /// not on the job (issue #305).
     fn scan_job(&self, binary: &str) -> Option<ScanJob> {
         let workspace = self.workspace.as_deref()?;
-        let type_inference = self
-            .type_inference_latch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        Some(ScanJob::new(
-            binary,
-            workspace,
-            self.scan_source(),
-            type_inference,
-        ))
-    }
-
-    /// Arm a fresh type-inference completion latch for one scan phase
-    /// (issue #238). The type-inference scan publishes it on every
-    /// exit, success or failure; callback detection awaits it before
-    /// composing its closure contracts. A new phase replaces a stale
-    /// latch, exactly as [`begin_cached_source`](Self::begin_cached_source)
-    /// re-arms the read cache per batch.
-    fn arm_type_inference_latch(&self) {
-        *self
-            .type_inference_latch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TypeInferenceLatch::new());
+        Some(ScanJob::new(binary, workspace, self.scan_source()))
     }
 
     /// Run the fourteen pre-batch evidence scans, the shared scan-phase
@@ -2422,7 +2416,7 @@ impl TranslationPipeline {
     /// next body the moment it frees the last, so parse work overlaps
     /// engine work and a cold scan phase costs roughly the engine's own
     /// decompile time rather than that plus every scan's parse time. The
-    /// spawn order is today's order — [`evidence_scan_tasks`] — but that
+    /// spawn order is the rows' order — [`scan_rows`] — but that
     /// order is only the order the scans enter the window. Exactly-once
     /// decompilation is preserved by construction, not by new locking:
     /// the read cache's per-key cell collapses concurrent misses of one
@@ -2432,13 +2426,15 @@ impl TranslationPipeline {
     /// Each scan keeps its own shape: a cached document short-circuits it
     /// before any engine read, and a failed scan or save only warns and
     /// continues — one detector's failure never takes down the batch. The
-    /// group joins all fourteen and never cancels its siblings.
+    /// The group joins all fourteen and never cancels its siblings.
     ///
-    /// The phase arms a fresh type-inference completion latch first:
-    /// the inference scan publishes it on every exit and callback
-    /// detection awaits it before composing its closure contracts, so
-    /// the one real ordering edge between the scans is explicit data
-    /// rather than any call order (issue #238).
+    /// The one real ordering edge between the scans — callback detection
+    /// composing its closure contracts from the type-inference
+    /// document — is a declared row dependency: the phase arms a fresh
+    /// completion latch per declared producer ([`arm_completion_latches`])
+    /// and the inference row publishes its latch on every exit while the
+    /// callback row waits on it, so the edge is explicit table data
+    /// rather than any call order (issues #238, #305).
     ///
     /// The phase also arms the engine heartbeat once around the whole
     /// group, under the phase name, and disarms it when the group ends:
@@ -2450,7 +2446,6 @@ impl TranslationPipeline {
     /// scans interleave (issue #239, preserving #121).
     async fn run_prebatch_scans(&self, binary: &str) {
         self.begin_scan_pass(binary, SCAN_PHASE);
-        self.arm_type_inference_latch();
         let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
@@ -2632,10 +2627,10 @@ impl TranslationPipeline {
     /// return `false` — prompts without type context are degraded, not
     /// fatal, and the batch proceeds either way.
     ///
-    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237),
-    /// which publishes the scan phase's completion latch on every exit —
-    /// cached hit, success, or failure — so callback detection waiting on
-    /// it is released either way (issue #238).
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
+    /// Inside the scan phase the scan instead runs from its registry row,
+    /// which publishes the completion latch the callback row's declared
+    /// dependency waits on (issues #238, #305).
     pub async fn ensure_type_inference(&self, binary: &str) -> bool {
         let Some(job) = self.scan_job(binary) else {
             debug!(binary, "No workspace configured; skipping type inference");
@@ -2799,8 +2794,8 @@ impl TranslationPipeline {
     /// the batch can see callback context instead of none. The persisted
     /// file is the cache: when a result is already saved for `binary`, the
     /// scan is skipped entirely. When a type-inference result is cached
-    /// too — inside a scan phase the job waits on inference's completion
-    /// latch before reading — its records are composed
+    /// too — the scan phase orders inference before this scan through the
+    /// rows' declared dependency — its records are composed
     /// into a signature map and injected, so the persisted suggestions
     /// carry real closure contracts (see [`callback_signature_map`]).
     ///
@@ -2810,10 +2805,10 @@ impl TranslationPipeline {
     /// fatal, and the batch proceeds either way.
     ///
     /// The scan itself — including the type-inference enrichment — runs on
-    /// the owned [`ScanJob`] this builds (issue #237). Inside an armed scan
-    /// phase the job first awaits the type-inference completion latch, so
-    /// the enrichment rides the explicit edge, not the preamble's call
-    /// order (issue #238).
+    /// the owned [`ScanJob`] this builds (issue #237); inside the scan
+    /// phase the scan instead runs from its registry row, whose declared
+    /// `waits_for` dependency orders it after the inference row (issues
+    /// #238, #305).
     pub async fn ensure_callback_detection(&self, binary: &str) -> bool {
         let Some(job) = self.scan_job(binary) else {
             debug!(
@@ -3999,10 +3994,10 @@ fn compose_signature_map(result: &TypeInferenceResult) -> SignatureMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan_registry::CompletionLatch;
     use calxgloss_algorithm::persist::AlgorithmPersistor;
     use calxgloss_apidetect::persist::ApiPersistor;
     use calxgloss_callback::persist::CallbackPersistor;
-    use calxgloss_callback::types::CallbackResult;
     use calxgloss_consts::persist::ConstPersistor;
     use calxgloss_controlflow::persist::ControlFlowPersistor;
     use calxgloss_controlflow::types::ControlFlowResult;
@@ -4963,33 +4958,6 @@ void SetCursor(void)
         );
     }
 
-    #[tokio::test]
-    async fn a_cached_inference_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = TypeInferPersistor::new(dir.path());
-        persistor
-            .save(&TypeInferenceResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_type_inference("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_inference() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_type_inference("eqmain.dll").await);
-    }
-
     /// A pipeline over a caller-supplied engine source, workspace included
     /// when there is one.
     fn pipeline_with(
@@ -5266,77 +5234,23 @@ void SetCursor(void)
         );
     }
 
-    #[tokio::test]
-    async fn a_cached_callback_result_is_reused_without_rescanning() {
-        let dir = TempDir::new().unwrap();
-        let persistor = CallbackPersistor::new(dir.path());
-        persistor
-            .save(&CallbackResult::new(ScanMetadata::new("eqmain.dll")))
-            .unwrap();
-        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
-
-        // The fixture engine would rescan successfully, so `true` alone
-        // proves nothing: the reuse is proven by the saved document's
-        // bytes surviving untouched - a rescan would rewrite them.
-        let pipeline = pipeline_over(Some(dir.path()));
-        assert!(pipeline.ensure_callback_detection("eqmain.dll").await);
-        assert_eq!(
-            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
-            saved,
-            "a cached document must not be rewritten by a rescan"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_callback_cache_miss_scans_and_saves_the_result() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(pipeline.ensure_callback_detection("eqmain.dll").await);
-
-        let persistor = CallbackPersistor::new(dir.path());
-        assert!(
-            persistor.exists("eqmain.dll"),
-            "a cache miss should leave a saved document behind"
-        );
-        assert_eq!(
-            persistor.path_for("eqmain.dll"),
-            dir.path()
-                .join("re")
-                .join("analysis")
-                .join("callback")
-                .join("eqmain.dll.json"),
-            "the document should be filed under re/analysis/callback"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_callback_save_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        // `re/analysis` as a plain file makes the save's directory
-        // creation fail even though the scan itself succeeds.
-        std::fs::create_dir_all(dir.path().join("re")).unwrap();
-        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
-
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_callback_detection("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn no_workspace_skips_the_callback_scan() {
-        let pipeline = pipeline_over(None);
-        assert!(!pipeline.ensure_callback_detection("eqmain.dll").await);
-    }
-
     // ─── Type-inference completion latch (issue #238) ────────────────
 
-    /// The latch is a shared one-shot: a waiter that arrived before the
-    /// publish is released by it, a waiter that arrives after answers
-    /// immediately, and publishing again changes nothing.
+    /// A named row out of a fresh table — descriptors are not `Clone`,
+    /// so each test takes its row out of its own `scan_rows()`.
+    fn find_row(name: &str) -> ScanDescriptor {
+        scan_rows()
+            .into_iter()
+            .find(|row| row.name() == name)
+            .expect("the roster carries the named row")
+    }
+
+    /// The completion latch is a shared one-shot: a waiter that arrived
+    /// before the publish is released by it, a waiter that arrives after
+    /// answers immediately, and publishing again changes nothing.
     #[tokio::test]
-    async fn the_type_inference_latch_is_a_shared_one_shot() {
-        let latch = TypeInferenceLatch::new();
+    async fn the_completion_latch_is_a_shared_one_shot() {
+        let latch = CompletionLatch::new();
         assert!(!latch.is_set(), "a fresh latch has not completed");
 
         let early = latch.clone();
@@ -5364,47 +5278,63 @@ void SetCursor(void)
             .expect("a waiter that arrives after the publish never blocks");
     }
 
-    /// The edge survives a reversed call order — the shape the fan-out
-    /// (#240) gives it: callback detection starts first and waits on
-    /// the latch, the inference scan then runs and publishes, and the
-    /// callback job composes its contracts from the document inference
-    /// just filed. Without the wait the callback scan would have read
-    /// an empty workspace and its findings would have lost the
-    /// enrichment (issue #173).
+    /// The declared edge survives a reversed call order — the shape the
+    /// fan-out (#240) gives it: the callback row starts first and its
+    /// pre-scan hook waits on the armed latch, the inference row then
+    /// runs and publishes its latch on the way out, and the callback
+    /// scan composes its contracts from the document inference just
+    /// filed. Without the wait the callback scan would have read an
+    /// empty workspace and its findings would have lost the enrichment
+    /// (issues #173, #238, #305).
     #[tokio::test]
     async fn callback_detection_waits_for_inference_across_a_reversed_call_order() {
         let dir = TempDir::new().unwrap();
         let pipeline = pipeline_over(Some(dir.path()));
-        pipeline.arm_type_inference_latch();
-
         let job = pipeline
             .scan_job("eqmain.dll")
             .expect("the workspace is configured, so the job exists");
-        let callback = tokio::spawn(async move { job.callback_detection().await });
+
+        // The latch the phase arms for the declared edge, wired onto the
+        // two rows exactly the way `registered_scan_tasks` wires it: the
+        // inference row's run publishes it on every exit, the callback
+        // row's pre-scan hook waits on it.
+        let edge = CompletionLatch::new();
+        let inference = find_row("type-inference");
+        let callback = find_row("callback-detection");
+        let mut inference_ctx = job.scan_context();
+        inference_ctx.latches.publish = Some(edge.clone());
+        let mut callback_ctx = job.scan_context();
+        callback_ctx.latches.wait = Some(edge.clone());
+
+        let running = tokio::spawn(async move { callback.run(callback_ctx).await });
         tokio::task::yield_now().await;
         assert!(
-            !callback.is_finished(),
-            "the callback job waits on the unpublished latch"
+            !running.is_finished(),
+            "the callback row waits on the unpublished latch"
         );
 
         assert!(
-            pipeline.ensure_type_inference("eqmain.dll").await,
+            inference.run(inference_ctx).await,
             "the inference scan succeeds over the fixture"
         );
+        assert!(
+            edge.is_set(),
+            "the inference row publishes its latch on the way out"
+        );
 
-        let scanned = tokio::time::timeout(std::time::Duration::from_secs(120), callback)
+        let scanned = tokio::time::timeout(std::time::Duration::from_secs(120), running)
             .await
-            .expect("the published latch releases the callback job — inference never strands it")
+            .expect("the published latch releases the callback row — inference never strands it")
             .expect("the callback task runs");
         assert!(scanned, "the callback scan succeeds over the fixture");
 
         // The enrichment the wait protects: inference's document is in
-        // place when the callback job reads it, and it composes real
-        // contracts — the fixture's inference records yield fully-read
-        // callables.
+        // place when the callback row composes its contracts, and it
+        // composes real ones — the fixture's inference records yield
+        // fully-read callables.
         assert!(
             TypeInferPersistor::new(dir.path()).exists("eqmain.dll"),
-            "the inference document is filed before the callback job reads it"
+            "the inference document is filed before the callback row reads it"
         );
         assert!(
             !callback_signature_map(dir.path(), "eqmain.dll").is_empty(),
@@ -5412,49 +5342,47 @@ void SetCursor(void)
         );
     }
 
-    /// The wait is real, not incidental: a callback job holding an
+    /// The wait is real, not incidental: a callback row holding an
     /// unpublished latch is still parked well past the time the same
     /// scan takes over the fixture when it does not wait — and the
-    /// publish releases it to a normal successful scan (issue #238).
+    /// publish releases it to a normal successful scan (issues #238,
+    /// #305).
     #[tokio::test]
     async fn callback_detection_holds_until_the_latch_publishes() {
         let dir = TempDir::new().unwrap();
         let pipeline = pipeline_over(Some(dir.path()));
-        pipeline.arm_type_inference_latch();
-
         let job = pipeline
             .scan_job("eqmain.dll")
             .expect("the workspace is configured, so the job exists");
-        let callback = tokio::spawn(async move { job.callback_detection().await });
 
-        // The fixture callback scan finishes in seconds; a job that
-        // skipped the latch would have answered inside this window.
+        let edge = CompletionLatch::new();
+        let callback = find_row("callback-detection");
+        let mut ctx = job.scan_context();
+        ctx.latches.wait = Some(edge.clone());
+        let running = tokio::spawn(async move { callback.run(ctx).await });
+
+        // The fixture callback scan finishes in seconds; a row that
+        // skipped the wait would have answered inside this window.
         // The margin — comfortably above the scan's own runtime, even
         // on a slow CI box — is what turns a missing wait into a
         // failure rather than a race.
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         assert!(
-            !callback.is_finished(),
-            "an unpublished latch holds the callback job past the scan's own runtime"
+            !running.is_finished(),
+            "an unpublished latch holds the callback row past the scan's own runtime"
         );
 
-        // The latch lives on the pipeline for the phase; publish through
-        // the armed handle, the way the inference scan would.
-        pipeline
-            .type_inference_latch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .expect("the phase armed a latch")
-            .publish();
+        // Publish the way the inference row's run does — the latch is
+        // the phase's, set on its way out.
+        edge.publish();
 
-        let scanned = tokio::time::timeout(std::time::Duration::from_secs(120), callback)
+        let scanned = tokio::time::timeout(std::time::Duration::from_secs(120), running)
             .await
-            .expect("the publish releases the held job")
+            .expect("the publish releases the held row")
             .expect("the callback task runs");
         assert!(
             scanned,
-            "the released job scans the fixture normally and files its document"
+            "the released row scans the fixture normally and files its document"
         );
         assert!(
             CallbackPersistor::new(dir.path()).exists("eqmain.dll"),
@@ -5463,9 +5391,9 @@ void SetCursor(void)
     }
 
     /// A failing type-inference scan leaves callback detection degraded
-    /// — no document, no enrichment — never blocked: the latch is
-    /// published on the failure path too, exactly as on success
-    /// (issue #238).
+    /// — no document, no enrichment — never blocked: the inference row
+    /// publishes its latch on the failure path too, exactly as on
+    /// success (issues #238, #305).
     #[tokio::test]
     async fn a_failing_type_inference_scan_degrades_callback_detection_never_blocks_it() {
         let dir = TempDir::new().unwrap();
@@ -5480,25 +5408,38 @@ void SetCursor(void)
         .unwrap();
 
         let pipeline = pipeline_over(Some(dir.path()));
-        pipeline.arm_type_inference_latch();
+        let job = pipeline
+            .scan_job("eqmain.dll")
+            .expect("the workspace is configured, so the job exists");
 
-        let inference = tokio::time::timeout(
+        let edge = CompletionLatch::new();
+        let inference = find_row("type-inference");
+        let mut inference_ctx = job.scan_context();
+        inference_ctx.latches.publish = Some(edge.clone());
+        let inferred = tokio::time::timeout(
             std::time::Duration::from_secs(120),
-            pipeline.ensure_type_inference("eqmain.dll"),
+            inference.run(inference_ctx),
         )
         .await
         .expect("a failing inference scan still returns");
-        assert!(!inference, "the failed save degrades the inference scan");
+        assert!(!inferred, "the failed save degrades the inference row");
+        assert!(
+            edge.is_set(),
+            "the failing run still published its latch on the way out"
+        );
 
-        // The failure path published the latch, so the callback job's
+        // The failure path published the latch, so the callback row's
         // wait releases even though no document was ever filed.
-        let callback = tokio::time::timeout(
+        let callback = find_row("callback-detection");
+        let mut callback_ctx = job.scan_context();
+        callback_ctx.latches.wait = Some(edge);
+        let scanned = tokio::time::timeout(
             std::time::Duration::from_secs(120),
-            pipeline.ensure_callback_detection("eqmain.dll"),
+            callback.run(callback_ctx),
         )
         .await
-        .expect("a failed inference scan never blocks callback detection");
-        assert!(callback, "the callback scan itself still succeeds");
+        .expect("a failed inference row never blocks the callback row");
+        assert!(scanned, "the callback scan itself still succeeds");
 
         assert!(
             !TypeInferPersistor::new(dir.path()).exists("eqmain.dll"),
@@ -6640,29 +6581,8 @@ void SetCursor(void)
     }
 
     // ============================================================
-    // The scan-descriptor registry (issues #302–#304)
+    // The scan-descriptor registry (issues #302–#305)
     // ============================================================
-
-    /// The not-yet-migrated scans' document locations: the roster that
-    /// must stay filed while a registered row degrades. Only the two
-    /// latch-coupled scans remain on the legacy path (issue #304); they
-    /// join the table when the ordering edge becomes a declared row
-    /// dependency (issue #305).
-    fn unmigrated_scan_documents(
-        workspace: &std::path::Path,
-        binary: &str,
-    ) -> Vec<(&'static str, std::path::PathBuf)> {
-        vec![
-            (
-                "type inference",
-                TypeInferPersistor::new(workspace).path_for(binary),
-            ),
-            (
-                "callback detection",
-                CallbackPersistor::new(workspace).path_for(binary),
-            ),
-        ]
-    }
 
     /// Registry-completeness is a test, not a comment: every row the
     /// phase runs from a descriptor is named here, so adding or dropping
@@ -6687,6 +6607,8 @@ void SetCursor(void)
                 "string-context",
                 "library-api",
                 "serialization",
+                "type-inference",
+                "callback-detection",
             ],
             "the registry roster changed — a scan joins the phase by adding \
              its row to the table, and never by being forgotten"
@@ -6719,15 +6641,8 @@ void SetCursor(void)
                 row.name()
             );
         }
-        // The rows and the legacy scans together are the whole phase:
-        // twelve registered documents plus the two latch-coupled legacy
-        // scans' documents are all fourteen, filed by one cold phase.
-        for (name, path) in unmigrated_scan_documents(dir.path(), PROGRAM) {
-            assert!(
-                path.is_file(),
-                "the legacy {name} scan filed its document on a cold phase"
-            );
-        }
+        // The table is the whole phase: all fourteen scans' documents
+        // are filed by one cold phase, every one of them from a row.
     }
 
     /// Every registered row, second shape: a pre-filed document is left
@@ -6764,8 +6679,8 @@ void SetCursor(void)
     }
 
     /// Every registered row, third shape: with its document directory
-    /// sabotaged the row warns and files nothing — and every other scan,
-    /// registered or legacy, still files its own. One detector's trouble
+    /// sabotaged the row warns and files nothing — and every other
+    /// registered row still files its own. One detector's trouble
     /// never takes down the group.
     #[tokio::test]
     async fn a_sabotaged_registered_row_degrades_without_taking_the_group_down() {
@@ -6798,14 +6713,6 @@ void SetCursor(void)
                         other.name()
                     );
                 }
-            }
-            for (name, path) in unmigrated_scan_documents(dir.path(), PROGRAM) {
-                assert!(
-                    path.is_file(),
-                    "the sabotaged {} row never took down the {} scan",
-                    row.name(),
-                    name
-                );
             }
         }
     }

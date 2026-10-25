@@ -35,28 +35,35 @@
 //! each row names its location through its own concrete `JsonStore`-based
 //! persistor, exactly as the legacy path does.
 //!
-//! Both mechanisms coexist while migration runs: the phase runs the
-//! registered rows first, then the legacy scans that have not migrated
-//! yet, joining every one of them. Control-flow detection was the first
-//! scan to run from its row end to end (issue #302); the six body-reading
-//! scans — memory lifecycle, concurrency, global state, constants,
-//! error handling, and float/SIMD — followed (issue #303); then the five
-//! that read whole-binary structure rather than per-function bodies —
-//! type-database recovery, algorithm recognition, string-context
-//! mapping, library/API identification, and serialization-pattern
-//! detection (issue #304). Only the two latch-coupled scans — parameter-
-//! type inference and callback detection — stay on the legacy path until
-//! the ordering edge becomes a declared row dependency (issue #305).
+//! Every scan now runs from its row (issue #305): the ordering edge that
+//! once kept parameter-type inference and callback detection on the
+//! legacy path is table data too — the callback row names the inference
+//! row in its [`ScanRow::waits_for`], and the module owns the completion
+//! latch generically ([`CompletionLatch`]): [`arm_completion_latches`]
+//! arms one latch per producer the rows declare, and the run shape
+//! hands it to the producer, publishing it on every exit whatever the
+//! outcome, and to the waiter, whose pre-scan hook awaits it before
+//! composing from the producer's document. No named latch field sits on
+//! the handle or the module, and a second ordering edge added later is
+//! one more pair of rows, not new mechanism.
+//!
+//! The legacy scan plumbing — the scan methods, their wrappers, the
+//! thunks, and the `ensure_*` entry points — is now unreachable from the
+//! phase; it stays compiling, exercised only by one-at-a-time `ensure_*`
+//! callers, until the contract ticket deletes it.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use calxgloss_algorithm::engine::AlgorithmEngine;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_apidetect::engine::ApiEngine;
 use calxgloss_apidetect::persist::ApiPersistor;
+use calxgloss_callback::engine::CallbackEngine;
+use calxgloss_callback::persist::CallbackPersistor;
+use calxgloss_callback::signatures::SignatureMap;
 use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
@@ -76,9 +83,14 @@ use calxgloss_stringctx::engine::StringContextEngine;
 use calxgloss_stringctx::persist::StringContextPersistor;
 use calxgloss_sync::engine::SyncEngine;
 use calxgloss_sync::persist::SyncPersistor;
+use calxgloss_typeinfer::engine::TypeInferEngine;
+use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
+use tokio::sync::watch;
 use tracing::{debug, info, warn};
+
+use crate::pipeline::callback_signature_map;
 
 /// A future with nothing borrowed from its caller, ready to cross onto a
 /// scan task — the shape the scan-phase fan-out moves every scan in.
@@ -113,12 +125,101 @@ type SuccessStep<T> = Arc<dyn Fn(&ScanContext, &T) + Send + Sync + 'static>;
 
 /// An optional per-row step the phase runs around the scan: a pre-scan
 /// step runs after the short-circuit decided to scan and before the engine
-/// is built (callback detection will await its dependency and compose its
-/// signature map there), and a post-scan step runs on every exit — cached
-/// hit, success, and both failures alike (the type-inference row will
-/// publish its completion latch there). Control-flow detection uses
-/// neither; the shape is here so the later rows need no new mechanism.
+/// is built (the callback row awaits its declared dependency and composes
+/// its signature map there), and a post-scan step runs on every exit —
+/// cached hit, success, and both failures alike. Completion latches are
+/// not a row hook: the run shape itself publishes the latch a row's
+/// producer arm carries, on every exit (see [`ScanLatches`]). Rows use
+/// neither hook today beyond callback detection's pre-scan step; the
+/// shape is here so later rows need no new mechanism.
 pub type ScanHook = Arc<dyn Fn(&ScanContext) -> OwnedFuture<()> + Send + Sync + 'static>;
+
+/// A declared dependency's completion latch — the phase's one ordering
+/// edge between rows, named only by the producer's scan name in the
+/// declaring rows (issue #305, generalizing issue #238's named field).
+///
+/// The phase arms one latch per scan a row declares it waits for; the
+/// producer's run publishes it on every exit — cached-document hit,
+/// successful scan, and failure alike — and the waiter's run awaits it
+/// in its pre-scan hook before composing from the producer's document.
+/// What made callback detection read inference's output only after
+/// inference had run — once a positional accident of the preamble's
+/// call order — is data on the rows that depend on it.
+///
+/// A shared one-shot: every clone of the latch sees the same completion
+/// flag. [`wait`](Self::wait) answers immediately once the flag is set,
+/// so a waiter that arrives after the publish never blocks and one that
+/// arrived before is released by it. Because the publish happens on
+/// failure too — and a latch whose producer never ran closes with it —
+/// a waiter is never stranded: it releases and degrades to composing
+/// nothing when no document is in place.
+#[derive(Debug, Clone)]
+pub struct CompletionLatch {
+    /// The completion flag, kept alive across clones of the latch by
+    /// the same `Arc<watch::Sender>` shape the progress bus uses.
+    completed: Arc<watch::Sender<bool>>,
+
+    /// The half a reader waits on; cheap to clone along with the latch.
+    waiter: watch::Receiver<bool>,
+}
+
+impl CompletionLatch {
+    /// A fresh, unpublished latch.
+    pub fn new() -> Self {
+        let (completed, waiter) = watch::channel(false);
+        Self {
+            completed: Arc::new(completed),
+            waiter,
+        }
+    }
+
+    /// Publish completion — the producing scan is done, succeeded or
+    /// failed. Idempotent: a second publish changes nothing.
+    pub fn publish(&self) {
+        self.completed.send_replace(true);
+    }
+
+    /// Whether the producer has published its completion.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_set(&self) -> bool {
+        *self.waiter.borrow()
+    }
+
+    /// Wait for the producing scan to finish. Returns immediately when
+    /// the latch is already published; a channel closed with no
+    /// publisher left also releases, so the waiter is never stranded —
+    /// only degraded.
+    pub async fn wait(&self) {
+        let mut waiter = self.waiter.clone();
+        // `wait_for` re-checks the current value before each poll, so a
+        // publish landing between the check and the wait is never missed.
+        let _ = waiter.wait_for(|completed| *completed).await;
+    }
+}
+
+impl Default for CompletionLatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The completion latches the phase hands to one row's run, wired from
+/// the table's declarations rather than from anything the row builds
+/// itself (issue #305): a row never arms or publishes a latch through a
+/// field of its own — the phase arms one [`CompletionLatch`] per declared
+/// producer ([`arm_completion_latches`]) and hands it here. Adding an
+/// ordering edge is therefore one more `waits_for` on a row, never a new
+/// field on the handle or the module.
+#[derive(Debug, Clone, Default)]
+pub struct ScanLatches {
+    /// The latch this row's run publishes on every exit — set when some
+    /// row declares this row's name as the scan it depends on.
+    pub publish: Option<CompletionLatch>,
+
+    /// The latch this row's pre-scan hook waits on — set when this row
+    /// declared the scan it depends on and that producer's latch armed.
+    pub wait: Option<CompletionLatch>,
+}
 
 /// The phase's run of one erased row: short-circuit, engine call,
 /// persist, degrade, completion log — composed from the row's steps by
@@ -141,6 +242,11 @@ pub struct ScanContext {
     /// loaded engine, exactly as [`ScanJob`](crate::scan_job::ScanJob)
     /// carries it.
     pub source: PipelineSource,
+
+    /// The completion latches the phase armed for this row's declared
+    /// dependency edge (issue #305) — empty when the row orders with
+    /// nothing, and never built by the row itself.
+    pub latches: ScanLatches,
 }
 
 /// The operator-visible wording a row carries so degradation and progress
@@ -175,6 +281,16 @@ where
 {
     /// The scan's name, used in logs and carried as the scan's identity.
     pub name: &'static str,
+
+    /// The name of the scan this row's pre-scan work waits for, if any
+    /// (issue #305). The phase arms one [`CompletionLatch`] for every
+    /// producer name declared in the table and hands the same latch to
+    /// the producer's run — published on every exit, whatever the
+    /// outcome — and to this row's run, awaited before the pre-scan
+    /// hook composes from the producer's document. A declared producer
+    /// missing from the table closes its latch's channel, so the waiter
+    /// releases degraded rather than stranded.
+    pub waits_for: Option<&'static str>,
 
     /// The row's operator-visible wording.
     pub messages: ScanMessages,
@@ -214,6 +330,7 @@ where
 /// consumers read without running the scan.
 pub struct ScanDescriptor {
     name: &'static str,
+    waits_for: Option<&'static str>,
     run: RunStep,
     document_path: LocationStep,
 }
@@ -227,8 +344,10 @@ impl ScanDescriptor {
     /// document, and degrade to a warning (leaving no document) when the
     /// scan or the save fails — answering `false` either way, `true` on a
     /// cached hit or a saved document. The post-scan hook runs on every
-    /// exit. The heartbeat, the window, and the joins stay the phase's;
-    /// the row never sees them.
+    /// exit, and so does the publish of a producer arm's completion
+    /// latch: cached hit, success, and both failures release the waiter
+    /// alike (issue #305). The heartbeat, the window, and the joins stay
+    /// the phase's; the row never sees them.
     pub fn new<T, P, ScanError, SaveError>(row: ScanRow<T, P, ScanError, SaveError>) -> Self
     where
         T: Send + 'static,
@@ -237,6 +356,7 @@ impl ScanDescriptor {
         SaveError: std::fmt::Display + Send + 'static,
     {
         let name = row.name;
+        let waits_for = row.waits_for;
         let messages = row.messages;
         // The run thunk is an `Fn` closure handing back a boxed future,
         // and each step is already an `Arc`, so the future takes cheap
@@ -297,12 +417,21 @@ impl ScanDescriptor {
                 if let Some(post) = &post_scan {
                     post(&ctx).await;
                 }
+                // The producer arm of a declared edge publishes on every
+                // exit — cached hit, success, and both failures alike —
+                // so a waiter is released whatever the outcome (issue
+                // #305). The latch is the phase's wiring, never a field
+                // this row built or named.
+                if let Some(latch) = &ctx.latches.publish {
+                    latch.publish();
+                }
                 scanned
             })
         });
 
         Self {
             name,
+            waits_for,
             run,
             document_path: table_path,
         }
@@ -312,6 +441,12 @@ impl ScanDescriptor {
     /// completeness roster.
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// The scan this row declared it depends on (issue #305) — read by
+    /// [`arm_completion_latches`] to wire the ordering edge generically.
+    pub fn waits_for(&self) -> Option<&'static str> {
+        self.waits_for
     }
 
     /// Where this scan's document is filed under a workspace root, named
@@ -339,6 +474,7 @@ impl ScanDescriptor {
 fn controlflow_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "control-flow",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting control-flow patterns before batch translation",
             cached_hit: "Control-flow result already cached; skipping scan",
@@ -371,12 +507,13 @@ fn controlflow_row() -> ScanDescriptor {
     })
 }
 
-/// The registered scan rows: the scans the phase runs from their
-/// descriptor, run first ahead of the legacy scans that have not migrated
-/// yet. Adding a scan to (or dropping one from) the phase means editing
-/// this table — and the translator suite's roster test names the rows
-/// explicitly, so the edit is deliberate, never an accident of a list
-/// someone forgot (the `libmatch` drift, spec #301).
+/// The registered scan rows: every scan the phase runs from its
+/// descriptor, run ahead of the legacy scans that once followed them —
+/// a legacy list now empty of un-migrated scans (issue #305). Adding a
+/// scan to (or dropping one from) the phase means editing this table —
+/// and the translator suite's roster test names the rows explicitly, so
+/// the edit is deliberate, never an accident of a list someone forgot
+/// (the `libmatch` drift, spec #301).
 pub fn scan_rows() -> Vec<ScanDescriptor> {
     vec![
         controlflow_row(),
@@ -391,7 +528,30 @@ pub fn scan_rows() -> Vec<ScanDescriptor> {
         string_context_row(),
         library_api_row(),
         serialization_row(),
+        type_inference_row(),
+        callback_row(),
     ]
+}
+
+/// Arm one completion latch per scan name the table declares a
+/// dependency on (issue #305): one latch per declared producer for the
+/// phase, a name declared by several waiters gets the one latch, and a
+/// producer no row waits for gets none. The scan phase wires the result
+/// into each row's [`ScanContext`] — the producer's run publishes the
+/// latch on every exit, its waiters' runs await it — so an ordering
+/// edge is a row declaration and nothing else: a second edge added
+/// later needs no new field on the handle or the module. A declared
+/// producer missing from the table leaves its latch with no publisher:
+/// the watch channel closes and its waiters release degraded rather
+/// than stranded.
+pub fn arm_completion_latches(rows: &[ScanDescriptor]) -> Vec<(&'static str, CompletionLatch)> {
+    let mut latches: Vec<(&'static str, CompletionLatch)> = Vec::new();
+    for producer in rows.iter().filter_map(ScanDescriptor::waits_for) {
+        if !latches.iter().any(|(name, _)| *name == producer) {
+            latches.push((producer, CompletionLatch::new()));
+        }
+    }
+    latches
 }
 
 /// Memory lifecycle detection, running from its row (issue #303). The
@@ -402,6 +562,7 @@ pub fn scan_rows() -> Vec<ScanDescriptor> {
 fn memory_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "memory-lifecycle",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting memory lifecycles before batch translation",
             cached_hit: "Memory lifecycle result already cached; skipping scan",
@@ -438,6 +599,7 @@ fn memory_row() -> ScanDescriptor {
 fn concurrency_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "concurrency",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting concurrency constructs before batch translation",
             cached_hit: "Concurrency result already cached; skipping scan",
@@ -473,6 +635,7 @@ fn concurrency_row() -> ScanDescriptor {
 fn global_state_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "global-state",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting global-state accesses before batch translation",
             cached_hit: "Global-state result already cached; skipping scan",
@@ -509,6 +672,7 @@ fn global_state_row() -> ScanDescriptor {
 fn constants_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "constants",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting constant structures before batch translation",
             cached_hit: "Constant result already cached; skipping scan",
@@ -546,6 +710,7 @@ fn constants_row() -> ScanDescriptor {
 fn error_handling_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "error-handling",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting error-handling idioms before batch translation",
             cached_hit: "Error-handling result already cached; skipping scan",
@@ -582,6 +747,7 @@ fn error_handling_row() -> ScanDescriptor {
 fn floatsimd_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "float-simd",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting float/SIMD usage before batch translation",
             cached_hit: "Float/SIMD result already cached; skipping scan",
@@ -622,6 +788,7 @@ fn floatsimd_row() -> ScanDescriptor {
 fn type_database_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "type-database",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Recovering type database before batch translation",
             cached_hit: "Type database already cached; skipping recovery",
@@ -664,6 +831,7 @@ fn type_database_row() -> ScanDescriptor {
 fn algorithm_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "algorithm-recognition",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Recognizing algorithms before batch translation",
             cached_hit: "Algorithm recognition result already cached; skipping scan",
@@ -700,6 +868,7 @@ fn algorithm_row() -> ScanDescriptor {
 fn string_context_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "string-context",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Mapping program strings before batch translation",
             cached_hit: "String context result already cached; skipping scan",
@@ -736,6 +905,7 @@ fn string_context_row() -> ScanDescriptor {
 fn library_api_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "library-api",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Identifying libraries and APIs before batch translation",
             cached_hit: "API result already cached; skipping scan",
@@ -771,6 +941,7 @@ fn library_api_row() -> ScanDescriptor {
 fn serialization_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "serialization",
+        waits_for: None,
         messages: ScanMessages {
             scan_started: "Detecting serialization patterns before batch translation",
             cached_hit: "Serialization result already cached; skipping scan",
@@ -795,6 +966,132 @@ fn serialization_row() -> ScanDescriptor {
             );
         }),
         pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// Parameter-type inference, running from its row (issue #305). The
+/// wording matches the legacy [`type_inference`](crate::scan_job::ScanJob)
+/// scan method byte-for-byte, and the document lands where that method
+/// filed it: `re/analysis/typeinfer/<binary>.json` through the engine's
+/// own persistor. No hooks: publishing the completion latch its waiter
+/// declared is the run shape's own every-exit step, not a row hook —
+/// the row names no latch, it only *is* the producer the callback row's
+/// `waits_for` names.
+fn type_inference_row() -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name: "type-inference",
+        waits_for: None,
+        messages: ScanMessages {
+            scan_started: "Inferring parameter types before batch translation",
+            cached_hit: "Type inference result already cached; skipping scan",
+            scan_failed: "Type inference failed; continuing without type context",
+            save_failed: "Failed to persist type inference result; continuing without type context",
+        },
+        persistor: Arc::new(|workspace| TypeInferPersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| {
+            TypeInferPersistor::new(workspace).path_for(binary)
+        }),
+        save: Arc::new(|persistor, result| persistor.save(result)),
+        build_and_scan: Arc::new(|source, binary| {
+            let engine = TypeInferEngine::with_source(source);
+            Box::pin(async move { engine.scan(binary).await })
+        }),
+        on_saved: Arc::new(|ctx, result| {
+            info!(
+                binary = %ctx.binary,
+                inferences = result.inferences.len(),
+                "Type inference complete"
+            );
+        }),
+        pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// Callback and function-pointer table detection, running from its row
+/// (issue #305) — and the table's one declared ordering edge: its
+/// `waits_for` names the inference row, so the phase arms the completion
+/// latch that orders them. Its pre-scan hook is the whole of the scan's
+/// pre-scan work: await the producer's latch (released on every exit,
+/// so a failing inference scan degrades this one, never strands it),
+/// then compose the closure-contract signatures from the filed
+/// type-inference document into the cell the engine step reads back.
+/// The wording matches the legacy
+/// [`callback_detection`](crate::scan_job::ScanJob) scan method
+/// byte-for-byte, and the document lands where that method filed it:
+/// `re/analysis/callback/<binary>.json` through the engine's own
+/// persistor.
+fn callback_row() -> ScanDescriptor {
+    // The composed signature map crosses from the pre-scan hook to the
+    // engine step through this cell: the hook fills it after the wait
+    // releases, and the engine step reads it when building the engine.
+    // One row runs once per phase and `scan_rows` builds a fresh table
+    // every phase, so the cell never spans two runs. With no producer
+    // document the composition yields an empty map — the un-enriched
+    // scan, degraded exactly as the legacy path left it.
+    let composed: Arc<Mutex<SignatureMap>> = Arc::new(Mutex::new(SignatureMap::new()));
+
+    ScanDescriptor::new(ScanRow {
+        name: "callback-detection",
+        waits_for: Some("type-inference"),
+        messages: ScanMessages {
+            scan_started: "Detecting callback tables before batch translation",
+            cached_hit: "Callback result already cached; skipping scan",
+            scan_failed: "Callback detection failed; continuing without callback context",
+            save_failed: "Failed to persist callback result; continuing without callback context",
+        },
+        persistor: Arc::new(|workspace| CallbackPersistor::new(workspace)),
+        exists: Arc::new(|persistor, binary| persistor.exists(binary)),
+        document_path: Arc::new(|workspace, binary| {
+            CallbackPersistor::new(workspace).path_for(binary)
+        }),
+        save: Arc::new(|persistor, result| persistor.save(result)),
+        build_and_scan: {
+            let composed = Arc::clone(&composed);
+            Arc::new(move |source, binary| {
+                let signatures = composed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let engine = CallbackEngine::with_source(source).with_signatures(signatures);
+                Box::pin(async move { engine.scan(binary).await })
+            })
+        },
+        on_saved: Arc::new(|ctx, result| {
+            info!(
+                binary = %ctx.binary,
+                findings = result.findings.len(),
+                "Callback detection complete"
+            );
+        }),
+        pre_scan: {
+            let composed = Arc::clone(&composed);
+            Some(Arc::new(move |ctx| {
+                let composed = Arc::clone(&composed);
+                // The boxed future outlives the borrowed context, so the
+                // fields it reads are taken out of `ctx` before boxing.
+                let latch = ctx.latches.wait.clone();
+                let workspace = ctx.workspace.clone();
+                let binary = ctx.binary.clone();
+                Box::pin(async move {
+                    // The declared edge, released by the phase's arm:
+                    // the inference row publishes its latch on every
+                    // exit — cached hit, success, or failure — and a
+                    // wait on an unclaimed latch closes with the
+                    // channel, so this scan is never stranded, only
+                    // ever degraded to an empty signature map.
+                    if let Some(latch) = &latch {
+                        latch.wait().await;
+                    }
+                    let signatures = callback_signature_map(&workspace, &binary);
+                    *composed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = signatures;
+                })
+            }))
+        },
         post_scan: None,
     })
 }
