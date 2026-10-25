@@ -43,3 +43,4 @@ askama = { workspace = true }
 [dev-dependencies]
 calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
 tempfile = "3"
+tracing-test = "0.2"

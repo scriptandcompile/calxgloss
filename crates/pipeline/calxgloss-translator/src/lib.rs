@@ -17,6 +17,7 @@
 
 pub mod carry_over;
 pub mod error;
+pub mod evidence_projector;
 mod pipeline;
 pub mod retry;
 mod scan_job;
