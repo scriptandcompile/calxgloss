@@ -7,6 +7,7 @@
 //! Run browser tests:   `cargo test --features server --test e2e headless -- --ignored`
 
 use calxgloss_git::{GitManager, InitConfig};
+use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_types::{
     GitBranch, PipelineControl, PipelineRunRequest, PipelineState, ProgressEvent, RunPhase,
     RunRequestSignal, RunScope, RunTarget, TestCase, TestResult, TranslationEvents,
@@ -354,6 +355,15 @@ fn baseline_result(
 }
 
 /// Start the axum server in a background task.
+/// The settings-backed actions backend the live (ws) routers carry (issue
+/// #327). The ws surface under test never posts a patch, so the default —
+/// LLM-less — description is enough here; a patch request against these
+/// routers would fail assembly, exactly what issue #327 specifies for a
+/// server started without LLM settings.
+fn ws_actions(fixture: &TestFixture) -> ActionsState {
+    ActionsState::new(fixture.repo_path(), PipelineSpec::default())
+}
+
 async fn spawn_server(router: axum::Router, port: u16) -> tokio::task::JoinHandle<()> {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
@@ -401,7 +411,7 @@ async fn test_health_endpoint_live_router() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -474,7 +484,7 @@ async fn test_server_status_live_router() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager.clone(), progress);
+    let router = build_router_with_ws(state, manager.clone(), progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -515,7 +525,7 @@ async fn test_server_status_live_router_idle() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -563,7 +573,7 @@ async fn test_pipeline_lifecycle_control_endpoints() {
     let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -644,7 +654,7 @@ async fn test_pipeline_state_changes_reach_ws_clients() {
     let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -703,7 +713,7 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -771,7 +781,7 @@ async fn test_pipeline_binary_pause_resume_endpoints() {
     let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -874,7 +884,7 @@ async fn test_binary_pause_changed_reaches_ws_clients() {
     let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -954,7 +964,7 @@ async fn test_pipeline_binary_focus_endpoint() {
     let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1044,7 +1054,7 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
         .with_run_requests(run_requests);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1141,7 +1151,7 @@ async fn test_pipeline_binary_start_refusals() {
         .with_run_requests(run_requests);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1207,7 +1217,7 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
         .with_run_requests(run_requests);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1287,7 +1297,7 @@ async fn test_scope_endpoints_503_without_control() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1375,7 +1385,7 @@ async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
     let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1511,7 +1521,7 @@ async fn test_override_endpoints_503_without_control() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1568,7 +1578,7 @@ async fn test_override_endpoints_apply_get_and_persist() {
     let state = ServerState::new(fixture.repo_path()).with_override_control(overrides);
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1714,7 +1724,7 @@ async fn test_classification_override_endpoints_503_without_control() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1773,7 +1783,7 @@ async fn test_classification_override_endpoints_set_get_and_persist() {
         ServerState::new(fixture.repo_path()).with_classification_override_control(overrides);
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1922,7 +1932,7 @@ async fn test_pipeline_start_endpoint_begins_idle_run() {
         .with_run_requests(run_requests.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1993,7 +2003,7 @@ async fn test_pipeline_restart_endpoint_queues_selectors() {
         .with_run_requests(run_requests.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2082,7 +2092,7 @@ async fn test_pipeline_start_and_restart_reach_ws_clients() {
         .with_run_requests(run_requests.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2168,7 +2178,7 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
         .with_unit_cancellation(cancellation.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress.clone());
+    let router = build_router_with_ws(state, manager, progress.clone(), ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2290,7 +2300,7 @@ async fn test_ws_pushes_unit_phase_records() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2430,7 +2440,7 @@ async fn test_stalled_ws_client_is_evicted() {
     let events = TranslationEvents::new(1024);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2546,7 +2556,12 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress.clone());
+    let router = build_router_with_ws(
+        state.clone(),
+        manager,
+        progress.clone(),
+        ws_actions(&fixture),
+    );
     let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2866,7 +2881,7 @@ async fn test_lifecycle_endpoints_registered_in_all_routers() {
         }),
         ("actions", {
             let fixture = TestFixture::new();
-            let actions = ActionsState::new(fixture.repo_path());
+            let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
             build_router_with_actions(
                 ServerState::new(fixture.repo_path())
                     .with_log_filter(calxgloss_web::LogLevelControl::new(handle_b)),
@@ -2881,6 +2896,7 @@ async fn test_lifecycle_endpoints_registered_in_all_routers() {
                     .with_log_filter(calxgloss_web::LogLevelControl::new(handle_c)),
                 manager,
                 ProgressState::new(),
+                ws_actions(&fixture),
             )
         }),
     ];
@@ -3667,7 +3683,7 @@ async fn test_batch_actions_report_per_item_results() {
     add_pending_translation(&fixture, "RenderHUD");
     add_pending_translation(&fixture, "PlaySound");
     let state = ServerState::new(fixture.repo_path());
-    let actions = ActionsState::new(fixture.repo_path());
+    let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
     let router = build_router_with_actions(state.clone(), actions);
     let _server = spawn_server(router, fixture.port()).await;
 
@@ -4058,7 +4074,7 @@ async fn test_pipeline_empty_progress() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress);
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4120,7 +4136,7 @@ async fn test_pipeline_phases_from_canned_events() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4396,7 +4412,7 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4461,7 +4477,7 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4546,7 +4562,7 @@ async fn test_pipeline_queue_plan_drives_row_order() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4638,7 +4654,7 @@ async fn test_pipeline_pal_binaries_sort_last() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4711,7 +4727,7 @@ async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4827,7 +4843,7 @@ async fn test_pipeline_pal_row_carries_trait_readiness_summary() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4867,7 +4883,7 @@ async fn test_pipeline_pal_binary_without_categories_reports_no_summary() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4892,7 +4908,7 @@ async fn test_pipeline_pal_readiness_recomputes_per_poll() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -4999,7 +5015,7 @@ async fn test_pipeline_time_estimate_present_with_durations() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -5034,7 +5050,7 @@ async fn test_pipeline_time_estimate_absent_without_durations() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -5200,7 +5216,10 @@ async fn test_pipeline_honest_empty_payload_on_non_live_routers() {
         let router = if kind == "serve" {
             build_router(state)
         } else {
-            build_router_with_actions(state, ActionsState::new(fixture.repo_path()))
+            build_router_with_actions(
+                state,
+                ActionsState::new(fixture.repo_path(), PipelineSpec::default()),
+            )
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -5231,7 +5250,7 @@ async fn test_pipeline_all_failed_batch_not_verification_complete() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -5287,7 +5306,7 @@ async fn test_progress_empty() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress);
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -5314,7 +5333,7 @@ async fn test_progress_reports_phase_history() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress);
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -5489,7 +5508,7 @@ async fn test_progress_enhanced_reports_live_records() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress);
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -5698,7 +5717,10 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
         let router = if kind == "serve" {
             build_router(state)
         } else {
-            build_router_with_actions(state, ActionsState::new(fixture.repo_path()))
+            build_router_with_actions(
+                state,
+                ActionsState::new(fixture.repo_path(), PipelineSpec::default()),
+            )
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -5783,7 +5805,10 @@ async fn test_llm_io_log_honest_empty_payload_on_non_live_routers() {
         let router = if kind == "serve" {
             build_router(state)
         } else {
-            build_router_with_actions(state, ActionsState::new(fixture.repo_path()))
+            build_router_with_actions(
+                state,
+                ActionsState::new(fixture.repo_path(), PipelineSpec::default()),
+            )
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -5809,7 +5834,7 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -6091,7 +6116,7 @@ async fn test_faults_analytics_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -6514,7 +6539,7 @@ async fn test_token_usage_analytics_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -6884,7 +6909,7 @@ async fn test_strategy_analytics_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -7335,7 +7360,7 @@ async fn test_llm_metrics_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -7613,7 +7638,7 @@ async fn test_binaries_list_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -7816,7 +7841,7 @@ async fn test_binaries_detail_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -8077,7 +8102,7 @@ async fn test_binaries_shim_status_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -8376,7 +8401,7 @@ async fn test_binaries_pal_status_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -8639,7 +8664,7 @@ async fn test_unit_attempts_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -8898,7 +8923,7 @@ async fn test_unit_attempt_diff_registered_in_plain_and_live_routers() {
         } else {
             let events = TranslationEvents::new(128);
             let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new())
+            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
         };
         let _server = spawn_server(router, fixture.port()).await;
 
@@ -10601,13 +10626,187 @@ async fn test_headless_binaries_detail_pal_tracker_honest_empty_state() {
     );
 }
 
+/// Issue #327 AC1/AC5: with the settings-backed actions backend wired in,
+/// `POST /api/units/{id}/patch` drives the real assembled request — the
+/// review UI's double-click creates the next-attempt branch and patch record
+/// for real, and the retry task is assembled from the description (its LLM
+/// endpoint here is a dead port, so the background retry fails on its own;
+/// the response and the on-disk artifacts prove the request ran the real
+/// path, not the retired canned response).
+#[tokio::test]
+async fn test_patch_request_with_actions_backend_creates_branch_and_record() {
+    let fixture = TestFixture::new();
+
+    // A target dir holding the Kuna-loadable fixture binary under the unit's
+    // name, so the request's engine load succeeds.
+    let target = tempfile::tempdir().expect("target dir");
+    let fixture_bin = calxgloss_testfixtures::fixture_target_path().expect("fixture target path");
+    std::fs::copy(fixture_bin, target.path().join("game_logic.dll"))
+        .expect("copy fixture binary under the unit's name");
+
+    let state = ServerState::new(fixture.repo_path());
+    let spec = PipelineSpec {
+        llm: Some(calxgloss_translator::assembly::LlmSelection::Description(
+            calxgloss_translator::assembly::LlmDescription {
+                endpoint: "http://127.0.0.1:1/v1/chat/completions".to_string(),
+                model: "fixture-model".to_string(),
+                api_key: None,
+                context_window: Some(128_000),
+                temperature: None,
+                timeout_secs: Some(2),
+            },
+        )),
+        ..PipelineSpec::default()
+    };
+    let actions =
+        ActionsState::new(fixture.repo_path(), spec).with_target_dir(target.path().to_path_buf());
+    let router = build_router_with_actions(state, actions);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
+    let encoded_id = urlencoding::encode(unit_id);
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/api/units/{}/patch",
+            fixture.port(),
+            encoded_id
+        ))
+        .json(&serde_json::json!({"issue": "off-by-one in loop bound"}))
+        .send()
+        .await
+        .expect("patch request reaches server");
+
+    assert_eq!(resp.status(), 200, "the assembled request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("patch body is JSON");
+    assert_eq!(body["action"], "patch_requested");
+    assert_eq!(
+        body["branch_name"], "re/game_logic.dll/DrawPrimitivev3",
+        "the next-attempt branch is named in the response"
+    );
+
+    // The branch really exists and the patch record really landed — the
+    // request walked the real create-and-record path.
+    let repo_path = fixture.repo_path();
+    let git = GitManager::open(&repo_path).expect("open git");
+    let branches = git.list_translation_branches().expect("list branches");
+    assert!(
+        branches.contains(&"re/game_logic.dll/DrawPrimitivev3".to_string()),
+        "the v3 branch exists: {branches:?}"
+    );
+    let record_path = fixture
+        .repo_path()
+        .join("re")
+        .join("patches")
+        .join("game_logic.dll")
+        .join("DrawPrimitive")
+        .join("v3.json");
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(record_path).expect("v3 patch record"))
+            .expect("v3 record json");
+    assert_eq!(record["patch_request"], "off-by-one in loop bound");
+}
+
+/// Issue #327 AC1: the canned "patch requested" response is gone. A router
+/// built without the settings-backed actions backend honestly refuses a patch
+/// request instead of pretending a retry started.
+#[tokio::test]
+async fn test_patch_without_actions_backend_refuses_instead_of_fabricating() {
+    let fixture = TestFixture::new();
+    let router = build_router(ServerState::new(fixture.repo_path()));
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
+    let encoded_id = urlencoding::encode(unit_id);
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/api/units/{}/patch",
+            fixture.port(),
+            encoded_id
+        ))
+        .json(&serde_json::json!({"issue": "off-by-one in loop bound"}))
+        .send()
+        .await
+        .expect("patch request reaches server");
+
+    assert_eq!(
+        resp.status(),
+        500,
+        "no actions backend means an honest refusal, not a fabricated 200"
+    );
+    let body = resp.text().await.expect("error body");
+    assert!(
+        body.contains("actions backend"),
+        "the refusal names the missing backend: {body}"
+    );
+}
+
+/// Issue #327 AC6: a server started with no LLM settings carries an
+/// actions backend whose description has no LLM selection, so a patch
+/// request fails with the assembly seam's clear error at request time —
+/// not a canned success and not a half-configured retry.
+#[tokio::test]
+async fn test_patch_without_llm_settings_reports_assembly_error() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    // Target dir configured, so the failing knob is specifically the missing
+    // LLM selection: the seam builds the LLM before it ever touches a binary.
+    let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default())
+        .with_target_dir(fixture.repo_path());
+    let router = build_router_with_actions(state, actions);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
+    let encoded_id = urlencoding::encode(unit_id);
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/api/units/{}/patch",
+            fixture.port(),
+            encoded_id
+        ))
+        .json(&serde_json::json!({"issue": "off-by-one in loop bound"}))
+        .send()
+        .await
+        .expect("patch request reaches server");
+
+    assert_eq!(
+        resp.status(),
+        500,
+        "a description with no LLM selection fails assembly, not the retry"
+    );
+    let body = resp.text().await.expect("error body");
+    assert!(
+        body.contains("cannot assemble a pass without an LLM"),
+        "the response carries the seam's assembly error: {body}"
+    );
+
+    // Nothing half-created behind the failed request: no v3 attempt branch.
+    let repo_path = fixture.repo_path();
+    let git = GitManager::open(&repo_path).expect("open git");
+    let v3_branches: Vec<_> = git
+        .list_translation_branches()
+        .expect("list branches")
+        .into_iter()
+        .filter(|b| b.ends_with("v3"))
+        .collect();
+    assert!(
+        v3_branches.is_empty(),
+        "a failed assembly must not leave a next-attempt branch: {v3_branches:?}"
+    );
+}
+
 /// Integration test verifying that the full router with actions
 /// can serve the dashboard.
 #[tokio::test]
 async fn test_actions_router_dashboard() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
-    let actions = ActionsState::new(fixture.repo_path());
+    let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
     let router = build_router_with_actions(state.clone(), actions);
     let _server = spawn_server(router, fixture.port()).await;
 
@@ -10653,7 +10852,7 @@ async fn test_actions_router_dashboard() {
 async fn test_send_back_verdict_survives_rebuild() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
-    let actions = ActionsState::new(fixture.repo_path());
+    let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
     let router = build_router_with_actions(state.clone(), actions);
     let _server = spawn_server(router, fixture.port()).await;
 
@@ -10769,7 +10968,7 @@ async fn test_websocket_upgrade_exists() {
     let state = ServerState::new(fixture.repo_path());
     let (manager, _event_tx) = SessionManager::new();
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress);
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -11668,7 +11867,7 @@ async fn test_headless_pipeline_phase_bar_live() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -11775,7 +11974,7 @@ async fn test_headless_pipeline_binary_rows() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -12160,7 +12359,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -12389,7 +12588,7 @@ async fn test_headless_controls_header_tracks_live_state() {
         .with_run_requests(run_requests.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -12573,7 +12772,7 @@ async fn test_headless_restart_dialog_drives_endpoint() {
         .with_run_requests(run_requests.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -12749,7 +12948,7 @@ async fn test_headless_binary_translation_toggle_matrix() {
         .with_run_requests(run_requests);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -12947,7 +13146,7 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
     let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -13050,7 +13249,7 @@ async fn test_headless_binary_start_swaps_the_rows() {
         .with_run_requests(run_requests);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -13184,7 +13383,7 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
     let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress);
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
     // The accept loop watches the state's shutdown flag — the production
     // graceful-shutdown path, so the dialog visibly stops the server.
     let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
@@ -13293,7 +13492,7 @@ async fn test_headless_scope_controls_panel() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -14124,7 +14323,7 @@ async fn test_headless_unit_overrides_tab() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -14294,7 +14493,7 @@ async fn test_headless_classification_override_panel() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     // One classified binary so the row exists to click.
@@ -14429,7 +14628,7 @@ async fn test_headless_classification_override_honest_without_control() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     events.emit(ProgressEvent::ClassificationComplete {
@@ -14597,7 +14796,7 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -15492,7 +15691,7 @@ async fn test_headless_llm_log_browser() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -15713,7 +15912,7 @@ async fn test_headless_live_view_renders_and_updates() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress);
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
     let _server = spawn_server(router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;

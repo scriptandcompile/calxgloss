@@ -7,7 +7,9 @@ use calxgloss::{
     PipelineControl, PipelineRunRequest, PipelineState, RunRequestSignal, StopSignal,
     TranslationEvents, UnitCancellation,
 };
-use calxgloss_web::{ServerState, SessionManager, build_router_with_ws, serve_with_listener};
+use calxgloss_web::{
+    ActionsState, ServerState, SessionManager, build_router_with_ws, serve_with_listener,
+};
 use tracing::{debug, error, info};
 
 use crate::Settings;
@@ -154,6 +156,39 @@ pub async fn handle_live(
     let classification_override_control =
         calxgloss::ClassificationOverrideControl::open(&workspace);
 
+    // Settings-backed review-actions backend (issue #327): the same
+    // `pipeline_spec` fold (issue #324) the run's passes go through, with
+    // this run's live control handles layered on — the patch retry's
+    // stop/pause/scope/override surface comes from the run that owns the
+    // server — and the run's call-graph/cache flags, exactly as the auto
+    // passes carry them. Each review-UI patch request assembles its retry
+    // pass from this description: the same wiring `serve` runs.
+    let mut patch_spec = crate::settings::pipeline_spec(settings)?;
+    RunControls {
+        events: Some(&events),
+        stop: Some(&stop_signal),
+        control: Some(&control),
+        cancellation: Some(&cancellation),
+        scope_control: Some(&scope_control),
+        override_control: Some(&override_control),
+        classification_overrides: Some(&classification_override_control),
+    }
+    .apply(&mut patch_spec);
+    patch_spec.no_callgraph = no_callgraph;
+    patch_spec.callgraph_cache_dir = callgraph_cache.clone();
+    patch_spec.callgraph_verbose = callgraph_verbose;
+    patch_spec.refresh_cache = refresh_cache;
+    let actions_target_dir = settings
+        .target_dir
+        .as_ref()
+        .map(|t| PathBuf::from(&t.value))
+        .or_else(|| target.clone());
+    let actions = ActionsState::new(workspace.clone(), patch_spec);
+    let actions = match actions_target_dir {
+        Some(dir) => actions.with_target_dir(dir),
+        None => actions,
+    };
+
     // Build the server state here (not inside the serve task) so the run
     // loop can also watch the server's shutdown flag and exit when the
     // operator shuts the server down.
@@ -190,10 +225,12 @@ pub async fn handle_live(
         let _ = ready_tx.send(Ok(local_addr));
 
         // Build the router with WebSocket support so the frontend can stream
-        // progress events over the upgrade endpoint.
+        // progress events over the upgrade endpoint, and with the settings-
+        // backed actions backend so the review UI's patch retry runs a real
+        // assembled pass (issue #327).
         let event_rx = events_clone.subscribe();
         let manager = SessionManager::new_with_broadcast(event_rx);
-        let router = build_router_with_ws(server_state.clone(), manager, serve_progress);
+        let router = build_router_with_ws(server_state.clone(), manager, serve_progress, actions);
         // Watch the state's shutdown flag so `POST /api/server/shutdown`
         // (and `/restart`) stops the accept loop gracefully.
         let shutdown = server_state.shutdown_signal();

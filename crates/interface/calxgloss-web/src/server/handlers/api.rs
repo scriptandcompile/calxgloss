@@ -493,6 +493,12 @@ pub(crate) async fn perform_send_back(
 /// 2. Creates a new version branch (v{N+1}) via `calxgloss-git`.
 /// 3. Persists the patch request record to `re/patches/`.
 /// 4. Spawns an async retry translation via `calxgloss-translator`.
+///
+/// The retry pass itself is assembled per request from the actions
+/// backend's settings-folded description (issue #327) — the canned
+/// "patch requested" response this endpoint used to fabricate when the
+/// router had no actions backend is gone: a router built without one now
+/// honestly refuses instead of pretending a retry started.
 pub async fn api_request_patch(
     State(combined): State<super::super::CombinedState>,
     Path(unit_id): Path<String>,
@@ -502,43 +508,21 @@ pub async fn api_request_patch(
         .map(|b| b.issue)
         .unwrap_or_else(|| "Unknown issue".to_string());
 
-    // If ActionsState is present, use the real implementation
-    if let Some(actions) = combined.actions {
-        let result = super::super::actions::request_patch(&actions, &unit_id, &issue)
-            .await
-            .map_err(action_error)?;
-        return Ok(Json(ActionResponse {
-            unit_id: result.unit_id,
-            action: result.action,
-            merge_hash: result.merge_hash,
-            branch_name: result.branch_name,
-            message: result.message,
-            rejection_path: result.rejection_path,
-        }));
-    }
-
-    // Fallback for basic router (no translator integration): return stub response
-    // This keeps the API working even without the full pipeline set up.
-    let state = combined.server;
-    let unit = super::queue::find_unit(&state, &unit_id)?;
-
-    let branch_name = format!(
-        "re/{}{}/v{}",
-        unit.binary,
-        unit.function
-            .as_deref()
-            .map(|f| format!("/{f}"))
-            .unwrap_or_default(),
-        unit.attempt
-    );
-
+    let actions = combined.actions.ok_or_else(|| {
+        ServerError::internal(
+            "patch retry needs the settings-backed actions backend — this server was built without one",
+        )
+    })?;
+    let result = super::super::actions::request_patch(&actions, &unit_id, &issue)
+        .await
+        .map_err(action_error)?;
     Ok(Json(ActionResponse {
-        unit_id,
-        action: "patch_requested".to_string(),
-        merge_hash: None,
-        branch_name: Some(branch_name),
-        message: format!("Patch requested: {issue}"),
-        rejection_path: None,
+        unit_id: result.unit_id,
+        action: result.action,
+        merge_hash: result.merge_hash,
+        branch_name: result.branch_name,
+        message: result.message,
+        rejection_path: result.rejection_path,
     }))
 }
 

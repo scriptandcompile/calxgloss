@@ -244,8 +244,10 @@ impl Settings {
 ///
 /// `auto` reads through the fold and hands the description to assembly
 /// (issue #325), and `translate` and `batch-translate` follow through
-/// `command_pass_spec` (issue #326). The one hand-built dance left — web's
-/// patch retry — moves onto `assemble` in epic #322's closing slice.
+/// `command_pass_spec` (issue #326). The last hand-built dance — web's patch
+/// retry — joined the fold in the epic's closing slice (issue #327): `serve`
+/// and `live` fold their resolved settings through here and hand the record
+/// to the actions backend, which assembles each retry's pass from it.
 pub fn pipeline_spec(s: &Settings) -> Result<PipelineSpec> {
     let llm = match (s.llm_url.as_ref(), s.llm_model.as_ref()) {
         (Some(url), Some(model)) => Some(LlmSelection::Description(LlmDescription {

@@ -8,6 +8,7 @@
 
 use axum::extract::{Path, State};
 use calxgloss_git::GitManager;
+use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_web::{
     ActionsState, CombinedState, ServerState, accept_unit, api_accept_unit, build_dashboard,
 };
@@ -46,7 +47,9 @@ fn make_conflicting_repo() -> tempfile::TempDir {
 #[tokio::test]
 async fn accepting_conflicting_unit_fails_without_marking_accepted() {
     let dir = make_conflicting_repo();
-    let state = ActionsState::new(dir.path().to_path_buf());
+    // Issue #327: the actions backend now carries a pass description; the
+    // accept path never assembles one, so the default is enough here.
+    let state = ActionsState::new(dir.path().to_path_buf(), PipelineSpec::default());
 
     let result = accept_unit(&state, "game_logic.dll/DrawSprite/v2").await;
 

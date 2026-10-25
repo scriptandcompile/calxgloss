@@ -13,7 +13,7 @@ use calxgloss_pal::{ApiMapping, ApiMappings};
 use calxgloss_testfixtures::{TARGET_FILE_NAME, load_target};
 use calxgloss_translator::TranslatorError;
 use calxgloss_translator::assembly::{
-    BinaryTarget, LlmDescription, LlmSelection, PipelineSpec, assemble,
+    BinaryTarget, LlmDescription, LlmSelection, PipelineSpec, assemble, assemble_patch,
 };
 use calxgloss_types::{ApiCategory, ContextTier, FunctionOverride, OverrideControl, RetryStrategy};
 
@@ -340,6 +340,99 @@ async fn an_assembled_patch_pass_honors_the_configured_kuna_budget() {
         .await
         .expect("with the budget unset the patch pass translates");
     assert_eq!(translation.rust_code, TICK_CODE);
+}
+
+// ============================================================
+// assemble_patch: the web server's entry — spec in, pass out
+// ============================================================
+
+#[tokio::test]
+async fn assemble_patch_refuses_a_spec_without_an_llm_before_touching_the_engine() {
+    let ws = tempfile::TempDir::new().expect("temp workspace");
+    // A patch-mode spec that names a real, loadable binary but carries no
+    // LLM: the refusal is the missing LLM, not an engine failure — the seam
+    // builds the LLM first, so a server started without LLM settings meets
+    // the clear assembly error at patch-request time (issue #327 AC6).
+    let spec = PipelineSpec {
+        patch_mode: true,
+        target_binary: fixture_spec(
+            ws.path(),
+            LlmSelection::Client(
+                LlmClient::from_url("http://127.0.0.1:1/v1", "m").expect("llm client"),
+            ),
+        )
+        .target_binary,
+        workspace: ws.path().to_path_buf(),
+        ..PipelineSpec::default()
+    };
+
+    let error = assemble_patch(&spec)
+        .await
+        .expect_err("a patch pass without an LLM must not assemble");
+    assert!(
+        matches!(error, TranslatorError::MissingLlm { .. }),
+        "the LLM is checked before the engine load, got: {error}"
+    );
+}
+
+#[tokio::test]
+async fn assemble_patch_names_a_missing_patch_target() {
+    let ws = tempfile::TempDir::new().expect("temp workspace");
+    // The LLM is fine but no binary is named: a patch pass loads its engine
+    // from that path, so the refusal says so by name (issue #327's honest
+    // failure surface — nothing half-assembled).
+    let spec = PipelineSpec {
+        llm: Some(LlmSelection::Client(
+            LlmClient::from_url("http://127.0.0.1:1/v1", "m").expect("llm client"),
+        )),
+        patch_mode: true,
+        workspace: ws.path().to_path_buf(),
+        ..PipelineSpec::default()
+    };
+
+    let error = assemble_patch(&spec)
+        .await
+        .expect_err("a patch pass with no target binary cannot load its engine");
+    match error {
+        TranslatorError::MissingPatchTarget { reason } => assert!(
+            reason.contains("target binary"),
+            "the refusal names what is missing: {reason}"
+        ),
+        other => panic!("expected MissingPatchTarget, got: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn assemble_patch_loads_its_engine_under_the_configured_budget() {
+    let ws = tempfile::TempDir::new().expect("temp workspace");
+    let base = fake_llm(TICK_CODE).await;
+
+    // The patch-mode budget test above through the web entry: spec in, no
+    // engine handed in, and the load the assembly performs still honors the
+    // configured budgets (issue #327 carries the settings' knobs through).
+    let mut spec = fixture_spec(
+        ws.path(),
+        LlmSelection::Client(LlmClient::from_url(&base, "m").expect("llm client")),
+    );
+    spec.patch_mode = true;
+    spec.kuna_budget = KunaBudget {
+        max_instructions: Some(1),
+        ..KunaBudget::default()
+    };
+
+    let pass = assemble_patch(&spec)
+        .await
+        .expect("the patch load arms the budget and succeeds");
+
+    let error = pass
+        .pipeline
+        .translate(TARGET_FILE_NAME, "fixture_tick")
+        .await
+        .expect_err("the armed instruction budget must trip on the fixture body");
+    assert!(
+        error.to_string().contains("budget tripped"),
+        "the failure should name the budget trip: {error}"
+    );
 }
 
 // ============================================================

@@ -1169,11 +1169,14 @@ pub fn build_router_with_actions(state: ServerState, actions: ActionsState) -> R
 }
 
 /// Build the router for `calxgloss live`: the shared surface plus the
-/// live-only pipeline-progress and WebSocket endpoints.
+/// live-only pipeline-progress and WebSocket endpoints, with the settings-
+/// backed review-actions backend wired in (issue #327) so the review UI's
+/// patch retry runs a real assembled pass in live mode too.
 pub fn build_router_with_ws(
     state: ServerState,
     manager: SessionManager,
     progress: ProgressState,
+    actions: ActionsState,
 ) -> Router {
     // Wire the session manager's callback so that every translation
     // progress event also updates the in-memory ProgressState.
@@ -1218,7 +1221,7 @@ pub fn build_router_with_ws(
         server: state,
         manager: Some(manager),
         bridge: None,
-        actions: None,
+        actions: Some(actions),
         progress: Some(Arc::new(RwLock::new(progress))),
     })
 }
@@ -1235,7 +1238,10 @@ async fn api_events_upgrade_ws(
     })
 }
 
-/// Start the API server on the given address.
+/// Start the review UI API server on the given address, with the
+/// settings-backed review-actions backend wired into the router (issue
+/// #327): accept, send-back, and patch all run for real, the patch retry
+/// assembled per request from the backend's pass description.
 ///
 /// If `ready` is provided, its sender is notified (with the local address)
 /// immediately after the TCP listener is bound, before any requests are
@@ -1247,6 +1253,7 @@ async fn api_events_upgrade_ws(
 /// instead.
 pub async fn serve(
     state: ServerState,
+    actions: ActionsState,
     port: u16,
     ready: Option<
         tokio::sync::oneshot::Sender<std::result::Result<std::net::SocketAddr, anyhow::Error>>,
@@ -1275,7 +1282,7 @@ pub async fn serve(
     // flag; axum then stops accepting new connections and lets in-flight
     // requests finish before `serve` returns.
     let shutdown = state.shutdown_signal();
-    axum::serve(listener, build_router(state))
+    axum::serve(listener, build_router_with_actions(state, actions))
         .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())

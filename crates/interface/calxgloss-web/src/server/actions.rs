@@ -21,9 +21,19 @@
 //! writing its own record, so a racing action fails with a conflict error
 //! instead of overwriting a newer record, and send-back/patch on an
 //! already-accepted unit are refused (issue #86).
+//!
+//! The patch-retry pass is assembled per request through the translator's
+//! assembly seam (issue #327): `serve`/`live` fold their resolved settings
+//! into a [`calxgloss_translator::assembly::PipelineSpec`], the request layers
+//! the unit's binary and patch mode on, and `assemble_patch` builds the whole
+//! pass — LLM client from the description's LLM selection (no environment
+//! reads, no inline fallback chain), engine load under the configured Kuna
+//! budgets, retry config from the description's policy. A server started
+//! without LLM settings fails a patch request with the seam's assembly error,
+//! before any branch or record exists.
 
 use calxgloss_git::{GitManager, ShimDependencyMap};
-use calxgloss_translator::{RetryConfig, TranslationPipeline};
+use calxgloss_translator::assembly::{AssembledPass, BinaryTarget, PipelineSpec, assemble_patch};
 use calxgloss_types::{GitBranch, ReviewStatus, TypesError};
 use chrono::Utc;
 use std::future::Future;
@@ -51,14 +61,29 @@ pub struct ActionsState {
     /// the Kuna engine from `target_dir/<binary>`. `None` means retries
     /// refuse by name rather than guessing a path.
     target_dir: Option<PathBuf>,
+    /// The server's pass description (issue #327): folded once from the
+    /// resolved settings `serve`/`live` started with, and layered per patch
+    /// request (patch mode, this unit's binary under the target dir, the
+    /// repo as workspace) before `assemble_patch` builds the retry pass.
+    /// LLM selection, Kuna budgets, retry policy and every other knob the
+    /// fold carries arrive through the description — the handler stopped
+    /// reading environment variables and hand-defaulting `RetryConfig` the
+    /// moment the description became the source. A server started without
+    /// LLM settings holds a description with no LLM selection, and its
+    /// patch requests fail with the seam's assembly error at request time.
+    pass_spec: PipelineSpec,
 }
 
 impl ActionsState {
-    pub fn new(repo_path: PathBuf) -> Self {
+    /// Wire an actions backend over `repo_path`, with the pass description
+    /// the server's resolved settings folded into (issue #327) — the same
+    /// `pipeline_spec` fold the CLI commands run their passes through.
+    pub fn new(repo_path: PathBuf, pass_spec: PipelineSpec) -> Self {
         Self {
             repo_path,
             action_lock: Arc::new(tokio::sync::Mutex::new(())),
             target_dir: None,
+            pass_spec,
         }
     }
 
@@ -77,6 +102,32 @@ impl ActionsState {
     /// Where the target binaries live, for engine loads in patch retries.
     pub fn target_dir(&self) -> Option<&Path> {
         self.target_dir.as_deref()
+    }
+
+    /// The description one patch request runs (issue #327): the server's
+    /// folded description with the run-scoped fields layered on — patch
+    /// mode, this unit's binary resolved under the server's target dir,
+    /// and the repo as the workspace (a patch retry writes into the
+    /// server's repo, whatever the settings record's own workspace says).
+    /// Pure data — the assembly that turns it into a pass is the request's.
+    fn patch_pass_spec(&self, binary: &str) -> Result<PipelineSpec, anyhow::Error> {
+        // Kuna is the only analysis engine (issue #214): the scan source is
+        // loaded in-process from the target file, so a retry needs the target
+        // directory the binary lives in — refuse by name when the server was
+        // started without one rather than guessing a path.
+        let target_dir = self.target_dir.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no target directory configured: this server was started without a              target_dir, so {binary} cannot be loaded for the patch retry"
+            )
+        })?;
+        let mut spec = self.pass_spec.clone();
+        spec.workspace = self.repo_path.clone();
+        spec.patch_mode = true;
+        spec.target_binary = Some(BinaryTarget {
+            name: binary.to_string(),
+            path: target_dir.join(binary),
+        });
+        Ok(spec)
     }
 
     /// Begins one review action on a unit: captures the unit's persisted
@@ -437,6 +488,20 @@ async fn request_patch_spawning(
         });
     }
 
+    // Assemble the retry pass before anything is created (issue #327): the
+    // server's folded description layered with this unit's binary, then the
+    // seam builds the whole pass — LLM client from the description's LLM
+    // selection (no environment reads, no inline fallback chain), engine
+    // load under the description's Kuna budgets, retry config from the
+    // description's policy. An unbuildable pass — a server started without
+    // LLM settings, an unreadable binary — fails the request HERE, at
+    // patch-request time, so the reviewer sees the assembly error and no
+    // half-configured retry exists: no branch, no record, no racing task.
+    let spec = state.patch_pass_spec(&unit.binary)?;
+    let pass = assemble_patch(&spec).await.map_err(|e| {
+        anyhow::anyhow!("patch retry for {unit_id} could not assemble its pass: {e}")
+    })?;
+
     // Create the branch in git (from main)
     let policy = match unit.kind.clone() {
         calxgloss_types::WorkKind::FunctionTranslation => {
@@ -502,6 +567,8 @@ async fn request_patch_spawning(
     // Kick off async retry translation in the background.
     // We can't hold git2 objects across await points (they're not Send),
     // so we pass only the data the closure needs and let it open its own GitManager.
+    // The assembled pass (issue #327) rides into the task: everything the
+    // retry translates with was already built from the description above.
     let repo_path = state.repo_path().to_path_buf();
     let issue_str = issue.to_string();
     let binary = unit.binary.clone();
@@ -509,18 +576,10 @@ async fn request_patch_spawning(
     let attempt = next_branch.attempt;
     let branch_name = next_branch.name.clone();
     let branch_name_for_log = branch_name.clone();
-    let target_dir = state.target_dir().map(|p| p.to_path_buf());
 
     spawn_retry(Box::pin(async move {
-        if let Err(e) = run_patch_retry(
-            &repo_path,
-            target_dir.as_deref(),
-            &issue_str,
-            &binary,
-            &function,
-            attempt,
-        )
-        .await
+        if let Err(e) =
+            run_patch_retry(pass, &repo_path, &issue_str, &binary, &function, attempt).await
         {
             warn!("Patch retry failed for {branch_name_for_log}: {e}");
         }
@@ -541,48 +600,18 @@ async fn request_patch_spawning(
 
 /// Run a full retry translation for a patch request.
 ///
-/// This runs the translation pipeline with retry logic.  On success it
-/// commits the result to the next-attempt branch.
+/// The pass to retry with was assembled by the request itself, from the
+/// server's pass description (issue #327) — pipeline, verifier, and retry
+/// config all arrive on [`AssembledPass`]. This function only drives the
+/// git branch dance around the retry loop and records the outcome.
 async fn run_patch_retry(
+    pass: AssembledPass,
     repo_path: &Path,
-    target_dir: Option<&Path>,
     _issue: &str,
     binary: &str,
     function: &str,
     attempt: u32,
 ) -> Result<(), anyhow::Error> {
-    // Kuna is the only analysis engine (issue #214): the scan source is
-    // loaded in-process from the target file, so a retry needs the target
-    // directory the binary lives in — refuse by name when the server was
-    // started without one rather than guessing a path.
-    let target_dir = target_dir.ok_or_else(|| {
-        anyhow::anyhow!(
-            "no target directory configured: this server was started without a              target_dir, so {binary} cannot be loaded for the patch retry"
-        )
-    })?;
-    let kuna = calxgloss_kuna::KunaSource::load(&target_dir.join(binary))
-        .map_err(|e| anyhow::anyhow!("Kuna engine: {e}"))?;
-
-    let llm_url =
-        std::env::var("LLM_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
-    let llm_model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "qwen3".to_string());
-
-    let llm = calxgloss_llm::LlmClient::from_url(&llm_url, &llm_model)
-        .map_err(|e| anyhow::anyhow!("LLM client: {e}"))?;
-
-    // Build the hallucination detector from engine symbols and PAL APIs
-    // before creating the pipeline (which consumes the scan source).
-    let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = calxgloss_translator::build_hallucination_detector(&kuna, &api_mappings).await;
-    let pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
-        .with_workspace(repo_path.to_path_buf())
-        .with_hallucination_detector(detector);
-
-    let verifier =
-        calxgloss_verify::Verifier::new(repo_path).map_err(|e| anyhow::anyhow!("Verifier: {e}"))?;
-
-    let config = RetryConfig::default();
-
     // Build the branch name for the retry
     let branch = GitBranch::new(binary, function, attempt)?;
 
@@ -640,8 +669,9 @@ async fn run_patch_retry(
     // (it was moved into the closure). Run the pipeline.
     info!("Starting patch retry for {binary}/{function} v{attempt}");
 
-    let result = pipeline
-        .try_translate_with_retry(binary, function, &config, &verifier)
+    let result = pass
+        .pipeline
+        .try_translate_with_retry(binary, function, &pass.retry, &pass.verifier)
         .await?;
 
     if result.success {
@@ -712,6 +742,9 @@ async fn run_patch_retry(
             .join("patches")
             .join(binary)
             .join(function);
+        std::fs::create_dir_all(&patch_dir).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to create patch dir: {e}"))
+        })?;
         let patch_record_path = patch_dir.join(format!("v{}.json", attempt));
         let mut patch_record = serde_json::json!({
             "binary": binary,
@@ -789,8 +822,43 @@ fn lookup_unit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_translator::assembly::{LlmDescription, LlmSelection};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The description a server folds when it was started without LLM
+    /// settings (issue #327): no LLM selection, so every patch request must
+    /// fail at assembly with the seam's `MissingLlm` error.
+    fn spec_without_llm() -> PipelineSpec {
+        PipelineSpec::default()
+    }
+
+    /// A description carrying an LLM selection pointed at a port where
+    /// nothing listens: `assemble_patch` builds the client fine, and the
+    /// counting spawners below never let the retry run far enough to call it.
+    fn spec_with_dead_llm() -> PipelineSpec {
+        PipelineSpec {
+            llm: Some(LlmSelection::Description(LlmDescription {
+                endpoint: "http://127.0.0.1:1/v1/chat/completions".to_string(),
+                model: "fixture-model".to_string(),
+                api_key: None,
+                context_window: Some(128_000),
+                temperature: None,
+                timeout_secs: Some(2),
+            })),
+            ..PipelineSpec::default()
+        }
+    }
+
+    /// A fresh target dir holding the Kuna-loadable fixture binary renamed
+    /// to `binary`: `assemble_patch` loads the retry's engine from
+    /// `target_dir/<binary>`, and the repo units below name `game_logic.dll`.
+    fn target_dir_with(binary: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("target dir");
+        let fixture = calxgloss_testfixtures::fixture_target_path().expect("fixture target path");
+        std::fs::copy(fixture, dir.path().join(binary)).expect("copy fixture binary");
+        dir
+    }
 
     /// A repo with one review unit: branch `re/game_logic.dll/DrawSpritev1`,
     /// carrying one translated commit so accepting the unit really merges
@@ -838,7 +906,14 @@ mod tests {
     #[tokio::test]
     async fn double_click_starts_one_branch_and_one_retry() {
         let dir = make_repo_with_unit();
-        let state = ActionsState::new(dir.path().to_path_buf());
+        // Issue #327: the request assembles a real pass before recording
+        // anything, so the state carries a description-backed backend — a
+        // description with an LLM selection and a target dir holding the
+        // unit's binary. The counting spawner still drops the retry task,
+        // so the dead endpoint is never called.
+        let target = target_dir_with("game_logic.dll");
+        let state = ActionsState::new(dir.path().to_path_buf(), spec_with_dead_llm())
+            .with_target_dir(target.path().to_path_buf());
         let spawns = Arc::new(AtomicUsize::new(0));
 
         let first = request_patch_spawning(
@@ -901,7 +976,11 @@ mod tests {
     #[tokio::test]
     async fn patch_after_previous_attempt_finished_starts_fresh() {
         let dir = make_repo_with_unit();
-        let state = ActionsState::new(dir.path().to_path_buf());
+        // Issue #327: description-backed actions backend (see the double-click
+        // test) — each fresh attempt assembles its own pass at request time.
+        let target = target_dir_with("game_logic.dll");
+        let state = ActionsState::new(dir.path().to_path_buf(), spec_with_dead_llm())
+            .with_target_dir(target.path().to_path_buf());
         let spawns = Arc::new(AtomicUsize::new(0));
 
         request_patch_spawning(
@@ -955,7 +1034,7 @@ mod tests {
     #[tokio::test]
     async fn accept_and_send_back_race_exactly_one_wins() {
         let dir = make_repo_with_unit();
-        let state = ActionsState::new(dir.path().to_path_buf());
+        let state = ActionsState::new(dir.path().to_path_buf(), spec_without_llm());
 
         // Hold the action lock while both actions start, so each captures the
         // persisted state ("nothing recorded yet") before either can proceed
@@ -1018,7 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn send_back_on_accepted_unit_is_rejected() {
         let dir = make_repo_with_unit();
-        let state = ActionsState::new(dir.path().to_path_buf());
+        let state = ActionsState::new(dir.path().to_path_buf(), spec_without_llm());
 
         accept_unit(&state, "game_logic.dll/DrawSprite/v1")
             .await
@@ -1046,7 +1125,10 @@ mod tests {
     #[tokio::test]
     async fn patch_on_accepted_unit_is_rejected() {
         let dir = make_repo_with_unit();
-        let state = ActionsState::new(dir.path().to_path_buf());
+        // No LLM in the description: the accepted-unit refusal must fire
+        // before assembly (issue #327), so this state could never assemble a
+        // pass anyway — reaching the conflict proves the refusal's order.
+        let state = ActionsState::new(dir.path().to_path_buf(), spec_without_llm());
         let spawns = Arc::new(AtomicUsize::new(0));
 
         accept_unit(&state, "game_logic.dll/DrawSprite/v1")
@@ -1078,6 +1160,305 @@ mod tests {
             .filter(|b| b.ends_with("v2"))
             .collect();
         assert!(v2_branches.is_empty(), "no next-attempt branch is created");
+    }
+
+    /// Issue #327 AC6: a server started with no LLM settings fails a patch
+    /// request with the assembly seam's clear error — not a canned success,
+    /// not a half-configured retry — and the failed request leaves nothing
+    /// behind: no branch, no record, no retry task.
+    #[tokio::test]
+    async fn patch_without_llm_settings_fails_assembly_and_creates_nothing() {
+        let dir = make_repo_with_unit();
+        // The target dir is configured, so the failure is specifically the
+        // missing LLM selection, not the missing target dir.
+        let target = target_dir_with("game_logic.dll");
+        let state = ActionsState::new(dir.path().to_path_buf(), spec_without_llm())
+            .with_target_dir(target.path().to_path_buf());
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        let err = request_patch_spawning(
+            &state,
+            "game_logic.dll/DrawSprite/v1",
+            "off-by-one in loop bound",
+            counting_spawner(&spawns),
+        )
+        .await
+        .expect_err("a server without LLM settings cannot assemble a patch retry");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot assemble a pass without an LLM"),
+            "the request surfaces the seam's assembly error: {msg}"
+        );
+        assert_eq!(spawns.load(Ordering::SeqCst), 0, "no retry task is started");
+
+        let git = GitManager::open(dir.path()).expect("open git");
+        let v2_branches: Vec<_> = git
+            .list_translation_branches()
+            .expect("list branches")
+            .into_iter()
+            .filter(|b| b.ends_with("v2"))
+            .collect();
+        assert!(
+            v2_branches.is_empty(),
+            "a failed assembly must not leave a next-attempt branch: {v2_branches:?}"
+        );
+        assert!(
+            read_action_state(dir.path(), "game_logic.dll/DrawSprite/v1").is_none(),
+            "a failed assembly must not persist an action record"
+        );
+        assert!(
+            !dir.path().join("re").join("patches").exists(),
+            "a failed assembly must not write a patch record"
+        );
+    }
+
+    /// Issue #327: the request assembles before creating anything, so a
+    /// server that cannot resolve the unit's binary refuses by name too —
+    /// no branch, no record — even when the rest of the description is fine.
+    #[tokio::test]
+    async fn patch_without_target_dir_refuses_by_name() {
+        let dir = make_repo_with_unit();
+        let state = ActionsState::new(dir.path().to_path_buf(), spec_with_dead_llm());
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        let err = request_patch_spawning(
+            &state,
+            "game_logic.dll/DrawSprite/v1",
+            "off-by-one in loop bound",
+            counting_spawner(&spawns),
+        )
+        .await
+        .expect_err("a server without a target dir cannot load the binary for a retry");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no target directory configured") && msg.contains("game_logic.dll"),
+            "the refusal names the missing wiring and the binary: {msg}"
+        );
+        assert_eq!(spawns.load(Ordering::SeqCst), 0, "no retry task is started");
+
+        let git = GitManager::open(dir.path()).expect("open git");
+        let v2_branches: Vec<_> = git
+            .list_translation_branches()
+            .expect("list branches")
+            .into_iter()
+            .filter(|b| b.ends_with("v2"))
+            .collect();
+        assert!(
+            v2_branches.is_empty(),
+            "the refusal must not leave a next-attempt branch: {v2_branches:?}"
+        );
+    }
+
+    /// Issue #327: the request layers only run-scoped fields onto the
+    /// server's description — workspace, patch mode, the unit's binary under
+    /// the target dir — and every settings knob the fold carries (LLM
+    /// selection, retry policy, call-graph flags, Kuna budget) rides along
+    /// untouched into the spec the assembly consumes.
+    #[test]
+    fn patch_request_layers_only_run_scoped_fields_onto_the_description() {
+        let dir = make_repo_with_unit();
+        let target = target_dir_with("game_logic.dll");
+        let mut spec = spec_with_dead_llm();
+        spec.retry_max_attempts = Some(7);
+        spec.no_callgraph = true;
+        spec.refresh_cache = true;
+        spec.callgraph_cache_dir = Some(dir.path().join("cg-cache"));
+        let state = ActionsState::new(dir.path().to_path_buf(), spec.clone())
+            .with_target_dir(target.path().to_path_buf());
+
+        let layered = state
+            .patch_pass_spec("game_logic.dll")
+            .expect("the request layers its run-scoped fields");
+
+        // Run-scoped fields the request owns:
+        assert_eq!(layered.workspace, dir.path(), "the repo is the workspace");
+        assert!(layered.patch_mode, "the pass is a patch-retry pass");
+        let binary = layered.target_binary.expect("the unit's binary is named");
+        assert_eq!(binary.name, "game_logic.dll");
+        assert_eq!(binary.path, target.path().join("game_logic.dll"));
+
+        // Everything the settings fold carried arrives unchanged:
+        assert!(
+            layered.llm.is_some(),
+            "the description's LLM selection rides along"
+        );
+        assert_eq!(
+            layered.retry_max_attempts,
+            Some(7),
+            "the description's retry policy drives the retry"
+        );
+        assert!(
+            layered.no_callgraph && layered.refresh_cache,
+            "the call-graph/cache flags ride along"
+        );
+        assert_eq!(
+            layered.callgraph_cache_dir.as_deref(),
+            Some(dir.path().join("cg-cache").as_path())
+        );
+        assert_eq!(
+            layered.kuna_budget, spec.kuna_budget,
+            "the configured Kuna budgets reach the engine load"
+        );
+
+        // The server's own description is untouched by the layering.
+        assert!(
+            !state.pass_spec.patch_mode,
+            "layering clones, it does not mutate"
+        );
+        assert!(state.pass_spec.target_binary.is_none());
+    }
+
+    /// Issue #327 AC2/AC4: the retry that runs is driven by the description —
+    /// its LLM selection (endpoint and model) is what the translation
+    /// actually calls, with no environment fallback behind it. A capture
+    /// server stands where the description's endpoint points; the retry hits
+    /// it, and the captured request carries the description's model name.
+    /// The retry runs to completion: the description's assembled pass — LLM,
+    /// engine under its Kuna budgets, retry config, verifier — drives a
+    /// successful translation end to end.
+    #[tokio::test]
+    async fn patch_retry_runs_the_pass_the_description_describes() {
+        let repo = tempfile::tempdir().expect("repo dir");
+        let git = GitManager::init_repo(repo.path(), None).expect("init git repo");
+        git.create_branch("fixture_target.dll", "fixture_tick", 1, None)
+            .expect("create v1 branch");
+        let branch = GitBranch::new("fixture_target.dll", "fixture_tick", 1).expect("branch name");
+        std::fs::create_dir_all(repo.path().join("src").join("modules")).expect("src dir");
+        std::fs::write(
+            repo.path()
+                .join("src")
+                .join("modules")
+                .join("fixture_target.rs"),
+            "pub fn fixture_tick(code: u32) -> u32 { code }\n",
+        )
+        .expect("write translation");
+        git.commit(
+            &branch,
+            "Translate fixture_tick",
+            &["src/modules/fixture_target.rs"],
+        )
+        .expect("commit translation");
+
+        // Stand a capture server where the description's endpoint points, and
+        // point the description at it with a model name no default chain
+        // could ever produce.
+        let base = fake_llm_server().await;
+        let spec = PipelineSpec {
+            llm: Some(LlmSelection::Description(LlmDescription {
+                endpoint: format!("{base}/v1/chat/completions"),
+                model: "description-owned-model".to_string(),
+                api_key: None,
+                context_window: Some(128_000),
+                temperature: None,
+                timeout_secs: Some(30),
+            })),
+            ..PipelineSpec::default()
+        };
+
+        let target = target_dir_with("fixture_target.dll");
+        let state = ActionsState::new(repo.path().to_path_buf(), spec)
+            .with_target_dir(target.path().to_path_buf());
+
+        // The same two steps a patch request performs — layer the run-scoped
+        // fields, assemble the pass — then the same retry drive the spawned
+        // task runs, all visible here for the completion assertions.
+        let spec = state
+            .patch_pass_spec("fixture_target.dll")
+            .expect("the request layers its description");
+        let pass = assemble_patch(&spec)
+            .await
+            .expect("the description assembles a complete pass");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            run_patch_retry(
+                pass,
+                repo.path(),
+                "off-by-one in loop bound",
+                "fixture_target.dll",
+                "fixture_tick",
+                2,
+            ),
+        )
+        .await
+        .expect("the description-driven retry finishes");
+        outcome.expect("the retry succeeds on the description's pass");
+
+        assert!(
+            capture_hits() > 0,
+            "the retry reached an LLM — with the environment read gone, the only one it can reach is the description's"
+        );
+        assert!(
+            captured_bodies()
+                .iter()
+                .any(|body| body.contains("description-owned-model")),
+            "the description's model drove the call"
+        );
+    }
+
+    /// A capture LLM server on an ephemeral port; `CAPTURE_HITS`/`CAPTURED`
+    /// record how many chat requests arrived and their bodies.
+    static CAPTURE_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn capture_hits() -> usize {
+        CAPTURE_HITS.load(Ordering::SeqCst)
+    }
+
+    fn captured_bodies() -> Vec<String> {
+        CAPTURED.lock().expect("capture lock").clone()
+    }
+
+    async fn fake_llm_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("capture server binds");
+        let addr = listener.local_addr().expect("capture address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    CAPTURE_HITS.fetch_add(1, Ordering::SeqCst);
+                    let mut request: Vec<u8> = Vec::new();
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                request.extend_from_slice(&buf[..n]);
+                                let Some(header_end) =
+                                    request.windows(4).position(|w| w == b"\r\n\r\n")
+                                else {
+                                    continue;
+                                };
+                                let headers = String::from_utf8_lossy(&request[..header_end]);
+                                let need = headers
+                                    .lines()
+                                    .find_map(|line| {
+                                        let (name, value) = line.split_once(':')?;
+                                        name.trim()
+                                            .eq_ignore_ascii_case("content-length")
+                                            .then(|| value.trim().to_string())
+                                    })
+                                    .and_then(|value| value.parse::<usize>().ok())
+                                    .unwrap_or(0);
+                                if request.len() >= header_end + 4 + need {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let body_str = String::from_utf8_lossy(&request).into_owned();
+                    CAPTURED.lock().expect("capture lock").push(body_str);
+                    let body = r#"{"choices":[{"message":{"role":"assistant","content":"fn fixture_tick(code: u32) -> u32 { code }"}}],"usage":{"completion_tokens":10,"prompt_tokens":20,"total_tokens":30}}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
     }
 
     /// Issue #86: the write-time re-check fails with an error naming the state

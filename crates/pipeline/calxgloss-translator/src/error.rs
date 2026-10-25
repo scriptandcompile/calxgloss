@@ -74,6 +74,15 @@ pub enum TranslatorError {
     #[error("failed to load the Kuna engine for the pass: {0}")]
     EngineLoad(#[from] calxgloss_kuna::KunaError),
 
+    /// A patch pass was assembled without the spec naming a target binary —
+    /// the spec's binary path is where a patch pass loads its engine from,
+    /// so a description without one cannot run (issue #327).
+    #[error("cannot assemble a patch pass without a target binary: {reason}")]
+    MissingPatchTarget {
+        /// What the spec was missing, in words.
+        reason: String,
+    },
+
     /// Assembling the pass's verifier failed (its working directory could
     /// not be created).
     #[error("verifier setup failed: {0}")]

@@ -544,7 +544,9 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_serve(workspace, port, log_level, log_filter))
+                .block_on(handle_serve(
+                    workspace, port, log_level, log_filter, &settings,
+                ))
         }
         Command::Live {
             target,

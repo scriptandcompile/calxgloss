@@ -3,17 +3,27 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use calxgloss_web::{LogLevelControl, ServerState, serve};
+use calxgloss_web::{ActionsState, LogLevelControl, ServerState, serve};
 use tracing::info;
 
+use crate::Settings;
 use crate::utils::*;
 
 /// Handle the `serve` subcommand: start the web review UI HTTP server.
+///
+/// The server's review-actions backend is wired from the resolved settings
+/// (issue #327): the one `pipeline_spec` fold the commands run their passes
+/// through becomes the server's pass description, and every review-UI patch
+/// request assembles its retry pass from it — LLM selection, Kuna budgets,
+/// retry policy and all. A server started without LLM settings still serves
+/// the review surface; its patch requests fail at request time with the
+/// assembly error naming what's missing.
 pub async fn handle_serve(
     workspace: PathBuf,
     port: u16,
     log_level: &'static str,
     log_filter: LogLevelControl,
+    settings: &Settings,
 ) -> Result<()> {
     info!(repo = ?workspace, port, "Starting web review UI server");
 
@@ -24,6 +34,31 @@ pub async fn handle_serve(
             workspace.display()
         );
     }
+
+    // Fold the resolved settings once (issue #327): the review-actions
+    // backend carries the same description the CLI commands run their passes
+    // through (`pipeline_spec`, issue #324), so a review-UI patch retry
+    // honors the settings the user configured. A fold failure — an
+    // unparseable retry-strategy name — stops startup like it stops the
+    // commands; a missing LLM pair is deliberately left unset on the
+    // description: the server still serves the review surface, and a patch
+    // request meets the seam's assembly error at request time.
+    let pass_spec = crate::settings::pipeline_spec(settings)?;
+    if pass_spec.llm.is_none() {
+        info!(
+            "no LLM endpoint configured: review-UI patch requests will fail \
+             until llm.url/llm.model are set (flag, config file, or env)"
+        );
+    }
+    let target_dir = settings
+        .target_dir
+        .as_ref()
+        .map(|t| PathBuf::from(&t.value));
+    let actions = ActionsState::new(workspace.clone(), pass_spec);
+    let actions = match target_dir {
+        Some(dir) => actions.with_target_dir(dir),
+        None => actions,
+    };
 
     // Print startup banner before moving workspace into ServerState
     println!();
@@ -74,8 +109,10 @@ pub async fn handle_serve(
     hsep_bold();
     println!();
 
-    // Start the axum server
-    serve(server_state, port, None).await?;
+    // Start the axum server with the settings-backed actions backend wired
+    // into the router (issue #327) — the review UI's patch button drives a
+    // real assembled pass, not a canned response.
+    serve(server_state, actions, port, None).await?;
 
     Ok(())
 }

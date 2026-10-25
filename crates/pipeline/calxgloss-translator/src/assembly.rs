@@ -5,10 +5,11 @@
 //! assembled-pass outcome ([`AssembledPass`]). `auto` runs through the seam
 //! (issue #325), and so do `translate` and `batch-translate` (issue #326):
 //! the CLI folds its resolved settings into the vocabulary, layers each
-//! command's run options on, and calls assembly once per pass. The one
-//! remaining hand-built construction — web's patch-retry — still uses
-//! [`TranslationPipeline::new`] and the `with_*` setters until the epic's
-//! closing slice moves that call site through.
+//! command's run options on, and calls assembly once per pass. The web
+//! server's patch retry joins through [`assemble_patch`] (issue #327), the
+//! entry point for a pass that loads its own engine — with every production
+//! call site moved through, this module is the only one that calls
+//! [`TranslationPipeline::new`].
 //!
 //! Reachability follows the epic's rule: the module is public on the crate
 //! path (`calxgloss_translator::assembly`) but the seam types are *not*
@@ -253,12 +254,13 @@ impl std::fmt::Debug for AssembledPass {
 /// Assembles `spec` into a ready-to-run pass over `engine`.
 ///
 /// The engine is passed in because normal passes load it in their facade
-/// (the CLI loads with `settings.kuna_budget()`, the web server plain-loads
-/// for patch retries — each owns its own budget policy). The exception is
-/// patch mode with a named binary: there `assemble` performs the load itself,
-/// under the spec's Kuna budget, so an assembled patch pass provably honors
-/// the configured budget for its engine; the passed engine is used only when
-/// no binary path is on the spec.
+/// (the CLI loads with `settings.kuna_budget()`); each owns its own budget
+/// policy. The exception is patch mode with a named binary: there `assemble`
+/// performs the load itself, under the spec's Kuna budget, so an assembled
+/// patch pass provably honors the configured budget for its engine; the
+/// passed engine is used only when no binary path is on the spec. A caller
+/// that has no engine to hand — the web server's patch retry (issue #327) —
+/// uses [`assemble_patch`] instead of fabricating one for this parameter.
 ///
 /// The wiring mirrors the reference dance `commands/auto.rs` carried until
 /// issue #325: detector built from the engine and the mapping table before
@@ -266,13 +268,55 @@ impl std::fmt::Debug for AssembledPass {
 /// call-graph flags, the injected handles, workspace, and the binary
 /// identity/path.
 pub async fn assemble(spec: &PipelineSpec, engine: &KunaSource) -> Result<AssembledPass> {
-    let llm = match spec.llm.as_ref() {
-        None => {
-            return Err(TranslatorError::MissingLlm {
-                reason: "the spec carries neither a prebuilt client nor an endpoint and model to build one from".to_string(),
-            });
+    let llm = llm_from_spec(spec)?;
+
+    // Patch passes assemble their own load so the configured budget binds
+    // the engine this pass reads through (issue #211's budgets arm at load).
+    let engine = if spec.patch_mode {
+        match spec.target_binary.as_ref() {
+            Some(target) => KunaSource::load_with_budget(&target.path, None, spec.kuna_budget)?,
+            None => engine.clone(),
         }
-        Some(LlmSelection::Client(client)) => client.clone(),
+    } else {
+        engine.clone()
+    };
+
+    wire_pass(spec, engine, llm).await
+}
+
+/// Assembles a patch-retry pass from `spec` alone — no engine handed in.
+///
+/// A patch pass names its binary (the unit under patch), so the description
+/// carries everything the pass needs: the engine load comes from the spec's
+/// binary path under the spec's Kuna budget, exactly as patch mode does in
+/// [`assemble`]. The web server's patch retry drives this entry (issue
+/// #327): it holds only its folded description, and a description whose LLM
+/// selection cannot produce a client is refused here — before any engine
+/// load, so a run started without LLM settings meets a clear assembly error
+/// at patch-request time, not a half-configured retry.
+pub async fn assemble_patch(spec: &PipelineSpec) -> Result<AssembledPass> {
+    let llm = llm_from_spec(spec)?;
+
+    let target = spec.target_binary.as_ref().ok_or_else(|| {
+        TranslatorError::MissingPatchTarget {
+            reason: "the spec carries no target binary, and a patch pass loads its engine from that path".to_string(),
+        }
+    })?;
+    let engine = KunaSource::load_with_budget(&target.path, None, spec.kuna_budget)?;
+
+    wire_pass(spec, engine, llm).await
+}
+
+/// The pass's LLM, from the spec's selection: a prebuilt client passes
+/// through; a description has its client built, and no selection at all is
+/// the [`TranslatorError::MissingLlm`] refusal (issue #323's mandatory-LLM
+/// rule). Shared by both assembly entries.
+fn llm_from_spec(spec: &PipelineSpec) -> Result<LlmClient> {
+    match spec.llm.as_ref() {
+        None => Err(TranslatorError::MissingLlm {
+            reason: "the spec carries neither a prebuilt client nor an endpoint and model to build one from".to_string(),
+        }),
+        Some(LlmSelection::Client(client)) => Ok(client.clone()),
         Some(LlmSelection::Description(desc)) => {
             let mut config = LlmConfig::new(&desc.endpoint, &desc.model)?;
             if let Some(key) = &desc.api_key {
@@ -287,21 +331,20 @@ pub async fn assemble(spec: &PipelineSpec, engine: &KunaSource) -> Result<Assemb
             if let Some(secs) = desc.timeout_secs {
                 config = config.with_timeout_secs(secs);
             }
-            LlmClient::new(config)?
+            Ok(LlmClient::new(config)?)
         }
-    };
+    }
+}
 
-    // Patch passes assemble their own load so the configured budget binds
-    // the engine this pass reads through (issue #211's budgets arm at load).
-    let engine = if spec.patch_mode {
-        match spec.target_binary.as_ref() {
-            Some(target) => KunaSource::load_with_budget(&target.path, None, spec.kuna_budget)?,
-            None => engine.clone(),
-        }
-    } else {
-        engine.clone()
-    };
-
+/// The wiring both entries share: detector from the engine and the mapping
+/// table before the pipeline consumes them, testgen and detector wired
+/// first, then the call-graph flags, the injected handles, workspace, and
+/// the binary identity/path, and the retry ladder with the spec's policy.
+async fn wire_pass(
+    spec: &PipelineSpec,
+    engine: KunaSource,
+    llm: LlmClient,
+) -> Result<AssembledPass> {
     // The detector reads the engine and the mapping table; the pipeline then
     // consumes both, so build it first — exactly as the hand-built paths do.
     let api_mappings = spec.api_mappings.clone().unwrap_or_default();
