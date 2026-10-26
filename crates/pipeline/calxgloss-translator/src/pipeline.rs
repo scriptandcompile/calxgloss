@@ -736,7 +736,10 @@ impl TranslationPipeline {
     ///
     /// When set, call graphs are saved to and loaded from this directory
     /// instead of the default `{workspace}/re/analysis/` path.
-    pub(crate) fn with_callgraph_cache_dir(mut self, cache_dir: impl Into<std::path::PathBuf>) -> Self {
+    pub(crate) fn with_callgraph_cache_dir(
+        mut self,
+        cache_dir: impl Into<std::path::PathBuf>,
+    ) -> Self {
         self.callgraph_cache_dir = Some(cache_dir.into());
         self
     }
@@ -1148,7 +1151,12 @@ impl TranslationPipeline {
                 let pal_traits =
                     crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
 
-                calxgloss_prompts::build_full_module_prompt(&request, evidence, shim_layers, pal_traits)?
+                calxgloss_prompts::build_full_module_prompt(
+                    &request,
+                    evidence,
+                    shim_layers,
+                    pal_traits,
+                )?
             }
         };
 
@@ -3388,7 +3396,7 @@ fn compose_signature_map(result: &TypeInferenceResult) -> SignatureMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan_registry::CompletionLatch;
+    use crate::scan_registry::{CompletionLatch, ScanRunOptions};
     use calxgloss_algorithm::persist::AlgorithmPersistor;
     use calxgloss_apidetect::persist::ApiPersistor;
     use calxgloss_callback::persist::CallbackPersistor;
@@ -6080,6 +6088,360 @@ void SetCursor(void)
             pipeline.scan_window_high_water(),
             0,
             "the phase skipped before any window permit was taken"
+        );
+    }
+
+    // ============================================================
+    // Per-run options on the registry run (issue #338, spec #337)
+    // ============================================================
+
+    /// A pattern database carrying one control-flow entry: the built-in
+    /// linear-search shape the fixture's bodies really wear, renamed to a
+    /// custom algorithm the built-in set can never emit. A section the
+    /// document omits reads as an empty set, so the file's set replaces
+    /// the standard sets whole.
+    fn custom_pattern_database_document() -> &'static str {
+        r#"{
+            "control_flow": [
+                {
+                    "name": "custom_fixture_scan_shape",
+                    "category": "searching",
+                    "match_patterns": ["\\b(for|while) \\(", "==", "\\b(return|break)\\b"],
+                    "exclude_patterns": ["(?:/ 2\\b|>> 1)", "% "],
+                    "min_lines": 10
+                }
+            ]
+        }"#
+    }
+
+    /// A signature database carrying one signature: the starter set's
+    /// strlen scan shape (which the fixture's statically linked `strnlen`
+    /// matches, pinned by issue #306's tests) renamed to a custom symbol
+    /// the built-in set can never name.
+    fn custom_signature_database_document() -> &'static str {
+        r#"{
+            "signatures": [
+                {
+                    "symbol": "custom_fixture_strlen",
+                    "family": "crt",
+                    "match_patterns": [
+                        "while \\(\\*VAR( != '\\\\0')?\\)",
+                        "VAR = (?:VAR \\+ 1|&VAR\\[1\\])"
+                    ],
+                    "exclude_patterns": ["\\bmalloc\\b", "\\bfree\\b"],
+                    "min_lines": 6,
+                    "suggestion": "count bytes to the NUL — the fixture's scan loop"
+                }
+            ]
+        }"#
+    }
+
+    /// The set-override option drives engine construction inside the
+    /// rows that can take one — no engine-named vocabulary crossed the
+    /// shared shape to get there. Over the fixture target: the algorithm
+    /// row's filed document carries only the file's renamed shape (the
+    /// built-in claims are gone — the file's set replaces the standard
+    /// sets whole), and the known-library row's document identifies the
+    /// fixture's scan loop through the file's renamed symbol instead of
+    /// the starter set's `strlen`. The defaults keep both rows on their
+    /// built-in sets — that is the shipped phase, pinned by the roster,
+    /// persistence, and cold-batch tests above.
+    #[tokio::test]
+    async fn a_set_override_file_replaces_the_built_in_set_inside_the_row_build() {
+        let dir = TempDir::new().expect("temp workspace");
+        let patterns = dir.path().join("custom-patterns.json");
+        std::fs::write(&patterns, custom_pattern_database_document())
+            .expect("custom pattern database written");
+        let signatures = dir.path().join("custom-signatures.json");
+        std::fs::write(&signatures, custom_signature_database_document())
+            .expect("custom signature database written");
+        let job = pipeline_over(Some(dir.path()))
+            .scan_job(PROGRAM)
+            .expect("the workspace is configured, so the job exists");
+
+        let algorithm = find_row("algorithm-recognition");
+        assert!(
+            algorithm
+                .run_with_options(
+                    job.scan_context(),
+                    ScanRunOptions {
+                        set_override_file: Some(patterns),
+                        ..ScanRunOptions::default()
+                    },
+                )
+                .await,
+            "the algorithm row scans the fixture from the override file's set"
+        );
+        let document = AlgorithmPersistor::new(dir.path())
+            .load(PROGRAM)
+            .expect("the overridden run filed an algorithm document");
+        assert!(
+            document
+                .hints
+                .iter()
+                .all(|hint| hint.algorithm == "custom_fixture_scan_shape")
+                && !document.hints.is_empty(),
+            "the document carries the file's claims and no built-in ones: {:?}",
+            document
+                .hints
+                .iter()
+                .map(|hint| &hint.algorithm)
+                .collect::<Vec<_>>()
+        );
+
+        let known_library = find_row("known-library");
+        assert!(
+            known_library
+                .run_with_options(
+                    job.scan_context(),
+                    ScanRunOptions {
+                        set_override_file: Some(signatures),
+                        ..ScanRunOptions::default()
+                    },
+                )
+                .await,
+            "the known-library row scans the fixture from the override file's set"
+        );
+        let document = calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path())
+            .load(PROGRAM)
+            .expect("the overridden run filed a known-library document");
+        assert!(
+            document
+                .findings
+                .iter()
+                .any(|finding| finding.function() == "strnlen"
+                    && finding.target() == "custom_fixture_strlen")
+                && document
+                    .findings
+                    .iter()
+                    .all(|finding| finding.target() == "custom_fixture_strlen"),
+            "the document identifies the fixture's scan loop only through the file's \
+             renamed symbol — the starter set never named it: {:?}",
+            document
+                .findings
+                .iter()
+                .map(|finding| finding.target())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A malformed set-override file fails the row's own scan loudly,
+    /// naming the file's path in the warning, and the row files nothing
+    /// — for both override-capable rows. The row degrades exactly as its
+    /// descriptor spells a failed scan; the shared shape never parsed
+    /// the file itself.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn a_malformed_set_override_file_fails_the_override_capable_rows_naming_the_path() {
+        for (row_name, database_wording) in [
+            ("algorithm-recognition", "could not read pattern database"),
+            ("known-library", "could not read signature database"),
+        ] {
+            let dir = TempDir::new().expect("temp workspace");
+            let malformed = dir.path().join("broken-database.json");
+            std::fs::write(&malformed, "{ this is not a database document")
+                .expect("malformed override file written");
+            let job = pipeline_over(Some(dir.path()))
+                .scan_job(PROGRAM)
+                .expect("the workspace is configured, so the job exists");
+
+            let row = find_row(row_name);
+            assert!(
+                !row.run_with_options(
+                    job.scan_context(),
+                    ScanRunOptions {
+                        set_override_file: Some(malformed.clone()),
+                        ..ScanRunOptions::default()
+                    },
+                )
+                .await,
+                "the {row_name} row's scan fails on its malformed override file"
+            );
+            assert!(
+                logs_contain(database_wording) && logs_contain(&malformed.display().to_string()),
+                "the {row_name} row's scan-failure warning names the bad file: \
+                 {malformed:?}"
+            );
+            assert!(
+                !row.document_path(dir.path(), PROGRAM).is_file(),
+                "the failed {row_name} scan left no document behind"
+            );
+        }
+    }
+
+    /// The write-suppression signal reaches the type-database row's own
+    /// engine construction: with the option set, the row scans the
+    /// fixture green, files its document, and writes nothing back — the
+    /// tag path never runs, so the tag-write refusal warning never fires.
+    /// The defaults change nothing: the option run's document is the
+    /// default run's document, stamps aside.
+    ///
+    /// One limitation is recorded rather than hidden: the fixture target
+    /// is pure C with no MSVC-RTTI vtables (its scan recovers zero
+    /// vtables), and the Kuna seam refuses every tag write by name, so
+    /// the registry seam cannot exhibit a tag write this option
+    /// prevented — the engine-level pin for the write itself stays
+    /// `without_tagging_writes_nothing_back` in the type-database crate.
+    /// What this test pins is the seam the option travels: the signal
+    /// reaches the row's build, the run stays green, the filed record is
+    /// byte-familiar, and the run writes no function tag back.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn the_write_suppression_option_holds_the_type_database_row_to_its_reads() {
+        let row = find_row("type-database");
+        let document_of = |workspace: &std::path::Path| {
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(TypeDatabasePersistor::new(workspace).path_for(PROGRAM))
+                    .expect("the row filed its document"),
+            )
+            .expect("the document is JSON")
+        };
+
+        let default_dir = TempDir::new().expect("temp workspace");
+        let default_job = pipeline_over(Some(default_dir.path()))
+            .scan_job(PROGRAM)
+            .expect("the workspace is configured, so the job exists");
+        assert!(
+            row.run(default_job.scan_context()).await,
+            "the type-database row scans the fixture with the defaults"
+        );
+
+        let suppressed_dir = TempDir::new().expect("temp workspace");
+        let suppressed_job = pipeline_over(Some(suppressed_dir.path()))
+            .scan_job(PROGRAM)
+            .expect("the workspace is configured, so the job exists");
+        assert!(
+            row.run_with_options(
+                suppressed_job.scan_context(),
+                ScanRunOptions {
+                    suppress_write_back: true,
+                    ..ScanRunOptions::default()
+                },
+            )
+            .await,
+            "the type-database row scans the fixture with the write suppression set"
+        );
+        assert_eq!(
+            stamped_document(document_of(suppressed_dir.path())),
+            stamped_document(document_of(default_dir.path())),
+            "the suppressed run's document is exactly the default run's — \
+             suppressing the write-back changes no part of the scan's record"
+        );
+        assert!(
+            !logs_contain("Could not tag vtable method"),
+            "the suppressed run wrote no vtable-method tag back — the tag path never ran"
+        );
+    }
+
+    /// The overwrite policy, pinned at the registry level: the defaults
+    /// never re-run a scan whose document is filed — even an override
+    /// option riding the same run short-circuits ahead of any engine
+    /// read — while the overwrite policy bypasses the short-circuit and
+    /// replaces the document with the fresh scan's result. Failure
+    /// semantics survive the bypass: a forced re-scan that fails (here
+    /// on a malformed override file, failing before any engine read)
+    /// answers `false` and leaves the previously filed document exactly
+    /// as it was — a save only ever follows a successful scan.
+    #[tokio::test]
+    async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed_rescan() {
+        let dir = TempDir::new().expect("temp workspace");
+        let patterns = dir.path().join("custom-patterns.json");
+        std::fs::write(&patterns, custom_pattern_database_document())
+            .expect("custom pattern database written");
+        let broken = dir.path().join("broken-patterns.json");
+        std::fs::write(&broken, "{ this is not a database document")
+            .expect("malformed override file written");
+        let job = pipeline_over(Some(dir.path()))
+            .scan_job(PROGRAM)
+            .expect("the workspace is configured, so the job exists");
+        let row = find_row("algorithm-recognition");
+        let persistor = AlgorithmPersistor::new(dir.path());
+
+        assert!(
+            row.run(job.scan_context()).await,
+            "the cold run files the built-in set's document"
+        );
+        let built_in = persistor
+            .load(PROGRAM)
+            .expect("the cold run filed an algorithm document");
+        assert!(
+            built_in
+                .hints
+                .iter()
+                .any(|hint| hint.algorithm == "linear_search"),
+            "the built-in set claims the fixture's scan loops — the baseline \
+             the overwrite replaces: {:?}",
+            built_in
+                .hints
+                .iter()
+                .map(|hint| &hint.algorithm)
+                .collect::<Vec<_>>()
+        );
+
+        assert!(
+            row.run_with_options(
+                job.scan_context(),
+                ScanRunOptions {
+                    set_override_file: Some(patterns.clone()),
+                    ..ScanRunOptions::default()
+                },
+            )
+            .await,
+            "the default policy answers a filed document from the short-circuit"
+        );
+        let short_circuited = persistor.load(PROGRAM).expect("document still filed");
+        assert_eq!(
+            short_circuited.hints, built_in.hints,
+            "the default policy never re-ran the scan — the override option alone \
+             does not bypass the short-circuit"
+        );
+
+        assert!(
+            row.run_with_options(
+                job.scan_context(),
+                ScanRunOptions {
+                    set_override_file: Some(patterns),
+                    overwrite_filed_document: true,
+                    ..ScanRunOptions::default()
+                },
+            )
+            .await,
+            "the overwrite policy re-runs a row whose document is already filed"
+        );
+        let replaced = persistor.load(PROGRAM).expect("the forced re-scan saved");
+        assert!(
+            !replaced.hints.is_empty()
+                && replaced
+                    .hints
+                    .iter()
+                    .all(|hint| hint.algorithm == "custom_fixture_scan_shape"),
+            "the forced re-scan replaced the filed document with the override \
+             file's result: {:?}",
+            replaced
+                .hints
+                .iter()
+                .map(|hint| &hint.algorithm)
+                .collect::<Vec<_>>()
+        );
+
+        assert!(
+            !row.run_with_options(
+                job.scan_context(),
+                ScanRunOptions {
+                    set_override_file: Some(broken),
+                    overwrite_filed_document: true,
+                    ..ScanRunOptions::default()
+                },
+            )
+            .await,
+            "a forced re-scan on a malformed override file answers false"
+        );
+        let survived = persistor
+            .load(PROGRAM)
+            .expect("the previous document survived");
+        assert_eq!(
+            survived.hints, replaced.hints,
+            "the failed forced re-scan left the previously filed document in place"
         );
     }
 

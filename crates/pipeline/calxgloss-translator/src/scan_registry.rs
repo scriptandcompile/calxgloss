@@ -35,6 +35,18 @@
 //! each row names its location through its own concrete `JsonStore`-based
 //! persistor, exactly as the deleted legacy path did.
 //!
+//! The run entry point takes a per-run [`ScanRunOptions`] record beside
+//! the scan context (issue #338, spec #337): the record carries exactly
+//! the concepts today's CLI flags actually need — a JSON database file
+//! overriding the engine's built-in set, suppression of the engine's own
+//! write-back during the scan, and an overwrite policy for the
+//! filed-document short-circuit — and nothing else. A row interprets the
+//! options inside its own build steps, so no engine-named enum or shared
+//! per-engine config vocabulary enters the shape, and the shipped scan
+//! phase keeps calling [`ScanDescriptor::run`], which hands the
+//! defaults: the fan-out, the sequential registry legs, and the
+//! registry's own pinned tests ride the options machinery untouched.
+//!
 //! Every scan now runs from its row (issue #305): the ordering edge that
 //! once kept parameter-type inference and callback detection on the
 //! legacy path is table data too — the callback row names the inference
@@ -64,6 +76,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use calxgloss_algorithm::engine::AlgorithmEngine;
+use calxgloss_algorithm::pattern_db::PatternDatabase;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_apidetect::engine::ApiEngine;
 use calxgloss_apidetect::persist::ApiPersistor;
@@ -83,6 +96,7 @@ use calxgloss_globalstate::engine::GlobalStateEngine;
 use calxgloss_globalstate::persist::GlobalStatePersistor;
 use calxgloss_libmatch::engine::LibmatchEngine;
 use calxgloss_libmatch::persist::LibmatchPersistor;
+use calxgloss_libmatch::signature_db::SignatureDatabase;
 use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_serialize::engine::SerializeEngine;
@@ -120,9 +134,14 @@ type SaveStep<T, P, SaveError> =
     Arc<dyn Fn(&P, &T) -> std::result::Result<(), SaveError> + Send + Sync + 'static>;
 
 /// The row's engine step: build the engine from the batch's shared read
-/// source and run its scan over the binary.
+/// source and run its scan over the binary. The run's options arrive
+/// here (issue #338) and each row interprets the ones it can inside its
+/// own build — the override-capable rows read the set-override file into
+/// their own database type, and the row with a write-back consults the
+/// suppression signal when constructing its engine — so the shared
+/// shape stays free of engine-named vocabulary.
 type EngineStep<T, ScanError> = Arc<
-    dyn Fn(PipelineSource, String) -> OwnedFuture<std::result::Result<T, ScanError>>
+    dyn Fn(PipelineSource, String, ScanRunOptions) -> OwnedFuture<std::result::Result<T, ScanError>>
         + Send
         + Sync
         + 'static,
@@ -229,10 +248,46 @@ pub struct ScanLatches {
     pub wait: Option<CompletionLatch>,
 }
 
+/// The per-run options the registry's run entry point takes beside the
+/// scan context (issue #338, spec #337) — the genuinely shared concepts
+/// the existing scan flags need, and nothing else. Every field defaults
+/// to the shipped scan phase's behavior, so the phase and its pinned
+/// tests keep calling [`ScanDescriptor::run`] untouched; a row
+/// interprets the options only inside its own build steps, so no
+/// engine-named vocabulary sits in this shape.
+#[derive(Debug, Clone, Default)]
+pub struct ScanRunOptions {
+    /// A JSON database file overriding the engine's built-in set — one
+    /// concept, read through the row's own database type by the rows
+    /// that can take one (algorithm recognition's pattern set, known-
+    /// library identification's signature set). The file's set replaces
+    /// the built-in one whole; a missing, unreadable, or malformed file
+    /// fails the row's scan with the error naming the path, rather than
+    /// silently degrading the scan to a partial set.
+    pub set_override_file: Option<PathBuf>,
+
+    /// Suppress the engine's own write-back during the scan — the
+    /// signal the row that performs a write-back consults when it
+    /// builds its engine, keeping the scan read-only when the operator
+    /// asked for it.
+    pub suppress_write_back: bool,
+
+    /// The overwrite policy: when set, the run bypasses the
+    /// filed-document short-circuit and re-scans, replacing the filed
+    /// document on success. Failure semantics are preserved — a failed
+    /// re-scan never touches the previously filed document, because
+    /// only a successful scan saves.
+    pub overwrite_filed_document: bool,
+}
+
 /// The phase's run of one erased row: short-circuit, engine call,
 /// persist, degrade, completion log — composed from the row's steps by
-/// [`ScanDescriptor::new`]. Answers whether the document is in place.
-type RunStep = Box<dyn Fn(ScanContext) -> OwnedFuture<bool> + Send + Sync + 'static>;
+/// [`ScanDescriptor::new`], with the run's [`ScanRunOptions`] read by
+/// the shape itself (the overwrite policy ahead of the short-circuit)
+/// and interpreted inside the row's own engine build. Answers whether
+/// the document is in place.
+type RunStep =
+    Box<dyn Fn(ScanContext, ScanRunOptions) -> OwnedFuture<bool> + Send + Sync + 'static>;
 
 /// Everything one registered scan reads, owned by the scan itself: the
 /// binary it reads and its document is named after, the workspace root the
@@ -319,7 +374,8 @@ where
     pub save: SaveStep<T, P, SaveError>,
 
     /// Builds the engine from the batch's shared read source and runs its
-    /// scan over the binary.
+    /// scan over the binary, interpreting the run's options inside its
+    /// own build (issue #338).
     pub build_and_scan: EngineStep<T, ScanError>,
 
     /// What the success log reports — genuinely per-engine (the type-
@@ -348,11 +404,15 @@ impl ScanDescriptor {
     /// Erase one typed row into the table — the single generic
     /// constructor, and the only place the scan's shape is written. The
     /// shape it applies: short-circuit on the filed document ahead of any
-    /// engine read; otherwise log the start, run the pre-scan hook, build
-    /// the engine from the batch's shared read source, persist the
-    /// document, and degrade to a warning (leaving no document) when the
-    /// scan or the save fails — answering `false` either way, `true` on a
-    /// cached hit or a saved document. The post-scan hook runs on every
+    /// engine read, unless the run's overwrite policy bypasses the
+    /// short-circuit and re-scans (issue #338); otherwise log the start,
+    /// run the pre-scan hook, build the engine from the batch's shared
+    /// read source — the run's options reaching that build, where the
+    /// row interprets the ones it can — persist the document, and
+    /// degrade to a warning (leaving no document on a first scan, and
+    /// leaving the previous one in place on a forced re-scan) when the
+    /// scan or the save fails — answering `false` either way, `true` on
+    /// a cached hit or a saved document. The post-scan hook runs on every
     /// exit, and so does the publish of a producer arm's completion
     /// latch: cached hit, success, and both failures release the waiter
     /// alike (issue #305). The heartbeat, the window, and the joins stay
@@ -382,7 +442,7 @@ impl ScanDescriptor {
         // One Arc of the location namer stays with the descriptor for its
         // `document_path` accessor; the run thunk takes its own clone.
         let table_path = Arc::clone(&document_path);
-        let run: RunStep = Box::new(move |ctx: ScanContext| {
+        let run: RunStep = Box::new(move |ctx: ScanContext, options: ScanRunOptions| {
             let persistor = Arc::clone(&persistor);
             let exists = Arc::clone(&exists);
             let document_path = Arc::clone(&document_path);
@@ -393,7 +453,14 @@ impl ScanDescriptor {
             let post_scan = post_scan.clone();
             Box::pin(async move {
                 let persistor = persistor(&ctx.workspace);
-                let scanned = if exists(&persistor, &ctx.binary) {
+                // The overwrite policy skips the filed-document
+                // short-circuit and re-runs the scan (issue #338); a
+                // save only ever follows a successful scan and never
+                // deletes, so a failed forced re-scan leaves the
+                // previous document filed.
+                let scanned = if !options.overwrite_filed_document
+                    && exists(&persistor, &ctx.binary)
+                {
                     debug!(
                         binary = %ctx.binary,
                         path = %document_path(&ctx.workspace, &ctx.binary).display(),
@@ -405,7 +472,8 @@ impl ScanDescriptor {
                     if let Some(pre) = &pre_scan {
                         pre(&ctx).await;
                     }
-                    let outcome = build_and_scan(ctx.source.clone(), ctx.binary.clone()).await;
+                    let outcome =
+                        build_and_scan(ctx.source.clone(), ctx.binary.clone(), options).await;
                     match outcome {
                         Ok(result) => match save(&persistor, &result) {
                             Ok(()) => {
@@ -465,12 +533,25 @@ impl ScanDescriptor {
         (self.document_path)(workspace, binary)
     }
 
-    /// Run the scan over the batch's context and report whether its
+    /// Run the scan over the batch's context with the default options —
+    /// the shipped phase's entry point, unchanged (issue #338): the
+    /// filed-document short-circuit, the built-in sets, and the
+    /// engine's own write-back behavior all stay as the rows shipped
+    /// them.
+    pub async fn run(&self, ctx: ScanContext) -> bool {
+        self.run_with_options(ctx, ScanRunOptions::default()).await
+    }
+
+    /// Run the scan with an options record beside the scan context
+    /// (issue #338, spec #337): the overwrite policy is read by the
+    /// run shape ahead of the short-circuit, and the set-override file
+    /// and write-suppression signal reach the row's own engine build,
+    /// where the row interprets them. Report whether the scan's
     /// document is in place afterwards — filed by this run, or already
     /// filed and short-circuited. A failure warns and answers `false`;
     /// it never aborts the group around it.
-    pub async fn run(&self, ctx: ScanContext) -> bool {
-        (self.run)(ctx).await
+    pub async fn run_with_options(&self, ctx: ScanContext, options: ScanRunOptions) -> bool {
+        (self.run)(ctx, options).await
     }
 }
 
@@ -500,7 +581,7 @@ fn controlflow_row() -> ScanDescriptor {
         // rather than borrowed from this frame — the fan-out needs a
         // `'static` boxed future (rust#100013), the same shape the legacy
         // algorithm scan already runs.
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = ControlFlowEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -584,7 +665,7 @@ fn memory_row() -> ScanDescriptor {
             MemoryPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = MemoryEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -619,7 +700,7 @@ fn concurrency_row() -> ScanDescriptor {
         exists: Arc::new(|persistor, binary| persistor.exists(binary)),
         document_path: Arc::new(|workspace, binary| SyncPersistor::new(workspace).path_for(binary)),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = SyncEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -657,7 +738,7 @@ fn global_state_row() -> ScanDescriptor {
             GlobalStatePersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = GlobalStateEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -694,7 +775,7 @@ fn constants_row() -> ScanDescriptor {
             ConstPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = ConstEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -732,7 +813,7 @@ fn error_handling_row() -> ScanDescriptor {
             ErrhandlingPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = ErrhandlingEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -769,7 +850,7 @@ fn floatsimd_row() -> ScanDescriptor {
             FloatsimdPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = FloatsimdEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -810,8 +891,17 @@ fn type_database_row() -> ScanDescriptor {
             TypeDatabasePersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, db| persistor.save(db)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, options| {
             let engine = TypesDBEngine::with_source(source);
+            // The write-suppression signal is consulted right here, at
+            // this row's own engine construction (issue #338): the
+            // vtable-method tag write-back is this row's engine
+            // knowledge, and the shared shape only carries the signal.
+            let engine = if options.suppress_write_back {
+                engine.without_tagging()
+            } else {
+                engine
+            };
             Box::pin(async move { engine.scan(binary).await })
         }),
         on_saved: Arc::new(|ctx, db| {
@@ -853,9 +943,20 @@ fn algorithm_row() -> ScanDescriptor {
             AlgorithmPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, options| {
             let engine = AlgorithmEngine::with_source(source);
-            Box::pin(async move { engine.scan(binary).await })
+            // The run's set-override file replaces the engine's built-in
+            // signature sets whole inside this row's own build (issue
+            // #338) — read through the row's own database type, so a
+            // malformed file fails the scan with the error naming the
+            // file's path rather than silently scanning a partial set.
+            Box::pin(async move {
+                let engine = match options.set_override_file {
+                    Some(path) => engine.with_pattern_database(PatternDatabase::load(&path)?),
+                    None => engine,
+                };
+                engine.scan(binary).await
+            })
         }),
         on_saved: Arc::new(|ctx, result| {
             info!(
@@ -890,7 +991,7 @@ fn string_context_row() -> ScanDescriptor {
             StringContextPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = StringContextEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -925,7 +1026,7 @@ fn library_api_row() -> ScanDescriptor {
         exists: Arc::new(|persistor, binary| persistor.exists(binary)),
         document_path: Arc::new(|workspace, binary| ApiPersistor::new(workspace).path_for(binary)),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = ApiEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -963,7 +1064,7 @@ fn serialization_row() -> ScanDescriptor {
             SerializePersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = SerializeEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -1003,7 +1104,7 @@ fn type_inference_row() -> ScanDescriptor {
             TypeInferPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, _options| {
             let engine = TypeInferEngine::with_source(source);
             Box::pin(async move { engine.scan(binary).await })
         }),
@@ -1059,7 +1160,7 @@ fn callback_row() -> ScanDescriptor {
         save: Arc::new(|persistor, result| persistor.save(result)),
         build_and_scan: {
             let composed = Arc::clone(&composed);
-            Arc::new(move |source, binary| {
+            Arc::new(move |source, binary, _options| {
                 let signatures = composed
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1115,9 +1216,12 @@ fn callback_row() -> ScanDescriptor {
 /// Skip classification. No hooks — the scan orders with nothing.
 ///
 /// The batch's engine is built with the built-in starter signature set;
-/// the operator-supplied signature database, the cached-report view, and
-/// the console report stay command-only — a batch never guesses at a
-/// curated set, and `calxgloss libmatch` behaves exactly as before.
+/// an operator-supplied signature database reaches this row only as a
+/// run's [set-override file](ScanRunOptions::set_override_file), read
+/// inside the row's own engine build (issue #338) — a batch never
+/// guesses at a curated set, and `calxgloss libmatch` behaves exactly
+/// as before. The cached-report view and the console report stay
+/// command-only.
 ///
 /// One limitation is recorded here rather than hidden:
 ///
@@ -1150,9 +1254,21 @@ fn known_library_row() -> ScanDescriptor {
             LibmatchPersistor::new(workspace).path_for(binary)
         }),
         save: Arc::new(|persistor, result| persistor.save(result)),
-        build_and_scan: Arc::new(|source, binary| {
+        build_and_scan: Arc::new(|source, binary, options| {
             let engine = LibmatchEngine::with_source(source);
-            Box::pin(async move { engine.scan(binary).await })
+            // The run's set-override file replaces the built-in starter
+            // signature set inside this row's own build (issue #338),
+            // read through the row's own database type — the batch keeps
+            // the built-in set, and only a run that names a file gets a
+            // curated one; a malformed file fails the scan naming the
+            // path.
+            Box::pin(async move {
+                let engine = match options.set_override_file {
+                    Some(path) => engine.with_signature_database(SignatureDatabase::load(&path)?),
+                    None => engine,
+                };
+                engine.scan(binary).await
+            })
         }),
         on_saved: Arc::new(|ctx, result| {
             info!(
