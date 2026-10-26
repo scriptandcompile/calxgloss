@@ -54,7 +54,9 @@
 //! build through the registry's own options record, and the
 //! type-inference write-back rides the entry's post-scan step over the
 //! retained engine source. `bdiff` has no registry row and stays
-//! outside the generic path.
+//! outside the generic path. The suite's pairing tests pin this complete
+//! contribution table against the registry roster one-for-one — the
+//! pair can never drift silently (issue #342).
 
 use std::any::Any;
 use std::future::Future;
@@ -401,7 +403,10 @@ pub(crate) async fn handle_scan_command(
 /// `bdiff`, which has no row to ride and keeps its dedicated pure-report
 /// arm. Adding a command to the table is one entry here and one variant
 /// in the arm, and the suite's roster assertion below pins the two
-/// together.
+/// together. Adding an engine is one registry row plus one small
+/// contribution entry: the pairing tests below pin the contribution
+/// table against the registry roster one-for-one, so the pair can never
+/// drift silently (issue #342).
 pub(crate) fn ride(command: &crate::cli_types::Command) -> Option<(ScanContribution, ScanFlags)> {
     use crate::cli_types::Command;
     let (entry, flags) = match command {
@@ -1110,9 +1115,9 @@ mod tests {
     }
 
     /// The ride table's roster as (CLI command name, entry) pairs — the
-    /// behavior suite's driver. A command joining or leaving the generic
-    /// path changes here, in `ride`, and in the `main.rs` arm together;
-    /// the roster assertion below pins the three.
+    /// behavior suite's and the pairing tests' driver. A command joining
+    /// or leaving the generic path changes here, in `ride`, and in the
+    /// `main.rs` arm together; the roster assertion below pins the three.
     fn ridden_table() -> Vec<(&'static str, ScanContribution)> {
         use crate::commands::{
             algorithm, apidetect, callback, consts, controlflow, errhandling, floatsimd,
@@ -1315,9 +1320,129 @@ mod tests {
         );
     }
 
+    /// The pairing pin (issue #342), the `libmatch` drift doctrine paid
+    /// in at the CLI side: the CLI contribution table and the registry
+    /// roster must name the same rows, one entry per row. The fault list
+    /// is the data-level verdict — empty means paired, and each fault
+    /// spells its drift: a roster row no CLI entry names, an entry
+    /// naming a row the roster does not hold, or two entries crowded
+    /// onto one row. Adding an engine is one registry row plus one
+    /// small contribution entry, and neither half can drift silently.
+    /// The pair's twin is the translator's named-roster test
+    /// `the_registered_rows_are_exactly_the_named_roster`
+    /// (crates/pipeline/calxgloss-translator/src/pipeline.rs): that one
+    /// pins the roster against its spelled list so a row enters only by
+    /// review, this one pins every roster row to exactly one CLI
+    /// contribution. Completeness follows: the behavior suite's walk
+    /// `every_ridden_command_files_shows_rescans_and_survives_a_failed_rescan`
+    /// drives the very entries read here, so a green pairing means every
+    /// engine in the roster is pinned through the generic handler.
+    fn pairing_faults(entry_rows: &[&str], roster_rows: &[&str]) -> Vec<String> {
+        let mut faults = Vec::new();
+        for row in roster_rows {
+            let entries_naming = entry_rows.iter().filter(|name| *name == row).count();
+            match entries_naming {
+                1 => {}
+                0 => faults.push(format!(
+                    "registry row '{row}' has no CLI contribution entry"
+                )),
+                count => faults.push(format!(
+                    "registry row '{row}' is named by {count} CLI entries, not one"
+                )),
+            }
+        }
+        for name in entry_rows {
+            if !roster_rows.contains(name) {
+                faults.push(format!(
+                    "CLI entry naming row '{name}' is not in the registry roster"
+                ));
+            }
+        }
+        faults
+    }
+
+    #[test]
+    fn the_cli_contribution_table_pairs_one_for_one_with_the_registry_roster() {
+        // Fifteen entries against fifteen rows, green: both sides read
+        // from their tables' own data, never a spelled name list.
+        let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
+        let roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
+        assert_eq!(entry_rows.len(), 15, "one CLI entry per scan command");
+        assert_eq!(
+            roster_rows.len(),
+            15,
+            "the roster holds the fifteen scan rows"
+        );
+        let faults = pairing_faults(&entry_rows, &roster_rows);
+        assert!(
+            faults.is_empty(),
+            "every registry row must have exactly one CLI entry naming it, and \
+             every entry must name a row in the roster: {faults:#?}"
+        );
+    }
+
+    #[test]
+    fn the_pairing_fails_when_a_roster_row_has_no_cli_entry() {
+        // Proven in-test with a fixture row: what a new engine's registry
+        // row looks like before its CLI contribution is reviewed must
+        // come back as a fault — the pin bites before any real drift.
+        let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
+        let mut roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
+        roster_rows.push("fixture-row-without-a-cli-entry");
+
+        let faults = pairing_faults(&entry_rows, &roster_rows);
+        assert_eq!(
+            faults
+                .iter()
+                .filter(|fault| fault.contains("fixture-row-without-a-cli-entry"))
+                .count(),
+            1,
+            "a roster row no entry names must fault exactly once: {faults:?}"
+        );
+    }
+
+    #[test]
+    fn the_pairing_fails_when_a_cli_entry_names_a_row_outside_the_roster() {
+        // The orphan direction, proven with a fixture entry: an entry
+        // naming a row the roster does not hold faults. And one-for-one
+        // means exactly one — a fixture entry crowding onto a row that
+        // already has its entry faults too.
+        let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
+        let roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
+
+        let mut orphaned = entry_rows.clone();
+        orphaned.push("fixture-entry-naming-no-row");
+        let faults = pairing_faults(&orphaned, &roster_rows);
+        assert_eq!(
+            faults
+                .iter()
+                .filter(|fault| fault.contains("fixture-entry-naming-no-row"))
+                .count(),
+            1,
+            "an entry naming no roster row must fault exactly once: {faults:?}"
+        );
+
+        let mut crowded = entry_rows.clone();
+        crowded.push(crowded[0]);
+        let faults = pairing_faults(&crowded, &roster_rows);
+        assert_eq!(
+            faults.len(),
+            1,
+            "the crowded row is the only fault: {faults:?}"
+        );
+        assert!(
+            faults[0].contains(entry_rows[0]),
+            "two entries naming one row must fault against that row: {faults:?}"
+        );
+    }
+
     #[tokio::test]
     async fn every_ridden_command_files_shows_rescans_and_survives_a_failed_rescan() {
         // The behavior suite over the whole ride table (issues #339–#341):
+        // every entry the pairing tests pin green rides this walk, so the
+        // fifteen entries here are the whole table — every engine in the
+        // roster is pinned through the generic handler (issue #342's
+        // completeness half).
         // each routed command scans the fixture and files its document
         // at the row's own `document_path` (the report's print rides the
         // same Ok path), a `--show` over an unscanned workspace fails

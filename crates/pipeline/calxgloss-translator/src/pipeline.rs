@@ -5938,6 +5938,14 @@ void SetCursor(void)
     /// a row fails this test until the roster is edited on purpose. That
     /// is what keeps the `libmatch` drift — an engine the phase silently
     /// never ran — from returning (spec #301).
+    ///
+    /// The pair's twin sits at the CLI: the pairing test
+    /// `the_cli_contribution_table_pairs_one_for_one_with_the_registry_roster`
+    /// and its two fault-direction siblings in
+    /// `crates/interface/calxgloss-cli/src/commands/scan_command.rs` read
+    /// this roster's own `scan_rows()` data against the CLI contribution
+    /// table, so a row that joins this roster without a reviewed CLI
+    /// contribution fails there too (issue #342).
     #[test]
     fn the_registered_rows_are_exactly_the_named_roster() {
         let names: Vec<&str> = scan_rows().iter().map(ScanDescriptor::name).collect();
