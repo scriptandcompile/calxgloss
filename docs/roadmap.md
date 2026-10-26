@@ -73,7 +73,7 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
+| P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | specced — `/to-tickets` next | [#344](https://github.com/scriptandcompile/calxgloss/issues/344) |
 | P20 | Seam capability report + engine-identity cache key — the seam advertises which questions Kuna can currently answer, and the scan cache keys on the engine build digest instead of a hand-bumped format version | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
 | P21 | First-class unknown records — per function, record what the evidence could not determine, with what evidence would close it; review UI resolves them, `escalate` retries consume them, the run leaves an audit ledger | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
 | P22 | Differential API-call trace in the gate — record the ordered Win32/PAL API-call sequence on both the original-DLL baseline and the restitched Rust, and compare order, catching right-result-wrong-path PAL-mapping errors value tests miss | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + integrations (`calxgloss-pal`) + evidence (`calxgloss-apidetect`) | — | ⬜ not started | not specced | — |
@@ -109,7 +109,9 @@ honesty that P21's unknown records and P26's fail-closed verdict consume —
 `unknown` must become a representable, machine-visible value before it can
 ever block a conclusion. Source: [33](rea/33-reconstruction-evidence-workflow.md)
 steal 4, [32](rea/32-native-artifact-intelligence.md) steal 1, README #3/#7.
-Blocks: P21, P26.
+Blocks: P21, P26. Specced 2026-10-25: spec
+[#344](https://github.com/scriptandcompile/calxgloss/issues/344) —
+`/to-tickets` is the next step.
 
 ## P20 — Seam capability report + engine-identity cache key (integrations + pipeline + interface)
 
