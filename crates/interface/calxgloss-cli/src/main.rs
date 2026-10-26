@@ -82,13 +82,13 @@ use commands::libmatch::handle_libmatch;
 use commands::live::handle_live;
 use commands::memory::handle_memory;
 use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
+use commands::scan_command::{ScanFlags, handle_scan_command};
 use commands::serialize::handle_serialize;
 use commands::serve::handle_serve;
 use commands::stringctx::handle_stringctx;
 use commands::sync::handle_sync;
 use commands::translate::handle_translate;
 use commands::typeinfer::handle_typeinfer;
-use commands::typesdb::handle_typesdb;
 use commands::verify::handle_verify;
 
 fn main() -> Result<()> {
@@ -242,6 +242,9 @@ fn main() -> Result<()> {
                     callgraph_verbose,
                 ))
         }
+        // The first rider on the generic scan command (issue #339): the
+        // clap variant stays exactly as it is, and the typesdb
+        // contribution entry serves the registry's type-database row.
         Command::Typesdb {
             binary,
             show,
@@ -252,7 +255,16 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_typesdb(&binary, &workspace, show, no_tag, &settings))
+                .block_on(handle_scan_command(
+                    &commands::typesdb::contribution(),
+                    &ScanFlags {
+                        binary,
+                        show,
+                        no_tag,
+                    },
+                    &workspace,
+                    &settings,
+                ))
         }
         Command::Typeinfer {
             binary,

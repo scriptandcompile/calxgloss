@@ -21,6 +21,7 @@ pub mod libmatch;
 pub mod live;
 pub mod memory;
 pub mod run_options;
+pub mod scan_command;
 pub mod serialize;
 pub mod serve;
 pub mod stringctx;

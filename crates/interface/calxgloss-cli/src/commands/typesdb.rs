@@ -1,82 +1,103 @@
-//! The `typesdb` command — recover the per-binary type database.
+//! The `typesdb` command's CLI contribution — recover the per-binary
+//! type database (issue #339, spec #337).
 //!
-//! Runs the three recovery scans — named types from the engine's type
-//! system, vtable detection, and string-guided struct inference —
-//! against the loaded program and saves the result to
-//! `re/analysis/typesdb/{binary}.json` in the workspace. Batch translation
-//! runs the same recovery before its first batch when no database is
-//! cached; this command is the manual entry point: it rebuilds the
-//! database on demand and can print what a cached one holds.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `type-database` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader, the
+//! report printer, the `--no-tag` derivation through the write-
+//! suppression option, and the post-scan step writing the
+//! `re/analysis/typesdb/<binary>.rs` declarations from the loaded
+//! document — the one side effect the registry row does not file. The
+//! generic handler ([`scan_command`](crate::commands::scan_command))
+//! routes the command end to end: it rebuilds the database on demand
+//! (the CLI's force-rescan contract) and can print what a cached one
+//! holds, and the run's report and a later `--show` report are the same
+//! read of the same document.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_typesdb::engine::TypesDBEngine;
+use calxgloss_decomp::PipelineSource;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
 use calxgloss_typesdb::rust_decls::render_rust_decls;
 use calxgloss_typesdb::types::{TypeDatabase, TypeKind, Vtable};
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps, ScanFlags};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `typesdb` subcommand: recover the type database for `binary`,
-/// or print the cached one when `show` is set.
-pub async fn handle_typesdb(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    no_tag: bool,
-    settings: &Settings,
-) -> Result<()> {
+/// The `typesdb` entry in the CLI-side contribution table: it serves the
+/// registry's `type-database` row and supplies this command's loader,
+/// printer, flag derivation, and post-scan step.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "type-database",
+        load: load_filed_database,
+        print: print_report,
+        derive_options: derive_run_options,
+        post_scan: Some(write_rust_decls),
+    })
+}
+
+/// Read the filed database through the engine's own persistor — the
+/// same loader for the `--show` report and for reading the document a
+/// run just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_database(workspace: &Path, binary: &str) -> Result<TypeDatabase> {
     let persistor = TypeDatabasePersistor::new(workspace);
+    persistor.load(binary).with_context(|| {
+        format!(
+            "No cached type database for {binary}; \
+             run `calxgloss typesdb --binary {binary}` to recover one"
+        )
+    })
+}
 
-    if show {
-        let db = persistor.load(binary).with_context(|| {
-            format!(
-                "No cached type database for {binary}; \
-                 run `calxgloss typesdb --binary {binary}` to recover one"
-            )
-        })?;
-        let decls = persistor.decls_exists(binary);
-        print_type_database_report(
-            &db,
-            &persistor.path_for(binary),
-            decls.then(|| persistor.decls_path_for(binary)).as_deref(),
-        );
-        return Ok(());
-    }
-
-    info!(binary, workspace = %workspace.display(), "Recovering type database");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let mut engine = TypesDBEngine::new(&kuna);
-    if no_tag {
-        engine = engine.without_tagging();
-    }
-
-    let db = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Type database recovery failed for {binary}"))?;
-    persistor
-        .save(&db)
-        .with_context(|| format!("Failed to save the type database for {binary}"))?;
-    persistor
-        .save_decls(binary, &render_rust_decls(&db))
-        .with_context(|| format!("Failed to write the Rust declarations for {binary}"))?;
-
+/// Print the report over the loaded database, naming where the document
+/// is filed and where its Rust declarations are when they exist. Both
+/// paths read the same on-disk state, so the run's report and a later
+/// `--show` report are byte-identical over one document.
+fn print_report(db: &TypeDatabase, workspace: &Path, binary: &str) -> Result<()> {
+    let persistor = TypeDatabasePersistor::new(workspace);
     print_type_database_report(
-        &db,
+        db,
         &persistor.path_for(binary),
-        Some(&persistor.decls_path_for(binary)),
+        persistor
+            .decls_exists(binary)
+            .then(|| persistor.decls_path_for(binary))
+            .as_deref(),
     );
     Ok(())
+}
+
+/// The `--no-tag` flag reaches the scan as the write-suppression signal,
+/// which the type-database row interprets inside its own engine build
+/// (issue #338); the overwrite policy stays the generic handler's.
+pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
+    ScanRunOptions {
+        suppress_write_back: flags.no_tag,
+        ..ScanRunOptions::default()
+    }
+}
+
+/// The post-scan step: render the loaded database into `#[repr(C)]`
+/// Rust declarations and write them beside the document — the one side
+/// effect the registry row does not file. The retained engine source is
+/// unused here; it is what later entries (the type-inference write-back)
+/// hold their follow-on steps with.
+fn write_rust_decls(
+    _source: &PipelineSource,
+    workspace: &Path,
+    binary: &str,
+    db: &TypeDatabase,
+) -> Result<()> {
+    TypeDatabasePersistor::new(workspace)
+        .save_decls(binary, &render_rust_decls(db))
+        .with_context(|| format!("Failed to write the Rust declarations for {binary}"))
 }
 
 /// Print a summary of a recovered type database: where it is filed, where
