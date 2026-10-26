@@ -87,3 +87,165 @@ pub async fn build_failure_informed_escalate_prompt(mut ctx: EscalatePromptCtx) 
     let history = std::mem::take(&mut ctx.history);
     build_escalate_prompt_inner(ctx, history).await
 }
+
+// ============================================================================
+// Strategy adapter (issue #333) — this module's arm of the closed dispatch
+// ============================================================================
+
+/// The escalate adapter — the only async arm: it stays async, pulling
+/// neighbor and decompiler context through the batch's shared scan source
+/// exactly as today. The failure description keeps today's shape: compile
+/// errors quoted when present, else the suite's failures from the verdict's
+/// verification, else "Verification failed". Empty history means the plain
+/// variant, today's rule.
+pub(crate) async fn escalate_prompt(req: &crate::retry::FixPromptRequest<'_>) -> String {
+    let failure_description = if !req.verdict.compilation_errors.is_empty() {
+        format!(
+            "Compilation failed with {} error(s):\n\n{}",
+            req.verdict.compilation_errors.len(),
+            req.verdict.compilation_errors.join("\n\n")
+        )
+    } else {
+        match &req.verdict.verification {
+            Ok(vr) => format!(
+                "{} test(s) failed:\n\n{}",
+                vr.failed_tests.len(),
+                vr.failed_tests
+                    .iter()
+                    .map(|ft| {
+                        format!(
+                            "Test {}: expected {}, got {} \u{2014} {}",
+                            ft.test_index, ft.expected, ft.actual, ft.error
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            ),
+            Err(_) => "Verification failed".to_string(),
+        }
+    };
+    let escalation_ctx = EscalatePromptCtx {
+        function_name: req.unit.function.to_string(),
+        dll_name: req.unit.binary.to_string(),
+        original_rust_code: req.unit.code_under_fix.to_string(),
+        failure_description,
+        source: req.source.clone(),
+        address: req.unit.function_address.unwrap_or(0),
+        call_graph: req.unit.call_graph.to_vec(),
+        history: req.history.to_vec(),
+        call_graph_context: req.unit.call_graph_context.to_vec(),
+        workspace: req.workspace.map(std::path::PathBuf::from),
+    };
+    if req.history.is_empty() {
+        build_escalate_prompt_with_context(escalation_ctx).await
+    } else {
+        build_failure_informed_escalate_prompt(escalation_ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::retry::attempt::AttemptUnit;
+    use crate::retry::{FixPromptRequest, UnitVerdict};
+    use calxgloss_types::{BinaryIdentity, ContextTier, FailureHint, VerificationResult};
+
+    const CODE: &str = "fn draw_sprite(x: i32) -> i32 { x }";
+
+    fn identity() -> &'static BinaryIdentity {
+        use std::sync::OnceLock;
+        static ID: OnceLock<BinaryIdentity> = OnceLock::new();
+        ID.get_or_init(|| "game_logic.dll".to_string().into())
+    }
+
+    fn unit() -> AttemptUnit<'static> {
+        AttemptUnit {
+            binary: identity(),
+            function: "DrawSprite",
+            code_under_fix: CODE,
+            baseline_tests: &[],
+            tier: ContextTier::Signature,
+            function_address: None,
+            call_graph: &[],
+            call_graph_context: &[],
+        }
+    }
+
+    /// The scan-source fixture — the adapter's neighbor pull reads the same
+    /// loaded engine the batch shares, no LLM and no scratch project.
+    fn source() -> calxgloss_decomp::PipelineSource {
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        calxgloss_decomp::PipelineSource::Kuna(
+            calxgloss_kuna::KunaSource::load(target.path()).expect("the fixture must load"),
+        )
+    }
+
+    #[tokio::test]
+    async fn escalate_adapter_quotes_compile_errors_and_pulls_context_from_the_source() {
+        let unit = unit();
+        let verdict = UnitVerdict {
+            compilation_errors: vec!["unresolved name: GetProcAddress".to_string()],
+            verification: Ok(VerificationResult {
+                compiled: false,
+                compilation_errors: Vec::new(),
+                tests_passed: 0,
+                tests_total: 0,
+                failed_tests: Vec::new(),
+            }),
+        };
+        let source = source();
+        let req = FixPromptRequest {
+            unit: &unit,
+            verdict: &verdict,
+            history: &[],
+            workspace: None,
+            source: &source,
+        };
+        let prompt = escalate_prompt(&req).await;
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("fn draw_sprite"));
+        assert!(prompt.contains("Compilation failed with 1 error(s)"));
+        assert!(prompt.contains("unresolved name: GetProcAddress"));
+        assert!(!prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+    }
+
+    #[tokio::test]
+    async fn escalate_adapter_quotes_suite_failures_and_history_when_no_errors() {
+        let unit = unit();
+        let verdict = UnitVerdict {
+            compilation_errors: Vec::new(),
+            verification: Ok(VerificationResult {
+                compiled: true,
+                compilation_errors: Vec::new(),
+                tests_passed: 0,
+                tests_total: 1,
+                failed_tests: vec![calxgloss_types::FailedTest {
+                    test_index: 0,
+                    inputs: serde_json::json!([7]),
+                    expected: serde_json::json!(7),
+                    actual: serde_json::json!(9),
+                    error: "expected 7, got 9".to_string(),
+                    expected_side_effects: Vec::new(),
+                }],
+            }),
+        };
+        let source = source();
+        let history = [FailureHint::new(
+            2,
+            "compile_fix",
+            "Compilation failed: boom",
+        )];
+        let req = FixPromptRequest {
+            unit: &unit,
+            verdict: &verdict,
+            history: &history,
+            workspace: None,
+            source: &source,
+        };
+        let prompt = escalate_prompt(&req).await;
+        assert!(prompt.contains("1 test(s) failed:"));
+        assert!(prompt.contains("expected 7, got 9"));
+        assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(prompt.contains("Compilation failed: boom"));
+    }
+}

@@ -105,3 +105,60 @@ pub(crate) fn log_token_usage(
     let logger = calxgloss_analysis::TokenUsageLogger::new(ws);
     logger.record(entry);
 }
+
+// ============================================================================
+// Strategy adapters — one closed dispatch over the prompt builders (#333)
+// ============================================================================
+
+/// The verdict evidence the fix prompts quote about the code under repair —
+/// today's shape: the initial attempt's compile errors plus one fresh
+/// verification of the code against the unit's baseline suite (what today's
+/// test-shaped strategy arms re-ran themselves on each attempt; the inputs
+/// never change, so it runs once). #334 replaces this with the latest failed
+/// attempt's verdict and retires the re-run.
+pub(crate) struct UnitVerdict {
+    /// The initial attempt's compile errors — what the compile_fix and
+    /// escalate prompts quote when present.
+    pub compilation_errors: Vec<String>,
+    /// The fresh verification against the code under repair — what the
+    /// test-shaped prompts quote. An `Err` means the verification run itself
+    /// failed; today's arms quote that as "Verification failed".
+    pub verification: anyhow::Result<calxgloss_types::VerificationResult>,
+}
+
+/// Everything a strategy adapter needs to build its fix prompt — the one
+/// shape that passes through the closed door (issue #333).
+pub(crate) struct FixPromptRequest<'a> {
+    /// The unit under repair: identity, code, suite, tier, and escalate's
+    /// wider reads (address, call graph).
+    pub unit: &'a attempt::AttemptUnit<'a>,
+    /// The verdict evidence the prompt quotes.
+    pub verdict: &'a UnitVerdict,
+    /// Failure history for failure-informed prompting.
+    pub history: &'a [calxgloss_types::FailureHint],
+    /// Optional workspace path — the escalate adapter's file-context pull.
+    pub workspace: Option<&'a std::path::Path>,
+    /// The batch's shared scan source — the escalate adapter's neighbor pull.
+    pub source: &'a calxgloss_decomp::PipelineSource,
+}
+
+/// The retry context's single door to the prompt builders: one closed
+/// dispatch keyed by [`RetryStrategy`], the only thing that asks them.
+/// Each strategy module's adapter keeps today's exact shape — payload
+/// split, plain-versus-failure-informed rule (empty history means plain),
+/// and template rendering. `Default` never comes through: re-sending the
+/// original prompt is selection, and the loop-side skip arm owns it.
+pub(crate) async fn build_fix_prompt(
+    strategy: RetryStrategy,
+    req: &FixPromptRequest<'_>,
+) -> String {
+    match strategy {
+        RetryStrategy::CompileFix => compile_fix::fix_prompt(req),
+        RetryStrategy::TestFix => prompts::test_fix_prompt(req),
+        RetryStrategy::Escalate => escalate::escalate_prompt(req).await,
+        RetryStrategy::EdgeCaseFix => prompts::edge_case_fix_prompt(req),
+        RetryStrategy::Default => unreachable!(
+            "the Default strategy re-sends the original prompt — the loop's skip arm owns that and never asks the door"
+        ),
+    }
+}

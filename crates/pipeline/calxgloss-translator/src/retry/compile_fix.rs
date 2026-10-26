@@ -62,3 +62,118 @@ pub fn build_failure_informed_compile_fix_prompt(ctx: &FixPromptCtx) -> String {
         )
     })
 }
+
+// ============================================================================
+// Strategy adapter (issue #333) — this module's arm of the closed dispatch
+// ============================================================================
+
+/// The compile_fix adapter. Today's payload split is held: the verdict's
+/// compile errors feed the fix context and the test payload stays empty —
+/// this strategy never carries one. Empty history means the plain variant,
+/// today's rule.
+pub(crate) fn fix_prompt(req: &crate::retry::FixPromptRequest<'_>) -> String {
+    let fix_ctx = FixPromptCtx {
+        function_name: req.unit.function.to_string(),
+        dll_name: req.unit.binary.to_string(),
+        original_rust_code: req.unit.code_under_fix.to_string(),
+        compilation_errors: req.verdict.compilation_errors.clone(),
+        failed_tests: Vec::new(),
+        history: req.history.to_vec(),
+    };
+    if req.history.is_empty() {
+        build_compile_fix_prompt(&fix_ctx)
+    } else {
+        build_failure_informed_compile_fix_prompt(&fix_ctx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::retry::attempt::AttemptUnit;
+    use crate::retry::{FixPromptRequest, UnitVerdict};
+    use calxgloss_types::{BinaryIdentity, ContextTier, FailureHint, TestCase, VerificationResult};
+
+    const CODE: &str = "fn draw_sprite(x: i32) -> i32 { let y: = ; x }";
+
+    fn identity() -> &'static BinaryIdentity {
+        use std::sync::OnceLock;
+        static ID: OnceLock<BinaryIdentity> = OnceLock::new();
+        ID.get_or_init(|| "game_logic.dll".to_string().into())
+    }
+
+    fn unit() -> AttemptUnit<'static> {
+        AttemptUnit {
+            binary: identity(),
+            function: "DrawSprite",
+            code_under_fix: CODE,
+            baseline_tests: &[] as &[TestCase],
+            tier: ContextTier::Signature,
+            function_address: None,
+            call_graph: &[],
+            call_graph_context: &[],
+        }
+    }
+
+    fn verdict(errors: Vec<String>) -> UnitVerdict {
+        UnitVerdict {
+            compilation_errors: errors.clone(),
+            verification: Ok(VerificationResult {
+                compiled: errors.is_empty(),
+                compilation_errors: errors,
+                tests_passed: 0,
+                tests_total: 0,
+                failed_tests: Vec::new(),
+            }),
+        }
+    }
+
+    /// A scan source the synchronous adapters never read — present only
+    /// because the request shape carries it for the escalate adapter.
+    fn source() -> calxgloss_decomp::PipelineSource {
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        calxgloss_decomp::PipelineSource::Kuna(
+            calxgloss_kuna::KunaSource::load(target.path()).expect("the fixture must load"),
+        )
+    }
+
+    #[test]
+    fn adapter_quotes_compile_errors_plain_until_history_exists() {
+        let unit = unit();
+        let verdict = verdict(vec!["unresolved import: GetProcAddress".to_string()]);
+        let source = source();
+        let req = FixPromptRequest {
+            unit: &unit,
+            verdict: &verdict,
+            history: &[],
+            workspace: None,
+            source: &source,
+        };
+
+        let plain = fix_prompt(&req);
+        assert!(plain.contains("DrawSprite"));
+        assert!(plain.contains("game_logic.dll"));
+        assert!(plain.contains("unresolved import: GetProcAddress"));
+        assert!(plain.contains("fn draw_sprite"));
+        assert!(
+            !plain.contains("PREVIOUS ATTEMPT HISTORY"),
+            "empty history must select the plain variant"
+        );
+
+        let history = [FailureHint::new(
+            2,
+            "compile_fix",
+            "Compilation failed: boom",
+        )];
+        let req = FixPromptRequest {
+            unit: &unit,
+            verdict: &verdict,
+            history: &history,
+            workspace: None,
+            source: &source,
+        };
+        let informed = fix_prompt(&req);
+        assert!(informed.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(informed.contains("Compilation failed: boom"));
+    }
+}

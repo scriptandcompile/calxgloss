@@ -66,9 +66,13 @@ pub(crate) enum VerificationMode {
 
 /// The unit under repair, routed through the seam instead of the loop
 /// reaching into the translation's fields (issue #330). The escalate
-/// adapter's wider reads (address, call graph) land with the strategy
+/// adapter's wider reads (address, call graph) joined it with the strategy
 /// adapters (#333).
 pub(crate) struct AttemptUnit<'a> {
+    /// The DLL hosting the function under repair.
+    pub binary: &'a BinaryIdentity,
+    /// The function under repair.
+    pub function: &'a str,
     /// The code this attempt's fix would replace — today the initial
     /// translation's output; from #334 on, the last failed attempt's.
     pub code_under_fix: &'a str,
@@ -76,6 +80,15 @@ pub(crate) struct AttemptUnit<'a> {
     pub baseline_tests: &'a [TestCase],
     /// The context tier this attempt's prompt was built at.
     pub tier: ContextTier,
+    /// The function's entry-point address, if known — the escalate adapter
+    /// pulls its neighbor context at this address.
+    pub function_address: Option<u64>,
+    /// Call-graph neighbors (callers and callees) from the scan — context
+    /// the escalate adapter pulls prompts around.
+    pub call_graph: &'a [String],
+    /// Enriched call-graph context (caller/callee details, matched APIs) —
+    /// the escalate adapter's richest context source.
+    pub call_graph_context: &'a [calxgloss_callgraph::FunctionContext],
 }
 
 /// Everything one attempt needs from the run, gathered once per unit.
@@ -816,11 +829,23 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// A 'static identity the fixture units can borrow.
+    fn unit_identity() -> &'static BinaryIdentity {
+        use std::sync::OnceLock;
+        static ID: OnceLock<BinaryIdentity> = OnceLock::new();
+        ID.get_or_init(|| "game_logic.dll".to_string().into())
+    }
+
     fn fixture_unit<'a>(code_under_fix: &'a str, suite: &'a [TestCase]) -> AttemptUnit<'a> {
         AttemptUnit {
+            binary: unit_identity(),
+            function: "draw_sprite",
             code_under_fix,
             baseline_tests: suite,
             tier: ContextTier::Signature,
+            function_address: None,
+            call_graph: &[],
+            call_graph_context: &[],
         }
     }
 

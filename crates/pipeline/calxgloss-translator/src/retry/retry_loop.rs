@@ -7,11 +7,8 @@ use crate::retry::attempt::{
 };
 use crate::retry::helpers::build_escalated_prompt;
 use crate::retry::{
-    EscalatePromptCtx, FixPromptCtx, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt,
-    build_compile_fix_prompt, build_edge_case_fix_prompt, build_escalate_prompt_with_context,
-    build_failure_informed_compile_fix_prompt, build_failure_informed_edge_case_fix_prompt,
-    build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
-    build_test_fix_prompt,
+    FixPromptRequest, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, UnitVerdict,
+    build_fix_prompt,
 };
 use calxgloss_analysis::FaultLogger;
 use calxgloss_llm::{
@@ -118,9 +115,14 @@ pub async fn try_translate_with_retry(
     // First attempt: verify the initial translation, riding the attempt
     // seam (issue #331). Compile-only mode — today's hole, closed in #334.
     let initial_unit = AttemptUnit {
+        binary: &initial_translation.binary,
+        function: &initial_translation.function,
         code_under_fix: &initial_translation.rust_code,
         baseline_tests: &initial_translation.baseline_tests,
         tier: initial_translation.context_tier,
+        function_address: initial_translation.function_address,
+        call_graph: &initial_translation.call_graph,
+        call_graph_context: &initial_translation.call_graph_context,
     };
     let initial_prompt = format!("{function} ({binary}) initial translation");
     let initial_report = verify_and_record(
@@ -148,6 +150,25 @@ pub async fn try_translate_with_retry(
         return result;
     }
 
+    // The verdict evidence the fix prompts quote about the code under
+    // repair: the initial attempt's compile errors plus one fresh
+    // verification of the code against its baseline suite — the very call
+    // today's test-shaped strategy arms re-ran themselves on each attempt;
+    // the inputs never change, so it runs once. #334 replaces this with the
+    // latest failed attempt's verdict and retires the re-run.
+    let verdict = UnitVerdict {
+        compilation_errors: initial_errors.clone(),
+        verification: ctx
+            .verifier
+            .verify(
+                &initial_translation.binary,
+                &initial_translation.function,
+                &initial_translation.rust_code,
+                &initial_translation.baseline_tests,
+            )
+            .await,
+    };
+
     // Retry loop
     let mut tier_escalated = false;
     for attempt_num in 2..=max {
@@ -169,9 +190,14 @@ pub async fn try_translate_with_retry(
         // #331): the code the fix would replace, the suite it must pass,
         // and the tier this attempt's prompt is built at.
         let unit = AttemptUnit {
+            binary: &initial_translation.binary,
+            function: &initial_translation.function,
             code_under_fix: &initial_translation.rust_code,
             baseline_tests: &initial_translation.baseline_tests,
             tier: current_tier,
+            function_address: initial_translation.function_address,
+            call_graph: &initial_translation.call_graph,
+            call_graph_context: &initial_translation.call_graph_context,
         };
 
         // If the tier was escalated in the previous iteration, build an
@@ -261,207 +287,49 @@ pub async fn try_translate_with_retry(
             continue; // Tier-escalated prompt was already sent above
         }
 
-        // Build fix prompt based on current strategy (normal path, no tier escalation)
-        let (prompt, strategy_name) = match &current_strategy {
-            RetryStrategy::Default => {
-                // Re-send original prompt — skip (would be identical to initial)
-                warn!("Default retry strategy — skipping (would be identical to initial)");
-                result.add_attempt(TranslationAttempt {
-                    attempt: attempt_num,
-                    rust_code: initial_translation.rust_code.clone(),
-                    compiled: false,
-                    compilation_errors: vec![
-                        "Skipped: default strategy would re-send identical prompt".to_string(),
-                    ],
-                    tests_passed: 0,
-                    tests_total: 0,
-                    failed_tests: Vec::new(),
-                    strategy: "skip_default".to_string(),
-                    tokens_used: None,
-                    context_tier: Some(current_tier.label().to_string()),
-                });
-                emit_attempt(
-                    ctx.events,
-                    &binary,
-                    &function,
-                    &result,
-                    attempt_num,
-                    "skip_default",
-                );
-                continue;
-            }
-            RetryStrategy::CompileFix => {
-                let fix_ctx = FixPromptCtx {
-                    function_name: initial_translation.function.clone(),
-                    dll_name: initial_translation.binary.to_string(),
-                    original_rust_code: initial_translation.rust_code.clone(),
-                    compilation_errors: initial_errors.clone(),
-                    failed_tests: Vec::new(),
-                    history: failure_history.clone(),
-                };
-                // Use failure-informed prompts after first retry
-                let prompt = if failure_history.is_empty() {
-                    build_compile_fix_prompt(&fix_ctx)
-                } else {
-                    build_failure_informed_compile_fix_prompt(&fix_ctx)
-                };
-                (prompt, "compile_fix".to_string())
-            }
-            RetryStrategy::TestFix => {
-                // Run verification first to get failing tests
-                let verification = ctx
-                    .verifier
-                    .verify(
-                        &initial_translation.binary,
-                        &initial_translation.function,
-                        &initial_translation.rust_code,
-                        &initial_translation.baseline_tests,
-                    )
-                    .await;
-
-                let failed_tests: Vec<String> = match &verification {
-                    Ok(vr) => vr
-                        .failed_tests
-                        .iter()
-                        .map(|ft| {
-                            format!(
-                                "Test {}: expected {}, got {} \u{2014} {}",
-                                ft.test_index, ft.expected, ft.actual, ft.error
-                            )
-                        })
-                        .collect(),
-                    Err(_) => vec!["Verification failed".to_string()],
-                };
-
-                // Use failure-informed prompts after first retry
-                let fix_ctx = FixPromptCtx {
-                    function_name: initial_translation.function.clone(),
-                    dll_name: initial_translation.binary.to_string(),
-                    original_rust_code: initial_translation.rust_code.clone(),
-                    compilation_errors: Vec::new(),
-                    failed_tests,
-                    history: failure_history.clone(),
-                };
-                let prompt = if failure_history.is_empty() {
-                    build_test_fix_prompt(&fix_ctx)
-                } else {
-                    build_failure_informed_test_fix_prompt(&fix_ctx)
-                };
-                (prompt, "test_fix".to_string())
-            }
-            RetryStrategy::Escalate => {
-                // Build an escalated prompt with additional decompiler context.
-                // The initial translation carries the function address and call graph.
-                let failure_desc = if !initial_errors.is_empty() {
-                    format!(
-                        "Compilation failed with {} error(s):\n\n{}",
-                        initial_errors.len(),
-                        initial_errors.join("\n\n")
-                    )
-                } else {
-                    // Get test failure details if compilation passed
-                    let verification = ctx
-                        .verifier
-                        .verify(
-                            &initial_translation.binary,
-                            &initial_translation.function,
-                            &initial_translation.rust_code,
-                            &initial_translation.baseline_tests,
-                        )
-                        .await;
-                    match verification {
-                        Ok(vr) => format!(
-                            "{} test(s) failed:\n\n{}",
-                            vr.failed_tests.len(),
-                            vr.failed_tests
-                                .iter()
-                                .map(|ft| format!(
-                                    "Test {}: expected {}, got {} — {}",
-                                    ft.test_index, ft.expected, ft.actual, ft.error
-                                ))
-                                .collect::<Vec<_>>()
-                                .join("\n\n")
-                        ),
-                        Err(_) => "Verification failed".to_string(),
-                    }
-                };
-
-                // Build the context struct for escalation
-                let addr = initial_translation.function_address.unwrap_or(0);
-                let call_graph = initial_translation.call_graph.clone();
-                let escalation_ctx = EscalatePromptCtx {
-                    function_name: function.clone(),
-                    dll_name: binary.to_string(),
-                    original_rust_code: initial_translation.rust_code.clone(),
-                    failure_description: failure_desc,
-                    source: ctx.source.clone(),
-                    address: addr,
-                    call_graph,
-                    history: failure_history.clone(),
-                    call_graph_context: initial_translation.call_graph_context.clone(),
-                    workspace: ctx.workspace.map(std::path::PathBuf::from),
-                };
-
-                // Use failure-informed escalated prompt
-                let prompt = if failure_history.is_empty() {
-                    build_escalate_prompt_with_context(escalation_ctx).await
-                } else {
-                    build_failure_informed_escalate_prompt(escalation_ctx).await
-                };
-                (prompt, "escalate".to_string())
-            }
-            RetryStrategy::EdgeCaseFix => {
-                // Get test failure details and build an edge-case-focused prompt
-                let verification = ctx
-                    .verifier
-                    .verify(
-                        &initial_translation.binary,
-                        &initial_translation.function,
-                        &initial_translation.rust_code,
-                        &initial_translation.baseline_tests,
-                    )
-                    .await;
-
-                let failed_tests: Vec<calxgloss_prompts::EdgeCaseTest> = match &verification {
-                    Ok(vr) => vr
-                        .failed_tests
-                        .iter()
-                        .map(|ft| calxgloss_prompts::EdgeCaseTest {
-                            index: ft.test_index,
-                            inputs: ft.inputs.clone(),
-                            expected: ft.expected.clone(),
-                            actual: ft.actual.clone(),
-                            error: ft.error.clone(),
-                            disassembly_hints: String::new(),
-                        })
-                        .collect(),
-                    Err(_) => vec![calxgloss_prompts::EdgeCaseTest {
-                        index: 0,
-                        inputs: serde_json::Value::Null,
-                        expected: serde_json::Value::Null,
-                        actual: serde_json::Value::Null,
-                        error: "Verification failed".to_string(),
-                        disassembly_hints: String::new(),
-                    }],
-                };
-
-                // Use failure-informed edge case prompt
-                let fix_ctx = FixPromptCtx {
-                    function_name: initial_translation.function.clone(),
-                    dll_name: initial_translation.binary.to_string(),
-                    original_rust_code: initial_translation.rust_code.clone(),
-                    compilation_errors: Vec::new(),
-                    failed_tests: Vec::new(),
-                    history: failure_history.clone(),
-                };
-                let prompt = if failure_history.is_empty() {
-                    build_edge_case_fix_prompt(&fix_ctx, &failed_tests)
-                } else {
-                    build_failure_informed_edge_case_fix_prompt(&fix_ctx, &failed_tests)
-                };
-                (prompt, "edge_case_fix".to_string())
-            }
+        // The strategy prompt junction — normal path, no tier escalation —
+        // is one dispatch call now (issue #333): the loop stopped matching
+        // over the variants to pick a builder and simply asks the retry
+        // context's door. The Default arm stays loop-side — its skip is
+        // selection, not a prompt — and the door never sees that variant.
+        if matches!(current_strategy, RetryStrategy::Default) {
+            // Re-send original prompt — skip (would be identical to initial)
+            warn!("Default retry strategy — skipping (would be identical to initial)");
+            result.add_attempt(TranslationAttempt {
+                attempt: attempt_num,
+                rust_code: initial_translation.rust_code.clone(),
+                compiled: false,
+                compilation_errors: vec![
+                    "Skipped: default strategy would re-send identical prompt".to_string(),
+                ],
+                tests_passed: 0,
+                tests_total: 0,
+                failed_tests: Vec::new(),
+                strategy: "skip_default".to_string(),
+                tokens_used: None,
+                context_tier: Some(current_tier.label().to_string()),
+            });
+            emit_attempt(
+                ctx.events,
+                &binary,
+                &function,
+                &result,
+                attempt_num,
+                "skip_default",
+            );
+            continue;
+        }
+        // The wire strategy label is the Display spelling — byte-identical
+        // to the literals the old inline arms paired with their prompts.
+        let strategy_name = current_strategy.to_string();
+        let prompt_req = FixPromptRequest {
+            unit: &unit,
+            verdict: &verdict,
+            history: &failure_history,
+            workspace: ctx.workspace,
+            source: ctx.source,
         };
+        let prompt = build_fix_prompt(current_strategy, &prompt_req).await;
 
         let report = run_attempt(
             run,
@@ -610,6 +478,12 @@ pub(crate) fn llm_call_with_keepalive<'a>(
 mod tests {
     use super::*;
     use crate::retry::is_edge_case_failure;
+    use crate::retry::{
+        EscalatePromptCtx, FixPromptCtx, build_compile_fix_prompt,
+        build_failure_informed_compile_fix_prompt, build_failure_informed_edge_case_fix_prompt,
+        build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
+        build_test_fix_prompt,
+    };
 
     #[test]
     fn test_retry_config_default() {
@@ -1117,6 +991,53 @@ mod tests {
             ]
         );
 
+        // #333: the dispatched compile_fix prompt equals the pre-adapter
+        // inline arm's result byte for byte — same recipe, same inputs,
+        // demanded identical.
+        let sent: std::collections::BTreeMap<u32, String> = captured
+            .iter()
+            .filter_map(|ev| match ev {
+                ProgressEvent::LlmRequest {
+                    attempt, prompt, ..
+                } => Some((*attempt, prompt.clone())),
+                _ => None,
+            })
+            .collect();
+        let expected2 = build_compile_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),
+            compilation_errors: result.attempts[0].compilation_errors.clone(),
+            failed_tests: Vec::new(),
+            history: Vec::new(),
+        });
+        assert_eq!(
+            sent[&2], expected2,
+            "the dispatched compile_fix prompt must be byte-identical to the pre-adapter arm's"
+        );
+        // By attempt 3 the seam's push from attempt 2's failed verification
+        // seeds the history, so the informed variant is the plain variant's
+        // only difference — rebuild it the same way and demand equality.
+        let expected3 = build_failure_informed_compile_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),
+            compilation_errors: result.attempts[0].compilation_errors.clone(),
+            failed_tests: Vec::new(),
+            history: vec![FailureHint::new(
+                2,
+                "compile_fix",
+                format!(
+                    "Compilation failed: {}",
+                    result.attempts[1].compilation_errors.join("; ")
+                ),
+            )],
+        });
+        assert_eq!(
+            sent[&3], expected3,
+            "attempt 3's dispatched informed-variant prompt must match the pre-adapter recipe bytes"
+        );
+
         // The deleted probes fabricated all-true edge results against a
         // detector that reports only failing edges — they could never fire.
         // A passing verified run pins their absence: zero divergence events
@@ -1138,5 +1059,276 @@ mod tests {
             )),
             "no divergence fault may be recorded, faults={faults:?}"
         );
+    }
+
+    /// A canned LLM server replying to every call with the same broken
+    /// code — every attempt fails verification, so the strategy ladder
+    /// walks compile_fix → test_fix → escalate across the run.
+    async fn always_broken_llm() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("canned LLM should bind");
+        let addr = listener.local_addr().expect("canned LLM address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    let body = concat!(
+                        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":",
+                        "\"fn draw_sprite(x: i32) -> i32 { let y: = ; x }\"",
+                        "}}],\"usage\":{\"completion_tokens\":123,\"total_tokens\":123}}"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn strategy_ladder_prompts_are_byte_identical_to_the_pre_adapter_arms() {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let broken = "fn draw_sprite(x: i32) -> i32 { let y: = ; x }";
+
+        let translation = Translation {
+            binary: "game_logic.dll".to_string().into(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: broken.to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+
+        let llm_base = always_broken_llm().await;
+        let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
+        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+        let events = calxgloss_types::TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+
+        // The cap pins the tier at Signature — Signature's next tier would
+        // breach it — so no attempt ever rides the tier-escalated path and
+        // the ladder's compile_fix → test_fix → escalate walk is what
+        // dispatches all three retry prompts.
+        let config = RetryConfig {
+            max_attempts: 6,
+            strategy: RetryStrategy::CompileFix,
+            escalate_on_failure: true,
+            max_context_tier: Some(calxgloss_types::ContextTier::Signature),
+        };
+
+        let ctx = RetryLoopCtx {
+            verifier: &verifier,
+            llm: &llm,
+            source: &source,
+            config: &config,
+            workspace: Some(ws.path()),
+            events: Some(&events),
+            resource_detector: None,
+            fault_logger: None,
+            reviewer_hints: &[],
+        };
+
+        let result = try_translate_with_retry(translation, &ctx).await;
+        assert!(
+            !result.success,
+            "the canned code is broken on every attempt"
+        );
+        assert_eq!(result.attempts.len(), 6);
+        assert_eq!(result.attempts[1].strategy, "compile_fix");
+        assert_eq!(result.attempts[2].strategy, "test_fix");
+        assert_eq!(result.attempts[3].strategy, "escalate");
+        assert_eq!(result.attempts[4].strategy, "edge_case_fix");
+        assert_eq!(result.attempts[5].strategy, "compile_fix");
+
+        let mut captured: Vec<calxgloss_types::ProgressEvent> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            captured.push(ev);
+        }
+        let sent: std::collections::BTreeMap<u32, String> = captured
+            .iter()
+            .filter_map(|ev| match ev {
+                ProgressEvent::LlmRequest {
+                    attempt, prompt, ..
+                } => Some((*attempt, prompt.clone())),
+                _ => None,
+            })
+            .collect();
+
+        // Rebuild each prompt with the pre-adapter inline arms of #332,
+        // spelled verbatim, and demand byte equality.
+
+        // Attempt 2, compile_fix — history still empty, plain variant.
+        let initial_errors = result.attempts[0].compilation_errors.clone();
+        assert!(
+            !initial_errors.is_empty(),
+            "the broken start must not compile"
+        );
+        let expected = build_compile_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: broken.to_string(),
+            compilation_errors: initial_errors.clone(),
+            failed_tests: Vec::new(),
+            history: Vec::new(),
+        });
+        assert_eq!(sent[&2], expected, "attempt 2 compile_fix prompt");
+
+        // Attempt 3, test_fix — history carries attempt 2's seam push, and
+        // the failed-tests payload comes from re-verifying the initial code.
+        let history = vec![FailureHint::new(
+            2,
+            "compile_fix",
+            format!(
+                "Compilation failed: {}",
+                result.attempts[1].compilation_errors.join("; ")
+            ),
+        )];
+        let identity: calxgloss_types::BinaryIdentity = "game_logic.dll".to_string().into();
+        let verification = verifier.verify(&identity, "DrawSprite", broken, &[]).await;
+        let failed_tests: Vec<String> = match &verification {
+            Ok(vr) => vr
+                .failed_tests
+                .iter()
+                .map(|ft| {
+                    format!(
+                        "Test {}: expected {}, got {} \u{2014} {}",
+                        ft.test_index, ft.expected, ft.actual, ft.error
+                    )
+                })
+                .collect(),
+            Err(_) => vec!["Verification failed".to_string()],
+        };
+        let expected = build_failure_informed_test_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: broken.to_string(),
+            compilation_errors: Vec::new(),
+            failed_tests,
+            history: history.clone(),
+        });
+        assert_eq!(sent[&3], expected, "attempt 3 test_fix prompt");
+
+        // Attempt 4, escalate — history also carries attempt 3's push, and
+        // the failure description quotes the initial compile errors.
+        let history: Vec<FailureHint> = history
+            .into_iter()
+            .chain(std::iter::once(FailureHint::new(
+                3,
+                "test_fix",
+                format!(
+                    "Compilation failed: {}",
+                    result.attempts[2].compilation_errors.join("; ")
+                ),
+            )))
+            .collect();
+        let failure_description = format!(
+            "Compilation failed with {} error(s):\n\n{}",
+            initial_errors.len(),
+            initial_errors.join("\n\n")
+        );
+        let expected = build_failure_informed_escalate_prompt(EscalatePromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: broken.to_string(),
+            failure_description,
+            source: source.clone(),
+            address: 0,
+            call_graph: Vec::new(),
+            history: history.clone(),
+            call_graph_context: Vec::new(),
+            workspace: Some(ws.path().to_path_buf()),
+        })
+        .await;
+        assert_eq!(sent[&4], expected, "attempt 4 escalate prompt");
+
+        // Attempt 5, edge_case_fix — the escalate attempt's failure has
+        // pushed too. The structured payload maps the verdict's suite
+        // failures; the non-compiling code lands the run on the same
+        // null-filled placeholder the pre-adapter arm fabricated.
+        let history5: Vec<FailureHint> = history
+            .iter()
+            .cloned()
+            .chain(std::iter::once(FailureHint::new(
+                4,
+                "escalate",
+                format!(
+                    "Compilation failed: {}",
+                    result.attempts[3].compilation_errors.join("; ")
+                ),
+            )))
+            .collect();
+        let failed_cases: Vec<calxgloss_prompts::EdgeCaseTest> = match &verification {
+            Ok(vr) => vr
+                .failed_tests
+                .iter()
+                .map(|ft| calxgloss_prompts::EdgeCaseTest {
+                    index: ft.test_index,
+                    inputs: ft.inputs.clone(),
+                    expected: ft.expected.clone(),
+                    actual: ft.actual.clone(),
+                    error: ft.error.clone(),
+                    disassembly_hints: String::new(),
+                })
+                .collect(),
+            Err(_) => vec![calxgloss_prompts::EdgeCaseTest {
+                index: 0,
+                inputs: serde_json::Value::Null,
+                expected: serde_json::Value::Null,
+                actual: serde_json::Value::Null,
+                error: "Verification failed".to_string(),
+                disassembly_hints: String::new(),
+            }],
+        };
+        let expected = build_failure_informed_edge_case_fix_prompt(
+            &FixPromptCtx {
+                function_name: "DrawSprite".to_string(),
+                dll_name: "game_logic.dll".to_string(),
+                original_rust_code: broken.to_string(),
+                compilation_errors: Vec::new(),
+                failed_tests: Vec::new(),
+                history: history5.clone(),
+            },
+            &failed_cases,
+        );
+        assert_eq!(sent[&5], expected, "attempt 5 edge_case_fix prompt");
+
+        // Attempt 6, the cycle back to compile_fix with the full history —
+        // informed variant, initial compile errors quoted as ever.
+        let history6: Vec<FailureHint> = history5
+            .into_iter()
+            .chain(std::iter::once(FailureHint::new(
+                5,
+                "edge_case_fix",
+                format!(
+                    "Compilation failed: {}",
+                    result.attempts[4].compilation_errors.join("; ")
+                ),
+            )))
+            .collect();
+        let expected = build_failure_informed_compile_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: broken.to_string(),
+            compilation_errors: initial_errors.clone(),
+            failed_tests: Vec::new(),
+            history: history6,
+        });
+        assert_eq!(sent[&6], expected, "attempt 6 compile_fix prompt");
     }
 }
