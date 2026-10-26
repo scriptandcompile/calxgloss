@@ -129,7 +129,9 @@ pub use progress::{
     StopSignal, TranslationEvents, TranslationPhase, UnitCancellation,
 };
 pub use retry_strategy::RetryStrategy;
-pub use scan::{EngineProvenance, ScanMetadata};
+pub use scan::{
+    CoverageStatus, EffectiveCoverage, EngineProvenance, FacetCoverage, ScanCoverage, ScanMetadata,
+};
 pub use scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,
     scope_record_path,

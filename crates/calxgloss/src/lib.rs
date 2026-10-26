@@ -36,7 +36,9 @@ pub use calxgloss_types::progress::{
     ProgressEvent, RunPhase, RunRequestSignal, RunScope, RunTarget, StopSignal, TranslationEvents,
     UnitCancellation,
 };
-pub use calxgloss_types::scan::{EngineProvenance, ScanMetadata};
+pub use calxgloss_types::scan::{
+    CoverageStatus, EffectiveCoverage, EngineProvenance, FacetCoverage, ScanCoverage, ScanMetadata,
+};
 pub use calxgloss_types::scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope,
 };
