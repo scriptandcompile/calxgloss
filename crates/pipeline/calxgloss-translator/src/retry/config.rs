@@ -65,6 +65,21 @@ impl RetryConfig {
             Some(next)
         }
     }
+
+    /// The next strategy in the escalation ladder — the one owner of the
+    /// order the two hand-rolled loop ladders used to each spell (issue
+    /// #334). The order is [`AUTO_STRATEGY_CYCLE`]'s spelled body: step
+    /// forward, cycle back at the end. `Default` is not in the cycle; it
+    /// steps to the cycle's head, exactly as the old ladders spelled.
+    /// Selection policy — the `escalate_on_failure` gate, the forced
+    /// starting strategy, and the tier caps — stays loop-side; this owns
+    /// only the step.
+    pub fn next_strategy(&self, current: RetryStrategy) -> RetryStrategy {
+        match AUTO_STRATEGY_CYCLE.iter().position(|s| *s == current) {
+            Some(i) => AUTO_STRATEGY_CYCLE[(i + 1) % AUTO_STRATEGY_CYCLE.len()],
+            None => AUTO_STRATEGY_CYCLE[0],
+        }
+    }
 }
 
 /// Details about a single translation attempt.
@@ -208,6 +223,40 @@ mod tests {
         assert_eq!(
             config.next_tier_within_cap(ContextTier::ModuleContext),
             Some(ContextTier::FullModule)
+        );
+    }
+
+    /// The strategy ladder's order is `AUTO_STRATEGY_CYCLE`'s spelled body,
+    /// cycling back at the end — the single owner both old ladders collapsed
+    /// into (#334), pinned by order.
+    #[test]
+    fn strategy_ladder_walks_the_auto_cycle_and_wraps_at_the_end() {
+        let config = RetryConfig::default();
+        let mut strategy = RetryStrategy::CompileFix;
+        let mut walked = Vec::new();
+        for _ in AUTO_STRATEGY_CYCLE {
+            strategy = config.next_strategy(strategy);
+            walked.push(strategy);
+        }
+        assert_eq!(
+            walked,
+            vec![
+                RetryStrategy::TestFix,
+                RetryStrategy::Escalate,
+                RetryStrategy::EdgeCaseFix,
+                RetryStrategy::CompileFix,
+            ]
+        );
+    }
+
+    /// `Default` enters the cycle at its head, exactly as both old
+    /// hand-rolled ladders spelled it.
+    #[test]
+    fn strategy_ladder_enters_at_the_cycle_head_from_default() {
+        let config = RetryConfig::default();
+        assert_eq!(
+            config.next_strategy(RetryStrategy::Default),
+            RetryStrategy::CompileFix
         );
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::Translation;
 use crate::retry::attempt::{
-    AttemptOutcome, AttemptPath, AttemptRunCtx, AttemptUnit, VerificationMode, emit_attempt,
+    AttemptOutcome, AttemptPath, AttemptReport, AttemptRunCtx, AttemptUnit, emit_attempt,
     run_attempt, verify_and_record,
 };
 use crate::retry::helpers::build_escalated_prompt;
@@ -133,12 +133,8 @@ pub async fn try_translate_with_retry(
         "initial",
         &initial_prompt,
         initial_translation.tokens_used,
-        VerificationMode::CompileOnly,
     )
     .await;
-
-    // Keep the initial compile's errors for later use in prompt building
-    let initial_errors = result.attempts[0].compilation_errors.clone();
 
     // If the first attempt succeeded, we're done
     if result.success {
@@ -150,24 +146,15 @@ pub async fn try_translate_with_retry(
         return result;
     }
 
-    // The verdict evidence the fix prompts quote about the code under
-    // repair: the initial attempt's compile errors plus one fresh
-    // verification of the code against its baseline suite — the very call
-    // today's test-shaped strategy arms re-ran themselves on each attempt;
-    // the inputs never change, so it runs once. #334 replaces this with the
-    // latest failed attempt's verdict and retires the re-run.
-    let verdict = UnitVerdict {
-        compilation_errors: initial_errors.clone(),
-        verification: ctx
-            .verifier
-            .verify(
-                &initial_translation.binary,
-                &initial_translation.function,
-                &initial_translation.rust_code,
-                &initial_translation.baseline_tests,
-            )
-            .await,
-    };
+    // The verdict evidence the fix prompts quote — always about **the code
+    // being fixed** (#334): seeded from the initial attempt's own record
+    // and seam outcome, and routed forward after every failed verification
+    // to that attempt's own record and seam outcome. The verifier stays
+    // asked exactly once per candidate code; the loop re-gathers nothing.
+    let mut verdict = UnitVerdict::from_failure(&result, &initial_report.outcome);
+    // The code the next fix prompt repairs — the latest failed attempt's
+    // own code from #334 on, seeded with the initial translation's output.
+    let mut fix_code = initial_translation.rust_code.clone();
 
     // Retry loop
     let mut tier_escalated = false;
@@ -187,12 +174,13 @@ pub async fn try_translate_with_retry(
         let attempt_start = std::time::Instant::now();
 
         // The unit under repair, routed through the attempt seam (issue
-        // #331): the code the fix would replace, the suite it must pass,
-        // and the tier this attempt's prompt is built at.
+        // #331): the code the fix would replace — the latest failed
+        // candidate's own since #334 — the suite it must pass, and the
+        // tier this attempt's prompt is built at.
         let unit = AttemptUnit {
             binary: &initial_translation.binary,
             function: &initial_translation.function,
-            code_under_fix: &initial_translation.rust_code,
+            code_under_fix: &fix_code,
             baseline_tests: &initial_translation.baseline_tests,
             tier: current_tier,
             function_address: initial_translation.function_address,
@@ -266,6 +254,16 @@ pub async fn try_translate_with_retry(
                 attempt_start,
             )
             .await;
+
+            // The failed candidate's own verdict and code ride into the
+            // next prompt (#334), and a fired detector ends the chain
+            // wherever it lands — its fault record and event are already
+            // written by the seam.
+            route_latest_failure(&result, &report, &mut verdict, &mut fix_code);
+            if report.loop_fired {
+                break;
+            }
+
             match report.outcome {
                 AttemptOutcome::Passed => break,
                 AttemptOutcome::LlmEmpty
@@ -276,13 +274,7 @@ pub async fn try_translate_with_retry(
 
             // Escalate strategy AND tier after failed tier-escalated attempt
             if ctx.config.escalate_on_failure {
-                current_strategy = match current_strategy {
-                    RetryStrategy::CompileFix => RetryStrategy::TestFix,
-                    RetryStrategy::TestFix => RetryStrategy::Escalate,
-                    RetryStrategy::Escalate => RetryStrategy::EdgeCaseFix,
-                    RetryStrategy::EdgeCaseFix => RetryStrategy::CompileFix,
-                    RetryStrategy::Default => RetryStrategy::CompileFix,
-                };
+                current_strategy = ctx.config.next_strategy(current_strategy);
             }
             continue; // Tier-escalated prompt was already sent above
         }
@@ -343,11 +335,17 @@ pub async fn try_translate_with_retry(
             attempt_start,
         )
         .await;
+        route_latest_failure(&result, &report, &mut verdict, &mut fix_code);
+        if report.loop_fired {
+            // A fired detector ends the chain wherever it lands (#334) —
+            // matching the fault record, event and history entry the seam
+            // already wrote for the firing attempt.
+            break;
+        }
         match report.outcome {
             // Today's shape, moved whole: a passing attempt stops the loop
             // right here, and the LLM-failure tails continue without
-            // stepping strategy or tier.  The loop detector's mid-chain fire
-            // is observed but not acted on — #334 makes it stop the chain.
+            // stepping strategy or tier.
             AttemptOutcome::Passed => break,
             AttemptOutcome::LlmEmpty
             | AttemptOutcome::LlmExhausted { .. }
@@ -355,15 +353,11 @@ pub async fn try_translate_with_retry(
             AttemptOutcome::VerificationFailed { .. } => {}
         }
 
-        // Escalate strategy and context tier for next attempt
+        // Escalate strategy and context tier for next attempt. The ladder
+        // step has one owner (#334); the gate, the starting strategy and
+        // the tier walk stay loop-side policy.
         if ctx.config.escalate_on_failure {
-            current_strategy = match current_strategy {
-                RetryStrategy::CompileFix => RetryStrategy::TestFix,
-                RetryStrategy::TestFix => RetryStrategy::Escalate,
-                RetryStrategy::Escalate => RetryStrategy::EdgeCaseFix,
-                RetryStrategy::EdgeCaseFix => RetryStrategy::CompileFix, // cycle back
-                RetryStrategy::Default => RetryStrategy::CompileFix,
-            };
+            current_strategy = ctx.config.next_strategy(current_strategy);
 
             // Escalate context tier to include more decompiler/workspace context.
             // On the next loop iteration the tier-escalated prompt path will
@@ -396,6 +390,29 @@ pub async fn try_translate_with_retry(
     }
 
     result
+}
+
+/// Route the latest failed candidate into the next prompt (#334): its
+/// record's evidence and the seam outcome's structured cases become the
+/// verdict, and its own code becomes the unit the next fix repairs. Only
+/// attempts that reached verification produce a candidate and a verdict —
+/// the LLM-tail outcomes (empty, exhausted, call error) leave both
+/// untouched, since there is nothing new to fix.
+fn route_latest_failure(
+    result: &RetryResult,
+    report: &AttemptReport,
+    verdict: &mut UnitVerdict,
+    fix_code: &mut String,
+) {
+    if matches!(report.outcome, AttemptOutcome::VerificationFailed { .. }) {
+        *verdict = UnitVerdict::from_failure(result, &report.outcome);
+        *fix_code = result
+            .attempts
+            .last()
+            .expect("the seam records every verified attempt")
+            .rust_code
+            .clone();
+    }
 }
 
 /// Call the LLM with periodic progress keepalive events.
@@ -1016,13 +1033,15 @@ mod tests {
             "the dispatched compile_fix prompt must be byte-identical to the pre-adapter arm's"
         );
         // By attempt 3 the seam's push from attempt 2's failed verification
-        // seeds the history, so the informed variant is the plain variant's
+        // seeds the history, and the verdict is attempt 2's own record
+        // (#334's routing — the canned code matches the initial one here,
+        // bytes and all), so the informed variant is the plain variant's
         // only difference — rebuild it the same way and demand equality.
         let expected3 = build_failure_informed_compile_fix_prompt(&FixPromptCtx {
             function_name: "DrawSprite".to_string(),
             dll_name: "game_logic.dll".to_string(),
-            original_rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),
-            compilation_errors: result.attempts[0].compilation_errors.clone(),
+            original_rust_code: result.attempts[1].rust_code.clone(),
+            compilation_errors: result.attempts[1].compilation_errors.clone(),
             failed_tests: Vec::new(),
             history: vec![FailureHint::new(
                 2,
@@ -1061,24 +1080,33 @@ mod tests {
         );
     }
 
-    /// A canned LLM server replying to every call with the same broken
-    /// code — every attempt fails verification, so the strategy ladder
-    /// walks compile_fix → test_fix → escalate across the run.
-    async fn always_broken_llm() -> String {
+    /// A canned LLM server alternating between the initial broken code and
+    /// a broken variant one identifier apart on every call — every attempt
+    /// still fails verification, so the strategy ladder walks its full
+    /// cycle, but consecutive attempts never produce the same output three
+    /// times running and the infinite-loop detector — which now stops the
+    /// chain wherever it fires (#334) — stays quiet through the run.
+    async fn alternating_broken_llm() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("canned LLM should bind");
         let addr = listener.local_addr().expect("canned LLM address");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_server = calls;
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
+                let n = calls_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut request = [0u8; 4096];
                     let _ = stream.read(&mut request).await;
-                    let body = concat!(
-                        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":",
-                        "\"fn draw_sprite(x: i32) -> i32 { let y: = ; x }\"",
-                        "}}],\"usage\":{\"completion_tokens\":123,\"total_tokens\":123}}"
+                    let content = if n % 2 == 0 {
+                        "fn draw_sprite(x: i32) -> i32 { let y: = ; x }"
+                    } else {
+                        "fn draw_sprite(x: i32) -> i32 { let z: = ; x }"
+                    };
+                    let body = format!(
+                        "{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}}}}],\"usage\":{{\"completion_tokens\":123,\"total_tokens\":123}}}}"
                     );
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1092,7 +1120,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strategy_ladder_prompts_are_byte_identical_to_the_pre_adapter_arms() {
+    async fn strategy_ladder_walks_the_full_cycle_quoting_each_attempts_own_verdict() {
         let ws = tempfile::TempDir::new().expect("temp workspace");
         let broken = "fn draw_sprite(x: i32) -> i32 { let y: = ; x }";
 
@@ -1111,7 +1139,7 @@ mod tests {
             call_graph_context: Vec::new(),
         };
 
-        let llm_base = always_broken_llm().await;
+        let llm_base = alternating_broken_llm().await;
         let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
         let target = calxgloss_testfixtures::load_target().expect("fixture target");
         let kuna = calxgloss_kuna::KunaSource::load(target.path())
@@ -1160,6 +1188,12 @@ mod tests {
         while let Ok(ev) = rx.try_recv() {
             captured.push(ev);
         }
+        assert!(
+            !captured
+                .iter()
+                .any(|ev| matches!(ev, ProgressEvent::InfiniteLoopDetected { .. })),
+            "alternating outputs must not streak the detector to a fire — one would stop the chain (#334)"
+        );
         let sent: std::collections::BTreeMap<u32, String> = captured
             .iter()
             .filter_map(|ev| match ev {
@@ -1170,10 +1204,15 @@ mod tests {
             })
             .collect();
 
-        // Rebuild each prompt with the pre-adapter inline arms of #332,
-        // spelled verbatim, and demand byte equality.
+        // #334: each fix prompt is built from the verdict of the code it
+        // repairs — the previous attempt's recorded evidence, routed — and
+        // replaces that attempt's own code. Rebuild every prompt through
+        // the builders from the recorded routed inputs and demand byte
+        // equality; the recipe reads the loop's own records, so it pins
+        // the routing exactly.
 
-        // Attempt 2, compile_fix — history still empty, plain variant.
+        // Attempt 2, compile_fix — history still empty, plain variant;
+        // the verdict is the initial attempt's own record.
         let initial_errors = result.attempts[0].compilation_errors.clone();
         assert!(
             !initial_errors.is_empty(),
@@ -1189,9 +1228,12 @@ mod tests {
         });
         assert_eq!(sent[&2], expected, "attempt 2 compile_fix prompt");
 
-        // Attempt 3, test_fix — history carries attempt 2's seam push, and
-        // the failed-tests payload comes from re-verifying the initial code.
-        let history = vec![FailureHint::new(
+        // Attempt 3, test_fix — attempt 2's candidate (the canned code,
+        // identical to the initial) failed, so this prompt quotes THAT
+        // record's evidence and repairs that code; the seam's push after
+        // attempt 2 seeds the history. No re-verification feeds this
+        // prompt anymore — the record is the payload.
+        let history3 = vec![FailureHint::new(
             2,
             "compile_fix",
             format!(
@@ -1199,34 +1241,21 @@ mod tests {
                 result.attempts[1].compilation_errors.join("; ")
             ),
         )];
-        let identity: calxgloss_types::BinaryIdentity = "game_logic.dll".to_string().into();
-        let verification = verifier.verify(&identity, "DrawSprite", broken, &[]).await;
-        let failed_tests: Vec<String> = match &verification {
-            Ok(vr) => vr
-                .failed_tests
-                .iter()
-                .map(|ft| {
-                    format!(
-                        "Test {}: expected {}, got {} \u{2014} {}",
-                        ft.test_index, ft.expected, ft.actual, ft.error
-                    )
-                })
-                .collect(),
-            Err(_) => vec!["Verification failed".to_string()],
-        };
         let expected = build_failure_informed_test_fix_prompt(&FixPromptCtx {
             function_name: "DrawSprite".to_string(),
             dll_name: "game_logic.dll".to_string(),
-            original_rust_code: broken.to_string(),
+            original_rust_code: result.attempts[1].rust_code.clone(),
             compilation_errors: Vec::new(),
-            failed_tests,
-            history: history.clone(),
+            failed_tests: result.attempts[1].failed_tests.clone(),
+            history: history3.clone(),
         });
         assert_eq!(sent[&3], expected, "attempt 3 test_fix prompt");
 
-        // Attempt 4, escalate — history also carries attempt 3's push, and
-        // the failure description quotes the initial compile errors.
-        let history: Vec<FailureHint> = history
+        // Attempt 4, escalate — attempt 3's candidate was the *other*
+        // broken variant, so this prompt quotes the variant's own compile
+        // errors and repairs the variant's code, and the history carries
+        // both pushes.
+        let history4: Vec<FailureHint> = history3
             .into_iter()
             .chain(std::iter::once(FailureHint::new(
                 3,
@@ -1237,33 +1266,33 @@ mod tests {
                 ),
             )))
             .collect();
+        let variant_errors = result.attempts[2].compilation_errors.clone();
         let failure_description = format!(
             "Compilation failed with {} error(s):\n\n{}",
-            initial_errors.len(),
-            initial_errors.join("\n\n")
+            variant_errors.len(),
+            variant_errors.join("\n\n")
         );
         let expected = build_failure_informed_escalate_prompt(EscalatePromptCtx {
             function_name: "DrawSprite".to_string(),
             dll_name: "game_logic.dll".to_string(),
-            original_rust_code: broken.to_string(),
+            original_rust_code: result.attempts[2].rust_code.clone(),
             failure_description,
             source: source.clone(),
             address: 0,
             call_graph: Vec::new(),
-            history: history.clone(),
+            history: history4.clone(),
             call_graph_context: Vec::new(),
             workspace: Some(ws.path().to_path_buf()),
         })
         .await;
         assert_eq!(sent[&4], expected, "attempt 4 escalate prompt");
 
-        // Attempt 5, edge_case_fix — the escalate attempt's failure has
-        // pushed too. The structured payload maps the verdict's suite
-        // failures; the non-compiling code lands the run on the same
-        // null-filled placeholder the pre-adapter arm fabricated.
-        let history5: Vec<FailureHint> = history
-            .iter()
-            .cloned()
+        // Attempt 5, edge_case_fix — attempt 4's candidate was the initial
+        // variant again and did not compile, so there are no structured
+        // failing cases to carry: nothing fabricates a placeholder from a
+        // re-run anymore, the payload is simply the verdict's empty slice.
+        let history5: Vec<FailureHint> = history4
+            .into_iter()
             .chain(std::iter::once(FailureHint::new(
                 4,
                 "escalate",
@@ -1273,43 +1302,21 @@ mod tests {
                 ),
             )))
             .collect();
-        let failed_cases: Vec<calxgloss_prompts::EdgeCaseTest> = match &verification {
-            Ok(vr) => vr
-                .failed_tests
-                .iter()
-                .map(|ft| calxgloss_prompts::EdgeCaseTest {
-                    index: ft.test_index,
-                    inputs: ft.inputs.clone(),
-                    expected: ft.expected.clone(),
-                    actual: ft.actual.clone(),
-                    error: ft.error.clone(),
-                    disassembly_hints: String::new(),
-                })
-                .collect(),
-            Err(_) => vec![calxgloss_prompts::EdgeCaseTest {
-                index: 0,
-                inputs: serde_json::Value::Null,
-                expected: serde_json::Value::Null,
-                actual: serde_json::Value::Null,
-                error: "Verification failed".to_string(),
-                disassembly_hints: String::new(),
-            }],
-        };
         let expected = build_failure_informed_edge_case_fix_prompt(
             &FixPromptCtx {
                 function_name: "DrawSprite".to_string(),
                 dll_name: "game_logic.dll".to_string(),
-                original_rust_code: broken.to_string(),
+                original_rust_code: result.attempts[3].rust_code.clone(),
                 compilation_errors: Vec::new(),
                 failed_tests: Vec::new(),
                 history: history5.clone(),
             },
-            &failed_cases,
+            &[],
         );
         assert_eq!(sent[&5], expected, "attempt 5 edge_case_fix prompt");
 
-        // Attempt 6, the cycle back to compile_fix with the full history —
-        // informed variant, initial compile errors quoted as ever.
+        // Attempt 6, the cycle back to compile_fix — attempt 5's variant
+        // verdict and code, with the full history.
         let history6: Vec<FailureHint> = history5
             .into_iter()
             .chain(std::iter::once(FailureHint::new(
@@ -1324,11 +1331,434 @@ mod tests {
         let expected = build_failure_informed_compile_fix_prompt(&FixPromptCtx {
             function_name: "DrawSprite".to_string(),
             dll_name: "game_logic.dll".to_string(),
-            original_rust_code: broken.to_string(),
-            compilation_errors: initial_errors.clone(),
+            original_rust_code: result.attempts[4].rust_code.clone(),
+            compilation_errors: result.attempts[4].compilation_errors.clone(),
             failed_tests: Vec::new(),
             history: history6,
         });
         assert_eq!(sent[&6], expected, "attempt 6 compile_fix prompt");
+
+        // #334's routing, visible in the wire bytes: attempt 4's fix slot
+        // names attempt 3's own variant — the initial code it replaces is
+        // gone from that section.
+        let section4 = original_section(&sent[&4]);
+        assert!(
+            section4.contains("let z: = ; x"),
+            "the escalate prompt must repair attempt 3's own code, not the initial one:\n{section4}"
+        );
+        assert!(
+            !section4.contains("let y: = ; x"),
+            "the replaced initial code must not sit in attempt 4's repair slot:\n{section4}"
+        );
+    }
+
+    /// The "ORIGINAL TRANSLATION (FAILED)" section of a fix prompt — the
+    /// code the prompt tells the LLM to replace.
+    fn original_section(prompt: &str) -> &str {
+        const HEADER: &str = "## ORIGINAL TRANSLATION (FAILED)";
+        let start = prompt
+            .find(HEADER)
+            .expect("fix prompts carry the failing code section");
+        let rest = &prompt[start + HEADER.len()..];
+        let end = rest.find("\n## ").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// A canned LLM server answering every call with the same code — the
+    /// same-output run that streaks the infinite-loop detector, or the
+    /// compiling-but-failing run a suite pins over.
+    async fn same_code_llm(content: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("canned LLM should bind");
+        let addr = listener.local_addr().expect("canned LLM address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    let body = format!(
+                        "{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}}}}],\"usage\":{{\"completion_tokens\":123,\"total_tokens\":123}}}}"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// A canned LLM server naming each reply with its own marker — every
+    /// attempt fails to compile for its OWN reason (an unresolved name),
+    /// so each attempt's recorded errors quote its own source and the
+    /// routing can be told apart from the initial translation's evidence.
+    async fn marker_rotating_llm() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("canned LLM should bind");
+        let addr = listener.local_addr().expect("canned LLM address");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_server = calls;
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let n = calls_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    let content = if n == 0 {
+                        "fn draw_sprite(x: i32) -> i32 { marker_alpha(x) }"
+                    } else {
+                        "fn draw_sprite(x: i32) -> i32 { marker_beta(x) }"
+                    };
+                    let body = format!(
+                        "{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}}}}],\"usage\":{{\"completion_tokens\":123,\"total_tokens\":123}}}}"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// #334 criterion 1, end to end: the initial translation rides the
+    /// seam with its baseline suite — a merely-compiling unit with a
+    /// non-empty suite is NOT done. The attempt-1 record carries the
+    /// suite's real counts, the run reports failure, and the retry prompt
+    /// is the test-fix one built from that verdict's payload. (The scratch
+    /// toolchain's suite runner currently fails to build — a verify-crate
+    /// defect out of this ticket's scope — so the honest verdict lands as
+    /// 0-of-1 with no per-case lines; what is pinned is that the suite was
+    /// consulted at all and the record tells the truth about it, which is
+    /// what closes the compile-only success hole.)
+    #[tokio::test]
+    async fn a_compiling_unit_with_a_failing_suite_is_not_reported_success() {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let good = "fn draw_sprite(x: i32) -> i32 { x + 1 }";
+
+        let translation = Translation {
+            binary: "game_logic.dll".to_string().into(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: good.to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: vec![calxgloss_types::TestCase {
+                inputs: serde_json::json!([5]),
+                expected_return: serde_json::json!(4),
+                expected_side_effects: Vec::new(),
+            }],
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+
+        // The canned fix compiles too — with the runner defect nothing can
+        // pass, and max_attempts 2 keeps the run inside the detector's
+        // streak threshold whatever the code.
+        let llm_base = same_code_llm(good).await;
+        let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
+        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+        let events = calxgloss_types::TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+
+        let config = RetryConfig {
+            max_attempts: 2,
+            strategy: RetryStrategy::TestFix,
+            escalate_on_failure: false,
+            max_context_tier: None,
+        };
+        let ctx = RetryLoopCtx {
+            verifier: &verifier,
+            llm: &llm,
+            source: &source,
+            config: &config,
+            workspace: Some(ws.path()),
+            events: Some(&events),
+            resource_detector: None,
+            fault_logger: None,
+            reviewer_hints: &[],
+        };
+
+        let result = try_translate_with_retry(translation, &ctx).await;
+
+        assert!(
+            !result.success,
+            "a compiling unit whose baseline suite failed is not done — the compile-only hole is closed"
+        );
+        assert_eq!(
+            result.attempts.len(),
+            2,
+            "the failing suite rides into a retry"
+        );
+        let first = &result.attempts[0];
+        assert_eq!(first.strategy, "initial");
+        assert!(first.compiled, "the code does compile");
+        assert_eq!(
+            first.tests_total, 1,
+            "the attempt-1 record carries the suite's real size"
+        );
+        assert_eq!(
+            first.tests_passed, 0,
+            "and honestly reports the suite as failed"
+        );
+        assert_eq!(result.attempts[1].strategy, "test_fix");
+
+        // The retry prompt is the test-fix one, byte-built from the
+        // attempt-1 verdict's payload — the record's failed-test lines are
+        // the payload, empty under the runner defect and named as such by
+        // the builder's fallback.
+        let sent: std::collections::BTreeMap<u32, String> = {
+            let mut captured = Vec::new();
+            while let Ok(ev) = rx.try_recv() {
+                captured.push(ev);
+            }
+            captured
+                .iter()
+                .filter_map(|ev| match ev {
+                    ProgressEvent::LlmRequest {
+                        attempt, prompt, ..
+                    } => Some((*attempt, prompt.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let expected = build_test_fix_prompt(&FixPromptCtx {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            original_rust_code: first.rust_code.clone(),
+            compilation_errors: Vec::new(),
+            failed_tests: first.failed_tests.clone(),
+            history: Vec::new(),
+        });
+        assert_eq!(
+            sent[&2], expected,
+            "the retry prompt is built from the initial verdict's payload"
+        );
+    }
+
+    /// #334 criterion 2, pinned through the captured request bodies: once
+    /// attempt N has failed, attempt N+1's prompt names N's OWN code and
+    /// quotes N's OWN failure evidence — the initial translation is no
+    /// longer the repair target or the evidence source. (The structured
+    /// failing cases of a tests-failed verdict ride the same routing;
+    /// they are pinned at seam and adapter level because this toolchain's
+    /// suite runner cannot produce real case lines — defect note above.)
+    #[tokio::test]
+    async fn fix_prompts_quote_the_latest_failed_attempts_code_and_evidence() {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let start = "fn draw_sprite(x: i32) -> i32 { let q: = ; x }";
+
+        let translation = Translation {
+            binary: "game_logic.dll".to_string().into(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: start.to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+
+        let llm_base = marker_rotating_llm().await;
+        let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
+        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+        let events = calxgloss_types::TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+
+        let config = RetryConfig {
+            max_attempts: 3,
+            strategy: RetryStrategy::CompileFix,
+            escalate_on_failure: false,
+            max_context_tier: None,
+        };
+        let ctx = RetryLoopCtx {
+            verifier: &verifier,
+            llm: &llm,
+            source: &source,
+            config: &config,
+            workspace: Some(ws.path()),
+            events: Some(&events),
+            resource_detector: None,
+            fault_logger: None,
+            reviewer_hints: &[],
+        };
+
+        let result = try_translate_with_retry(translation, &ctx).await;
+        assert!(!result.success, "every canned variant is broken");
+        assert_eq!(result.attempts.len(), 3);
+
+        let sent: std::collections::BTreeMap<u32, String> = {
+            let mut captured = Vec::new();
+            while let Ok(ev) = rx.try_recv() {
+                captured.push(ev);
+            }
+            captured
+                .iter()
+                .filter_map(|ev| match ev {
+                    ProgressEvent::LlmRequest {
+                        attempt, prompt, ..
+                    } => Some((*attempt, prompt.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Attempt 2 repairs the initial code — nothing has replaced it yet.
+        let section2 = original_section(&sent[&2]);
+        assert!(
+            section2.contains("let q: = ; x"),
+            "attempt 2 repairs the initial translation:\n{section2}"
+        );
+
+        // Attempt 3 repairs attempt 2's code — the alpha variant — and
+        // quotes attempt 2's own errors: the marker names both the repair
+        // slot and the error text, so it occurs at least twice.
+        let section3 = original_section(&sent[&3]);
+        assert!(
+            section3.contains("marker_alpha"),
+            "attempt 3 must repair attempt 2's own code:\n{section3}"
+        );
+        assert!(
+            !section3.contains("let q: = ; x"),
+            "the initial code is gone from attempt 3's repair slot:\n{section3}"
+        );
+        assert!(
+            sent[&3].matches("marker_alpha").count() >= 2,
+            "attempt 3's prompt must also quote attempt 2's own compile errors:\n{}",
+            sent[&3]
+        );
+    }
+
+    /// #334's "the verifier is asked exactly once per candidate code",
+    /// held at the source level: the retry loop module's own body never
+    /// asks the verifier anything — every verification belongs to the
+    /// attempt seam, and the re-verification arms are gone for good.
+    #[test]
+    fn retry_loop_never_reverifies_a_previous_attempts_code() {
+        let src = include_str!("retry_loop.rs");
+        let body = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("a module body ahead of the test module");
+        let needle = concat!(".", "verify", "(");
+        assert!(
+            !body.contains(needle),
+            "the retry loop body must not call the verifier itself (#334): the seam owns every verification"
+        );
+    }
+
+    /// #334: a fired infinite-loop detector ends the chain wherever it
+    /// lands. Same canned code as the initial translation on every call —
+    /// the initial attempt rides the detector too, so the third straight
+    /// identical failing output fires at attempt 3. Today's loop merely
+    /// observed the mid-chain fire; this one stops on it, leaving its one
+    /// event and one fault record as the whole story past attempt 3.
+    #[tokio::test]
+    async fn a_fired_loop_detector_ends_the_chain_where_it_lands() {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let broken = "fn draw_sprite(x: i32) -> i32 { let y: = ; x }";
+
+        let translation = Translation {
+            binary: "game_logic.dll".to_string().into(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: broken.to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+
+        let llm_base = same_code_llm(broken).await;
+        let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
+        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+        let events = calxgloss_types::TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let fault_logger = calxgloss_analysis::FaultLogger::new(ws.path());
+
+        let config = RetryConfig {
+            max_attempts: 6,
+            strategy: RetryStrategy::CompileFix,
+            escalate_on_failure: false,
+            max_context_tier: None,
+        };
+        let ctx = RetryLoopCtx {
+            verifier: &verifier,
+            llm: &llm,
+            source: &source,
+            config: &config,
+            workspace: Some(ws.path()),
+            events: Some(&events),
+            resource_detector: None,
+            fault_logger: Some(&fault_logger),
+            reviewer_hints: &[],
+        };
+
+        let result = try_translate_with_retry(translation, &ctx).await;
+
+        assert!(!result.success, "every output is the same broken code");
+        assert_eq!(
+            result.attempts.len(),
+            3,
+            "the chain stops at the firing attempt — no attempt 4"
+        );
+
+        let mut loop_events = 0;
+        let mut requests = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, ProgressEvent::InfiniteLoopDetected { .. }) {
+                loop_events += 1;
+            }
+            if let ProgressEvent::LlmRequest { attempt, .. } = ev {
+                requests.push(attempt);
+            }
+        }
+        assert_eq!(loop_events, 1, "exactly one InfiniteLoopDetected event");
+        assert_eq!(
+            requests,
+            vec![2, 3],
+            "no fix request is built past the fire"
+        );
+
+        let faults = fault_logger.load().expect("fault log").entries;
+        assert_eq!(faults.len(), 1, "one fault record for the fired detector");
+        assert!(
+            matches!(
+                faults[0].category,
+                calxgloss_types::FaultCategory::InfiniteLoop
+            ),
+            "the one fault is the loop fire, faults={faults:?}"
+        );
     }
 }

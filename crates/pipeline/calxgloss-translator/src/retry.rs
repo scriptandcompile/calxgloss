@@ -110,20 +110,45 @@ pub(crate) fn log_token_usage(
 // Strategy adapters — one closed dispatch over the prompt builders (#333)
 // ============================================================================
 
-/// The verdict evidence the fix prompts quote about the code under repair —
-/// today's shape: the initial attempt's compile errors plus one fresh
-/// verification of the code against the unit's baseline suite (what today's
-/// test-shaped strategy arms re-ran themselves on each attempt; the inputs
-/// never change, so it runs once). #334 replaces this with the latest failed
-/// attempt's verdict and retires the re-run.
+/// The verdict evidence the fix prompts quote — always about **the code
+/// being fixed**: since #334 the loop routes it from the latest failed
+/// attempt's own record and seam outcome, and nobody re-verifies to
+/// re-gather it. The verifier is asked once per candidate code.
 pub(crate) struct UnitVerdict {
-    /// The initial attempt's compile errors — what the compile_fix and
+    /// The failing verdict's compile errors — what the compile_fix and
     /// escalate prompts quote when present.
     pub compilation_errors: Vec<String>,
-    /// The fresh verification against the code under repair — what the
-    /// test-shaped prompts quote. An `Err` means the verification run itself
-    /// failed; today's arms quote that as "Verification failed".
-    pub verification: anyhow::Result<calxgloss_types::VerificationResult>,
+    /// The failing behavioral-test lines as quoted — what the test-shaped
+    /// prompts quote. The seam leaves its "Verification failed" sentinel
+    /// here when the verification run itself fell over.
+    pub failed_test_quotes: Vec<String>,
+    /// The structured payload of failing cases — the edge-case builder's
+    /// typed slice; the seam fabricates the null-filled placeholder on a
+    /// failed verification run.
+    pub structured_failed_cases: Vec<calxgloss_prompts::EdgeCaseTest>,
+}
+
+impl UnitVerdict {
+    /// Route the verdict from the newest recorded attempt and the seam's
+    /// outcome for it — the routing that replaced the arms' per-attempt
+    /// re-verification (#334).
+    pub(crate) fn from_failure(result: &RetryResult, outcome: &attempt::AttemptOutcome) -> Self {
+        let record = result
+            .attempts
+            .last()
+            .expect("a verification-failed attempt is recorded");
+        let structured_failed_cases = match outcome {
+            attempt::AttemptOutcome::VerificationFailed {
+                structured_failed_cases,
+            } => structured_failed_cases.clone(),
+            _ => Vec::new(),
+        };
+        Self {
+            compilation_errors: record.compilation_errors.clone(),
+            failed_test_quotes: record.failed_tests.clone(),
+            structured_failed_cases,
+        }
+    }
 }
 
 /// Everything a strategy adapter needs to build its fix prompt — the one
@@ -160,5 +185,81 @@ pub(crate) async fn build_fix_prompt(
         RetryStrategy::Default => unreachable!(
             "the Default strategy re-sends the original prompt — the loop's skip arm owns that and never asks the door"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #334's routing: the verdict a fix prompt is built from reads its
+    /// compile errors and test quotes from the newest recorded attempt and
+    /// its structured cases from the seam outcome for that same attempt —
+    /// the evidence of the code being fixed, never re-gathered.
+    #[test]
+    fn unit_verdict_from_failure_routes_the_latest_record_and_outcome() {
+        let mut result = RetryResult::new();
+        result.attempts.push(TranslationAttempt {
+            attempt: 2,
+            rust_code: "fn draw_sprite(x: i32) -> i32 { x + 1 }".to_string(),
+            compiled: true,
+            compilation_errors: Vec::new(),
+            tests_passed: 0,
+            tests_total: 1,
+            failed_tests: vec!["Test 0: expected 4, got 5 \u{2014} mismatch".to_string()],
+            strategy: "test_fix".to_string(),
+            tokens_used: Some(9),
+            context_tier: Some("Signature".to_string()),
+        });
+        let outcome = attempt::AttemptOutcome::VerificationFailed {
+            structured_failed_cases: vec![calxgloss_prompts::EdgeCaseTest {
+                index: 0,
+                inputs: serde_json::json!([5]),
+                expected: serde_json::json!(4),
+                actual: serde_json::json!(5),
+                error: "mismatch".to_string(),
+                disassembly_hints: String::new(),
+            }],
+        };
+
+        let verdict = UnitVerdict::from_failure(&result, &outcome);
+
+        assert_eq!(verdict.compilation_errors, Vec::<String>::new());
+        assert_eq!(
+            verdict.failed_test_quotes, result.attempts[0].failed_tests,
+            "the quotes are the record's own"
+        );
+        assert_eq!(
+            verdict.structured_failed_cases.len(),
+            1,
+            "the structured cases ride in from the seam outcome"
+        );
+        assert_eq!(verdict.structured_failed_cases[0].error, "mismatch");
+    }
+
+    /// LLM-tail outcomes have no candidate verdict to route — the match
+    /// arm yields an empty structured slice beside the record's payload.
+    #[test]
+    fn unit_verdict_from_failure_carries_no_structured_cases_for_other_outcomes() {
+        let mut result = RetryResult::new();
+        result.attempts.push(TranslationAttempt {
+            attempt: 2,
+            rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),
+            compiled: false,
+            compilation_errors: vec!["expected type, found `=`".to_string()],
+            tests_passed: 0,
+            tests_total: 0,
+            failed_tests: Vec::new(),
+            strategy: "compile_fix".to_string(),
+            tokens_used: Some(9),
+            context_tier: Some("Signature".to_string()),
+        });
+        let outcome = attempt::AttemptOutcome::LlmEmpty;
+
+        let verdict = UnitVerdict::from_failure(&result, &outcome);
+
+        assert_eq!(verdict.compilation_errors, vec!["expected type, found `=`"]);
+        assert!(verdict.failed_test_quotes.is_empty());
+        assert!(verdict.structured_failed_cases.is_empty());
     }
 }

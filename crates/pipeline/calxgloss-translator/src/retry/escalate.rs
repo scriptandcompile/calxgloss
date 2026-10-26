@@ -94,10 +94,10 @@ pub async fn build_failure_informed_escalate_prompt(mut ctx: EscalatePromptCtx) 
 
 /// The escalate adapter — the only async arm: it stays async, pulling
 /// neighbor and decompiler context through the batch's shared scan source
-/// exactly as today. The failure description keeps today's shape: compile
-/// errors quoted when present, else the suite's failures from the verdict's
-/// verification, else "Verification failed". Empty history means the plain
-/// variant, today's rule.
+/// exactly as today. The failure description keeps today's shape, quoted
+/// from the code-under-fix's own verdict: compile errors when present,
+/// else the suite's failure quotes, else the seam's bare "Verification
+/// failed" sentinel. Empty history means the plain variant, today's rule.
 pub(crate) async fn escalate_prompt(req: &crate::retry::FixPromptRequest<'_>) -> String {
     let failure_description = if !req.verdict.compilation_errors.is_empty() {
         format!(
@@ -105,24 +105,17 @@ pub(crate) async fn escalate_prompt(req: &crate::retry::FixPromptRequest<'_>) ->
             req.verdict.compilation_errors.len(),
             req.verdict.compilation_errors.join("\n\n")
         )
+    } else if req.verdict.failed_test_quotes == ["Verification failed".to_string()] {
+        // The seam's sentinel for a verification run that itself fell
+        // over — today's arm spelled it as the bare description rather
+        // than counting it as one test failure.
+        "Verification failed".to_string()
     } else {
-        match &req.verdict.verification {
-            Ok(vr) => format!(
-                "{} test(s) failed:\n\n{}",
-                vr.failed_tests.len(),
-                vr.failed_tests
-                    .iter()
-                    .map(|ft| {
-                        format!(
-                            "Test {}: expected {}, got {} \u{2014} {}",
-                            ft.test_index, ft.expected, ft.actual, ft.error
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n")
-            ),
-            Err(_) => "Verification failed".to_string(),
-        }
+        format!(
+            "{} test(s) failed:\n\n{}",
+            req.verdict.failed_test_quotes.len(),
+            req.verdict.failed_test_quotes.join("\n\n")
+        )
     };
     let escalation_ctx = EscalatePromptCtx {
         function_name: req.unit.function.to_string(),
@@ -148,7 +141,7 @@ mod tests {
     use super::*;
     use crate::retry::attempt::AttemptUnit;
     use crate::retry::{FixPromptRequest, UnitVerdict};
-    use calxgloss_types::{BinaryIdentity, ContextTier, FailureHint, VerificationResult};
+    use calxgloss_types::{BinaryIdentity, ContextTier, FailureHint};
 
     const CODE: &str = "fn draw_sprite(x: i32) -> i32 { x }";
 
@@ -185,13 +178,8 @@ mod tests {
         let unit = unit();
         let verdict = UnitVerdict {
             compilation_errors: vec!["unresolved name: GetProcAddress".to_string()],
-            verification: Ok(VerificationResult {
-                compiled: false,
-                compilation_errors: Vec::new(),
-                tests_passed: 0,
-                tests_total: 0,
-                failed_tests: Vec::new(),
-            }),
+            failed_test_quotes: Vec::new(),
+            structured_failed_cases: Vec::new(),
         };
         let source = source();
         let req = FixPromptRequest {
@@ -214,20 +202,11 @@ mod tests {
         let unit = unit();
         let verdict = UnitVerdict {
             compilation_errors: Vec::new(),
-            verification: Ok(VerificationResult {
-                compiled: true,
-                compilation_errors: Vec::new(),
-                tests_passed: 0,
-                tests_total: 1,
-                failed_tests: vec![calxgloss_types::FailedTest {
-                    test_index: 0,
-                    inputs: serde_json::json!([7]),
-                    expected: serde_json::json!(7),
-                    actual: serde_json::json!(9),
-                    error: "expected 7, got 9".to_string(),
-                    expected_side_effects: Vec::new(),
-                }],
-            }),
+            // The seam's own quote for one failing baseline case.
+            failed_test_quotes: vec![
+                "Test 0: expected 7, got 9 \u{2014} expected 7, got 9".to_string(),
+            ],
+            structured_failed_cases: Vec::new(),
         };
         let source = source();
         let history = [FailureHint::new(

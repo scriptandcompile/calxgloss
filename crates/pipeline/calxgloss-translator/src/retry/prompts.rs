@@ -146,30 +146,19 @@ pub fn build_failure_informed_edge_case_fix_prompt(
 // Strategy adapters (issue #333) — this module's arms of the closed dispatch
 // ============================================================================
 
-/// The test_fix adapter — the re-verification today's arm ran itself is now
-/// the unit verdict the dispatch hands in. The compile payload stays empty:
-/// this strategy quotes only the suite's failures. Empty history means the
-/// plain variant, today's rule.
+/// The test_fix adapter — the verdict it quotes is the code-under-fix's
+/// own failed attempt, routed by the loop; the seam already spelled its
+/// failing cases into quotes, so this is a pass-through into today's
+/// payload slot. The compile payload stays empty: this strategy quotes
+/// only the suite's failures. Empty history means the plain variant,
+/// today's rule.
 pub(crate) fn test_fix_prompt(req: &crate::retry::FixPromptRequest<'_>) -> String {
-    let failed_tests: Vec<String> = match &req.verdict.verification {
-        Ok(vr) => vr
-            .failed_tests
-            .iter()
-            .map(|ft| {
-                format!(
-                    "Test {}: expected {}, got {} \u{2014} {}",
-                    ft.test_index, ft.expected, ft.actual, ft.error
-                )
-            })
-            .collect(),
-        Err(_) => vec!["Verification failed".to_string()],
-    };
     let fix_ctx = FixPromptCtx {
         function_name: req.unit.function.to_string(),
         dll_name: req.unit.binary.to_string(),
         original_rust_code: req.unit.code_under_fix.to_string(),
         compilation_errors: Vec::new(),
-        failed_tests,
+        failed_tests: req.verdict.failed_test_quotes.clone(),
         history: req.history.to_vec(),
     };
     if req.history.is_empty() {
@@ -179,32 +168,11 @@ pub(crate) fn test_fix_prompt(req: &crate::retry::FixPromptRequest<'_>) -> Strin
     }
 }
 
-/// The edge_case_fix adapter — the structured payload is built from the
-/// verdict's suite failures exactly as today's arm spelled it, and the
-/// verification-failure side keeps the same null-filled placeholder case.
+/// The edge_case_fix adapter — the structured payload rides from the
+/// verdict directly (the seam built it from the attempt's real cases, or
+/// the same null-filled placeholder when the verification run fell over).
 pub(crate) fn edge_case_fix_prompt(req: &crate::retry::FixPromptRequest<'_>) -> String {
-    let failed_cases: Vec<calxgloss_prompts::EdgeCaseTest> = match &req.verdict.verification {
-        Ok(vr) => vr
-            .failed_tests
-            .iter()
-            .map(|ft| calxgloss_prompts::EdgeCaseTest {
-                index: ft.test_index,
-                inputs: ft.inputs.clone(),
-                expected: ft.expected.clone(),
-                actual: ft.actual.clone(),
-                error: ft.error.clone(),
-                disassembly_hints: String::new(),
-            })
-            .collect(),
-        Err(_) => vec![calxgloss_prompts::EdgeCaseTest {
-            index: 0,
-            inputs: serde_json::Value::Null,
-            expected: serde_json::Value::Null,
-            actual: serde_json::Value::Null,
-            error: "Verification failed".to_string(),
-            disassembly_hints: String::new(),
-        }],
-    };
+    let failed_cases = req.verdict.structured_failed_cases.clone();
     let fix_ctx = FixPromptCtx {
         function_name: req.unit.function.to_string(),
         dll_name: req.unit.binary.to_string(),
@@ -225,9 +193,7 @@ mod tests {
     use super::*;
     use crate::retry::attempt::AttemptUnit;
     use crate::retry::{FixPromptRequest, UnitVerdict};
-    use calxgloss_types::{
-        BinaryIdentity, ContextTier, FailedTest, FailureHint, VerificationResult,
-    };
+    use calxgloss_types::{BinaryIdentity, ContextTier, FailureHint};
 
     const CODE: &str = "fn draw_sprite(x: i32) -> i32 { x * 2 }";
 
@@ -250,21 +216,49 @@ mod tests {
         }
     }
 
-    fn one_failing_case() -> FailedTest {
-        FailedTest {
-            test_index: 0,
-            inputs: serde_json::json!([i64::MAX]),
-            expected: serde_json::json!(i64::MAX),
-            actual: serde_json::json!(0),
-            error: "expected 9223372036854775807, got 0".to_string(),
-            expected_side_effects: Vec::new(),
-        }
+    /// One failing baseline case spelled the way the seam spells it into a
+    /// verdict: the quoted line and the structured payload.
+    fn one_failing_case() -> (Vec<String>, Vec<calxgloss_prompts::EdgeCaseTest>) {
+        (
+            vec![
+                "Test 0: expected 9223372036854775807, got 0 \u{2014} expected 9223372036854775807, got 0"
+                    .to_string(),
+            ],
+            vec![calxgloss_prompts::EdgeCaseTest {
+                index: 0,
+                inputs: serde_json::json!([i64::MAX]),
+                expected: serde_json::json!(i64::MAX),
+                actual: serde_json::json!(0),
+                error: "expected 9223372036854775807, got 0".to_string(),
+                disassembly_hints: String::new(),
+            }],
+        )
     }
 
-    fn verdict(verification: anyhow::Result<VerificationResult>) -> UnitVerdict {
+    /// The seam's sentinel for a verification run that itself fell over:
+    /// the quote list and the null-filled placeholder case.
+    fn verification_fell_over() -> (Vec<String>, Vec<calxgloss_prompts::EdgeCaseTest>) {
+        (
+            vec!["Verification failed".to_string()],
+            vec![calxgloss_prompts::EdgeCaseTest {
+                index: 0,
+                inputs: serde_json::Value::Null,
+                expected: serde_json::Value::Null,
+                actual: serde_json::Value::Null,
+                error: "Verification failed".to_string(),
+                disassembly_hints: String::new(),
+            }],
+        )
+    }
+
+    fn verdict(
+        failed_test_quotes: Vec<String>,
+        structured_failed_cases: Vec<calxgloss_prompts::EdgeCaseTest>,
+    ) -> UnitVerdict {
         UnitVerdict {
             compilation_errors: Vec::new(),
-            verification,
+            failed_test_quotes,
+            structured_failed_cases,
         }
     }
 
@@ -295,13 +289,8 @@ mod tests {
     #[test]
     fn test_fix_adapter_quotes_the_verdicts_failing_cases() {
         let unit = unit();
-        let verdict = verdict(Ok(VerificationResult {
-            compiled: true,
-            compilation_errors: Vec::new(),
-            tests_passed: 0,
-            tests_total: 1,
-            failed_tests: vec![one_failing_case()],
-        }));
+        let (quotes, cases) = one_failing_case();
+        let verdict = verdict(quotes, cases);
         let source = source();
         let prompt = test_fix_prompt(&req(&unit, &verdict, &[], &source));
         assert!(prompt.contains("DrawSprite"));
@@ -316,7 +305,8 @@ mod tests {
     #[test]
     fn test_fix_adapter_maps_a_failed_verification_run_to_todays_quote() {
         let unit = unit();
-        let verdict = verdict(Err(anyhow::anyhow!("scratch project build blew up")));
+        let (quotes, cases) = verification_fell_over();
+        let verdict = verdict(quotes, cases);
         let source = source();
         let prompt = test_fix_prompt(&req(&unit, &verdict, &[], &source));
         assert!(prompt.contains("Verification failed"));
@@ -325,13 +315,8 @@ mod tests {
     #[test]
     fn edge_case_adapter_uses_the_informed_variant_once_history_exists() {
         let unit = unit();
-        let verdict = verdict(Ok(VerificationResult {
-            compiled: true,
-            compilation_errors: Vec::new(),
-            tests_passed: 0,
-            tests_total: 1,
-            failed_tests: vec![one_failing_case()],
-        }));
+        let (_quotes, cases) = one_failing_case();
+        let verdict = verdict(Vec::new(), cases);
         let source = source();
         let history = [FailureHint::new(3, "test_fix", "1 of 4 tests passed")];
         let prompt = edge_case_fix_prompt(&req(&unit, &verdict, &history, &source));
@@ -347,7 +332,8 @@ mod tests {
     #[test]
     fn edge_case_adapter_keeps_the_null_placeholder_on_failed_verification() {
         let unit = unit();
-        let verdict = verdict(Err(anyhow::anyhow!("verification blew up")));
+        let (quotes, cases) = verification_fell_over();
+        let verdict = verdict(quotes, cases);
         let source = source();
         let prompt = edge_case_fix_prompt(&req(&unit, &verdict, &[], &source));
         assert!(prompt.contains("Verification failed"));

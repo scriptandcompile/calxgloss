@@ -92,7 +92,7 @@ mod tests {
     use super::*;
     use crate::retry::attempt::AttemptUnit;
     use crate::retry::{FixPromptRequest, UnitVerdict};
-    use calxgloss_types::{BinaryIdentity, ContextTier, FailureHint, TestCase, VerificationResult};
+    use calxgloss_types::{BinaryIdentity, ContextTier, FailureHint, TestCase};
 
     const CODE: &str = "fn draw_sprite(x: i32) -> i32 { let y: = ; x }";
 
@@ -117,14 +117,9 @@ mod tests {
 
     fn verdict(errors: Vec<String>) -> UnitVerdict {
         UnitVerdict {
-            compilation_errors: errors.clone(),
-            verification: Ok(VerificationResult {
-                compiled: errors.is_empty(),
-                compilation_errors: errors,
-                tests_passed: 0,
-                tests_total: 0,
-                failed_tests: Vec::new(),
-            }),
+            compilation_errors: errors,
+            failed_test_quotes: Vec::new(),
+            structured_failed_cases: Vec::new(),
         }
     }
 

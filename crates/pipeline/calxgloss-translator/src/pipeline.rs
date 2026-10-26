@@ -5493,26 +5493,32 @@ void SetCursor(void)
             attempt.tokens_used.is_none(),
             "a seeded attempt spends no LLM tokens"
         );
-        // The seed is a hypothesis the new bytes get to reject — and this one
-        // survives full verification (a real scaffolded compile and test run
-        // against the freshly captured baseline). Success here is the
-        // verifier's verdict, never a carry-over stamp: the review overlay
-        // model (ADR-0003) is untouched, and nothing marks the unit Verified.
+        // The seed is a hypothesis the new bytes get to reject — and from
+        // #334 on the rejection is honest: attempt 1 now consults the
+        // freshly captured baseline suite, and the attempt-1 record
+        // carries its real size. The verdict lands as tests-failed here
+        // for two toolchain-side reasons outside this issue's scope — the
+        // scratch suite runner cannot build on this machine (a verify-
+        // crate defect), and a stub seed like this one could never answer
+        // a behavioral suite anyway. What is pinned is the contract: the
+        // suite was consulted, the counts are real, and success remains
+        // the verifier's verdict, never a carry-over stamp — the review
+        // overlay model (ADR-0003) is untouched, and the pairing never
+        // marks a unit Verified.
+        assert!(attempt.compiled, "the seed compiles against the new bytes");
         assert!(
-            attempt.is_successful(),
-            "the seeded code faced the retry loop's full verification, and \
-             verification — not the pairing — decided the outcome"
+            attempt.tests_total > 0,
+            "attempt 1 now consults the captured baseline suite — the \
+             compile-only success hole is closed (#334)"
         );
-        let carry = seeded
-            .carry_over
-            .as_ref()
-            .expect("the winning seed code earns its provenance record");
-        assert_eq!(carry.old_function, "legacy_status");
-        assert_eq!(carry.old_attempt, 3);
-        assert_eq!(carry.confidence, 95);
-        assert_eq!(
-            carry.commit_note(),
-            "seeded from legacy_status attempt 3 (paired, 95% confidence)"
+        assert!(
+            !attempt.is_successful(),
+            "verification — not the pairing — decided the outcome"
+        );
+        assert!(
+            seeded.carry_over.is_none(),
+            "provenance rides only an honest done: with verification saying \
+             not-done, nothing marks the carried code as a win (ADR-0003)"
         );
 
         let fresh = result

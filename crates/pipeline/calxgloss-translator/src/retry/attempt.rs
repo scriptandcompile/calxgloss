@@ -49,21 +49,6 @@ pub(crate) enum AttemptPath {
     TierEscalated,
 }
 
-/// How much of the suite a verification runs. The retry attempts always run
-/// the full suite; the initial attempt is pinned to compile-only until the
-/// contract ticket (#334) closes that hole and retires this mode.
-#[derive(Debug)]
-pub(crate) enum VerificationMode {
-    /// Compile check only — today's initial-attempt hole, kept open across
-    /// the move so the move is provably not a behavior change (#332).
-    CompileOnly,
-    /// Compile, then the baseline suite against the scratch project.
-    // Constructed only once #334 verifies the initial attempt honestly;
-    // the seam tests already exercise it.
-    #[allow(dead_code)]
-    FullSuite,
-}
-
 /// The unit under repair, routed through the seam instead of the loop
 /// reaching into the translation's fields (issue #330). The escalate
 /// adapter's wider reads (address, call graph) joined it with the strategy
@@ -119,12 +104,10 @@ pub(crate) enum AttemptOutcome {
     /// Compiled and its suite passed (or there was no suite). Done.
     Passed,
     /// Ran and failed verification. The structured failing cases ride out
-    /// for the next prompt — the loop's strategies stop re-verifying to
-    /// re-gather this evidence (#334).
+    /// for the next prompt — the loop routes them, together with this
+    /// attempt's recorded evidence, into the next fix prompt instead of
+    /// re-verifying to re-gather them (#334).
     VerificationFailed {
-        // Read from #334 on: the strategies stop re-verifying to re-gather
-        // these cases for the next prompt. The loop acts on the verdict.
-        #[allow(dead_code)]
         structured_failed_cases: Vec<calxgloss_prompts::EdgeCaseTest>,
     },
     /// The LLM answered with empty code. Recorded; no policy step follows.
@@ -142,8 +125,9 @@ pub(crate) enum AttemptOutcome {
 }
 
 /// The seam's report: the verdict plus whether the infinite-loop detector
-/// fired on this attempt's (prompt, output) pair. Today's loop observes a
-/// mid-chain fire without acting; #334 makes the fire stop the chain.
+/// fired on this attempt's (prompt, output) streak. A fired detector ends
+/// the chain wherever it lands — the loop stops on `loop_fired`, matching
+/// the fault record and event the seam already wrote (#334).
 #[derive(Debug)]
 pub(crate) struct AttemptReport {
     pub outcome: AttemptOutcome,
@@ -637,8 +621,9 @@ pub(crate) async fn run_attempt(
 }
 
 /// The verification+recording tail without a prompt or an LLM call — for
-/// the initial translation `translate()` hands to the loop. Today this is
-/// compile-only (`VerificationMode::CompileOnly`), the hole #334 closes.
+/// the initial translation `translate()` hands to the loop. It consults
+/// the baseline suite honestly: compiled *and* the suite passed, never
+/// "compiled and nobody asked" (the hole #334 closed).
 // Parameters mirror the verification+recording tail's inputs, passed
 // positionally by the loop — same shape as log_token_usage.
 #[allow(clippy::too_many_arguments)]
@@ -650,7 +635,6 @@ pub(crate) async fn verify_and_record(
     strategy: &str,
     detector_prompt: &str,
     tokens_used: Option<usize>,
-    mode: VerificationMode,
 ) -> AttemptReport {
     let compile_result = match run
         .verifier
@@ -669,63 +653,59 @@ pub(crate) async fn verify_and_record(
         }
     };
 
-    let (tests_passed, tests_total, failed_tests, structured_failed_cases) = match mode {
-        VerificationMode::CompileOnly => (0, 0, Vec::new(), Vec::new()),
-        VerificationMode::FullSuite => {
-            if compile_result.success {
-                match run
-                    .verifier
-                    .verify(
-                        &run.binary,
-                        &run.function,
-                        unit.code_under_fix,
-                        unit.baseline_tests,
-                    )
-                    .await
-                {
-                    Ok(vr) => (
-                        vr.tests_passed,
-                        vr.tests_total,
-                        vr.failed_tests
-                            .iter()
-                            .map(|ft| {
-                                format!(
-                                    "Test {}: expected {}, got {} — {}",
-                                    ft.test_index, ft.expected, ft.actual, ft.error
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                        vr.failed_tests
-                            .iter()
-                            .map(|ft| calxgloss_prompts::EdgeCaseTest {
-                                index: ft.test_index,
-                                inputs: ft.inputs.clone(),
-                                expected: ft.expected.clone(),
-                                actual: ft.actual.clone(),
-                                error: ft.error.clone(),
-                                disassembly_hints: String::new(),
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                    Err(_) => (
-                        0,
-                        0,
-                        vec!["Verification failed".to_string()],
-                        vec![calxgloss_prompts::EdgeCaseTest {
-                            index: 0,
-                            inputs: serde_json::Value::Null,
-                            expected: serde_json::Value::Null,
-                            actual: serde_json::Value::Null,
-                            error: "Verification failed".to_string(),
+    let (tests_passed, tests_total, failed_tests, structured_failed_cases) =
+        if compile_result.success {
+            match run
+                .verifier
+                .verify(
+                    &run.binary,
+                    &run.function,
+                    unit.code_under_fix,
+                    unit.baseline_tests,
+                )
+                .await
+            {
+                Ok(vr) => (
+                    vr.tests_passed,
+                    vr.tests_total,
+                    vr.failed_tests
+                        .iter()
+                        .map(|ft| {
+                            format!(
+                                "Test {}: expected {}, got {} — {}",
+                                ft.test_index, ft.expected, ft.actual, ft.error
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                    vr.failed_tests
+                        .iter()
+                        .map(|ft| calxgloss_prompts::EdgeCaseTest {
+                            index: ft.test_index,
+                            inputs: ft.inputs.clone(),
+                            expected: ft.expected.clone(),
+                            actual: ft.actual.clone(),
+                            error: ft.error.clone(),
                             disassembly_hints: String::new(),
-                        }],
-                    ),
-                }
-            } else {
-                (0, 0, Vec::new(), Vec::new())
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                Err(_) => (
+                    0,
+                    0,
+                    vec!["Verification failed".to_string()],
+                    vec![calxgloss_prompts::EdgeCaseTest {
+                        index: 0,
+                        inputs: serde_json::Value::Null,
+                        expected: serde_json::Value::Null,
+                        actual: serde_json::Value::Null,
+                        error: "Verification failed".to_string(),
+                        disassembly_hints: String::new(),
+                    }],
+                ),
             }
-        }
-    };
+        } else {
+            (0, 0, Vec::new(), Vec::new())
+        };
 
     let attempt = TranslationAttempt {
         attempt: attempt_num,
@@ -1247,58 +1227,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verify_and_record_compile_only_mode_pins_todays_initial_attempt_hole() {
-        let ws = tempfile::TempDir::new().expect("temp workspace");
-        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
-        let mut loop_detector = InfiniteLoopDetector::new();
-        let mut run = AttemptRunCtx {
-            verifier: &verifier,
-            // No LLM call happens here — the dummy client is never asked.
-            llm: &LlmClient::from_url("http://127.0.0.1:1", "test-model").expect("llm client"),
-            events: None,
-            workspace: Some(ws.path()),
-            resource_detector: None,
-            fault_logger: None,
-            loop_detector: &mut loop_detector,
-            binary: "game_logic.dll".to_string().into(),
-            function: "draw_sprite".to_string(),
-        };
-        let suite = failing_suite();
-        let unit = fixture_unit(GOOD_CODE, &suite);
-        let mut result = RetryResult::new();
-
-        let report = verify_and_record(
-            &mut run,
-            &mut result,
-            &unit,
-            1,
-            "initial",
-            "draw_sprite (game_logic.dll) initial translation",
-            Some(10),
-            VerificationMode::CompileOnly,
-        )
-        .await;
-
-        // Today's hole, pinned where it stands (closes in #334): a
-        // non-empty suite is not consulted, so a merely-compiling unit
-        // reports success with zero tests.
-        assert!(
-            matches!(report.outcome, AttemptOutcome::Passed),
-            "outcome: {:?}",
-            report
-        );
-        assert!(result.success);
-        let attempt = result.attempts.last().expect("one attempt recorded");
-        assert!(attempt.compiled);
-        assert_eq!(attempt.tests_total, 0);
-        assert_eq!(attempt.tokens_used, Some(10));
-        // Today's initial attempt writes neither log.
-        assert!(token_entries(ws.path()).is_empty());
-        assert!(experiment_entries(ws.path()).is_empty());
-    }
-
-    #[tokio::test]
-    async fn verify_and_record_full_suite_mode_consults_the_baseline_suite() {
+    async fn verify_and_record_honestly_consults_the_baseline_suite() {
         let ws = tempfile::TempDir::new().expect("temp workspace");
         let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
         let mut loop_detector = InfiniteLoopDetector::new();
@@ -1325,13 +1254,16 @@ mod tests {
             "initial",
             "draw_sprite (game_logic.dll) initial translation",
             Some(10),
-            VerificationMode::FullSuite,
         )
         .await;
 
-        // The seam can close the hole when the loop rides it: with
-        // FullSuite the non-empty baseline is consulted — the attempt
-        // carries the suite's size, and a unit is not done until it passes.
+        // The initial attempt's verdict is honest now (#334): a
+        // merely-compiling unit with a non-empty suite is not done — the
+        // record carries the suite's real counts and the outcome routes to
+        // a retry. (The scratch toolchain's suite runner currently fails
+        // to build — a verify-crate defect out of this ticket's scope —
+        // so every failing suite verdict lands as 0-of-N here; the honest
+        // part is that the suite was consulted and recorded at all.)
         assert!(
             matches!(report.outcome, AttemptOutcome::VerificationFailed { .. }),
             "outcome: {:?}",
@@ -1342,5 +1274,9 @@ mod tests {
         assert!(attempt.compiled);
         assert_eq!(attempt.tests_total, 1, "the suite was consulted");
         assert_eq!(attempt.tests_passed, 0);
+        assert_eq!(attempt.tokens_used, Some(10));
+        // The initial attempt still writes neither log (no LLM call ran).
+        assert!(token_entries(ws.path()).is_empty());
+        assert!(experiment_entries(ws.path()).is_empty());
     }
 }
