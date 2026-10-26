@@ -51,6 +51,7 @@ use crate::this_ptr::ThisPointerDetector;
 use crate::types::{InferredType, ScanMetadata, TypeInferenceResult};
 use calxgloss_decomp::DecompiledFunction;
 use calxgloss_kuna::KunaSource;
+use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -63,6 +64,156 @@ use tracing::{info, warn};
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
+
+/// How many unreadable regions one coverage limitation line names inline
+/// before folding the remainder into a count — bounded prose beside the
+/// counts, not a dump (the P19-7 admitted-semantics track).
+const MAX_NAMED_UNREACHED: usize = 5;
+
+/// The coverage record every type-inference scan stamps about itself
+/// (issue #351), beside the provenance and the timing.
+///
+/// The type-inference scan reads four facets. `function-bodies` — the
+/// decompiled bodies the inline detectors read: the function listing is
+/// always read end to end (a failed listing aborts the run, and more
+/// than half failing to decompile trips the skip-rate breaker), so what
+/// a finished scan can not have read is exactly the bodies it skipped:
+/// a nameless listing entry, or a decompile that failed.
+/// `machine-listings` — the machine listing beside each listed
+/// function, the source of the stack-discipline convention readings: a
+/// failed read costs only that function's listing-borne readings, so it
+/// is admitted by name. `import-names` — the import listing the `@N`
+/// convention reading runs over: a failed listing costs only those
+/// readings, so the facet is then `unavailable` with its reason rather
+/// than silently empty. `caller-edges` — the call-graph lookups the
+/// caller→callee and return-usage passes share: a failed lookup drops
+/// both passes for that function, and is admitted by name. The
+/// cross-function passes read the bodies and listings the walk already
+/// kept, so they add no coverage border of their own. With nothing
+/// skipped and every read answered, all four facets are `complete`,
+/// and that is the admission's point: a function no record mentions
+/// was examined and clean, never silently unchecked. With any, the
+/// facet falls short and its limitation line names the regions
+/// (bounded at [`MAX_NAMED_UNREACHED`]), so silence and never-reaching
+/// are distinguishable in the filed record itself. The whole picture
+/// mirrors the four facets together.
+fn coverage_stamp(
+    unreached: &[String],
+    nameless: usize,
+    listings_unreadable: &[String],
+    imports_unreadable: bool,
+    callers_unreadable: &[String],
+) -> ScanCoverage {
+    let bodies = {
+        let total = unreached.len() + nameless;
+        if total == 0 {
+            FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: CoverageStatus::Complete,
+                limitation: None,
+            }
+        } else {
+            let mut names = unreached
+                .iter()
+                .take(MAX_NAMED_UNREACHED)
+                .cloned()
+                .collect::<Vec<_>>();
+            let hidden = unreached.len().saturating_sub(names.len()) + nameless;
+            if hidden > 0 {
+                names.push(format!("+{hidden} more"));
+            }
+            let body = if total == 1 { "body" } else { "bodies" };
+            FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: CoverageStatus::Partial,
+                limitation: Some(format!(
+                    "{total} function {body} unreached: {}",
+                    names.join(", ")
+                )),
+            }
+        }
+    };
+    let listings = if listings_unreadable.is_empty() {
+        FacetCoverage {
+            id: "machine-listings".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    } else {
+        let total = listings_unreadable.len();
+        let mut names = listings_unreadable
+            .iter()
+            .take(MAX_NAMED_UNREACHED)
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden = total.saturating_sub(names.len());
+        if hidden > 0 {
+            names.push(format!("+{hidden} more"));
+        }
+        let listing = if total == 1 { "listing" } else { "listings" };
+        FacetCoverage {
+            id: "machine-listings".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!(
+                "{total} machine {listing} unreadable: {}",
+                names.join(", ")
+            )),
+        }
+    };
+    let imports = if imports_unreadable {
+        FacetCoverage {
+            id: "import-names".to_string(),
+            status: CoverageStatus::Unavailable,
+            limitation: Some("import listing unreadable".to_string()),
+        }
+    } else {
+        FacetCoverage {
+            id: "import-names".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    };
+    let edges = if callers_unreadable.is_empty() {
+        FacetCoverage {
+            id: "caller-edges".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    } else {
+        let total = callers_unreadable.len();
+        let mut names = callers_unreadable
+            .iter()
+            .take(MAX_NAMED_UNREACHED)
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden = total.saturating_sub(names.len());
+        if hidden > 0 {
+            names.push(format!("+{hidden} more"));
+        }
+        let edge = if total == 1 { "edge" } else { "edges" };
+        FacetCoverage {
+            id: "caller-edges".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!(
+                "{total} caller {edge} unreadable: {}",
+                names.join(", ")
+            )),
+        }
+    };
+    let status = if bodies.status == CoverageStatus::Complete
+        && listings.status == CoverageStatus::Complete
+        && imports.status == CoverageStatus::Complete
+        && edges.status == CoverageStatus::Complete
+    {
+        CoverageStatus::Complete
+    } else {
+        CoverageStatus::Partial
+    };
+    ScanCoverage {
+        status,
+        facets: vec![bodies, listings, imports, edges],
+    }
+}
 
 /// Orchestrates the inline detectors and the cross-function pass into one
 /// [`TypeInferenceResult`].
@@ -205,6 +356,11 @@ impl<S> TypeInferEngine<S> {
         let mut listings: Vec<(String, String)> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
+        // The regions this walk never reached, named as it goes, so the
+        // coverage record below can admit them (issue #351).
+        let mut unreached: Vec<String> = Vec::new();
+        let mut nameless = 0usize;
+        let mut listings_unreadable: Vec<String> = Vec::new();
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
@@ -215,6 +371,7 @@ impl<S> TypeInferEngine<S> {
                     "Skipping function with no name"
                 );
                 skipped += 1;
+                nameless += 1;
                 continue;
             }
             // The contract carried in the symbol itself: an MSVC-mangled
@@ -239,6 +396,7 @@ impl<S> TypeInferEngine<S> {
                     );
                     skipped += 1;
                     decompile_failures += 1;
+                    unreached.push(function.name.clone());
                     // Skip-rate breaker: once most of the listing has
                     // failed to decompile, the scan is reading a
                     // program the engine cannot analyze, and an
@@ -303,6 +461,7 @@ impl<S> TypeInferEngine<S> {
                         error = %error,
                         "Skipping listing-borne convention readings: disassembly read failed"
                     );
+                    listings_unreadable.push(function.name.clone());
                 }
             }
         }
@@ -311,7 +470,10 @@ impl<S> TypeInferEngine<S> {
         // names are not in the function listing, so this read runs after
         // the loop; the readings join the inline set and compete in the
         // same resolution. A failure to list imports costs only these
-        // readings — the scan keeps whatever the names already showed.
+        // readings — the scan keeps whatever the names already showed,
+        // and the coverage record admits the listing as unreadable
+        // (issue #351).
+        let mut imports_unreadable = false;
         match self.source.imports().await {
             Ok(imports) => {
                 for import in &imports {
@@ -325,6 +487,7 @@ impl<S> TypeInferEngine<S> {
                     error = %error,
                     "Skipping @N convention readings: import listing failed"
                 );
+                imports_unreadable = true;
             }
         }
 
@@ -394,6 +557,9 @@ impl<S> TypeInferEngine<S> {
         let mut fetched: HashMap<String, Option<DecompiledFunction>> = HashMap::new();
         let mut to_callee: Vec<InferredType> = Vec::new();
         let mut to_return: Vec<InferredType> = Vec::new();
+        // Functions whose caller lookup was attempted and never answered
+        // — the caller-edges facet admits them by name (issue #351).
+        let mut callers_unreadable: Vec<String> = Vec::new();
         for function in &functions {
             if function.name.is_empty() {
                 continue;
@@ -409,6 +575,7 @@ impl<S> TypeInferEngine<S> {
                         error = %error,
                         "Skipping caller-to-callee pass: caller lookup failed"
                     );
+                    callers_unreadable.push(function.name.clone());
                     continue;
                 }
             };
@@ -498,6 +665,18 @@ impl<S> TypeInferEngine<S> {
         let conflicts_resolved = collected - inferences.len();
 
         let mut metadata = ScanMetadata::new(binary);
+        // The engine admits its own coverage inside its own scan, where
+        // the skips and the unreadable reads happened, so the filed
+        // record says what the walk never got (issue #351) — and a
+        // complete record lets an unmentioned function read as examined
+        // and clean.
+        metadata.coverage = Some(coverage_stamp(
+            &unreached,
+            nameless,
+            &listings_unreadable,
+            imports_unreadable,
+            &callers_unreadable,
+        ));
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
@@ -603,6 +782,12 @@ mod tests {
         fail_decompiles: Vec<String>,
         fail_disassembly: Vec<String>,
         fail_listing: bool,
+        /// The import listing failing outright — the `import-names`
+        /// facet admits it as unreadable (issue #351).
+        fail_imports: bool,
+        /// Callee addresses whose caller lookup never answers — the
+        /// `caller-edges` facet admits them by name (issue #351).
+        fail_callers: Vec<u64>,
         stats: Arc<Stats>,
     }
 
@@ -617,6 +802,8 @@ mod tests {
                 fail_decompiles: Vec::new(),
                 fail_disassembly: Vec::new(),
                 fail_listing: false,
+                fail_imports: false,
+                fail_callers: Vec::new(),
                 stats: Arc::new(Stats::default()),
             }
         }
@@ -678,6 +865,11 @@ mod tests {
         }
 
         async fn callers(&self, address: u64) -> Result<Vec<String>> {
+            if self.fail_callers.contains(&address) {
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
+                });
+            }
             Ok(self.callers.get(&address).cloned().unwrap_or_default())
         }
 
@@ -708,6 +900,11 @@ mod tests {
         }
 
         async fn imports(&self) -> Result<Vec<Symbol>> {
+            if self.fail_imports {
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
+                });
+            }
             Ok(self.imports.clone())
         }
 
@@ -2534,6 +2731,310 @@ mod tests {
             program.decompiled(),
             ["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"],
             "listing failures never move the decompile breaker's counts"
+        );
+    }
+
+    // ============================================================
+    // Admitted scan coverage (issue #351)
+    // ============================================================
+
+    /// The facets a type-inference scan declares, in order — the roster
+    /// the record must name exactly once each: the decompiled bodies,
+    /// the machine listings beside them, the import names the `@N`
+    /// reading runs over, and the caller edges the propagated passes
+    /// share.
+    const DECLARED_FACETS: &[&str] = &[
+        "function-bodies",
+        "machine-listings",
+        "import-names",
+        "caller-edges",
+    ];
+
+    /// The data-level verdict of the roster pin: empty means the record
+    /// names every declared facet exactly once, and each fault spells one
+    /// drift.
+    fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+        let mut faults = Vec::new();
+        for declared in DECLARED_FACETS {
+            let hits = coverage
+                .facets
+                .iter()
+                .filter(|facet| facet.id == *declared)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{declared}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{declared}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &coverage.facets {
+            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
+
+    /// The named facet with the given id, for asserting its status and
+    /// limitation line.
+    fn facet<'a>(coverage: &'a ScanCoverage, id: &str) -> &'a FacetCoverage {
+        coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == id)
+            .unwrap_or_else(|| panic!("{id} is named"))
+    }
+
+    #[tokio::test]
+    async fn a_fresh_scan_stamps_complete_coverage_and_a_clean_roster() {
+        // The stamp rides the engine's own scan, not the registry row
+        // and not the CLI — the batch scan phase and the CLI's
+        // force-rescan file the same admission through this one
+        // definition. Every body, listing, import name, and caller edge
+        // was read here, so the record is complete and says nothing
+        // needs admitting.
+        let result = scan(program()).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh type-inference scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Complete);
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a fresh document must name every declared facet exactly once"
+        );
+        for id in DECLARED_FACETS {
+            assert_eq!(
+                facet(&coverage, id).status,
+                CoverageStatus::Complete,
+                "{id} read end to end admits nothing"
+            );
+            assert_eq!(facet(&coverage, id).limitation, None);
+        }
+        assert_eq!(
+            coverage.admission(),
+            None,
+            "a complete record has nothing to admit"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_machine_listing_is_admitted_by_name_on_its_own_facet() {
+        // The disassembly read that never answered costs only that
+        // function's listing-borne convention readings — and names only
+        // itself, leaving the other three facets complete.
+        let mut program = program();
+        program.fail_disassembly = vec!["FUN_18003e750".into()];
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial scan states its coverage too");
+        assert_eq!(coverage.status, CoverageStatus::Partial);
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            facet(&coverage, "machine-listings").limitation.as_deref(),
+            Some("1 machine listing unreadable: FUN_18003e750")
+        );
+        assert_eq!(
+            facet(&coverage, "function-bodies").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "import-names").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "caller-edges").status,
+            CoverageStatus::Complete
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_import_listing_costs_only_import_derived_signals_and_admits_itself() {
+        // The scan survives a failing import listing: the body-borne and
+        // name-borne readings stand, only the `@N` convention readings
+        // drop — and the record says so, the facet unavailable with its
+        // reason rather than silently empty.
+        let mut program = program();
+        program.imports = vec![Symbol {
+            name: "CreateFileA@28".into(),
+            address: 0x1800_90000,
+            imported: true,
+        }];
+        program.fail_imports = true;
+        let result = scan(program).await;
+        assert!(
+            !result.inferences.iter().any(|inference| {
+                matches!(inference, InferredType::Convention(record)
+                    if record.function == "CreateFileA@28")
+            }),
+            "the decorated import's convention reading dropped with the listing"
+        );
+        assert!(
+            result
+                .inferences
+                .iter()
+                .any(|inference| inference.function() == "FUN_18003ab00"),
+            "the body-borne readings stand untouched"
+        );
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("the degraded scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Partial);
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            facet(&coverage, "import-names").status,
+            CoverageStatus::Unavailable,
+            "the imports were there to list and never arrived"
+        );
+        assert_eq!(
+            facet(&coverage, "import-names").limitation.as_deref(),
+            Some("import listing unreadable")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_caller_edge_is_admitted_by_name_on_its_own_facet() {
+        // The lookup that never answers drops both propagated passes for
+        // that function — the arguments' types and the return's — and
+        // names only the function whose edge went unread.
+        let mut program = program();
+        program.fail_callers = vec![addr("FUN_18003ab00")];
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Partial);
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            facet(&coverage, "caller-edges").limitation.as_deref(),
+            Some("1 caller edge unreadable: FUN_18003ab00")
+        );
+        assert_eq!(
+            facet(&coverage, "function-bodies").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "machine-listings").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "import-names").status,
+            CoverageStatus::Complete
+        );
+    }
+
+    #[tokio::test]
+    async fn three_falling_short_facets_admit_their_wording_in_record_order() {
+        // One machine listing, the import listing, and one caller edge
+        // all fall short at once: the shared admission line names each
+        // gap once, in the record's own facet order, under one status
+        // word — the exact wording the prompt sections and the report
+        // will render.
+        let mut program = program();
+        program.fail_disassembly = vec!["FUN_18003e750".into()];
+        program.fail_imports = true;
+        program.fail_callers = vec![addr("FUN_18003ab00")];
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial scan states its coverage");
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            coverage.admission().as_deref(),
+            Some(
+                "partial — 1 machine listing unreadable: FUN_18003e750; \
+                 import listing unreadable; 1 caller edge unreadable: FUN_18003ab00"
+            ),
+            "the bodies facet read everything and says nothing; the three \
+             that fell short speak, in order, once each"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_bodies_line_is_capped_at_five_names_and_counts_the_nameless() {
+        // Bounded prose beside the counts: six decompile failures name
+        // five inline and fold the sixth into a count, and a nameless
+        // listing entry counts toward the total without stealing a name
+        // slot.
+        let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
+        let mut program = FakeProgram::empty();
+        for (index, name) in names.iter().enumerate() {
+            program.listing.push(summary(name));
+            if index >= 6 {
+                program.bodies.insert(
+                    name.clone(),
+                    function(name, "void test(void)", "  return;\n"),
+                );
+            }
+        }
+        program.fail_decompiles = names[..6].to_vec();
+        program.listing.push(summary(""));
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial scan states its coverage");
+        let bodies = facet(&coverage, "function-bodies");
+        assert_eq!(bodies.status, CoverageStatus::Partial);
+        assert_eq!(
+            bodies.limitation.as_deref(),
+            Some(
+                "7 function bodies unreached: FUN_body_0000, FUN_body_0001, \
+                 FUN_body_0002, FUN_body_0003, FUN_body_0004, +2 more"
+            ),
+            "six named failures plus one nameless entry: five names, the \
+             rest counted, the count covering both"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+        let mut coverage = coverage_stamp(&[], 0, &[], false, &[]);
+        coverage.facets.retain(|facet| facet.id != "import-names");
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `import-names` is missing from the record"],
+            "an engine quietly dropping one of its facets fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_facet_is_doubled() {
+        let mut coverage = coverage_stamp(&[], 0, &["FUN_18003e750".to_string()], false, &[]);
+        coverage.facets.push(coverage.facets[1].clone());
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `machine-listings` appears 2 times in the record"],
+            "a facet crowded into two entries fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+        let mut coverage = coverage_stamp(&[], 0, &[], false, &[]);
+        coverage.facets.push(FacetCoverage {
+            id: "local-assignments".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        });
+        assert_eq!(
+            roster_faults(&coverage),
+            ["record names `local-assignments`, a facet the engine never declared"],
+            "an entry outside the declared roster fails loudly — local \
+             readings come off the bodies the scan already kept, not a \
+             region of their own"
         );
     }
 }

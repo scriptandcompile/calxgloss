@@ -613,7 +613,9 @@ fn the_memory_report_prints_the_documents_admission_line_only_when_there_is_one(
         facets: vec![calxgloss_types::FacetCoverage {
             id: "function-bodies".to_string(),
             status: calxgloss_types::CoverageStatus::Partial,
-            limitation: Some("2 function bodies unreached: FUN_180049abc, FUN_18004def0".to_string()),
+            limitation: Some(
+                "2 function bodies unreached: FUN_180049abc, FUN_18004def0".to_string(),
+            ),
         }],
     });
     let (ok, stdout, stderr) = run(
@@ -940,6 +942,354 @@ fn the_callback_report_prints_the_documents_admission_line_only_when_there_is_on
 }
 
 #[test]
+fn the_algorithm_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The algorithm-recognition admission line at the process seam
+    // (issue #351): the `--show` report prints the filed document's one
+    // bounded line, naming the never-reached bodies and unreadable
+    // caller edges, and prints nothing under a complete record — pinned
+    // through the engine's own persistor so it does not depend on which
+    // bodies the fixture happens to decompile.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_algorithm::types::AlgorithmRecognitionResult::new(metadata);
+        calxgloss_algorithm::persist::AlgorithmPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped algorithm document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![
+            calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_180070010".to_string()),
+            },
+            calxgloss_types::FacetCoverage {
+                id: "caller-edges".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("1 caller edge unreadable: FUN_180070020".to_string()),
+            },
+        ],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "algorithm",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the algorithm show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:")
+            && stdout.contains("1 function body unreached: FUN_180070010")
+            && stdout.contains("1 caller edge unreadable: FUN_180070020"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "algorithm",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the algorithm show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_stringctx_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The string-context admission line at the process seam (issue #351):
+    // its three-facet record — bodies never read, a string listing that
+    // never arrived, cross-references that refused — prints beside the
+    // counts; a complete record prints nothing. Filed through the
+    // engine's own persistor, as every pin in this family.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_stringctx::types::StringContextResult::new(metadata);
+        calxgloss_stringctx::persist::StringContextPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped string-context document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![
+            calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_180061000".to_string()),
+            },
+            calxgloss_types::FacetCoverage {
+                id: "program-strings".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("program string listing unreadable".to_string()),
+            },
+            calxgloss_types::FacetCoverage {
+                id: "string-xrefs".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("no string cross-reference could be read".to_string()),
+            },
+        ],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "stringctx",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the stringctx show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:")
+            && stdout.contains("1 function body unreached: FUN_180061000")
+            && stdout.contains("program string listing unreadable")
+            && stdout.contains("no string cross-reference could be read"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![
+            calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+            calxgloss_types::FacetCoverage {
+                id: "program-strings".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+            calxgloss_types::FacetCoverage {
+                id: "string-xrefs".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+        ],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "stringctx",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the stringctx show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_serialize_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The serialization-pattern admission line at the process seam
+    // (issue #351), filed through the engine's own persistor.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_serialize::types::SerializeResult::new(metadata);
+        calxgloss_serialize::persist::SerializePersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped serialization document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Partial,
+            limitation: Some("1 function body unreached: FUN_180099900".to_string()),
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "serialize",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the serialize show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:") && stdout.contains("1 function body unreached: FUN_180099900"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "serialize",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the serialize show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_typeinfer_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The type-inference admission line at the process seam (issue #351):
+    // the four-facet record prints with its complete bodies facet naming
+    // nothing, and a complete record prints no line at all. The ride
+    // goes through the scan-and-show path the write-back ticket already
+    // pins; this pin only proves the admission line lands beside the
+    // counts when the filed document has one to admit.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_typeinfer::types::TypeInferenceResult::new(metadata);
+        calxgloss_typeinfer::persist::TypeInferPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped type-inference document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![
+            calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+            calxgloss_types::FacetCoverage {
+                id: "machine-listings".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 machine listing unreadable: FUN_180088000".to_string()),
+            },
+            calxgloss_types::FacetCoverage {
+                id: "import-names".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("import listing unreadable".to_string()),
+            },
+            calxgloss_types::FacetCoverage {
+                id: "caller-edges".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("1 caller edge unreadable: FUN_180088010".to_string()),
+            },
+        ],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "typeinfer",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the typeinfer show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:")
+            && stdout.contains("1 machine listing unreadable: FUN_180088000")
+            && stdout.contains("import listing unreadable")
+            && stdout.contains("1 caller edge unreadable: FUN_180088010"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![
+            calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+            calxgloss_types::FacetCoverage {
+                id: "machine-listings".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+            calxgloss_types::FacetCoverage {
+                id: "import-names".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+            calxgloss_types::FacetCoverage {
+                id: "caller-edges".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+        ],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "typeinfer",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the typeinfer show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
 fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_alike() {
     // The two rides' own stamps at the process seam (issue #348): each
     // scan files the record it stamped, and the run's report and a later
@@ -1064,6 +1414,41 @@ fn the_globalstate_errhandling_and_callback_rides_report_run_and_show_identicall
                 .save(&result)
                 .expect("the empty type-inference document should be filed");
         }
+        let (ok, stdout, stderr) = run(
+            cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+
+        let (ok, show_stdout, stderr) = run(
+            cli(ws.path()).args([
+                "--target-dir",
+                ".",
+                command,
+                "--binary",
+                "fixture-target",
+                "--show",
+            ]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} show failed:\n{show_stdout}\n{stderr}");
+        assert_eq!(
+            stdout, show_stdout,
+            "the {command} run's report and a later --show report are the same \
+             read of the same document, coverage included"
+        );
+    }
+}
+
+#[test]
+fn the_fan_out_c_reports_run_and_show_identically() {
+    // The run-equals-show doctrine holds for the fan-out C quartet's own
+    // stamps (issue #351): whatever coverage the fixture's real scans
+    // stamp, the run's report and a later `--show` report are the same
+    // read of the same document — admission line and all, or its
+    // absence.
+    for command in ["algorithm", "stringctx", "serialize", "typeinfer"] {
+        let ws = fixture_workspace();
         let (ok, stdout, stderr) = run(
             cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
             ws.path(),

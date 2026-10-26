@@ -155,6 +155,13 @@ fn print_algorithm_recognition_report(result: &AlgorithmRecognitionResult, path:
             None => dim("(none)"),
         }
     ));
+
+    // The scan's own admission, beside the counts it qualifies (issue
+    // #351): the shared type's bounded line, framed under `Coverage:` and
+    // printed only when there is something to admit. The line names only
+    // bodies the scan never read and edges it could not pull — a function
+    // without a hint under a complete record is examined and clean.
+    print_coverage(result.metadata.coverage.as_ref());
     println!();
 
     if !result.hints.is_empty() {

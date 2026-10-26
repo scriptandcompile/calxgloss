@@ -3239,18 +3239,14 @@ mod tests {
         let dir = TempDir::new().expect("temp workspace should be created");
         let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
         assert!(
-            bundle.concurrency_findings.is_empty()
-                && bundle.sync_coverage.admission.is_empty(),
+            bundle.concurrency_findings.is_empty() && bundle.sync_coverage.admission.is_empty(),
             "a missing concurrency document fills neither findings nor coverage"
         );
         let dir = TempDir::new().expect("temp workspace should be created");
-        corrupt_at(
-            calxgloss_sync::persist::SyncPersistor::new(dir.path()).path_for("eqmain.dll"),
-        );
+        corrupt_at(calxgloss_sync::persist::SyncPersistor::new(dir.path()).path_for("eqmain.dll"));
         let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
         assert!(
-            bundle.concurrency_findings.is_empty()
-                && bundle.sync_coverage.admission.is_empty(),
+            bundle.concurrency_findings.is_empty() && bundle.sync_coverage.admission.is_empty(),
             "a corrupt concurrency document fills neither findings nor coverage"
         );
     }
@@ -3545,6 +3541,392 @@ mod tests {
         assert!(
             bundle.callback_findings.is_empty() && bundle.callback_coverage.admission.is_empty(),
             "a corrupt callback document fills neither findings nor coverage"
+        );
+    }
+
+    /// The algorithm-recognition row's coverage leg end to end (issue
+    /// #351): the two-facet record the scan stamps into its filed
+    /// document — bodies it never read and caller edges it could not
+    /// pull — rides one gather into the bundle beside the hints, word
+    /// for word; a document filed before coverage stamping fills
+    /// nothing; and a missing or corrupt document fills nothing and
+    /// degrades exactly as its findings do.
+    #[test]
+    fn the_algorithm_row_gathers_the_documents_coverage_beside_its_hints() {
+        // The engine's own stamp: its bodies facet fell short, naming the
+        // body the decompiler never produced, and its caller-edge facet
+        // could read no edge for the function it tried.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 function body unreached: FUN_180070010".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("1 caller edge unreadable: FUN_180070020".to_string()),
+                },
+            ],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_algorithm::types::AlgorithmRecognitionResult::new(metadata);
+        result.hints = vec![algorithm_hint("FUN_18003ab00", "CRC-32")];
+        calxgloss_algorithm::persist::AlgorithmPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped algorithm result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.recognized_algorithms.len(),
+            1,
+            "the hints still ride their ordinary row"
+        );
+        assert_eq!(bundle.algorithm_coverage.status, "partial");
+        assert_eq!(
+            bundle.algorithm_coverage.admission,
+            "partial — 1 function body unreached: FUN_180070010; \
+             1 caller edge unreadable: FUN_180070020",
+            "both short facets admit in the record's own order, word for word"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_hints(&dir, vec![algorithm_hint("FUN_18003ab00", "CRC-32")]);
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.recognized_algorithms.is_empty()
+                && bundle.algorithm_coverage.status.is_empty()
+                && bundle.algorithm_coverage.admission.is_empty(),
+            "a pre-P19 document fills hints but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither hints nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.recognized_algorithms.is_empty()
+                && bundle.algorithm_coverage.admission.is_empty(),
+            "a missing algorithm document fills neither hints nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_algorithm::persist::AlgorithmPersistor::new(dir.path())
+                .path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.recognized_algorithms.is_empty()
+                && bundle.algorithm_coverage.admission.is_empty(),
+            "a corrupt algorithm document fills neither hints nor coverage"
+        );
+    }
+
+    /// The string-context row's coverage leg end to end (issue #351):
+    /// the three-facet record the scan stamps — bodies it never read, a
+    /// string listing that never arrived, and cross-reference lookups
+    /// that refused — rides one gather into the bundle beside the
+    /// strings, word for word; a pre-P19 document fills nothing; and a
+    /// missing or corrupt document fills nothing and degrades exactly as
+    /// its findings do.
+    #[test]
+    fn the_string_context_row_gathers_the_documents_coverage_beside_its_findings() {
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 function body unreached: FUN_180061000".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "program-strings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("program string listing unreadable".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "string-xrefs".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("no string cross-reference could be read".to_string()),
+                },
+            ],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_stringctx::types::StringContextResult::new(metadata);
+        result.findings = vec![classified_string(
+            "FUN_18003ab00",
+            "Journal.txt",
+            "config file path",
+        )];
+        calxgloss_stringctx::persist::StringContextPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped string-context result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.string_findings.len(),
+            1,
+            "the strings still ride their ordinary row"
+        );
+        assert_eq!(bundle.string_context_coverage.status, "partial");
+        assert_eq!(
+            bundle.string_context_coverage.admission,
+            "partial — 1 function body unreached: FUN_180061000; \
+             program string listing unreadable; \
+             no string cross-reference could be read",
+            "all three short facets admit in the record's own order, word for word"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut result =
+            calxgloss_stringctx::types::StringContextResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = vec![classified_string(
+            "FUN_18003ab00",
+            "Journal.txt",
+            "config file path",
+        )];
+        calxgloss_stringctx::persist::StringContextPersistor::new(dir.path())
+            .save(&result)
+            .expect("the pre-P19 string-context result should be saved");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.string_findings.is_empty()
+                && bundle.string_context_coverage.status.is_empty()
+                && bundle.string_context_coverage.admission.is_empty(),
+            "a pre-P19 document fills findings but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither findings nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.string_findings.is_empty()
+                && bundle.string_context_coverage.admission.is_empty(),
+            "a missing string-context document fills neither findings nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_stringctx::persist::StringContextPersistor::new(dir.path())
+                .path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.string_findings.is_empty()
+                && bundle.string_context_coverage.admission.is_empty(),
+            "a corrupt string-context document fills neither findings nor coverage"
+        );
+    }
+
+    /// The serialization row's coverage leg end to end (issue #351): the
+    /// record the scan stamps into its filed document rides one gather
+    /// into the bundle beside the findings, word for word; a document
+    /// filed before coverage stamping fills nothing; and a missing or
+    /// corrupt document fills nothing and degrades exactly as its
+    /// findings do.
+    #[test]
+    fn the_serialization_row_gathers_the_documents_coverage_beside_its_findings() {
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_180099900".to_string()),
+            }],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_serialize::types::SerializeResult::new(metadata);
+        result.findings = vec![swap_record("FUN_18003ab00")];
+        calxgloss_serialize::persist::SerializePersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped serialization result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.serialization_findings.len(),
+            1,
+            "the findings still ride their ordinary row"
+        );
+        assert_eq!(bundle.serialization_coverage.status, "partial");
+        assert_eq!(
+            bundle.serialization_coverage.admission,
+            "partial — 1 function body unreached: FUN_180099900",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_serialize_findings(&dir, vec![swap_record("FUN_18003ab00")]);
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.serialization_findings.is_empty()
+                && bundle.serialization_coverage.status.is_empty()
+                && bundle.serialization_coverage.admission.is_empty(),
+            "a pre-P19 document fills findings but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither findings nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.serialization_findings.is_empty()
+                && bundle.serialization_coverage.admission.is_empty(),
+            "a missing serialization document fills neither findings nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_serialize::persist::SerializePersistor::new(dir.path())
+                .path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.serialization_findings.is_empty()
+                && bundle.serialization_coverage.admission.is_empty(),
+            "a corrupt serialization document fills neither findings nor coverage"
+        );
+    }
+
+    /// The type-inference row's coverage leg end to end (issue #351):
+    /// the four-facet record the scan stamps — with its complete bodies
+    /// facet dropping out of the admission — rides one gather into the
+    /// bundle, and the ONE record qualifies all THREE surfaces the row
+    /// feeds: the type-information list, the calling-convention list,
+    /// and the parameter-direction list all stand beside the same
+    /// admission line, word for word; a pre-P19 document fills nothing;
+    /// and a missing or corrupt document fills nothing and degrades
+    /// exactly as its findings do.
+    #[test]
+    fn the_type_inference_row_gathers_the_documents_coverage_beside_its_three_surfaces() {
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "machine-listings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 machine listing unreadable: FUN_180088000".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "import-names".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("import listing unreadable".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("1 caller edge unreadable: FUN_180088010".to_string()),
+                },
+            ],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_typeinfer::types::TypeInferenceResult::new(metadata);
+        result.inferences = vec![
+            calxgloss_typeinfer::types::InferredType::Param(
+                calxgloss_typeinfer::types::InferredParamType {
+                    function: "FUN_18003ab00".to_string(),
+                    param_index: 0,
+                    param_name: Some("param_1".to_string()),
+                    inferred_type: "char *".to_string(),
+                    method: calxgloss_typeinfer::types::InferenceMethod::StringFunction,
+                    scope: calxgloss_typeinfer::types::InferenceScope::Function,
+                    confidence: calxgloss_typeinfer::types::Confidence::new(80),
+                    evidence: "lstrlenA(param_1)".to_string(),
+                },
+            ),
+            direction_inference(
+                "FUN_18003ab00",
+                0,
+                calxgloss_typeinfer::types::Direction::In,
+            ),
+        ];
+        calxgloss_typeinfer::persist::TypeInferPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped type-inference result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.type_info.len(),
+            2,
+            "both readings still ride their ordinary row"
+        );
+        assert_eq!(
+            bundle.parameter_direction_findings.len(),
+            1,
+            "the direction reading still fans out to its own surface"
+        );
+        assert_eq!(bundle.type_inference_coverage.status, "partial");
+        assert_eq!(
+            bundle.type_inference_coverage.admission,
+            "partial — 1 machine listing unreadable: FUN_180088000; \
+             import listing unreadable; \
+             1 caller edge unreadable: FUN_180088010",
+            "the complete bodies facet names nothing; the three short \
+             facets admit in the record's own order, word for word"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_inferences(
+            &dir,
+            vec![calxgloss_typeinfer::types::InferredType::Param(
+                calxgloss_typeinfer::types::InferredParamType {
+                    function: "FUN_18003ab00".to_string(),
+                    param_index: 0,
+                    param_name: Some("param_1".to_string()),
+                    inferred_type: "char *".to_string(),
+                    method: calxgloss_typeinfer::types::InferenceMethod::StringFunction,
+                    scope: calxgloss_typeinfer::types::InferenceScope::Function,
+                    confidence: calxgloss_typeinfer::types::Confidence::new(80),
+                    evidence: "lstrlenA(param_1)".to_string(),
+                },
+            )],
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.type_info.is_empty()
+                && bundle.type_inference_coverage.status.is_empty()
+                && bundle.type_inference_coverage.admission.is_empty(),
+            "a pre-P19 document fills inferences but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither readings nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.type_info.is_empty() && bundle.type_inference_coverage.admission.is_empty(),
+            "a missing type-inference document fills neither readings nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_typeinfer::persist::TypeInferPersistor::new(dir.path())
+                .path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.type_info.is_empty() && bundle.type_inference_coverage.admission.is_empty(),
+            "a corrupt type-inference document fills neither readings nor coverage"
         );
     }
 }

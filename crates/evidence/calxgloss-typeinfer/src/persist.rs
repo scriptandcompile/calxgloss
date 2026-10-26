@@ -360,4 +360,45 @@ mod tests {
             Err(TypeInferError::Json(_))
         ));
     }
+
+    #[test]
+    fn the_stamped_document_round_trips_coverage_exactly() {
+        // What the scan stamped rides the persistor untouched: statuses,
+        // ids, order, limitation lines — exactly what a later reader
+        // (the projection seam, the report, a `--show` months later)
+        // sees (issue #351).
+        let dir = TempDir::new().unwrap();
+        let persistor = TypeInferPersistor::new(dir.path());
+        let mut saved = result("eqmain.dll");
+        saved.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "machine-listings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 machine listing unreadable: FUN_180088000".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "import-names".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("import listing unreadable".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 caller edge unreadable: FUN_180088010".to_string()),
+                },
+            ],
+        });
+
+        persistor.save(&saved).unwrap();
+        let loaded = persistor.load("eqmain.dll").unwrap();
+
+        assert_eq!(loaded.metadata.coverage, saved.metadata.coverage);
+    }
 }

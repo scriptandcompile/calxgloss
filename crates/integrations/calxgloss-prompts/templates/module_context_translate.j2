@@ -115,11 +115,11 @@ Pseudo-C:
 {% endif %}
 {% call data_structures::data_structures_section(evidence.data_structures, "SHARED DATA STRUCTURES", evidence.type_database_coverage) %}{% endcall %}
 {% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS", evidence.control_flow_coverage) %}{% endcall %}
-{% call calling_convention::calling_convention_section(evidence.convention_findings, "CALLING CONVENTION") %}{% endcall %}
+{% call calling_convention::calling_convention_section(evidence.convention_findings, "CALLING CONVENTION", evidence.type_inference_coverage) %}{% endcall %}
 {% call sections::global_state_section(evidence.global_state_findings, "GLOBAL STATE", evidence.global_state_coverage) %}{% endcall %}
 {% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "FLOAT/SIMD", evidence.floatsimd_coverage) %}{% endcall %}
 {% call libmatch::libmatch_section(evidence.libmatch_findings, "KNOWN LIBRARY FUNCTIONS", evidence.libmatch_coverage) %}{% endcall %}
-{% call parameter_direction::parameter_direction_section(evidence.parameter_direction_findings, "PARAMETER DIRECTIONS") %}{% endcall %}
+{% call parameter_direction::parameter_direction_section(evidence.parameter_direction_findings, "PARAMETER DIRECTIONS", evidence.type_inference_coverage) %}{% endcall %}
 {% call data_tables::data_tables_section(evidence.data_table_findings, "DATA TABLES", evidence.consts_coverage) %}{% endcall %}
 {% if !evidence.error_handling_findings.is_empty() %}
 ## ERROR HANDLING

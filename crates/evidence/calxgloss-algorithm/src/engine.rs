@@ -37,6 +37,7 @@ use crate::string_hints::StringHintEngine;
 use crate::types::{AlgorithmHint, AlgorithmRecognitionResult, ScanMetadata};
 use calxgloss_decomp::{DecompiledFunction, StringLiteral};
 use calxgloss_kuna::KunaSource;
+use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -61,13 +62,16 @@ const MAX_IN_FLIGHT_DECOMPILES: usize = 8;
 /// scan owes the skip count and the breaker.
 enum PassOutcome {
     /// The body, with the per-function hints read from it in detector
-    /// order — control flow, then string-guided, then callback.
+    /// order — control flow, then string-guided, then callback — and
+    /// whether the caller fetch the callback detector needed failed.
     Read {
         body: DecompiledFunction,
         hints: Vec<AlgorithmHint>,
+        callers_unreadable: bool,
     },
-    /// The decompile failed; the skip-rate breaker counts it.
-    Failed,
+    /// The decompile failed; the skip-rate breaker counts it, and the
+    /// coverage stamp names it.
+    Failed { name: String },
     /// A nameless listing entry, skipped without a decompile.
     Nameless,
     /// The breaker had already tripped before this function's decompile
@@ -132,6 +136,106 @@ impl SkipRateBreaker {
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
+
+/// How many unreadable regions one coverage limitation line names inline
+/// before folding the remainder into a count — bounded prose beside the
+/// counts, not a dump (the P19-7 admitted-semantics track).
+const MAX_NAMED_UNREACHED: usize = 5;
+
+/// The coverage record every algorithm-recognition scan stamps about
+/// itself (issue #351), beside the provenance and the timing.
+///
+/// The algorithm scan reads two facets. `function-bodies` — the
+/// decompiled bodies every detector reads: the function listing and the
+/// program string listing are always read end to end (a failure of
+/// either aborts the run, and more than half the listing failing to
+/// decompile trips the skip-rate breaker), so what a finished scan can
+/// not have read is exactly the bodies it skipped: a nameless listing
+/// entry, or a decompile that failed. `caller-edges` — the call-graph
+/// reads the callback detector makes, issued only where some contract
+/// could fit: a failed fetch costs that function its callback readings
+/// and nothing else, so it is admitted by name rather than aborting
+/// the run. The correlation pass reads the call map off the bodies the
+/// scan already kept, so it adds no coverage border of its own. With
+/// nothing skipped, both facets are `complete`, and that is the
+/// admission's point: a function no hint mentions was examined and
+/// clean, never silently unchecked. With any, the facet is `partial`
+/// and its limitation line names the regions (bounded at
+/// [`MAX_NAMED_UNREACHED`]), so silence and never-reaching are
+/// distinguishable in the filed record itself. The whole picture
+/// mirrors the two facets together.
+fn coverage_stamp(
+    unreached: &[String],
+    nameless: usize,
+    callers_unreadable: &[String],
+) -> ScanCoverage {
+    let bodies = {
+        let total = unreached.len() + nameless;
+        if total == 0 {
+            FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: CoverageStatus::Complete,
+                limitation: None,
+            }
+        } else {
+            let mut names = unreached
+                .iter()
+                .take(MAX_NAMED_UNREACHED)
+                .cloned()
+                .collect::<Vec<_>>();
+            let hidden = unreached.len().saturating_sub(names.len()) + nameless;
+            if hidden > 0 {
+                names.push(format!("+{hidden} more"));
+            }
+            let body = if total == 1 { "body" } else { "bodies" };
+            FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: CoverageStatus::Partial,
+                limitation: Some(format!(
+                    "{total} function {body} unreached: {}",
+                    names.join(", ")
+                )),
+            }
+        }
+    };
+    let edges = if callers_unreadable.is_empty() {
+        FacetCoverage {
+            id: "caller-edges".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    } else {
+        let total = callers_unreadable.len();
+        let mut names = callers_unreadable
+            .iter()
+            .take(MAX_NAMED_UNREACHED)
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden = total.saturating_sub(names.len());
+        if hidden > 0 {
+            names.push(format!("+{hidden} more"));
+        }
+        let edge = if total == 1 { "edge" } else { "edges" };
+        FacetCoverage {
+            id: "caller-edges".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!(
+                "{total} caller {edge} unreadable: {}",
+                names.join(", ")
+            )),
+        }
+    };
+    let status =
+        if bodies.status == CoverageStatus::Complete && edges.status == CoverageStatus::Complete {
+            CoverageStatus::Complete
+        } else {
+            CoverageStatus::Partial
+        };
+    ScanCoverage {
+        status,
+        facets: vec![bodies, edges],
+    }
+}
 
 /// The reads and detectors the concurrent per-function pass shares.
 ///
@@ -361,7 +465,9 @@ impl<S> AlgorithmEngine<S> {
                             "Skipping function: decompile failed"
                         );
                         breaker.record_failure();
-                        return PassOutcome::Failed;
+                        return PassOutcome::Failed {
+                            name: function.name.clone(),
+                        };
                     }
                 };
 
@@ -377,6 +483,7 @@ impl<S> AlgorithmEngine<S> {
                 // the caller fetch — the scan's only call-graph read — runs
                 // just where some contract could still fit.
                 let arity = decompiled.parameter_names().len();
+                let mut callers_unreadable = false;
                 if shared
                     .callbacks
                     .patterns()
@@ -391,6 +498,10 @@ impl<S> AlgorithmEngine<S> {
                                 error = %error,
                                 "Could not read callers: callback detection skips the function"
                             );
+                            // The fetch was attempted and the answer
+                            // never arrived — the coverage stamp below
+                            // admits it by name (issue #351).
+                            callers_unreadable = true;
                             Vec::new()
                         }
                     };
@@ -406,6 +517,7 @@ impl<S> AlgorithmEngine<S> {
                 PassOutcome::Read {
                     body: decompiled,
                     hints,
+                    callers_unreadable,
                 }
             }
         }))
@@ -418,17 +530,34 @@ impl<S> AlgorithmEngine<S> {
         let mut hints = Vec::new();
         let mut bodies: Vec<DecompiledFunction> = Vec::with_capacity(total);
         let mut skipped = 0usize;
+        // The regions this walk never reached, collected as the pass
+        // lands them in listing order, so the coverage record below can
+        // admit them by name (issue #351).
+        let mut unreached: Vec<String> = Vec::new();
+        let mut nameless = 0usize;
+        let mut unreadable_edges: Vec<String> = Vec::new();
         while let Some(outcome) = pass.next().await {
             match outcome {
-                PassOutcome::Read { body, hints: own } => {
+                PassOutcome::Read {
+                    body,
+                    hints: own,
+                    callers_unreadable,
+                } => {
+                    if callers_unreadable {
+                        unreadable_edges.push(body.name.clone());
+                    }
                     hints.extend(own);
                     // Keep the body: the correlation pass reads the call map
                     // off the bodies this scan already fetched, so it costs
                     // no extra round trip.
                     bodies.push(body);
                 }
-                PassOutcome::Nameless => skipped += 1,
-                PassOutcome::Failed => {
+                PassOutcome::Nameless => {
+                    skipped += 1;
+                    nameless += 1;
+                }
+                PassOutcome::Failed { name } => {
+                    unreached.push(name);
                     skipped += 1;
                     if breaker.tripped() {
                         return Err(breaker.error());
@@ -444,6 +573,11 @@ impl<S> AlgorithmEngine<S> {
         hints.extend(self.cross.detect_correlations(&bodies));
 
         let mut metadata = ScanMetadata::new(binary);
+        // The engine admits its own coverage inside its own scan, where
+        // the skips happened, so the filed record says what the walk
+        // never read (issue #351) — and a complete record lets an
+        // unmentioned function read as examined and clean.
+        metadata.coverage = Some(coverage_stamp(&unreached, nameless, &unreadable_edges));
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
@@ -1827,6 +1961,241 @@ mod tests {
             claims,
             [("FUN_180050100", "library_sort")],
             "the file's set is the whole set — no built-in claim survives beside it"
+        );
+    }
+
+    // ============================================================
+    // Admitted scan coverage (issue #351)
+    // ============================================================
+
+    /// The facets an algorithm-recognition scan declares, in order —
+    /// the roster the record must name exactly once each: the bodies
+    /// every detector reads, and the caller edges the callback detector
+    /// reads.
+    const DECLARED_FACETS: &[&str] = &["function-bodies", "caller-edges"];
+
+    /// The data-level verdict of the roster pin: empty means the record
+    /// names every declared facet exactly once, and each fault spells one
+    /// drift.
+    fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+        let mut faults = Vec::new();
+        for declared in DECLARED_FACETS {
+            let hits = coverage
+                .facets
+                .iter()
+                .filter(|facet| facet.id == *declared)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{declared}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{declared}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &coverage.facets {
+            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
+
+    /// The named facet with the given id, for asserting its status and
+    /// limitation line.
+    fn facet<'a>(coverage: &'a ScanCoverage, id: &str) -> &'a FacetCoverage {
+        coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == id)
+            .unwrap_or_else(|| panic!("{id} is named"))
+    }
+
+    #[tokio::test]
+    async fn a_fresh_scan_stamps_complete_coverage_and_a_clean_roster() {
+        // The stamp rides the engine's own scan, not the registry row
+        // and not the CLI — the batch scan phase and the CLI's
+        // force-rescan file the same admission through this one
+        // definition. Every body and every caller edge was read here,
+        // so the record is complete and says nothing needs admitting.
+        let result = scan(program()).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh algorithm scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Complete);
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a fresh document must name every declared facet exactly once"
+        );
+        assert_eq!(
+            facet(&coverage, "function-bodies").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(facet(&coverage, "function-bodies").limitation, None);
+        assert_eq!(
+            facet(&coverage, "caller-edges").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(facet(&coverage, "caller-edges").limitation, None);
+    }
+
+    #[tokio::test]
+    async fn an_unreached_body_and_an_unreadable_caller_edge_are_admitted_by_name() {
+        // The whole point of the admission: the two ways this scan
+        // falls short — a body the decompiler never produced and a
+        // caller fetch that never answered — are each named, on their
+        // own facet, so silence is never mistaken for a clean read.
+        let mut program = program();
+        program.fail_decompiles = vec!["FUN_18003e750".into()];
+        program.fail_callers = vec![A12A0];
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial algorithm scan states its coverage too");
+        assert_eq!(
+            coverage.status,
+            CoverageStatus::Partial,
+            "either facet falling short makes the whole picture partial"
+        );
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a partial scan still names every declared facet exactly once"
+        );
+        assert_eq!(
+            facet(&coverage, "function-bodies").limitation.as_deref(),
+            Some("1 function body unreached: FUN_18003e750"),
+            "the unreached body is named, and only the unreached body"
+        );
+        assert_eq!(
+            facet(&coverage, "caller-edges").limitation.as_deref(),
+            Some("1 caller edge unreadable: FUN_1800412a0"),
+            "the function whose caller fetch failed is named, and only it — \
+             the edges the scan did read say nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_bodies_line_is_capped_at_five_names_and_counts_the_nameless() {
+        // Bounded prose beside the counts: six decompile failures name
+        // five inline and fold the sixth into a count, and a nameless
+        // listing entry counts toward the total without stealing a name
+        // slot.
+        let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
+        let mut program = FakeProgram::empty();
+        for (index, name) in names.iter().enumerate() {
+            program
+                .listing
+                .push(summary(name, 0x0001_8006_0000 + index as u64));
+            if index >= 6 {
+                program.bodies.insert(
+                    name.clone(),
+                    function(name, "void test(void)", "  return;\n"),
+                );
+            }
+        }
+        program.fail_decompiles = names[..6].to_vec();
+        program.listing.push(summary("", 0x0001_8006_0100));
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial algorithm scan states its coverage");
+        let bodies = facet(&coverage, "function-bodies");
+        assert_eq!(bodies.status, CoverageStatus::Partial);
+        assert_eq!(
+            bodies.limitation.as_deref(),
+            Some(
+                "7 function bodies unreached: FUN_body_0000, FUN_body_0001, \
+                 FUN_body_0002, FUN_body_0003, FUN_body_0004, +2 more"
+            ),
+            "six named failures plus one nameless entry: five names, the \
+             rest counted, the count covering both"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_caller_edge_line_is_capped_at_five_names_and_counts_the_rest() {
+        // Six functions of contract arity, every caller fetch failing:
+        // five named inline, the sixth folded into a count. Bodies all
+        // decompile, so only the edge facet speaks.
+        let mut program = FakeProgram::empty();
+        for index in 0..12u64 {
+            let name = format!("FUN_edge_{index:04}");
+            let address = 0x0001_8007_0000 + index * 0x10;
+            program.listing.push(summary(&name, address));
+            program.bodies.insert(
+                name.clone(),
+                function(&name, &format!("void {name}(int a,int b)"), "  return;\n"),
+            );
+            if index < 6 {
+                program.fail_callers.push(address);
+            }
+        }
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial algorithm scan states its coverage");
+        let edges = facet(&coverage, "caller-edges");
+        assert_eq!(edges.status, CoverageStatus::Partial);
+        assert_eq!(
+            edges.limitation.as_deref(),
+            Some(
+                "6 caller edges unreadable: FUN_edge_0000, FUN_edge_0001, \
+                 FUN_edge_0002, FUN_edge_0003, FUN_edge_0004, +1 more"
+            ),
+            "six failed fetches: five names, the sixth counted"
+        );
+        assert_eq!(
+            facet(&coverage, "function-bodies").status,
+            CoverageStatus::Complete,
+            "a failed caller fetch costs no body its decompile"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+        let mut coverage = coverage_stamp(&[], 0, &[]);
+        coverage.facets.retain(|facet| facet.id != "caller-edges");
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `caller-edges` is missing from the record"],
+            "an engine quietly dropping one of its facets fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_facet_is_doubled() {
+        let mut coverage = coverage_stamp(&[], 0, &["FUN_1800412a0".to_string()]);
+        coverage.facets.push(coverage.facets[1].clone());
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `caller-edges` appears 2 times in the record"],
+            "a facet crowded into two entries fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+        let mut coverage = coverage_stamp(&[], 0, &[]);
+        coverage.facets.push(FacetCoverage {
+            id: "program-strings".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        });
+        assert_eq!(
+            roster_faults(&coverage),
+            ["record names `program-strings`, a facet the engine never declared"],
+            "an entry outside the declared roster fails loudly — a failed \
+             string listing aborts the run, so a finished scan never left \
+             it unread"
         );
     }
 }

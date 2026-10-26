@@ -480,4 +480,40 @@ mod tests {
         });
         assert!(matches!(mapped, StringCtxError::NotFound { .. }));
     }
+
+    #[test]
+    fn the_stamped_document_round_trips_coverage_exactly() {
+        // What the scan stamped rides the persistor untouched: statuses,
+        // ids, order, limitation lines — exactly what a later reader
+        // (the projection seam, the report, a `--show` months later)
+        // sees (issue #351).
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = StringContextPersistor::new(dir.path());
+        let mut saved = sample_result("eqmain.dll");
+        saved.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "program-strings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("program string listing unreadable".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "string-xrefs".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("no string cross-reference could be read".to_string()),
+                },
+            ],
+        });
+
+        persistor.save(&saved).unwrap();
+        let loaded = persistor.load("eqmain.dll").unwrap();
+
+        assert_eq!(loaded.metadata.coverage, saved.metadata.coverage);
+    }
 }

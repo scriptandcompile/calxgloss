@@ -2,7 +2,7 @@
 {# string-context findings. Parameterized by (findings list, heading text) so #}
 {# each template passes its own heading text. The body is verbatim-pinned by #}
 {# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
-{% macro string_context_section(findings, heading) %}
+{% macro string_context_section(findings, heading, coverage) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -16,6 +16,14 @@ role in the translation instead of transliterating the raw literal or
 - **{{ finding.suggestion|safe }}** ({{ finding.kind }} string, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% endfor %}
+
+{% endif %}
+{% if !coverage.admission.is_empty() %}
+{% if findings.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+Coverage: {{ coverage.admission }}
 
 {% endif %}
 {% endmacro %}

@@ -3,7 +3,7 @@
 {# text) so each template passes its own heading text. The body is #}
 {# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
 {# drift fails CI. #}
-{% macro type_information_section(findings, heading) %}
+{% macro type_information_section(findings, heading, coverage) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -12,6 +12,14 @@ The following types were inferred by Ghidra's type database:
 {% for ti in findings %}
 - `{{ ti.name }}`: {% if ti.description.len() > 0 %}{{ ti.description }}{% else %}inferred type{% endif %}
 {% endfor %}
+
+{% endif %}
+{% if !coverage.admission.is_empty() %}
+{% if findings.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+Coverage: {{ coverage.admission }}
 
 {% endif %}
 {% endmacro %}

@@ -75,6 +75,18 @@ impl AnalysisDoc for AlgorithmDoc {
             .recognized_algorithms
             .push(calxgloss_prompts::AlgorithmInfo::from(record));
     }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never read and which caller
+        // edges it could not pull — never a body it read and left
+        // without a recognition (issue #351).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.algorithm_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
+    }
 }
 
 /// The memory lifecycle document, `re/analysis/memory/{binary}.json`:
@@ -206,6 +218,19 @@ impl AnalysisDoc for StringContextDoc {
         bundle
             .string_findings
             .push(calxgloss_prompts::StringContextInfo::from(record));
+    }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never read, whether the
+        // program's string listing arrived, and which cross-reference
+        // lookups refused — never a string it read and left unattached
+        // (issue #351).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.string_context_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
     }
 }
 
@@ -440,6 +465,17 @@ impl AnalysisDoc for SerializationDoc {
         bundle
             .serialization_findings
             .push(calxgloss_prompts::SerializationInfo::from(record));
+    }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never reached — never a
+        // body it read and left without a pattern (issue #351).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.serialization_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
     }
 }
 
@@ -775,6 +811,22 @@ impl AnalysisDoc for TypeInferDoc {
             _ => {}
         }
     }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // ONE record qualifies all THREE surfaces this row feeds — the
+        // type information list, the calling convention list, and the
+        // parameter direction list — because one type-inference scan
+        // stamped them together; the same admission line lands in each
+        // section. The record names the listings and edges the scan
+        // never reached, never a reading it made and left unrecorded
+        // (issue #351).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.type_inference_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
+    }
 }
 
 // ============================================================
@@ -813,6 +865,8 @@ pub static PROJECTION_ROWS: &[ProjectionRow] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retry::helpers::gather_function_evidence;
+    use tempfile::TempDir;
 
     /// The row-membership roster: the set of registered projection rows
     /// is exactly the engines that have migrated onto the fold. An
@@ -847,5 +901,338 @@ mod tests {
             "exactly the fourteen engines of the three migration batches \
              (issues #312, #313, #314) are registered"
         );
+    }
+
+    /// The four fan-out rows' coverage legs (issue #351): one gather of a
+    /// workspace whose four documents each carry a stamped record fills
+    /// each coverage field exactly once — a second gather lands the same
+    /// single record, never a doubled or merged one — and the fills
+    /// follow the registered order of the rows, each landing in its own
+    /// field. A document filed before coverage stamping (the standing
+    /// kit's shape) leaves its field default-empty, and a missing or
+    /// corrupt document fills neither findings nor coverage.
+    #[test]
+    fn coverage_projection_covers_the_engine_coverage_record_of_every_project_document() {
+        use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage, ScanMetadata};
+
+        let stamped = |facets: &[(&str, CoverageStatus, &str)]| ScanCoverage {
+            status: if facets
+                .iter()
+                .any(|(_, status, _)| *status != CoverageStatus::Complete)
+            {
+                CoverageStatus::Partial
+            } else {
+                CoverageStatus::Complete
+            },
+            facets: facets
+                .iter()
+                .map(|(id, status, line)| FacetCoverage {
+                    id: (*id).to_string(),
+                    status: *status,
+                    limitation: if *status == CoverageStatus::Complete {
+                        None
+                    } else {
+                        Some((*line).to_string())
+                    },
+                })
+                .collect(),
+        };
+
+        let workspace = TempDir::new().expect("fixture workspace");
+        let dir = workspace.path();
+
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamped(&[
+            (
+                "function-bodies",
+                CoverageStatus::Partial,
+                "ALGO-BODIES-LINE",
+            ),
+            (
+                "caller-edges",
+                CoverageStatus::Unavailable,
+                "ALGO-EDGES-LINE",
+            ),
+        ]));
+        let mut algorithm = calxgloss_algorithm::types::AlgorithmRecognitionResult::new(metadata);
+        algorithm.hints = vec![calxgloss_algorithm::types::AlgorithmHint {
+            function: "FUN_18003ab00".to_string(),
+            algorithm: "CRC-32".to_string(),
+            category: calxgloss_algorithm::types::AlgorithmCategory::Checksum,
+            method: calxgloss_algorithm::types::DetectionMethod::CfgPattern,
+            confidence: calxgloss_algorithm::types::Confidence::new(90),
+            evidence: "0xEDB88320".to_string(),
+        }];
+        calxgloss_algorithm::persist::AlgorithmPersistor::new(dir)
+            .save(&algorithm)
+            .expect("the stamped algorithm document should be saved");
+
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamped(&[
+            (
+                "function-bodies",
+                CoverageStatus::Partial,
+                "STR-BODIES-LINE",
+            ),
+            (
+                "program-strings",
+                CoverageStatus::Unavailable,
+                "STR-LISTING-LINE",
+            ),
+            (
+                "string-xrefs",
+                CoverageStatus::Unavailable,
+                "STR-XREFS-LINE",
+            ),
+        ]));
+        let mut stringctx = calxgloss_stringctx::types::StringContextResult::new(metadata);
+        stringctx.findings = vec![calxgloss_stringctx::types::StringFinding::Classified(
+            calxgloss_stringctx::types::ClassifiedString {
+                function: "FUN_18003ab00".to_string(),
+                string_address: 0x180127cd8,
+                string_value: "Journal.txt".to_string(),
+                classification: calxgloss_stringctx::types::StringClassification::FilePath,
+                purpose: "config file path".to_string(),
+                source: calxgloss_stringctx::types::StringSource::BodyParse,
+                confidence: calxgloss_stringctx::types::Confidence::new(60),
+                evidence: "lpszVar1 = \"Journal.txt\";".to_string(),
+            },
+        )];
+        calxgloss_stringctx::persist::StringContextPersistor::new(dir)
+            .save(&stringctx)
+            .expect("the stamped string-context document should be saved");
+
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamped(&[(
+            "function-bodies",
+            CoverageStatus::Partial,
+            "SER-BODIES-LINE",
+        )]));
+        let mut serialize = calxgloss_serialize::types::SerializeResult::new(metadata);
+        serialize.findings = vec![calxgloss_serialize::types::SerializeFinding::ByteSwap(
+            calxgloss_serialize::types::ByteSwapOperation {
+                function: "FUN_18003ab00".to_string(),
+                operation: "ntohl".to_string(),
+                width: 32,
+                suggestion: "byteorder::BE::read_u32".to_string(),
+                confidence: calxgloss_serialize::types::Confidence::new(70),
+                evidence: "uVar2 = ntohl(uVar1);".to_string(),
+            },
+        )];
+        calxgloss_serialize::persist::SerializePersistor::new(dir)
+            .save(&serialize)
+            .expect("the stamped serialization document should be saved");
+
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamped(&[
+            ("function-bodies", CoverageStatus::Complete, ""),
+            (
+                "machine-listings",
+                CoverageStatus::Partial,
+                "TYPE-LISTINGS-LINE",
+            ),
+            (
+                "import-names",
+                CoverageStatus::Unavailable,
+                "TYPE-IMPORTS-LINE",
+            ),
+            (
+                "caller-edges",
+                CoverageStatus::Unavailable,
+                "TYPE-EDGES-LINE",
+            ),
+        ]));
+        let mut typeinfer = calxgloss_typeinfer::types::TypeInferenceResult::new(metadata);
+        typeinfer.inferences = vec![calxgloss_typeinfer::types::InferredType::Param(
+            calxgloss_typeinfer::types::InferredParamType {
+                function: "FUN_18003ab00".to_string(),
+                param_index: 0,
+                param_name: Some("param_1".to_string()),
+                inferred_type: "char *".to_string(),
+                method: calxgloss_typeinfer::types::InferenceMethod::StringFunction,
+                scope: calxgloss_typeinfer::types::InferenceScope::Function,
+                confidence: calxgloss_typeinfer::types::Confidence::new(80),
+                evidence: "lstrlenA(param_1)".to_string(),
+            },
+        )];
+        calxgloss_typeinfer::persist::TypeInferPersistor::new(dir)
+            .save(&typeinfer)
+            .expect("the stamped type-inference document should be saved");
+
+        let bundle = gather_function_evidence(Some(dir), "eqmain.dll", "FUN_18003ab00", &[]);
+
+        // Each field holds exactly its own engine's record: the admission
+        // line joins the limitation lines of exactly the facets that fell
+        // short, in the record's own facet order, so a facet landing in —
+        // or merging across — another engine's field fails here. The
+        // wording *style* itself is proven word-for-word at the gather
+        // seam in the helpers' tests; these marker lines keep the fields
+        // visibly distinct.
+        assert_eq!(
+            bundle.algorithm_coverage.status, "partial",
+            "the algorithm record's overall status rides its own field"
+        );
+        assert_eq!(
+            bundle.algorithm_coverage.admission,
+            "partial — ALGO-BODIES-LINE; ALGO-EDGES-LINE"
+        );
+        assert_eq!(
+            bundle.string_context_coverage.admission,
+            "partial — STR-BODIES-LINE; STR-LISTING-LINE; STR-XREFS-LINE"
+        );
+        assert_eq!(
+            bundle.serialization_coverage.admission,
+            "partial — SER-BODIES-LINE"
+        );
+        assert_eq!(
+            bundle.type_inference_coverage.admission,
+            "partial — TYPE-LISTINGS-LINE; TYPE-IMPORTS-LINE; TYPE-EDGES-LINE",
+            "the complete bodies facet drops out of the admission; the \
+             three surfaces this row feeds all qualify from this one line"
+        );
+
+        // Each field was filled exactly once: the fills assign one record
+        // per document, so gathering again lands the same single record,
+        // never a doubled or merged one.
+        let again = gather_function_evidence(Some(dir), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(again.algorithm_coverage, bundle.algorithm_coverage);
+        assert_eq!(
+            again.string_context_coverage,
+            bundle.string_context_coverage
+        );
+        assert_eq!(again.serialization_coverage, bundle.serialization_coverage);
+        assert_eq!(
+            again.type_inference_coverage,
+            bundle.type_inference_coverage
+        );
+
+        // The one record qualifies all three type-inference surfaces: the
+        // single load fills the type-information list beside the same one
+        // coverage record — the convention and direction lists ride the
+        // same field even when this fixture files none of their kind.
+        assert_eq!(bundle.type_info.len(), 1);
+        assert!(
+            bundle.convention_findings.is_empty() && bundle.parameter_direction_findings.is_empty()
+        );
+    }
+
+    /// A document filed before coverage stamping — the standing fixture
+    /// kit's shape, with findings but no record — leaves its coverage
+    /// field default-empty while the findings still ride: the old render
+    /// stands (issue #351).
+    #[test]
+    fn fill_coverage_from_a_pre_p19_kit_document_fills_neither_findings_side_nor_coverage() {
+        use calxgloss_types::ScanMetadata;
+
+        let workspace = TempDir::new().expect("fixture workspace");
+        let dir = workspace.path();
+
+        let mut algorithm = calxgloss_algorithm::types::AlgorithmRecognitionResult::new(
+            ScanMetadata::new("eqmain.dll"),
+        );
+        algorithm.hints = vec![calxgloss_algorithm::types::AlgorithmHint {
+            function: "FUN_18003ab00".to_string(),
+            algorithm: "CRC-32".to_string(),
+            category: calxgloss_algorithm::types::AlgorithmCategory::Checksum,
+            method: calxgloss_algorithm::types::DetectionMethod::CfgPattern,
+            confidence: calxgloss_algorithm::types::Confidence::new(90),
+            evidence: "0xEDB88320".to_string(),
+        }];
+        calxgloss_algorithm::persist::AlgorithmPersistor::new(dir)
+            .save(&algorithm)
+            .expect("the pre-P19 algorithm document should be saved");
+
+        let mut stringctx =
+            calxgloss_stringctx::types::StringContextResult::new(ScanMetadata::new("eqmain.dll"));
+        stringctx.findings = vec![calxgloss_stringctx::types::StringFinding::Classified(
+            calxgloss_stringctx::types::ClassifiedString {
+                function: "FUN_18003ab00".to_string(),
+                string_address: 0x180127cd8,
+                string_value: "Journal.txt".to_string(),
+                classification: calxgloss_stringctx::types::StringClassification::FilePath,
+                purpose: "config file path".to_string(),
+                source: calxgloss_stringctx::types::StringSource::BodyParse,
+                confidence: calxgloss_stringctx::types::Confidence::new(60),
+                evidence: "lpszVar1 = \"Journal.txt\";".to_string(),
+            },
+        )];
+        calxgloss_stringctx::persist::StringContextPersistor::new(dir)
+            .save(&stringctx)
+            .expect("the pre-P19 string-context document should be saved");
+
+        let mut serialize =
+            calxgloss_serialize::types::SerializeResult::new(ScanMetadata::new("eqmain.dll"));
+        serialize.findings = vec![calxgloss_serialize::types::SerializeFinding::ByteSwap(
+            calxgloss_serialize::types::ByteSwapOperation {
+                function: "FUN_18003ab00".to_string(),
+                operation: "ntohl".to_string(),
+                width: 32,
+                suggestion: "byteorder::BE::read_u32".to_string(),
+                confidence: calxgloss_serialize::types::Confidence::new(70),
+                evidence: "uVar2 = ntohl(uVar1);".to_string(),
+            },
+        )];
+        calxgloss_serialize::persist::SerializePersistor::new(dir)
+            .save(&serialize)
+            .expect("the pre-P19 serialization document should be saved");
+
+        let mut typeinfer =
+            calxgloss_typeinfer::types::TypeInferenceResult::new(ScanMetadata::new("eqmain.dll"));
+        typeinfer.inferences = vec![calxgloss_typeinfer::types::InferredType::Param(
+            calxgloss_typeinfer::types::InferredParamType {
+                function: "FUN_18003ab00".to_string(),
+                param_index: 0,
+                param_name: Some("param_1".to_string()),
+                inferred_type: "char *".to_string(),
+                method: calxgloss_typeinfer::types::InferenceMethod::StringFunction,
+                scope: calxgloss_typeinfer::types::InferenceScope::Function,
+                confidence: calxgloss_typeinfer::types::Confidence::new(80),
+                evidence: "lstrlenA(param_1)".to_string(),
+            },
+        )];
+        calxgloss_typeinfer::persist::TypeInferPersistor::new(dir)
+            .save(&typeinfer)
+            .expect("the pre-P19 type-inference document should be saved");
+
+        let bundle = gather_function_evidence(Some(dir), "eqmain.dll", "FUN_18003ab00", &[]);
+
+        // The findings still ride their rows.
+        assert_eq!(bundle.recognized_algorithms.len(), 1);
+        assert_eq!(bundle.string_findings.len(), 1);
+        assert_eq!(bundle.serialization_findings.len(), 1);
+        assert_eq!(bundle.type_info.len(), 1);
+        // The coverage fields stay default-empty: an empty admission is
+        // exactly the includes' signal that there is nothing to admit,
+        // so every old render stands byte-identically.
+        for coverage in [
+            &bundle.algorithm_coverage,
+            &bundle.string_context_coverage,
+            &bundle.serialization_coverage,
+            &bundle.type_inference_coverage,
+        ] {
+            assert!(coverage.status.is_empty() && coverage.admission.is_empty());
+        }
+    }
+
+    /// A missing document fills neither findings nor coverage, exactly as
+    /// its findings-side degradation already reads (issue #351).
+    #[test]
+    fn a_missing_project_document_fills_neither_findings_nor_coverage() {
+        let workspace = TempDir::new().expect("fixture workspace");
+        let bundle =
+            gather_function_evidence(Some(workspace.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.recognized_algorithms.is_empty()
+                && bundle.algorithm_coverage.admission.is_empty()
+        );
+        assert!(
+            bundle.string_findings.is_empty()
+                && bundle.string_context_coverage.admission.is_empty()
+        );
+        assert!(
+            bundle.serialization_findings.is_empty()
+                && bundle.serialization_coverage.admission.is_empty()
+        );
+        assert!(bundle.type_info.is_empty() && bundle.type_inference_coverage.admission.is_empty());
     }
 }

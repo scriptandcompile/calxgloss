@@ -3,7 +3,7 @@
 {# text) so each template passes its own heading text. The body is #}
 {# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
 {# drift fails CI. #}
-{% macro calling_convention_section(findings, heading) %}
+{% macro calling_convention_section(findings, heading, coverage) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -18,6 +18,14 @@ that leaves none:
 - **{{ finding.convention|safe }}** {% if finding.callee.is_some() %}for `{{ finding.callee.as_ref().unwrap() }}` {% endif %}(via {{ finding.method }}, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% endfor %}
+
+{% endif %}
+{% if !coverage.admission.is_empty() %}
+{% if findings.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+Coverage: {{ coverage.admission }}
 
 {% endif %}
 {% endmacro %}

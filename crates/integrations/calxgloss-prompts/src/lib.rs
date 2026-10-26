@@ -322,6 +322,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
@@ -350,6 +351,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -385,6 +387,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let categories = data.api_categories();
@@ -420,6 +423,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let categories = data.api_categories();
@@ -443,6 +447,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let categories = data.api_categories();
@@ -469,6 +474,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -499,6 +505,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
@@ -539,6 +546,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data).unwrap();
@@ -568,6 +576,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -1606,6 +1615,7 @@ mod tests {
     #[test]
     fn test_rich_template_renders_control_flow_section() {
         let data = ComplexityPromptData {
+            type_inference_coverage: CoverageInfo::default(),
             function_name: "FUN_18003ab00".to_string(),
             dll_name: "eqmain.dll".to_string(),
             address: 0x3000,
@@ -1646,6 +1656,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
@@ -1657,6 +1668,7 @@ mod tests {
     #[test]
     fn test_detailed_template_renders_control_flow_section() {
         let data = ComplexityPromptData {
+            type_inference_coverage: CoverageInfo::default(),
             function_name: "FUN_18003ab00".to_string(),
             dll_name: "eqmain.dll".to_string(),
             address: 0x4000,
@@ -1697,6 +1709,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
@@ -1708,6 +1721,7 @@ mod tests {
     #[test]
     fn test_minimal_and_standard_templates_stay_clean_of_control_flow() {
         let data = ComplexityPromptData {
+            type_inference_coverage: CoverageInfo::default(),
             function_name: "SimpleFunc".to_string(),
             dll_name: "test.dll".to_string(),
             address: 0x1000,
@@ -1789,6 +1803,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: type_info_pair(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
@@ -1819,6 +1834,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: type_info_pair(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
@@ -1849,6 +1865,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         for tier in [FunctionComplexity::Rich, FunctionComplexity::Detailed] {
@@ -1876,6 +1893,7 @@ mod tests {
             data_structures: Vec::new(),
             type_info: type_info_pair(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: CoverageInfo::default(),
         };
 
         for tier in [FunctionComplexity::Minimal, FunctionComplexity::Standard] {
@@ -2423,6 +2441,7 @@ mod tests {
         let mut data = ComplexityPromptData::from_request(&req);
         data.type_info = bundle.type_info.clone();
         data.control_flow_findings = bundle.control_flow_findings.clone();
+        data.type_inference_coverage = bundle.type_inference_coverage.clone();
         build_complexity_prompt(&FunctionComplexity::Rich, &data)
             .expect("the rich prompt should render")
     }
@@ -2434,6 +2453,7 @@ mod tests {
         let mut data = ComplexityPromptData::from_request(&req);
         data.type_info = bundle.type_info.clone();
         data.control_flow_findings = bundle.control_flow_findings.clone();
+        data.type_inference_coverage = bundle.type_inference_coverage.clone();
         build_complexity_prompt(&FunctionComplexity::Detailed, &data)
             .expect("the detailed prompt should render")
     }
@@ -2936,6 +2956,13 @@ mod tests {
         for row in SECTION_SUITE_ROWS {
             let mut bundle = EvidenceBundle::default();
             (row.populate)(&mut bundle);
+            // A scan that read everything it attempted admits nothing, so
+            // every row renders the section exactly as it did before any
+            // coverage record existed — the suite pins that identity.
+            bundle.algorithm_coverage = CoverageInfo::from(&complete_coverage());
+            bundle.string_context_coverage = CoverageInfo::from(&complete_coverage());
+            bundle.type_inference_coverage = CoverageInfo::from(&complete_coverage());
+            bundle.serialization_coverage = CoverageInfo::from(&complete_coverage());
 
             let populated = (row.render)(&bundle);
             let expected = (row.expected)(row.heading);
@@ -2984,6 +3011,46 @@ mod tests {
                     id: "delay-imports".to_string(),
                     status: calxgloss_types::CoverageStatus::Unexamined,
                     limitation: Some("delay imports unexamined".to_string()),
+                },
+            ],
+        }
+    }
+
+    /// A scan that read every facet it attempted, filed under the named
+    /// engine (the section-suite rows carry one per producing scan).
+    fn complete_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "program-strings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "string-xrefs".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "machine-listings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "import-names".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
                 },
             ],
         }
@@ -3847,7 +3914,11 @@ mod tests {
         let module_admitted = render_module_context_full(&branch);
 
         for (clean, admitted, heading) in [
-            (escalate_clean, escalate_admitted, ESCALATE_CONTROL_FLOW_HEADING),
+            (
+                escalate_clean,
+                escalate_admitted,
+                ESCALATE_CONTROL_FLOW_HEADING,
+            ),
             (full_clean, full_admitted, SHARED_CONTROL_FLOW_HEADING),
             (module_clean, module_admitted, SHARED_CONTROL_FLOW_HEADING),
         ] {
@@ -3991,12 +4062,447 @@ mod tests {
                 SHARED_CONTROL_FLOW_HEADING,
                 CONTROL_FLOW_ADMISSION,
             ),
-            (&full_partial, SHARED_CONTROL_FLOW_HEADING, CONTROL_FLOW_ADMISSION),
+            (
+                &full_partial,
+                SHARED_CONTROL_FLOW_HEADING,
+                CONTROL_FLOW_ADMISSION,
+            ),
         ] {
             assert!(
-                prompt.contains(&format!(
-                    "## {heading}\n\nCoverage: {admission}\n\n"
-                )),
+                prompt.contains(&format!("## {heading}\n\nCoverage: {admission}\n\n")),
+                "the empty list still carries the one admission line"
+            );
+        }
+    }
+
+    // -- admitted coverage: the algorithm, string-context, type-inference,
+    //    and serialization sections (issue #351) --
+
+    /// Coverage records in the shape these four scans file. The
+    /// algorithm-recognition scan names the bodies its decompiler never
+    /// produced beside the caller edges it could not read; the
+    /// string-context scan lost its program-string listing and the xrefs
+    /// that ride on it, while still reading every body; the type-inference
+    /// scan read a truncated machine listing, lost its import listing, and
+    /// could not read one caller edge; the serialization-pattern scan —
+    /// like the global-state scan before it — has one facet, one missing
+    /// body. Each engine names different functions, so a coverage value
+    /// crossing into another engine's section fails every pin below.
+    fn algorithm_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 function body unreached: FUN_180070010".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 caller edge unreadable: FUN_180070020".to_string()),
+                },
+            ],
+        }
+    }
+
+    fn stringctx_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "program-strings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("program string listing unreadable".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "string-xrefs".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("no string cross-reference could be read".to_string()),
+                },
+            ],
+        }
+    }
+
+    fn typeinfer_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "machine-listings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 machine listing unreadable: FUN_180088000".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "import-names".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("import listing unreadable".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 caller edge unreadable: FUN_180088010".to_string()),
+                },
+            ],
+        }
+    }
+
+    fn serialize_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_180099900".to_string()),
+            }],
+        }
+    }
+
+    /// The one qualification wording each section suite pins for its
+    /// engine's section (issue #351). The type-inference admission is one
+    /// record — its joined form names three gaps — shared by the type
+    /// information, calling convention, and parameter direction surfaces.
+    const ALGORITHM_ADMISSION: &str = "partial — 1 function body unreached: FUN_180070010; 1 caller edge unreadable: FUN_180070020";
+    const STRINGCTX_ADMISSION: &str =
+        "partial — program string listing unreadable; no string cross-reference could be read";
+    const TYPEINFER_ADMISSION: &str = "partial — 1 machine listing unreadable: FUN_180088000; import listing unreadable; 1 caller edge unreadable: FUN_180088010";
+    const SERIALIZE_ADMISSION: &str = "partial — 1 function body unreached: FUN_180099900";
+
+    /// The headings the consuming templates pass each section.
+    const ESCALATE_RECOGNIZED_ALGORITHMS_HEADING: &str =
+        "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS";
+    const ESCALATE_STRING_CONTEXT_HEADING: &str = "ADDITIONAL CONTEXT — STRINGS";
+    const ESCALATE_SERIALIZATION_HEADING: &str = "ADDITIONAL CONTEXT — SERIALIZATION";
+    const ESCALATE_CALLING_CONVENTION_HEADING: &str = "ADDITIONAL CONTEXT — CALLING CONVENTION";
+    const MODULE_CALLING_CONVENTION_HEADING: &str = "CALLING CONVENTION";
+    const MODULE_PARAMETER_DIRECTION_HEADING: &str = "PARAMETER DIRECTIONS";
+
+    /// The pinned wording stands at both ends of its journey: the shared
+    /// coverage type produces each admission from a scan-shaped record, and
+    /// the prompt-side view carries that same line verbatim (issue #351).
+    #[test]
+    fn the_four_admission_wordings_are_pinned_at_both_ends_of_their_journey() {
+        for (record, pinned) in [
+            (algorithm_admitting_coverage(), ALGORITHM_ADMISSION),
+            (stringctx_admitting_coverage(), STRINGCTX_ADMISSION),
+            (typeinfer_admitting_coverage(), TYPEINFER_ADMISSION),
+            (serialize_admitting_coverage(), SERIALIZE_ADMISSION),
+        ] {
+            assert_eq!(
+                record.admission().expect("partial admits"),
+                pinned,
+                "the shared type's own admission is the pinned line"
+            );
+            assert_eq!(
+                CoverageInfo::from(&record).admission,
+                pinned,
+                "the template-side view carries the same line, word for word"
+            );
+        }
+    }
+
+    /// A complete coverage record is nothing to admit: each of the six
+    /// sections — including all three type-inference surfaces on all their
+    /// consumers, and both tier templates — renders byte-for-byte what it
+    /// rendered when the document stated no coverage at all (issue #351).
+    #[test]
+    fn complete_coverage_for_all_four_scans_renders_every_section_byte_identically() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.recognized_algorithms.push(algorithm_fixture());
+        bundle.string_findings.push(string_fixture());
+        bundle.serialization_findings.push(serialization_fixture());
+        bundle.convention_findings.push(convention_fixture());
+        bundle
+            .parameter_direction_findings
+            .push(parameter_direction_fixture());
+        let unstamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+
+        bundle.algorithm_coverage = CoverageInfo::from(&complete_coverage());
+        bundle.string_context_coverage = CoverageInfo::from(&complete_coverage());
+        bundle.type_inference_coverage = CoverageInfo::from(&complete_coverage());
+        bundle.serialization_coverage = CoverageInfo::from(&complete_coverage());
+        let stamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+        assert_eq!(
+            unstamped, stamped,
+            "four complete records add no bytes to the escalate or module-context prompt"
+        );
+        for prompt in [stamped.0, stamped.1] {
+            assert!(
+                !prompt.contains("Coverage:"),
+                "complete coverage has nothing to admit"
+            );
+        }
+
+        // The tier templates carry the type information surface; a complete
+        // type-inference record must leave their renders byte-identical too.
+        let req = sample_request();
+        let mut rich_data = ComplexityPromptData::from_request(&req);
+        rich_data.type_info = type_info_pair();
+        let rich_unstamped = build_complexity_prompt(&FunctionComplexity::Rich, &rich_data)
+            .expect("rich prompt should render");
+        rich_data.type_inference_coverage = CoverageInfo::from(&complete_coverage());
+        let rich_stamped = build_complexity_prompt(&FunctionComplexity::Rich, &rich_data)
+            .expect("rich prompt with complete coverage should render");
+        assert_eq!(
+            rich_unstamped, rich_stamped,
+            "a complete type-inference record adds no bytes to the rich template"
+        );
+
+        let mut detailed_data = ComplexityPromptData::from_request(&req);
+        detailed_data.type_info = type_info_pair();
+        let detailed_unstamped =
+            build_complexity_prompt(&FunctionComplexity::Detailed, &detailed_data)
+                .expect("detailed prompt should render");
+        detailed_data.type_inference_coverage = CoverageInfo::from(&complete_coverage());
+        let detailed_stamped =
+            build_complexity_prompt(&FunctionComplexity::Detailed, &detailed_data)
+                .expect("detailed prompt with complete coverage should render");
+        assert_eq!(
+            detailed_unstamped, detailed_stamped,
+            "a complete type-inference record adds no bytes to the detailed template"
+        );
+    }
+
+    /// A falling-short record appends exactly one bounded qualification
+    /// line beside the entries of every section the producing scan feeds —
+    /// and for type inference, that ONE record lands identically on all
+    /// THREE of its surfaces across BOTH their consumers (issue #351).
+    #[test]
+    fn each_falling_short_record_appends_one_line_per_section_it_qualifies() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.recognized_algorithms.push(algorithm_fixture());
+        bundle.string_findings.push(string_fixture());
+        bundle.serialization_findings.push(serialization_fixture());
+        bundle.convention_findings.push(convention_fixture());
+        bundle
+            .parameter_direction_findings
+            .push(parameter_direction_fixture());
+        let escalate_clean = render_escalate_full(&bundle);
+        let module_clean = render_module_context_full(&bundle);
+
+        bundle.algorithm_coverage = CoverageInfo::from(&algorithm_admitting_coverage());
+        bundle.string_context_coverage = CoverageInfo::from(&stringctx_admitting_coverage());
+        bundle.type_inference_coverage = CoverageInfo::from(&typeinfer_admitting_coverage());
+        bundle.serialization_coverage = CoverageInfo::from(&serialize_admitting_coverage());
+        let escalate_admitted = render_escalate_full(&bundle);
+        let module_admitted = render_module_context_full(&bundle);
+
+        let escalate_expected = escalate_clean
+            .replace(
+                "## ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS",
+                &format!(
+                    "## ADDITIONAL CONTEXT — TYPE INFORMATION\n\nCoverage: {TYPEINFER_ADMISSION}\n\n## ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS"
+                ),
+            )
+            .replace(
+                &format!("{RECOGNIZED_ALGORITHMS_SECTION_BODY}\n\n"),
+                &format!(
+                    "{RECOGNIZED_ALGORITHMS_SECTION_BODY}\n\nCoverage: {ALGORITHM_ADMISSION}\n\n"
+                ),
+            )
+            .replace(
+                &format!("{STRING_CONTEXT_SECTION_BODY}\n\n## TRANSLATION REQUIREMENTS"),
+                &format!(
+                    "{STRING_CONTEXT_SECTION_BODY}\n\nCoverage: {STRINGCTX_ADMISSION}\n\n## TRANSLATION REQUIREMENTS"
+                ),
+            )
+            .replace(
+                &format!("{SERIALIZATION_SECTION_BODY}\n\n"),
+                &format!(
+                    "{SERIALIZATION_SECTION_BODY}\n\nCoverage: {SERIALIZE_ADMISSION}\n\n"
+                ),
+            )
+            .replace(
+                &format!("{CALLING_CONVENTION_SECTION_BODY}\n\n"),
+                &format!(
+                    "{CALLING_CONVENTION_SECTION_BODY}\n\nCoverage: {TYPEINFER_ADMISSION}\n\n"
+                ),
+            );
+        assert_eq!(
+            escalate_admitted, escalate_expected,
+            "each admission rides its own escalate section as exactly one line beside the entries"
+        );
+        let module_expected = module_clean
+            .replace(
+                &format!("{CALLING_CONVENTION_SECTION_BODY}\n\n"),
+                &format!(
+                    "{CALLING_CONVENTION_SECTION_BODY}\n\nCoverage: {TYPEINFER_ADMISSION}\n\n"
+                ),
+            )
+            .replace(
+                &format!("{PARAMETER_DIRECTION_SECTION_BODY}\n\n"),
+                &format!(
+                    "{PARAMETER_DIRECTION_SECTION_BODY}\n\nCoverage: {TYPEINFER_ADMISSION}\n\n"
+                ),
+            );
+        assert_eq!(
+            module_admitted, module_expected,
+            "the one type-inference admission rides both of its module-context surfaces"
+        );
+        for (prompt, heading) in [
+            (&escalate_admitted, ESCALATE_RECOGNIZED_ALGORITHMS_HEADING),
+            (&escalate_admitted, ESCALATE_STRING_CONTEXT_HEADING),
+            (&escalate_admitted, ESCALATE_SERIALIZATION_HEADING),
+            (&escalate_admitted, ESCALATE_CALLING_CONVENTION_HEADING),
+            (&module_admitted, MODULE_CALLING_CONVENTION_HEADING),
+            (&module_admitted, MODULE_PARAMETER_DIRECTION_HEADING),
+        ] {
+            assert_eq!(
+                prompt.matches(&format!("## {heading}")).count(),
+                1,
+                "the admissions never open a second {heading} section"
+            );
+        }
+        assert_eq!(
+            escalate_admitted.matches("Coverage:").count(),
+            escalate_clean.matches("Coverage:").count() + 5,
+            "five admission lines across five escalate sections — the one \
+             type-inference record qualifies type information and calling \
+             convention there — never a paragraph"
+        );
+        assert_eq!(
+            module_admitted.matches("Coverage:").count(),
+            module_clean.matches("Coverage:").count() + 2,
+            "the one type-inference record qualifies exactly two module-context surfaces"
+        );
+        assert_eq!(
+            module_admitted
+                .matches(&format!("Coverage: {TYPEINFER_ADMISSION}"))
+                .count(),
+            2,
+            "the type-inference admission renders byte-identically on the calling \
+             convention surface and the parameter direction surface"
+        );
+    }
+
+    /// The type information surface's two tier consumers carry the same
+    /// record too: one type-inference admission renders identical bytes on
+    /// the type information section of the rich and detailed templates
+    /// (issue #351).
+    #[test]
+    fn the_type_inference_admission_qualifies_its_third_surface_identically_on_both_tiers() {
+        let req = sample_request();
+        let admitted_line = format!("Coverage: {TYPEINFER_ADMISSION}");
+        for complexity in [FunctionComplexity::Rich, FunctionComplexity::Detailed] {
+            let mut data = ComplexityPromptData::from_request(&req);
+            data.type_info = type_info_pair();
+            let clean = build_complexity_prompt(&complexity, &data).expect("tier prompt renders");
+            data.type_inference_coverage = CoverageInfo::from(&typeinfer_admitting_coverage());
+            let admitted = build_complexity_prompt(&complexity, &data)
+                .expect("tier prompt with admitted coverage renders");
+            assert_eq!(
+                admitted,
+                clean.replace(
+                    &format!("{TYPE_INFORMATION_SECTION_BODY}\n\n"),
+                    &format!("{TYPE_INFORMATION_SECTION_BODY}\n\n{admitted_line}\n\n")
+                ),
+                "{complexity:?} appends exactly the one shared qualification line"
+            );
+            assert_eq!(
+                admitted.matches(&admitted_line).count(),
+                1,
+                "{complexity:?} carries the type-inference admission exactly once"
+            );
+        }
+    }
+
+    /// The doctrine pair for all four engines (issue #351): an unmentioned
+    /// function under a complete record means examined-and-clean, and
+    /// silence from a record that names bodies it never reached must never
+    /// render the same bytes — a retry or a module translation can tell
+    /// "this function has no such findings" from "the scan never read
+    /// this function".
+    #[test]
+    fn empty_algorithm_string_typeinfer_and_serialize_findings_under_complete_and_partial_coverage_never_render_alike()
+     {
+        let under_complete = (
+            render_escalate_full(&EvidenceBundle::default()),
+            render_module_context_full(&EvidenceBundle::default()),
+        );
+        for (prompt, heading) in [
+            (&under_complete.0, ESCALATE_RECOGNIZED_ALGORITHMS_HEADING),
+            (&under_complete.0, ESCALATE_STRING_CONTEXT_HEADING),
+            (&under_complete.0, ESCALATE_SERIALIZATION_HEADING),
+            (&under_complete.0, ESCALATE_CALLING_CONVENTION_HEADING),
+            (&under_complete.1, MODULE_CALLING_CONVENTION_HEADING),
+            (&under_complete.1, MODULE_PARAMETER_DIRECTION_HEADING),
+        ] {
+            assert!(
+                !prompt.contains(&format!("## {heading}")),
+                "silence from an unstamped record stays section-less, as before P19"
+            );
+        }
+        let escalate_partial = render_escalate_full(&EvidenceBundle {
+            algorithm_coverage: CoverageInfo::from(&algorithm_admitting_coverage()),
+            string_context_coverage: CoverageInfo::from(&stringctx_admitting_coverage()),
+            type_inference_coverage: CoverageInfo::from(&typeinfer_admitting_coverage()),
+            serialization_coverage: CoverageInfo::from(&serialize_admitting_coverage()),
+            ..Default::default()
+        });
+        let module_partial = render_module_context_full(&EvidenceBundle {
+            type_inference_coverage: CoverageInfo::from(&typeinfer_admitting_coverage()),
+            ..Default::default()
+        });
+        assert_ne!(
+            under_complete.0, escalate_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert_ne!(
+            under_complete.1, module_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        for (prompt, heading, admission) in [
+            (
+                &escalate_partial,
+                ESCALATE_RECOGNIZED_ALGORITHMS_HEADING,
+                ALGORITHM_ADMISSION,
+            ),
+            (
+                &escalate_partial,
+                ESCALATE_STRING_CONTEXT_HEADING,
+                STRINGCTX_ADMISSION,
+            ),
+            (
+                &escalate_partial,
+                ESCALATE_SERIALIZATION_HEADING,
+                SERIALIZE_ADMISSION,
+            ),
+            (
+                &escalate_partial,
+                ESCALATE_CALLING_CONVENTION_HEADING,
+                TYPEINFER_ADMISSION,
+            ),
+            (
+                &module_partial,
+                MODULE_CALLING_CONVENTION_HEADING,
+                TYPEINFER_ADMISSION,
+            ),
+            (
+                &module_partial,
+                MODULE_PARAMETER_DIRECTION_HEADING,
+                TYPEINFER_ADMISSION,
+            ),
+        ] {
+            assert!(
+                prompt.contains(&format!("## {heading}\n\nCoverage: {admission}\n\n")),
                 "the empty list still carries the one admission line"
             );
         }
@@ -4133,8 +4639,8 @@ mod tests {
     /// render byte-for-byte what they rendered when their documents
     /// stated no coverage at all, at every consumer of each (issue #350).
     #[test]
-    fn a_complete_coverage_record_renders_the_global_state_error_handling_and_callback_sections_byte_identically(
-    ) {
+    fn a_complete_coverage_record_renders_the_global_state_error_handling_and_callback_sections_byte_identically()
+     {
         let mut bundle = EvidenceBundle::default();
         bundle.global_state_findings.push(global_state_fixture());
         bundle
@@ -4255,8 +4761,8 @@ mod tests {
     /// translation can tell "this function has no such findings" from
     /// "the scan never read this function".
     #[test]
-    fn empty_global_state_error_handling_and_callback_findings_under_complete_and_partial_coverage_never_render_alike(
-    ) {
+    fn empty_global_state_error_handling_and_callback_findings_under_complete_and_partial_coverage_never_render_alike()
+     {
         let under_complete = (
             render_escalate_full(&EvidenceBundle::default()),
             render_module_context_full(&EvidenceBundle::default()),
@@ -4322,9 +4828,7 @@ mod tests {
             ),
         ] {
             assert!(
-                prompt.contains(&format!(
-                    "## {heading}\n\nCoverage: {admission}\n\n"
-                )),
+                prompt.contains(&format!("## {heading}\n\nCoverage: {admission}\n\n")),
                 "the empty list still carries the one admission line"
             );
         }

@@ -32,6 +32,7 @@ use crate::types::{
     ClassifiedString, Confidence, FormatStringUse, ScanMetadata, StringClassification,
     StringContextResult, StringFinding, StringSource,
 };
+use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 
 /// The program a string-context scan reads.
 ///
@@ -42,6 +43,123 @@ use crate::types::{
 /// orchestration runs without a server. The futures are `Send` so a
 /// scan can be driven from an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
+
+/// How many unreached functions one coverage limitation line names inline
+/// before folding the remainder into a count — bounded prose beside the
+/// counts, not a dump (the P19-7 admitted-semantics track).
+const MAX_NAMED_UNREACHED: usize = 5;
+
+/// The coverage record every string-context scan stamps about itself
+/// (issue #351), beside the provenance and the timing.
+///
+/// The string-context scan reads three facets. `function-bodies` — the
+/// decompiled bodies the body parse reads: the function listing is
+/// always read end to end (a failed listing aborts the run, and more
+/// than half failing to decompile trips the skip-rate breaker), so what
+/// a finished scan can not have read is exactly the bodies it skipped:
+/// a nameless listing entry, or a decompile that failed.
+/// `program-strings` — the program-wide string listing the `DAT_`
+/// resolution and the xref fallback need; a failed listing costs the
+/// scan that evidence and nothing else, so the facet is then
+/// `unavailable` with its reason rather than silently empty.
+/// `string-xrefs` — the cross-reference lookups the fallback makes for
+/// each program string when a body came up empty: every lookup failing
+/// leaves the facet `unavailable` — no cross-reference could be read —
+/// while some landing leaves it `partial`, counting the ones that
+/// never answered. With nothing skipped and every read answered, the
+/// facets are `complete`, and that is the admission's point: a string
+/// no finding maps was examined and clean, never silently unchecked.
+/// The cross-function pass reads the bodies and the string table the
+/// walk already holds, so it adds no coverage border of its own. The
+/// whole picture mirrors the three facets together.
+fn coverage_stamp(
+    unreached: &[String],
+    nameless: usize,
+    strings_unreadable: bool,
+    xrefs_read: usize,
+    xrefs_unreadable: usize,
+) -> ScanCoverage {
+    let bodies = {
+        let total = unreached.len() + nameless;
+        if total == 0 {
+            FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: CoverageStatus::Complete,
+                limitation: None,
+            }
+        } else {
+            let mut names = unreached
+                .iter()
+                .take(MAX_NAMED_UNREACHED)
+                .cloned()
+                .collect::<Vec<_>>();
+            let hidden = unreached.len().saturating_sub(names.len()) + nameless;
+            if hidden > 0 {
+                names.push(format!("+{hidden} more"));
+            }
+            let body = if total == 1 { "body" } else { "bodies" };
+            FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: CoverageStatus::Partial,
+                limitation: Some(format!(
+                    "{total} function {body} unreached: {}",
+                    names.join(", ")
+                )),
+            }
+        }
+    };
+    let strings = if strings_unreadable {
+        FacetCoverage {
+            id: "program-strings".to_string(),
+            status: CoverageStatus::Unavailable,
+            limitation: Some("program string listing unreadable".to_string()),
+        }
+    } else {
+        FacetCoverage {
+            id: "program-strings".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    };
+    let xrefs = if xrefs_unreadable == 0 {
+        FacetCoverage {
+            id: "string-xrefs".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    } else if xrefs_read == 0 {
+        FacetCoverage {
+            id: "string-xrefs".to_string(),
+            status: CoverageStatus::Unavailable,
+            limitation: Some("no string cross-reference could be read".to_string()),
+        }
+    } else {
+        let lookup = if xrefs_unreadable == 1 {
+            "lookup"
+        } else {
+            "lookups"
+        };
+        FacetCoverage {
+            id: "string-xrefs".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!(
+                "{xrefs_unreadable} string cross-reference {lookup} unreadable"
+            )),
+        }
+    };
+    let status = if bodies.status == CoverageStatus::Complete
+        && strings.status == CoverageStatus::Complete
+        && xrefs.status == CoverageStatus::Complete
+    {
+        CoverageStatus::Complete
+    } else {
+        CoverageStatus::Partial
+    };
+    ScanCoverage {
+        status,
+        facets: vec![bodies, strings, xrefs],
+    }
+}
 
 /// Orchestrates the classifier, hybrid mapper, format-string engine,
 /// localization detector, and cross-function analyzer into one
@@ -156,7 +274,9 @@ impl<S> StringContextEngine<S> {
         // Only the function listing is fatal. A failed string listing
         // costs the fallback and `DAT_` resolution — the body parse
         // still reads its direct literals — so the scan degrades to a
-        // warning rather than aborting.
+        // warning rather than aborting, and the coverage record below
+        // admits the listing as unreadable (issue #351).
+        let mut strings_unreadable = false;
         let program_strings = match self.source.strings().await {
             Ok(strings) => strings,
             Err(error) => {
@@ -164,6 +284,7 @@ impl<S> StringContextEngine<S> {
                     error = %error,
                     "String listing failed; scanning body literals only"
                 );
+                strings_unreadable = true;
                 Vec::new()
             }
         };
@@ -186,6 +307,10 @@ impl<S> StringContextEngine<S> {
             HashMap::new();
         // The fallback asks each string address at most once per scan.
         let mut xref_cache: HashMap<u64, Vec<Xref>> = HashMap::new();
+        // Addresses whose lookup was attempted and never answered, so
+        // the coverage record below can count them (issue #351). An
+        // address that answers on a later try is not counted.
+        let mut xref_unreadable: HashSet<u64> = HashSet::new();
 
         let mut findings = Vec::new();
         // The bodies the walk successfully decompiled, kept in listing
@@ -193,6 +318,10 @@ impl<S> StringContextEngine<S> {
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
+        // The regions this walk never reached, named as it goes, so the
+        // coverage record below can admit them (issue #351).
+        let mut unreached: Vec<String> = Vec::new();
+        let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
@@ -203,6 +332,7 @@ impl<S> StringContextEngine<S> {
                     "Skipping function with no name"
                 );
                 skipped += 1;
+                nameless += 1;
                 continue;
             }
             let decompiled = match self.source.decompile(&function.name).await {
@@ -215,6 +345,7 @@ impl<S> StringContextEngine<S> {
                     );
                     skipped += 1;
                     decompile_failures += 1;
+                    unreached.push(function.name.clone());
                     // Skip-rate breaker: once most of the listing has
                     // failed to decompile, the scan is reading a
                     // program the engine cannot analyze, and an
@@ -262,6 +393,7 @@ impl<S> StringContextEngine<S> {
                                     error = %error,
                                     "Skipping string in xref fallback: lookup failed"
                                 );
+                                xref_unreadable.insert(string.address);
                                 continue;
                             }
                         },
@@ -367,6 +499,21 @@ impl<S> StringContextEngine<S> {
         );
 
         let mut metadata = ScanMetadata::new(binary);
+        // The engine admits its own coverage inside its own scan, where
+        // the skips and the unreadable reads happened, so the filed
+        // record says what the walk never got (issue #351) — and a
+        // complete record lets an unmentioned string read as examined
+        // and clean. Addresses that answered on a later try are read.
+        metadata.coverage = Some(coverage_stamp(
+            &unreached,
+            nameless,
+            strings_unreadable,
+            xref_cache.len(),
+            xref_unreadable
+                .iter()
+                .filter(|address| !xref_cache.contains_key(*address))
+                .count(),
+        ));
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
@@ -426,6 +573,7 @@ mod tests {
         fail_strings: bool,
         fail_decompile: Vec<String>,
         fail_xrefs: bool,
+        fail_xref_addrs: Vec<u64>,
         decompile_fetches: Arc<AtomicUsize>,
         xref_fetches: Arc<AtomicUsize>,
     }
@@ -468,7 +616,7 @@ mod tests {
 
         async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
             self.xref_fetches.fetch_add(1, Ordering::SeqCst);
-            if self.fail_xrefs {
+            if self.fail_xrefs || self.fail_xref_addrs.contains(&address) {
                 return Err(EngineError::Reported {
                     message: "the engine is busy".into(),
                 });
@@ -1121,6 +1269,304 @@ mod tests {
                 .iter()
                 .all(|finding| finding.kind() != "cross_function"),
             "a skipped function fabricates no flow"
+        );
+    }
+
+    // ============================================================
+    // Admitted scan coverage (issue #351)
+    // ============================================================
+
+    /// The facets a string-context scan declares, in order — the roster
+    /// the record must name exactly once each: the decompiled bodies,
+    /// the program-wide string listing, and the cross-reference lookups
+    /// the fallback makes.
+    const DECLARED_FACETS: &[&str] = &["function-bodies", "program-strings", "string-xrefs"];
+
+    /// The data-level verdict of the roster pin: empty means the record
+    /// names every declared facet exactly once, and each fault spells one
+    /// drift.
+    fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+        let mut faults = Vec::new();
+        for declared in DECLARED_FACETS {
+            let hits = coverage
+                .facets
+                .iter()
+                .filter(|facet| facet.id == *declared)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{declared}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{declared}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &coverage.facets {
+            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
+
+    /// The named facet with the given id, for asserting its status and
+    /// limitation line.
+    fn facet<'a>(coverage: &'a ScanCoverage, id: &str) -> &'a FacetCoverage {
+        coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == id)
+            .unwrap_or_else(|| panic!("{id} is named"))
+    }
+
+    #[tokio::test]
+    async fn a_fresh_scan_stamps_complete_coverage_and_a_clean_roster() {
+        // The stamp rides the engine's own scan, not the registry row
+        // and not the CLI — the batch scan phase and the CLI's
+        // force-rescan file the same admission through this one
+        // definition. Every body, every listing string, and every
+        // cross-reference was read here, so the record is complete and
+        // says nothing needs admitting.
+        let result = StringContextEngine::with_source(program())
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh string-context scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Complete);
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a fresh document must name every declared facet exactly once"
+        );
+        for id in DECLARED_FACETS {
+            assert_eq!(
+                facet(&coverage, id).status,
+                CoverageStatus::Complete,
+                "{id} read end to end admits nothing"
+            );
+            assert_eq!(facet(&coverage, id).limitation, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_string_listing_makes_that_facet_unavailable_with_its_reason() {
+        // The listing failure is not silence — it is an admission: the
+        // program's strings were there to read and never arrived, so
+        // the facet says so with its reason while the body-parsed
+        // findings and the rest of the record stand.
+        let mut program = program();
+        program.fail_strings = true;
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("the scan survives a failed string listing");
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a degraded scan states its coverage too");
+        assert_eq!(
+            coverage.status,
+            CoverageStatus::Partial,
+            "one facet falling short makes the whole picture partial"
+        );
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            facet(&coverage, "function-bodies").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "program-strings").status,
+            CoverageStatus::Unavailable,
+            "the strings were not read, and the record says why"
+        );
+        assert_eq!(
+            facet(&coverage, "program-strings").limitation.as_deref(),
+            Some("program string listing unreadable")
+        );
+        assert_eq!(
+            facet(&coverage, "string-xrefs").status,
+            CoverageStatus::Complete,
+            "with no listing strings there was no cross-reference to ask for"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_failed_cross_reference_lookup_makes_that_facet_unavailable() {
+        // The fallback asked and nothing answered: the xref facet is
+        // unavailable with its reason, and the failed addresses count
+        // once each however many body-empty functions retried them.
+        let mut program = program();
+        program.fail_xrefs = true;
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("the degraded scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Partial);
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            facet(&coverage, "function-bodies").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "program-strings").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "string-xrefs").status,
+            CoverageStatus::Unavailable
+        );
+        assert_eq!(
+            facet(&coverage, "string-xrefs").limitation.as_deref(),
+            Some("no string cross-reference could be read"),
+            "the fallback read nothing across every string it asked about"
+        );
+    }
+
+    #[tokio::test]
+    async fn some_unreadable_cross_reference_lookups_leave_the_facet_partial() {
+        // One address answered, one never did: the facet is partial and
+        // counts the lookup that was attempted and never landed.
+        let mut program = program();
+        program.fail_xref_addrs = vec![0x180129a00];
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("the partial scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Partial);
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            facet(&coverage, "string-xrefs").status,
+            CoverageStatus::Partial
+        );
+        assert_eq!(
+            facet(&coverage, "string-xrefs").limitation.as_deref(),
+            Some("1 string cross-reference lookup unreadable"),
+            "the answered lookups count as read, the failed one as the gap"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreached_body_is_admitted_by_name_on_its_own_facet() {
+        // A decompile failure names only itself: the other two facets
+        // stand complete, so the admission cannot hide behind them or
+        // smear across them.
+        let mut program = program();
+        program.fail_decompile = vec!["FUN_18003e750".into()];
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Partial);
+        assert!(roster_faults(&coverage).is_empty());
+        assert_eq!(
+            facet(&coverage, "function-bodies").limitation.as_deref(),
+            Some("1 function body unreached: FUN_18003e750")
+        );
+        assert_eq!(
+            facet(&coverage, "program-strings").status,
+            CoverageStatus::Complete
+        );
+        assert_eq!(
+            facet(&coverage, "string-xrefs").status,
+            CoverageStatus::Complete
+        );
+    }
+
+    #[tokio::test]
+    async fn the_bodies_line_is_capped_at_five_names_and_counts_the_nameless() {
+        // Bounded prose beside the counts: six decompile failures name
+        // five inline and fold the sixth into a count, and a nameless
+        // listing entry counts toward the total without stealing a name
+        // slot.
+        let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
+        let mut program = FakeProgram::default();
+        for (index, name) in names.iter().enumerate() {
+            program.listing.push(summary(name));
+            if index >= 6 {
+                program
+                    .bodies
+                    .insert(name.clone(), function(name, "  return;\n"));
+            }
+        }
+        program.fail_decompile = names[..6].to_vec();
+        program.listing.push(summary(""));
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial scan states its coverage");
+        let bodies = facet(&coverage, "function-bodies");
+        assert_eq!(bodies.status, CoverageStatus::Partial);
+        assert_eq!(
+            bodies.limitation.as_deref(),
+            Some(
+                "7 function bodies unreached: FUN_body_0000, FUN_body_0001, \
+                 FUN_body_0002, FUN_body_0003, FUN_body_0004, +2 more"
+            ),
+            "six named failures plus one nameless entry: five names, the \
+             rest counted, the count covering both"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+        let mut coverage = coverage_stamp(&[], 0, false, 0, 0);
+        coverage
+            .facets
+            .retain(|facet| facet.id != "program-strings");
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `program-strings` is missing from the record"],
+            "an engine quietly dropping one of its facets fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_facet_is_doubled() {
+        let mut coverage = coverage_stamp(&[], 0, true, 0, 0);
+        coverage.facets.push(coverage.facets[1].clone());
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `program-strings` appears 2 times in the record"],
+            "a facet crowded into two entries fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+        let mut coverage = coverage_stamp(&[], 0, false, 0, 0);
+        coverage.facets.push(FacetCoverage {
+            id: "format-strings".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        });
+        assert_eq!(
+            roster_faults(&coverage),
+            ["record names `format-strings`, a facet the engine never declared"],
+            "an entry outside the declared roster fails loudly — format \
+             strings are read off the bodies, not from a region of their own"
         );
     }
 }

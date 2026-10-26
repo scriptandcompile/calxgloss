@@ -2,7 +2,7 @@
 {# serialization findings. Parameterized by (findings list, heading text) so #}
 {# each template passes its own heading text. The body is verbatim-pinned by #}
 {# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
-{% macro serialization_section(findings, heading) %}
+{% macro serialization_section(findings, heading, coverage) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -16,6 +16,14 @@ the manual swaps, shifts, and masks:
 - **{{ finding.suggestion|safe }}** ({{ finding.kind }} pattern, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% endfor %}
+
+{% endif %}
+{% if !coverage.admission.is_empty() %}
+{% if findings.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+Coverage: {{ coverage.admission }}
 
 {% endif %}
 {% endmacro %}

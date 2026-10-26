@@ -171,6 +171,12 @@ pub struct ComplexityPromptData {
     /// Control-flow findings about the target function made by the
     /// `calxgloss-controlflow` detectors.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// What the type-inference scan's own document admits — carried to
+    /// the rich and detailed tier templates, whose type information
+    /// surface is the third surface this record qualifies (issue #351).
+    /// Default-empty: no tier path files a scan document.
+    #[serde(default)]
+    pub type_inference_coverage: super::templates::CoverageInfo,
 }
 
 impl ComplexityPromptData {
@@ -202,6 +208,7 @@ impl ComplexityPromptData {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            type_inference_coverage: Default::default(),
         }
     }
 

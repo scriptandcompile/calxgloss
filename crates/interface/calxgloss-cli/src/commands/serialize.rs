@@ -111,6 +111,13 @@ fn print_serialization_report(result: &SerializeResult, path: &Path) {
             None => dim("(none)"),
         }
     ));
+
+    // The scan's own admission, beside the counts it qualifies (issue
+    // #351): the shared type's bounded line, framed under `Coverage:` and
+    // printed only when there is something to admit. The line names only
+    // bodies the scan never reached — a function without a pattern under
+    // a complete record is examined and clean.
+    print_coverage(result.metadata.coverage.as_ref());
     println!();
 
     if !result.findings.is_empty() {

@@ -52,7 +52,7 @@ Test #{{ test.index }}:
 {% endfor %}
 
 {% endif %}
-{% call type_information::type_information_section(type_info, "TYPE INFORMATION") %}{% endcall %}
+{% call type_information::type_information_section(type_info, "TYPE INFORMATION", type_inference_coverage) %}{% endcall %}
 {% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS", control_flow_coverage) %}{% endcall %}
 ## EXTERNAL FUNCTION HANDLING RULES
 

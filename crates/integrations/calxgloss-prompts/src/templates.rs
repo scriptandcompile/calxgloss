@@ -797,7 +797,7 @@ impl FixTemplate {
 /// coverage — leaves the field default-empty, and an empty `admission`
 /// is exactly the include's signal that there is nothing to admit: the
 /// section renders byte-for-byte what it rendered before P19.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CoverageInfo {
     /// The document's overall coverage status word, as persisted —
     /// `complete`, `partial`, `unavailable`, or `unexamined`; empty when
@@ -919,9 +919,28 @@ pub struct EvidenceBundle {
     /// carries an admission — naming the bodies the scan never reached,
     /// never a body it read and left without a record.
     pub global_state_coverage: CoverageInfo,
+    /// What the algorithm-recognition scan's own document admits it read
+    /// and could not — filled exactly once per document by the algorithm
+    /// projection row, beside (never inside) the per-record
+    /// `recognized_algorithms` list (issue #351). Default-empty when no
+    /// algorithm document was read, when that document states no coverage,
+    /// or when it claims complete coverage; the recognized-algorithms
+    /// include renders its one qualification line exactly when this
+    /// carries an admission — naming the bodies the scan never reached,
+    /// never a body it read and left without a recognition.
+    pub algorithm_coverage: CoverageInfo,
     /// String-context findings about this function made by the analysis
     /// pipeline.
     pub string_findings: Vec<StringContextInfo>,
+    /// What the string-context scan's own document admits it read and
+    /// could not — filled exactly once per document by the string-context
+    /// projection row, beside (never inside) the per-record
+    /// `string_findings` list (issue #351). Default-empty when no
+    /// string-context document was read, when that document states no
+    /// coverage, or when it claims complete coverage; the string-context
+    /// include renders its one qualification line exactly when this
+    /// carries an admission.
+    pub string_context_coverage: CoverageInfo,
     /// Library/API findings about this function and its binary made by
     /// the analysis pipeline.
     pub api_findings: Vec<ApiInfo>,
@@ -939,6 +958,27 @@ pub struct EvidenceBundle {
     /// Endianness and serialization findings about this function made
     /// by the analysis pipeline.
     pub serialization_findings: Vec<SerializationInfo>,
+    /// What the serialization-pattern scan's own document admits it read
+    /// and could not — filled exactly once per document by the
+    /// serialization projection row, beside (never inside) the per-record
+    /// `serialization_findings` list (issue #351). Default-empty when no
+    /// serialization document was read, when that document states no
+    /// coverage, or when it claims complete coverage; the serialization
+    /// include renders its one qualification line exactly when this
+    /// carries an admission — naming the bodies the scan never reached,
+    /// never a body it read and left without a pattern.
+    pub serialization_coverage: CoverageInfo,
+    /// What the type-inference scan's own document admits it read and
+    /// could not — filled exactly once per document by the type-inference
+    /// projection row, beside (never inside) all three surfaces it feeds:
+    /// the type information list, the calling convention list, and the
+    /// parameter direction list (issue #351). Default-empty when no
+    /// type-inference document was read, when that document states no
+    /// coverage, or when it claims complete coverage; each of the three
+    /// includes renders its one qualification line exactly when this
+    /// carries an admission, and the ONE record qualifies all THREE
+    /// surfaces with byte-identical lines.
+    pub type_inference_coverage: CoverageInfo,
     /// Library-match findings about this function and its call graph —
     /// shown where the module-context template's known-library include
     /// renders them; the escalate template calls no include for this list.
@@ -1182,6 +1222,12 @@ pub struct RichTemplate {
     /// complete (issue #349). This tier template is built from a bare
     /// request, which carries no filed document, so it defaults empty.
     pub control_flow_coverage: CoverageInfo,
+    /// What the type-inference scan's own document admits — the rich
+    /// template includes the type information surface, and this is the
+    /// only scan record that can qualify it here; default-empty like the
+    /// control-flow field above, since no tier path files a scan document
+    /// (issue #351).
+    pub type_inference_coverage: CoverageInfo,
 }
 
 impl RichTemplate {
@@ -1213,6 +1259,7 @@ impl RichTemplate {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             control_flow_coverage: CoverageInfo::default(),
+            type_inference_coverage: CoverageInfo::default(),
         }
     }
 }
@@ -1262,6 +1309,12 @@ pub struct DetailedTemplate {
     /// complete (issue #349). This tier template is built from a bare
     /// request, which carries no filed document, so it defaults empty.
     pub control_flow_coverage: CoverageInfo,
+    /// What the type-inference scan's own document admits — the detailed
+    /// template includes the type information surface, and this is the
+    /// only scan record that can qualify it here; default-empty like the
+    /// control-flow field above, since no tier path files a scan document
+    /// (issue #351).
+    pub type_inference_coverage: CoverageInfo,
 }
 
 impl DetailedTemplate {
@@ -1296,6 +1349,7 @@ impl DetailedTemplate {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             control_flow_coverage: CoverageInfo::default(),
+            type_inference_coverage: CoverageInfo::default(),
         }
     }
 }

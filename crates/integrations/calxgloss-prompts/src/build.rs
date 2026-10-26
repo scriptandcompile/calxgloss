@@ -359,6 +359,9 @@ pub fn build_complexity_prompt(
             // template's existing type-info section — no new section.
             template.type_info = data.type_info.clone();
             template.control_flow_findings = data.control_flow_findings.clone();
+            // Coverage fan-out (issue #351): the type-inference engine's one
+            // record qualifies this tier's type-information section too.
+            template.type_inference_coverage = data.type_inference_coverage.clone();
             render_prompt(&template)?
         }
         FunctionComplexity::Detailed => {
@@ -373,6 +376,10 @@ pub fn build_complexity_prompt(
             // type-info section, no new section.
             template.type_info = data.type_info.clone();
             template.control_flow_findings = data.control_flow_findings.clone();
+            // Coverage fan-out (issue #351): the type-inference engine's one
+            // record also qualifies this tier's type-information section and
+            // its parameter-direction section.
+            template.type_inference_coverage = data.type_inference_coverage.clone();
             render_prompt(&template)?
         }
     };
