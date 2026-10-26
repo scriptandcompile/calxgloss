@@ -111,10 +111,10 @@ Pseudo-C:
 {% call concurrency::concurrency_section(evidence.concurrency_findings, "ADDITIONAL CONTEXT — CONCURRENCY", evidence.sync_coverage) %}{% endcall %}
 {% call serialization::serialization_section(evidence.serialization_findings, "ADDITIONAL CONTEXT — SERIALIZATION") %}{% endcall %}
 {% call constants::constants_section(evidence.const_findings, "ADDITIONAL CONTEXT — CONSTANTS", evidence.consts_coverage) %}{% endcall %}
-{% call callbacks::callbacks_section(evidence.callback_findings, "ADDITIONAL CONTEXT — CALLBACKS") %}{% endcall %}
+{% call callbacks::callbacks_section(evidence.callback_findings, "ADDITIONAL CONTEXT — CALLBACKS", evidence.callback_coverage) %}{% endcall %}
 {% call control_flow::control_flow_section(evidence.control_flow_findings, "ADDITIONAL CONTEXT — CONTROL FLOW", evidence.control_flow_coverage) %}{% endcall %}
 {% call calling_convention::calling_convention_section(evidence.convention_findings, "ADDITIONAL CONTEXT — CALLING CONVENTION") %}{% endcall %}
-{% call sections::global_state_section(evidence.global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE") %}{% endcall %}
+{% call sections::global_state_section(evidence.global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE", evidence.global_state_coverage) %}{% endcall %}
 {% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "ADDITIONAL CONTEXT — FLOAT/SIMD", evidence.floatsimd_coverage) %}{% endcall %}
 {% call string_context::string_context_section(evidence.string_findings, "ADDITIONAL CONTEXT — STRINGS") %}{% endcall %}
 {% call libraries_apis::libraries_apis_section(evidence.api_findings, "ADDITIONAL CONTEXT — LIBRARIES AND APIS", evidence.api_coverage) %}{% endcall %}
@@ -138,6 +138,14 @@ or reshaping this contract:
   Evidence: `{{ finding.evidence|safe }}`
 {% endif %}
 {% endfor %}
+
+{% endif %}
+{% if !evidence.error_handling_coverage.admission.is_empty() %}
+{% if evidence.error_handling_findings.is_empty() %}
+## ADDITIONAL CONTEXT — ERROR HANDLING
+
+{% endif %}
+Coverage: {{ evidence.error_handling_coverage.admission }}
 
 {% endif %}
 ## TRANSLATION REQUIREMENTS

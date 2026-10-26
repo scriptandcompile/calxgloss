@@ -731,6 +731,215 @@ fn the_sync_report_prints_the_documents_admission_line_only_when_there_is_one() 
 }
 
 #[test]
+fn the_globalstate_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The global-state admission line at the process seam (issue #350):
+    // the `--show` report prints the filed document's one bounded line,
+    // naming the never-reached bodies, and prints nothing under a
+    // complete record — pinned through the engine's own persistor so it
+    // does not depend on which bodies the fixture happens to decompile.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_globalstate::types::GlobalStateResult::new(metadata);
+        calxgloss_globalstate::persist::GlobalStatePersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped global-state document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Partial,
+            limitation: Some("1 function body unreached: FUN_180045670".to_string()),
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "global-state",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the global-state show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:") && stdout.contains("1 function body unreached: FUN_180045670"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "global-state",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the global-state show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_errhandling_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The error-handling admission line at the process seam (issue
+    // #350), pinned the same way as global-state's: the `--show` report
+    // prints the filed document's one bounded line naming the skipped
+    // bodies, and prints nothing under a complete record.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_errhandling::types::ErrhandlingResult::new(metadata);
+        calxgloss_errhandling::persist::ErrhandlingPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped error-handling document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Partial,
+            limitation: Some(
+                "2 function bodies unreached: FUN_18004abcd, FUN_18006beef".to_string(),
+            ),
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "errhandling",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the errhandling show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:")
+            && stdout.contains("2 function bodies unreached: FUN_18004abcd, FUN_18006beef"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "errhandling",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the errhandling show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_callback_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The callback-detection admission line at the process seam (issue
+    // #350), pinned the same way: the `--show` report prints the filed
+    // document's one bounded line, and prints nothing under a complete
+    // record — so the flagless counts beside a complete record mean
+    // examined-and-clean.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_callback::types::CallbackResult::new(metadata);
+        calxgloss_callback::persist::CallbackPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped callback document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Partial,
+            limitation: Some("1 function body unreached: FUN_180050001".to_string()),
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "callback",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the callback show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:") && stdout.contains("1 function body unreached: FUN_180050001"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "callback",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the callback show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
 fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_alike() {
     // The two rides' own stamps at the process seam (issue #348): each
     // scan files the record it stamped, and the run's report and a later
@@ -806,6 +1015,55 @@ fn the_controlflow_memory_and_sync_rides_report_run_and_show_identically() {
     // absence.
     for command in ["controlflow", "memory", "sync"] {
         let ws = fixture_workspace();
+        let (ok, stdout, stderr) = run(
+            cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+
+        let (ok, show_stdout, stderr) = run(
+            cli(ws.path()).args([
+                "--target-dir",
+                ".",
+                command,
+                "--binary",
+                "fixture-target",
+                "--show",
+            ]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} show failed:\n{show_stdout}\n{stderr}");
+        assert_eq!(
+            stdout, show_stdout,
+            "the {command} run's report and a later --show report are the same \
+             read of the same document, coverage included"
+        );
+    }
+}
+
+#[test]
+fn the_globalstate_errhandling_and_callback_rides_report_run_and_show_identically() {
+    // The run-equals-show doctrine holds for the fan-out B trio's own
+    // stamps (issue #350): whatever coverage the fixture's real scans
+    // stamp, the run's report and a later `--show` report are the same
+    // read of the same document — admission line and all, or its
+    // absence.
+    for command in ["global-state", "errhandling", "callback"] {
+        let ws = fixture_workspace();
+        if command == "callback" {
+            // The callback ride's pre-scan hook reads the type-inference
+            // document for signature enrichment and warns when it is
+            // absent — scan-side log noise on the tracing stream, not
+            // report bytes. Filing the empty document through its own
+            // persistor keeps the run's stdout to just the report, so
+            // run and --show compare byte for byte.
+            let result = calxgloss_typeinfer::types::TypeInferenceResult::new(
+                calxgloss_types::ScanMetadata::new("fixture-target"),
+            );
+            calxgloss_typeinfer::persist::TypeInferPersistor::new(ws.path())
+                .save(&result)
+                .expect("the empty type-inference document should be filed");
+        }
         let (ok, stdout, stderr) = run(
             cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
             ws.path(),

@@ -121,6 +121,13 @@ fn print_global_state_report(result: &GlobalStateResult, path: &Path) {
             None => dim("(none)"),
         }
     ));
+
+    // The scan's own admission, beside the counts it qualifies (issue
+    // #350): the shared type's bounded line, framed under `Coverage:` and
+    // printed only when there is something to admit. The line names only
+    // bodies the scan never reached — a function without access records
+    // under a complete record is examined and clean.
+    print_coverage(result.metadata.coverage.as_ref());
     println!();
 
     if !result.findings.is_empty() {

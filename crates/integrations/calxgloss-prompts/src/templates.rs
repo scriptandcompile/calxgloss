@@ -880,6 +880,16 @@ pub struct EvidenceBundle {
     /// Callback and function-pointer-table findings about this function
     /// made by the analysis pipeline.
     pub callback_findings: Vec<CallbackInfo>,
+    /// What the callback-detection scan's own document admits it examined
+    /// and could not — filled exactly once per document by the callback
+    /// projection row, beside (never inside) the per-record
+    /// `callback_findings` list (issue #350). Default-empty when no
+    /// callback document was read, when that document states no coverage,
+    /// or when it claims complete coverage; the callback include renders
+    /// its one qualification line exactly when this carries an admission
+    /// — naming the bodies the scan never reached, never a body it read
+    /// and left unflagged.
+    pub callback_coverage: CoverageInfo,
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
@@ -899,6 +909,16 @@ pub struct EvidenceBundle {
     /// Global-state access records about this function made by the
     /// global-state scan.
     pub global_state_findings: Vec<GlobalStateInfo>,
+    /// What the global-state scan's own document admits it examined and
+    /// could not — filled exactly once per document by the global-state
+    /// projection row, beside (never inside) the per-record
+    /// `global_state_findings` list (issue #350). Default-empty when no
+    /// global-state document was read, when that document states no
+    /// coverage, or when it claims complete coverage; the global-state
+    /// include renders its one qualification line exactly when this
+    /// carries an admission — naming the bodies the scan never reached,
+    /// never a body it read and left without a record.
+    pub global_state_coverage: CoverageInfo,
     /// String-context findings about this function made by the analysis
     /// pipeline.
     pub string_findings: Vec<StringContextInfo>,
@@ -961,6 +981,16 @@ pub struct EvidenceBundle {
     /// `calxgloss-errhandling` scan — the idiom the body guards its
     /// work with and the failure codes it states.
     pub error_handling_findings: Vec<ErrhandlingInfo>,
+    /// What the error-handling scan's own document admits it examined and
+    /// could not — filled exactly once per document by the error-handling
+    /// projection row, beside (never inside) the per-record
+    /// `error_handling_findings` list (issue #350). Default-empty when no
+    /// error-handling document was read, when that document states no
+    /// coverage, or when it claims complete coverage; the error-handling
+    /// section renders its one qualification line exactly when this
+    /// carries an admission — naming the bodies the scan never reached,
+    /// never a body it read and left without a finding.
+    pub error_handling_coverage: CoverageInfo,
     /// The float/SIMD usage flag for this function made by the
     /// `calxgloss-floatsimd` scan — one record naming the shape the
     /// body's float evidence spells.

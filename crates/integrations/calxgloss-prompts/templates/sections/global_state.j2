@@ -1,8 +1,17 @@
 {# The GLOBAL STATE section, shared by every engine template that feeds the #}
-{# global-state findings. Parameterized by (findings list, heading text) so #}
-{# each template passes its own heading prefix. The body is verbatim-pinned #}
-{# by the section suite in src/lib.rs — wording or formatting drift fails CI.#}
-{% macro global_state_section(findings, heading) %}
+{# global-state findings. Parameterized by (findings list, heading text, #}
+{# scan coverage record) so each template passes its own heading prefix and #}
+{# the coverage the producing scan stamped. The body is verbatim-pinned by #}
+{# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{# The coverage record (issue #350) arrives as CoverageInfo strings: the #}
+{# scan's status word and its admission line. The include appends exactly #}
+{# one "Coverage:" qualification line — beside the entries, or as the whole #}
+{# section beside the heading when the scan stamped no findings but admits #}
+{# falling short — whenever the record carries an admission; a complete or #}
+{# missing record renders exactly what it rendered before, and the line #}
+{# names only bodies the scan never reached, never an examined-and-clean #}
+{# body the record list left unmentioned. #}
+{% macro global_state_section(findings, heading, coverage) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -17,6 +26,14 @@ for it:
 - **{{ finding.suggestion|safe }}** ({{ finding.kind }} of `{{ finding.global }}`, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% endfor %}
+
+{% endif %}
+{% if !coverage.admission.is_empty() %}
+{% if findings.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+Coverage: {{ coverage.admission }}
 
 {% endif %}
 {% endmacro %}

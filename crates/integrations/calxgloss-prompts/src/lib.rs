@@ -4002,6 +4002,334 @@ mod tests {
         }
     }
 
+    // -- admitted coverage: the global-state, error-handling, and callback
+    //    sections (issue #350) --
+
+    /// Coverage records in the shape these three scans file: each one's
+    /// single `function-bodies` facet fell short, naming the bodies the
+    /// decompiler never produced — never an examined-and-clean body the
+    /// finding list left unmentioned. Each engine names different bodies,
+    /// so a coverage value crossing into another engine's section fails
+    /// every pin below.
+    fn globalstate_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_180045670".to_string()),
+            }],
+        }
+    }
+
+    fn errhandling_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "2 function bodies unreached: FUN_18004abcd, FUN_18006beef".to_string(),
+                ),
+            }],
+        }
+    }
+
+    fn callback_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_180050001".to_string()),
+            }],
+        }
+    }
+
+    /// The one qualification wording each section suite pins for its
+    /// engine's section (issue #350).
+    const GLOBALSTATE_ADMISSION: &str = "partial — 1 function body unreached: FUN_180045670";
+    const ERRHANDLING_ADMISSION: &str =
+        "partial — 2 function bodies unreached: FUN_18004abcd, FUN_18006beef";
+    const CALLBACK_ADMISSION: &str = "partial — 1 function body unreached: FUN_180050001";
+
+    /// The headings the consuming templates pass each section.
+    const ESCALATE_GLOBAL_STATE_HEADING: &str = "ADDITIONAL CONTEXT — GLOBAL STATE";
+    const MODULE_GLOBAL_STATE_HEADING: &str = "GLOBAL STATE";
+    const ESCALATE_CALLBACKS_HEADING: &str = "ADDITIONAL CONTEXT — CALLBACKS";
+    const ESCALATE_ERROR_HANDLING_HEADING: &str = "ADDITIONAL CONTEXT — ERROR HANDLING";
+    const MODULE_ERROR_HANDLING_HEADING: &str = "ERROR HANDLING";
+
+    /// The error-handling section's body as each host template renders it
+    /// inline — the steering wording genuinely differs between the retry
+    /// prompt and the module translation, so the block is the one section
+    /// kept inline rather than lifted onto an include; each copy is
+    /// pinned beside its own steering (issue #350). Both rows below are
+    /// what `seh_finding()` and `code_finding()` render, in list order.
+    const ERROR_HANDLING_ROWS: &str = "- **translate the frame as a Rust match arms ladder** (try/catch frame idiom, confidence 100)\n  \
+        Evidence: `  catch(...) {`\n\n\
+        - **failure code 0x80070057** (failure code from a `return` site, confidence 85)\n  \
+        Evidence: `  mov eax, 80070057h`";
+    const ESCALATE_ERROR_HANDLING_BODY: &str = "The error-handling contract this function's body carries, read by static\n\
+        analysis — the same findings the first attempt saw. Translate the idiom into\n\
+        the suggested Rust shape — an exception-mapped error type for a try/catch\n\
+        frame, early returns plus RAII or scope guards for a cleanup ladder — and\n\
+        surface the failure codes below as the numeric codes of the Rust error values\n\
+        the function hands back; a divergence here is usually the translation dropping\n\
+        or reshaping this contract:";
+    const MODULE_ERROR_HANDLING_BODY: &str = "The error-handling contract this function's body carries, read by static\n\
+        analysis. Where a finding is credible, translate the idiom into the suggested\n\
+        Rust shape — an exception-mapped error type for a try/catch frame, early\n\
+        returns plus RAII or scope guards for a cleanup ladder — instead of flattening\n\
+        the guarded block into straight-line logic, and surface the failure codes\n\
+        below as the numeric codes of the Rust error values the function hands back\n\
+        instead of collapsing them into ad-hoc error variants:";
+
+    /// The pinned wording stands at both ends of its journey for all
+    /// three engines: the shared coverage type produces it from the
+    /// records their scans stamp, and the prompt-side view carries those
+    /// same lines verbatim.
+    #[test]
+    fn the_global_state_error_handling_and_callback_admission_wording_is_pinned_at_both_ends() {
+        assert_eq!(
+            globalstate_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            GLOBALSTATE_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&globalstate_admitting_coverage()).admission,
+            GLOBALSTATE_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+        assert_eq!(
+            errhandling_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            ERRHANDLING_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&errhandling_admitting_coverage()).admission,
+            ERRHANDLING_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+        assert_eq!(
+            callback_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            CALLBACK_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&callback_admitting_coverage()).admission,
+            CALLBACK_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+    }
+
+    /// A complete coverage record is nothing to admit: the three sections
+    /// render byte-for-byte what they rendered when their documents
+    /// stated no coverage at all, at every consumer of each (issue #350).
+    #[test]
+    fn a_complete_coverage_record_renders_the_global_state_error_handling_and_callback_sections_byte_identically(
+    ) {
+        let mut bundle = EvidenceBundle::default();
+        bundle.global_state_findings.push(global_state_fixture());
+        bundle
+            .error_handling_findings
+            .extend([seh_finding(), code_finding()]);
+        bundle.callback_findings.push(callback_fixture());
+        let unstamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+        let complete = CoverageInfo::from(&calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: Vec::new(),
+        });
+        bundle.global_state_coverage = complete.clone();
+        bundle.error_handling_coverage = complete.clone();
+        bundle.callback_coverage = complete;
+        let stamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+        assert_eq!(unstamped, stamped, "a complete record adds no bytes");
+        assert!(
+            !stamped.0.contains("Coverage:") && !stamped.1.contains("Coverage:"),
+            "complete coverage has nothing to admit"
+        );
+    }
+
+    /// A falling-short record for each engine appends exactly one bounded
+    /// qualification line beside its own entries at each of the
+    /// section's consumers — the admission rides the section, it never
+    /// replaces or reflows it, and one line is the whole of the bloat
+    /// budget (issue #350).
+    #[test]
+    fn the_global_state_error_handling_and_callback_rides_append_exactly_one_qualification_line() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.global_state_findings.push(global_state_fixture());
+        bundle
+            .error_handling_findings
+            .extend([seh_finding(), code_finding()]);
+        bundle.callback_findings.push(callback_fixture());
+        let escalate_clean = render_escalate_full(&bundle);
+        let module_clean = render_module_context_full(&bundle);
+
+        bundle.global_state_coverage = CoverageInfo::from(&globalstate_admitting_coverage());
+        bundle.error_handling_coverage = CoverageInfo::from(&errhandling_admitting_coverage());
+        bundle.callback_coverage = CoverageInfo::from(&callback_admitting_coverage());
+        let escalate_admitted = render_escalate_full(&bundle);
+        let module_admitted = render_module_context_full(&bundle);
+
+        let escalate_expected = escalate_clean
+            .replace(
+                &format!("{GLOBAL_STATE_STEERING}\n\n{GLOBAL_STATE_ENTRY}\n\n"),
+                &format!(
+                    "{GLOBAL_STATE_STEERING}\n\n{GLOBAL_STATE_ENTRY}\n\nCoverage: {GLOBALSTATE_ADMISSION}\n\n"
+                ),
+            )
+            .replace(
+                &format!("{ESCALATE_ERROR_HANDLING_BODY}\n\n{ERROR_HANDLING_ROWS}\n\n"),
+                &format!(
+                    "{ESCALATE_ERROR_HANDLING_BODY}\n\n{ERROR_HANDLING_ROWS}\n\nCoverage: {ERRHANDLING_ADMISSION}\n\n"
+                ),
+            )
+            .replace(
+                &format!("{CALLBACKS_SECTION_BODY}\n\n"),
+                &format!("{CALLBACKS_SECTION_BODY}\n\nCoverage: {CALLBACK_ADMISSION}\n\n"),
+            );
+        assert_eq!(
+            escalate_admitted, escalate_expected,
+            "each admission rides its own escalate section as exactly one line beside the entries"
+        );
+        let module_expected = module_clean
+            .replace(
+                &format!("{GLOBAL_STATE_STEERING}\n\n{GLOBAL_STATE_ENTRY}\n\n"),
+                &format!(
+                    "{GLOBAL_STATE_STEERING}\n\n{GLOBAL_STATE_ENTRY}\n\nCoverage: {GLOBALSTATE_ADMISSION}\n\n"
+                ),
+            )
+            .replace(
+                &format!("{MODULE_ERROR_HANDLING_BODY}\n\n{ERROR_HANDLING_ROWS}\n\n"),
+                &format!(
+                    "{MODULE_ERROR_HANDLING_BODY}\n\n{ERROR_HANDLING_ROWS}\n\nCoverage: {ERRHANDLING_ADMISSION}\n\n"
+                ),
+            );
+        assert_eq!(
+            module_admitted, module_expected,
+            "each admission rides its own module-context section as exactly one line beside the entries"
+        );
+        for (prompt, heading) in [
+            (&escalate_admitted, ESCALATE_GLOBAL_STATE_HEADING),
+            (&escalate_admitted, ESCALATE_CALLBACKS_HEADING),
+            (&escalate_admitted, ESCALATE_ERROR_HANDLING_HEADING),
+            (&module_admitted, MODULE_GLOBAL_STATE_HEADING),
+            (&module_admitted, MODULE_ERROR_HANDLING_HEADING),
+        ] {
+            assert_eq!(
+                prompt.matches(&format!("## {heading}")).count(),
+                1,
+                "the admissions never open a second {heading} section"
+            );
+        }
+        assert_eq!(
+            escalate_admitted.matches("Coverage:").count(),
+            escalate_clean.matches("Coverage:").count() + 3,
+            "three admission lines across three sections, never a paragraph"
+        );
+        assert_eq!(
+            module_admitted.matches("Coverage:").count(),
+            module_clean.matches("Coverage:").count() + 2,
+            "two admission lines across two sections, never a paragraph"
+        );
+    }
+
+    /// The doctrine pair for all three engines (issue #350): an
+    /// unmentioned function under a complete record means examined-and-
+    /// clean, and silence from a record that names bodies it never
+    /// reached must never render the same bytes — a retry or a module
+    /// translation can tell "this function has no such findings" from
+    /// "the scan never read this function".
+    #[test]
+    fn empty_global_state_error_handling_and_callback_findings_under_complete_and_partial_coverage_never_render_alike(
+    ) {
+        let under_complete = (
+            render_escalate_full(&EvidenceBundle::default()),
+            render_module_context_full(&EvidenceBundle::default()),
+        );
+        for (prompt, heading) in [
+            (&under_complete.0, ESCALATE_GLOBAL_STATE_HEADING),
+            (&under_complete.0, ESCALATE_CALLBACKS_HEADING),
+            (&under_complete.0, ESCALATE_ERROR_HANDLING_HEADING),
+            (&under_complete.1, MODULE_GLOBAL_STATE_HEADING),
+            (&under_complete.1, MODULE_ERROR_HANDLING_HEADING),
+        ] {
+            assert!(
+                !prompt.contains(&format!("## {heading}")),
+                "silence from an unstamped record stays section-less, as before P19"
+            );
+        }
+        let escalate_partial = render_escalate_full(&EvidenceBundle {
+            global_state_coverage: CoverageInfo::from(&globalstate_admitting_coverage()),
+            error_handling_coverage: CoverageInfo::from(&errhandling_admitting_coverage()),
+            callback_coverage: CoverageInfo::from(&callback_admitting_coverage()),
+            ..Default::default()
+        });
+        let module_partial = render_module_context_full(&EvidenceBundle {
+            global_state_coverage: CoverageInfo::from(&globalstate_admitting_coverage()),
+            error_handling_coverage: CoverageInfo::from(&errhandling_admitting_coverage()),
+            ..Default::default()
+        });
+        assert_ne!(
+            under_complete.0, escalate_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert_ne!(
+            under_complete.1, module_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        for (prompt, heading, admission) in [
+            (
+                &escalate_partial,
+                ESCALATE_GLOBAL_STATE_HEADING,
+                GLOBALSTATE_ADMISSION,
+            ),
+            (
+                &escalate_partial,
+                ESCALATE_CALLBACKS_HEADING,
+                CALLBACK_ADMISSION,
+            ),
+            (
+                &escalate_partial,
+                ESCALATE_ERROR_HANDLING_HEADING,
+                ERRHANDLING_ADMISSION,
+            ),
+            (
+                &module_partial,
+                MODULE_GLOBAL_STATE_HEADING,
+                GLOBALSTATE_ADMISSION,
+            ),
+            (
+                &module_partial,
+                MODULE_ERROR_HANDLING_HEADING,
+                ERRHANDLING_ADMISSION,
+            ),
+        ] {
+            assert!(
+                prompt.contains(&format!(
+                    "## {heading}\n\nCoverage: {admission}\n\n"
+                )),
+                "the empty list still carries the one admission line"
+            );
+        }
+    }
+
     /// Scans template source for `{% import "<path>" as <scope> %}`
     /// directives, returning each (path, scope) pair.
     fn imported_sections(source: &str) -> Vec<(&str, &str)> {

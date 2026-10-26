@@ -478,6 +478,18 @@ impl AnalysisDoc for CallbackDoc {
             .callback_findings
             .push(calxgloss_prompts::CallbackInfo::from(record));
     }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never reached — never an
+        // examined-and-clean body its finding list left unmentioned
+        // (issue #350).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.callback_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
+    }
 }
 
 /// The control-flow document, `re/analysis/controlflow/{binary}.json`:
@@ -574,6 +586,18 @@ impl AnalysisDoc for ErrorHandlingDoc {
             .error_handling_findings
             .push(calxgloss_prompts::ErrhandlingInfo::from(record));
     }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never reached — never an
+        // examined-and-clean body its finding list left unmentioned
+        // (issue #350).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.error_handling_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
+    }
 }
 
 /// The global-state document, `re/analysis/globalstate/{binary}.json`:
@@ -614,6 +638,18 @@ impl AnalysisDoc for GlobalStateDoc {
         bundle
             .global_state_findings
             .push(calxgloss_prompts::GlobalStateInfo::from(record));
+    }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never reached — never an
+        // examined-and-clean body its record list left unmentioned
+        // (issue #350).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.global_state_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
     }
 }
 
