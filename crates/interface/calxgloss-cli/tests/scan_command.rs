@@ -216,6 +216,181 @@ fn the_apidetect_report_prints_the_scans_admission_run_and_show_alike() {
 }
 
 #[test]
+fn the_libmatch_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The libmatch admission line at the process seam (issue #347): a
+    // filed document's coverage record — however it got stamped — prints
+    // its one bounded admission line beside the counts through `--show`,
+    // and a complete record prints nothing. The documents here are filed
+    // by the engine's own persistor with hand-stamped coverage, so the
+    // pin does not depend on which bodies the fixture's real decompile
+    // happens to produce.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_libmatch::types::LibmatchResult::new(metadata);
+        calxgloss_libmatch::persist::LibmatchPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped libmatch document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Partial,
+            limitation: Some("1 function body unreached: FUN_180099000".to_string()),
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "libmatch",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the libmatch show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:") && stdout.contains("1 function body unreached: FUN_180099000"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "libmatch",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the libmatch show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_floatsimd_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The floatsimd admission line at the process seam (issue #347),
+    // pinned the same way as libmatch's: the `--show` report prints the
+    // filed document's one bounded line, naming the never-reached
+    // bodies, and prints nothing under a complete record — so the
+    // flagless rows beside a complete count mean examined-and-clean.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_floatsimd::types::FloatsimdResult::new(metadata);
+        calxgloss_floatsimd::persist::FloatsimdPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped float/SIMD document should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Partial,
+            limitation: Some("2 function bodies unreached: FUN_99000, FUN_99100".to_string()),
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "floatsimd",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the floatsimd show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Coverage:")
+            && stdout.contains("2 function bodies unreached: FUN_99000, FUN_99100"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "floatsimd",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the floatsimd show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_libmatch_and_floatsimd_rides_report_run_and_show_identically() {
+    // The run-equals-show doctrine holds for both engines' new stamps
+    // (issue #347): whatever coverage the fixture's real scans stamp,
+    // the run's report and a later `--show` report are the same read of
+    // the same document — admission line and all, or its absence.
+    for command in ["libmatch", "floatsimd"] {
+        let ws = fixture_workspace();
+        let (ok, stdout, stderr) = run(
+            cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+
+        let (ok, show_stdout, stderr) = run(
+            cli(ws.path()).args([
+                "--target-dir",
+                ".",
+                command,
+                "--binary",
+                "fixture-target",
+                "--show",
+            ]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} show failed:\n{show_stdout}\n{stderr}");
+        assert_eq!(
+            stdout, show_stdout,
+            "the {command} run's report and a later --show report are the same \
+             read of the same document"
+        );
+    }
+}
+
+#[test]
 fn the_typeinfer_write_back_rides_the_scan_and_show_paths_and_prints_its_report() {
     // The type-inference follow-on at the process seam (issue #341):
     // `--write-back --confidence-floor 0` applies through the typeinfer

@@ -83,6 +83,7 @@ mod tests {
             suggestion: "slice copy".into(),
             confidence: Confidence::new(confidence),
             evidence: format!("{symbol} evidence"),
+            admission: None,
         })
     }
 

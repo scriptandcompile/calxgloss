@@ -327,6 +327,12 @@ pub struct LibmatchInfo {
     pub confidence: u8,
     /// The normalized body shape that carried the match.
     pub evidence: String,
+    /// P19-3: what the match record admits about its own version
+    /// authority — `Signature match, version unknown` for engine-made
+    /// matches, empty for a record from a pre-P19-3 document. The
+    /// section shows the note beside the finding's evidence so the
+    /// prompt never reads a versioned claim where none was established.
+    pub admission: String,
 }
 
 /// One pointer parameter's direction reading about one function, made by
@@ -877,6 +883,15 @@ pub struct EvidenceBundle {
     /// shown where the module-context template's known-library include
     /// renders them; the escalate template calls no include for this list.
     pub libmatch_findings: Vec<LibmatchInfo>,
+    /// What the libmatch scan's own document admits it examined and
+    /// could not — filled from the filed libmatch document at the
+    /// function-evidence gather (issue #347), beside (never inside) the
+    /// per-record `libmatch_findings` list. Default-empty when no
+    /// libmatch document was read, when that document states no
+    /// coverage, or when it claims complete coverage; the known-library
+    /// include renders its one qualification line exactly when this
+    /// carries an admission.
+    pub libmatch_coverage: CoverageInfo,
     /// Parameter-direction readings about this function made by the
     /// type-inference direction detector — shown where the module-context
     /// template's parameter-directions include renders them; the escalate
@@ -899,6 +914,16 @@ pub struct EvidenceBundle {
     /// `calxgloss-floatsimd` scan — one record naming the shape the
     /// body's float evidence spells.
     pub floatsimd_findings: Vec<FloatsimdInfo>,
+    /// What the float/SIMD scan's own document admits it examined and
+    /// could not — filled exactly once per document by the floatsimd
+    /// projection row, beside (never inside) the per-record
+    /// `floatsimd_findings` list (issue #347). Default-empty when no
+    /// floatsimd document was read, when that document states no
+    /// coverage, or when it claims complete coverage; the float/SIMD
+    /// include renders its one qualification line exactly when this
+    /// carries an admission — naming the bodies the scan never reached,
+    /// never a body it read and left unflagged.
+    pub floatsimd_coverage: CoverageInfo,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }

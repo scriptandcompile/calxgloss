@@ -21,7 +21,7 @@
 use crate::confidence::BODY_MATCH_CONFIDENCE;
 use crate::normalize::normalize_lines;
 use crate::signature::LibmatchSignature;
-use crate::types::{Confidence, LibmatchFinding, LibmatchMatch};
+use crate::types::{Confidence, LibmatchFinding, LibmatchMatch, VERSION_UNKNOWN_ADMISSION};
 use calxgloss_decomp::DecompiledFunction;
 use regex::Regex;
 
@@ -144,6 +144,10 @@ impl LibmatchMatcher {
                         signature.confidence.unwrap_or(BODY_MATCH_CONFIDENCE),
                     ),
                     evidence,
+                    // P19-3: every match this pass makes states its own
+                    // version authority — the signature proved a body
+                    // shape, never WHICH release carried it.
+                    admission: Some(VERSION_UNKNOWN_ADMISSION.into()),
                 }));
             }
         }

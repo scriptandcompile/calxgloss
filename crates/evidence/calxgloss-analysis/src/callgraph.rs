@@ -605,7 +605,7 @@ mod tests {
     use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
     use calxgloss_libmatch::persist::LibmatchPersistor;
     use calxgloss_libmatch::types::{
-        LibmatchFinding, LibmatchMatch, LibmatchResult, LibraryFamily,
+        LibmatchFinding, LibmatchMatch, LibmatchResult, LibraryFamily, VERSION_UNKNOWN_ADMISSION,
     };
     use calxgloss_types::{Confidence, DllCategory, ScanMetadata};
 
@@ -655,6 +655,7 @@ mod tests {
             confidence: Confidence::new(confidence),
             evidence: "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
                 .to_string(),
+            admission: Some(VERSION_UNKNOWN_ADMISSION.to_string()),
         }
     }
 

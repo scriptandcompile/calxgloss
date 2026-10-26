@@ -131,8 +131,8 @@ Fields:
 {% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
 {% call calling_convention::calling_convention_section(evidence.convention_findings, "CALLING CONVENTION") %}{% endcall %}
 {% call sections::global_state_section(evidence.global_state_findings, "GLOBAL STATE") %}{% endcall %}
-{% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "FLOAT/SIMD") %}{% endcall %}
-{% call libmatch::libmatch_section(evidence.libmatch_findings, "KNOWN LIBRARY FUNCTIONS") %}{% endcall %}
+{% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "FLOAT/SIMD", evidence.floatsimd_coverage) %}{% endcall %}
+{% call libmatch::libmatch_section(evidence.libmatch_findings, "KNOWN LIBRARY FUNCTIONS", evidence.libmatch_coverage) %}{% endcall %}
 {% call parameter_direction::parameter_direction_section(evidence.parameter_direction_findings, "PARAMETER DIRECTIONS") %}{% endcall %}
 {% call data_tables::data_tables_section(evidence.data_table_findings, "DATA TABLES") %}{% endcall %}
 {% if !evidence.error_handling_findings.is_empty() %}

@@ -1,9 +1,21 @@
 {# The known-library match section, shared by every engine template that #}
 {# feeds the library-match findings. Parameterized by (findings list, heading #}
-{# text) so each template passes its own heading text. The body is #}
+{# text, scan coverage record) so each template passes its own heading text #}
+{# and the coverage the producing scan stamped. The body is #}
 {# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
 {# drift fails CI. #}
-{% macro libmatch_section(findings, heading) %}
+{# Each match record carries its own version-authority note (issue #347): #}
+{# the signature matched some release, which release is not established. The #}
+{# note rides the record — an admitted finding renders one extra "Admission:" #}
+{# line beside its Evidence; a finding with no note renders what it rendered #}
+{# before. #}
+{# The coverage record (issue #347) arrives as CoverageInfo strings: the #}
+{# scan's status word and its admission line. The include appends exactly #}
+{# one "Coverage:" qualification line — beside the entries, or as the whole #}
+{# section beside the heading when the scan stamped no findings but admits #}
+{# falling short — whenever the record carries an admission; a complete or #}
+{# missing record renders exactly what it rendered before. #}
+{% macro libmatch_section(findings, heading, coverage) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -15,7 +27,16 @@ suggested Rust equivalent instead:
 {% for finding in findings %}
 - **{{ finding.suggestion|safe }}** — `{{ finding.function }}` matches `{{ finding.symbol }}` ({{ finding.family }} library, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
-{% endfor %}
+{% if !finding.admission.is_empty() %}  Admission: {{ finding.admission }}
+{% endif %}{% endfor %}
+
+{% endif %}
+{% if !coverage.admission.is_empty() %}
+{% if findings.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+Coverage: {{ coverage.admission }}
 
 {% endif %}
 {% endmacro %}

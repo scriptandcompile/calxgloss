@@ -181,6 +181,31 @@ mod tests {
     }
 
     #[test]
+    fn the_filed_document_carries_its_coverage_record_exactly() {
+        // What the engine stamped inside its scan is what every later
+        // reader — the projection seam, the report, a `--show` months
+        // later — sees: statuses, ids, order, and limitation lines ride
+        // the persistor untouched (issue #347).
+        let dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let persistor = FloatsimdPersistor::with_cache_dir(dir.path());
+        let mut result = sample_result("game_logic.dll");
+        result.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_18003e750".to_string()),
+            }],
+        });
+
+        persistor.save(&result).expect("save should succeed");
+        let loaded = persistor
+            .load("game_logic.dll")
+            .expect("load should succeed after a save");
+        assert_eq!(loaded.metadata.coverage, result.metadata.coverage);
+    }
+
+    #[test]
     fn results_are_filed_under_re_analysis_floatsimd_in_the_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let expected = dir.path().join("re/analysis/floatsimd/game_logic.dll.json");

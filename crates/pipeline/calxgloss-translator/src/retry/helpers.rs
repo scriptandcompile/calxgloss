@@ -34,8 +34,22 @@ pub fn gather_function_evidence(
     function: &str,
     call_graph: &[String],
 ) -> EvidenceBundle {
+    // The libmatch document is loaded once here: its findings join the
+    // live call-graph neighbor list outside the projection fold — the
+    // correlation is not a per-function fold row — and its coverage
+    // record, what the libmatch scan admitted about the bodies it read,
+    // rides beside those findings (issue #347). A document stating no
+    // coverage, or complete coverage, leaves the qualification field
+    // default-empty, exactly the pre-P19 render.
+    let libmatch = load_libmatch_result(workspace, binary);
+    let libmatch_coverage = libmatch
+        .as_ref()
+        .and_then(|document| document.metadata.coverage.as_ref())
+        .map(calxgloss_prompts::CoverageInfo::from)
+        .unwrap_or_default();
     let mut evidence = EvidenceBundle {
-        libmatch_findings: extract_libmatch_hints(workspace, binary, function, call_graph),
+        libmatch_findings: libmatch_hints_from(libmatch.as_ref(), function, call_graph),
+        libmatch_coverage,
         ..Default::default()
     };
     // The fold fills every other persisted-document field, the shared
@@ -315,33 +329,6 @@ pub fn libmatch_hints_from(
         .filter(|finding| joined.contains(finding.function()))
         .map(calxgloss_prompts::LibmatchInfo::from)
         .collect()
-}
-
-/// Extract known-library findings for a function from the persisted
-/// libmatch result, joined against the function's call-graph neighbors.
-///
-/// Reads the per-binary result produced by the `calxgloss-libmatch`
-/// matcher from `re/analysis/libmatch/{binary}.json` and keeps the
-/// identifications made for the neighbors named in `neighbors` — the
-/// known-library functions the target calls — through
-/// [`libmatch_hints_from`], so the prompt maps those calls onto Rust
-/// equivalents instead of re-implementing them.
-///
-/// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `binary` (the scan has not run), or the document is
-/// corrupt: missing known-library context degrades the prompt, it never
-/// fails it.
-pub fn extract_libmatch_hints(
-    workspace: Option<&std::path::Path>,
-    binary: &str,
-    function: &str,
-    neighbors: &[String],
-) -> Vec<calxgloss_prompts::LibmatchInfo> {
-    libmatch_hints_from(
-        load_libmatch_result(workspace, binary).as_ref(),
-        function,
-        neighbors,
-    )
 }
 
 // ============================================================
@@ -1437,6 +1424,25 @@ mod tests {
 
     // ---- libmatch callee-hint extraction --------------------------------
 
+    /// Test-only convenience wrapper over the read-plus-join route: load
+    /// the per-binary document — degrading to nothing when no workspace
+    /// is configured, none is persisted, or it is corrupt — and join it
+    /// against the neighbors through [`libmatch_hints_from`]. The gather
+    /// itself keeps the document to fill its coverage leg beside the
+    /// hints (issue #347), so this pair only serves the pins.
+    fn extract_libmatch_hints(
+        workspace: Option<&std::path::Path>,
+        binary: &str,
+        function: &str,
+        neighbors: &[String],
+    ) -> Vec<calxgloss_prompts::LibmatchInfo> {
+        libmatch_hints_from(
+            load_libmatch_result(workspace, binary).as_ref(),
+            function,
+            neighbors,
+        )
+    }
+
     fn libmatch_finding(
         function: &str,
         symbol: &str,
@@ -1452,6 +1458,11 @@ mod tests {
                 evidence:
                     "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
                         .to_string(),
+                // Shaped as the engine writes them (P19-3): the note
+                // rides every match record a fresh scan files.
+                admission: Some(
+                    calxgloss_libmatch::types::VERSION_UNKNOWN_ADMISSION.to_string(),
+                ),
             },
         )
     }
@@ -2718,6 +2729,190 @@ mod tests {
         assert!(
             bundle.api_findings.is_empty() && bundle.api_coverage.admission.is_empty(),
             "a corrupt API document fills neither findings nor coverage"
+        );
+    }
+
+    /// The float/SIMD row's coverage leg end to end (issue #347): the
+    /// record floatsimd stamps into its filed document rides one gather
+    /// into the bundle beside the flag, word for word; a document filed
+    /// before coverage stamping fills nothing; and a missing or corrupt
+    /// document fills nothing and degrades exactly as its flag does.
+    #[test]
+    fn the_floatsimd_row_gathers_the_documents_coverage_beside_its_flag() {
+        // The engine's own stamp: its one bodies facet fell short, naming
+        // the bodies the decompiler never produced.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "2 function bodies unreached: FUN_1800412a0, FUN_180049abc".to_string(),
+                ),
+            }],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_floatsimd::types::FloatsimdResult::new(metadata);
+        result.findings = vec![float_flag("FUN_18003ab00")];
+        calxgloss_floatsimd::persist::FloatsimdPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped float/SIMD result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.floatsimd_findings.len(),
+            1,
+            "the flag still rides its ordinary row"
+        );
+        assert_eq!(bundle.floatsimd_coverage.status, "partial");
+        assert_eq!(
+            bundle.floatsimd_coverage.admission,
+            "partial — 2 function bodies unreached: FUN_1800412a0, FUN_180049abc",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_floatsimd_findings(&dir, vec![float_flag("FUN_18003ab00")]);
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.floatsimd_findings.is_empty()
+                && bundle.floatsimd_coverage.status.is_empty()
+                && bundle.floatsimd_coverage.admission.is_empty(),
+            "a pre-P19 document fills the flag but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither flag nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.floatsimd_findings.is_empty() && bundle.floatsimd_coverage.admission.is_empty(),
+            "a missing float/SIMD document fills neither flag nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_floatsimd::persist::FloatsimdPersistor::new(dir.path())
+                .path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.floatsimd_findings.is_empty() && bundle.floatsimd_coverage.admission.is_empty(),
+            "a corrupt float/SIMD document fills neither flag nor coverage"
+        );
+    }
+
+    /// The libmatch gather's coverage leg end to end (issue #347): the
+    /// libmatch document is read outside the projection fold — its
+    /// findings join the live call-graph neighbor list — so its coverage
+    /// record rides the gather beside those joined findings, word for
+    /// word; a document filed before coverage stamping fills nothing;
+    /// and a missing or corrupt document fills neither findings nor
+    /// coverage.
+    #[test]
+    fn the_libmatch_gather_carries_the_documents_coverage_beside_its_hints() {
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_18003e999".to_string()),
+            }],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_libmatch::types::LibmatchResult::new(metadata);
+        result.findings = vec![libmatch_finding(
+            "FUN_18003e750",
+            "memcpy",
+            calxgloss_libmatch::types::LibraryFamily::Crt,
+        )];
+        calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped libmatch result should be saved");
+
+        let bundle = gather_function_evidence(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_18003e750".to_string()],
+        );
+        assert_eq!(
+            bundle
+                .libmatch_findings
+                .iter()
+                .map(|hint| hint.symbol.as_str())
+                .collect::<Vec<_>>(),
+            vec!["memcpy"],
+            "the callee hint still joins against the neighbor list"
+        );
+        assert_eq!(
+            bundle.libmatch_findings[0].admission,
+            calxgloss_libmatch::types::VERSION_UNKNOWN_ADMISSION,
+            "the match record's own version-authority note reaches the prompt \
+             with the hint"
+        );
+        assert_eq!(bundle.libmatch_coverage.status, "partial");
+        assert_eq!(
+            bundle.libmatch_coverage.admission,
+            "partial — 1 function body unreached: FUN_18003e999",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): hints without a coverage field.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_libmatch_findings(
+            &dir,
+            vec![libmatch_finding(
+                "FUN_18003e750",
+                "memcpy",
+                calxgloss_libmatch::types::LibraryFamily::Crt,
+            )],
+        );
+        let bundle = gather_function_evidence(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_18003e750".to_string()],
+        );
+        assert!(
+            !bundle.libmatch_findings.is_empty()
+                && bundle.libmatch_coverage.status.is_empty()
+                && bundle.libmatch_coverage.admission.is_empty(),
+            "a pre-P19 document fills hints but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither hint nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_18003e750".to_string()],
+        );
+        assert!(
+            bundle.libmatch_findings.is_empty() && bundle.libmatch_coverage.admission.is_empty(),
+            "a missing libmatch document fills neither hints nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path()).path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(
+            Some(dir.path()),
+            "eqmain.dll",
+            "FUN_18003ab00",
+            &["FUN_18003e750".to_string()],
+        );
+        assert!(
+            bundle.libmatch_findings.is_empty() && bundle.libmatch_coverage.admission.is_empty(),
+            "a corrupt libmatch document fills neither hints nor coverage"
         );
     }
 }

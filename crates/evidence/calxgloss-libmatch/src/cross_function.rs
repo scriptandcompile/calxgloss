@@ -211,7 +211,10 @@ fn sole_tail_call(pairing: &[(String, String)]) -> Option<(String, String)> {
 
 /// The match one body inherits from a claimed parent: the parent's
 /// symbol, family, and suggestion, at the given `confidence`, with the
-/// inheriting body's own `evidence` line.
+/// inheriting body's own `evidence` line. The parent's admission note —
+/// what the match says about its own version authority (P19-3) — is
+/// inherited with the claim: a propagated match admits exactly what the
+/// match it was inherited from admits.
 fn inherited_match(
     parent: &LibmatchFinding,
     function: &str,
@@ -225,6 +228,7 @@ fn inherited_match(
         suggestion: parent.suggestion().to_string(),
         confidence,
         evidence,
+        admission: (!parent.admission().is_empty()).then(|| parent.admission().to_string()),
     }
 }
 

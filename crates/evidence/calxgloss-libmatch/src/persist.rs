@@ -138,7 +138,10 @@ impl LibmatchPersistor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Confidence, LibmatchFinding, LibmatchMatch, LibraryFamily, ScanMetadata};
+    use crate::types::{
+        Confidence, LibmatchFinding, LibmatchMatch, LibraryFamily, ScanMetadata,
+        VERSION_UNKNOWN_ADMISSION,
+    };
     use tempfile::TempDir;
 
     /// A result carrying one finding, so a round trip proves the record
@@ -160,6 +163,9 @@ mod tests {
                 confidence: Confidence::new(60),
                 evidence: "*(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
                     .into(),
+                // The scan under test stamps its admission note (P19-3);
+                // the filed document must carry it through the file.
+                admission: Some(VERSION_UNKNOWN_ADMISSION.into()),
             })],
         }
     }
@@ -198,6 +204,7 @@ mod tests {
                 confidence: Confidence::new(60),
                 evidence: "*(undefined8 *)((long)puVar7 + -8) = *(undefined8 *)((long)lVar9 + -8);"
                     .into(),
+                admission: Some(VERSION_UNKNOWN_ADMISSION.into()),
             }));
         saved
             .findings
@@ -208,6 +215,7 @@ mod tests {
                 suggestion: "slice copy — `copy_nonoverlapping`".into(),
                 confidence: Confidence::new(50),
                 evidence: "return FUN_18003ab00(param_1, param_2, param_3);".into(),
+                admission: Some(VERSION_UNKNOWN_ADMISSION.into()),
             }));
 
         persistor.save(&saved).expect("save should succeed");
@@ -344,6 +352,34 @@ mod tests {
             .load("eqmain.dll")
             .expect("load should succeed after a save");
         assert_eq!(loaded, fresh);
+    }
+
+    #[test]
+    fn the_filed_document_carries_admission_and_coverage_exactly() {
+        // What the scan stamped rides the persistor untouched: the
+        // per-finding admission note and the coverage record — statuses,
+        // ids, order, limitation lines — are exactly what a later reader
+        // (the projection seam, the report, a `--show` months later)
+        // sees (issue #347).
+        let dir = TempDir::new().expect("temp dir should be created");
+        let persistor = LibmatchPersistor::with_cache_dir(dir.path());
+        let mut saved = result("eqmain.dll");
+        saved.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_180099000".to_string()),
+            }],
+        });
+
+        persistor.save(&saved).expect("save should succeed");
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("load should succeed after a save");
+
+        assert_eq!(loaded.metadata.coverage, saved.metadata.coverage);
+        assert_eq!(loaded.findings[0].admission(), VERSION_UNKNOWN_ADMISSION);
     }
 
     #[test]

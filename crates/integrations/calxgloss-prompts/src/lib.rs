@@ -1481,6 +1481,11 @@ mod tests {
             confidence: 90,
             evidence: "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
                 .to_string(),
+            // The section body was pinned before P19-3 gave match records
+            // a version-authority note, so the fixture carries none —
+            // the pinned render stays byte-identical, and a note-bearing
+            // finding renders one extra "Admission:" line, pinned beside.
+            admission: String::new(),
         }
     }
 
@@ -3012,6 +3017,283 @@ mod tests {
         assert!(
             under_partial.contains(&format!(
                 "## {LIBRARIES_APIS_HEADING}\n\nCoverage: {API_ADMISSION}\n\n"
+            )),
+            "the empty list still carries the one admission line"
+        );
+    }
+
+    /// A scan coverage record in the shape a libmatch scan files (issue
+    /// #347): its one `function-bodies` facet fell short, naming the two
+    /// bodies the decompiler never produced.
+    fn libmatch_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "2 function bodies unreached: FUN_180099000, FUN_180099100".to_string(),
+                ),
+            }],
+        }
+    }
+
+    /// The one qualification wording the section suite pins for the
+    /// known-library section (issue #347).
+    const LIBMATCH_ADMISSION: &str =
+        "partial — 2 function bodies unreached: FUN_180099000, FUN_180099100";
+
+    /// The heading the module-context template passes the libmatch include.
+    const KNOWN_LIBRARY_HEADING: &str = "KNOWN LIBRARY FUNCTIONS";
+
+    /// The pinned wording stands at both ends of its journey: the shared
+    /// coverage type produces it from a libmatch-shaped record, and the
+    /// prompt-side view carries that same line verbatim.
+    #[test]
+    fn the_libmatch_admission_wording_is_pinned_at_both_ends_of_its_journey() {
+        assert_eq!(
+            libmatch_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            LIBMATCH_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&libmatch_admitting_coverage()).admission,
+            LIBMATCH_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+    }
+
+    /// A complete coverage record is nothing to admit: the known-library
+    /// section renders byte-for-byte what it rendered when the document
+    /// stated no coverage at all (issue #347).
+    #[test]
+    fn a_complete_libmatch_coverage_record_renders_the_section_byte_identically() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.libmatch_findings.push(libmatch_fixture());
+        let unstamped = render_module_context_full(&bundle);
+        bundle.libmatch_coverage = CoverageInfo::from(&calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: Vec::new(),
+        });
+        let stamped_complete = render_module_context_full(&bundle);
+        assert_eq!(
+            unstamped, stamped_complete,
+            "a complete record adds no bytes to the prompt"
+        );
+        assert!(
+            !stamped_complete.contains("Coverage:"),
+            "complete coverage has nothing to admit"
+        );
+    }
+
+    /// A falling-short record appends exactly one bounded qualification
+    /// line, pinned byte-for-byte as the line the include renders after
+    /// the entries (issue #347).
+    #[test]
+    fn a_partial_libmatch_coverage_record_appends_exactly_one_qualification_line() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.libmatch_findings.push(libmatch_fixture());
+        let clean = render_module_context_full(&bundle);
+        bundle.libmatch_coverage = CoverageInfo::from(&libmatch_admitting_coverage());
+        let admitted = render_module_context_full(&bundle);
+        assert_eq!(
+            admitted,
+            clean.replace(
+                &format!("{LIBMATCH_SECTION_BODY}\n\n"),
+                &format!("{LIBMATCH_SECTION_BODY}\n\nCoverage: {LIBMATCH_ADMISSION}\n\n"),
+            ),
+            "the admission rides the section as exactly one line beside the entries"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {KNOWN_LIBRARY_HEADING}"))
+                .count(),
+            1,
+            "the admission never opens a second section"
+        );
+    }
+
+    /// The doctrine pair, libmatch side (issue #347): silence under
+    /// complete coverage and under a falling-short record must never
+    /// render alike — an empty list from a scan that admits bodies it
+    /// never reached still says something about which callees the match
+    /// picture simply does not cover.
+    #[test]
+    fn empty_libmatch_findings_under_complete_and_partial_coverage_never_render_alike() {
+        let under_complete = render_module_context_full(&EvidenceBundle::default());
+        assert!(
+            !under_complete.contains(&format!("## {KNOWN_LIBRARY_HEADING}")),
+            "silence from an unstamped record stays section-less, as before P19"
+        );
+        let under_partial = render_module_context_full(&EvidenceBundle {
+            libmatch_coverage: CoverageInfo::from(&libmatch_admitting_coverage()),
+            ..Default::default()
+        });
+        assert_ne!(
+            under_complete, under_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert!(
+            under_partial.contains(&format!(
+                "## {KNOWN_LIBRARY_HEADING}\n\nCoverage: {LIBMATCH_ADMISSION}\n\n"
+            )),
+            "the empty list still carries the one admission line"
+        );
+    }
+
+    /// The per-finding note (issue #347): a match record carrying its
+    /// version-authority admission renders one extra line beside its
+    /// evidence — the prompt is never shown a versioned claim the
+    /// signature never established — while a note-less record renders
+    /// the pinned body untouched (pinned by the section suite above).
+    #[test]
+    fn an_admitted_libmatch_finding_renders_its_note_beside_its_evidence() {
+        let mut finding = libmatch_fixture();
+        finding.admission = "Signature match, version unknown".to_string();
+        let admitted = render_module_context_full(&EvidenceBundle {
+            libmatch_findings: vec![finding],
+            ..Default::default()
+        });
+        let clean = render_module_context_full(&EvidenceBundle {
+            libmatch_findings: vec![libmatch_fixture()],
+            ..Default::default()
+        });
+        // Un-stamp the note line from the admitted render: what's left
+        // must be exactly the note-less render — the note rides exactly
+        // one extra line, right after the evidence line, and nothing
+        // else moves.
+        assert_eq!(
+            admitted.replace(
+                &format!("{LIBMATCH_SECTION_BODY}\n  Admission: Signature match, version unknown"),
+                LIBMATCH_SECTION_BODY,
+            ),
+            clean,
+            "the note rides exactly one extra line, right after the evidence line"
+        );
+        assert!(
+            admitted.contains("  Admission: Signature match, version unknown"),
+            "the note is actually there to be unstamped"
+        );
+    }
+
+    /// A scan coverage record in the shape a floatsimd scan files (issue
+    /// #347): its one `function-bodies` facet fell short, naming the one
+    /// body the decompiler never produced — never an examined-and-clean
+    /// body the flag list left unmentioned.
+    fn floatsimd_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_1800412a0".to_string()),
+            }],
+        }
+    }
+
+    /// The one qualification wording the section suite pins for the
+    /// float/SIMD section (issue #347).
+    const FLOATSIMD_ADMISSION: &str = "partial — 1 function body unreached: FUN_1800412a0";
+
+    /// The heading the escalate template passes the floatsimd include.
+    const ESCALATE_FLOATSIMD_HEADING: &str = "ADDITIONAL CONTEXT — FLOAT/SIMD";
+
+    /// The pinned wording stands at both ends of its journey: the shared
+    /// coverage type produces it from a floatsimd-shaped record, and the
+    /// prompt-side view carries that same line verbatim.
+    #[test]
+    fn the_floatsimd_admission_wording_is_pinned_at_both_ends_of_its_journey() {
+        assert_eq!(
+            floatsimd_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            FLOATSIMD_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&floatsimd_admitting_coverage()).admission,
+            FLOATSIMD_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+    }
+
+    /// A complete coverage record is nothing to admit: the float/SIMD
+    /// section renders byte-for-byte what it rendered when the document
+    /// stated no coverage at all (issue #347).
+    #[test]
+    fn a_complete_floatsimd_coverage_record_renders_the_section_byte_identically() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.floatsimd_findings.push(floatsimd_fixture());
+        let unstamped = render_escalate_full(&bundle);
+        bundle.floatsimd_coverage = CoverageInfo::from(&calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: Vec::new(),
+        });
+        let stamped_complete = render_escalate_full(&bundle);
+        assert_eq!(
+            unstamped, stamped_complete,
+            "a complete record adds no bytes to the prompt"
+        );
+        assert!(
+            !stamped_complete.contains("Coverage:"),
+            "complete coverage has nothing to admit"
+        );
+    }
+
+    /// A falling-short record appends exactly one bounded qualification
+    /// line, pinned byte-for-byte as the line the include renders after
+    /// the entries (issue #347).
+    #[test]
+    fn a_partial_floatsimd_coverage_record_appends_exactly_one_qualification_line() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.floatsimd_findings.push(floatsimd_fixture());
+        let clean = render_escalate_full(&bundle);
+        bundle.floatsimd_coverage = CoverageInfo::from(&floatsimd_admitting_coverage());
+        let admitted = render_escalate_full(&bundle);
+        assert_eq!(
+            admitted,
+            clean.replace(
+                &format!("{FLOATSIMD_SECTION_BODY}\n\n"),
+                &format!("{FLOATSIMD_SECTION_BODY}\n\nCoverage: {FLOATSIMD_ADMISSION}\n\n"),
+            ),
+            "the admission rides the section as exactly one line beside the entries"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {ESCALATE_FLOATSIMD_HEADING}"))
+                .count(),
+            1,
+            "the admission never opens a second section"
+        );
+    }
+
+    /// The doctrine pair, floatsimd side (issue #347): an unflagged
+    /// function under a complete record means examined-and-clean, and
+    /// silence from a record that names bodies it never reached must
+    /// never render the same bytes — the clean body and the never-
+    /// reached body part company in the prompt.
+    #[test]
+    fn empty_floatsimd_findings_under_complete_and_partial_coverage_never_render_alike() {
+        let under_complete = render_escalate_full(&EvidenceBundle::default());
+        assert!(
+            !under_complete.contains(&format!("## {ESCALATE_FLOATSIMD_HEADING}")),
+            "silence from an unstamped record stays section-less, as before P19"
+        );
+        let under_partial = render_escalate_full(&EvidenceBundle {
+            floatsimd_coverage: CoverageInfo::from(&floatsimd_admitting_coverage()),
+            ..Default::default()
+        });
+        assert_ne!(
+            under_complete, under_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert!(
+            under_partial.contains(&format!(
+                "## {ESCALATE_FLOATSIMD_HEADING}\n\nCoverage: {FLOATSIMD_ADMISSION}\n\n"
             )),
             "the empty list still carries the one admission line"
         );

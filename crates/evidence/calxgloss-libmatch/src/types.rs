@@ -56,6 +56,17 @@ calxgloss_types::display_serde_label!(LibraryFamily {
 // Libmatch matches
 // ============================================================
 
+/// What every P19-3 match record states about its own version authority:
+/// the signature matched SOME release of the library, and which release is
+/// not established — the record carries no version witness, only the
+/// signature plus its confidence score. This is the admission a reader
+/// sees, in the report's libmatch section beside each match and in the
+/// scan-coverage line: the engine states what it did NOT establish, next
+/// to what it did (`docs/admitted-semantics.md`). The note rides the
+/// record itself, so a filed document stays honest no matter who renders
+/// it.
+pub const VERSION_UNKNOWN_ADMISSION: &str = "Signature match, version unknown";
+
 /// One known-library identification of one function, with the evidence
 /// behind it.
 ///
@@ -83,6 +94,13 @@ pub struct LibmatchMatch {
     /// first required pattern — kept so a reviewer can check the
     /// reasoning.
     pub evidence: String,
+    /// P19-3: what the record admits about its own version authority —
+    /// [`VERSION_UNKNOWN_ADMISSION`] for every match the engine produces,
+    /// because a signature match never establishes WHICH release matched.
+    /// Optional with a default so pre-P19-3 documents, which carry no such
+    /// note, still load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<String>,
 }
 
 // ============================================================
@@ -156,6 +174,13 @@ impl LibmatchFinding {
         &self.record().evidence
     }
 
+    /// What the finding admits about its own version authority — see
+    /// [`VERSION_UNKNOWN_ADMISSION`]. Empty when the record carries no
+    /// note (a pre-P19-3 document).
+    pub fn admission(&self) -> &str {
+        self.record().admission.as_deref().unwrap_or("")
+    }
+
     /// The serde `kind` tag — `body_signature`, `identical_body`, or
     /// `tail_call_thunk` — naming the pass behind the finding.
     pub fn kind(&self) -> &'static str {
@@ -169,10 +194,11 @@ impl LibmatchFinding {
 
 /// Render a finding as prompt data: the function it identifies, the
 /// library symbol it matched, the family that symbol belongs to, the
-/// Rust equivalent the match suggests, and the confidence and evidence
-/// behind the claim — so a translation prompt naming this function's
-/// callees can show the translator what a call is really calling and
-/// how strongly that was read.
+/// Rust equivalent the match suggests, the confidence and evidence
+/// behind the claim, and what the record admits about its own version
+/// authority — so a translation prompt naming this function's callees
+/// can show the translator what a call is really calling, how strongly
+/// that was read, and what the match does NOT establish.
 impl From<&LibmatchFinding> for calxgloss_prompts::LibmatchInfo {
     fn from(finding: &LibmatchFinding) -> Self {
         Self {
@@ -182,6 +208,7 @@ impl From<&LibmatchFinding> for calxgloss_prompts::LibmatchInfo {
             suggestion: finding.suggestion().to_string(),
             confidence: finding.confidence().value(),
             evidence: finding.evidence().to_string(),
+            admission: finding.admission().to_string(),
         }
     }
 }
@@ -246,6 +273,9 @@ mod tests {
             confidence: Confidence::new(60),
             evidence: "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
                 .into(),
+            // The helper stays in the pre-P19-3 shape — no note — so the
+            // serde-defaulted field has a live fixture proving it loads.
+            admission: None,
         }
     }
 
@@ -303,6 +333,35 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_p19_match_record_loads_and_admits_nothing() {
+        // Documents persisted before P19-3 carry no admission key — the
+        // field is serde-defaulted, so the record still loads and simply
+        // has nothing to admit. The helper record has no note, so its
+        // serialized shape is exactly the pre-P19-3 document.
+        let json = serde_json::to_string(&matched()).unwrap();
+        assert!(!json.contains("\"admission\""), "pre-P19 shape: {json}");
+        let record: LibmatchMatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(record, matched());
+        assert_eq!(record.admission, None);
+        let finding = LibmatchFinding::TailCallThunk(record);
+        assert!(finding.admission().is_empty());
+    }
+
+    #[test]
+    fn an_admitted_match_record_carries_its_note_through_serde() {
+        // P19-3: the admission rides the record, so a filed document
+        // states its own version authority when it is read back.
+        let mut record = matched();
+        record.admission = Some(VERSION_UNKNOWN_ADMISSION.into());
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("\"admission\":\"Signature match, version unknown\""));
+        let back: LibmatchMatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+        let finding = LibmatchFinding::BodySignature(back);
+        assert_eq!(finding.admission(), VERSION_UNKNOWN_ADMISSION);
+    }
+
+    #[test]
     fn a_finding_renders_as_prompt_data_with_its_evidence() {
         let info =
             calxgloss_prompts::LibmatchInfo::from(&LibmatchFinding::BodySignature(matched()));
@@ -317,6 +376,9 @@ mod tests {
         );
         assert_eq!(info.confidence, 60);
         assert!(info.evidence.contains("= *(undefined8"));
+        // The helper record carries no note — a pre-P19-3 shape — so the
+        // prompt data has nothing to admit.
+        assert!(info.admission.is_empty());
     }
 
     #[test]
