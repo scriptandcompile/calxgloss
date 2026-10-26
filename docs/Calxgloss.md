@@ -35,27 +35,26 @@ Build an agent harness that leverages GhidraMCP to reverse engineer project exec
   ┌───────────────────────────────────────────────────────────────────────────────────────────┐
   │                      calxgloss-translator — the translation pipeline                      │
   │ read cache ▸ evidence warmup ▸ fetch ▸ prompt ▸ translate ▸ verify ▸ retry ▸ commit       │
-  │ batch warmup: the 13 evidence scans · failure-informed retries · tier escalation          │
+  │ batch warmup: the 15 evidence scans · failure-informed retries · tier escalation          │
   │ Windows API calls mapped through calxgloss-pal                                            │
   └───────────────────────────────────────────────────────────────────────────────────────────┘
            ▲                          ▲                          ▲                    ▲
            │                          │                          │                    │
            │                          │                          │                    │
   ┌────────────────┐   ┌────────────────────────────┐  ┌──────────────────┐  ┌────────────────┐
-  │calxgloss-ghidra│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
-  │ HTTP client +  │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
-  │ lifecycle owner│   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
-  │ (ADR-0007)     │   │ algorithm · memory         │  │                  │  │ infinite loop, │
+  │calxgloss-decomp│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
+  │ Kuna engine +  │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
+  │ scan read cache│   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
+  │ (ADR-0041/0042)│   │ algorithm · memory         │  │                  │  │ infinite loop, │
   │                │   │ sync · consts · callback   │  │                  │  │ divergence,    │
   │                │   │ controlflow · stringctx    │  │                  │  │ exhaustion     │
   │                │   │ apidetect · serialize      │  │                  │  │                │
   └────────────────┘   └────────────────────────────┘  └──────────────────┘  └────────────────┘
-           │          attach or spawn headless (ADR-0007)
                                                                                       │
-  ┌────────────────┐                                                         ┌────────────────┐
-  │ Ghidra +       │                                                         │Local LLM server│
-  │GhidraMCP bridge│                                                         │ Ollama · vLLM  │
-  └────────────────┘                                                         └────────────────┘
+                                                                             ┌────────────────┐
+                                                                             │Local LLM server│
+                                                                             │ Ollama · vLLM  │
+                                                                             └────────────────┘
 
   Foundation: calxgloss-types (shared types) · calxgloss-config (layered settings) ·
   calxgloss-testgen (FFI bindings & baseline tests) · calxgloss-verify (compile & test) ·
