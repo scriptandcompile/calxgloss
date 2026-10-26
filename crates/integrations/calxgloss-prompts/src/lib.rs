@@ -2320,6 +2320,39 @@ mod tests {
         }
     }
 
+    /// The structures the type database feeds the shared include: two of
+    /// them, so the pinned body covers the blank line the include keeps
+    /// between structures as well as each structure's size and fields.
+    fn data_structures_fixtures() -> Vec<StructuredData> {
+        vec![
+            StructuredData {
+                name: "Player".to_string(),
+                size: 16,
+                fields: vec![
+                    StructField {
+                        name: "hp".to_string(),
+                        type_: "u32".to_string(),
+                        offset: 0,
+                    },
+                    StructField {
+                        name: "mp".to_string(),
+                        type_: "u16".to_string(),
+                        offset: 4,
+                    },
+                ],
+            },
+            StructuredData {
+                name: "SaveGame".to_string(),
+                size: 8,
+                fields: vec![StructField {
+                    name: "slot".to_string(),
+                    type_: "u32".to_string(),
+                    offset: 0,
+                }],
+            },
+        ]
+    }
+
     fn callback_fixture() -> CallbackInfo {
         CallbackInfo {
             function: "FUN_18003ab00".to_string(),
@@ -2633,6 +2666,19 @@ mod tests {
         format!("## {heading}\n\n{DATA_TABLES_SECTION_BODY}")
     }
 
+    /// The data-structure section
+    /// body — steering paragraph and entries — pinned byte-for-byte from
+    /// the pre-include renders, shared by its three consumers (escalate,
+    /// module-context, full-module); the section suite re-renders each
+    /// consuming template against it. Two structures, so the pin covers
+    /// the blank line the include keeps between them as well as each
+    /// structure's size and field lines.
+    const DATA_STRUCTURES_SECTION_BODY: &str = "The following data structures are used in or near this function:\n\n### Player\nSize: 16 bytes\nFields:\n\n- `hp` : u32 (offset: 0)\n\n- `mp` : u16 (offset: 4)\n\n### SaveGame\nSize: 8 bytes\nFields:\n\n- `slot` : u32 (offset: 0)";
+
+    fn expected_data_structures_section(heading: &str) -> String {
+        format!("## {heading}\n\n{DATA_STRUCTURES_SECTION_BODY}")
+    }
+
     /// One (section × consuming template) pair of the parametrized
     /// section suite (issues #317, #318, #319). A new engine that includes a
     /// shared section registers one row here and is covered by both
@@ -2708,6 +2754,14 @@ mod tests {
             populate: |b| b.const_findings.push(const_fixture()),
             render: render_escalate_full,
             expected: expected_constants_section,
+        },
+        SectionRow {
+            section: "sections/data_structures.j2",
+            template: "escalate.j2",
+            heading: "ADDITIONAL CONTEXT — DATA STRUCTURES",
+            populate: |b| b.data_structures.extend(data_structures_fixtures()),
+            render: render_escalate_full,
+            expected: expected_data_structures_section,
         },
         SectionRow {
             section: "sections/callbacks.j2",
@@ -2817,12 +2871,28 @@ mod tests {
             expected: expected_data_tables_section,
         },
         SectionRow {
+            section: "sections/data_structures.j2",
+            template: "module_context_translate.j2",
+            heading: "SHARED DATA STRUCTURES",
+            populate: |b| b.data_structures.extend(data_structures_fixtures()),
+            render: render_module_context_full,
+            expected: expected_data_structures_section,
+        },
+        SectionRow {
             section: "sections/control_flow.j2",
             template: "full_module_translate.j2",
             heading: "CONTROL FLOW PATTERNS",
             populate: |b| b.control_flow_findings.push(control_flow_fixture()),
             render: render_full_module_full,
             expected: expected_control_flow_section,
+        },
+        SectionRow {
+            section: "sections/data_structures.j2",
+            template: "full_module_translate.j2",
+            heading: "SHARED DATA STRUCTURES",
+            populate: |b| b.data_structures.extend(data_structures_fixtures()),
+            render: render_full_module_full,
+            expected: expected_data_structures_section,
         },
         SectionRow {
             section: "sections/type_information.j2",
@@ -3294,6 +3364,325 @@ mod tests {
         assert!(
             under_partial.contains(&format!(
                 "## {ESCALATE_FLOATSIMD_HEADING}\n\nCoverage: {FLOATSIMD_ADMISSION}\n\n"
+            )),
+            "the empty list still carries the one admission line"
+        );
+    }
+
+    // -- admitted coverage: the typesdb and consts sections (issue #348) --
+
+    /// The coverage record a typesdb scan stamps over a target that
+    /// yields no vtable evidence: the single `vtables` facet, `unavailable`,
+    /// naming its reason — zero recorded vtables as a property of the
+    /// target, never as the program having no classes.
+    fn typesdb_unavailable_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Unavailable,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "vtables".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("no vtable evidence on this target".to_string()),
+            }],
+        }
+    }
+
+    /// The one qualification wording the section suite pins for the
+    /// data-structures section (issue #348).
+    const TYPESDB_ADMISSION: &str = "unavailable — no vtable evidence on this target";
+
+    /// The headings the consuming templates pass the data-structures include.
+    const ESCALATE_DATA_STRUCTURES_HEADING: &str = "ADDITIONAL CONTEXT — DATA STRUCTURES";
+    const SHARED_DATA_STRUCTURES_HEADING: &str = "SHARED DATA STRUCTURES";
+
+    /// The coverage record a consts scan stamps over a region-limited run:
+    /// both facets `partial`, one naming the bodies it never reached and
+    /// one the memory windows it never read. The wording is the engine's
+    /// own, pinned in the engine's tests too, so a drift at either end
+    /// fails loudly.
+    fn consts_partial_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some(
+                        "2 function bodies unreached: FUN_18003e750, +1 more".to_string(),
+                    ),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "data-objects".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some(
+                        "1 data-object memory window unreadable: DAT_1400a1c00".to_string(),
+                    ),
+                },
+            ],
+        }
+    }
+
+    /// The one qualification wording the consts sections carry (issue
+    /// #348) — the same line beside the constants entries and beside the
+    /// data-tables entries, since one constant scan feeds both.
+    const CONSTS_ADMISSION: &str = "partial — 2 function bodies unreached: FUN_18003e750, +1 more; \
+                                    1 data-object memory window unreadable: DAT_1400a1c00";
+
+    /// The headings the templates pass the constants and data-tables includes.
+    const ESCALATE_CONSTANTS_HEADING: &str = "ADDITIONAL CONTEXT — CONSTANTS";
+    const MODULE_CONTEXT_DATA_TABLES_HEADING: &str = "DATA TABLES";
+
+    /// The pinned wording stands at both ends of its journey for both
+    /// engines: the shared coverage type produces it from the records
+    /// their scans stamp, and the prompt-side view carries that same line
+    /// verbatim.
+    #[test]
+    fn the_typesdb_and_consts_admission_wording_is_pinned_at_both_ends_of_their_journeys() {
+        assert_eq!(
+            typesdb_unavailable_coverage()
+                .admission()
+                .expect("unavailable admits"),
+            TYPESDB_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&typesdb_unavailable_coverage()).admission,
+            TYPESDB_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+        assert_eq!(
+            consts_partial_coverage()
+                .admission()
+                .expect("partial admits"),
+            CONSTS_ADMISSION,
+            "both falling-short facets speak in one shared line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&consts_partial_coverage()).admission,
+            CONSTS_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+    }
+
+    /// A complete coverage record is nothing to admit: the data-structures
+    /// section renders byte-for-byte what it rendered when the database
+    /// stated no coverage at all, at every one of its three consumers
+    /// (issue #348).
+    #[test]
+    fn a_complete_typesdb_coverage_record_renders_the_section_byte_identically() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.data_structures.extend(data_structures_fixtures());
+        let unstamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+            render_full_module_full(&bundle),
+        );
+        bundle.type_database_coverage = CoverageInfo::from(&calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: Vec::new(),
+        });
+        let stamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+            render_full_module_full(&bundle),
+        );
+        assert_eq!(unstamped, stamped, "a complete record adds no bytes");
+        assert!(
+            !stamped.0.contains("Coverage:")
+                && !stamped.1.contains("Coverage:")
+                && !stamped.2.contains("Coverage:"),
+            "complete coverage has nothing to admit"
+        );
+    }
+
+    /// A falling-short typesdb record appends exactly one bounded
+    /// qualification line beside the structures — the admission rides the
+    /// section, it never replaces or reflows it, and one line is the whole
+    /// of the bloat budget (issue #348).
+    #[test]
+    fn a_falling_short_typesdb_record_qualifies_the_section_beyond_its_entries() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.data_structures.extend(data_structures_fixtures());
+        let clean = render_escalate_full(&bundle);
+        bundle.type_database_coverage = CoverageInfo::from(&typesdb_unavailable_coverage());
+        let admitted = render_escalate_full(&bundle);
+        assert_eq!(
+            admitted,
+            clean.replace(
+                &format!("{DATA_STRUCTURES_SECTION_BODY}\n\n"),
+                &format!("{DATA_STRUCTURES_SECTION_BODY}\n\nCoverage: {TYPESDB_ADMISSION}\n\n"),
+            ),
+            "the admission rides the section as exactly one line beside the entries"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {ESCALATE_DATA_STRUCTURES_HEADING}"))
+                .count(),
+            1,
+            "the admission never opens a second section"
+        );
+        assert_eq!(
+            admitted.matches("Coverage:").count(),
+            clean.matches("Coverage:").count() + 1,
+            "one admission line, never a paragraph"
+        );
+    }
+
+    /// The empty-findings doctrine, typesdb side (issue #348): structures
+    /// the scan never recovered establish nothing about the function, so a
+    /// falling-short record over an empty list opens no section to qualify
+    /// — unlike the constants and float/SIMD sections, whose headings the
+    /// admission does open. What the reader sees is the entries plus a
+    /// line, or nothing at all.
+    #[test]
+    fn empty_data_structures_under_a_falling_short_typesdb_record_establish_no_section() {
+        let unstamped = render_module_context_full(&EvidenceBundle::default());
+        let admitted = render_module_context_full(&EvidenceBundle {
+            type_database_coverage: CoverageInfo::from(&typesdb_unavailable_coverage()),
+            ..Default::default()
+        });
+        assert_eq!(
+            unstamped, admitted,
+            "no structures recovered is no section to qualify, coverage or no coverage"
+        );
+        assert!(
+            !admitted.contains(&format!("## {SHARED_DATA_STRUCTURES_HEADING}")),
+            "the admission alone never opens the data-structures heading"
+        );
+    }
+
+    /// A complete consts record is nothing to admit: the constants and
+    /// data-tables sections render byte-for-byte what they rendered when
+    /// the document stated no coverage at all (issue #348).
+    #[test]
+    fn a_complete_consts_coverage_record_renders_both_sections_byte_identically() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.const_findings.push(const_fixture());
+        bundle.data_table_findings.push(data_table_fixture());
+        let unstamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+        bundle.consts_coverage = CoverageInfo::from(&calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: Vec::new(),
+        });
+        let stamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+        assert_eq!(unstamped, stamped, "a complete record adds no bytes");
+        assert!(
+            !stamped.0.contains("Coverage:") && !stamped.1.contains("Coverage:"),
+            "complete coverage has nothing to admit"
+        );
+    }
+
+    /// A region-limited consts record qualifies each of its two sections
+    /// with exactly one line — the same admission beside the constants
+    /// entries and beside the data-tables entries, each pinned byte-for-
+    /// byte as the line its include renders (issue #348).
+    #[test]
+    fn a_region_limited_consts_record_qualifies_both_sections_with_one_line_each() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.const_findings.push(const_fixture());
+        bundle.data_table_findings.push(data_table_fixture());
+        let clean = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+        bundle.consts_coverage = CoverageInfo::from(&consts_partial_coverage());
+        let admitted = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+        );
+        assert_eq!(
+            admitted.0,
+            clean.0.replace(
+                &format!("{CONSTANTS_SECTION_BODY}\n\n"),
+                &format!("{CONSTANTS_SECTION_BODY}\n\nCoverage: {CONSTS_ADMISSION}\n\n"),
+            ),
+            "the constants section carries the one admission line beside its entries"
+        );
+        assert_eq!(
+            admitted.1,
+            clean.1.replace(
+                &format!("{DATA_TABLES_SECTION_BODY}\n\n"),
+                &format!("{DATA_TABLES_SECTION_BODY}\n\nCoverage: {CONSTS_ADMISSION}\n\n"),
+            ),
+            "the data-tables section carries the same line beside its entries"
+        );
+        assert_eq!(
+            admitted
+                .0
+                .matches(&format!("## {ESCALATE_CONSTANTS_HEADING}"))
+                .count(),
+            1,
+            "the admission never opens a second constants section"
+        );
+        assert_eq!(
+            admitted
+                .1
+                .matches(&format!("## {MODULE_CONTEXT_DATA_TABLES_HEADING}"))
+                .count(),
+            1,
+            "the admission never opens a second data-tables section"
+        );
+    }
+
+    /// The doctrine pair, consts side (issue #348): a program with no
+    /// findings under a complete record means examined-and-clean, and
+    /// silence from a record that names bodies and windows it never
+    /// reached must never render the same bytes — an escalate retry can
+    /// tell "this binary has no constants" from "the constants scan
+    /// examined little and filed almost nothing".
+    #[test]
+    fn empty_consts_findings_under_complete_and_partial_coverage_never_render_alike() {
+        let under_complete = (
+            render_escalate_full(&EvidenceBundle::default()),
+            render_module_context_full(&EvidenceBundle::default()),
+        );
+        assert!(
+            !under_complete
+                .0
+                .contains(&format!("## {ESCALATE_CONSTANTS_HEADING}")),
+            "silence from an unstamped record stays section-less, as before P19"
+        );
+        assert!(
+            !under_complete
+                .1
+                .contains(&format!("## {MODULE_CONTEXT_DATA_TABLES_HEADING}")),
+            "silence from an unstamped record stays section-less, as before P19"
+        );
+        let coverage = CoverageInfo::from(&consts_partial_coverage());
+        let under_partial = (
+            render_escalate_full(&EvidenceBundle {
+                consts_coverage: coverage.clone(),
+                ..Default::default()
+            }),
+            render_module_context_full(&EvidenceBundle {
+                consts_coverage: coverage,
+                ..Default::default()
+            }),
+        );
+        assert_ne!(
+            under_complete.0, under_partial.0,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert_ne!(
+            under_complete.1, under_partial.1,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert!(
+            under_partial.0.contains(&format!(
+                "## {ESCALATE_CONSTANTS_HEADING}\n\nCoverage: {CONSTS_ADMISSION}\n\n"
+            )),
+            "the empty list still carries the one admission line"
+        );
+        assert!(
+            under_partial.1.contains(&format!(
+                "## {MODULE_CONTEXT_DATA_TABLES_HEADING}\n\nCoverage: {CONSTS_ADMISSION}\n\n"
             )),
             "the empty list still carries the one admission line"
         );

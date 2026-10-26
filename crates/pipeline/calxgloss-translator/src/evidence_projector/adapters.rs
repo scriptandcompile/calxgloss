@@ -367,6 +367,18 @@ impl AnalysisDoc for TypeDatabaseDoc {
         };
         bundle.data_structures.push(structure);
     }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says the vtable evidence a target never yielded — never
+        // a structure the scan read and left out of this function's list
+        // (issue #348).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.type_database_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
+    }
 }
 
 /// The serialization document, `re/analysis/serialize/{binary}.json`:
@@ -618,6 +630,20 @@ impl AnalysisDoc for ConstsDoc {
         bundle
             .const_findings
             .push(calxgloss_prompts::ConstInfo::from(record));
+    }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. One
+        // fill feeds both sections this load populates — the constants
+        // union and the data-tables list — because one constant scan
+        // stamped both. The record names the bodies and memory windows
+        // it never reached, never a constant it read and did not name
+        // (issue #348).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.consts_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
     }
 }
 

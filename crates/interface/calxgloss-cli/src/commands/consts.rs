@@ -153,6 +153,14 @@ fn print_constant_report(result: &ConstResult, path: &Path, codegen_path: Option
             None => dim("(none)"),
         }
     ));
+
+    // The scan's own admission, beside the counts it qualifies (issue
+    // #348): the shared type's bounded line, framed under `Coverage:` and
+    // printed only when there is something to admit. The line names the
+    // bodies and memory windows the scan never reached — an object it
+    // read and claimed no table for is the object's shape, not the
+    // scan's border.
+    print_coverage(result.metadata.coverage.as_ref());
     println!();
 
     if !result.findings.is_empty() {

@@ -11,6 +11,7 @@
 {%- import "sections/floatsimd.j2" as floatsimd -%}
 {%- import "sections/string_context.j2" as string_context -%}
 {%- import "sections/libraries_apis.j2" as libraries_apis -%}
+{%- import "sections/data_structures.j2" as data_structures -%}
 You are a reverse engineering specialist. You previously translated a function to Rust, but earlier attempts failed. This time, additional Ghidra context has been injected to help you succeed.
 
 ## FUNCTION: {{ function_name }}
@@ -103,28 +104,13 @@ Pseudo-C:
 {% endfor %}
 
 {% endif %}
-{% if !evidence.data_structures.is_empty() %}
-## ADDITIONAL CONTEXT — DATA STRUCTURES
-
-The following data structures are used in or near this function:
-
-{% for ds in evidence.data_structures %}
-### {{ ds.name }}
-Size: {{ ds.size }} bytes
-Fields:
-{% for field in ds.fields %}
-- `{{ field.name }}` : {{ field.type_ }} {% if field.offset != -1 %}(offset: {{ field.offset }}){% endif %}
-{% endfor %}
-
-{% endfor %}
-
-{% endif %}
+{% call data_structures::data_structures_section(evidence.data_structures, "ADDITIONAL CONTEXT — DATA STRUCTURES", evidence.type_database_coverage) %}{% endcall %}
 {% call type_information::type_information_section(evidence.type_info, "ADDITIONAL CONTEXT — TYPE INFORMATION") %}{% endcall %}
 {% call recognized_algorithms::recognized_algorithms_section(evidence.recognized_algorithms, "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS") %}{% endcall %}
 {% call memory_lifecycle::memory_lifecycle_section(evidence.memory_findings, "ADDITIONAL CONTEXT — MEMORY LIFECYCLE") %}{% endcall %}
 {% call concurrency::concurrency_section(evidence.concurrency_findings, "ADDITIONAL CONTEXT — CONCURRENCY") %}{% endcall %}
 {% call serialization::serialization_section(evidence.serialization_findings, "ADDITIONAL CONTEXT — SERIALIZATION") %}{% endcall %}
-{% call constants::constants_section(evidence.const_findings, "ADDITIONAL CONTEXT — CONSTANTS") %}{% endcall %}
+{% call constants::constants_section(evidence.const_findings, "ADDITIONAL CONTEXT — CONSTANTS", evidence.consts_coverage) %}{% endcall %}
 {% call callbacks::callbacks_section(evidence.callback_findings, "ADDITIONAL CONTEXT — CALLBACKS") %}{% endcall %}
 {% call control_flow::control_flow_section(evidence.control_flow_findings, "ADDITIONAL CONTEXT — CONTROL FLOW") %}{% endcall %}
 {% call calling_convention::calling_convention_section(evidence.convention_findings, "ADDITIONAL CONTEXT — CALLING CONVENTION") %}{% endcall %}

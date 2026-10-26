@@ -230,6 +230,14 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path, decls_path: Option
             None => String::new(),
         })
     ));
+
+    // The scan's own admission, beside the counts it qualifies (issue
+    // #348): the shared type's bounded line, framed under `Coverage:` and
+    // printed only when there is something to admit. A target that
+    // yielded no vtable evidence says so beside the zero count — the
+    // reading a reviewer needs is "this binary carries no RTTI", never
+    // "this program has no classes".
+    print_coverage(db.metadata.coverage.as_ref());
     println!();
 
     if !db.vtables.is_empty() {

@@ -1,4 +1,5 @@
 {%- import "sections/control_flow.j2" as control_flow -%}
+{%- import "sections/data_structures.j2" as data_structures -%}
 You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
 
 ## FUNCTION: {{ function_name }}
@@ -106,22 +107,7 @@ Pseudo-C:
 {% endfor %}
 
 {% endif %}
-{% if !evidence.data_structures.is_empty() %}
-## SHARED DATA STRUCTURES
-
-The following data structures are used in or near this function:
-
-{% for ds in evidence.data_structures %}
-### {{ ds.name }}
-Size: {{ ds.size }} bytes
-Fields:
-{% for field in ds.fields %}
-- `{{ field.name }}` : {{ field.type_ }} {% if field.offset != -1 %}(offset: {{ field.offset }}){% endif %}
-{% endfor %}
-
-{% endfor %}
-
-{% endif %}
+{% call data_structures::data_structures_section(evidence.data_structures, "SHARED DATA STRUCTURES", evidence.type_database_coverage) %}{% endcall %}
 {% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
 {% if !shim_layers.is_empty() %}
 ## SHIM LAYER CODE (crate-replacement DLLs)

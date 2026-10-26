@@ -39,6 +39,7 @@ use crate::types::{
 };
 use crate::vtable::{TagSink, VtableDetector};
 use calxgloss_kuna::KunaSource;
+use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -51,6 +52,39 @@ use tracing::info;
 /// a server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
+
+/// The coverage record every typesdb scan stamps about itself (issue
+/// #348), beside the provenance and the timing.
+///
+/// typesdb has one facet it can come up empty on: `vtables`, the RTTI
+/// walk that recovers a class's method table. A target built without RTTI
+/// (a stripped release build, a non-MSVC binary) yields nothing for the
+/// detector to find, and zero recorded vtables is then a property of the
+/// target, not of the program's shape — so the facet is `unavailable` with
+/// that reason rather than a quiet zero. A scan that found at least one
+/// table read the walk end to end and the facet is `complete`, and the
+/// named types and string-inferred candidates beside it are unaffected
+/// either way. The whole picture mirrors the single facet — there is
+/// nothing else this engine examines over a vtable (the P19-4
+/// admitted-semantics track).
+fn coverage_stamp(vtables_found: usize) -> ScanCoverage {
+    let (status, limitation) = if vtables_found == 0 {
+        (
+            CoverageStatus::Unavailable,
+            Some("no vtable evidence on this target".to_string()),
+        )
+    } else {
+        (CoverageStatus::Complete, None)
+    };
+    ScanCoverage {
+        status,
+        facets: vec![FacetCoverage {
+            id: "vtables".to_string(),
+            status,
+            limitation,
+        }],
+    }
+}
 
 /// Orchestrates the three recovery engines into one [`TypeDatabase`].
 ///
@@ -155,6 +189,9 @@ impl<S> TypesDBEngine<S> {
         let stl_flagged = flag_stl_types(&mut named_types, &mut vtables, &mut inferred_structs);
 
         let mut metadata = ScanMetadata::new(binary);
+        // The engine admits its own coverage where the truth lives, beside
+        // the provenance and the timing (issue #348).
+        metadata.coverage = Some(coverage_stamp(vtables.len()));
         // The source names its engine and pin under `kuna` (issue #208). The three scanners share one source, so any of
         // them can answer for it.
         metadata.engine = self.scanner.source().engine_provenance();
@@ -1116,6 +1153,169 @@ mod tests {
         assert!(db.is_empty());
         assert_eq!(db.metadata.binary, "nothing.dll");
         assert!(db.metadata.scanned_at > 0);
+    }
+
+    // -- admitted coverage (P19 admitted-semantics track, issue #348) -----
+
+    /// The facet ids typesdb declares — the roster, spelled once here the
+    /// way the CLI pairing pin (#342) spells its roster and the way
+    /// apidetect (#346) and floatsimd (#347) spell theirs. Every facet a
+    /// freshly stamped coverage record names is read against this list by
+    /// the pin below, and every drift direction is a fault: a declared
+    /// facet the scan stopped stamping, a facet stamped twice, and an id
+    /// the scan invented outside the roster all fail loudly.
+    const DECLARED_FACETS: &[&str] = &["vtables"];
+
+    /// The data-level verdict of the roster pin: empty means the record
+    /// names every declared facet exactly once, and each fault spells one
+    /// drift.
+    fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+        let mut faults = Vec::new();
+        for declared in DECLARED_FACETS {
+            let hits = coverage
+                .facets
+                .iter()
+                .filter(|facet| facet.id == *declared)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{declared}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{declared}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &coverage.facets {
+            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
+
+    /// Runs the engine's own scan over `program`: the coverage stamp rides
+    /// this call, the one definition the batch scan phase and the CLI's
+    /// force-rescan both go through.
+    async fn scan(program: FakeProgram) -> TypeDatabase {
+        TypesDBEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan")
+    }
+
+    #[tokio::test]
+    async fn scan_stamps_coverage_naming_every_declared_facet_once() {
+        let db = scan(program()).await;
+        let coverage = db
+            .metadata
+            .coverage
+            .expect("a fresh typesdb scan states its coverage");
+        assert_eq!(
+            coverage.status,
+            CoverageStatus::Complete,
+            "a fully examined target admits nothing"
+        );
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a fresh document must name every declared facet exactly once"
+        );
+        let vtables = coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == "vtables")
+            .expect("vtables is named");
+        assert_eq!(vtables.status, CoverageStatus::Complete);
+        assert_eq!(vtables.limitation, None, "complete coverage names no limit");
+    }
+
+    #[tokio::test]
+    async fn a_target_yielding_no_vtable_evidence_stamps_the_facet_unavailable_with_its_reason() {
+        // The data objects the RTTI walk starts from are gone, so the walk
+        // finds nothing to read — while the Type Manager listing and the
+        // string clusters still carry their findings. Zero recorded vtables
+        // beside a database that still names types reads as the target
+        // carrying no RTTI, never as the program having no classes.
+        let mut program = program();
+        program.items.clear();
+        let db = scan(program).await;
+        assert!(
+            db.vtables.is_empty(),
+            "the target yields no vtable evidence"
+        );
+        assert_eq!(db.named_types.len(), 2, "the other scans read normally");
+        assert_eq!(db.inferred_structs.len(), 1, "and so did this one");
+
+        let coverage = db
+            .metadata
+            .coverage
+            .expect("a fresh typesdb scan states its coverage");
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a scan that comes up empty still names every declared facet exactly once"
+        );
+        let vtables = coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == "vtables")
+            .expect("vtables is named");
+        assert_eq!(vtables.status, CoverageStatus::Unavailable);
+        assert_eq!(
+            vtables.limitation.as_deref(),
+            Some("no vtable evidence on this target"),
+            "the facet that came up empty names its reason"
+        );
+        assert_eq!(
+            coverage.status,
+            CoverageStatus::Unavailable,
+            "the single facet is the whole picture"
+        );
+        assert_eq!(
+            coverage.admission().as_deref(),
+            Some("unavailable — no vtable evidence on this target"),
+            "what a reviewer reads is the shared type's own admission line"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+        let mut coverage = coverage_stamp(1);
+        coverage.facets.clear();
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `vtables` is missing from the record"],
+            "an engine quietly skipping a declared facet fails loudly"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_a_facet_is_doubled() {
+        let mut coverage = coverage_stamp(1);
+        coverage.facets.push(coverage.facets[0].clone());
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `vtables` appears 2 times in the record"],
+            "a facet crowded into two entries fails loudly"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+        let mut coverage = coverage_stamp(1);
+        coverage.facets.push(FacetCoverage {
+            id: "named-types".to_string(),
+            status: CoverageStatus::Unexamined,
+            limitation: None,
+        });
+        assert_eq!(
+            roster_faults(&coverage),
+            ["record names `named-types`, a facet the engine never declared"],
+            "an id invented outside the declared roster fails loudly"
+        );
     }
 
     #[tokio::test]

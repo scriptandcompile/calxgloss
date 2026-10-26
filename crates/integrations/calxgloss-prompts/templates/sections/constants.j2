@@ -1,8 +1,18 @@
 {# The constant-structure section, shared by every engine template that feeds #}
-{# the constant findings. Parameterized by (findings list, heading text) so #}
-{# each template passes its own heading text. The body is verbatim-pinned by #}
-{# the section suite in src/lib.rs — wording or formatting drift fails CI. #}
-{% macro constants_section(findings, heading) %}
+{# the constant findings. Parameterized by (findings list, heading text, scan #}
+{# coverage record) so each template passes its own heading text and the #}
+{# coverage the producing scan stamped. The body is verbatim-pinned by the #}
+{# section suite in src/lib.rs — wording or formatting drift fails CI. #}
+{# The coverage record (issue #348) arrives as CoverageInfo strings: the #}
+{# scan's status word and its admission line. The include appends exactly #}
+{# one "Coverage:" qualification line — beside the entries, or as the whole #}
+{# section beside the heading when the scan stamped no findings but admits #}
+{# falling short — whenever the record carries an admission; a complete or #}
+{# missing record renders exactly what it rendered before. The line names #}
+{# only the bodies the scan never reached, so an escalate retry can tell #}
+{# "this binary has no constants" from "the constants scan examined little #}
+{# and filed almost nothing". #}
+{% macro constants_section(findings, heading, coverage) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -15,6 +25,14 @@ Rust shape instead of scattering the bare integer literals:
 - **{{ finding.suggestion|safe }}** ({{ finding.kind }}, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% endfor %}
+
+{% endif %}
+{% if !coverage.admission.is_empty() %}
+{% if findings.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+Coverage: {{ coverage.admission }}
 
 {% endif %}
 {% endmacro %}

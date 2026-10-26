@@ -1460,9 +1460,7 @@ mod tests {
                         .to_string(),
                 // Shaped as the engine writes them (P19-3): the note
                 // rides every match record a fresh scan files.
-                admission: Some(
-                    calxgloss_libmatch::types::VERSION_UNKNOWN_ADMISSION.to_string(),
-                ),
+                admission: Some(calxgloss_libmatch::types::VERSION_UNKNOWN_ADMISSION.to_string()),
             },
         )
     }
@@ -2802,6 +2800,183 @@ mod tests {
         assert!(
             bundle.floatsimd_findings.is_empty() && bundle.floatsimd_coverage.admission.is_empty(),
             "a corrupt float/SIMD document fills neither flag nor coverage"
+        );
+    }
+
+    /// The type database row's coverage leg end to end (issue #348): the
+    /// record typesdb stamps into its filed document rides one gather into
+    /// the bundle beside the structures, word for word; a document filed
+    /// before coverage stamping fills nothing; and a missing or corrupt
+    /// document fills nothing and degrades exactly as its structures do.
+    #[test]
+    fn the_typesdb_row_gathers_the_documents_coverage_beside_its_structures() {
+        // The engine's own stamp over a target that yielded no vtable
+        // evidence: the single facet unavailable beside its reason, while
+        // the string-inferred candidates this function references still
+        // ride the row.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Unavailable,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "vtables".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("no vtable evidence on this target".to_string()),
+            }],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut db = TypeDatabase::new(metadata);
+        db.inferred_structs = vec![inferred_struct("Player", &["FUN_18003ab00"])];
+        persist(&dir, db);
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle
+                .data_structures
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Player"],
+            "the structures still ride their ordinary row"
+        );
+        assert_eq!(bundle.type_database_coverage.status, "unavailable");
+        assert_eq!(
+            bundle.type_database_coverage.admission,
+            "unavailable — no vtable evidence on this target",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut db = TypeDatabase::new(ScanMetadata::new("eqmain.dll"));
+        db.inferred_structs = vec![inferred_struct("Player", &["FUN_18003ab00"])];
+        persist(&dir, db);
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.data_structures.is_empty()
+                && bundle.type_database_coverage.status.is_empty()
+                && bundle.type_database_coverage.admission.is_empty(),
+            "a pre-P19 document fills structures but no coverage — the old render stands"
+        );
+
+        // Missing: nothing gathered, nothing filled.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.data_structures.is_empty() && bundle.type_database_coverage.admission.is_empty(),
+            "a missing type database fills neither structures nor coverage"
+        );
+
+        // Corrupt: degrades alike, fills neither.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_typesdb::persist::TypeDatabasePersistor::new(dir.path())
+                .path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.data_structures.is_empty() && bundle.type_database_coverage.admission.is_empty(),
+            "a corrupt type database fills neither structures nor coverage"
+        );
+    }
+
+    /// The constant row's coverage leg end to end (issue #348): the record
+    /// consts stamps into its filed document rides one gather into the
+    /// bundle beside the findings, word for word — and one load feeds both
+    /// fields it populates, so the same admission qualifies the constants
+    /// union and the data-tables list. A document filed before coverage
+    /// stamping fills nothing; a missing or corrupt document fills nothing
+    /// and degrades exactly as its findings do.
+    #[test]
+    fn the_consts_row_gathers_the_documents_coverage_beside_its_findings() {
+        // The engine's own stamp over a region-limited scan: both facets
+        // partial, one naming the bodies it never reached and one the
+        // memory window it never read.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some(
+                        "2 function bodies unreached: FUN_18003e750, +1 more".to_string(),
+                    ),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "data-objects".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some(
+                        "1 data-object memory window unreadable: DAT_1400a1c00".to_string(),
+                    ),
+                },
+            ],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_consts::types::ConstResult::new(metadata);
+        result.findings = vec![
+            calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record("FUN_18003ab00")),
+            table_record(&["FUN_18003ab00"]),
+        ];
+        calxgloss_consts::persist::ConstPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped constant result should be saved");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.const_findings.len(),
+            2,
+            "both findings still ride the union row"
+        );
+        assert_eq!(
+            bundle.data_table_findings.len(),
+            1,
+            "and the table record still rides its own field"
+        );
+        assert_eq!(bundle.consts_coverage.status, "partial");
+        assert_eq!(
+            bundle.consts_coverage.admission,
+            "partial — 2 function bodies unreached: FUN_18003e750, +1 more; \
+             1 data-object memory window unreadable: DAT_1400a1c00",
+            "one admission reaches the bundle, and it is the whole picture's"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_const_findings(
+            &dir,
+            vec![calxgloss_consts::types::ConstFinding::BitflagGroup(
+                bitflag_record("FUN_18003ab00"),
+            )],
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.const_findings.is_empty()
+                && bundle.consts_coverage.status.is_empty()
+                && bundle.consts_coverage.admission.is_empty(),
+            "a pre-P19 document fills findings but no coverage — the old render stands"
+        );
+
+        // Missing: nothing gathered, nothing filled.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.const_findings.is_empty() && bundle.consts_coverage.admission.is_empty(),
+            "a missing constant document fills neither findings nor coverage"
+        );
+
+        // Corrupt: degrades alike, fills neither.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_consts::persist::ConstPersistor::new(dir.path()).path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.const_findings.is_empty() && bundle.consts_coverage.admission.is_empty(),
+            "a corrupt constant document fills neither findings nor coverage"
         );
     }
 

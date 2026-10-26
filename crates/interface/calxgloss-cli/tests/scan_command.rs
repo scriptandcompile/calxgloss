@@ -357,6 +357,206 @@ fn the_floatsimd_report_prints_the_documents_admission_line_only_when_there_is_o
 }
 
 #[test]
+fn the_typesdb_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The typesdb admission line at the process seam (issue #348): a
+    // filed document's coverage record — however it got stamped — prints
+    // its one bounded admission line beside the counts through `--show`,
+    // and a complete record prints nothing. The documents here are filed
+    // by the engine's own persistor with hand-stamped coverage, so the
+    // pin does not depend on whether the fixture target carries RTTI.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let db = calxgloss_typesdb::types::TypeDatabase::new(metadata);
+        calxgloss_typesdb::persist::TypeDatabasePersistor::new(ws.path())
+            .save(&db)
+            .expect("the hand-stamped type database should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Unavailable,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "vtables".to_string(),
+            status: calxgloss_types::CoverageStatus::Unavailable,
+            limitation: Some("no vtable evidence on this target".to_string()),
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "typesdb",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the typesdb show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Inferred:"),
+        "the counts still print as they always did:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Coverage:")
+            && stdout.contains("unavailable — no vtable evidence on this target"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![calxgloss_types::FacetCoverage {
+            id: "vtables".to_string(),
+            status: calxgloss_types::CoverageStatus::Complete,
+            limitation: None,
+        }],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "typesdb",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the typesdb show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_consts_report_prints_the_documents_admission_line_only_when_there_is_one() {
+    // The consts admission line at the process seam (issue #348), pinned
+    // the same way: the `--show` report prints the filed document's one
+    // bounded line — the whole picture's admission, naming both regions
+    // the scan could not read — and prints nothing under a complete
+    // record, so an empty findings list beside a complete count means
+    // examined-and-clean.
+    let ws = fixture_workspace();
+    let file_document = |coverage: calxgloss_types::ScanCoverage| {
+        let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
+        metadata.coverage = Some(coverage);
+        let result = calxgloss_consts::types::ConstResult::new(metadata);
+        calxgloss_consts::persist::ConstPersistor::new(ws.path())
+            .save(&result)
+            .expect("the hand-stamped constant result should be filed");
+    };
+
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Partial,
+        facets: vec![
+            calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("2 function bodies unreached: FUN_99000, FUN_99100".to_string()),
+            },
+            calxgloss_types::FacetCoverage {
+                id: "data-objects".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "1 data-object memory window unreadable: DAT_1400a1c00".to_string(),
+                ),
+            },
+        ],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "consts",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the consts show failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Findings:"),
+        "the counts still print as they always did:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Coverage:")
+            && stdout.contains("2 function bodies unreached: FUN_99000, FUN_99100")
+            && stdout.contains("1 data-object memory window unreadable: DAT_1400a1c00"),
+        "the report prints the document's one admission line, both regions in it:\n{stdout}"
+    );
+
+    // A complete record is nothing to admit: no line at all.
+    file_document(calxgloss_types::ScanCoverage {
+        status: calxgloss_types::CoverageStatus::Complete,
+        facets: vec![
+            calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+            calxgloss_types::FacetCoverage {
+                id: "data-objects".to_string(),
+                status: calxgloss_types::CoverageStatus::Complete,
+                limitation: None,
+            },
+        ],
+    });
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "consts",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the consts show failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Coverage:"),
+        "a complete record has nothing to admit:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_alike() {
+    // The two rides' own stamps at the process seam (issue #348): each
+    // scan files the record it stamped, and the run's report and a later
+    // `--show` report stay the byte-identical same read — admission line
+    // when the scan owes one, silence when it does not.
+    for command in ["typesdb", "consts"] {
+        let ws = fixture_workspace();
+        let (ok, stdout, stderr) = run(
+            cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+        let (ok, show_stdout, stderr) = run(
+            cli(ws.path()).args([
+                "--target-dir",
+                ".",
+                command,
+                "--binary",
+                "fixture-target",
+                "--show",
+            ]),
+            ws.path(),
+        );
+        assert!(ok, "the {command} show failed:\n{show_stdout}\n{stderr}");
+        assert_eq!(
+            stdout, show_stdout,
+            "the {command} run's report and a later --show report are the same \
+             read of the same document, coverage included"
+        );
+    }
+}
+
+#[test]
 fn the_libmatch_and_floatsimd_rides_report_run_and_show_identically() {
     // The run-equals-show doctrine holds for both engines' new stamps
     // (issue #347): whatever coverage the fixture's real scans stamp,

@@ -249,6 +249,39 @@ mod tests {
     }
 
     #[test]
+    fn the_filed_document_carries_its_coverage_record_exactly() {
+        // What the engine stamped inside its scan is what every later
+        // reader — the projection seam, the report, a `--show` months
+        // later — sees: the status, the facet id, and the limitation line
+        // ride the persistor untouched (issue #348).
+        let dir = TempDir::new().unwrap();
+        let persistor = TypeDatabasePersistor::with_cache_dir(dir.path());
+        let mut db = database("eqmain.dll");
+        db.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Unavailable,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "vtables".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some("no vtable evidence on this target".to_string()),
+            }],
+        });
+
+        persistor.save(&db).unwrap();
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded.metadata.coverage, db.metadata.coverage);
+        assert_eq!(
+            loaded
+                .metadata
+                .coverage
+                .as_ref()
+                .and_then(|coverage| coverage.admission())
+                .as_deref(),
+            Some("unavailable — no vtable evidence on this target"),
+            "the reader's admission line is the one the scan wrote"
+        );
+    }
+
+    #[test]
     fn a_document_in_the_shipped_mvp_shape_still_loads() {
         // Databases written before the linking pass carry no
         // `linked_vtable` key; the field defaults, so the cache keeps

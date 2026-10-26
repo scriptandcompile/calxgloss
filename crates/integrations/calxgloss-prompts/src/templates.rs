@@ -837,6 +837,16 @@ pub struct EvidenceBundle {
     pub neighboring_functions: Vec<NeighborFunction>,
     /// Data structures referenced near this function.
     pub data_structures: Vec<StructuredData>,
+    /// What the type database's own scan admits it examined and could
+    /// not — filled exactly once per database by the typesdb projection
+    /// row, beside (never inside) the per-record `data_structures` list
+    /// (issue #348). Default-empty when no type database was read, when
+    /// that document states no coverage, or when it claims complete
+    /// coverage; the data-structures include renders its one qualification
+    /// line exactly when this carries an admission — naming the vtable
+    /// evidence a target never yielded, never a structure the scan read
+    /// and left out of the list.
+    pub type_database_coverage: CoverageInfo,
     /// Type information inferred by the decompiler.
     pub type_info: Vec<TypeInfo>,
     /// Algorithms recognized in this function by the analysis pipeline.
@@ -906,6 +916,17 @@ pub struct EvidenceBundle {
     /// constants include through the constant findings' union prompt
     /// conversion.
     pub data_table_findings: Vec<DataTableInfo>,
+    /// What the constant scan's own document admits it examined and could
+    /// not — filled exactly once per document by the constant projection
+    /// row, beside (never inside) the `const_findings` union and the
+    /// `data_table_findings` list that one load feeds both (issue #348).
+    /// Default-empty when no constant document was read, when that document
+    /// states no coverage, or when it claims complete coverage; the
+    /// constants and data-tables includes each render their one
+    /// qualification line exactly when this carries an admission — naming
+    /// the bodies and memory windows the scan never reached, never a
+    /// constant it read and did not name.
+    pub consts_coverage: CoverageInfo,
     /// Error-handling findings about this function made by the
     /// `calxgloss-errhandling` scan — the idiom the body guards its
     /// work with and the failure codes it states.

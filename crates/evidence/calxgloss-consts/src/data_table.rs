@@ -572,6 +572,22 @@ fn le_u64(bytes: &[u8]) -> u64 {
     value
 }
 
+/// What reading one data object's window produced (issue #348).
+///
+/// The three outcomes part company in the coverage record. `Table` is a
+/// claim; `Disqualified` is a window read end to end whose shape claims
+/// nothing — examined, and silent about coverage; `Unreadable` is a
+/// window that never arrived, so nothing examined the object at all and
+/// the scan's admission names it.
+enum ReadOutcome {
+    /// A table claim for this object.
+    Table(DataTable),
+    /// Read in full, and its shape claims no table.
+    Disqualified,
+    /// The memory window failed to read or came up short: unexamined.
+    Unreadable,
+}
+
 /// The table reading for one data object: no kept body may store
 /// through its symbol, its bytes must be readable in full and decode
 /// coherently, one family must survive the resolution — the engine's
@@ -579,17 +595,17 @@ fn le_u64(bytes: &[u8]) -> u64 {
 /// families the bounds guards of indexing bodies narrow to exactly one,
 /// otherwise a single coherent family standing alone — and none of its
 /// entries may resolve to one of the `function_starts` the listing
-/// names. `None` silently for a disqualifying or unresolved shape, with
-/// a warning for a read that failed. A kept body's indexed read is no
-/// longer required to claim: it decides which Evidence tier the claim
-/// lands at, from applied type at the top to raw bytes only at the
-/// bottom.
+/// names. `Disqualified` silently for a disqualifying or unresolved
+/// shape, `Unreadable` with a warning for a read that failed. A kept
+/// body's indexed read is no longer required to claim: it decides which
+/// Evidence tier the claim lands at, from applied type at the top to raw
+/// bytes only at the bottom.
 async fn read_object<S: ScanSource>(
     source: &S,
     item: &DataItem,
     usage: &ObjectUsage,
     function_starts: &BTreeSet<u64>,
-) -> Option<DataTable> {
+) -> ReadOutcome {
     if usage.written {
         // The mutation gate: a body that stores through the symbol
         // makes it mutable global state, the global-state track's
@@ -599,13 +615,13 @@ async fn read_object<S: ScanSource>(
             address = format_args!("{:#x}", item.address),
             "Skipping data object: a kept body stores through the symbol"
         );
-        return None;
+        return ReadOutcome::Disqualified;
     }
     let reads = &usage.reads;
     if item.label.is_empty() || item.length < 2 {
         // No stride divides a shorter object into the two entries the
         // candidate gate asks for.
-        return None;
+        return ReadOutcome::Disqualified;
     }
     let bytes = match source.read_memory(item.address, item.length as usize).await {
         Ok(bytes) => bytes,
@@ -616,7 +632,7 @@ async fn read_object<S: ScanSource>(
                 error = %error,
                 "Skipping data object: read_memory failed"
             );
-            return None;
+            return ReadOutcome::Unreadable;
         }
     };
     if bytes.len() as u64 != item.length {
@@ -625,7 +641,7 @@ async fn read_object<S: ScanSource>(
             address = format_args!("{:#x}", item.address),
             "Skipping data object: short memory window"
         );
-        return None;
+        return ReadOutcome::Unreadable;
     }
 
     let viable = viable_families(&bytes);
@@ -635,7 +651,7 @@ async fn read_object<S: ScanSource>(
             address = format_args!("{:#x}", item.address),
             "Skipping data object: bytes decode incoherently at every stride"
         );
-        return None;
+        return ReadOutcome::Disqualified;
     }
     // The widths the indexing bodies' guards imply; guards naming no
     // width do not narrow.
@@ -655,7 +671,7 @@ async fn read_object<S: ScanSource>(
                 applied_type = %item.type_name,
                 "Skipping data object: the bytes decode incoherently at the applied type's stride"
             );
-            return None;
+            return ReadOutcome::Disqualified;
         }
         if !implied.is_empty() && !implied.contains(&applied.width) {
             debug!(
@@ -664,7 +680,7 @@ async fn read_object<S: ScanSource>(
                 applied_type = %item.type_name,
                 "Skipping data object: the reads' bounds guards contradict the applied type"
             );
-            return None;
+            return ReadOutcome::Disqualified;
         }
         confidence = Some(APPLIED_TYPE_CONFIDENCE);
         applied
@@ -677,7 +693,7 @@ async fn read_object<S: ScanSource>(
             // Zero surviving strides is a contradiction between the
             // guards and the bytes; several is an unresolved
             // multi-stride decode — both claim nothing.
-            return None;
+            return ReadOutcome::Disqualified;
         };
         confidence = Some(CORROBORATED_CONFIDENCE);
         family
@@ -688,7 +704,7 @@ async fn read_object<S: ScanSource>(
                 address = format_args!("{:#x}", item.address),
                 "Skipping data object: several strides decode coherently with nothing to resolve them"
             );
-            return None;
+            return ReadOutcome::Disqualified;
         };
         family
     };
@@ -718,7 +734,7 @@ async fn read_object<S: ScanSource>(
             resolving = format_args!("{pointers}/{count} entries resolve to function starts"),
             "Skipping data object: function-pointer table, the callback crate's jump-table reading owns it"
         );
-        return None;
+        return ReadOutcome::Disqualified;
     }
     let values_truncated = count > MAX_INLINE_TABLE_VALUES;
     let mut values = entries;
@@ -799,7 +815,7 @@ async fn read_object<S: ScanSource>(
         }
     }
 
-    Some(DataTable {
+    ReadOutcome::Table(DataTable {
         symbol: item.label.clone(),
         address: item.address,
         element_type: family.name.to_string(),
@@ -822,21 +838,30 @@ async fn read_object<S: ScanSource>(
 /// address set the function listing names, which the pointer gates
 /// resolve entries against. A failed listing fails the run like the
 /// function listing's failure (the engine reads it before calling
-/// this); a failing per-object read skips that object with a warning,
-/// and a disqualified or unresolved shape skips it silently.
+/// this); a disqualified or unresolved shape skips that object silently.
+///
+/// Beside the tables, the second half of the pair names every object
+/// whose memory window never arrived — a failed read or a short one — in
+/// listing order (issue #348). Those objects went unexamined, and the
+/// engine's coverage record says so; an object it read and refused to
+/// claim a table for is not named, because that gap is the object's
+/// shape, not the scan's border.
 pub(crate) async fn data_tables<S: ScanSource>(
     source: &S,
     items: &[DataItem],
     table_usage: &[ObjectUsage],
     function_starts: &BTreeSet<u64>,
-) -> Vec<DataTable> {
+) -> (Vec<DataTable>, Vec<String>) {
     let mut tables = Vec::new();
+    let mut unreadable = Vec::new();
     for (item, usage) in items.iter().zip(table_usage) {
-        if let Some(record) = read_object(source, item, usage, function_starts).await {
-            tables.push(record);
+        match read_object(source, item, usage, function_starts).await {
+            ReadOutcome::Table(record) => tables.push(record),
+            ReadOutcome::Unreadable => unreadable.push(item.label.clone()),
+            ReadOutcome::Disqualified => {}
         }
     }
-    tables
+    (tables, unreadable)
 }
 
 // ============================================================

@@ -5,6 +5,7 @@
 {%- import "sections/libmatch.j2" as libmatch -%}
 {%- import "sections/parameter_direction.j2" as parameter_direction -%}
 {%- import "sections/data_tables.j2" as data_tables -%}
+{%- import "sections/data_structures.j2" as data_structures -%}
 You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
 
 ## FUNCTION: {{ function_name }}
@@ -112,29 +113,14 @@ Pseudo-C:
 {% endfor %}
 
 {% endif %}
-{% if !evidence.data_structures.is_empty() %}
-## SHARED DATA STRUCTURES
-
-The following data structures are used in or near this function:
-
-{% for ds in evidence.data_structures %}
-### {{ ds.name }}
-Size: {{ ds.size }} bytes
-Fields:
-{% for field in ds.fields %}
-- `{{ field.name }}` : {{ field.type_ }} {% if field.offset != -1 %}(offset: {{ field.offset }}){% endif %}
-{% endfor %}
-
-{% endfor %}
-
-{% endif %}
+{% call data_structures::data_structures_section(evidence.data_structures, "SHARED DATA STRUCTURES", evidence.type_database_coverage) %}{% endcall %}
 {% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
 {% call calling_convention::calling_convention_section(evidence.convention_findings, "CALLING CONVENTION") %}{% endcall %}
 {% call sections::global_state_section(evidence.global_state_findings, "GLOBAL STATE") %}{% endcall %}
 {% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "FLOAT/SIMD", evidence.floatsimd_coverage) %}{% endcall %}
 {% call libmatch::libmatch_section(evidence.libmatch_findings, "KNOWN LIBRARY FUNCTIONS", evidence.libmatch_coverage) %}{% endcall %}
 {% call parameter_direction::parameter_direction_section(evidence.parameter_direction_findings, "PARAMETER DIRECTIONS") %}{% endcall %}
-{% call data_tables::data_tables_section(evidence.data_table_findings, "DATA TABLES") %}{% endcall %}
+{% call data_tables::data_tables_section(evidence.data_table_findings, "DATA TABLES", evidence.consts_coverage) %}{% endcall %}
 {% if !evidence.error_handling_findings.is_empty() %}
 ## ERROR HANDLING
 

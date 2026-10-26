@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use calxgloss_kuna::KunaSource;
+use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 use tracing::{info, warn};
 
 use crate::bitmask::BitmaskDetector;
@@ -63,6 +64,115 @@ use crate::types::{BitflagGroup, ConstFinding, ConstResult, ScanMetadata};
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
+
+/// How many unreached names one coverage limitation line names inline
+/// before folding the remainder into a count — bounded prose beside the
+/// counts, not a dump, and the same bound floatsimd's admission carries
+/// (the P19 admitted-semantics track, issues #347 and #348).
+const MAX_NAMED_LIMITS: usize = 5;
+
+/// The names one limitation line prints inline — at most
+/// [`MAX_NAMED_LIMITS`] of them — with the names it drops, beside
+/// `nameless` entries that carry no name to print at all, folded into a
+/// single trailing count.
+fn bounded_names(names: &[String], nameless: usize) -> Vec<String> {
+    let mut shown = names
+        .iter()
+        .take(MAX_NAMED_LIMITS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let hidden = names.len().saturating_sub(shown.len()) + nameless;
+    if hidden > 0 {
+        shown.push(format!("+{hidden} more"));
+    }
+    shown
+}
+
+/// The coverage record every consts scan stamps about itself (issue
+/// #348), beside the provenance and the timing.
+///
+/// Two facets, one per listing the scan reads through.
+///
+/// `function-bodies` is the decompiled bodies the three detectors read.
+/// The function listing itself is always read end to end — a failed
+/// listing aborts the run, and more than half failing to decompile trips
+/// the skip-rate breaker — so what a finished scan can not have read is
+/// exactly the bodies it skipped along the way: a nameless listing entry,
+/// or a decompile that failed. With none, the facet is `complete`, and
+/// that is the admission's point: a constant the detectors did not name
+/// in a body they read was examined and absent, never silently unchecked.
+/// With any, the facet is `partial` and the limitation line names the
+/// unreached bodies (bounded at [`MAX_NAMED_LIMITS`]) and nothing else.
+///
+/// `data-objects` is the memory windows the data-table reading decodes.
+/// A window that failed to read, or arrived shorter than the listing
+/// says, left that object unexamined; the objects the scan read and
+/// claimed no table for are not a limit and name nothing. With no missing
+/// window the facet is `complete`; with any it is `partial` beside the
+/// objects whose windows never arrived.
+///
+/// The whole picture is `partial` when either facet falls short — the
+/// regions the scan could not read — and `complete` when neither does,
+/// with no third state: a consts scan either read both listings through
+/// or says which part it could not.
+fn coverage_stamp(unreached: &[String], nameless: usize, unreadable: &[String]) -> ScanCoverage {
+    let mut facets = Vec::new();
+    let bodies_total = unreached.len() + nameless;
+    if bodies_total == 0 {
+        facets.push(FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        });
+    } else {
+        // The names the scan can print, with the names it drops and the
+        // nameless entries that carry no name at all folded into one
+        // count beside them.
+        let shown = bounded_names(unreached, nameless);
+        let body = if bodies_total == 1 { "body" } else { "bodies" };
+        facets.push(FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!(
+                "{bodies_total} function {body} unreached: {}",
+                shown.join(", ")
+            )),
+        });
+    }
+    if unreadable.is_empty() {
+        facets.push(FacetCoverage {
+            id: "data-objects".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        });
+    } else {
+        let window = if unreadable.len() == 1 {
+            "window"
+        } else {
+            "windows"
+        };
+        facets.push(FacetCoverage {
+            id: "data-objects".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!(
+                "{} data-object memory {window} unreadable: {}",
+                unreadable.len(),
+                bounded_names(unreadable, 0).join(", ")
+            )),
+        });
+    }
+    let fell_short = facets
+        .iter()
+        .any(|facet| facet.status != CoverageStatus::Complete);
+    ScanCoverage {
+        status: if fell_short {
+            CoverageStatus::Partial
+        } else {
+            CoverageStatus::Complete
+        },
+        facets,
+    }
+}
 
 /// Orchestrates the three detectors into one [`ConstResult`].
 ///
@@ -201,6 +311,12 @@ impl<S> ConstEngine<S> {
         let mut names: BTreeMap<u64, String> = BTreeMap::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
+        // What the bodies walk could not read, kept by name so the
+        // coverage record can say so beside the counts (issue #348):
+        // the listing entries whose decompile failed, and the nameless
+        // entries that carry no name to name.
+        let mut unreached: Vec<String> = Vec::new();
+        let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
@@ -211,6 +327,7 @@ impl<S> ConstEngine<S> {
                     "Skipping function with no name"
                 );
                 skipped += 1;
+                nameless += 1;
                 continue;
             }
             let decompiled = match self.source.decompile(&function.name).await {
@@ -223,6 +340,7 @@ impl<S> ConstEngine<S> {
                     );
                     skipped += 1;
                     decompile_failures += 1;
+                    unreached.push(function.name.clone());
                     // Skip-rate breaker: once most of the listing has
                     // failed to decompile, the scan is reading a
                     // program the engine cannot analyze, and an
@@ -318,21 +436,23 @@ impl<S> ConstEngine<S> {
         // resolve through the engine's applied listing type or an
         // indexed read's guard width, and the tier follows the
         // evidence: 90 applied type, 70 decode plus indexed read, 50
-        // Xrefs-only, 30 bytes-only.
-        findings.extend(
-            crate::data_table::data_tables(
-                &self.source,
-                &data_objects,
-                &table_usage,
-                &function_starts,
-            )
-            .await
-            .into_iter()
-            .map(ConstFinding::DataTable),
-        );
+        // Xrefs-only, 30 bytes-only. The objects whose memory window
+        // never arrived come back beside the tables so the coverage
+        // record can name them (issue #348).
+        let (tables, unreadable_windows) = crate::data_table::data_tables(
+            &self.source,
+            &data_objects,
+            &table_usage,
+            &function_starts,
+        )
+        .await;
+        findings.extend(tables.into_iter().map(ConstFinding::DataTable));
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
+        // The engine admits its own coverage where the truth lives,
+        // beside the provenance and the timing (issue #348).
+        metadata.coverage = Some(coverage_stamp(&unreached, nameless, &unreadable_windows));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,
@@ -2288,6 +2408,241 @@ mod tests {
         );
         let result = scan(program).await;
         assert!(result.findings.is_empty());
+    }
+
+    // -- admitted coverage (P19 admitted-semantics track, issue #348) -----
+
+    /// The facet ids consts declares — the roster, spelled once here the
+    /// way the CLI pairing pin (#342) spells its roster and the way
+    /// apidetect (#346), floatsimd (#347) and typesdb (#348) spell
+    /// theirs. Every facet a freshly stamped coverage record names is
+    /// read against this list by the pin below, and every drift direction
+    /// is a fault: a declared facet the scan stopped stamping, a facet
+    /// stamped twice, and an id the scan invented outside the roster all
+    /// fail loudly.
+    const DECLARED_FACETS: &[&str] = &["function-bodies", "data-objects"];
+
+    /// The data-level verdict of the roster pin: empty means the record
+    /// names every declared facet exactly once, and each fault spells one
+    /// drift.
+    fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+        let mut faults = Vec::new();
+        for declared in DECLARED_FACETS {
+            let hits = coverage
+                .facets
+                .iter()
+                .filter(|facet| facet.id == *declared)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{declared}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{declared}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &coverage.facets {
+            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
+
+    /// The facet a roster-clean record names under `id`.
+    fn facet<'a>(coverage: &'a ScanCoverage, id: &str) -> &'a FacetCoverage {
+        coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == id)
+            .unwrap_or_else(|| panic!("`{id}` is named"))
+    }
+
+    #[tokio::test]
+    async fn scan_stamps_coverage_naming_every_declared_facet_once() {
+        // Bodies read, one object's window read in full: the scan fell
+        // short of nothing, so it admits nothing and a constant the
+        // detectors missed reads as absent, not unchecked.
+        let result = scan(table_program()).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh consts scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Complete);
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a fresh document must name every declared facet exactly once"
+        );
+        for id in DECLARED_FACETS {
+            let facet = facet(&coverage, id);
+            assert_eq!(facet.status, CoverageStatus::Complete, "`{id}` was read");
+            assert_eq!(facet.limitation, None, "complete coverage names no limit");
+        }
+        assert_eq!(
+            coverage.admission(),
+            None,
+            "a fully examined scan gives the sections nothing to qualify"
+        );
+
+        // An empty listing was read end to end too: it named nothing,
+        // which is complete coverage, never an unexamined scan.
+        let coverage = scan(FakeProgram::empty())
+            .await
+            .metadata
+            .coverage
+            .expect("a fresh consts scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Complete);
+        assert!(roster_faults(&coverage).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_region_limited_scan_names_both_facets_partial_with_their_reasons() {
+        // The two regions fall short at once: the bodies walk loses a
+        // named function to a failed decompile and a nameless listing
+        // entry it can name nothing about, and the data listing defines
+        // an object whose memory window never arrives. The record says
+        // which parts it could not read, so findings filed almost
+        // nothing over this record read as "examined little" — the
+        // reading an escalate retry needs — never as "this binary has no
+        // constants".
+        let mut program = table_program();
+        program.listing.push(summary("FUN_18003e750"));
+        program.fail_decompiles.push("FUN_18003e750".to_string());
+        program.listing.push(summary_at("", 0x1800_40000));
+        program.data_items.push(DataItem {
+            label: "DAT_1400a1c00".to_string(),
+            address: 0x1400_a1c00,
+            type_name: "undefined".to_string(),
+            length: 24,
+        });
+        let result = scan(program).await;
+        assert_eq!(
+            table_findings(&result).len(),
+            1,
+            "the object the scan did read still claims its table"
+        );
+
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh consts scan states its coverage");
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a scan that fell short still names every declared facet exactly once"
+        );
+        assert_eq!(
+            coverage.status,
+            CoverageStatus::Partial,
+            "the border stands until an engine change moves it"
+        );
+        assert_eq!(
+            facet(&coverage, "function-bodies").limitation.as_deref(),
+            Some("2 function bodies unreached: FUN_18003e750, +1 more"),
+            "the failed decompile names itself, the nameless entry rides the count"
+        );
+        assert_eq!(
+            facet(&coverage, "data-objects").limitation.as_deref(),
+            Some("1 data-object memory window unreadable: DAT_1400a1c00"),
+            "the object left unexamined names itself"
+        );
+        assert_eq!(
+            coverage.admission().as_deref(),
+            Some(
+                "partial — 2 function bodies unreached: FUN_18003e750, +1 more; \
+                 1 data-object memory window unreadable: DAT_1400a1c00"
+            ),
+            "what a reviewer reads is the shared type's own admission line"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_window_that_arrived_and_claimed_nothing_leaves_the_facet_complete() {
+        // The disqualification gates are the object's shape, not the
+        // scan's border: an object read in full whose bytes decode
+        // incoherently, or a mutation-gated one, claims nothing and
+        // admits nothing. Only a window that never arrived is a limit.
+        let mut program = table_program();
+        program.data_items.push(DataItem {
+            label: "DAT_1400a1c00".to_string(),
+            address: 0x1400_a1c00,
+            type_name: "undefined".to_string(),
+            length: 24,
+        });
+        program.memory_at(0x1400_a1c00, vec![0u8; 24]);
+        let coverage = scan(program).await.metadata.coverage.expect("coverage");
+        assert_eq!(coverage.status, CoverageStatus::Complete);
+        assert_eq!(
+            facet(&coverage, "data-objects").status,
+            CoverageStatus::Complete
+        );
+    }
+
+    #[tokio::test]
+    async fn the_bodies_limit_line_names_five_unreached_functions_and_counts_the_rest() {
+        // Bounded prose beside the counts, not a dump: the same cap
+        // floatsimd's admission carries (#347).
+        let mut program = FakeProgram::empty();
+        for index in 0..16 {
+            let name = format!("FUN_{index:04}");
+            if index < 7 {
+                program.listing.push(summary(&name));
+                program.fail_decompiles.push(name);
+            } else {
+                // A listing entry with no canned body fails to decompile
+                // too, which would trip the skip-rate breaker the walk
+                // runs over the whole listing.
+                add_body(&mut program, &name, "  return;\n");
+            }
+        }
+        let coverage = scan(program).await.metadata.coverage.expect("coverage");
+        assert_eq!(
+            facet(&coverage, "function-bodies").limitation.as_deref(),
+            Some(
+                "7 function bodies unreached: FUN_0000, FUN_0001, FUN_0002, FUN_0003, FUN_0004, +2 more"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+        let mut coverage = coverage_stamp(&[], 0, &[]);
+        coverage.facets.retain(|facet| facet.id != "data-objects");
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `data-objects` is missing from the record"],
+            "an engine quietly skipping a declared facet fails loudly"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_a_facet_is_doubled() {
+        let mut coverage = coverage_stamp(&[], 0, &[]);
+        coverage.facets.push(coverage.facets[0].clone());
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `function-bodies` appears 2 times in the record"],
+            "a facet crowded into two entries fails loudly"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+        let mut coverage = coverage_stamp(&[], 0, &[]);
+        coverage.facets.push(FacetCoverage {
+            id: "import-table".to_string(),
+            status: CoverageStatus::Unexamined,
+            limitation: None,
+        });
+        assert_eq!(
+            roster_faults(&coverage),
+            ["record names `import-table`, a facet the engine never declared"],
+            "an id invented outside the declared roster fails loudly"
+        );
     }
 
     #[tokio::test]

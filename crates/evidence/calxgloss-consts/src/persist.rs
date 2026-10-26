@@ -207,6 +207,49 @@ mod tests {
     }
 
     #[test]
+    fn the_filed_document_carries_its_coverage_record_exactly() {
+        // What the engine stamped inside its scan is what every later
+        // reader — the projection seam, the report, a `--show` months
+        // later — sees: both facets, their statuses, and their bounded
+        // limitation lines ride the persistor untouched (issue #348).
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ConstPersistor::new(dir.path());
+        let mut result = sample_result("eqmain.dll");
+        result.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "data-objects".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some(
+                        "1 data-object memory window unreadable: DAT_1400a1c00".to_string(),
+                    ),
+                },
+            ],
+        });
+
+        persistor.save(&result).unwrap();
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded.metadata.coverage, result.metadata.coverage);
+        assert_eq!(
+            loaded
+                .metadata
+                .coverage
+                .as_ref()
+                .and_then(|coverage| coverage.admission())
+                .as_deref(),
+            Some("partial — 1 data-object memory window unreadable: DAT_1400a1c00"),
+            "the reader's admission line is the one the scan wrote, and only \
+             the facet that fell short speaks in it"
+        );
+    }
+
+    #[test]
     fn results_are_filed_under_re_analysis_consts_in_the_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let expected = dir.path().join("re/analysis/consts/eqmain.dll.json");

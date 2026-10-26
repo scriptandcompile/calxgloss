@@ -419,6 +419,44 @@ pub(super) fn println_content(content: impl AsRef<str>) {
     println!("  {}", padded);
 }
 
+/// Prints a scan's own admission beside the counts it qualifies (issues
+/// #346–#348): the shared type's line framed under `Coverage:`, printed
+/// only when there is something to admit. A line that fits the report's
+/// column prints whole and byte-identical to how it always printed; one
+/// that does not — a scan whose every facet fell short, like a region-
+/// limited constant scan — breaks at its facet boundaries instead of at
+/// the column: the status word beside the label and each falling-short
+/// facet's limitation line on its own continuation line, so a reason is
+/// never cut mid-word and the report's box stays intact.
+pub(super) fn print_coverage(coverage: Option<&calxgloss_types::ScanCoverage>) {
+    let Some(coverage) = coverage else { return };
+    let Some(admission) = coverage.admission() else {
+        return;
+    };
+    const LABEL: &str = "Coverage:  ";
+    if 2 + LABEL.len() + admission.chars().count() < SEP_WIDTH {
+        println_content(format!("  {}{}", white_bold(LABEL), dim(&admission)));
+        return;
+    }
+    // The break's continuation indent: the label's width, so the
+    // limitation lines start under the status word, not under the box.
+    let indent = " ".repeat(LABEL.len());
+    println_content(format!(
+        "  {}{}",
+        white_bold(LABEL),
+        dim(&coverage.status.to_string())
+    ));
+    for facet in coverage
+        .facets
+        .iter()
+        .filter(|facet| facet.status != calxgloss_types::CoverageStatus::Complete)
+    {
+        if let Some(limitation) = &facet.limitation {
+            println_content(format!("  {indent}{}", dim(limitation)));
+        }
+    }
+}
+
 // ============================================================
 // Dashboard accept/reject helpers
 // ============================================================
