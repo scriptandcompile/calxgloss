@@ -1,26 +1,25 @@
 //! The retry loop — orchestrates translation, verification, and LLM fixes.
 
 use crate::Translation;
+use crate::retry::attempt::{
+    AttemptOutcome, AttemptPath, AttemptRunCtx, AttemptUnit, VerificationMode, emit_attempt,
+    run_attempt, verify_and_record,
+};
 use crate::retry::helpers::build_escalated_prompt;
 use crate::retry::{
     EscalatePromptCtx, FixPromptCtx, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt,
     build_compile_fix_prompt, build_edge_case_fix_prompt, build_escalate_prompt_with_context,
     build_failure_informed_compile_fix_prompt, build_failure_informed_edge_case_fix_prompt,
     build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
-    build_test_fix_prompt, log_prompt_variant_experiment, log_token_usage,
+    build_test_fix_prompt,
 };
 use calxgloss_analysis::FaultLogger;
 use calxgloss_llm::{
-    LlmClient, LlmError, LlmMessage,
-    behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest as DetEdgeCaseTest},
-    infinite_loop::InfiniteLoopDetector,
+    LlmClient, LlmError, LlmMessage, infinite_loop::InfiniteLoopDetector,
     resource_exhaustion::ResourceExhaustionDetector,
 };
-use calxgloss_types::{
-    FailureHint, FaultEvent, ProgressEvent, ResourceExhaustionFault, TranslationEvents,
-};
-use calxgloss_verify::{CompileResult, Verifier};
-use std::collections::HashSet;
+use calxgloss_types::{FailureHint, ProgressEvent, TranslationEvents};
+use calxgloss_verify::Verifier;
 use tracing::{info, warn};
 
 /// Context for the retry loop.
@@ -99,136 +98,45 @@ pub async fn try_translate_with_retry(
     // loop breaks to avoid wasting tokens on a dead-end path.
     let mut loop_detector = InfiniteLoopDetector::new();
 
-    // Helper: record an attempt in the loop detector so streaks are tracked,
-    // and persist a fault event when a loop is detected.
-    let record_in_detector = |detector: &mut InfiniteLoopDetector,
-                              prompt: &str,
-                              code: &str,
-                              success: bool,
-                              strategy: &str,
-                              attempt: u32,
-                              binary: &str,
-                              function: &str,
-                              events: Option<&TranslationEvents>,
-                              fault_logger: Option<&FaultLogger>| {
-        detector.record_attempt(prompt, code, success, strategy, attempt);
-
-        // Check for infinite loop
-        if let Some(signal) = detector.detect() {
-            // Emit progress event
-            if let Some(em) = events {
-                let _ = em.emit(ProgressEvent::InfiniteLoopDetected {
-                    binary: binary.to_string().into(),
-                    function: function.to_string(),
-                    streak: signal.streak,
-                    streak_start_attempt: signal.streak_start_attempt,
-                    streak_end_attempt: signal.streak_end_attempt,
-                    strategy: signal.strategy.clone(),
-                });
-            }
-            // Persist fault event for post-hoc analysis
-            if let Some(logger) = fault_logger {
-                let event = FaultEvent::infinite_loop(
-                    binary,
-                    function,
-                    attempt,
-                    strategy,
-                    signal.streak,
-                    signal.streak_start_attempt,
-                    signal.streak_end_attempt,
-                );
-                logger.record(event);
-            }
-            warn!(
-                binary,
-                function,
-                streak = signal.streak,
-                strategy = signal.strategy,
-                streak_range = ?format!("{}–{}", signal.streak_start_attempt, signal.streak_end_attempt),
-                "Infinite loop detected — stopping retry"
-            );
-            return true; // loop detected
-        }
-        false
-    };
-
     let binary = initial_translation.binary.clone();
     let function = initial_translation.function.clone();
 
-    // Helper: emit a TranslationAttemptCompleted event if events are wired up
-    let emit_attempt = |result: &RetryResult, attempt_num: u32, strategy: &str| {
-        if let Some(em) = ctx.events {
-            let attempt = &result.attempts[attempt_num as usize - 1];
-            let _ = em.emit(ProgressEvent::TranslationAttemptCompleted {
-                binary: binary.clone(),
-                function: function.clone(),
-                attempt: attempt_num,
-                success: attempt.is_successful(),
-                compiled: attempt.compiled,
-                tests_passed: attempt.tests_passed,
-                tests_total: attempt.tests_total,
-                compilation_errors: attempt.compilation_errors.clone(),
-                failed_tests: attempt.failed_tests.clone(),
-                strategy: strategy.to_string(),
-                tokens_used: attempt.tokens_used,
-            });
-        }
+    // The attempt seam's run context (issue #331): everything every attempt
+    // of this unit needs from the loop, gathered once.
+    let run = &mut AttemptRunCtx {
+        verifier: ctx.verifier,
+        llm: ctx.llm,
+        events: ctx.events,
+        workspace: ctx.workspace,
+        resource_detector: ctx.resource_detector,
+        fault_logger: ctx.fault_logger,
+        loop_detector: &mut loop_detector,
+        binary: binary.clone(),
+        function: function.clone(),
     };
 
-    // First attempt: verify the initial translation
-    let compile_result = match ctx
-        .verifier
-        .compile(
-            &initial_translation.binary,
-            &initial_translation.function,
-            &initial_translation.rust_code,
-        )
-        .await
-    {
-        Ok(cr) => cr,
-        Err(e) => {
-            warn!(error = %e, "Compilation check failed during retry");
-            CompileResult {
-                success: false,
-                errors: vec![e.to_string()],
-                warnings: Vec::new(),
-                output: e.to_string(),
-            }
-        }
+    // First attempt: verify the initial translation, riding the attempt
+    // seam (issue #331). Compile-only mode — today's hole, closed in #334.
+    let initial_unit = AttemptUnit {
+        code_under_fix: &initial_translation.rust_code,
+        baseline_tests: &initial_translation.baseline_tests,
+        tier: initial_translation.context_tier,
     };
-
-    // Clone errors for later use in prompt building
-    let initial_errors = compile_result.errors.clone();
-
-    let attempt = TranslationAttempt {
-        attempt: 1,
-        rust_code: initial_translation.rust_code.clone(),
-        compiled: compile_result.success,
-        compilation_errors: compile_result.errors.clone(),
-        tests_passed: 0,
-        tests_total: 0,
-        failed_tests: Vec::new(),
-        strategy: "initial".to_string(),
-        tokens_used: initial_translation.tokens_used,
-        context_tier: Some(initial_translation.context_tier.label().to_string()),
-    };
-    result.add_attempt(attempt);
-    emit_attempt(&result, 1, "initial");
-
-    // Record in infinite-loop detector (initial translation).
     let initial_prompt = format!("{function} ({binary}) initial translation");
-    let loop_detected = record_in_detector(
-        &mut loop_detector,
-        &initial_prompt,
-        &initial_translation.rust_code,
-        result.success,
-        "initial",
+    let initial_report = verify_and_record(
+        run,
+        &mut result,
+        &initial_unit,
         1,
-        &binary,
-        &function,
-        ctx.events,
-        ctx.fault_logger,
-    );
+        "initial",
+        &initial_prompt,
+        initial_translation.tokens_used,
+        VerificationMode::CompileOnly,
+    )
+    .await;
+
+    // Keep the initial compile's errors for later use in prompt building
+    let initial_errors = result.attempts[0].compilation_errors.clone();
 
     // If the first attempt succeeded, we're done
     if result.success {
@@ -236,7 +144,7 @@ pub async fn try_translate_with_retry(
     }
 
     // Loop detector fired — do not retry
-    if loop_detected {
+    if initial_report.loop_fired {
         return result;
     }
 
@@ -253,7 +161,18 @@ pub async fn try_translate_with_retry(
 
         // Wall-clock start of this attempt — recorded on its token-usage
         // entry so the dashboard can estimate remaining time (issue #64).
+        // Handed through the seam so the recorded duration still spans
+        // prompt building plus the call.
         let attempt_start = std::time::Instant::now();
+
+        // The unit under repair, routed through the attempt seam (issue
+        // #331): the code the fix would replace, the suite it must pass,
+        // and the tier this attempt's prompt is built at.
+        let unit = AttemptUnit {
+            code_under_fix: &initial_translation.rust_code,
+            baseline_tests: &initial_translation.baseline_tests,
+            tier: current_tier,
+        };
 
         // If the tier was escalated in the previous iteration, build an
         // escalated prompt with additional decompiler/workspace context for
@@ -297,6 +216,9 @@ pub async fn try_translate_with_retry(
                         context_tier: Some(current_tier.label().to_string()),
                     });
                     emit_attempt(
+                        ctx.events,
+                        &binary,
+                        &function,
                         &result,
                         attempt_num,
                         &format!("tier_escalation_failed({})", current_tier.label()),
@@ -306,381 +228,25 @@ pub async fn try_translate_with_retry(
             };
             let tier_label = current_tier.label().to_string();
 
-            // Emit: LLM request (full prompt) for this retry attempt
-            if let Some(em) = ctx.events {
-                let _ = em.emit(ProgressEvent::LlmRequest {
-                    binary: initial_translation.binary.clone(),
-                    function: initial_translation.function.clone(),
-                    attempt: attempt_num,
-                    strategy: format!("escalated({tier_label})"),
-                    prompt: escalated_prompt.clone(),
-                });
-            }
-
-            // Emit: LLM call started
-            if let Some(em) = ctx.events {
-                let _ = em.emit(ProgressEvent::LlmCallStart {
-                    binary: initial_translation.binary.clone(),
-                    function: initial_translation.function.clone(),
-                    attempt: attempt_num,
-                    strategy: format!("escalated({tier_label})"),
-                });
-            }
-
-            let response = match llm_call_with_keepalive(
-                ctx.llm,
-                &[LlmMessage::user(&escalated_prompt)],
-                &initial_translation.binary,
-                &initial_translation.function,
-                attempt_num,
+            let report = run_attempt(
+                run,
+                &mut result,
+                &mut failure_history,
+                &unit,
+                AttemptPath::TierEscalated,
                 &format!("escalated({tier_label})"),
-                ctx.events,
-            )
-            .await
-            {
-                Ok(r) => {
-                    if let Some(detector) = ctx.resource_detector {
-                        detector.record_success();
-                    }
-                    r
-                }
-                Err(LlmError::ResourceExhausted { kind }) => {
-                    const DEFAULT_ELAPSED_SECS: u64 = 300;
-                    if let Some(detector) = ctx.resource_detector {
-                        detector.record_failure_with_kind(kind.clone(), DEFAULT_ELAPSED_SECS);
-                        if let Some(signal) = detector.check_overload() {
-                            if let Some(em) = ctx.events {
-                                let _ = em.emit(ProgressEvent::ResourceExhaustionDetected {
-                                    binary: initial_translation.binary.clone(),
-                                    function: initial_translation.function.clone(),
-                                    attempt: attempt_num,
-                                    strategy: format!("escalated({tier_label})"),
-                                    reason: kind.to_string(),
-                                    elapsed_secs: signal.longest_request_secs,
-                                    recommended_backoff_secs: signal.recommended_backoff_secs,
-                                });
-                            }
-                            warn!(
-                                binary = %initial_translation.binary,
-                                function = %initial_translation.function,
-                                streak = signal.streak,
-                                kind = %kind,
-                                backoff = signal.recommended_backoff_secs,
-                                "LLM model overloaded — work queued"
-                            );
-                        }
-                    }
-                    if let Some(logger) = ctx.fault_logger {
-                        let fault = ResourceExhaustionFault::timeout(DEFAULT_ELAPSED_SECS);
-                        logger.record_resource_exhaustion(
-                            &initial_translation.binary,
-                            &initial_translation.function,
-                            attempt_num,
-                            &format!("escalated({tier_label})"),
-                            &fault,
-                        );
-                    }
-                    warn!(attempt = attempt_num, kind = %kind, "LLM resource exhausted during tier escalation");
-                    result.add_attempt(TranslationAttempt {
-                        attempt: attempt_num,
-                        rust_code: initial_translation.rust_code.clone(),
-                        compiled: false,
-                        compilation_errors: vec![format!(
-                            "LLM resource exhausted ({kind}) during tier escalation"
-                        )],
-                        tests_passed: 0,
-                        tests_total: 0,
-                        failed_tests: Vec::new(),
-                        strategy: format!("escalated({tier_label})"),
-                        tokens_used: None,
-                        context_tier: Some(tier_label.clone()),
-                    });
-                    emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
-                    failure_history.push(FailureHint::new(
-                        attempt_num,
-                        format!("escalated({tier_label})"),
-                        format!("LLM resource exhausted: {kind}"),
-                    ));
-                    continue;
-                }
-                Err(e) => {
-                    warn!(
-                        attempt = attempt_num,
-                        error = %e,
-                        "LLM call failed during tier escalation"
-                    );
-                    result.add_attempt(TranslationAttempt {
-                        attempt: attempt_num,
-                        rust_code: initial_translation.rust_code.clone(),
-                        compiled: false,
-                        compilation_errors: vec![format!("LLM call failed: {e}")],
-                        tests_passed: 0,
-                        tests_total: 0,
-                        failed_tests: Vec::new(),
-                        strategy: format!("escalated({tier_label})"),
-                        tokens_used: None,
-                        context_tier: Some(tier_label.clone()),
-                    });
-                    emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
-                    continue;
-                }
-            };
-
-            // Emit: LLM response (full content) for this retry attempt
-            if let Some(em) = ctx.events {
-                let _ = em.emit(ProgressEvent::LlmResponse {
-                    binary: initial_translation.binary.clone(),
-                    function: initial_translation.function.clone(),
-                    attempt: attempt_num,
-                    strategy: format!("escalated({tier_label})"),
-                    content: response.content.clone(),
-                    tokens_used: response.tokens_used,
-                });
-            }
-
-            let new_rust_code = response.content.trim().to_string();
-            let tokens_used = response.tokens_used;
-
-            if new_rust_code.is_empty() {
-                warn!(
-                    attempt = attempt_num,
-                    "LLM returned empty code during tier escalation"
-                );
-                result.add_attempt(TranslationAttempt {
-                    attempt: attempt_num,
-                    rust_code: String::new(),
-                    compiled: false,
-                    compilation_errors: vec!["LLM returned empty code".to_string()],
-                    tests_passed: 0,
-                    tests_total: 0,
-                    failed_tests: Vec::new(),
-                    strategy: format!("escalated({tier_label})"),
-                    tokens_used,
-                    context_tier: Some(tier_label.clone()),
-                });
-                emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
-                log_token_usage(
-                    &binary,
-                    &function,
-                    attempt_num,
-                    &format!("escalated({tier_label})"),
-                    tokens_used,
-                    false,
-                    ctx.workspace,
-                    &tier_label,
-                    Some(attempt_start.elapsed().as_secs()),
-                );
-                continue;
-            }
-
-            // Verify the fix attempt
-            let compile_result = match ctx
-                .verifier
-                .compile(
-                    &initial_translation.binary,
-                    &initial_translation.function,
-                    &new_rust_code,
-                )
-                .await
-            {
-                Ok(cr) => cr,
-                Err(e) => CompileResult {
-                    success: false,
-                    errors: vec![e.to_string()],
-                    warnings: Vec::new(),
-                    output: e.to_string(),
-                },
-            };
-
-            let (tests_passed, tests_total, failed_tests) = if compile_result.success {
-                match ctx
-                    .verifier
-                    .verify(
-                        &initial_translation.binary,
-                        &initial_translation.function,
-                        &new_rust_code,
-                        &initial_translation.baseline_tests,
-                    )
-                    .await
-                {
-                    Ok(vr) => (
-                        vr.tests_passed,
-                        vr.tests_total,
-                        vr.failed_tests
-                            .iter()
-                            .map(|ft| {
-                                format!(
-                                    "Test {}: expected {}, got {} — {}",
-                                    ft.test_index, ft.expected, ft.actual, ft.error
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                    Err(_) => (0, 0, vec!["Verification failed".to_string()]),
-                }
-            } else {
-                (0, 0, Vec::new())
-            };
-
-            // Verify behavior-divergence for tier-escalated attempts
-            let divergence_signal =
-                if compile_result.success && !initial_translation.baseline_tests.is_empty() {
-                    let num_params = initial_translation.baseline_tests.len().min(5);
-                    let hints: HashSet<String> = initial_translation
-                        .disassembly_hints
-                        .iter()
-                        .cloned()
-                        .collect();
-                    let detector = BehaviorDivergenceDetector::new();
-                    let edge_tests: Vec<DetEdgeCaseTest> = detector
-                        .generate_edge_cases(num_params, &hints)
-                        .into_iter()
-                        .map(|t| DetEdgeCaseTest::new(t.label, t.inputs, t.expected))
-                        .collect();
-
-                    if !edge_tests.is_empty() && edge_tests.len() >= 2 && tests_total >= 1 {
-                        let baseline_passed: Vec<bool> =
-                            (0..tests_total).map(|_| tests_passed > 0).collect();
-                        let edge_results: Vec<bool> = edge_tests.iter().map(|_| true).collect();
-
-                        detector.detect_divergence(
-                            &initial_translation.binary,
-                            &initial_translation.function,
-                            attempt_num,
-                            &format!("escalated({tier_label})"),
-                            &baseline_passed,
-                            &edge_tests,
-                            &edge_results,
-                        )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-            if let Some(ref signal) = divergence_signal {
-                let fault_confidence =
-                    BehaviorDivergenceDetector::new().divergence_confidence(signal);
-                let failing_labels: Vec<String> = signal
-                    .failing_edge_cases
-                    .iter()
-                    .map(|t| t.label.clone())
-                    .collect();
-
-                if let Some(em) = ctx.events {
-                    let _ = em.emit(ProgressEvent::BehaviorDivergenceDetected {
-                        binary: signal.binary.clone().into(),
-                        function: signal.function.clone(),
-                        attempt: signal.attempt,
-                        strategy: signal.strategy.clone(),
-                        baseline_passed: signal.baseline_passed,
-                        baseline_total: signal.baseline_total,
-                        edge_tests_passed: signal.edge_tests_passed,
-                        edge_tests_total: signal.edge_tests_total,
-                        failing_edge_cases: failing_labels.clone(),
-                        fault_confidence,
-                    });
-                }
-                if let Some(logger) = ctx.fault_logger {
-                    let event = FaultEvent::behavior_divergence(
-                        &signal.binary,
-                        &signal.function,
-                        signal.attempt,
-                        &signal.strategy,
-                        signal.baseline_passed,
-                        signal.baseline_total,
-                        signal.edge_tests_passed,
-                        signal.edge_tests_total,
-                        failing_labels.clone(),
-                        fault_confidence,
-                    );
-                    logger.record(event);
-                }
-            }
-
-            let attempt_success = compile_result.success && tests_passed == tests_total;
-            let _loop_fired = record_in_detector(
-                &mut loop_detector,
+                attempt_num,
                 &escalated_prompt,
-                &new_rust_code,
-                attempt_success,
-                &format!("escalated({tier_label})"),
-                attempt_num,
-                &binary,
-                &function,
-                ctx.events,
-                ctx.fault_logger,
-            );
-
-            let attempt = TranslationAttempt {
-                attempt: attempt_num,
-                rust_code: new_rust_code,
-                compiled: compile_result.success,
-                compilation_errors: compile_result.errors.clone(),
-                tests_passed,
-                tests_total,
-                failed_tests: failed_tests.clone(),
-                strategy: format!("escalated({tier_label})"),
-                tokens_used,
-                context_tier: Some(tier_label.clone()),
-            };
-            result.add_attempt(attempt);
-            emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
-
-            log_token_usage(
-                &binary,
-                &function,
-                attempt_num,
-                &format!("escalated({tier_label})"),
-                tokens_used,
-                result
-                    .attempts
-                    .last()
-                    .map(|a| a.is_successful())
-                    .unwrap_or(false),
-                ctx.workspace,
-                &tier_label,
-                Some(attempt_start.elapsed().as_secs()),
-            );
-
-            if !result.success {
-                failure_history.push(FailureHint::new(
-                    attempt_num,
-                    format!("escalated({tier_label})"),
-                    if !result
-                        .attempts
-                        .last()
-                        .map(|a| a.compilation_errors.is_empty())
-                        .unwrap_or(false)
-                    {
-                        format!(
-                            "Compilation failed: {}",
-                            result
-                                .attempts
-                                .last()
-                                .map(|a| a.compilation_errors.join("; "))
-                                .unwrap_or_default()
-                        )
-                    } else {
-                        let tp = result.attempts.last().map(|a| a.tests_passed).unwrap_or(0);
-                        let tt = result.attempts.last().map(|a| a.tests_total).unwrap_or(0);
-                        format!("{tp} of {tt} tests passed")
-                    },
-                ));
+                attempt_start,
+            )
+            .await;
+            match report.outcome {
+                AttemptOutcome::Passed => break,
+                AttemptOutcome::LlmEmpty
+                | AttemptOutcome::LlmExhausted { .. }
+                | AttemptOutcome::LlmCallError => continue,
+                AttemptOutcome::VerificationFailed { .. } => {}
             }
-
-            if result.success {
-                break;
-            }
-
-            log_prompt_variant_experiment(
-                &binary,
-                &format!("escalated({tier_label})"),
-                result.success,
-                attempt_num,
-                ctx.workspace,
-            );
 
             // Escalate strategy AND tier after failed tier-escalated attempt
             if ctx.config.escalate_on_failure {
@@ -714,7 +280,14 @@ pub async fn try_translate_with_retry(
                     tokens_used: None,
                     context_tier: Some(current_tier.label().to_string()),
                 });
-                emit_attempt(&result, attempt_num, "skip_default");
+                emit_attempt(
+                    ctx.events,
+                    &binary,
+                    &function,
+                    &result,
+                    attempt_num,
+                    "skip_default",
+                );
                 continue;
             }
             RetryStrategy::CompileFix => {
@@ -890,417 +463,29 @@ pub async fn try_translate_with_retry(
             }
         };
 
-        // Emit: LLM request (full prompt) for this retry attempt
-        if let Some(em) = ctx.events {
-            let _ = em.emit(ProgressEvent::LlmRequest {
-                binary: initial_translation.binary.clone(),
-                function: initial_translation.function.clone(),
-                attempt: attempt_num,
-                strategy: strategy_name.clone(),
-                prompt: prompt.clone(),
-            });
-        }
-
-        // Send fix prompt to LLM with keepalive progress updates
-        let messages = vec![LlmMessage::user(&prompt)];
-
-        // Emit: LLM call started
-        if let Some(em) = ctx.events {
-            let _ = em.emit(ProgressEvent::LlmCallStart {
-                binary: initial_translation.binary.clone(),
-                function: initial_translation.function.clone(),
-                attempt: attempt_num,
-                strategy: strategy_name.clone(),
-            });
-        }
-
-        let response = match llm_call_with_keepalive(
-            ctx.llm,
-            &messages,
-            &initial_translation.binary,
-            &initial_translation.function,
-            attempt_num,
+        let report = run_attempt(
+            run,
+            &mut result,
+            &mut failure_history,
+            &unit,
+            AttemptPath::StrategyPrompt,
             &strategy_name,
-            ctx.events,
-        )
-        .await
-        {
-            Ok(r) => {
-                // Record success in the resource exhaustion detector
-                if let Some(detector) = ctx.resource_detector {
-                    detector.record_success();
-                }
-                r
-            }
-            Err(LlmError::ResourceExhausted { kind }) => {
-                // Approximate elapsed time for resource exhaustion events
-                const DEFAULT_ELAPSED_SECS: u64 = 300;
-                // Record in the resource exhaustion detector
-                if let Some(detector) = ctx.resource_detector {
-                    detector.record_failure_with_kind(kind.clone(), DEFAULT_ELAPSED_SECS);
-                    if let Some(signal) = detector.check_overload() {
-                        // Emit progress event
-                        if let Some(em) = ctx.events {
-                            let _ = em.emit(ProgressEvent::ResourceExhaustionDetected {
-                                binary: initial_translation.binary.clone(),
-                                function: initial_translation.function.clone(),
-                                attempt: attempt_num,
-                                strategy: strategy_name.clone(),
-                                reason: kind.to_string(),
-                                elapsed_secs: signal.longest_request_secs,
-                                recommended_backoff_secs: signal.recommended_backoff_secs,
-                            });
-                        }
-                        warn!(
-                            binary = %initial_translation.binary,
-                            function = %initial_translation.function,
-                            streak = signal.streak,
-                            kind = %kind,
-                            backoff = signal.recommended_backoff_secs,
-                            "LLM model overloaded — work queued"
-                        );
-                    }
-                }
-                // Persist fault event to disk
-                if let Some(logger) = ctx.fault_logger {
-                    let fault = ResourceExhaustionFault::timeout(DEFAULT_ELAPSED_SECS);
-                    logger.record_resource_exhaustion(
-                        &initial_translation.binary,
-                        &initial_translation.function,
-                        attempt_num,
-                        &strategy_name,
-                        &fault,
-                    );
-                }
-                warn!(
-                    attempt = attempt_num,
-                    kind = %kind,
-                    "LLM resource exhausted during retry"
-                );
-                result.add_attempt(TranslationAttempt {
-                    attempt: attempt_num,
-                    rust_code: initial_translation.rust_code.clone(),
-                    compiled: false,
-                    compilation_errors: vec![format!(
-                        "LLM resource exhausted ({kind}) — model is overloaded or timed out"
-                    )],
-                    tests_passed: 0,
-                    tests_total: 0,
-                    failed_tests: Vec::new(),
-                    strategy: strategy_name.clone(),
-                    tokens_used: None,
-                    context_tier: Some(current_tier.label().to_string()),
-                });
-                emit_attempt(&result, attempt_num, &strategy_name);
-                // Record failure history for informed prompting
-                failure_history.push(FailureHint::new(
-                    attempt_num,
-                    strategy_name.clone(),
-                    format!("LLM resource exhausted: {kind}"),
-                ));
-                // Continue to next attempt (might get a different strategy)
-                continue;
-            }
-            Err(e) => {
-                warn!(
-                    attempt = attempt_num,
-                    error = %e,
-                    "LLM call failed during retry"
-                );
-                result.add_attempt(TranslationAttempt {
-                    attempt: attempt_num,
-                    rust_code: initial_translation.rust_code.clone(),
-                    compiled: false,
-                    compilation_errors: vec![format!("LLM call failed: {}", e)],
-                    tests_passed: 0,
-                    tests_total: 0,
-                    failed_tests: Vec::new(),
-                    strategy: strategy_name.clone(),
-                    tokens_used: None,
-                    context_tier: Some(current_tier.label().to_string()),
-                });
-                emit_attempt(&result, attempt_num, &strategy_name);
-                // Continue to next attempt (might get a different strategy)
-                continue;
-            }
-        };
-
-        // Emit: LLM response (full content) for this retry attempt
-        if let Some(em) = ctx.events {
-            let _ = em.emit(ProgressEvent::LlmResponse {
-                binary: initial_translation.binary.clone(),
-                function: initial_translation.function.clone(),
-                attempt: attempt_num,
-                strategy: strategy_name.clone(),
-                content: response.content.clone(),
-                tokens_used: response.tokens_used,
-            });
-        }
-
-        let new_rust_code = response.content.trim().to_string();
-        let tokens_used = response.tokens_used;
-
-        if new_rust_code.is_empty() {
-            warn!(
-                attempt = attempt_num,
-                "LLM returned empty code during retry"
-            );
-            result.add_attempt(TranslationAttempt {
-                attempt: attempt_num,
-                rust_code: String::new(),
-                compiled: false,
-                compilation_errors: vec!["LLM returned empty code".to_string()],
-                tests_passed: 0,
-                tests_total: 0,
-                failed_tests: Vec::new(),
-                strategy: strategy_name.clone(),
-                tokens_used,
-                context_tier: Some(current_tier.label().to_string()),
-            });
-            emit_attempt(&result, attempt_num, &strategy_name);
-
-            // Log token usage (even with empty code, the LLM consumed tokens)
-            log_token_usage(
-                &binary,
-                &function,
-                attempt_num,
-                &strategy_name,
-                tokens_used,
-                false,
-                ctx.workspace,
-                current_tier.label(),
-                Some(attempt_start.elapsed().as_secs()),
-            );
-            continue;
-        }
-
-        // Verify the fix attempt
-        let compile_result = match ctx
-            .verifier
-            .compile(
-                &initial_translation.binary,
-                &initial_translation.function,
-                &new_rust_code,
-            )
-            .await
-        {
-            Ok(cr) => cr,
-            Err(e) => CompileResult {
-                success: false,
-                errors: vec![e.to_string()],
-                warnings: Vec::new(),
-                output: e.to_string(),
-            },
-        };
-
-        // Get test results
-        let (tests_passed, tests_total, failed_tests) = if compile_result.success {
-            match ctx
-                .verifier
-                .verify(
-                    &initial_translation.binary,
-                    &initial_translation.function,
-                    &new_rust_code,
-                    &initial_translation.baseline_tests,
-                )
-                .await
-            {
-                Ok(vr) => (
-                    vr.tests_passed,
-                    vr.tests_total,
-                    vr.failed_tests
-                        .iter()
-                        .map(|ft| {
-                            format!(
-                                "Test {}: expected {}, got {} — {}",
-                                ft.test_index, ft.expected, ft.actual, ft.error
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                ),
-                Err(_) => (0, 0, vec!["Verification failed".to_string()]),
-            }
-        } else {
-            (0, 0, Vec::new())
-        };
-
-        // Verify behavior-divergence: run edge-case tests alongside
-        // baseline tests.  If all baseline tests pass but edge-case
-        // tests fail, the implementation likely diverges on inputs
-        // not covered by the baseline suite.
-        let (divergence_signal, divergence_detector) =
-            if compile_result.success && !initial_translation.baseline_tests.is_empty() {
-                // Generate edge-case tests from disassembly hints.
-                let num_params = initial_translation.baseline_tests.len().min(5); // Heuristic: param count approximated by baseline test arity.
-                let hints: HashSet<String> = initial_translation
-                    .disassembly_hints
-                    .iter()
-                    .cloned()
-                    .collect();
-                let detector = BehaviorDivergenceDetector::new();
-                let edge_tests: Vec<DetEdgeCaseTest> = detector
-                    .generate_edge_cases(num_params, &hints)
-                    .into_iter()
-                    .map(|t| DetEdgeCaseTest::new(t.label, t.inputs, t.expected))
-                    .collect();
-
-                if !edge_tests.is_empty() {
-                    // Run edge-case tests against the compiled code.
-                    let baseline_passed: Vec<bool> =
-                        (0..tests_total).map(|_| tests_passed > 0).collect();
-                    let edge_results: Vec<bool> = edge_tests.iter().map(|_t| true).collect();
-
-                    if edge_tests.len() >= 2 && tests_total >= 1 {
-                        let signal = detector.detect_divergence(
-                            &initial_translation.binary,
-                            &initial_translation.function,
-                            attempt_num,
-                            &strategy_name,
-                            &baseline_passed,
-                            &edge_tests,
-                            &edge_results,
-                        );
-                        (signal, detector)
-                    } else {
-                        (None, detector)
-                    }
-                } else {
-                    (None, detector)
-                }
-            } else {
-                (None, BehaviorDivergenceDetector::new())
-            };
-
-        // Emit divergence signal if detected.
-        if let Some(ref signal) = divergence_signal {
-            let fault_confidence = divergence_detector.divergence_confidence(signal);
-            let failing_labels: Vec<String> = signal
-                .failing_edge_cases
-                .iter()
-                .map(|t| t.label.clone())
-                .collect();
-
-            if let Some(em) = ctx.events {
-                let _ = em.emit(ProgressEvent::BehaviorDivergenceDetected {
-                    binary: signal.binary.clone().into(),
-                    function: signal.function.clone(),
-                    attempt: signal.attempt,
-                    strategy: signal.strategy.clone(),
-                    baseline_passed: signal.baseline_passed,
-                    baseline_total: signal.baseline_total,
-                    edge_tests_passed: signal.edge_tests_passed,
-                    edge_tests_total: signal.edge_tests_total,
-                    failing_edge_cases: failing_labels.clone(),
-                    fault_confidence,
-                });
-            }
-            // Persist the fault event for post-hoc analysis.
-            if let Some(logger) = ctx.fault_logger {
-                let event = FaultEvent::behavior_divergence(
-                    &signal.binary,
-                    &signal.function,
-                    signal.attempt,
-                    &signal.strategy,
-                    signal.baseline_passed,
-                    signal.baseline_total,
-                    signal.edge_tests_passed,
-                    signal.edge_tests_total,
-                    failing_labels.clone(),
-                    fault_confidence,
-                );
-                logger.record(event);
-            }
-        }
-
-        // Record this attempt in the infinite-loop detector so we catch
-        // cases where the LLM keeps returning identical code despite
-        // changing prompts/strategies.  Do this before moving `new_rust_code`
-        // into the TranslationAttempt below.
-        let attempt_success = compile_result.success && tests_passed == tests_total;
-        let _loop_fired = record_in_detector(
-            &mut loop_detector,
+            attempt_num,
             &prompt,
-            &new_rust_code,
-            attempt_success,
-            &strategy_name,
-            attempt_num,
-            &binary,
-            &function,
-            ctx.events,
-            ctx.fault_logger,
-        );
-
-        let attempt = TranslationAttempt {
-            attempt: attempt_num,
-            rust_code: new_rust_code,
-            compiled: compile_result.success,
-            compilation_errors: compile_result.errors.clone(),
-            tests_passed,
-            tests_total,
-            failed_tests: failed_tests.clone(),
-            strategy: strategy_name.clone(),
-            tokens_used,
-            context_tier: Some(current_tier.label().to_string()),
-        };
-        result.add_attempt(attempt);
-        emit_attempt(&result, attempt_num, &strategy_name);
-
-        // Log token usage to file
-        log_token_usage(
-            &binary,
-            &function,
-            attempt_num,
-            &strategy_name,
-            tokens_used,
-            result
-                .attempts
-                .last()
-                .map(|a| a.is_successful())
-                .unwrap_or(false),
-            ctx.workspace,
-            current_tier.label(),
-            Some(attempt_start.elapsed().as_secs()),
-        );
-
-        // Track failure history for informed prompting
-        // Only record history for failed attempts (not the initial one, not successful retries)
-        if attempt_num >= 1 && !result.success {
-            // Reconstruct the failure info from the attempt we just added
-            let tests_passed = result.attempts.last().map(|a| a.tests_passed).unwrap_or(0);
-            let tests_total = result.attempts.last().map(|a| a.tests_total).unwrap_or(0);
-            let comp_errors = result
-                .attempts
-                .last()
-                .map(|a| a.compilation_errors.clone())
-                .unwrap_or_default();
-            let failure_desc = if !comp_errors.is_empty() {
-                format!("Compilation failed: {}", comp_errors.join("; "))
-            } else if tests_passed < tests_total {
-                format!("{} of {} tests passed", tests_passed, tests_total)
-            } else {
-                "Unknown failure".to_string()
-            };
-            failure_history.push(FailureHint::new(
-                attempt_num,
-                strategy_name.clone(),
-                failure_desc,
-            ));
+            attempt_start,
+        )
+        .await;
+        match report.outcome {
+            // Today's shape, moved whole: a passing attempt stops the loop
+            // right here, and the LLM-failure tails continue without
+            // stepping strategy or tier.  The loop detector's mid-chain fire
+            // is observed but not acted on — #334 makes it stop the chain.
+            AttemptOutcome::Passed => break,
+            AttemptOutcome::LlmEmpty
+            | AttemptOutcome::LlmExhausted { .. }
+            | AttemptOutcome::LlmCallError => continue,
+            AttemptOutcome::VerificationFailed { .. } => {}
         }
-
-        // If this attempt succeeded, we're done
-        if result.success {
-            break;
-        }
-
-        // Log experiment data for prompt variant tracking
-        let dll_name = &initial_translation.binary;
-        log_prompt_variant_experiment(
-            dll_name,
-            &strategy_name,
-            result.success,
-            attempt_num,
-            ctx.workspace,
-        );
 
         // Escalate strategy and context tier for next attempt
         if ctx.config.escalate_on_failure {
@@ -1773,6 +958,185 @@ mod tests {
             entry.duration_secs.is_some_and(|d| d >= 1),
             "attempt duration should be recorded and >= 1s, got {:?}",
             entry.duration_secs
+        );
+    }
+
+    // ─── The loop rides the seam: today's event stream, zero divergence ──
+    // (issue #332 — the deleted probe's absence is pinned here too)
+
+    /// A canned LLM server answering the first call with broken code and
+    /// every later call with code that compiles — the canned failing-then-
+    /// succeeding run the event stream is captured over.
+    async fn flaky_llm() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("flaky LLM should bind");
+        let addr = listener.local_addr().expect("flaky LLM address");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_server = calls;
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let calls = calls_server.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let content = if n == 0 {
+                        "fn draw_sprite(x: i32) -> i32 { let y: = ; x }"
+                    } else {
+                        "fn draw_sprite(x: i32) -> i32 { x }"
+                    };
+                    let body = format!(
+                        "{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}}}}],\"usage\":{{\"completion_tokens\":123,\"total_tokens\":123}}}}"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn retry_loop_streams_todays_event_order_and_records_no_divergence() {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+
+        // Broken initial code → attempt 1 fails compile; attempt 2 gets the
+        // canned broken fix (verification fails, ladder stays put because
+        // escalation is off); attempt 3 gets the canned compiling fix and
+        // the run stops passed.
+        let translation = Translation {
+            binary: "game_logic.dll".to_string().into(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+
+        let llm_base = flaky_llm().await;
+        let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
+        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+        let fault_logger = calxgloss_analysis::FaultLogger::new(ws.path());
+        let events = calxgloss_types::TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let config = RetryConfig {
+            max_attempts: 3,
+            strategy: RetryStrategy::CompileFix,
+            escalate_on_failure: false,
+            max_context_tier: None,
+        };
+
+        let ctx = RetryLoopCtx {
+            verifier: &verifier,
+            llm: &llm,
+            source: &source,
+            config: &config,
+            workspace: Some(ws.path()),
+            events: Some(&events),
+            resource_detector: None,
+            fault_logger: Some(&fault_logger),
+            reviewer_hints: &[],
+        };
+
+        let result = try_translate_with_retry(translation, &ctx).await;
+        assert!(
+            result.success,
+            "the canned fix should pass on attempt 3, attempts={:?}",
+            result.attempts
+        );
+        assert_eq!(result.attempts.len(), 3);
+
+        // The run is over — everything published is queued; drain the stream.
+        let mut captured: Vec<calxgloss_types::ProgressEvent> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            captured.push(ev);
+        }
+
+        // Today's per-attempt ordering on both retry attempts: every LLM
+        // attempt streams request → call-start → response → completed.
+        let streamed: Vec<(u32, &'static str)> = captured
+            .iter()
+            .filter_map(|ev| match ev {
+                ProgressEvent::LlmRequest { attempt, .. } => Some((*attempt, "request")),
+                ProgressEvent::LlmCallStart { attempt, .. } => Some((*attempt, "call-start")),
+                ProgressEvent::LlmResponse { attempt, .. } => Some((*attempt, "response")),
+                ProgressEvent::TranslationAttemptCompleted { attempt, .. } => {
+                    Some((*attempt, "completed"))
+                }
+                _ => None,
+            })
+            .collect();
+        for num in [2u32, 3] {
+            let per_attempt: Vec<&str> = streamed
+                .iter()
+                .filter(|(a, _)| *a == num)
+                .map(|(_, name)| *name)
+                .collect();
+            assert_eq!(
+                per_attempt,
+                vec!["request", "call-start", "response", "completed"],
+                "attempt {num} should stream request → call-start → response → completed, full stream: {streamed:?}"
+            );
+        }
+
+        // Today's payloads on the completion events: strategy names and the
+        // verdicts, attempt 1 riding verify_and_record untouched.
+        let completions: Vec<(u32, String, bool)> = captured
+            .iter()
+            .filter_map(|ev| match ev {
+                ProgressEvent::TranslationAttemptCompleted {
+                    attempt,
+                    strategy,
+                    success,
+                    ..
+                } => Some((*attempt, strategy.clone(), *success)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            completions,
+            vec![
+                (1, "initial".to_string(), false),
+                (2, "compile_fix".to_string(), false),
+                (3, "compile_fix".to_string(), true),
+            ]
+        );
+
+        // The deleted probes fabricated all-true edge results against a
+        // detector that reports only failing edges — they could never fire.
+        // A passing verified run pins their absence: zero divergence events
+        // on the stream and zero divergence faults in the log.
+        assert!(
+            !captured
+                .iter()
+                .any(|ev| matches!(ev, ProgressEvent::BehaviorDivergenceDetected { .. })),
+            "no divergence event may appear on a passing verified run"
+        );
+        let faults = calxgloss_analysis::FaultLogger::new(ws.path())
+            .load()
+            .map(|l| l.entries)
+            .unwrap_or_default();
+        assert!(
+            !faults.iter().any(|f| matches!(
+                f.category,
+                calxgloss_types::FaultCategory::BehaviorDivergence
+            )),
+            "no divergence fault may be recorded, faults={faults:?}"
         );
     }
 }

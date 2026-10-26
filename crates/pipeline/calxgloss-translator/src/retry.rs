@@ -45,9 +45,6 @@ pub use experiment_log::log_prompt_variant_experiment;
 // ============================================================================
 // Internal submodule declarations
 // ============================================================================
-// Expand step (#331): the attempt seam exists but no production call site
-// rides it yet — the retry loop moves onto it in #332.
-#[allow(dead_code)]
 mod attempt;
 mod compile_fix;
 mod config;

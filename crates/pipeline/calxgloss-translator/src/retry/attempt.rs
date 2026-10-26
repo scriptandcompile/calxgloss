@@ -17,10 +17,10 @@
 //! edge, so it could never fire) does not come along; the detector, event
 //! and fault types stay for the day edge tests get real results (P22/P25).
 
+use crate::retry::retry_loop::llm_call_with_keepalive;
 use crate::retry::{
     RetryResult, TranslationAttempt, log_prompt_variant_experiment, log_token_usage,
 };
-use crate::retry::retry_loop::llm_call_with_keepalive;
 use calxgloss_analysis::FaultLogger;
 use calxgloss_llm::{
     LlmClient, LlmError, LlmMessage, infinite_loop::InfiniteLoopDetector,
@@ -58,6 +58,9 @@ pub(crate) enum VerificationMode {
     /// the move so the move is provably not a behavior change (#332).
     CompileOnly,
     /// Compile, then the baseline suite against the scratch project.
+    // Constructed only once #334 verifies the initial attempt honestly;
+    // the seam tests already exercise it.
+    #[allow(dead_code)]
     FullSuite,
 }
 
@@ -106,13 +109,21 @@ pub(crate) enum AttemptOutcome {
     /// for the next prompt — the loop's strategies stop re-verifying to
     /// re-gather this evidence (#334).
     VerificationFailed {
+        // Read from #334 on: the strategies stop re-verifying to re-gather
+        // these cases for the next prompt. The loop acts on the verdict.
+        #[allow(dead_code)]
         structured_failed_cases: Vec<calxgloss_prompts::EdgeCaseTest>,
     },
     /// The LLM answered with empty code. Recorded; no policy step follows.
     LlmEmpty,
     /// The LLM was overloaded or timed out. Detector, fault and history
     /// recorded; no policy step follows.
-    LlmExhausted { kind: String },
+    LlmExhausted {
+        // Read from #334 on. The seam already recorded the kind with the
+        // resource detector and the fault log.
+        #[allow(dead_code)]
+        kind: String,
+    },
     /// The LLM call errored. Recorded; no policy step follows.
     LlmCallError,
 }
@@ -227,11 +238,8 @@ pub(crate) async fn run_attempt(
     strategy: &str,
     attempt_num: u32,
     prompt: &str,
+    attempt_start: std::time::Instant,
 ) -> AttemptReport {
-    // Wall-clock start of this attempt — recorded on its token-usage
-    // entry so the dashboard can estimate remaining time (issue #64).
-    let attempt_start = std::time::Instant::now();
-
     // Emit: LLM request (full prompt) for this retry attempt
     if let Some(em) = run.events {
         let _ = em.emit(ProgressEvent::LlmRequest {
@@ -590,11 +598,7 @@ pub(crate) async fn run_attempt(
         } else {
             "Unknown failure".to_string()
         };
-        failure_history.push(FailureHint::new(
-            attempt_num,
-            strategy,
-            failure_desc,
-        ));
+        failure_history.push(FailureHint::new(attempt_num, strategy, failure_desc));
     }
 
     let outcome = if result.success {
@@ -613,7 +617,10 @@ pub(crate) async fn run_attempt(
             structured_failed_cases,
         }
     };
-    AttemptReport { outcome, loop_fired }
+    AttemptReport {
+        outcome,
+        loop_fired,
+    }
 }
 
 /// The verification+recording tail without a prompt or an LLM call — for
@@ -746,7 +753,10 @@ pub(crate) async fn verify_and_record(
             structured_failed_cases,
         }
     };
-    AttemptReport { outcome, loop_fired }
+    AttemptReport {
+        outcome,
+        loop_fired,
+    }
 }
 
 #[cfg(test)]
@@ -869,6 +879,7 @@ mod tests {
             "compile_fix",
             1,
             "fix it",
+            std::time::Instant::now(),
         )
         .await;
 
@@ -959,6 +970,7 @@ mod tests {
             "compile_fix",
             1,
             "fix it",
+            std::time::Instant::now(),
         )
         .await;
 
@@ -1018,6 +1030,7 @@ mod tests {
             "compile_fix",
             1,
             "fix it",
+            std::time::Instant::now(),
         )
         .await;
 
@@ -1071,6 +1084,7 @@ mod tests {
             "compile_fix",
             1,
             "fix it",
+            std::time::Instant::now(),
         )
         .await;
 
@@ -1083,9 +1097,11 @@ mod tests {
         assert!(attempt.compilation_errors[0].contains("LLM resource exhausted"));
 
         assert_eq!(history.len(), 1);
-        assert!(history[0]
-            .failure_description
-            .contains("LLM resource exhausted:"));
+        assert!(
+            history[0]
+                .failure_description
+                .contains("LLM resource exhausted:")
+        );
         assert_eq!(fault_entries(ws.path()).len(), 1, "one fault record");
         assert!(token_entries(ws.path()).is_empty());
         assert!(experiment_entries(ws.path()).is_empty());
@@ -1123,6 +1139,7 @@ mod tests {
             "compile_fix",
             1,
             "fix it",
+            std::time::Instant::now(),
         )
         .await;
 
@@ -1177,6 +1194,7 @@ mod tests {
                 "compile_fix",
                 attempt,
                 "fix it",
+                std::time::Instant::now(),
             )
             .await;
             fired.push(report.loop_fired);
