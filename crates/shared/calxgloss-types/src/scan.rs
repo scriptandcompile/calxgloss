@@ -149,6 +149,37 @@ pub struct ScanCoverage {
     pub facets: Vec<FacetCoverage>,
 }
 
+impl ScanCoverage {
+    /// The bounded admission the surfaces append to their rendering: the
+    /// status word and, when facets fell short, the limitation lines of
+    /// exactly those facets, in the record's own facet order — e.g.
+    /// `partial — call graph unavailable; delay imports unexamined`.
+    ///
+    /// This is the one home of the qualification wording (issue #346):
+    /// the shared prompt section includes and the report printers both
+    /// render this line rather than restating the format, so the same
+    /// admission reads the same at every surface. It returns `None` when
+    /// the record claims complete coverage — there is nothing to admit —
+    /// and carries no `Coverage:` label: each surface puts the line in
+    /// its own frame.
+    pub fn admission(&self) -> Option<String> {
+        if self.status == CoverageStatus::Complete {
+            return None;
+        }
+        let limitations: Vec<&str> = self
+            .facets
+            .iter()
+            .filter(|facet| facet.status != CoverageStatus::Complete)
+            .filter_map(|facet| facet.limitation.as_deref())
+            .collect();
+        Some(if limitations.is_empty() {
+            self.status.to_string()
+        } else {
+            format!("{} — {}", self.status, limitations.join("; "))
+        })
+    }
+}
+
 /// Provenance and coverage of the scan that produced a per-binary artifact.
 ///
 /// A persisted artifact doubles as a cache, and this is the part a consumer
@@ -376,6 +407,60 @@ mod tests {
                 label.as_str().expect("label is a string")
             );
         }
+    }
+
+    #[test]
+    fn admission_names_the_falling_short_facets_in_record_order() {
+        // The one home of the qualification wording (issue #346): the
+        // status word plus the limitation lines of exactly the facets
+        // that fell short, in the record's own facet order. The complete
+        // facet contributes nothing.
+        assert_eq!(
+            admitted_coverage_fixture()
+                .admission()
+                .expect("partial admits"),
+            "partial — two regions truncated at the per-function budget; \
+             the target yields no vtable evidence; the engine parses no delay imports"
+        );
+    }
+
+    #[test]
+    fn complete_coverage_has_nothing_to_admit() {
+        // A complete record renders byte-for-byte as today — the surfaces
+        // skip the line entirely, zero added tokens.
+        let coverage = ScanCoverage {
+            status: CoverageStatus::Complete,
+            facets: vec![FacetCoverage {
+                id: "imports".into(),
+                status: CoverageStatus::Complete,
+                limitation: None,
+            }],
+        };
+        assert_eq!(coverage.admission(), None);
+    }
+
+    #[test]
+    fn admission_stands_on_the_status_word_when_no_facet_spells_a_reason() {
+        // A facet entry with no limitation line adds no fragment; a record
+        // whose falling-short facets spell no reasons still admits its
+        // status word alone.
+        let coverage = ScanCoverage {
+            status: CoverageStatus::Unexamined,
+            facets: vec![FacetCoverage {
+                id: "delay-imports".into(),
+                status: CoverageStatus::Unexamined,
+                limitation: None,
+            }],
+        };
+        assert_eq!(
+            coverage.admission().expect("unexamined admits"),
+            "unexamined"
+        );
+        let empty = ScanCoverage {
+            status: CoverageStatus::Partial,
+            facets: Vec::new(),
+        };
+        assert_eq!(empty.admission().expect("partial admits"), "partial");
     }
 
     #[test]

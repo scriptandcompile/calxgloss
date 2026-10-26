@@ -778,6 +778,41 @@ impl FixTemplate {
 // Evidence bundle — the finding lists a fix prompt is built from
 // ============================================================
 
+/// What a scan document admits about its own coverage, in the shape the
+/// shared section includes render (issue #346).
+///
+/// The prompt-side view of a [`calxgloss_types::ScanCoverage`]: the
+/// record's status word beside the one bounded admission line the shared
+/// type produces — the wording lives once in
+/// [`calxgloss_types::ScanCoverage::admission`], so a prompt section and
+/// a report printer never drift a word. A bundle that carries no coverage
+/// for an engine — the engine has not adopted coverage stamping, its
+/// document was missing or corrupt, or the document claims complete
+/// coverage — leaves the field default-empty, and an empty `admission`
+/// is exactly the include's signal that there is nothing to admit: the
+/// section renders byte-for-byte what it rendered before P19.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoverageInfo {
+    /// The document's overall coverage status word, as persisted —
+    /// `complete`, `partial`, `unavailable`, or `unexamined`; empty when
+    /// no coverage was stated at all.
+    pub status: String,
+    /// The bounded admission line: the status word plus the limitation
+    /// lines of exactly the facets that fell short, in the document's own
+    /// facet order — e.g. `partial — delay imports unexamined`. Empty
+    /// when there is nothing to admit.
+    pub admission: String,
+}
+
+impl From<&calxgloss_types::ScanCoverage> for CoverageInfo {
+    fn from(coverage: &calxgloss_types::ScanCoverage) -> Self {
+        Self {
+            status: coverage.status.to_string(),
+            admission: coverage.admission().unwrap_or_default(),
+        }
+    }
+}
+
 /// The decompiler-derived evidence every bundle-fed prompt template renders from.
 ///
 /// Every finding list a template may read, grouped into one struct so the
@@ -824,6 +859,14 @@ pub struct EvidenceBundle {
     /// Library/API findings about this function and its binary made by
     /// the analysis pipeline.
     pub api_findings: Vec<ApiInfo>,
+    /// What the library-API scan's own document admits it examined and
+    /// could not — filled exactly once per document by the API
+    /// projection row, beside (never inside) the per-record
+    /// `api_findings` dance (issue #346). Default-empty when no API
+    /// document was read, when that document states no coverage, or when
+    /// it claims complete coverage; the libraries-apis include renders
+    /// its one qualification line exactly when this carries an admission.
+    pub api_coverage: CoverageInfo,
     /// Constant and enum findings about this function made by the
     /// analysis pipeline.
     pub const_findings: Vec<ConstInfo>,

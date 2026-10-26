@@ -238,6 +238,36 @@ mod tests {
     }
 
     #[test]
+    fn the_filed_document_carries_its_coverage_record_exactly() {
+        // What the engine stamped inside its scan is what every later
+        // reader — the projection seam, the report, a `--show` months
+        // later — sees: statuses, ids, order, and limitation lines ride
+        // the persistor untouched (issue #346).
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ApiPersistor::with_cache_dir(dir.path());
+        let mut result = sample_result("eqmain.dll");
+        result.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "import-table".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "delay-imports".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unexamined,
+                    limitation: Some("delay imports unexamined".to_string()),
+                },
+            ],
+        });
+
+        persistor.save(&result).unwrap();
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded.metadata.coverage, result.metadata.coverage);
+    }
+
+    #[test]
     fn a_document_saved_before_the_deepening_loads_unchanged() {
         // A document written before category and features existed: the
         // enrichment fields are optional on disk, so it loads with no

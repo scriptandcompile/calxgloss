@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use calxgloss_callgraph::{CallGraphBuilder, FunctionCallGraph};
 use calxgloss_kuna::KunaSource;
+use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 use tracing::{info, warn};
 
 use crate::api_summary::ApiSummaryDetector;
@@ -73,6 +74,52 @@ impl CallGraphSource for calxgloss_decomp::PipelineSource {
                 reason: error.to_string(),
             })?;
         Ok(graph.functions)
+    }
+}
+
+/// The coverage record every apidetect scan stamps about itself (issue
+/// #346), beside the provenance and the timing.
+///
+/// The import table is always `complete`: a failed import listing aborts
+/// the run, so a finished scan read the listing end to end. The
+/// per-function API reading is `complete` when the call graph built and
+/// `unavailable` with its reason when the scan degraded to the import
+/// table alone — the warning the run already logs lands in the document
+/// as well. `delay-imports` is always `unexamined`: parsing the delay-import
+/// table is outside what this engine was ever built to examine, and the
+/// admission is the point — the API picture carries its border. The
+/// whole picture is therefore `partial`: the border stands until an
+/// engine change moves it, never because the scan quietly skipped part
+/// of what it could read.
+fn coverage_stamp(call_graph_available: bool) -> ScanCoverage {
+    let api_usage = if call_graph_available {
+        FacetCoverage {
+            id: "api-usage".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    } else {
+        FacetCoverage {
+            id: "api-usage".to_string(),
+            status: CoverageStatus::Unavailable,
+            limitation: Some("call graph unavailable".to_string()),
+        }
+    };
+    ScanCoverage {
+        status: CoverageStatus::Partial,
+        facets: vec![
+            FacetCoverage {
+                id: "import-table".to_string(),
+                status: CoverageStatus::Complete,
+                limitation: None,
+            },
+            api_usage,
+            FacetCoverage {
+                id: "delay-imports".to_string(),
+                status: CoverageStatus::Unexamined,
+                limitation: Some("delay imports unexamined".to_string()),
+            },
+        ],
     }
 }
 
@@ -143,7 +190,10 @@ impl<S> ApiEngine<S> {
     /// that cannot be built degrades the run to the import table
     /// alone, with a warning: the binary-level identifications stand
     /// on their own, and the COM reading runs off the import listing
-    /// without the graph names.
+    /// without the graph names. The scan also stamps a coverage
+    /// record admitting what it did not examine — including the
+    /// delay imports it never attempts — so the filed document says
+    /// what the scan examined and what it could not (issue #346).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<ApiDetectionResult>
     where
         S: ScanSource + CallGraphSource,
@@ -194,6 +244,15 @@ impl<S> ApiEngine<S> {
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
+        // The engine admits its own coverage inside its own scan, where
+        // the truth lives — not the registry row and not the CLI (issue
+        // #346): the import table was parsed end to end (a failed listing
+        // aborts the run above), the per-function API reading rode the
+        // graph when one built and says so when it did not, and delay
+        // imports sit outside what this engine was built to examine. The
+        // batch scan phase and the CLI's force-rescan therefore file the
+        // same admission through the same single definition.
+        metadata.coverage = Some(coverage_stamp(graph.is_some()));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,
@@ -684,5 +743,169 @@ mod tests {
     async fn an_empty_program_yields_an_empty_result() {
         let result = scan(FakeProgram::new(Vec::new(), Vec::new())).await;
         assert!(result.findings.is_empty());
+    }
+
+    // -- admitted coverage (P19 tracer bullet, issue #346) ---------------
+
+    /// The facet ids apidetect declares — the roster, spelled once here
+    /// the way the CLI pairing pin (#342) spells its roster. Every facet
+    /// a freshly written coverage record names is read against this list
+    /// by the pin below, and every drift direction is a fault: a declared
+    /// facet the scan stopped stamping, a facet stamped twice, and an id
+    /// the scan invented outside the roster all fail loudly. `delay-imports`
+    /// belongs on the roster precisely because the engine parses no
+    /// delay-import table — the roster names what the engine knows about,
+    /// not only what it reads.
+    const DECLARED_FACETS: &[&str] = &["import-table", "api-usage", "delay-imports"];
+
+    /// The data-level verdict of the roster pin: empty means the record
+    /// names every declared facet exactly once, and each fault spells one
+    /// drift.
+    fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+        let mut faults = Vec::new();
+        for declared in DECLARED_FACETS {
+            let hits = coverage
+                .facets
+                .iter()
+                .filter(|facet| facet.id == *declared)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{declared}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{declared}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &coverage.facets {
+            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
+
+    #[tokio::test]
+    async fn scan_stamps_coverage_naming_every_declared_facet_once() {
+        // The stamp rides the engine's own scan, not the registry row and
+        // not the CLI — the batch scan phase and the CLI's force-rescan
+        // file the same admission through this one definition.
+        let result = scan(FakeProgram::new(
+            vec!["inflate"],
+            vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
+        ))
+        .await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh apidetect scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Partial);
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a fresh document must name every declared facet exactly once"
+        );
+        let by_id = |id: &str| {
+            coverage
+                .facets
+                .iter()
+                .find(|facet| facet.id == id)
+                .unwrap_or_else(|| panic!("`{id}` is named"))
+        };
+        assert_eq!(by_id("import-table").status, CoverageStatus::Complete);
+        assert_eq!(by_id("api-usage").status, CoverageStatus::Complete);
+        assert_eq!(
+            by_id("delay-imports").status,
+            CoverageStatus::Unexamined,
+            "the engine parses no delay-import table and says so end to end"
+        );
+        assert_eq!(
+            by_id("delay-imports").limitation.as_deref(),
+            Some("delay imports unexamined")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_degraded_call_graph_lands_api_usage_unavailable_with_its_reason() {
+        // The warning the run already logs ("Call graph unavailable:
+        // reporting the import table alone") also rides the document: the
+        // facet that could not be read says why, beside the permanent
+        // delay-imports border that stands either way.
+        let result = ApiEngine::with_source(FakeProgram {
+            fail_graph: true,
+            ..FakeProgram::new(vec!["inflate"], Vec::new())
+        })
+        .scan("game.exe")
+        .await
+        .expect("a missing call graph degrades, it does not fail the run");
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh apidetect scan states its coverage");
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a degraded scan still names every declared facet exactly once"
+        );
+        let api_usage = coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == "api-usage")
+            .expect("api-usage is named");
+        assert_eq!(api_usage.status, CoverageStatus::Unavailable);
+        assert_eq!(
+            api_usage.limitation.as_deref(),
+            Some("call graph unavailable"),
+            "the facet that fell short names its reason"
+        );
+        assert_eq!(
+            coverage
+                .facets
+                .iter()
+                .find(|facet| facet.id == "delay-imports")
+                .expect("delay-imports is named")
+                .status,
+            CoverageStatus::Unexamined
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+        let mut coverage = coverage_stamp(true);
+        coverage.facets.retain(|facet| facet.id != "delay-imports");
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `delay-imports` is missing from the record"],
+            "an engine quietly skipping a declared facet fails loudly"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_a_facet_is_doubled() {
+        let mut coverage = coverage_stamp(true);
+        coverage.facets.push(coverage.facets[0].clone());
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `import-table` appears 2 times in the record"],
+            "a facet crowded into two entries fails loudly"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+        let mut coverage = coverage_stamp(true);
+        coverage.facets.push(FacetCoverage {
+            id: "vtables".to_string(),
+            status: CoverageStatus::Unexamined,
+            limitation: None,
+        });
+        assert_eq!(
+            roster_faults(&coverage),
+            ["record names `vtables`, a facet the engine never declared"],
+            "an id invented outside the declared roster fails loudly"
+        );
     }
 }

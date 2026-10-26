@@ -140,6 +140,16 @@ pub trait AnalysisDoc {
     /// the shared consts and type-inference documents — pushes into
     /// more than one field here, from the single load its row performs.
     fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle);
+
+    /// Project what the loaded document itself admits about its scan's
+    /// coverage into the bundle field(s) that sit beside this row's
+    /// findings — called exactly once per successfully loaded document,
+    /// before any per-record [`fill`] (issue #346). The default no-op
+    /// serves documents from engines that do not stamp coverage; a
+    /// missing or corrupt document never reaches this leg at all, so a
+    /// bundle that read no document fills no coverage, and the section
+    /// beside this row renders exactly what it rendered before P19.
+    fn fill_coverage(_doc: &Self::Doc, _bundle: &mut EvidenceBundle) {}
 }
 
 /// The fold's step for one row, type-erased: each engine's document is
@@ -194,6 +204,12 @@ pub fn load_and_project<D: AnalysisDoc>(
             return;
         }
     };
+
+    // The coverage leg runs once for the whole document — never per
+    // record, and never on the miss path, which returned above — so the
+    // bundle's coverage field can never be filled or doubled from one
+    // document (issue #346).
+    D::fill_coverage(&doc, bundle);
 
     for record in D::for_function(&doc, function) {
         D::fill(record, bundle);
@@ -496,6 +512,210 @@ mod tests {
         let dir = TempDir::new().expect("temp workspace");
         let path = dir.path().to_path_buf();
         (dir, path)
+    }
+
+    // The coverage-carrying fakes (issue #346): a document that admits
+    // falling short beside its records, standing in for the apidetect
+    // result, pinned against the same fold so the coverage leg runs once
+    // per document and never on a miss.
+
+    /// A fake document's own coverage record, beside its records: the
+    /// admission the engine stamped, or `None` standing in for a
+    /// document written before coverage stamping — present, but with
+    /// nothing to admit.
+    #[derive(Debug, Clone)]
+    struct FakeStampedDoc {
+        records: Vec<FakeRecord>,
+        coverage: Option<String>,
+    }
+
+    thread_local! {
+        /// Coverage legs run per document kind — the pins that one
+        /// present document runs its coverage leg exactly once and a
+        /// missing or corrupt document never runs one at all.
+        static FAKE_COVERAGE_FILLS: RefCell<HashMap<&'static str, usize>> =
+            HashMap::new().into();
+
+        /// The admission stored beside a fake document's records,
+        /// keyed like the fake store.
+        static FAKE_ADMISSIONS: RefCell<HashMap<(&'static str, String), Option<String>>> =
+            HashMap::new().into();
+    }
+
+    fn fake_stamped_put(
+        kind: &'static str,
+        binary: &str,
+        records: Vec<FakeRecord>,
+        admission: Option<&str>,
+    ) {
+        fake_put(kind, binary, records);
+        FAKE_ADMISSIONS.with(|admissions| {
+            admissions
+                .borrow_mut()
+                .insert((kind, binary.to_string()), admission.map(str::to_string));
+        });
+    }
+
+    fn fake_coverage_fill_count(kind: &'static str) -> usize {
+        FAKE_COVERAGE_FILLS.with(|fills| fills.borrow().get(kind).copied().unwrap_or(0))
+    }
+
+    /// One fake stamped adapter: records through the ordinary fake
+    /// store, its admission through the beside-store, filling the API
+    /// coverage field the way the real API row does.
+    macro_rules! fake_stamped_doc {
+        ($name:ident, $kind:literal) => {
+            struct $name;
+
+            impl AnalysisDoc for $name {
+                const KIND: &'static str = $kind;
+                type Doc = FakeStampedDoc;
+                type Record<'a> = &'a FakeRecord;
+
+                fn load(_workspace: &Path, binary: &str) -> Result<Self::Doc, DocLoadError> {
+                    let records = fake_load(Self::KIND, binary)?;
+                    let coverage = FAKE_ADMISSIONS.with(|admissions| {
+                        admissions
+                            .borrow()
+                            .get(&(Self::KIND, binary.to_string()))
+                            .cloned()
+                            .flatten()
+                    });
+                    Ok(FakeStampedDoc { records, coverage })
+                }
+
+                fn for_function<'a>(
+                    doc: &'a Self::Doc,
+                    function: &str,
+                ) -> impl Iterator<Item = Self::Record<'a>> {
+                    doc.records.iter().filter(move |r| r.function == function)
+                }
+
+                fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
+                    bundle.type_info.push(TypeInfo::from(record));
+                }
+
+                fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+                    FAKE_COVERAGE_FILLS
+                        .with(|fills| *fills.borrow_mut().entry(Self::KIND).or_insert(0) += 1);
+                    if let Some(admission) = &doc.coverage {
+                        bundle.api_coverage = calxgloss_prompts::CoverageInfo {
+                            status: "partial".to_string(),
+                            admission: admission.clone(),
+                        };
+                    }
+                }
+            }
+        };
+    }
+
+    fake_stamped_doc!(FakeStampedPresentDoc, "fake stamped document");
+    fake_stamped_doc!(FakeStampedBareDoc, "fake bare stamped document");
+    fake_stamped_doc!(FakeStampedMissingDoc, "fake stamped missing document");
+    fake_stamped_doc!(FakeStampedCorruptDoc, "fake stamped corrupt document");
+
+    #[traced_test]
+    #[test]
+    fn a_stamped_document_fills_its_coverage_exactly_once_beside_its_records() {
+        fake_stamped_put(
+            FakeStampedPresentDoc::KIND,
+            "stamped.dll",
+            vec![
+                record("FUN_18003ab00", "first-reading", false),
+                record("FUN_18003ab00", "second-reading", false),
+                record("FUN_zzz", "another-functions-reading", false),
+            ],
+            Some("partial — delay imports unexamined"),
+        );
+        let (_workspace, path) = temp_workspace();
+
+        let bundle = project_bundle(
+            &[ProjectionRow::of::<FakeStampedPresentDoc>()],
+            Some(&path),
+            "stamped.dll",
+            "FUN_18003ab00",
+        );
+
+        assert_eq!(
+            bundle.type_info.len(),
+            2,
+            "the record leg ran its ordinary fills"
+        );
+        assert_eq!(
+            bundle.api_coverage.admission, "partial — delay imports unexamined",
+            "the document's own admission reaches the bundle beside the findings"
+        );
+        assert_eq!(
+            fake_coverage_fill_count(FakeStampedPresentDoc::KIND),
+            1,
+            "two records projected, but the coverage leg ran exactly once for the document"
+        );
+    }
+
+    #[traced_test]
+    #[test]
+    fn a_document_written_before_coverage_stamping_fills_no_coverage() {
+        fake_stamped_put(
+            FakeStampedBareDoc::KIND,
+            "pre-p19.dll",
+            vec![record("FUN_18003ab00", "old-reading", false)],
+            None,
+        );
+        let (_workspace, path) = temp_workspace();
+
+        let bundle = project_bundle(
+            &[ProjectionRow::of::<FakeStampedBareDoc>()],
+            Some(&path),
+            "pre-p19.dll",
+            "FUN_18003ab00",
+        );
+
+        assert_eq!(bundle.type_info.len(), 1, "the records still project");
+        assert!(
+            bundle.api_coverage.admission.is_empty() && bundle.api_coverage.status.is_empty(),
+            "a document that states no coverage fills nothing — the old render stands"
+        );
+    }
+
+    #[traced_test]
+    #[test]
+    fn missing_and_corrupt_documents_fill_no_coverage_and_run_no_coverage_leg() {
+        fake_corrupt(FakeStampedCorruptDoc::KIND, "stampedcorrupt.dll");
+        let (_workspace, path) = temp_workspace();
+
+        let missing = project_bundle(
+            &[ProjectionRow::of::<FakeStampedMissingDoc>()],
+            Some(&path),
+            "stampedmissing.dll",
+            "FUN_18003ab00",
+        );
+        let corrupt = project_bundle(
+            &[ProjectionRow::of::<FakeStampedCorruptDoc>()],
+            Some(&path),
+            "stampedcorrupt.dll",
+            "FUN_18003ab00",
+        );
+
+        for bundle in [missing, corrupt] {
+            assert!(
+                bundle.type_info.is_empty() && bundle.api_coverage.admission.is_empty(),
+                "a document that never loaded fills neither findings nor coverage"
+            );
+        }
+        assert_eq!(
+            fake_coverage_fill_count(FakeStampedMissingDoc::KIND)
+                + fake_coverage_fill_count(FakeStampedCorruptDoc::KIND),
+            0,
+            "the coverage leg belongs to the loaded document alone — a miss never runs it"
+        );
+        assert!(
+            logs_contain("No fake stamped missing document persisted for the binary"),
+            "the missing miss keeps its own wording"
+        );
+        assert!(
+            logs_contain("The persisted fake stamped corrupt document is unusable"),
+            "the corrupt miss keeps its distinct wording"
+        );
     }
 
     #[traced_test]

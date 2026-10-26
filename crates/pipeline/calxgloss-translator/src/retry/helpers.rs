@@ -2608,4 +2608,116 @@ mod tests {
             );
         }
     }
+
+    /// Files an API document whose metadata carries `coverage` — the
+    /// shape apidetect's own stamp takes — beside one usage record for
+    /// the target function.
+    fn persist_api_document_with_coverage(
+        dir: &TempDir,
+        coverage: Option<calxgloss_types::ScanCoverage>,
+    ) {
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = coverage;
+        let mut result = calxgloss_apidetect::types::ApiDetectionResult::new(metadata);
+        result.findings = vec![api_usage(
+            "FUN_18003ab00",
+            "inflate",
+            "zlib",
+            "flate2",
+            true,
+        )];
+        calxgloss_apidetect::persist::ApiPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped API result should be saved");
+    }
+
+    /// The API row's coverage leg end to end (issue #346): the record
+    /// apidetect stamps into its filed document rides one gather into
+    /// the bundle's coverage field beside the findings, word for word;
+    /// a document filed before coverage stamping fills nothing; and a
+    /// missing or corrupt document fills nothing and degrades exactly
+    /// as its findings do.
+    #[test]
+    fn the_api_row_gathers_the_documents_coverage_beside_its_findings() {
+        // The engine's own stamp beside a complete call graph: partial
+        // overall, with delay imports the one facet admitting short.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "import-table".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "api-usage".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "delay-imports".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unexamined,
+                    limitation: Some("delay imports unexamined".to_string()),
+                },
+            ],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_api_document_with_coverage(&dir, Some(stamp));
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle
+                .api_findings
+                .iter()
+                .map(|f| f.api.clone())
+                .collect::<Vec<_>>(),
+            vec!["inflate".to_string()],
+            "the findings still ride their ordinary row"
+        );
+        assert_eq!(bundle.api_coverage.status, "partial");
+        assert_eq!(
+            bundle.api_coverage.admission, "partial — delay imports unexamined",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_api_findings(
+            &dir,
+            vec![api_usage(
+                "FUN_18003ab00",
+                "inflate",
+                "zlib",
+                "flate2",
+                true,
+            )],
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.api_findings.is_empty()
+                && bundle.api_coverage.status.is_empty()
+                && bundle.api_coverage.admission.is_empty(),
+            "a pre-P19 document fills findings but no coverage — the old render stands"
+        );
+
+        // Missing: nothing gathered, nothing filled.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.api_findings.is_empty() && bundle.api_coverage.admission.is_empty(),
+            "a missing API document fills neither findings nor coverage"
+        );
+
+        // Corrupt: degrades alike, fills neither.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_apidetect::persist::ApiPersistor::new(dir.path()).path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.api_findings.is_empty() && bundle.api_coverage.admission.is_empty(),
+            "a corrupt API document fills neither findings nor coverage"
+        );
+    }
 }

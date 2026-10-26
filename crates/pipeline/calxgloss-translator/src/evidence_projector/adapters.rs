@@ -221,6 +221,16 @@ impl AnalysisDoc for ApiDoc {
             .api_findings
             .push(calxgloss_prompts::ApiInfo::from(record));
     }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical
+        // (issue #346).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.api_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
+    }
 }
 
 /// The float/SIMD flag document, `re/analysis/floatsimd/{binary}.json`:

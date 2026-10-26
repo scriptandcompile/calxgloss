@@ -54,8 +54,8 @@ pub use context::{
 pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
-    ConstInfo, ControlFlowInfo, ConventionInfo, DataTableInfo, EdgeCaseTemplate, EdgeCaseTest,
-    ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate, FloatsimdInfo,
+    ConstInfo, ControlFlowInfo, ConventionInfo, CoverageInfo, DataTableInfo, EdgeCaseTemplate,
+    EdgeCaseTest, ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate, FloatsimdInfo,
     FormattedTestResult, FullModuleTemplate, GlobalStateInfo, LibmatchInfo, MemoryInfo,
     MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod,
     ParameterDirectionInfo, SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo,
@@ -2892,6 +2892,129 @@ mod tests {
                 row.section
             );
         }
+    }
+
+    /// A scan coverage record in the shape an apidetect scan files: a
+    /// complete import table beside an unexamined delay-imports facet.
+    fn api_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "import-table".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "delay-imports".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unexamined,
+                    limitation: Some("delay imports unexamined".to_string()),
+                },
+            ],
+        }
+    }
+
+    /// The one qualification wording the section suite pins (issue #346).
+    const API_ADMISSION: &str = "partial — delay imports unexamined";
+
+    /// The heading the escalate template passes the libraries-apis include.
+    const LIBRARIES_APIS_HEADING: &str = "ADDITIONAL CONTEXT — LIBRARIES AND APIS";
+
+    /// The pinned wording stands at both ends of its journey: the shared
+    /// coverage type produces it from an apidetect-shaped record, and the
+    /// prompt-side view carries that same line verbatim.
+    #[test]
+    fn the_api_admission_wording_is_pinned_at_both_ends_of_its_journey() {
+        assert_eq!(
+            api_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            API_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&api_admitting_coverage()).admission,
+            API_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+    }
+
+    /// A complete coverage record is nothing to admit: the section renders
+    /// byte-for-byte what it rendered when the document stated no coverage
+    /// at all (issue #346).
+    #[test]
+    fn a_complete_api_coverage_record_renders_the_section_byte_identically() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.api_findings.push(api_fixture());
+        let unstamped = render_escalate_full(&bundle);
+        bundle.api_coverage = CoverageInfo::from(&calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: Vec::new(),
+        });
+        let stamped_complete = render_escalate_full(&bundle);
+        assert_eq!(
+            unstamped, stamped_complete,
+            "a complete record adds no bytes to the prompt"
+        );
+        assert!(
+            !stamped_complete.contains("Coverage:"),
+            "complete coverage has nothing to admit"
+        );
+    }
+
+    /// A falling-short record appends exactly one bounded qualification
+    /// line, pinned byte-for-byte as the line the include renders after
+    /// the entries (issue #346).
+    #[test]
+    fn a_partial_api_coverage_record_appends_exactly_one_qualification_line() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.api_findings.push(api_fixture());
+        let clean = render_escalate_full(&bundle);
+        bundle.api_coverage = CoverageInfo::from(&api_admitting_coverage());
+        let admitted = render_escalate_full(&bundle);
+        assert_eq!(
+            admitted,
+            clean.replace(
+                &format!("{LIBRARIES_APIS_SECTION_BODY}\n\n"),
+                &format!("{LIBRARIES_APIS_SECTION_BODY}\n\nCoverage: {API_ADMISSION}\n\n"),
+            ),
+            "the admission rides the section as exactly one line beside the entries"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {LIBRARIES_APIS_HEADING}"))
+                .count(),
+            1,
+            "the admission never opens a second section"
+        );
+    }
+
+    /// The doctrine pair (issue #346): findings silence under complete
+    /// coverage and under a falling-short record must never render alike —
+    /// an empty list from a scan that admits falling short still says
+    /// something, while silence from a complete scan says nothing.
+    #[test]
+    fn empty_api_findings_under_complete_and_partial_coverage_never_render_alike() {
+        let under_complete = render_escalate_full(&EvidenceBundle::default());
+        assert!(
+            !under_complete.contains(&format!("## {LIBRARIES_APIS_HEADING}")),
+            "silence from an unstamped record stays section-less, as before P19"
+        );
+        let under_partial = render_escalate_full(&EvidenceBundle {
+            api_coverage: CoverageInfo::from(&api_admitting_coverage()),
+            ..Default::default()
+        });
+        assert_ne!(
+            under_complete, under_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert!(
+            under_partial.contains(&format!(
+                "## {LIBRARIES_APIS_HEADING}\n\nCoverage: {API_ADMISSION}\n\n"
+            )),
+            "the empty list still carries the one admission line"
+        );
     }
 
     /// Scans template source for `{% import "<path>" as <scope> %}`

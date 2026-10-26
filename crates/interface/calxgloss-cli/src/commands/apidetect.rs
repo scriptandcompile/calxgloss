@@ -190,6 +190,22 @@ fn print_api_report(
         white_bold("Identified:"),
         identified
     ));
+
+    // The scan's own admission, beside the counts it qualifies (issue
+    // #346): the report prints the shared type's one bounded line, in
+    // its own `Coverage:` frame, only when there is something to admit.
+    if let Some(admission) = result
+        .metadata
+        .coverage
+        .as_ref()
+        .and_then(|coverage| coverage.admission())
+    {
+        println_content(format!(
+            "  {}{}",
+            white_bold("Coverage:  "),
+            dim(&admission)
+        ));
+    }
     println!();
 
     if !result.findings.is_empty() {

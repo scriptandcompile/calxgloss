@@ -160,6 +160,62 @@ fn a_ridden_flag_free_command_prints_the_same_report_run_and_show() {
 }
 
 #[test]
+fn the_apidetect_report_prints_the_scans_admission_run_and_show_alike() {
+    // The apidetect admission line at the process seam (issue #346):
+    // the scan stamps its coverage into the document it files, and both
+    // the run's report and a later `--show` report print the document's
+    // one bounded admission line beside the counts — byte-identically,
+    // because both are the same read of the same document.
+    let ws = fixture_workspace();
+
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "apidetect",
+            "--binary",
+            "fixture-target",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the apidetect ride failed:\n{stdout}\n{stderr}");
+    let document = ws.path().join("re/analysis/apidetect/fixture-target.json");
+    assert!(document.is_file(), "the document is filed at {document:?}");
+
+    // The limitation line rides beside the counts, and it names the
+    // facet the engine never examines — the admission the scan owes.
+    // Label and admission print in different styles, so the assertion
+    // quotes each piece as printed, never their join across the codes.
+    assert!(stdout.contains("Identified:"), "{stdout}");
+    assert!(
+        stdout.contains("Coverage:") && stdout.contains("partial — delay imports unexamined"),
+        "the report prints the document's admission line beside the counts:\n{stdout}"
+    );
+
+    let (ok, show_stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "apidetect",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the apidetect show failed:\n{show_stdout}\n{stderr}");
+    assert!(
+        show_stdout.contains("Coverage:")
+            && show_stdout.contains("partial — delay imports unexamined"),
+        "the show report prints the same admission:\n{show_stdout}"
+    );
+    assert_eq!(
+        stdout, show_stdout,
+        "the run's report and a later --show report are the same read of the same document"
+    );
+}
+
+#[test]
 fn the_typeinfer_write_back_rides_the_scan_and_show_paths_and_prints_its_report() {
     // The type-inference follow-on at the process seam (issue #341):
     // `--write-back --confidence-floor 0` applies through the typeinfer
