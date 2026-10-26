@@ -14,7 +14,7 @@
 > recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
 > ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008,
 > P1.5 → ADR-0009–0013, X5 → ADR-0041, P35 → ADR-0048, P36 → ADR-0049,
-> P37 → ADR-0050, P38 → ADR-0051).
+> P37 → ADR-0050, P38 → ADR-0051, P39 → ADR-0052).
 
 ## How a track gets built
 
@@ -58,17 +58,21 @@ and the record close #329, and was pruned when spec #322 closed
 (2026-10-25), and P38 (the attempt seam over the retry loop) shipped
 through tickets #331–#334 with the pin close #335 and the record close
 #336, and was pruned when spec #330 closed (2026-10-25),
-leaving P39 as the group's last open track. Together they pay
+and P39 (one CLI scan command riding the registry's rows) shipped
+through tickets #338–#342 with the pairing pin #342 and the record close
+#343, and was pruned when spec #337 closed (2026-10-25), completing
+the group. Together they pay
 for themselves by making every later Evidence track (P19–P21, P28) and the
 retry-loop hypothesis ledger (P27) cheaper to land — one place to add an
-engine, one place to read one (shipped — P35, ADR-0048), one place to
+engine — one registry row plus one CLI contribution entry, the rosters
+pinned one-for-one (shipped — P39, ADR-0052) — one place to read one
+(shipped — P35, ADR-0048), one place to
 render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 (shipped — P37, ADR-0050), one attempt seam every retry rides
 (shipped — P38, ADR-0051).
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P39 | One CLI scan command, sixteen report printers — a generic `ScanCommand` driven by P34's descriptor (load · scan · persist · show); each engine contributes its report printer and flag block only; 16 command-module skeletons and `main.rs` match arms deleted | interface (`calxgloss-cli`) + evidence (all scan crates) | — | ⬜ not started | specced — [#337](https://github.com/scriptandcompile/calxgloss/issues/337); tickets [#338](https://github.com/scriptandcompile/calxgloss/issues/338)–[#343](https://github.com/scriptandcompile/calxgloss/issues/343) published — next `/implement` | [#337](https://github.com/scriptandcompile/calxgloss/issues/337) |
 | P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
 | P20 | Seam capability report + engine-identity cache key — the seam advertises which questions Kuna can currently answer, and the scan cache keys on the engine build digest instead of a hand-bumped format version | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
 | P21 | First-class unknown records — per function, record what the evidence could not determine, with what evidence would close it; review UI resolves them, `escalate` retries consume them, the run leaves an audit ledger | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
@@ -86,20 +90,6 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 | P33 | Whole-task measurement harness — benchmark pipeline tasks end to end (tokens, RSS, ms) with an oracle independent of the implementation, counting discovery, retries, and continuations in every token claim | — (dev-side experiment harness, no crate) | — | ⬜ not started | not specced | — |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## P39 — One CLI scan command, sixteen report printers (interface + evidence)
-
-**Sixteen engine subcommands re-spell the same sequence.** 16 clap variant
-blocks, 16 command modules of 150–570 lines, 16 `main.rs` match arms — all
-load source → engine → scan → persist → report, modulo names; only the
-report printer is genuinely per-engine. This track builds `ScanCommand`
-over P34's descriptor (load · scan · persist · show), each engine
-contributing its report printer and flag block only. One descriptor pays
-back at two interfaces — pipeline and CLI — leverage made real; the match
-arms and the 35-line skeletons are deleted. Source: architecture review
-(2026-10-24), candidate 6. Blocked by: P34 — shipped through #302–#308
-(#301 closed 2026-10-24), so the descriptor it drives is the scan registry's
-row table, and the track stands unblocked.
 
 ## P19 — Admitted semantics: coverage + limits on every evidence finding (evidence + shared + pipeline + interface)
 
