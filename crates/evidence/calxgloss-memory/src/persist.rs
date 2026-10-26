@@ -321,6 +321,32 @@ mod tests {
     }
 
     #[test]
+    fn the_filed_document_carries_its_coverage_record_exactly() {
+        // What the scan stamped rides the persistor untouched: statuses,
+        // ids, order, limitation lines — exactly what a later reader
+        // (the projection seam, the report, a `--show` months later)
+        // sees (issue #349).
+        let dir = TempDir::new().expect("temp dir should be created");
+        let persistor = MemoryPersistor::with_cache_dir(dir.path());
+        let mut saved = result("eqmain.dll");
+        saved.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("2 function bodies unreached: FUN_180099000, +1 more".to_string()),
+            }],
+        });
+
+        persistor.save(&saved).expect("save should succeed");
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("load should succeed after a save");
+
+        assert_eq!(loaded.metadata.coverage, saved.metadata.coverage);
+    }
+
+    #[test]
     fn results_for_two_binaries_stay_independent() {
         let dir = TempDir::new().expect("temp dir should be created");
         let persistor = MemoryPersistor::with_cache_dir(dir.path());

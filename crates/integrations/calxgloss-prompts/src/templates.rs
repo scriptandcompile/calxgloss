@@ -854,15 +854,45 @@ pub struct EvidenceBundle {
     /// Memory lifecycle findings about this function made by the analysis
     /// pipeline.
     pub memory_findings: Vec<MemoryInfo>,
+    /// What the memory lifecycle scan's own document admits it examined
+    /// and could not — filled exactly once per document by the memory
+    /// projection row, beside (never inside) the per-record
+    /// `memory_findings` list (issue #349). Default-empty when no memory
+    /// document was read, when that document states no coverage, or when
+    /// it claims complete coverage; the memory-lifecycle include renders
+    /// its one qualification line exactly when this carries an admission
+    /// — naming the bodies the scan never reached, never a body it read
+    /// and left unflagged.
+    pub memory_coverage: CoverageInfo,
     /// Concurrency findings about this function made by the analysis
     /// pipeline.
     pub concurrency_findings: Vec<ConcurrencyInfo>,
+    /// What the concurrency scan's own document admits it examined and
+    /// could not — filled exactly once per document by the sync
+    /// projection row, beside (never inside) the per-record
+    /// `concurrency_findings` list (issue #349). Default-empty when no
+    /// sync document was read, when that document states no coverage, or
+    /// when it claims complete coverage; the concurrency include renders
+    /// its one qualification line exactly when this carries an admission
+    /// — naming the bodies the scan never reached, never a body it read
+    /// and left unflagged.
+    pub sync_coverage: CoverageInfo,
     /// Callback and function-pointer-table findings about this function
     /// made by the analysis pipeline.
     pub callback_findings: Vec<CallbackInfo>,
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// What the control-flow scan's own document admits it examined and
+    /// could not — filled exactly once per document by the control-flow
+    /// projection row, beside (never inside) the per-record
+    /// `control_flow_findings` list (issue #349). Default-empty when no
+    /// control-flow document was read, when that document states no
+    /// coverage, or when it claims complete coverage; the control-flow
+    /// include renders its one qualification line exactly when this
+    /// carries an admission — naming the bodies the scan never reached,
+    /// never a body it read and left without a finding.
+    pub control_flow_coverage: CoverageInfo,
     /// Calling-convention readings about this function and its callees
     /// made by the type-inference engine.
     pub convention_findings: Vec<ConventionInfo>,
@@ -1116,6 +1146,12 @@ pub struct RichTemplate {
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// What the control-flow scan's own document admits — rendered
+    /// beside (never inside) the findings list by the control-flow
+    /// include; default-empty when no coverage was stated or it claims
+    /// complete (issue #349). This tier template is built from a bare
+    /// request, which carries no filed document, so it defaults empty.
+    pub control_flow_coverage: CoverageInfo,
 }
 
 impl RichTemplate {
@@ -1146,6 +1182,7 @@ impl RichTemplate {
             api_category_mappings: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            control_flow_coverage: CoverageInfo::default(),
         }
     }
 }
@@ -1189,6 +1226,12 @@ pub struct DetailedTemplate {
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// What the control-flow scan's own document admits — rendered
+    /// beside (never inside) the findings list by the control-flow
+    /// include; default-empty when no coverage was stated or it claims
+    /// complete (issue #349). This tier template is built from a bare
+    /// request, which carries no filed document, so it defaults empty.
+    pub control_flow_coverage: CoverageInfo,
 }
 
 impl DetailedTemplate {
@@ -1222,6 +1265,7 @@ impl DetailedTemplate {
             data_structures: Vec::new(),
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
+            control_flow_coverage: CoverageInfo::default(),
         }
     }
 }

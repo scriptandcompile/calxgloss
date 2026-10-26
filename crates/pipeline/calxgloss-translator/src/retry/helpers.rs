@@ -3090,4 +3090,244 @@ mod tests {
             "a corrupt libmatch document fills neither hints nor coverage"
         );
     }
+
+    /// The memory row's coverage leg end to end (issue #349): the record
+    /// the memory scan stamps into its filed document rides one gather
+    /// into the bundle beside the findings, word for word; a document
+    /// filed before coverage stamping fills nothing; and a missing or
+    /// corrupt document fills nothing and degrades exactly as its
+    /// findings do.
+    #[test]
+    fn the_memory_row_gathers_the_documents_coverage_beside_its_findings() {
+        // The engine's own stamp: its one bodies facet fell short, naming
+        // the bodies the decompiler never produced.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "2 function bodies unreached: FUN_1800412a0, FUN_180049abc".to_string(),
+                ),
+            }],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_memory::types::MemoryResult::new(metadata);
+        result.findings = vec![calxgloss_memory::types::MemoryFinding::Allocation(
+            allocation_hint("FUN_18003ab00", "Box<T>"),
+        )];
+        calxgloss_memory::persist::MemoryPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped memory result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.memory_findings.len(),
+            1,
+            "the findings still ride their ordinary row"
+        );
+        assert_eq!(bundle.memory_coverage.status, "partial");
+        assert_eq!(
+            bundle.memory_coverage.admission,
+            "partial — 2 function bodies unreached: FUN_1800412a0, FUN_180049abc",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_findings(
+            &dir,
+            vec![calxgloss_memory::types::MemoryFinding::Allocation(
+                allocation_hint("FUN_18003ab00", "Box<T>"),
+            )],
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.memory_findings.is_empty()
+                && bundle.memory_coverage.status.is_empty()
+                && bundle.memory_coverage.admission.is_empty(),
+            "a pre-P19 document fills findings but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither findings nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.memory_findings.is_empty() && bundle.memory_coverage.admission.is_empty(),
+            "a missing memory document fills neither findings nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_memory::persist::MemoryPersistor::new(dir.path()).path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.memory_findings.is_empty() && bundle.memory_coverage.admission.is_empty(),
+            "a corrupt memory document fills neither findings nor coverage"
+        );
+    }
+
+    /// The concurrency row's coverage leg end to end (issue #349): the
+    /// record the sync scan stamps into its filed document rides one
+    /// gather into the bundle beside the findings, word for word; a
+    /// document filed before coverage stamping fills nothing; and a
+    /// missing or corrupt document fills nothing and degrades exactly as
+    /// its findings do.
+    #[test]
+    fn the_sync_row_gathers_the_documents_coverage_beside_its_findings() {
+        // The engine's own stamp: its one bodies facet fell short, naming
+        // the bodies the decompiler never produced.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "2 function bodies unreached: FUN_1800412a0, FUN_180049abc".to_string(),
+                ),
+            }],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_sync::types::SyncResult::new(metadata);
+        result.findings = vec![calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
+            "FUN_18003ab00",
+            "std::sync::Mutex",
+        ))];
+        calxgloss_sync::persist::SyncPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped concurrency result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.concurrency_findings.len(),
+            1,
+            "the findings still ride their ordinary row"
+        );
+        assert_eq!(bundle.sync_coverage.status, "partial");
+        assert_eq!(
+            bundle.sync_coverage.admission,
+            "partial — 2 function bodies unreached: FUN_1800412a0, FUN_180049abc",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_sync_findings(
+            &dir,
+            vec![calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
+                "FUN_18003ab00",
+                "std::sync::Mutex",
+            ))],
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.concurrency_findings.is_empty()
+                && bundle.sync_coverage.status.is_empty()
+                && bundle.sync_coverage.admission.is_empty(),
+            "a pre-P19 document fills findings but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither findings nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.concurrency_findings.is_empty()
+                && bundle.sync_coverage.admission.is_empty(),
+            "a missing concurrency document fills neither findings nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_sync::persist::SyncPersistor::new(dir.path()).path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.concurrency_findings.is_empty()
+                && bundle.sync_coverage.admission.is_empty(),
+            "a corrupt concurrency document fills neither findings nor coverage"
+        );
+    }
+
+    /// The control-flow row's coverage leg end to end (issue #349): the
+    /// record the control-flow scan stamps into its filed document rides
+    /// one gather into the bundle beside the findings, word for word; a
+    /// document filed before coverage stamping fills nothing; and a
+    /// missing or corrupt document fills nothing and degrades exactly as
+    /// its findings do.
+    #[test]
+    fn the_control_flow_row_gathers_the_documents_coverage_beside_its_findings() {
+        // The engine's own stamp: its one bodies facet fell short, naming
+        // the bodies the decompiler never produced.
+        let stamp = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "2 function bodies unreached: FUN_1800412a0, FUN_180049abc".to_string(),
+                ),
+            }],
+        };
+
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(stamp);
+        let mut result = calxgloss_controlflow::types::ControlFlowResult::new(metadata);
+        result.findings = vec![switch_hint("FUN_18003ab00")];
+        calxgloss_controlflow::persist::ControlFlowPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped control-flow result should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.control_flow_findings.len(),
+            1,
+            "the findings still ride their ordinary row"
+        );
+        assert_eq!(bundle.control_flow_coverage.status, "partial");
+        assert_eq!(
+            bundle.control_flow_coverage.admission,
+            "partial — 2 function bodies unreached: FUN_1800412a0, FUN_180049abc",
+            "the admission reaches the bundle exactly as the shared type words it"
+        );
+
+        // A document filed before the coverage record shipped (the
+        // standing kit's shape): the field stays default-empty.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_controlflow_findings(&dir, vec![switch_hint("FUN_18003ab00")]);
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            !bundle.control_flow_findings.is_empty()
+                && bundle.control_flow_coverage.status.is_empty()
+                && bundle.control_flow_coverage.admission.is_empty(),
+            "a pre-P19 document fills findings but no coverage — the old render stands"
+        );
+
+        // Missing and corrupt: neither findings nor coverage.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.control_flow_findings.is_empty()
+                && bundle.control_flow_coverage.admission.is_empty(),
+            "a missing control-flow document fills neither findings nor coverage"
+        );
+        let dir = TempDir::new().expect("temp workspace should be created");
+        corrupt_at(
+            calxgloss_controlflow::persist::ControlFlowPersistor::new(dir.path())
+                .path_for("eqmain.dll"),
+        );
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.control_flow_findings.is_empty()
+                && bundle.control_flow_coverage.admission.is_empty(),
+            "a corrupt control-flow document fills neither findings nor coverage"
+        );
+    }
 }

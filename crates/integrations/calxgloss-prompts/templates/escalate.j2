@@ -107,12 +107,12 @@ Pseudo-C:
 {% call data_structures::data_structures_section(evidence.data_structures, "ADDITIONAL CONTEXT — DATA STRUCTURES", evidence.type_database_coverage) %}{% endcall %}
 {% call type_information::type_information_section(evidence.type_info, "ADDITIONAL CONTEXT — TYPE INFORMATION") %}{% endcall %}
 {% call recognized_algorithms::recognized_algorithms_section(evidence.recognized_algorithms, "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS") %}{% endcall %}
-{% call memory_lifecycle::memory_lifecycle_section(evidence.memory_findings, "ADDITIONAL CONTEXT — MEMORY LIFECYCLE") %}{% endcall %}
-{% call concurrency::concurrency_section(evidence.concurrency_findings, "ADDITIONAL CONTEXT — CONCURRENCY") %}{% endcall %}
+{% call memory_lifecycle::memory_lifecycle_section(evidence.memory_findings, "ADDITIONAL CONTEXT — MEMORY LIFECYCLE", evidence.memory_coverage) %}{% endcall %}
+{% call concurrency::concurrency_section(evidence.concurrency_findings, "ADDITIONAL CONTEXT — CONCURRENCY", evidence.sync_coverage) %}{% endcall %}
 {% call serialization::serialization_section(evidence.serialization_findings, "ADDITIONAL CONTEXT — SERIALIZATION") %}{% endcall %}
 {% call constants::constants_section(evidence.const_findings, "ADDITIONAL CONTEXT — CONSTANTS", evidence.consts_coverage) %}{% endcall %}
 {% call callbacks::callbacks_section(evidence.callback_findings, "ADDITIONAL CONTEXT — CALLBACKS") %}{% endcall %}
-{% call control_flow::control_flow_section(evidence.control_flow_findings, "ADDITIONAL CONTEXT — CONTROL FLOW") %}{% endcall %}
+{% call control_flow::control_flow_section(evidence.control_flow_findings, "ADDITIONAL CONTEXT — CONTROL FLOW", evidence.control_flow_coverage) %}{% endcall %}
 {% call calling_convention::calling_convention_section(evidence.convention_findings, "ADDITIONAL CONTEXT — CALLING CONVENTION") %}{% endcall %}
 {% call sections::global_state_section(evidence.global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE") %}{% endcall %}
 {% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "ADDITIONAL CONTEXT — FLOAT/SIMD", evidence.floatsimd_coverage) %}{% endcall %}

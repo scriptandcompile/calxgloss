@@ -111,6 +111,18 @@ impl AnalysisDoc for MemoryDoc {
             .memory_findings
             .push(calxgloss_prompts::MemoryInfo::from(record));
     }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never reached — never an
+        // examined-and-clean body its finding list left unmentioned
+        // (issue #349).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.memory_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
+    }
 }
 
 /// The concurrency document, `re/analysis/sync/{binary}.json`: the lock
@@ -146,6 +158,18 @@ impl AnalysisDoc for SyncDoc {
         bundle
             .concurrency_findings
             .push(calxgloss_prompts::ConcurrencyInfo::from(record));
+    }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never reached — never an
+        // examined-and-clean body its finding list left unmentioned
+        // (issue #349).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.sync_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
     }
 }
 
@@ -496,6 +520,18 @@ impl AnalysisDoc for ControlFlowDoc {
         bundle
             .control_flow_findings
             .push(calxgloss_prompts::ControlFlowInfo::from(record));
+    }
+
+    fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
+        // Only a document that carries a coverage record fills one; a
+        // pre-P19 document, whose field's absence reads as no record,
+        // fills nothing and keeps the old render byte-identical. The
+        // record says which bodies the scan never reached — never an
+        // examined-and-clean body its finding list left unmentioned
+        // (issue #349).
+        if let Some(coverage) = doc.metadata.coverage.as_ref() {
+            bundle.control_flow_coverage = calxgloss_prompts::CoverageInfo::from(coverage);
+        }
     }
 }
 

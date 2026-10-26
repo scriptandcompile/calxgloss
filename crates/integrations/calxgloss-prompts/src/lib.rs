@@ -3688,6 +3688,320 @@ mod tests {
         );
     }
 
+    // -- admitted coverage: the control-flow, memory, and concurrency
+    //    sections (issue #349) --
+
+    /// Coverage records in the shape these three scans file: each one's
+    /// single `function-bodies` facet fell short, naming the bodies the
+    /// decompiler never produced — never an examined-and-clean body the
+    /// finding list left unmentioned. Each engine names different bodies,
+    /// so a coverage value crossing into another engine's section fails
+    /// every pin below.
+    fn control_flow_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_1800412a0".to_string()),
+            }],
+        }
+    }
+
+    fn memory_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some(
+                    "2 function bodies unreached: FUN_180049abc, FUN_18004def0".to_string(),
+                ),
+            }],
+        }
+    }
+
+    fn sync_admitting_coverage() -> calxgloss_types::ScanCoverage {
+        calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: calxgloss_types::CoverageStatus::Partial,
+                limitation: Some("1 function body unreached: FUN_18003e999".to_string()),
+            }],
+        }
+    }
+
+    /// The one qualification wording each section suite pins for its
+    /// engine's section (issue #349).
+    const CONTROL_FLOW_ADMISSION: &str = "partial — 1 function body unreached: FUN_1800412a0";
+    const MEMORY_ADMISSION: &str =
+        "partial — 2 function bodies unreached: FUN_180049abc, FUN_18004def0";
+    const SYNC_ADMISSION: &str = "partial — 1 function body unreached: FUN_18003e999";
+
+    /// The headings the consuming templates pass the three includes.
+    const ESCALATE_CONTROL_FLOW_HEADING: &str = "ADDITIONAL CONTEXT — CONTROL FLOW";
+    const SHARED_CONTROL_FLOW_HEADING: &str = "CONTROL FLOW PATTERNS";
+    const ESCALATE_MEMORY_HEADING: &str = "ADDITIONAL CONTEXT — MEMORY LIFECYCLE";
+    const ESCALATE_CONCURRENCY_HEADING: &str = "ADDITIONAL CONTEXT — CONCURRENCY";
+
+    /// The pinned wording stands at both ends of its journey for all
+    /// three engines: the shared coverage type produces it from the
+    /// records their scans stamp, and the prompt-side view carries those
+    /// same lines verbatim.
+    #[test]
+    fn the_control_flow_memory_and_sync_admission_wording_is_pinned_at_both_ends() {
+        assert_eq!(
+            control_flow_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            CONTROL_FLOW_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&control_flow_admitting_coverage()).admission,
+            CONTROL_FLOW_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+        assert_eq!(
+            memory_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            MEMORY_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&memory_admitting_coverage()).admission,
+            MEMORY_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+        assert_eq!(
+            sync_admitting_coverage()
+                .admission()
+                .expect("partial admits"),
+            SYNC_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CoverageInfo::from(&sync_admitting_coverage()).admission,
+            SYNC_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+    }
+
+    /// A complete coverage record is nothing to admit: the three sections
+    /// render byte-for-byte what they rendered when their documents
+    /// stated no coverage at all, at every consumer of each (issue #349).
+    #[test]
+    fn a_complete_coverage_record_renders_the_three_sections_byte_identically() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.control_flow_findings.push(control_flow_fixture());
+        bundle.memory_findings.push(memory_fixture());
+        bundle.concurrency_findings.push(concurrency_fixture());
+        let unstamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+            render_full_module_full(&bundle),
+        );
+        let complete = CoverageInfo::from(&calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Complete,
+            facets: Vec::new(),
+        });
+        bundle.control_flow_coverage = complete.clone();
+        bundle.memory_coverage = complete.clone();
+        bundle.sync_coverage = complete;
+        let stamped = (
+            render_escalate_full(&bundle),
+            render_module_context_full(&bundle),
+            render_full_module_full(&bundle),
+        );
+        assert_eq!(unstamped, stamped, "a complete record adds no bytes");
+        assert!(
+            !stamped.0.contains("Coverage:")
+                && !stamped.1.contains("Coverage:")
+                && !stamped.2.contains("Coverage:"),
+            "complete coverage has nothing to admit"
+        );
+    }
+
+    /// A falling-short control-flow record appends exactly one bounded
+    /// qualification line at each of the section's three consumers — the
+    /// admission rides the section, it never replaces or reflows it, and
+    /// one line is the whole of the bloat budget (issue #349). The
+    /// module-context row feeds the branch-site fixture, so its pinned
+    /// body is the branch entry's.
+    #[test]
+    fn a_partial_control_flow_record_appends_exactly_one_line_at_each_consumer() {
+        let mut patterns = EvidenceBundle::default();
+        patterns.control_flow_findings.push(control_flow_fixture());
+        let escalate_clean = render_escalate_full(&patterns);
+        let full_clean = render_full_module_full(&patterns);
+        let mut branch = EvidenceBundle::default();
+        branch.control_flow_findings.push(branch_site_fixture());
+        let module_clean = render_module_context_full(&branch);
+
+        patterns.control_flow_coverage = CoverageInfo::from(&control_flow_admitting_coverage());
+        branch.control_flow_coverage = CoverageInfo::from(&control_flow_admitting_coverage());
+        let escalate_admitted = render_escalate_full(&patterns);
+        let full_admitted = render_full_module_full(&patterns);
+        let module_admitted = render_module_context_full(&branch);
+
+        for (clean, admitted, heading) in [
+            (escalate_clean, escalate_admitted, ESCALATE_CONTROL_FLOW_HEADING),
+            (full_clean, full_admitted, SHARED_CONTROL_FLOW_HEADING),
+            (module_clean, module_admitted, SHARED_CONTROL_FLOW_HEADING),
+        ] {
+            let is_branch = heading == SHARED_CONTROL_FLOW_HEADING
+                && clean.contains(&CONTROL_FLOW_BRANCH_SECTION_BODY.to_string());
+            let body = if is_branch {
+                &CONTROL_FLOW_BRANCH_SECTION_BODY
+            } else {
+                &CONTROL_FLOW_SECTION_BODY
+            };
+            assert_eq!(
+                admitted,
+                clean.replace(
+                    &format!("{body}\n\n"),
+                    &format!("{body}\n\nCoverage: {CONTROL_FLOW_ADMISSION}\n\n"),
+                ),
+                "the admission rides the {heading} section as exactly one line beside the entries"
+            );
+            assert_eq!(
+                admitted.matches(&format!("## {heading}")).count(),
+                1,
+                "the admission never opens a second {heading} section"
+            );
+            assert_eq!(
+                admitted.matches("Coverage:").count(),
+                clean.matches("Coverage:").count() + 1,
+                "one admission line, never a paragraph"
+            );
+        }
+    }
+
+    /// A falling-short memory record and a falling-short sync record each
+    /// append exactly one bounded qualification line beside their own
+    /// entries in the escalate prompt — the two admissions never borrow
+    /// each other's wording, and each section keeps one heading (issue
+    /// #349).
+    #[test]
+    fn partial_memory_and_sync_records_append_one_qualification_line_each() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.memory_findings.push(memory_fixture());
+        bundle.concurrency_findings.push(concurrency_fixture());
+        let clean = render_escalate_full(&bundle);
+        bundle.memory_coverage = CoverageInfo::from(&memory_admitting_coverage());
+        bundle.sync_coverage = CoverageInfo::from(&sync_admitting_coverage());
+        let admitted = render_escalate_full(&bundle);
+        let expected = clean
+            .replace(
+                &format!("{MEMORY_LIFECYCLE_SECTION_BODY}\n\n"),
+                &format!("{MEMORY_LIFECYCLE_SECTION_BODY}\n\nCoverage: {MEMORY_ADMISSION}\n\n"),
+            )
+            .replace(
+                &format!("{CONCURRENCY_SECTION_BODY}\n\n"),
+                &format!("{CONCURRENCY_SECTION_BODY}\n\nCoverage: {SYNC_ADMISSION}\n\n"),
+            );
+        assert_eq!(
+            admitted, expected,
+            "each admission rides its own section as exactly one line beside the entries"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {ESCALATE_MEMORY_HEADING}"))
+                .count(),
+            1,
+            "the memory admission never opens a second section"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {ESCALATE_CONCURRENCY_HEADING}"))
+                .count(),
+            1,
+            "the sync admission never opens a second section"
+        );
+    }
+
+    /// The doctrine pair for all three engines (issue #349): an
+    /// unmentioned function under a complete record means examined-and-
+    /// clean, and silence from a record that names bodies it never
+    /// reached must never render the same bytes — a retry or a module
+    /// translation can tell "this function has no such findings" from
+    /// "the scan never read this function".
+    #[test]
+    fn empty_findings_under_complete_and_partial_coverage_never_render_alike() {
+        let under_complete = (
+            render_escalate_full(&EvidenceBundle::default()),
+            render_module_context_full(&EvidenceBundle::default()),
+            render_full_module_full(&EvidenceBundle::default()),
+        );
+        for (prompt, heading) in [
+            (&under_complete.0, ESCALATE_CONTROL_FLOW_HEADING),
+            (&under_complete.1, SHARED_CONTROL_FLOW_HEADING),
+            (&under_complete.2, SHARED_CONTROL_FLOW_HEADING),
+        ] {
+            assert!(
+                !prompt.contains(&format!("## {heading}")),
+                "silence from an unstamped record stays section-less, as before P19"
+            );
+        }
+        let escalate_partial = render_escalate_full(&EvidenceBundle {
+            control_flow_coverage: CoverageInfo::from(&control_flow_admitting_coverage()),
+            memory_coverage: CoverageInfo::from(&memory_admitting_coverage()),
+            sync_coverage: CoverageInfo::from(&sync_admitting_coverage()),
+            ..Default::default()
+        });
+        let module_partial = render_module_context_full(&EvidenceBundle {
+            control_flow_coverage: CoverageInfo::from(&control_flow_admitting_coverage()),
+            ..Default::default()
+        });
+        let full_partial = render_full_module_full(&EvidenceBundle {
+            control_flow_coverage: CoverageInfo::from(&control_flow_admitting_coverage()),
+            ..Default::default()
+        });
+        assert_ne!(
+            under_complete.0, escalate_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert_ne!(
+            under_complete.1, module_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        assert_ne!(
+            under_complete.2, full_partial,
+            "empty findings under a falling-short record must render observably \
+             different bytes than the same emptiness under a complete one"
+        );
+        for (prompt, heading, admission) in [
+            (
+                &escalate_partial,
+                ESCALATE_CONTROL_FLOW_HEADING,
+                CONTROL_FLOW_ADMISSION,
+            ),
+            (&escalate_partial, ESCALATE_MEMORY_HEADING, MEMORY_ADMISSION),
+            (
+                &escalate_partial,
+                ESCALATE_CONCURRENCY_HEADING,
+                SYNC_ADMISSION,
+            ),
+            (
+                &module_partial,
+                SHARED_CONTROL_FLOW_HEADING,
+                CONTROL_FLOW_ADMISSION,
+            ),
+            (&full_partial, SHARED_CONTROL_FLOW_HEADING, CONTROL_FLOW_ADMISSION),
+        ] {
+            assert!(
+                prompt.contains(&format!(
+                    "## {heading}\n\nCoverage: {admission}\n\n"
+                )),
+                "the empty list still carries the one admission line"
+            );
+        }
+    }
+
     /// Scans template source for `{% import "<path>" as <scope> %}`
     /// directives, returning each (path, scope) pair.
     fn imported_sections(source: &str) -> Vec<(&str, &str)> {

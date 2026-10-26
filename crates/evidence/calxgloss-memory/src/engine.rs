@@ -23,6 +23,7 @@ use crate::refcount::ReferenceCountDetector;
 use crate::types::{MemoryFinding, MemoryResult, ScanMetadata};
 use calxgloss_decomp::DecompiledFunction;
 use calxgloss_kuna::KunaSource;
+use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -35,6 +36,61 @@ use tracing::{info, warn};
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
+
+/// How many unreached functions one coverage limitation line names inline
+/// before folding the remainder into a count — bounded prose beside the
+/// counts, not a dump (the P19-5 admitted-semantics track).
+const MAX_NAMED_UNREACHED: usize = 5;
+
+/// The coverage record every memory lifecycle scan stamps about itself
+/// (issue #349), beside the provenance and the timing.
+///
+/// The memory scan has one facet: `function-bodies`, the decompiled
+/// bodies all three detectors read. The function listing is always read
+/// end to end — a failed listing aborts the run, and more than half
+/// failing to decompile trips the skip-rate breaker above — so what a
+/// finished scan can not have read is exactly the bodies it skipped
+/// along the way: a nameless listing entry, or a decompile that failed.
+/// The cross-function pass reads only bodies this walk already decompiled,
+/// so it adds no coverage border of its own. With nothing skipped, the
+/// facet is `complete`, and that is the admission's point: a function no
+/// finding mentions was examined and clean, never silently unchecked.
+/// With any, the facet is `partial` and the limitation line names the
+/// unreached bodies (bounded at [`MAX_NAMED_UNREACHED`]), so silence and
+/// never-reaching are distinguishable in the filed record itself. The
+/// whole picture mirrors the single facet — there is nothing else this
+/// engine examines.
+fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
+    let total = unreached.len() + nameless;
+    if total == 0 {
+        return ScanCoverage {
+            status: CoverageStatus::Complete,
+            facets: vec![FacetCoverage {
+                id: "function-bodies".to_string(),
+                status: CoverageStatus::Complete,
+                limitation: None,
+            }],
+        };
+    }
+    let mut names = unreached
+        .iter()
+        .take(MAX_NAMED_UNREACHED)
+        .cloned()
+        .collect::<Vec<_>>();
+    let hidden = unreached.len().saturating_sub(names.len()) + nameless;
+    if hidden > 0 {
+        names.push(format!("+{hidden} more"));
+    }
+    let body = if total == 1 { "body" } else { "bodies" };
+    ScanCoverage {
+        status: CoverageStatus::Partial,
+        facets: vec![FacetCoverage {
+            id: "function-bodies".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!("{total} function {body} unreached: {}", names.join(", "))),
+        }],
+    }
+}
 
 /// Orchestrates the three detectors into one [`MemoryResult`].
 ///
@@ -133,6 +189,12 @@ impl<S> MemoryEngine<S> {
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
+        // P19-5: which bodies the scan could NOT read, named where a name
+        // exists, counted where the listing entry is nameless — the
+        // coverage record below states it, so an unmentioned function
+        // means examined-and-clean, never silently unchecked.
+        let mut unreached: Vec<String> = Vec::new();
+        let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
@@ -143,6 +205,7 @@ impl<S> MemoryEngine<S> {
                     "Skipping function with no name"
                 );
                 skipped += 1;
+                nameless += 1;
                 continue;
             }
             let decompiled = match self.source.decompile(&function.name).await {
@@ -155,6 +218,7 @@ impl<S> MemoryEngine<S> {
                     );
                     skipped += 1;
                     decompile_failures += 1;
+                    unreached.push(function.name.clone());
                     // Skip-rate breaker: once most of the listing has
                     // failed to decompile, the scan is reading a
                     // program the engine cannot analyze, and an
@@ -204,6 +268,13 @@ impl<S> MemoryEngine<S> {
         let mut metadata = ScanMetadata::new(binary);
         // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
+        // The engine admits its own coverage inside its own scan, where
+        // the truth lives — not the registry row and not the CLI (issue
+        // #349): every listed body was read by all three detectors unless
+        // the scan says which ones it could not reach. The batch scan
+        // phase and the CLI's force-rescan file the same admission
+        // through the same single definition.
+        metadata.coverage = Some(coverage_stamp(&unreached, nameless));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,
@@ -968,5 +1039,190 @@ mod tests {
         assert!(result.is_empty());
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
+    }
+
+    // ============================================================
+    // Admitted scan coverage (issue #349)
+    // ============================================================
+
+    /// The facets a memory lifecycle scan declares, in order — the roster
+    /// the record must name exactly once each. The memory scan reads one
+    /// facet: the decompiled bodies all three detectors share.
+    const DECLARED_FACETS: &[&str] = &["function-bodies"];
+
+    /// The data-level verdict of the roster pin: empty means the record
+    /// names every declared facet exactly once, and each fault spells one
+    /// drift.
+    fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+        let mut faults = Vec::new();
+        for declared in DECLARED_FACETS {
+            let hits = coverage
+                .facets
+                .iter()
+                .filter(|facet| facet.id == *declared)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{declared}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{declared}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &coverage.facets {
+            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
+
+    #[tokio::test]
+    async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
+        // The stamp rides the engine's own scan, not the registry row
+        // and not the CLI — the batch scan phase and the CLI's
+        // force-rescan file the same admission through this one
+        // definition. Every body was read here, so the record is
+        // complete and says nothing needs admitting.
+        let result = scan(program()).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a fresh memory scan states its coverage");
+        assert_eq!(coverage.status, CoverageStatus::Complete);
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a fresh document must name every declared facet exactly once"
+        );
+        let bodies = coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == "function-bodies")
+            .expect("function-bodies is named");
+        assert_eq!(bodies.status, CoverageStatus::Complete);
+        assert_eq!(
+            bodies.limitation, None,
+            "a scan that read every body admits nothing — and silence now \
+             means examined-and-clean, not unchecked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_decompiled_failure_is_admitted_by_name_on_the_coverage_record() {
+        // The whole point of the admission: a body the scan could not
+        // read is named, so it is never mistaken for an examined-and-
+        // clean function the findings simply left unmentioned.
+        let mut program = program();
+        program.fail_decompiles = vec!["FUN_18003e750".into()];
+        let result = scan(program).await;
+        let coverage = result
+            .metadata
+            .coverage
+            .expect("a partial memory scan states its coverage too");
+        assert_eq!(
+            coverage.status,
+            CoverageStatus::Partial,
+            "the whole picture mirrors the one facet it examined"
+        );
+        assert!(
+            roster_faults(&coverage).is_empty(),
+            "a partial scan still names every declared facet exactly once"
+        );
+        let bodies = coverage
+            .facets
+            .iter()
+            .find(|facet| facet.id == "function-bodies")
+            .expect("function-bodies is named");
+        assert_eq!(bodies.status, CoverageStatus::Partial);
+        assert_eq!(
+            bodies.limitation.as_deref(),
+            Some("1 function body unreached: FUN_18003e750"),
+            "the unreached body is named, and only the unreached body"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_coverage_line_is_capped_at_five_names_and_counts_the_nameless() {
+        // Bounded prose beside the counts: six decompile failures name
+        // five inline and fold the sixth into a count, and a nameless
+        // listing entry counts toward the total without stealing a name
+        // slot.
+        let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
+        let mut program = FakeProgram::empty();
+        for (index, name) in names.iter().enumerate() {
+            program.listing.push(FunctionSummary {
+                name: name.clone(),
+                address: 0x1800_0000 + index as u64,
+            });
+            if index >= 6 {
+                program.bodies.insert(
+                    name.clone(),
+                    function(name, "undefined FUN_body_x(void)", "  return;\n"),
+                );
+            }
+        }
+        program.fail_decompiles = names[..6].to_vec();
+        program.listing.push(summary(""));
+        let result = scan(program).await;
+        let bodies = result
+            .metadata
+            .coverage
+            .expect("a partial memory scan states its coverage")
+            .facets
+            .into_iter()
+            .find(|facet| facet.id == "function-bodies")
+            .expect("function-bodies is named");
+        assert_eq!(bodies.status, CoverageStatus::Partial);
+        assert_eq!(
+            bodies.limitation.as_deref(),
+            Some(
+                "7 function bodies unreached: FUN_body_0000, FUN_body_0001, \
+                 FUN_body_0002, FUN_body_0003, FUN_body_0004, +2 more"
+            ),
+            "six named failures plus one nameless entry: five names, the \
+             rest counted, the count covering both"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+        let mut coverage = coverage_stamp(&[], 0);
+        coverage.facets.retain(|facet| facet.id != "function-bodies");
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `function-bodies` is missing from the record"],
+            "an engine quietly dropping its one facet fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_a_facet_is_doubled() {
+        let mut coverage = coverage_stamp(&["FUN_18003e750".to_string()], 0);
+        coverage.facets.push(coverage.facets[0].clone());
+        assert_eq!(
+            roster_faults(&coverage),
+            ["declared facet `function-bodies` appears 2 times in the record"],
+            "a facet crowded into two entries fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+        let mut coverage = coverage_stamp(&[], 0);
+        coverage.facets.push(FacetCoverage {
+            id: "global-state".to_string(),
+            status: CoverageStatus::Unexamined,
+            limitation: None,
+        });
+        assert_eq!(
+            roster_faults(&coverage),
+            ["record names `global-state`, a facet the engine never declared"],
+            "an id invented outside the declared roster fails loudly"
+        );
     }
 }

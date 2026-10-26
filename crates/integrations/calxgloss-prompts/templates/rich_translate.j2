@@ -53,7 +53,7 @@ Test #{{ test.index }}:
 
 {% endif %}
 {% call type_information::type_information_section(type_info, "TYPE INFORMATION") %}{% endcall %}
-{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
+{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS", control_flow_coverage) %}{% endcall %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.

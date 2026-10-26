@@ -108,7 +108,7 @@ Pseudo-C:
 
 {% endif %}
 {% call data_structures::data_structures_section(evidence.data_structures, "SHARED DATA STRUCTURES", evidence.type_database_coverage) %}{% endcall %}
-{% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS") %}{% endcall %}
+{% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS", evidence.control_flow_coverage) %}{% endcall %}
 {% if !shim_layers.is_empty() %}
 ## SHIM LAYER CODE (crate-replacement DLLs)
 
