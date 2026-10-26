@@ -1,64 +1,69 @@
-//! The `controlflow` command — detect control-flow patterns for a binary.
+//! The `controlflow` command's CLI contribution — detect control-flow
+//! patterns for a binary (issue #340, spec #337).
 //!
-//! Runs the control-flow detectors — switch-shaped if/else-if chains,
-//! self-recursion, state-machine patterns, and the per-function branch
-//! inventory — against the loaded program and saves the result to
-//! `re/analysis/controlflow/{binary}.json` in the workspace, the same file
-//! batch translation will read as prompt context. Batch translation runs
-//! the same scan before its first batch when no result is cached; this
-//! command is the manual entry point: it rebuilds the result on demand
-//! and can print what a cached one holds.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `control-flow` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader and the
+//! report printer. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/controlflow/{binary}.json` — the same
+//! file batch translation reads as prompt context. The run's report and
+//! a later `--show` report are the same read of the same document.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_controlflow::types::ControlFlowResult;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `controlflow` subcommand: detect control-flow patterns for
-/// `binary`, or print the cached result when `show` is set.
-pub async fn handle_controlflow(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = ControlFlowPersistor::new(workspace);
+/// The `controlflow` entry in the CLI-side contribution table: it serves
+/// the registry's `control-flow` row and supplies this command's loader
+/// and printer. The command carries no flags beyond `--binary` and
+/// `--show`, so its flag derivation hands over the plain default options —
+/// the overwrite policy is the generic handler's to set.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "control-flow",
+        load: load_filed_result,
+        print: print_report,
+        derive_options: |_flags| ScanRunOptions::default(),
+        post_scan: None,
+    })
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// Read the filed result through the engine's own persistor — the same
+/// loader for the `--show` report and for reading the document a run
+/// just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_result(workspace: &Path, binary: &str) -> Result<ControlFlowResult> {
+    ControlFlowPersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached control-flow result for {binary}; \
                  run `calxgloss controlflow --binary {binary}` to produce one"
             )
-        })?;
-        print_controlflow_report(&result, &persistor.path_for(binary));
-        return Ok(());
-    }
+        })
+}
 
-    info!(binary, workspace = %workspace.display(), "Detecting control-flow patterns");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = ControlFlowEngine::new(&kuna);
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Control-flow detection failed for {binary}"))?;
-    persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the control-flow result for {binary}"))?;
-
-    print_controlflow_report(&result, &persistor.path_for(binary));
+/// Print the report over the loaded result, naming where the document is
+/// filed. Both paths read the same on-disk state, so the run's report
+/// and a later `--show` report are byte-identical over one document.
+fn print_report(result: &ControlFlowResult, workspace: &Path, binary: &str) -> Result<()> {
+    print_controlflow_report(
+        result,
+        &ControlFlowPersistor::new(workspace).path_for(binary),
+    );
     Ok(())
 }
 

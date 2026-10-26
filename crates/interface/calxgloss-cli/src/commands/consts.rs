@@ -1,80 +1,94 @@
-//! The `consts` command — detect constant structures for a binary.
+//! The `consts` command's CLI contribution — detect constant structures
+//! for a binary (issue #340, spec #337).
 //!
-//! Runs the three constant detectors — bitflag group detection,
-//! enumerated-dispatch detection, and repeated-magic-number frequency
-//! analysis — against the loaded program and saves the
-//! result to `re/analysis/consts/{binary}.json` in the workspace, the same
-//! file batch translation will read as prompt context, together with a
-//! rendered Rust codegen file spelling the reconstructed flag families,
-//! enums, and constants out beside the JSON. Batch translation
-//! runs the same scan before its first batch when no result is cached;
-//! this command is the manual entry point: it rebuilds the result on
-//! demand and can print what a cached one holds.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `constants` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader, the
+//! report printer, and the post-scan step holding the one side effect
+//! the row does not file — the rendered Rust codegen spelling the
+//! reconstructed flag families, enums, and constants out beside the
+//! JSON. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/consts/{binary}.json` — the same file
+//! batch translation reads as prompt context. The run's report and
+//! a later `--show` report are the same read of the same document.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use calxgloss_consts::codegen::render_codegen;
-use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_consts::types::ConstResult;
+use calxgloss_decomp::PipelineSource;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `consts` subcommand: detect constant structures for
-/// `binary`, or print the cached result when `show` is set.
-pub async fn handle_consts(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = ConstPersistor::new(workspace);
+/// The `consts` entry in the CLI-side contribution table: it serves the
+/// registry's `constants` row and supplies this command's loader,
+/// printer, and codegen post-scan step. The command carries no flags
+/// beyond `--binary` and `--show`, so its flag derivation hands over the
+/// plain default options — the overwrite policy is the generic handler's
+/// to set.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "constants",
+        load: load_filed_result,
+        print: print_report,
+        derive_options: |_flags| ScanRunOptions::default(),
+        post_scan: Some(write_codegen),
+    })
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// Read the filed result through the engine's own persistor — the same
+/// loader for the `--show` report and for reading the document a run
+/// just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_result(workspace: &Path, binary: &str) -> Result<ConstResult> {
+    ConstPersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached constant result for {binary}; \
                  run `calxgloss consts --binary {binary}` to produce one"
             )
-        })?;
-        print_constant_report(
-            &result,
-            &persistor.path_for(binary),
-            persistor
-                .codegen_exists(binary)
-                .then(|| persistor.codegen_path_for(binary))
-                .as_deref(),
-        );
-        return Ok(());
-    }
+        })
+}
 
-    info!(binary, workspace = %workspace.display(), "Detecting constant structures");
+/// Write the rendered Rust codegen beside the filed document — the one
+/// side effect the `constants` row does not file, run over the document
+/// the row just saved so a re-scan replaces the codegen along with it.
+fn write_codegen(
+    _source: &PipelineSource,
+    workspace: &Path,
+    binary: &str,
+    result: &ConstResult,
+) -> Result<()> {
+    ConstPersistor::new(workspace)
+        .save_codegen(binary, &render_codegen(result))
+        .with_context(|| format!("Failed to write the constant codegen for {binary}"))
+}
 
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = ConstEngine::new(&kuna);
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Constant detection failed for {binary}"))?;
-    persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the constant result for {binary}"))?;
-    persistor
-        .save_codegen(binary, &render_codegen(&result))
-        .with_context(|| format!("Failed to write the constant codegen for {binary}"))?;
-
+/// Print the report over the loaded result, naming where the document is
+/// filed and where the codegen sits when it exists. Both paths read the
+/// same on-disk state, so the run's report and a later `--show` report
+/// are byte-identical over one document.
+fn print_report(result: &ConstResult, workspace: &Path, binary: &str) -> Result<()> {
+    let persistor = ConstPersistor::new(workspace);
     print_constant_report(
-        &result,
+        result,
         &persistor.path_for(binary),
-        Some(&persistor.codegen_path_for(binary)),
+        persistor
+            .codegen_exists(binary)
+            .then(|| persistor.codegen_path_for(binary))
+            .as_deref(),
     );
     Ok(())
 }

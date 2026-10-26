@@ -1,64 +1,66 @@
-//! The `errhandling` command — detect error-handling idioms for a binary.
+//! The `errhandling` command's CLI contribution — detect error-handling
+//! idioms for a binary (issue #340, spec #337).
 //!
-//! Runs the body-text detectors — reading each decompiled body for spelled
-//! `try`/`catch` frames, named personality-handler thunks, exception-API
-//! calls, direct `RaiseException` sites, and goto-cleanup ladders (guarded
-//! forward gotos converging on one releasing join block), and records the
-//! HRESULT- and NTSTATUS-shaped failure codes each body returns, raises, or
-//! compares for — against the loaded program and
-//! saves the result to `re/analysis/errhandling/{binary}.json` in the
-//! workspace. `--show` prints a cached result without running the scan.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `error-handling` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader and the
+//! report printer. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/errhandling/{binary}.json`. The run's
+//! report and a later `--show` report are the same read of the same
+//! document.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_errhandling::engine::ErrhandlingEngine;
 use calxgloss_errhandling::persist::ErrhandlingPersistor;
 use calxgloss_errhandling::types::ErrhandlingResult;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `errhandling` subcommand: detect error-handling idioms
-/// for `binary`, or print the cached result when `show` is set.
-pub async fn handle_errhandling(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = ErrhandlingPersistor::new(workspace);
+/// The `errhandling` entry in the CLI-side contribution table: it serves
+/// the registry's `error-handling` row and supplies this command's loader
+/// and printer. The command carries no flags beyond `--binary` and
+/// `--show`, so its flag derivation hands over the plain default options —
+/// the overwrite policy is the generic handler's to set.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "error-handling",
+        load: load_filed_result,
+        print: print_report,
+        derive_options: |_flags| ScanRunOptions::default(),
+        post_scan: None,
+    })
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// Read the filed result through the engine's own persistor — the same
+/// loader for the `--show` report and for reading the document a run
+/// just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_result(workspace: &Path, binary: &str) -> Result<ErrhandlingResult> {
+    ErrhandlingPersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached error-handling detection result for {binary}; \
                  run `calxgloss errhandling --binary {binary}` to produce one"
             )
-        })?;
-        print_errhandling_report(&result, &persistor.path_for(binary));
-        return Ok(());
-    }
+        })
+}
 
-    info!(binary, workspace = %workspace.display(), "Detecting error-handling idioms");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = ErrhandlingEngine::new(&kuna);
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Error-handling detection failed for {binary}"))?;
-    persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the error-handling result for {binary}"))?;
-
-    print_errhandling_report(&result, &persistor.path_for(binary));
+/// Print the report over the loaded result, naming where the document is
+/// filed. Both paths read the same on-disk state, so the run's report
+/// and a later `--show` report are byte-identical over one document.
+fn print_report(result: &ErrhandlingResult, workspace: &Path, binary: &str) -> Result<()> {
+    print_errhandling_report(result, &ErrhandlingPersistor::new(workspace).path_for(binary));
     Ok(())
 }
 

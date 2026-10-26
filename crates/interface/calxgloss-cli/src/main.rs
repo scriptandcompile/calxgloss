@@ -59,34 +59,23 @@ use utils::*;
 
 // Re-export handler functions for match arm access
 use commands::algorithm::handle_algorithm;
-use commands::apidetect::handle_apidetect;
 use commands::auto::handle_auto;
 use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
 use commands::bdiff::handle_bdiff;
-use commands::callback::handle_callback;
 use commands::classify::handle_classify;
-use commands::consts::handle_consts;
-use commands::controlflow::handle_controlflow;
 use commands::dashboard::{
     handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
     handle_dashboard_reject, handle_dashboard_view,
 };
 use commands::doctor::handle_doctor;
-use commands::errhandling::handle_errhandling;
-use commands::floatsimd::handle_floatsimd;
 use commands::gc::handle_gc;
-use commands::globalstate::handle_global_state;
 use commands::init::handle_init;
 use commands::libmatch::handle_libmatch;
 use commands::live::handle_live;
-use commands::memory::handle_memory;
 use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
-use commands::scan_command::{ScanFlags, handle_scan_command};
-use commands::serialize::handle_serialize;
+use commands::scan_command::handle_scan_command;
 use commands::serve::handle_serve;
-use commands::stringctx::handle_stringctx;
-use commands::sync::handle_sync;
 use commands::translate::handle_translate;
 use commands::typeinfer::handle_typeinfer;
 use commands::verify::handle_verify;
@@ -182,6 +171,36 @@ fn main() -> Result<()> {
         refresh_cache: false,
     });
     let result = match command {
+        // All twelve table-named scan commands ride the generic handler
+        // (issue #340): the clap variants are mapped onto scan flags in
+        // the ride table, and this one arm drives the shared pipeline.
+        Command::Typesdb { .. }
+        | Command::ControlFlow { .. }
+        | Command::Memory { .. }
+        | Command::Sync { .. }
+        | Command::GlobalState { .. }
+        | Command::Consts { .. }
+        | Command::Errhandling { .. }
+        | Command::Floatsimd { .. }
+        | Command::StringCtx { .. }
+        | Command::ApiDetect { .. }
+        | Command::Serialize { .. }
+        | Command::Callback { .. } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            let (contribution, flags) = commands::scan_command::ride(&command)
+                .expect("the routed commands are exactly the ride table's keys");
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_scan_command(
+                    &contribution,
+                    &flags,
+                    &workspace,
+                    &settings,
+                ))
+        }
+
         Command::Config => {
             print!("{}", settings::render(&settings));
             Ok(())
@@ -245,27 +264,6 @@ fn main() -> Result<()> {
         // The first rider on the generic scan command (issue #339): the
         // clap variant stays exactly as it is, and the typesdb
         // contribution entry serves the registry's type-database row.
-        Command::Typesdb {
-            binary,
-            show,
-            no_tag,
-        } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_scan_command(
-                    &commands::typesdb::contribution(),
-                    &ScanFlags {
-                        binary,
-                        show,
-                        no_tag,
-                    },
-                    &workspace,
-                    &settings,
-                ))
-        }
         Command::Typeinfer {
             binary,
             show,
@@ -304,14 +302,6 @@ fn main() -> Result<()> {
                     &settings,
                 ))
         }
-        Command::Memory { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_memory(&binary, &workspace, show, &settings))
-        }
         Command::Libmatch {
             binary,
             show,
@@ -338,86 +328,7 @@ fn main() -> Result<()> {
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_bdiff(&binary, &workspace, &settings))
         }
-        Command::Sync { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_sync(&binary, &workspace, show, &settings))
-        }
-        Command::GlobalState { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_global_state(&binary, &workspace, show, &settings))
-        }
-        Command::Consts { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_consts(&binary, &workspace, show, &settings))
-        }
-        Command::Callback { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_callback(&binary, &workspace, show, &settings))
-        }
-        Command::ControlFlow { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_controlflow(&binary, &workspace, show, &settings))
-        }
-        Command::StringCtx { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_stringctx(&binary, &workspace, show, &settings))
-        }
-        Command::ApiDetect { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_apidetect(&binary, &workspace, show, &settings))
-        }
-        Command::Serialize { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_serialize(&binary, &workspace, show, &settings))
-        }
-        Command::Errhandling { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_errhandling(&binary, &workspace, show, &settings))
-        }
-        Command::Floatsimd { binary, show } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_floatsimd(&binary, &workspace, show, &settings))
-        }
+
         Command::Verify {
             binary,
             function,

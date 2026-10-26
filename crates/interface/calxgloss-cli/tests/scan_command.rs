@@ -114,3 +114,48 @@ fn show_with_no_filed_document_fails_naming_the_producing_command() {
         "the failure names the exact producing command:\n{stdout}\n{stderr}"
     );
 }
+
+#[test]
+fn a_ridden_flag_free_command_prints_the_same_report_run_and_show() {
+    // One of the eleven commands folded into the generic handler (issue
+    // #340) at the process seam: `controlflow` scans the fixture, files
+    // its document at the row's own path, and the run's report and a
+    // later `--show` report are byte-identical — the same read of the
+    // same document, with no entry-side engine composition left behind.
+    let ws = fixture_workspace();
+
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "controlflow",
+            "--binary",
+            "fixture-target",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the controlflow ride failed:\n{stdout}\n{stderr}");
+    let document = ws.path().join("re/analysis/controlflow/fixture-target.json");
+    assert!(
+        document.is_file(),
+        "the document is filed at {document:?}"
+    );
+    assert!(stdout.contains("Control flow"), "{stdout}");
+
+    let (ok, show_stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "controlflow",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the controlflow show failed:\n{show_stdout}\n{stderr}");
+    assert_eq!(
+        stdout, show_stdout,
+        "the run's report and a later --show report are the same read of the same document"
+    );
+}

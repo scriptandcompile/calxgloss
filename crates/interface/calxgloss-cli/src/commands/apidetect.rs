@@ -1,90 +1,104 @@
-//! The `apidetect` command — identify the libraries and APIs of a binary.
+//! The `apidetect` command's CLI contribution — identify the libraries
+//! and APIs of a binary (issue #340, spec #337).
 //!
-//! Runs the two API detectors — the import-table scanner and the
-//! per-function call-graph summary — plus the platform-divergence and
-//! COM readings, against the program currently open
-//! loaded and saves the result to `re/analysis/apidetect/{binary}.json`
-//! in the workspace, the same file batch translation will read as prompt
-//! context, together with a rendered FFI bindings file declaring
-//! the imports no crate replaces and a Cargo.toml-style dependency
-//! manifest aggregating the crates the identified findings suggest, both
-//! beside the JSON. Batch translation runs the same scan before
-//! its first batch
-//! when no result is cached; this command is the manual entry point: it
-//! rebuilds the result on demand and can print what a cached one holds.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `library-api` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader, the
+//! report printer, and the post-scan step holding the two side effects
+//! the row does not file — the rendered FFI bindings file declaring the
+//! imports no crate replaces and the Cargo.toml-style dependency
+//! manifest aggregating the crates the identified findings suggest,
+//! both beside the JSON. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/apidetect/{binary}.json` — the same file
+//! batch translation reads as prompt context. The run's report and
+//! a later `--show` report are the same read of the same document.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_apidetect::engine::ApiEngine;
 use calxgloss_apidetect::ffi_bindings::{render_dependency_manifest, render_ffi_bindings};
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiDetectionResult;
+use calxgloss_decomp::PipelineSource;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `apidetect` subcommand: identify the libraries and APIs of
-/// `binary`, or print the cached result when `show` is set.
-pub async fn handle_apidetect(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = ApiPersistor::new(workspace);
+/// The `apidetect` entry in the CLI-side contribution table: it serves
+/// the registry's `library-api` row and supplies this command's loader,
+/// printer, and post-scan step writing the bindings and the manifest.
+/// The command carries no flags beyond `--binary` and `--show`, so its
+/// flag derivation hands over the plain default options — the overwrite
+/// policy is the generic handler's to set.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "library-api",
+        load: load_filed_result,
+        print: print_report,
+        derive_options: |_flags| ScanRunOptions::default(),
+        post_scan: Some(write_side_effects),
+    })
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// Read the filed result through the engine's own persistor — the same
+/// loader for the `--show` report and for reading the document a run
+/// just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_result(workspace: &Path, binary: &str) -> Result<ApiDetectionResult> {
+    ApiPersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached API result for {binary}; \
                  run `calxgloss apidetect --binary {binary}` to produce one"
             )
-        })?;
-        print_api_report(
-            &result,
-            &persistor.path_for(binary),
-            persistor
-                .bindings_exists(binary)
-                .then(|| persistor.bindings_path_for(binary))
-                .as_deref(),
-            persistor
-                .manifest_exists(binary)
-                .then(|| persistor.manifest_path_for(binary))
-                .as_deref(),
-        );
-        return Ok(());
-    }
+        })
+}
 
-    info!(binary, workspace = %workspace.display(), "Identifying libraries and APIs");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = ApiEngine::new(&kuna);
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("API detection failed for {binary}"))?;
+/// Write the rendered FFI bindings and dependency manifest beside the
+/// filed document — the two side effects the `library-api` row does not
+/// file, run over the document the row just saved so a re-scan replaces
+/// them along with it.
+fn write_side_effects(
+    _source: &PipelineSource,
+    workspace: &Path,
+    binary: &str,
+    result: &ApiDetectionResult,
+) -> Result<()> {
+    let persistor = ApiPersistor::new(workspace);
     persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the API result for {binary}"))?;
-    persistor
-        .save_bindings(binary, &render_ffi_bindings(&result))
+        .save_bindings(binary, &render_ffi_bindings(result))
         .with_context(|| format!("Failed to write the FFI bindings for {binary}"))?;
     persistor
-        .save_manifest(binary, &render_dependency_manifest(&result))
-        .with_context(|| format!("Failed to write the dependency manifest for {binary}"))?;
+        .save_manifest(binary, &render_dependency_manifest(result))
+        .with_context(|| format!("Failed to write the dependency manifest for {binary}"))
+}
 
+/// Print the report over the loaded result, naming where the document is
+/// filed and where the bindings and manifest sit when they exist. Both
+/// paths read the same on-disk state, so the run's report and a later
+/// `--show` report are byte-identical over one document.
+fn print_report(result: &ApiDetectionResult, workspace: &Path, binary: &str) -> Result<()> {
+    let persistor = ApiPersistor::new(workspace);
     print_api_report(
-        &result,
+        result,
         &persistor.path_for(binary),
-        Some(&persistor.bindings_path_for(binary)),
-        Some(&persistor.manifest_path_for(binary)),
+        persistor
+            .bindings_exists(binary)
+            .then(|| persistor.bindings_path_for(binary))
+            .as_deref(),
+        persistor
+            .manifest_exists(binary)
+            .then(|| persistor.manifest_path_for(binary))
+            .as_deref(),
     );
     Ok(())
 }

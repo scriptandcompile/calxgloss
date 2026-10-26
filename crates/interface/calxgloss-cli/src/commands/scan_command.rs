@@ -42,9 +42,12 @@
 //! today — the translate/auto paths, never a scan command — so this
 //! handler never calls it.
 //!
-//! Today the table has its first rider, `typesdb`; the other fifteen
-//! scan arms keep working untouched until their tickets (spec #337's
-//! trail #340–#342) flood the table and lock it to the registry roster.
+//! The table now has twelve riders (issue #340): the twelve table-named
+//! commands ride through [`ride`], which maps each clap variant onto its
+//! entry and flags, and one `main.rs` arm drives them all. `algorithm`,
+//! `typeinfer`, and `libmatch` keep their dedicated arms until #341
+//! rides them with their per-engine flags; `bdiff` has no registry row
+//! and stays outside the generic path.
 
 use std::any::Any;
 use std::path::Path;
@@ -263,6 +266,124 @@ pub(crate) async fn handle_scan_command(
     Ok(())
 }
 
+/// The ride table (issue #340): every clap variant that reaches a
+/// registry row through the generic handler, mapped to its module's
+/// contribution entry and the [`ScanFlags`] read off the variant. The
+/// `main.rs` arm matches exactly these variants and hands the pair to
+/// [`handle_scan_command`]; a variant outside the table — `algorithm`,
+/// `typeinfer`, and `libmatch`, still holding their own per-engine flags
+/// until #341 rides them, and `bdiff`, which has no row to ride —
+/// answers `None` and keeps its dedicated arm. Adding a command to the
+/// table is one entry here and one variant in the arm, and the suite's
+/// roster assertion below pins the two together.
+pub(crate) fn ride(command: &crate::cli_types::Command) -> Option<(ScanContribution, ScanFlags)> {
+    use crate::cli_types::Command;
+    let (entry, flags) = match command {
+        Command::Typesdb {
+            binary,
+            show,
+            no_tag,
+        } => (
+            crate::commands::typesdb::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: *no_tag,
+            },
+        ),
+        Command::ControlFlow { binary, show } => (
+            crate::commands::controlflow::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::Memory { binary, show } => (
+            crate::commands::memory::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::Sync { binary, show } => (
+            crate::commands::sync::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::GlobalState { binary, show } => (
+            crate::commands::globalstate::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::Consts { binary, show } => (
+            crate::commands::consts::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::Errhandling { binary, show } => (
+            crate::commands::errhandling::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::Floatsimd { binary, show } => (
+            crate::commands::floatsimd::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::StringCtx { binary, show } => (
+            crate::commands::stringctx::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::ApiDetect { binary, show } => (
+            crate::commands::apidetect::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::Serialize { binary, show } => (
+            crate::commands::serialize::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        Command::Callback { binary, show } => (
+            crate::commands::callback::contribution(),
+            ScanFlags {
+                binary: binary.clone(),
+                show: *show,
+                no_tag: false,
+            },
+        ),
+        _ => return None,
+    };
+    Some((entry, flags))
+}
+
 #[cfg(test)]
 mod tests {
     use calxgloss_config::{FileConfig, Layers, LoadedConfig};
@@ -463,6 +584,335 @@ mod tests {
         assert!(
             !plain.overwrite_filed_document,
             "the overwrite policy is the handler's to set, never the entry's"
+        );
+    }
+
+    /// The ride table's roster as (CLI command name, entry) pairs — the
+    /// behavior suite's driver. A command joining or leaving the generic
+    /// path changes here, in `ride`, and in the `main.rs` arm together;
+    /// the roster assertion below pins the three.
+    fn ridden_table() -> Vec<(&'static str, ScanContribution)> {
+        use crate::commands::{
+            apidetect, callback, consts, controlflow, errhandling, floatsimd, globalstate, memory,
+            serialize, stringctx, sync,
+        };
+        vec![
+            ("typesdb", typesdb::contribution()),
+            ("controlflow", controlflow::contribution()),
+            ("memory", memory::contribution()),
+            ("sync", sync::contribution()),
+            ("globalstate", globalstate::contribution()),
+            ("consts", consts::contribution()),
+            ("errhandling", errhandling::contribution()),
+            ("floatsimd", floatsimd::contribution()),
+            ("stringctx", stringctx::contribution()),
+            ("apidetect", apidetect::contribution()),
+            ("serialize", serialize::contribution()),
+            ("callback", callback::contribution()),
+        ]
+    }
+
+    /// The twelve clap variants the `main.rs` arm routes, all over the
+    /// fixture binary with the flags at their defaults.
+    fn ridden_commands() -> Vec<crate::cli_types::Command> {
+        use crate::cli_types::Command;
+        let binary = || "fixture-target".to_string();
+        vec![
+            Command::Typesdb {
+                binary: binary(),
+                show: false,
+                no_tag: false,
+            },
+            Command::ControlFlow {
+                binary: binary(),
+                show: false,
+            },
+            Command::Memory {
+                binary: binary(),
+                show: false,
+            },
+            Command::Sync {
+                binary: binary(),
+                show: false,
+            },
+            Command::GlobalState {
+                binary: binary(),
+                show: false,
+            },
+            Command::Consts {
+                binary: binary(),
+                show: false,
+            },
+            Command::Errhandling {
+                binary: binary(),
+                show: false,
+            },
+            Command::Floatsimd {
+                binary: binary(),
+                show: false,
+            },
+            Command::StringCtx {
+                binary: binary(),
+                show: false,
+            },
+            Command::ApiDetect {
+                binary: binary(),
+                show: false,
+            },
+            Command::Serialize {
+                binary: binary(),
+                show: false,
+            },
+            Command::Callback {
+                binary: binary(),
+                show: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_ride_table_maps_each_ridden_variant_to_its_own_entry() {
+        // The `main.rs` arm, `ride`, and the contribution modules are one
+        // roster: every routed variant yields its entry and its flags,
+        // and the twelve rows they serve are exactly the ones #340
+        // routes.
+        let entries = ridden_table();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(_, entry)| entry.row)
+                .collect::<Vec<_>>(),
+            vec![
+                "type-database",
+                "control-flow",
+                "memory-lifecycle",
+                "concurrency",
+                "global-state",
+                "constants",
+                "error-handling",
+                "float-simd",
+                "string-context",
+                "library-api",
+                "serialization",
+                "callback-detection",
+            ],
+            "the ride roster is the twelve table-named commands"
+        );
+        let commands = ridden_commands();
+        assert_eq!(commands.len(), entries.len());
+        for (command, (cli, entry)) in commands.iter().zip(&entries) {
+            let (ridden, flags) = ride(command).unwrap_or_else(|| panic!("{cli} must ride"));
+            assert_eq!(ridden.row, entry.row, "{cli} rides its own entry");
+            assert_eq!(flags.binary, "fixture-target");
+            assert!(!flags.show, "the routed variants parse show off by default");
+            assert!(
+                !flags.no_tag,
+                "only the typesdb variant carries --no-tag; the others ride with it off"
+            );
+        }
+
+        // Outside the table: the three scans still holding their own
+        // per-engine flags keep their dedicated arms until #341, and the
+        // cross-binary diff has no registry row to ride at all.
+        use crate::cli_types::Command;
+        for unridden in [
+            Command::Typeinfer {
+                binary: "fixture-target".to_string(),
+                show: false,
+                write_back: false,
+                confidence_floor: 70,
+            },
+            Command::Algorithm {
+                binary: "fixture-target".to_string(),
+                show: false,
+                patterns: None,
+            },
+            Command::Libmatch {
+                binary: "fixture-target".to_string(),
+                show: false,
+                signatures: None,
+            },
+            Command::Bdiff {
+                binary: "fixture-target".to_string(),
+            },
+        ] {
+            assert!(ride(&unridden).is_none(), "the command keeps its dedicated path");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_ridden_command_files_shows_rescans_and_survives_a_failed_rescan() {
+        // The behavior suite over the whole ride table: each routed
+        // command scans the fixture and files its document at the row's
+        // own `document_path` (the report's print rides the same Ok
+        // path), a `--show` over an unscanned workspace fails naming the
+        // exact producing command, a re-scan replaces the filed document
+        // outright, and a failed re-scan leaves the previous document
+        // in place — the four scenarios, one pass per rider.
+        for (cli, entry) in ridden_table() {
+            let ws = fixture_workspace();
+            let settings = settings_over(ws.path());
+            let flags = ScanFlags {
+                binary: "fixture-target".to_string(),
+                show: false,
+                no_tag: false,
+            };
+
+            // Scenario: `--show` with nothing filed fails naming the
+            // command that would produce the document.
+            let error = handle_scan_command(
+                &entry,
+                &ScanFlags {
+                    binary: flags.binary.clone(),
+                    show: true,
+                    no_tag: false,
+                },
+                ws.path(),
+                &settings,
+            )
+            .await
+            .expect_err(&format!("{cli} --show over an unscanned workspace must fail"));
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("run `calxgloss {cli} --binary fixture-target`")),
+                "the {cli} remediation names the exact producing command, got: {error}"
+            );
+
+            // Scenario: the scan ride succeeds and files the document
+            // at the row's own path, readable back through the entry.
+            handle_scan_command(&entry, &flags, ws.path(), &settings)
+                .await
+                .unwrap_or_else(|e| panic!("the {cli} ride must succeed: {e}"));
+            let row = scan_rows()
+                .into_iter()
+                .find(|row| row.name() == entry.row)
+                .expect("the entry names a registry row");
+            let filed = row.document_path(ws.path(), "fixture-target");
+            assert!(
+                filed.is_file(),
+                "{cli} must file its document at the row's own path: {}",
+                filed.display()
+            );
+            (entry.load)(ws.path(), "fixture-target")
+                .unwrap_or_else(|e| panic!("the filed {cli} document must read back: {e}"));
+
+            // Scenario: the re-scan replaces the filed document — the
+            // CLI never adopts the cached-hit short-circuit. Tamper the
+            // document first: a short-circuited run would fail loading
+            // the tamper, so a successful run IS the re-scan.
+            std::fs::write(&filed, r#"{"metadata":{"binary":"sentinel"}}"#)
+                .expect("tamper the filed document");
+            handle_scan_command(&entry, &flags, ws.path(), &settings)
+                .await
+                .unwrap_or_else(|e| panic!("the {cli} re-scan must replace the tampered file: {e}"));
+            let replaced = std::fs::read_to_string(&filed).expect("the re-filed document");
+            assert!(
+                !replaced.contains("sentinel"),
+                "the {cli} re-scan must overwrite the filed document outright"
+            );
+
+            // Scenario: a failed re-scan leaves the previous document
+            // in place. With the target gone the engine load fails
+            // before the row runs, so nothing touches the filed file.
+            let before = std::fs::read(&filed).expect("the filed document");
+            std::fs::remove_file(ws.path().join("fixture-target")).expect("target gone");
+            handle_scan_command(&entry, &flags, ws.path(), &settings)
+                .await
+                .expect_err(&format!("a {cli} run without its target must fail"));
+            assert_eq!(
+                std::fs::read(&filed).expect("the document after the failed re-scan"),
+                before,
+                "a failed {cli} re-scan must leave the previous document untouched"
+            );
+            (entry.load)(ws.path(), "fixture-target")
+                .unwrap_or_else(|e| panic!("the previous {cli} document must still parse: {e}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_callback_riding_observes_the_cached_type_inference() {
+        // The enrichment the old CLI wired by hand now rides the row's
+        // own pre-scan hook: with a filed type-inference document the
+        // `callback-detection` row composes real callable contracts into
+        // its engine, and the filed type-inference records read back
+        // through `callback_signature_map` prove the document the hook
+        // composes from is in place. Without the document the ride is
+        // exactly what it was (issue #173's degradation, observed over
+        // the fixture).
+        use anyhow::Context;
+        use calxgloss_typeinfer::persist::TypeInferPersistor;
+        use calxgloss_typeinfer::types::TypeInferenceResult;
+
+        /// The type-inference ride: the test-local entry the producing
+        /// row needs — its loader and a no-op printer, the scan itself
+        /// still the row's.
+        fn typeinfer_entry() -> ScanContribution {
+            ScanContribution::new(ScanContributionSteps {
+                row: "type-inference",
+                load: |workspace, binary| {
+                    TypeInferPersistor::new(workspace)
+                        .load(binary)
+                        .with_context(|| {
+                            format!(
+                                "No cached type-inference result for {binary}; \
+                                 run `calxgloss type-inference --binary {binary}` to produce one"
+                            )
+                        })
+                },
+                print: |_result: &TypeInferenceResult, _workspace: &Path, _binary: &str| Ok(()),
+                derive_options: |_flags| ScanRunOptions::default(),
+                post_scan: None,
+            })
+        }
+
+        let flags = ScanFlags {
+            binary: "fixture-target".to_string(),
+            show: false,
+            no_tag: false,
+        };
+
+        // Enriched workspace: the producing row's ride files the
+        // type-inference document the callback row's hook composes from.
+        let enriched = fixture_workspace();
+        handle_scan_command(
+            &typeinfer_entry(),
+            &flags,
+            enriched.path(),
+            &settings_over(enriched.path()),
+        )
+        .await
+        .expect("the type-inference ride succeeds over the fixture");
+
+        // Plain workspace: never scanned beside the callback ride.
+        let plain = fixture_workspace();
+
+        let callback_entry = crate::commands::callback::contribution();
+        for ws in [&enriched, &plain] {
+            handle_scan_command(
+                &callback_entry,
+                &flags,
+                ws.path(),
+                &settings_over(ws.path()),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("the callback ride must succeed: {e}"));
+        }
+
+        // Enrichment observed over the fixture: the composed callable
+        // contracts the row's hook reads are present exactly where the
+        // type-inference document is filed.
+        let composed =
+            calxgloss_translator::callback_signature_map(enriched.path(), "fixture-target");
+        let unenriched =
+            calxgloss_translator::callback_signature_map(plain.path(), "fixture-target");
+        assert!(
+            !composed.is_empty(),
+            "the callback row composed no callable contracts from the filed type-inference document"
+        );
+        assert!(
+            unenriched.is_empty(),
+            "without a type-inference document the callback scan stays un-enriched"
         );
     }
 }

@@ -1,67 +1,69 @@
-//! The `globalstate` command — record the global-state reference sets
-//! for a binary.
+//! The `globalstate` command's CLI contribution — record the global-state
+//! reference sets for a binary (issue #340, spec #337).
 //!
-//! Runs the global-state detector — which program globals each function
-//! reads and writes, each access with its evidence statement and
-//! confidence band, rolled up into a shared-globals index of who shares
-//! what — against the loaded program and saves the result to
-//! `re/analysis/globalstate/{binary}.json` in the workspace, the same
-//! file batch translation will read as prompt context. Batch
-//! translation runs the same scan before its first batch when no result
-//! is cached; this command is the manual entry point: it rebuilds the
-//! result on demand and can print what a cached one holds.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `global-state` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader and the
+//! report printer. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/globalstate/{binary}.json` — the same file
+//! batch translation reads as prompt context. The run's report and a
+//! later `--show` report are the same read of the same document.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_globalstate::engine::GlobalStateEngine;
 use calxgloss_globalstate::persist::GlobalStatePersistor;
 use calxgloss_globalstate::types::GlobalStateResult;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `globalstate` subcommand: record the global-state
-/// reference sets for `binary`, or print the cached result when `show`
-/// is set.
-pub async fn handle_global_state(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = GlobalStatePersistor::new(workspace);
+/// The `globalstate` entry in the CLI-side contribution table: it serves
+/// the registry's `global-state` row and supplies this command's loader
+/// and printer. The command carries no flags beyond `--binary` and
+/// `--show`, so its flag derivation hands over the plain default options —
+/// the overwrite policy is the generic handler's to set.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "global-state",
+        load: load_filed_result,
+        print: print_report,
+        derive_options: |_flags| ScanRunOptions::default(),
+        post_scan: None,
+    })
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// Read the filed result through the engine's own persistor — the same
+/// loader for the `--show` report and for reading the document a run
+/// just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_result(workspace: &Path, binary: &str) -> Result<GlobalStateResult> {
+    GlobalStatePersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached global-state result for {binary}; \
                  run `calxgloss globalstate --binary {binary}` to produce one"
             )
-        })?;
-        print_global_state_report(&result, &persistor.path_for(binary));
-        return Ok(());
-    }
+        })
+}
 
-    info!(binary, workspace = %workspace.display(), "Recording global-state reference sets");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = GlobalStateEngine::new(&kuna);
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Global-state detection failed for {binary}"))?;
-    persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the global-state result for {binary}"))?;
-
-    print_global_state_report(&result, &persistor.path_for(binary));
+/// Print the report over the loaded result, naming where the document is
+/// filed. Both paths read the same on-disk state, so the run's report
+/// and a later `--show` report are byte-identical over one document.
+fn print_report(result: &GlobalStateResult, workspace: &Path, binary: &str) -> Result<()> {
+    print_global_state_report(
+        result,
+        &GlobalStatePersistor::new(workspace).path_for(binary),
+    );
     Ok(())
 }
 
