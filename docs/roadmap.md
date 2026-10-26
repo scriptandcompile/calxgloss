@@ -14,7 +14,7 @@
 > recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
 > ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008,
 > P1.5 → ADR-0009–0013, X5 → ADR-0041, P35 → ADR-0048, P36 → ADR-0049,
-> P37 → ADR-0050).
+> P37 → ADR-0050, P38 → ADR-0051).
 
 ## How a track gets built
 
@@ -55,16 +55,19 @@ shipped through tickets #317–#320 with the verification close #321 and was
 pruned when spec #316 closed (2026-10-25), and P37 (pipeline assembly from
 settings) shipped through tickets #323–#327 with the contract close #328
 and the record close #329, and was pruned when spec #322 closed
-(2026-10-25), leaving P38 at the head and P39 unblocked. Together they pay
+(2026-10-25), and P38 (the attempt seam over the retry loop) shipped
+through tickets #331–#334 with the pin close #335 and the record close
+#336, and was pruned when spec #330 closed (2026-10-25),
+leaving P39 as the group's last open track. Together they pay
 for themselves by making every later Evidence track (P19–P21, P28) and the
 retry-loop hypothesis ledger (P27) cheaper to land — one place to add an
 engine, one place to read one (shipped — P35, ADR-0048), one place to
 render one (shipped — P36, ADR-0049), one place to assemble the pipeline
-(shipped — P37, ADR-0050).
+(shipped — P37, ADR-0050), one attempt seam every retry rides
+(shipped — P38, ADR-0051).
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P38 | Attempt as a deep module — one attempt = prompt → LLM → verification → record, returning a verdict; the 1,272-line retry-loop body becomes attempt-selection and cancellation policy, with retry strategies as adapters at the existing internal seam | pipeline (`calxgloss-translator`) | — | ⬜ not started | specced — `/to-tickets` next | [`#330`](https://github.com/scriptandcompile/calxgloss/issues/330) |
 | P39 | One CLI scan command, sixteen report printers — a generic `ScanCommand` driven by P34's descriptor (load · scan · persist · show); each engine contributes its report printer and flag block only; 16 command-module skeletons and `main.rs` match arms deleted | interface (`calxgloss-cli`) + evidence (all scan crates) | — | ⬜ not started | not specced | — |
 | P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | not specced | — |
 | P20 | Seam capability report + engine-identity cache key — the seam advertises which questions Kuna can currently answer, and the scan cache keys on the engine build digest instead of a hand-bumped format version | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
@@ -83,29 +86,6 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 | P33 | Whole-task measurement harness — benchmark pipeline tasks end to end (tokens, RSS, ms) with an oracle independent of the implementation, counting discovery, retries, and continuations in every token claim | — (dev-side experiment harness, no crate) | — | ⬜ not started | not specced | — |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## P38 — Attempt as a deep module: the retry loop becomes policy (pipeline)
-
-**The retry loop hides an attempt inside one 1,272-line async fn.** Attempt
-rotation, escalation and context-tier decisions, compile-fix / test-fix
-prompt construction, verification against the scratch project, token and
-experiment logging, and pause/stop handling interleave — a bug in "how one
-attempt fails and gets re-prompted" can only be exercised through the
-whole loop, and `translate()` repeats the evidence gathering twice rather
-than routing a unit through it. This track names the hidden module:
-`Attempt` — prompt → LLM → verification → record — taking a unit of work
-and a context tier, returning the attempt and its verdict; the loop keeps
-attempt selection and cancellation policy only, and retry strategies
-(compile fix, test fix, escalation, edge-case fix) become adapters at the
-internal seam — `escalate.rs` and `retry/config` are already two of them,
-waiting. Source: architecture review (2026-10-24), candidate 5. Pairs with:
-P27 — the hypothesis ledger lands on this loop; the deepening gives it
-per-attempt verdict records instead of log lines. Pairs with: P37 —
-shipped through #323–#329 (spec #322 closed 2026-10-25, ADR-0050) — the
-deepening starts from the complete assembled pass that seam hands over,
-not from four hand-built ones. Specced 2026-10-25: spec
-[#330](https://github.com/scriptandcompile/calxgloss/issues/330) —
-`/to-tickets` is the next step.
 
 ## P39 — One CLI scan command, sixteen report printers (interface + evidence)
 
