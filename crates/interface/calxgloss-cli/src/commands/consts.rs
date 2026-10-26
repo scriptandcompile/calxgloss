@@ -25,7 +25,9 @@ use calxgloss_decomp::PipelineSource;
 use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
 
-use crate::commands::scan_command::{ScanContribution, ScanContributionSteps};
+use crate::commands::scan_command::{
+    PostScanFuture, ScanContribution, ScanContributionSteps, ScanFlags,
+};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
@@ -44,6 +46,7 @@ pub(crate) fn contribution() -> ScanContribution {
         print: print_report,
         derive_options: |_flags| ScanRunOptions::default(),
         post_scan: Some(write_codegen),
+        show_loads_program: |_flags| false,
     })
 }
 
@@ -65,15 +68,18 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<ConstResult> {
 /// Write the rendered Rust codegen beside the filed document — the one
 /// side effect the `constants` row does not file, run over the document
 /// the row just saved so a re-scan replaces the codegen along with it.
-fn write_codegen(
-    _source: &PipelineSource,
-    workspace: &Path,
-    binary: &str,
-    result: &ConstResult,
-) -> Result<()> {
-    ConstPersistor::new(workspace)
-        .save_codegen(binary, &render_codegen(result))
-        .with_context(|| format!("Failed to write the constant codegen for {binary}"))
+fn write_codegen<'a>(
+    _source: &'a PipelineSource,
+    workspace: &'a Path,
+    binary: &'a str,
+    _flags: &'a ScanFlags,
+    result: &'a mut ConstResult,
+) -> PostScanFuture<'a> {
+    Box::pin(async move {
+        ConstPersistor::new(workspace)
+            .save_codegen(binary, &render_codegen(result))
+            .with_context(|| format!("Failed to write the constant codegen for {binary}"))
+    })
 }
 
 /// Print the report over the loaded result, naming where the document is

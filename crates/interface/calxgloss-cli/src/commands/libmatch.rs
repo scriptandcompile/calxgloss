@@ -1,12 +1,18 @@
-//! The `libmatch` command — identify known-library functions for a binary.
+//! The `libmatch` command's CLI contribution — identify known-library
+//! functions for a binary (issue #341, spec #337).
 //!
-//! Runs the body-signature matcher — normalizing each decompiled body so
-//! Ghidra variable names, register temporaries, and volatile addresses
-//! read as wildcards, then matching the shape against the built-in
-//! signature set of statically linked CRT/STL code — against the loaded
-//! program and saves the result to `re/analysis/libmatch/{binary}.json`
-//! in the workspace. `--show` prints a cached result without running the
-//! scan.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `known-library` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader, the
+//! report printer, and the `--signatures` derivation through the
+//! registry's own set-override option, which the row interprets inside
+//! its own engine build. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/libmatch/{binary}.json`. The run's
+//! report and a later `--show` report are the same read of the same
+//! document.
 //!
 //! With `--signatures <file>`, the scan reads its signature set from a
 //! JSON [signature database](calxgloss_libmatch::signature_db) instead
@@ -17,70 +23,67 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_libmatch::engine::LibmatchEngine;
 use calxgloss_libmatch::persist::LibmatchPersistor;
-use calxgloss_libmatch::signature_db::SignatureDatabase;
 use calxgloss_libmatch::types::LibmatchResult;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps, ScanFlags};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `libmatch` subcommand: identify known-library functions
-/// for `binary`, or print the cached result when `show` is set. With
-/// `signatures`, run the scan with that [database](SignatureDatabase)'s
-/// signature set instead of the built-in starter set; the flag means
-/// nothing to a cached result, so `show` ignores it.
-pub async fn handle_libmatch(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    signatures: Option<&Path>,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = LibmatchPersistor::new(workspace);
+/// The `libmatch` entry in the CLI-side contribution table: it serves
+/// the registry's `known-library` row and supplies this command's
+/// loader, printer, and flag derivation. `--signatures` reaches the row
+/// build through the set-override option; the overwrite policy is the
+/// generic handler's to set.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "known-library",
+        load: load_filed_result,
+        print: print_report,
+        derive_options: derive_run_options,
+        post_scan: None,
+        show_loads_program: |_flags| false,
+    })
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// Read the filed result through the engine's own persistor — the same
+/// loader for the `--show` report and for reading the document a run
+/// just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_result(workspace: &Path, binary: &str) -> Result<LibmatchResult> {
+    LibmatchPersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached known-library identification result for {binary}; \
-                 run `calxgloss libmatch --binary {binary}` to produce one"
+             run `calxgloss libmatch --binary {binary}` to produce one"
             )
-        })?;
-        print_libmatch_report(&result, &persistor.path_for(binary));
-        return Ok(());
-    }
+        })
+}
 
-    info!(binary, workspace = %workspace.display(), "Identifying known-library functions");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = LibmatchEngine::new(&kuna);
-    // A malformed database fails the run loudly — the error already
-    // names the file path and the reason, so a typo never silently
-    // degrades recognition to a partial set.
-    let engine = match signatures {
-        Some(path) => {
-            engine.with_signature_database(SignatureDatabase::load(path).with_context(|| {
-                format!("Failed to load the signature database: {}", path.display())
-            })?)
-        }
-        None => engine,
-    };
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Known-library identification failed for {binary}"))?;
-    persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the known-library result for {binary}"))?;
-
-    print_libmatch_report(&result, &persistor.path_for(binary));
+/// Print the report over the loaded result, naming where the document
+/// is filed. Both paths read the same on-disk state, so the run's
+/// report and a later `--show` report are byte-identical over one
+/// document.
+fn print_report(result: &LibmatchResult, workspace: &Path, binary: &str) -> Result<()> {
+    print_libmatch_report(result, &LibmatchPersistor::new(workspace).path_for(binary));
     Ok(())
+}
+
+/// The `--signatures` flag reaches the scan as the registry's
+/// set-override option, which the known-library row interprets inside
+/// its own engine build (issue #338); a malformed database fails the
+/// row, whose warning the handler turns into a failed run. The
+/// overwrite policy stays the generic handler's.
+pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
+    ScanRunOptions {
+        set_override_file: flags.set_override_file.clone(),
+        ..ScanRunOptions::default()
+    }
 }
 
 /// Print a summary of an identification result: where it is filed, when

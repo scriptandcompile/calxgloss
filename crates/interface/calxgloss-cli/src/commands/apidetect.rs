@@ -26,7 +26,9 @@ use calxgloss_decomp::PipelineSource;
 use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
 
-use crate::commands::scan_command::{ScanContribution, ScanContributionSteps};
+use crate::commands::scan_command::{
+    PostScanFuture, ScanContribution, ScanContributionSteps, ScanFlags,
+};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
@@ -45,6 +47,7 @@ pub(crate) fn contribution() -> ScanContribution {
         print: print_report,
         derive_options: |_flags| ScanRunOptions::default(),
         post_scan: Some(write_side_effects),
+        show_loads_program: |_flags| false,
     })
 }
 
@@ -53,33 +56,34 @@ pub(crate) fn contribution() -> ScanContribution {
 /// just filed. A missing one arrives with the remediation wording
 /// naming the exact producing command.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<ApiDetectionResult> {
-    ApiPersistor::new(workspace)
-        .load(binary)
-        .with_context(|| {
-            format!(
-                "No cached API result for {binary}; \
+    ApiPersistor::new(workspace).load(binary).with_context(|| {
+        format!(
+            "No cached API result for {binary}; \
                  run `calxgloss apidetect --binary {binary}` to produce one"
-            )
-        })
+        )
+    })
 }
 
 /// Write the rendered FFI bindings and dependency manifest beside the
 /// filed document — the two side effects the `library-api` row does not
 /// file, run over the document the row just saved so a re-scan replaces
 /// them along with it.
-fn write_side_effects(
-    _source: &PipelineSource,
-    workspace: &Path,
-    binary: &str,
-    result: &ApiDetectionResult,
-) -> Result<()> {
-    let persistor = ApiPersistor::new(workspace);
-    persistor
-        .save_bindings(binary, &render_ffi_bindings(result))
-        .with_context(|| format!("Failed to write the FFI bindings for {binary}"))?;
-    persistor
-        .save_manifest(binary, &render_dependency_manifest(result))
-        .with_context(|| format!("Failed to write the dependency manifest for {binary}"))
+fn write_side_effects<'a>(
+    _source: &'a PipelineSource,
+    workspace: &'a Path,
+    binary: &'a str,
+    _flags: &'a ScanFlags,
+    result: &'a mut ApiDetectionResult,
+) -> PostScanFuture<'a> {
+    Box::pin(async move {
+        let persistor = ApiPersistor::new(workspace);
+        persistor
+            .save_bindings(binary, &render_ffi_bindings(result))
+            .with_context(|| format!("Failed to write the FFI bindings for {binary}"))?;
+        persistor
+            .save_manifest(binary, &render_dependency_manifest(result))
+            .with_context(|| format!("Failed to write the dependency manifest for {binary}"))
+    })
 }
 
 /// Print the report over the loaded result, naming where the document is

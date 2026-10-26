@@ -1,98 +1,138 @@
-//! The `typeinfer` command — infer parameter types for a binary.
+//! The `typeinfer` command's CLI contribution — infer parameter types
+//! for a binary (issue #341, spec #337).
 //!
-//! Runs the inference detectors — C++ this-pointer detection,
-//! parameter-size detection, known-type propagation, cross-function
-//! propagation, assignment chains, caller return usage, name mangling,
-//! and name-borne calling conventions —
-//! against the loaded program and saves the result to
-//! `re/analysis/typeinfer/{binary}.json` in the workspace. Batch translation
-//! runs the same scan before its first batch when no result is cached;
-//! this command is the manual entry point: it rebuilds the result on
-//! demand and can print what a cached one holds. With `--write-back` it
-//! also applies the surviving inferences into the program through the
-//! type-write seam, narrowed by a confidence floor.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `type-inference` registry row; this module contributes
+//! only what is genuinely per-engine: the cached-document loader, the
+//! report printer, and the post-scan step applying `--write-back`
+//! through the typeinfer crate's own write-back API, narrowed by the
+//! `--confidence-floor`. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/typeinfer/{binary}.json` — the same file
+//! batch translation reads as prompt context. The run's report and a
+//! later `--show` report are the same read of the same document.
+//!
+//! The write-back step runs on the scan path and on `--show
+//! --write-back`; the follow-on report it produces rides inside the
+//! loaded document, so both paths print the main report first and the
+//! write-back section second, byte-identically. `--show` alone never
+//! loads the engine at all.
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use calxgloss_kuna::KunaSource;
-use calxgloss_typeinfer::engine::TypeInferEngine;
+use anyhow::{Context, Result, bail};
+use calxgloss_decomp::PipelineSource;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{Confidence, InferenceMethod, InferredType, TypeInferenceResult};
 use calxgloss_typeinfer::write_back::{WriteBack, WriteBackReport};
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{
+    PostScanFuture, ScanContribution, ScanContributionSteps, ScanFlags,
+};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `typeinfer` subcommand: infer parameter types for `binary`,
-/// or print the cached result when `show` is set. With `write_back`, apply
-/// the surviving inferences into the open program — the scan's result or
-/// the cached one — keeping only records at `confidence_floor` or above.
-pub async fn handle_typeinfer(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    write_back: bool,
-    confidence_floor: u8,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = TypeInferPersistor::new(workspace);
+/// The document this entry loads and prints: the filed inference result
+/// plus, when a `--write-back` pass ran, the report it produced and the
+/// floor it ran at. The follow-on report rides inside the document so
+/// the printer — the same on the scan path and `--show` — renders both
+/// sections in one order without the handler having to sequence them.
+struct FiledInference {
+    /// The filed inference result, exactly as the persistor reads it.
+    result: TypeInferenceResult,
+    /// The write-back report and the floor it was produced at, when a
+    /// `--write-back` pass ran over this document.
+    write_back: Option<(u8, WriteBackReport)>,
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// The `typeinfer` entry in the CLI-side contribution table: it serves
+/// the registry's `type-inference` row and supplies this command's
+/// loader, printer, and write-back post-scan step. The command's flags
+/// reach the row build as plain defaults; the write-back is the
+/// entry's own step, interpreting the flags itself.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "type-inference",
+        load: load_filed_inference,
+        print: print_report,
+        derive_options: |_flags| ScanRunOptions::default(),
+        post_scan: Some(write_back_surviving_inferences),
+        show_loads_program: |flags| flags.write_back,
+    })
+}
+
+/// Read the filed result through the engine's own persistor, wrapped in
+/// the entry's document. A missing one arrives with the remediation
+/// wording naming the exact producing command.
+fn load_filed_inference(workspace: &Path, binary: &str) -> Result<FiledInference> {
+    let result = TypeInferPersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached type inference result for {binary}; \
                  run `calxgloss typeinfer --binary {binary}` to produce one"
             )
         })?;
-        print_type_inference_report(&result, &persistor.path_for(binary));
-        if write_back {
-            let kuna = load_kuna_source(settings, binary)?;
-            run_write_back(&kuna, &result, binary, confidence_floor).await?;
-        }
-        return Ok(());
-    }
+    Ok(FiledInference {
+        result,
+        write_back: None,
+    })
+}
 
-    info!(binary, workspace = %workspace.display(), "Inferring parameter types");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = TypeInferEngine::new(&kuna);
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Type inference failed for {binary}"))?;
-    persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the type inference result for {binary}"))?;
-
-    print_type_inference_report(&result, &persistor.path_for(binary));
-    if write_back {
-        run_write_back(&kuna, &result, binary, confidence_floor).await?;
+/// Print the report over the loaded document: the inference summary
+/// first, then the write-back section when this very command line ran a
+/// write-back pass — the order the old dedicated handler printed in,
+/// now carried by the document itself so both paths agree.
+fn print_report(filed: &FiledInference, workspace: &Path, binary: &str) -> Result<()> {
+    print_type_inference_report(
+        &filed.result,
+        &TypeInferPersistor::new(workspace).path_for(binary),
+    );
+    if let Some((floor, report)) = &filed.write_back {
+        print_write_back_report(report, *floor);
     }
     Ok(())
 }
 
-/// Apply the result through the engine type-write seam and print the
-/// applied / skipped / failed report. The Kuna source answers both seams
-/// — the read cache never implements the write trait (ADR-0020).
-async fn run_write_back(
-    kuna: &KunaSource,
-    result: &TypeInferenceResult,
-    binary: &str,
-    confidence_floor: u8,
-) -> Result<()> {
-    let report = WriteBack::new(kuna, kuna, Confidence::new(confidence_floor))
-        .apply(result)
-        .await
-        .with_context(|| format!("Type write-back failed for {binary}"))?;
-    print_write_back_report(&report, confidence_floor);
-    Ok(())
+/// The post-scan step: with `--write-back`, apply the surviving
+/// inferences into the open program through the typeinfer crate's own
+/// write-back seam — the engine's type-write API, not a re-implementation
+/// — keeping only records at the confidence floor or above, and leave
+/// the produced report in the document for the printer. Without the
+/// flag the step does nothing; the document is read-only in that run.
+/// The Kuna source answers both seams — the read cache never implements
+/// the write trait (ADR-0020), and the generic handler hands this entry
+/// the same settings-aware Kuna load the dedicated handler used.
+fn write_back_surviving_inferences<'a>(
+    source: &'a PipelineSource,
+    _workspace: &'a Path,
+    binary: &'a str,
+    flags: &'a ScanFlags,
+    filed: &'a mut FiledInference,
+) -> PostScanFuture<'a> {
+    Box::pin(async move {
+        if !flags.write_back {
+            return Ok(());
+        }
+        let PipelineSource::Kuna(kuna) = source else {
+            bail!(
+                "the type-inference write-back needs the in-process Kuna source, \
+                 and the scan handed a cached read source"
+            );
+        };
+        let report = WriteBack::new(kuna, kuna, Confidence::new(flags.confidence_floor))
+            .apply(&filed.result)
+            .await
+            .with_context(|| format!("Type write-back failed for {binary}"))?;
+        filed.write_back = Some((flags.confidence_floor, report));
+        Ok(())
+    })
 }
 
 /// Print a summary of an inference result: where it is filed, when it was

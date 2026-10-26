@@ -58,7 +58,6 @@ use settings::Settings;
 use utils::*;
 
 // Re-export handler functions for match arm access
-use commands::algorithm::handle_algorithm;
 use commands::auto::handle_auto;
 use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
@@ -71,13 +70,11 @@ use commands::dashboard::{
 use commands::doctor::handle_doctor;
 use commands::gc::handle_gc;
 use commands::init::handle_init;
-use commands::libmatch::handle_libmatch;
 use commands::live::handle_live;
 use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use commands::scan_command::handle_scan_command;
 use commands::serve::handle_serve;
 use commands::translate::handle_translate;
-use commands::typeinfer::handle_typeinfer;
 use commands::verify::handle_verify;
 
 fn main() -> Result<()> {
@@ -171,9 +168,12 @@ fn main() -> Result<()> {
         refresh_cache: false,
     });
     let result = match command {
-        // All twelve table-named scan commands ride the generic handler
-        // (issue #340): the clap variants are mapped onto scan flags in
-        // the ride table, and this one arm drives the shared pipeline.
+        // All fifteen table-named scan commands ride the generic handler
+        // (issues #339–#341): the clap variants are mapped onto scan
+        // flags in the ride table, and this one arm drives the shared
+        // pipeline — the three that carry per-engine flags
+        // (`algorithm --patterns`, `libmatch --signatures`, `typeinfer
+        // --write-back`) included, each interpreted by its own entry.
         Command::Typesdb { .. }
         | Command::ControlFlow { .. }
         | Command::Memory { .. }
@@ -185,7 +185,10 @@ fn main() -> Result<()> {
         | Command::StringCtx { .. }
         | Command::ApiDetect { .. }
         | Command::Serialize { .. }
-        | Command::Callback { .. } => {
+        | Command::Callback { .. }
+        | Command::Algorithm { .. }
+        | Command::Libmatch { .. }
+        | Command::Typeinfer { .. } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             let (contribution, flags) = commands::scan_command::ride(&command)
                 .expect("the routed commands are exactly the ride table's keys");
@@ -261,65 +264,8 @@ fn main() -> Result<()> {
                     callgraph_verbose,
                 ))
         }
-        // The first rider on the generic scan command (issue #339): the
-        // clap variant stays exactly as it is, and the typesdb
-        // contribution entry serves the registry's type-database row.
-        Command::Typeinfer {
-            binary,
-            show,
-            write_back,
-            confidence_floor,
-        } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_typeinfer(
-                    &binary,
-                    &workspace,
-                    show,
-                    write_back,
-                    confidence_floor,
-                    &settings,
-                ))
-        }
-        Command::Algorithm {
-            binary,
-            show,
-            patterns,
-        } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_algorithm(
-                    &binary,
-                    &workspace,
-                    show,
-                    patterns.as_deref(),
-                    &settings,
-                ))
-        }
-        Command::Libmatch {
-            binary,
-            show,
-            signatures,
-        } => {
-            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_libmatch(
-                    &binary,
-                    &workspace,
-                    show,
-                    signatures.as_deref(),
-                    &settings,
-                ))
-        }
+        // The cross-binary diff has no registry row to ride: it stays a
+        // dedicated pure-report arm beside the fifteen.
         Command::Bdiff { binary } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()

@@ -38,6 +38,7 @@ pub(crate) fn contribution() -> ScanContribution {
         print: print_report,
         derive_options: |_flags| ScanRunOptions::default(),
         post_scan: None,
+        show_loads_program: |_flags| false,
     })
 }
 
@@ -60,7 +61,10 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<ErrhandlingResult
 /// filed. Both paths read the same on-disk state, so the run's report
 /// and a later `--show` report are byte-identical over one document.
 fn print_report(result: &ErrhandlingResult, workspace: &Path, binary: &str) -> Result<()> {
-    print_errhandling_report(result, &ErrhandlingPersistor::new(workspace).path_for(binary));
+    print_errhandling_report(
+        result,
+        &ErrhandlingPersistor::new(workspace).path_for(binary),
+    );
     Ok(())
 }
 

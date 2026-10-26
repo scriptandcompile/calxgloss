@@ -38,6 +38,7 @@ pub(crate) fn contribution() -> ScanContribution {
         print: print_report,
         derive_options: |_flags| ScanRunOptions::default(),
         post_scan: None,
+        show_loads_program: |_flags| false,
     })
 }
 

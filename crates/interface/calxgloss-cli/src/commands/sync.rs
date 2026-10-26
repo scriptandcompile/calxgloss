@@ -38,6 +38,7 @@ pub(crate) fn contribution() -> ScanContribution {
         print: print_report,
         derive_options: |_flags| ScanRunOptions::default(),
         post_scan: None,
+        show_loads_program: |_flags| false,
     })
 }
 
@@ -46,14 +47,12 @@ pub(crate) fn contribution() -> ScanContribution {
 /// just filed. A missing one arrives with the remediation wording
 /// naming the exact producing command.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<SyncResult> {
-    SyncPersistor::new(workspace)
-        .load(binary)
-        .with_context(|| {
-            format!(
-                "No cached concurrency result for {binary}; \
+    SyncPersistor::new(workspace).load(binary).with_context(|| {
+        format!(
+            "No cached concurrency result for {binary}; \
                  run `calxgloss sync --binary {binary}` to produce one"
-            )
-        })
+        )
+    })
 }
 
 /// Print the report over the loaded result, naming where the document is

@@ -24,7 +24,9 @@ use calxgloss_typesdb::rust_decls::render_rust_decls;
 use calxgloss_typesdb::types::{TypeDatabase, TypeKind, Vtable};
 use chrono::DateTime;
 
-use crate::commands::scan_command::{ScanContribution, ScanContributionSteps, ScanFlags};
+use crate::commands::scan_command::{
+    PostScanFuture, ScanContribution, ScanContributionSteps, ScanFlags,
+};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
@@ -40,6 +42,7 @@ pub(crate) fn contribution() -> ScanContribution {
         print: print_report,
         derive_options: derive_run_options,
         post_scan: Some(write_rust_decls),
+        show_loads_program: |_flags| false,
     })
 }
 
@@ -86,18 +89,22 @@ pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
 
 /// The post-scan step: render the loaded database into `#[repr(C)]`
 /// Rust declarations and write them beside the document — the one side
-/// effect the registry row does not file. The retained engine source is
-/// unused here; it is what later entries (the type-inference write-back)
-/// hold their follow-on steps with.
-fn write_rust_decls(
-    _source: &PipelineSource,
-    workspace: &Path,
-    binary: &str,
-    db: &TypeDatabase,
-) -> Result<()> {
-    TypeDatabasePersistor::new(workspace)
-        .save_decls(binary, &render_rust_decls(db))
-        .with_context(|| format!("Failed to write the Rust declarations for {binary}"))
+/// effect the registry row does not file. The retained engine source and
+/// the command line's flags are unused here; the source is what later
+/// entries (the type-inference write-back) hold their follow-on steps
+/// with.
+fn write_rust_decls<'a>(
+    _source: &'a PipelineSource,
+    workspace: &'a Path,
+    binary: &'a str,
+    _flags: &'a ScanFlags,
+    db: &'a mut TypeDatabase,
+) -> PostScanFuture<'a> {
+    Box::pin(async move {
+        TypeDatabasePersistor::new(workspace)
+            .save_decls(binary, &render_rust_decls(db))
+            .with_context(|| format!("Failed to write the Rust declarations for {binary}"))
+    })
 }
 
 /// Print a summary of a recovered type database: where it is filed, where

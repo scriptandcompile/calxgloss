@@ -1,12 +1,18 @@
-//! The `algorithm` command — recognize algorithms in a binary.
+//! The `algorithm` command's CLI contribution — recognize algorithms in
+//! a binary (issue #341, spec #337).
 //!
-//! Runs the three recognition detectors — control flow signature
-//! matching, string-guided hints, and callback pattern detection —
-//! against the loaded program and saves the result to
-//! `re/analysis/algorithm/{binary}.json` in the workspace. Batch
-//! translation runs the same scan before its first batch when no result
-//! is cached; this command is the manual entry point: it rebuilds the
-//! result on demand and can print what a cached one holds.
+//! The scan shape — engine build, scan, persist, degradation — lives in
+//! the pipeline's `algorithm-recognition` registry row; this module
+//! contributes only what is genuinely per-engine: the cached-document
+//! loader, the report printer, and the `--patterns` derivation through
+//! the registry's own set-override option, which the row interprets
+//! inside its own engine build. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) routes the command
+//! end to end: it rebuilds the result on demand (the CLI's force-rescan
+//! contract) and can print what a cached one holds, filing it where the
+//! row files it — `re/analysis/algorithm/{binary}.json` — the same file
+//! batch translation reads as prompt context. The run's report and a
+//! later `--show` report are the same read of the same document.
 //!
 //! With `--patterns <file>`, the scan reads its signature sets from a
 //! JSON [pattern database](calxgloss_algorithm::pattern_db) instead of
@@ -17,71 +23,71 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_algorithm::engine::AlgorithmEngine;
-use calxgloss_algorithm::pattern_db::PatternDatabase;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_algorithm::types::AlgorithmRecognitionResult;
 use calxgloss_algorithm::types::DetectionMethod;
+use calxgloss_translator::scan_registry::ScanRunOptions;
 use chrono::DateTime;
-use tracing::info;
 
-use crate::Settings;
+use crate::commands::scan_command::{ScanContribution, ScanContributionSteps, ScanFlags};
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `algorithm` subcommand: recognize algorithms in `binary`,
-/// or print the cached result when `show` is set. With `patterns`, run
-/// the scan with that [database](PatternDatabase)'s signature sets
-/// instead of the built-in standard sets; the flag means nothing to a
-/// cached result, so `show` ignores it.
-pub async fn handle_algorithm(
-    binary: &str,
-    workspace: &Path,
-    show: bool,
-    patterns: Option<&Path>,
-    settings: &Settings,
-) -> Result<()> {
-    let persistor = AlgorithmPersistor::new(workspace);
+/// The `algorithm` entry in the CLI-side contribution table: it serves
+/// the registry's `algorithm-recognition` row and supplies this
+/// command's loader, printer, and flag derivation. `--patterns` reaches
+/// the row build through the set-override option; the overwrite policy
+/// is the generic handler's to set.
+pub(crate) fn contribution() -> ScanContribution {
+    ScanContribution::new(ScanContributionSteps {
+        row: "algorithm-recognition",
+        load: load_filed_result,
+        print: print_report,
+        derive_options: derive_run_options,
+        post_scan: None,
+        show_loads_program: |_flags| false,
+    })
+}
 
-    if show {
-        let result = persistor.load(binary).with_context(|| {
+/// Read the filed result through the engine's own persistor — the same
+/// loader for the `--show` report and for reading the document a run
+/// just filed. A missing one arrives with the remediation wording
+/// naming the exact producing command.
+fn load_filed_result(workspace: &Path, binary: &str) -> Result<AlgorithmRecognitionResult> {
+    AlgorithmPersistor::new(workspace)
+        .load(binary)
+        .with_context(|| {
             format!(
                 "No cached algorithm recognition result for {binary}; \
                  run `calxgloss algorithm --binary {binary}` to produce one"
             )
-        })?;
-        print_algorithm_recognition_report(&result, &persistor.path_for(binary));
-        return Ok(());
-    }
+        })
+}
 
-    info!(binary, workspace = %workspace.display(), "Recognizing algorithms");
-
-    let kuna = load_kuna_source(settings, binary)?;
-
-    let engine = AlgorithmEngine::new(&kuna);
-    // A malformed database fails the run loudly — the error already
-    // names the file path and the reason, so a typo never silently
-    // degrades recognition to a partial set.
-    let engine = match patterns {
-        Some(path) => {
-            engine.with_pattern_database(PatternDatabase::load(path).with_context(|| {
-                format!("Failed to load the pattern database: {}", path.display())
-            })?)
-        }
-        None => engine,
-    };
-    let result = engine
-        .scan(binary)
-        .await
-        .with_context(|| format!("Algorithm recognition failed for {binary}"))?;
-    persistor
-        .save(&result)
-        .with_context(|| format!("Failed to save the algorithm recognition result for {binary}"))?;
-
-    print_algorithm_recognition_report(&result, &persistor.path_for(binary));
+/// Print the report over the loaded result, naming where the document
+/// is filed. Both paths read the same on-disk state, so the run's
+/// report and a later `--show` report are byte-identical over one
+/// document.
+fn print_report(result: &AlgorithmRecognitionResult, workspace: &Path, binary: &str) -> Result<()> {
+    print_algorithm_recognition_report(
+        result,
+        &AlgorithmPersistor::new(workspace).path_for(binary),
+    );
     Ok(())
+}
+
+/// The `--patterns` flag reaches the scan as the registry's set-override
+/// option, which the algorithm-recognition row interprets inside its
+/// own engine build (issue #338); a malformed database fails the row,
+/// whose warning the handler turns into a failed run. The overwrite
+/// policy stays the generic handler's.
+pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
+    ScanRunOptions {
+        set_override_file: flags.set_override_file.clone(),
+        ..ScanRunOptions::default()
+    }
 }
 
 /// Print a summary of a recognition result: where it is filed, when it
