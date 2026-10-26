@@ -6,7 +6,7 @@ Reverse Engineering Harness
 
 ## Objective
 
-Build an agent harness that leverages GhidraMCP to reverse engineer project executables and DLLs, transforming disassembled code into **cross-platform Rust source code** through a test-driven decompilation workflow. The output runs on Windows, macOS, and Linux with identical observable behavior.
+Build an agent harness that reverse engineers project executables and DLLs with the Kuna analysis engine loaded in-process behind the decompiler seam, transforming disassembled code into **cross-platform Rust source code** through a test-driven decompilation workflow. The output runs on Windows, macOS, and Linux with identical observable behavior.
 
 ## Core Philosophy
 
@@ -25,9 +25,10 @@ Build an agent harness that leverages GhidraMCP to reverse engineer project exec
   │                   calxgloss-cli                    │     │         calxgloss-web          │
   │ init · doctor · classify · translate · auto · live │     │ review: accept · send back ·   │
   │ batch-translate · serve · dashboard · verify · gc  │     │ patch · skip · override        │
-  │ typesdb · typeinfer · algorithm · memory · sync    │     │ pipeline: pause · resume ·     │
-  │ consts · callback · controlflow · stringctx        │     │ stop · start · cancel-current  │
-  │ apidetect · serialize · config · auto-shim         │     │ Axum + React SPA               │
+  │ analysis · callgraph · typesdb · typeinfer         │     │ pipeline: pause · resume ·     │
+  │ algorithm · memory · sync · consts · callback      │     │ stop · start · cancel-current  │
+  │ controlflow · stringctx · apidetect · serialize    │     │ Axum + React SPA               │
+  │ libmatch · globalstate · errhandling · floatsimd   │     │ Axum + React SPA               │
   └────────────────────────────────────────────────────┘     └────────────────────────────────┘
                              ▲                                               ▲
                              │                                               │
@@ -45,10 +46,12 @@ Build an agent harness that leverages GhidraMCP to reverse engineer project exec
   │calxgloss-decomp│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
   │ Kuna engine +  │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
   │ scan read cache│   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
-  │ (ADR-0041/0042)│   │ algorithm · memory         │  │                  │  │ infinite loop, │
-  │                │   │ sync · consts · callback   │  │                  │  │ divergence,    │
+  │ (ADR-0041/0042)│   │ algorithm · memory · sync  │  │                  │  │ infinite loop, │
+  │                │   │ consts · callback          │  │                  │  │ divergence,    │
   │                │   │ controlflow · stringctx    │  │                  │  │ exhaustion     │
   │                │   │ apidetect · serialize      │  │                  │  │                │
+  │                │   │ libmatch · globalstate     │  │                  │  │                │
+  │                │   │ errhandling · floatsimd    │  │                  │  │                │
   └────────────────┘   └────────────────────────────┘  └──────────────────┘  └────────────────┘
                                                                                       │
                                                                              ┌────────────────┐
@@ -84,9 +87,9 @@ The harness continuously monitors LLM interactions and detects common failure mo
 | Fault | Detection | Recovery |
 |-------|-----------|----------|
 | **Context window exceeded** | LLM returns error / truncated response | Split the function into smaller chunks; retry with focused context (only the relevant basic block or control-flow region) |
-| **LLM hallucination** (invents non-existent APIs, wrong function signatures) | Test failure, compilation error, Ghidra cross-reference mismatch | Branch off from the last known good commit; prompt the LLM with Ghidra's actual symbols and disassembly as ground truth |
-| **Infinite compilation-fix loops** | Same prompt → same bad output repeated 3+ times | Escalate to a different prompt strategy (e.g., ask for pseudo-C from Ghidra decompiler instead of raw disassembly; or ask for a minimal reproducer first) |
-| **Wrong behavior but passes tests** | Tests are insufficient / missing edge cases | Enrich the test suite with Ghidra-derived edge cases (branch conditions, boundary checks); retry with expanded test coverage |
+| **LLM hallucination** (invents non-existent APIs, wrong function signatures) | Test failure, compilation error, mismatch against the engine's symbol cross-references | Branch off from the last known good commit; prompt the LLM with the engine's actual symbols and disassembly as ground truth |
+| **Infinite compilation-fix loops** | Same prompt → same bad output repeated 3+ times | Escalate to a different prompt strategy (e.g., ask for decompiled pseudo-C instead of raw disassembly; or ask for a minimal reproducer first) |
+| **Wrong behavior but passes tests** | Tests are insufficient / missing edge cases | Enrich the test suite with edge cases read from the scan documents (branch conditions, boundary checks); retry with expanded test coverage |
 | **LLM produces code that compiles but diverges on input X** | Test suite covers more inputs than the LLM saw | Feed the failing test case back to the LLM as a concrete example; ask it to patch |
 | **Resource exhaustion** (local LLM OOM, GPU swap) | System monitoring detects high memory/CPU | Reduce context size, switch to smaller model, or queue work for later |
 | **Slow responses** (large context, model overloaded) | Latency exceeds threshold | Stream the prompt into smaller chunks; use the smaller/faster model for simple tasks, reserve large-context model for complex translations |
@@ -99,7 +102,7 @@ The harness manages LLM context in tiers:
 | Tier | Content | When Used |
 |------|---------|-----------|
 | **Tier 0 — Function stub** | Function name, signature, call graph neighbors | Initial translation attempt, simple functions |
-| **Tier 1 — Disassembly + decompiler** | Full disassembly, Ghidra pseudo-C, type info | Main translation path |
+| **Tier 1 — Disassembly + decompiler** | Full disassembly, decompiled pseudo-C, type info | Main translation path |
 | **Tier 2 — Disassembly + decompiler + tests** | Tier 1 + baseline test results + failing test cases | Debugging failures, fixing incorrect translations |
 | **Tier 3 — Module context** | Tier 2 + neighboring functions + shared data structures | Complex inter-function translations, data flow analysis |
 | **Tier 4 — Full module + crate shims** | Tier 3 + shim layer code + PAL trait definitions | Restitching, integration-level work |
@@ -209,44 +212,40 @@ A web-based interface provides structured human review of every unit of work. Th
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  RE_compile Review Dashboard                                                │
+│ Calxgloss — Review Dashboard                                                │
 │                                                                             │
-│  ┌─────────────────┐  ┌───────────────────────────────────────────────────┐ │
-│  │  Dependency      │  │  Unit of Work Details                             │ │
-│  │  Graph           │  │                                                   │ │
-│  │                  │  │  Function: DirectX_DrawPrimitive                  │ │
-│  │  ● DLL Classify  │  │  Branch: re/func/DirectX_DrawPrimitive/v3        │ │
-│  │    │             │  │  Status: ✅ Accepted                              │ │
-│  │    ├─ shim/wgpu  │  │                                                   │ │
-│  │    ├─ shim/cpal  │  │  ┌─ Justification ─────────────────────────┐     │ │
-│  │    └─ PAL traits │  │  │ • Disassembly shows 47 instructions     │     │ │
-│  │                  │  │  │ • Ghidra decompiler output matches       │     │ │
-│  │  [Expand/Collapse]│  │    wgpu encoder.draw() parameters          │     │ │
-│  │                  │  │  • 47 baseline tests pass                   │     │ │
-│  │  ┌─ Queued       │  │  • 12 verification tests pass               │     │ │
-│  │     Work Queue    │  │  • Attempt 3 — failed at v1 (missing      │     │ │
-│  │    ● func_023     │  │      texture view), failed at v2 (wrong   │     │ │
-│  │    ● func_047     │  │      shader constant mapping)              │     │ │
-│  │    ● shim_fmod    │  │  └────────────────────────────────────────┘     │ │
-│  │                  │  │                                                   │ │
-│  │  ┌─ Recent       │  │  ┌─ Diff View ────────────────────────────┐     │ │
-│  │     Activity      │  │  │ +fn draw_primitive(...) {              │     │ │
-│  │  ● func_022       │  │  │     encoder.draw(...);                 │     │ │
-│  │     accepted ✓    │  │  │     // Maps: SetTexture → bind_group   │     │ │
-│  │  ● func_023       │  │  │     // 47 instructions → 23 lines Rust │     │ │
-│  │     pending ◉     │  │  │ }                                      │     │ │
-│  │  ● shim_cpal      │  │  └────────────────────────────────────────┘     │ │
-│  │     merged ──     │  │                                                   │ │
-│  │                  │  │  ┌─ Test Results ─────────────────────────┐     │ │
-│  │                  │  │  │ Baseline:  47/47 passed ✅              │     │ │
-│  │                  │  │  │ Verifier:  12/12 passed ✅              │     │ │
-│  │                  │  │  │ CI Linux:  build + tests passed ✅      │     │ │
-│  │                  │  │  │ CI macOS:  build + tests passed ✅      │     │ │
-│  │                  │  │  └────────────────────────────────────────┘     │ │
-│  │                  │  │                                                   │ │
-│  │                  │  │  [✅ Accept] [🔀 Send Back] [✏️ Request Patch]   │ │
-│  └─────────────────┘  │  [📋 View All Attempts] [📝 View Ghidra Context] │ │
-│                        └───────────────────────────────────────────────────┘ │
+│ Dashboard · Pipeline · Live · Review Queue · Dependency Graph ·             │
+│ LLM I/O · Branch Cleanup · Faults · Token Usage ·                           │
+│ Strategy Analytics · LLM Metrics · Binaries                                 │
+│                                                                             │
+│ pipeline controls (live only): [Start] [Pause] [Resume] [Stop]              │
+│                                [Restart] [Cancel current]                   │
+│                                [Shut Down Server]                           │
+│                                                                             │
+  ┌─ Review Queue ────────────────────┐  ┌─ Unit of Work Details ───────────┐ │
+  │ filter: all statuses              │  │ func_023 · DirectX_DrawPrimitive │ │
+  │                                   │  │ branch: re/func/DrawPrimitive/v3 │ │
+  │ [ ] func_022       accepted       │  │ status: pending review           │ │
+  │ [x] func_047       skipped        │  │ confidence: 82%                  │ │
+  │ [ ] func_023       pending review │  │                                  │ │
+  │ [ ] shim_fmod      queued         │  │ Test Results                     │ │
+  │ [ ] msvbvm60     do not translate │  │   Baseline     47/47 passed      │ │
+  │ [x] = reviewer skip               │  │   Verification 12/12 passed      │ │
+  │                                   │  │                                  │ │
+  │ batch: [Accept All] [Skip All]    │  │ Attempts: 3 · Compare attempts   │ │
+  │        [Send Back All]            │  │                                  │ │
+  │                                   │  │ tabs: Diff (23+ 4-) |            │ │
+  │                                   │  │ Decompiler Context | Overrides   │ │
+  │                                   │  │ ┌──────────────────────────────┐ │ │
+  │                                   │  │ │ + fn draw_primitive(...) {   │ │ │
+  │                                   │  │ │ +     encoder.draw(...);     │ │ │
+  │                                   │  │ │ +     // SetTexture -> bind  │ │ │
+  │                                   │  │ │   47 instrs -> 23 Rust lines │ │ │
+  │                                   │  │ └──────────────────────────────┘ │ │
+  │                                   │  │                                  │ │
+  │                                   │  │ [Accept] [Send Back]             │ │
+  │                                   │  │ [Request Patch] [Reload]         │ │
+  └───────────────────────────────────┘  └──────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -257,8 +256,9 @@ A web-based interface provides structured human review of every unit of work. Th
 | **Accept** | Merge branch into `main`. Unit is complete. |
 | **Send Back** | Return to LLM with reviewer comments. New attempt created on new branch. |
 | **Request Patch** | Ask LLM to fix a specific issue (identified in the UI). New attempt on new branch. |
-| **View All Attempts** | See the full sequence of LLM attempts for this unit, including diffs from each. |
-| **View Ghidra Context** | See the original disassembly, decompiler output, and Ghidra annotations that informed the translation. |
+| **Skip / unskip (queue checkbox)** | Reviewer intent persisted in the skip set; the unit leaves the work queue until unskipped. Distinct from a classified *Do Not Translate*. |
+| **Compare attempts** | See the full sequence of LLM attempts for this unit and diff any two of them — branches plus patch records, never anything invented. |
+| **Decompiler Context** | See the original disassembly, decompiler output, and engine annotations that informed the translation. |
 
 ### Justification Requirements
 
@@ -380,11 +380,10 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
    |----------|-------------|----------|----------|
    | **Windows OS** | Core Windows system DLLs | PAL → std lib / winit / etc. | `kernel32.dll`, `user32.dll`, `gdi32.dll`, `advapi32.dll`, `shell32.dll` |
    | **Microsoft SDK** | Official Microsoft libraries with known Rust equivalents | Crate replacement + shim layer | `d3d9.dll`, `d3d11.dll`, `d2d1.dll`, `dwrite.dll`, `dxgi.dll` |
-    | **Known Third-Party Libraries** | Sound systems, physics engines, game engines, charting libraries, compression, etc. with existing Rust crates | Crate replacement + shim layer for API compatibility | `openal32.dll` → `cpal`, `fmod.dll` → `fmod-rs`, `bullet.dll` → `rapier`, `chipmunk.dll` → `chipmunk2d-rs`, `qt5*.dll` → `iced`/`slint`, `cairo.dll` → `cairo-rs`/`skia-safe`, `zlib1.dll` → `flate2`/`miniz_oxide`, `lua51.dll` → `mlua`, `python3.dll` → `pyo3` |
-    | **Microsoft VB6 Runtime** (`msvbvm60.dll`) | VB6 object model, COM automation, BSTR/VARIANT types, form/control infrastructure | Crate replacement — `vb6runtime` crate implements VB6 runtime semantics | `msvbvm60.dll` → `vb6runtime` crate |
-| **Project-Specific DLLs** | DLLs built from this project's source, or DLLs that are part of the application's own codebase | **Reverse engineer from disassembly** — these are the target of our main pipeline | `project_renderer.dll`, `game_logic.dll`, `ui_framework.dll` |
-| **Third-Party Program DLLs** | DLLs from unknown/proprietary third parties with no Rust crate equivalent | **Reverse engineer from disassembly** — treat as opaque libraries to replicate | Custom plugin DLLs, vendor-specific SDKs |
-| **VB6 Runtime** (`msvbvm60.dll`) | Microsoft Visual Basic 6 runtime — COM objects, BSTR strings, Variants, form model, `IUnknown` vtables | **Crate replacement** — use `vb6runtime` crate to replicate the VB6 runtime DLL | `msvbvm60.dll` → `vb6runtime` crate |
+   | **Known Third-Party Libraries** | Sound systems, physics engines, game engines, charting libraries, compression, etc. with existing Rust crates | Crate replacement + shim layer for API compatibility | `openal32.dll` → `cpal`, `fmod.dll` → `fmod-rs`, `bullet.dll` → `rapier`, `chipmunk.dll` → `chipmunk2d-rs`, `qt5*.dll` → `iced`/`slint`, `cairo.dll` → `cairo-rs`/`skia-safe`, `zlib1.dll` → `flate2`/`miniz_oxide`, `lua51.dll` → `mlua`, `python3.dll` → `pyo3` |
+   | **Microsoft VB6 Runtime** (`msvbvm60.dll`) | VB6 object model, COM automation, BSTR/VARIANT types, form/control infrastructure | Crate replacement — `vb6runtime` crate implements VB6 runtime semantics | `msvbvm60.dll` → `vb6runtime` crate |
+   | **Project-Specific DLLs** | DLLs built from this project's source, or DLLs that are part of the application's own codebase | **Reverse engineer from disassembly** — these are the target of our main pipeline | `project_renderer.dll`, `game_logic.dll`, `ui_framework.dll` |
+   | **Third-Party Program DLLs** | DLLs from unknown/proprietary third parties with no Rust crate equivalent | **Reverse engineer from disassembly** — treat as opaque libraries to replicate | Custom plugin DLLs, vendor-specific SDKs |
 
    For each DLL:
    - Record DLL name, version, digital signature (if present)
@@ -406,10 +405,9 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
      - VB6 Runtime → vb6runtime crate
    - For each import, record: API name, source DLL, called functions, translation target crate
 
-4. **GhidraMCP Initialization**
-   - Launch GhidraMCP server pointing to the target binary
-   - Establish session for the executable
-   - Load all associated DLLs into the analysis context
+4. **Analysis Engine Load**
+   - The analysis engine loads the target binary in-process — nothing to attach to, spawn, or install
+   - Related DLLs enter the loaded program beside it; decompile answers come back through the seam's scan read cache
 
 5. **Symbol & Structure Extraction**
    - Extract all symbols: exports, imports, global variables
@@ -427,7 +425,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
 **Goal:** Break down binaries and tag every Windows API call for cross-platform translation.
 
 1. **Function-Level Disassembly**
-   - For each function, extract the full disassembly listing from GhidraMCP
+   - For each function, extract the full disassembly listing from the analysis engine
    - Extract the decompiler output (pseudo-C) for reference
    - Preserve: instruction addresses, operands, comments, cross-references
 
@@ -526,7 +524,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
      - Boundary values (zero, max, negative, null)
      - Typical/expected values
      - Edge cases identified in the disassembly (comparisons, checks)
-   - Use Ghidra's analysis hints (type information, comments) to guide inputs
+   - Use the engine's analysis hints (type information, comments) to guide inputs
 
 3. **Output Observation**
    - For each test input, invoke the original function via FFI
@@ -557,7 +555,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
    - Generate Rust code incrementally, respecting dependency order
 
 3. **Type Refinement**
-   - Use Ghidra type information as starting point
+   - Use the engine's type information as starting point
    - Refine types based on usage patterns in disassembly
    - Replace raw pointers with safe Rust types where possible
    - Use `enum` for tagged unions, `struct` for records
@@ -679,7 +677,7 @@ For each classified Microsoft SDK / Known Third-Party DLL:
 STAGE 2: Reverse Engineering (Phase 2–6)
 ─────────────────────────────────────────────────────────
 For each function in project-specific / unknown third-party DLLs:
-    1. Pull disassembly from GhidraMCP
+    1. Pull disassembly from the analysis engine
     2. Identify Windows API calls and crate-replacement calls in the disassembly
     3. Windows API calls → translate to PAL trait methods
     4. Crate-replacement DLL calls → translate to shim/crate calls
@@ -709,7 +707,7 @@ STAGE 3: Integration
 
 4. **Incremental restitching**: Never replace the entire binary at once. Swap in Rust functions one at a time, verifying each swap.
 
-5. **Ghidra as single source of truth**: Disassembly, decompiler output, and type info from GhidraMCP are the authoritative reference. No guessing.
+5. **The analysis engine as single source of truth**: Disassembly, decompiler output, and type info from the loaded program are the authoritative reference. No guessing.
 
 6. **Safety boundary**: All unsafe FFI calls to the original binary are isolated in a dedicated module. The translation target is to eliminate each unsafe block.
 
@@ -729,12 +727,12 @@ STAGE 3: Integration
 
 | Risk | Mitigation |
 |------|-----------|
-| Ghidra misidentifies function boundaries | Cross-reference decompiler output with CFG; manual override capability |
+| The analysis engine misidentifies function boundaries | Cross-reference decompiler output with CFG; manual override capability |
 | Non-deterministic behavior (timing, memory layout) | Focus tests on observable I/O; avoid timing-dependent tests |
-| Complex calling conventions | Use Ghidra's calling convention analysis; verify with FFI stubs |
+| Complex calling conventions | Use the engine's calling convention analysis; verify with FFI stubs |
 | Position-independent code | Handle relative addressing in translation; test with varied load addresses |
 | Anti-reversing techniques | Note in translation confidence; may require manual intervention |
-| Data segment ambiguity | Use Ghidra data type analysis; verify with usage-pattern tests |
+| Data segment ambiguity | Use the engine's data type analysis; verify with usage-pattern tests |
 | Misclassified DLL (false positive for crate replacement) | Verify shim layer passes all original behavior tests before removing FFI; fallback to RE if shim fails |
 | Crate API diverges from original DLL | Implement comprehensive shim tests covering all observed call patterns; patch shim iteratively |
 | No crate exists for known third-party DLL | Fall back to reverse engineering; treat as unknown third-party category |
@@ -745,7 +743,7 @@ STAGE 3: Integration
 
 ## Tooling Requirements
 
-- **GhidraMCP**: Server providing disassembly, decompiler, and symbol queries via MCP protocol
+- **Analysis engine**: The Kuna engine crate (`calxgloss-decomp`) loads the target binary in-process behind the decompiler seam and serves disassembly, decompiler output, and symbol queries, with the scan read cache in front of it (ADR-0041)
 - **Rust toolchain**: `cargo`, `rustc` with unstable features for inline assembly if needed
 - **FFI bindings**: `bindgen` or manual FFI definitions for original binary interface
 - **Test framework**: `cargo test` with arbitrary test generation capabilities
@@ -1200,7 +1198,7 @@ The `docs/` directory is the living record of all reverse engineering work. It c
 | Subdirectory | Contents |
 |--------------|----------|
 | `docs/review/` | Human review documents for each unit of work. Each function that is translated gets a review doc that explains what was found, how it was translated, test results, and reviewer decisions. |
-| `docs/analysis/` | Technical analysis: dependency maps, call flow diagrams, data flow analysis, control flow summaries from Ghidra, structural insights |
+| `docs/analysis/` | Technical analysis: dependency maps, call flow diagrams, data flow analysis, control flow summaries from the evidence scans, structural insights |
 | `docs/plans/` | Work plans for ongoing and future work. Each phase of translation gets a plan document that outlines scope, strategy, and dependencies |
 | `docs/decisions/` | Architecture and translation decisions. A running decision log records key choices, their rationale, and any trade-offs considered |
 | `docs/reference/` | Reference material copied or derived from the source directory. Original documentation summaries, resource file catalogs, configuration file documentation |
@@ -1320,7 +1318,7 @@ The `source/` directory in the resultant workspace contains **selective copies**
 | User data, personal files | Privacy |
 | Dependencies already classified as crate replacements | Not needed if we have the crate |
 
-The harness automates this selection using the DLL classification results and Ghidra's import/export analysis to determine what is actually required for testing and verification.
+The harness automates this selection using the DLL classification results and the scans' import/export findings to determine what is actually required for testing and verification.
 
 #### Workspace Configuration
 
