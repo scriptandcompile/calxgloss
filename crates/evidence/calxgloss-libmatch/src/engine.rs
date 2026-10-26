@@ -38,6 +38,11 @@ pub use calxgloss_decomp::ScanSource;
 /// counts, not a dump (the P19-3 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
+/// The facets a libmatch scan declares, in order — the roster the
+/// record must name exactly once each. libmatch reads one facet: the
+/// decompiled bodies.
+pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
+
 /// The coverage record every libmatch scan stamps about itself (issue
 /// #347), beside the provenance and the timing.
 ///
@@ -81,7 +86,10 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
         facets: vec![FacetCoverage {
             id: "function-bodies".to_string(),
             status: CoverageStatus::Partial,
-            limitation: Some(format!("{total} function {body} unreached: {}", names.join(", "))),
+            limitation: Some(format!(
+                "{total} function {body} unreached: {}",
+                names.join(", ")
+            )),
         }],
     }
 }
@@ -1563,41 +1571,11 @@ mod tests {
     // Admitted scan coverage (issue #347)
     // ============================================================
 
-    /// The facets a libmatch scan declares, in order — the roster the
-    /// record must name exactly once each. libmatch reads one facet: the
-    /// decompiled bodies.
-    const DECLARED_FACETS: &[&str] = &["function-bodies"];
-
     /// The data-level verdict of the roster pin: empty means the record
     /// names every declared facet exactly once, and each fault spells one
     /// drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
-        let mut faults = Vec::new();
-        for declared in DECLARED_FACETS {
-            let hits = coverage
-                .facets
-                .iter()
-                .filter(|facet| facet.id == *declared)
-                .count();
-            if hits == 0 {
-                faults.push(format!(
-                    "declared facet `{declared}` is missing from the record"
-                ));
-            } else if hits > 1 {
-                faults.push(format!(
-                    "declared facet `{declared}` appears {hits} times in the record"
-                ));
-            }
-        }
-        for facet in &coverage.facets {
-            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
-                faults.push(format!(
-                    "record names `{}`, a facet the engine never declared",
-                    facet.id
-                ));
-            }
-        }
-        faults
+        coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]
@@ -1752,13 +1730,18 @@ mod tests {
         let claims: Vec<&LibmatchFinding> = result.for_function("thunk_FUN_180099999").collect();
         assert_eq!(claims.len(), 1, "the duplicate inherits one claim");
         assert_eq!(claims[0].kind(), "identical_body");
-        assert_eq!(claims[0].admission(), crate::types::VERSION_UNKNOWN_ADMISSION);
+        assert_eq!(
+            claims[0].admission(),
+            crate::types::VERSION_UNKNOWN_ADMISSION
+        );
     }
 
     #[test]
     fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
         let mut coverage = coverage_stamp(&[], 0);
-        coverage.facets.retain(|facet| facet.id != "function-bodies");
+        coverage
+            .facets
+            .retain(|facet| facet.id != "function-bodies");
         assert_eq!(
             roster_faults(&coverage),
             ["declared facet `function-bodies` is missing from the record"],

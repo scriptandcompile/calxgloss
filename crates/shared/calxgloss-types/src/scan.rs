@@ -178,6 +178,47 @@ impl ScanCoverage {
             format!("{} — {}", self.status, limitations.join("; "))
         })
     }
+
+    /// The data-level verdict of the roster pin: does this record name the
+    /// facets `declared` — every one of them, exactly once, and nothing the
+    /// engine never declared?
+    ///
+    /// This is the one home of the engine-stamps/roster-pins doctrine
+    /// (issue #352): each engine's own pin calls it against its crate's
+    /// declared roster, and the P19 track sweep calls it across every
+    /// registered row's filed document. An empty verdict means the record
+    /// pairs one-for-one with the roster; each fault spells one drift — a
+    /// declared facet the scan stopped stamping, a facet stamped twice, or
+    /// an id the scan invented outside the roster — so a drift can only ever
+    /// fail loudly, naming itself in words.
+    pub fn roster_faults(&self, declared: &[&str]) -> Vec<String> {
+        let mut faults = Vec::new();
+        for facet_id in declared {
+            let hits = self
+                .facets
+                .iter()
+                .filter(|facet| facet.id == **facet_id)
+                .count();
+            if hits == 0 {
+                faults.push(format!(
+                    "declared facet `{facet_id}` is missing from the record"
+                ));
+            } else if hits > 1 {
+                faults.push(format!(
+                    "declared facet `{facet_id}` appears {hits} times in the record"
+                ));
+            }
+        }
+        for facet in &self.facets {
+            if !declared.contains(&facet.id.as_str()) {
+                faults.push(format!(
+                    "record names `{}`, a facet the engine never declared",
+                    facet.id
+                ));
+            }
+        }
+        faults
+    }
 }
 
 /// Provenance and coverage of the scan that produced a per-binary artifact.
@@ -461,6 +502,51 @@ mod tests {
             facets: Vec::new(),
         };
         assert_eq!(empty.admission().expect("partial admits"), "partial");
+    }
+
+    #[test]
+    fn roster_faults_name_every_drift_direction_of_the_pinning() {
+        // The engine-stamps/roster-pins doctrine (issue #352): the record
+        // pairs one-for-one with the declared roster, and each drift
+        // direction spells itself as a fault — a facet the engine stopped
+        // stamping, a facet stamped twice, and an id invented outside the
+        // roster. The shared wording every engine's own pin and the track
+        // sweep both read.
+        let declared = ["imports", "regions", "vtables", "delay-imports"];
+        assert!(
+            admitted_coverage_fixture()
+                .roster_faults(&declared)
+                .is_empty(),
+            "a record naming every declared facet exactly once has nothing to fault"
+        );
+
+        let mut missing = admitted_coverage_fixture();
+        missing.facets.retain(|facet| facet.id != "vtables");
+        assert_eq!(
+            missing.roster_faults(&declared),
+            ["declared facet `vtables` is missing from the record"],
+            "an engine quietly skipping one of its facets fails loudly"
+        );
+
+        let mut doubled = admitted_coverage_fixture();
+        doubled.facets.push(doubled.facets[0].clone());
+        assert_eq!(
+            doubled.roster_faults(&declared),
+            ["declared facet `imports` appears 2 times in the record"],
+            "a facet stamped twice fails loudly"
+        );
+
+        let mut orphan = admitted_coverage_fixture();
+        orphan.facets.push(FacetCoverage {
+            id: "machine-listings".into(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        });
+        assert_eq!(
+            orphan.roster_faults(&declared),
+            ["record names `machine-listings`, a facet the engine never declared"],
+            "an id invented outside the declared roster fails loudly"
+        );
     }
 
     #[test]

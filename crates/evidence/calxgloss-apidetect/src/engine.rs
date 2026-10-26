@@ -77,6 +77,17 @@ impl CallGraphSource for calxgloss_decomp::PipelineSource {
     }
 }
 
+/// The facet ids apidetect declares — the roster, spelled once here
+/// the way the CLI pairing pin (#342) spells its roster. Every facet
+/// a freshly written coverage record names is read against this list
+/// by the pin below, and every drift direction is a fault: a declared
+/// facet the scan stopped stamping, a facet stamped twice, and an id
+/// the scan invented outside the roster all fail loudly. `delay-imports`
+/// belongs on the roster precisely because the engine parses no
+/// delay-import table — the roster names what the engine knows about,
+/// not only what it reads.
+pub const DECLARED_FACETS: &[&str] = &["import-table", "api-usage", "delay-imports"];
+
 /// The coverage record every apidetect scan stamps about itself (issue
 /// #346), beside the provenance and the timing.
 ///
@@ -747,47 +758,11 @@ mod tests {
 
     // -- admitted coverage (P19 tracer bullet, issue #346) ---------------
 
-    /// The facet ids apidetect declares — the roster, spelled once here
-    /// the way the CLI pairing pin (#342) spells its roster. Every facet
-    /// a freshly written coverage record names is read against this list
-    /// by the pin below, and every drift direction is a fault: a declared
-    /// facet the scan stopped stamping, a facet stamped twice, and an id
-    /// the scan invented outside the roster all fail loudly. `delay-imports`
-    /// belongs on the roster precisely because the engine parses no
-    /// delay-import table — the roster names what the engine knows about,
-    /// not only what it reads.
-    const DECLARED_FACETS: &[&str] = &["import-table", "api-usage", "delay-imports"];
-
     /// The data-level verdict of the roster pin: empty means the record
     /// names every declared facet exactly once, and each fault spells one
     /// drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
-        let mut faults = Vec::new();
-        for declared in DECLARED_FACETS {
-            let hits = coverage
-                .facets
-                .iter()
-                .filter(|facet| facet.id == *declared)
-                .count();
-            if hits == 0 {
-                faults.push(format!(
-                    "declared facet `{declared}` is missing from the record"
-                ));
-            } else if hits > 1 {
-                faults.push(format!(
-                    "declared facet `{declared}` appears {hits} times in the record"
-                ));
-            }
-        }
-        for facet in &coverage.facets {
-            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
-                faults.push(format!(
-                    "record names `{}`, a facet the engine never declared",
-                    facet.id
-                ));
-            }
-        }
-        faults
+        coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]

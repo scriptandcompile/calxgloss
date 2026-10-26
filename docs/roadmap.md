@@ -14,7 +14,7 @@
 > recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
 > ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008,
 > P1.5 → ADR-0009–0013, X5 → ADR-0041, P35 → ADR-0048, P36 → ADR-0049,
-> P37 → ADR-0050, P38 → ADR-0051, P39 → ADR-0052).
+> P37 → ADR-0050, P38 → ADR-0051, P39 → ADR-0052, P19 → ADR-0053).
 
 ## How a track gets built
 
@@ -30,13 +30,20 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 ## Status matrix
 
-Tracks P19–P33 are the feature ideas catalogued by the [REA
-comparison](rea/README.md) (`docs/rea/`, every chapter's "Steal ideas").
+**Tracks P19–P33 are the feature ideas catalogued by the [REA
+comparison](rea/README.md) (`docs/rea/`, every chapter's "Steal ideas").**
+**P19 (admitted semantics — coverage beside every evidence scan) shipped
+through tickets #345–#351 with the close-out record #352 and was pruned from
+this matrix when spec #344 closed (2026-10-26);** the data-layer honesty it
+landed — the admitted-coverage envelope, the absent-reads-as-unknown rule, and
+the engine-stamps/roster-pins doctrine — lives on as
+[ADR-0053](adr/0053-scan-coverage-is-the-scans-own-record-stamped-at-scan-time-beside-provenance-read-as-unknown-when-absent-and-pinned-to-the-engines-declared-facets.md),
+and P21 and P26 are unblocked on their data side.
 **Table order is dependency order** — no track appears before one that blocks
 it (each summary names its blockers/blocked-by edges) — and among independent
 tracks, ordered by how strongly each pulls calxgloss toward **complete
 end-to-end restitching from binaries**: honest evidence about what the engines
-could not determine (P19–P21), a verification gate wide enough to cover what
+could not determine (P20–P21), a verification gate wide enough to cover what
 restitching can actually get wrong (P22–P24), and the durable receipts plus
 fail-closed ledger that finally make "this binary is done" a checkable claim
 instead of "the pipeline stopped with nobody complaining" (P25–P26). P27–P33
@@ -73,7 +80,6 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P19 | Admitted semantics — every evidence finding carries what its scan examined and what it could not, so `null`/absence reads as unknown, never as `false` | evidence (all scan crates) + shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-prompts`) + interface (`calxgloss-reports`, `calxgloss-web`) | — | ⬜ not started | specced — `/to-tickets` next | [#344](https://github.com/scriptandcompile/calxgloss/issues/344) |
 | P20 | Seam capability report + engine-identity cache key — the seam advertises which questions Kuna can currently answer, and the scan cache keys on the engine build digest instead of a hand-bumped format version | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
 | P21 | First-class unknown records — per function, record what the evidence could not determine, with what evidence would close it; review UI resolves them, `escalate` retries consume them, the run leaves an audit ledger | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
 | P22 | Differential API-call trace in the gate — record the ordered Win32/PAL API-call sequence on both the original-DLL baseline and the restitched Rust, and compare order, catching right-result-wrong-path PAL-mapping errors value tests miss | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + integrations (`calxgloss-pal`) + evidence (`calxgloss-apidetect`) | — | ⬜ not started | not specced | — |
@@ -90,28 +96,6 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 | P33 | Whole-task measurement harness — benchmark pipeline tasks end to end (tokens, RSS, ms) with an oracle independent of the implementation, counting discovery, retries, and continuations in every token claim | — (dev-side experiment harness, no crate) | — | ⬜ not started | not specced | — |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## P19 — Admitted semantics: coverage + limits on every evidence finding (evidence + shared + pipeline + interface)
-
-**An evidence engine that saw nothing and an evidence engine that looked and
-found nothing currently read the same.** A scan's `null`, empty listing, or
-absent finding is indistinguishable downstream from "examined and absent", so
-prompts and reviewers can read an unexamined fact as an observed one — the
-failure mode REA's contracts exist to kill (`coverage.status` per collection,
-`facet_availability` distinguishing observed-absence from unobserved, "a
-missing match does not establish absence"). Every scan crate's output gains
-first-class coverage/limitation fields on the finding union (`calxgloss-
-types`), rendered into prompt sections (`calxgloss-prompts`) and reports
-without token bloat: `libmatch` says "signature match, version unknown",
-`typesdb` says "vtable scan unavailable on this target", `apidetect` says
-"import table parsed, delay imports unexamined". This is the data-layer
-honesty that P21's unknown records and P26's fail-closed verdict consume —
-`unknown` must become a representable, machine-visible value before it can
-ever block a conclusion. Source: [33](rea/33-reconstruction-evidence-workflow.md)
-steal 4, [32](rea/32-native-artifact-intelligence.md) steal 1, README #3/#7.
-Blocks: P21, P26. Specced 2026-10-25: spec
-[#344](https://github.com/scriptandcompile/calxgloss/issues/344) —
-`/to-tickets` is the next step.
 
 ## P20 — Seam capability report + engine-identity cache key (integrations + pipeline + interface)
 
@@ -142,7 +126,8 @@ quiet. Built directly on P19's coverage fields (the gap must be visible in the
 data before it can be recorded) and P20's capability report (unobserved ≠
 observed-absent); the capstone P26 ledger consumes it — an open unknown must
 block "DLL complete". Source: [33](rea/33-reconstruction-evidence-workflow.md)
-steal 1, README #1. Blocked by: P19, P20. Blocks: P26, P27.
+steal 1, README #1. Blocked by: P20 (P19's data side shipped with the
+admitted-semantics track, ADR-0053). Blocks: P26, P27.
 
 ## P22 — Differential API-call trace in the gate (pipeline + integrations + evidence)
 
@@ -226,7 +211,8 @@ the evaluator is fail-closed: fail, unknown, skipped, truncated, and parked
 never aggregate to pass, so the dashboard grows a real conformance verdict —
 the definition of complete end-to-end restitching, made checkable. Source:
 [33](rea/33-reconstruction-evidence-workflow.md) steals 2–3, README #2.
-Blocked by: P19, P21, P25 (hard); P22–P24 (shape — the verdict should stand on
+Blocked by: P19 (data side — shipped, ADR-0053; the `unknown` value the verdict
+consumes is in place), P21, P25 (hard); P22–P24 (shape — the verdict should stand on
 the widest gate and on a lane for EXEs). Blocks: nothing — this is the
 capstone.
 

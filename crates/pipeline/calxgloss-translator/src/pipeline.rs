@@ -3407,6 +3407,7 @@ mod tests {
     use calxgloss_floatsimd::persist::FloatsimdPersistor;
     use calxgloss_globalstate::persist::GlobalStatePersistor;
     use calxgloss_globalstate::types::{GlobalAccess, GlobalStateFinding, GlobalStateResult};
+    use calxgloss_libmatch::persist::LibmatchPersistor;
     use calxgloss_memory::persist::MemoryPersistor;
     use calxgloss_serialize::persist::SerializePersistor;
     use calxgloss_stringctx::persist::StringContextPersistor;
@@ -3417,6 +3418,7 @@ mod tests {
         TypeInferenceResult,
     };
     use calxgloss_types::Confidence;
+    use calxgloss_types::EffectiveCoverage;
     use calxgloss_types::TranslationConstraints;
     use calxgloss_typesdb::persist::TypeDatabasePersistor;
     use calxgloss_typesdb::types::ScanMetadata;
@@ -5971,6 +5973,401 @@ void SetCursor(void)
             "the registry roster changed — a scan joins the phase by adding \
              its row to the table, and never by being forgotten"
         );
+    }
+
+    /// The track roster (issue #352): every registered scan row keyed to
+    /// the engine's **own** declared-facets table — each engine crate
+    /// lifts its `DECLARED_FACETS` to module scope precisely so this
+    /// sweep reads the tables' own data, the same pairing doctrine the
+    /// CLI contribution table pins (#342). A row that joins the registry
+    /// without a pairing row here, or whose engine renames a facet this
+    /// table never had, fails the sweep below loudly; no roster is ever
+    /// re-spelled for the sweep, so the sweep cannot drift from the
+    /// engine it checks.
+    const TRACK_DECLARED_FACETS: &[(&str, &[&str])] = &[
+        (
+            "control-flow",
+            calxgloss_controlflow::engine::DECLARED_FACETS,
+        ),
+        (
+            "memory-lifecycle",
+            calxgloss_memory::engine::DECLARED_FACETS,
+        ),
+        ("concurrency", calxgloss_sync::engine::DECLARED_FACETS),
+        (
+            "global-state",
+            calxgloss_globalstate::engine::DECLARED_FACETS,
+        ),
+        ("constants", calxgloss_consts::engine::DECLARED_FACETS),
+        (
+            "error-handling",
+            calxgloss_errhandling::engine::DECLARED_FACETS,
+        ),
+        ("float-simd", calxgloss_floatsimd::engine::DECLARED_FACETS),
+        ("type-database", calxgloss_typesdb::engine::DECLARED_FACETS),
+        (
+            "algorithm-recognition",
+            calxgloss_algorithm::engine::DECLARED_FACETS,
+        ),
+        (
+            "string-context",
+            calxgloss_stringctx::engine::DECLARED_FACETS,
+        ),
+        ("library-api", calxgloss_apidetect::engine::DECLARED_FACETS),
+        (
+            "serialization",
+            calxgloss_serialize::engine::DECLARED_FACETS,
+        ),
+        (
+            "type-inference",
+            calxgloss_typeinfer::engine::DECLARED_FACETS,
+        ),
+        (
+            "callback-detection",
+            calxgloss_callback::engine::DECLARED_FACETS,
+        ),
+        ("known-library", calxgloss_libmatch::engine::DECLARED_FACETS),
+    ];
+
+    /// The track sweep's fixture: a cold phase over the fixture target,
+    /// then every registered row's filed document as parsed JSON — the
+    /// documents the sweep reads are the ones the phase actually wrote,
+    /// not re-serialized copies.
+    async fn track_sweep_documents(
+        workspace: &std::path::Path,
+    ) -> Vec<(&'static str, serde_json::Value)> {
+        let (pipeline, _) = cached_pipeline(workspace);
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        registered_documents(workspace)
+    }
+
+    /// One document's metadata as the shared type carries it, for the
+    /// sweep: absent or unreadable metadata is itself a sweep fault,
+    /// never a silent skip.
+    fn swept_metadata(
+        doc: &serde_json::Value,
+    ) -> std::result::Result<ScanMetadata, serde_json::Error> {
+        serde_json::from_value(doc["metadata"].clone())
+    }
+
+    /// The all-fifteen sweep (issue #352): walk every registered scan
+    /// row's produced document, read the coverage entry its engine
+    /// stamped, and pin it against the engine's own declared-facets
+    /// table — every declared facet named exactly once, nothing else
+    /// named. Every fault names its engine; one failure report carries
+    /// them all, so a single run of this test states the whole track's
+    /// pinning health.
+    #[tokio::test]
+    async fn every_registered_rows_document_pins_its_engines_own_roster() {
+        let dir = TempDir::new().expect("temp workspace");
+        let documents = track_sweep_documents(dir.path()).await;
+        let mut report: Vec<String> = Vec::new();
+        for (row, declared) in TRACK_DECLARED_FACETS {
+            let Some((_, doc)) = documents.iter().find(|(name, _)| name == row) else {
+                report.push(format!("{row}: the phase filed no document to sweep"));
+                continue;
+            };
+            match swept_metadata(doc) {
+                Ok(metadata) => match &metadata.coverage {
+                    Some(coverage) => {
+                        for fault in coverage.roster_faults(declared) {
+                            report.push(format!("{row}: {fault}"));
+                        }
+                    }
+                    None => report.push(format!(
+                        "{row}: the filed document carries no coverage entry — the \
+                         engine stamped nothing"
+                    )),
+                },
+                Err(error) => report.push(format!(
+                    "{row}: the filed document's metadata will not load: {error}"
+                )),
+            }
+        }
+        for (name, _) in &documents {
+            if !TRACK_DECLARED_FACETS.iter().any(|(row, _)| row == name) {
+                report.push(format!(
+                    "{name}: a filed document no track roster entry pairs with"
+                ));
+            }
+        }
+        assert!(
+            report.is_empty(),
+            "the all-fifteen sweep pins every filed coverage entry against its \
+             engine's own DECLARED_FACETS table, and these engines broke it:\n{}",
+            report.join("\n")
+        );
+    }
+
+    /// The orphan check (issue #352): a coverage entry in any written
+    /// document that names a facet its engine never declared is an
+    /// invented qualification — the reader would be shown a gap in a
+    /// facet the scan never promised to read. This sweep states that
+    /// direction alone: every facet id in every filed document is in
+    /// the engine's own table, one failure report naming every orphan.
+    #[tokio::test]
+    async fn no_filed_document_names_a_facet_its_engine_never_declared() {
+        let dir = TempDir::new().expect("temp workspace");
+        let documents = track_sweep_documents(dir.path()).await;
+        let mut orphans: Vec<String> = Vec::new();
+        for (row, declared) in TRACK_DECLARED_FACETS {
+            let Some((_, doc)) = documents.iter().find(|(name, _)| name == row) else {
+                continue; // the roster sweep above reports the absence
+            };
+            if let Ok(Some(coverage)) = swept_metadata(doc).map(|m| m.coverage) {
+                for facet in &coverage.facets {
+                    if !declared.contains(&facet.id.as_str()) {
+                        orphans.push(format!("{row}: `{}`", facet.id));
+                    }
+                }
+            }
+        }
+        assert!(
+            orphans.is_empty(),
+            "no written coverage entry names a facet its engine never \
+             declared, and these orphans broke it: {}",
+            orphans.join(", ")
+        );
+    }
+
+    /// The pre-P19 fixtures load across all fifteen engines (issue
+    /// #352): a document written before the coverage key shipped —
+    /// `ScanMetadata::new` stamps nothing, and the engine's own
+    /// persistor saves those bytes — carries no coverage key at all,
+    /// loads through that persistor without an error, reads coverage
+    /// absent, and resolves to `EffectiveCoverage::Unknown`, never
+    /// `Complete`. The absent-reads-as-unknown rule (ADR-0053) is the
+    /// whole contract, and each engine's loader holds it.
+    #[test]
+    fn every_engine_loads_a_pre_p19_document_as_unknown_coverage() {
+        let fixtures: [(&str, fn(&std::path::Path) -> (String, ScanMetadata)); 15] = [
+            ("library-api", |dir| {
+                let p = ApiPersistor::new(dir);
+                p.save(&calxgloss_apidetect::types::ApiDetectionResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 api-detection document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 api-detection document loads")
+                        .metadata,
+                )
+            }),
+            ("known-library", |dir| {
+                let p = LibmatchPersistor::new(dir);
+                p.save(&calxgloss_libmatch::types::LibmatchResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 libmatch document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 libmatch document loads")
+                        .metadata,
+                )
+            }),
+            ("float-simd", |dir| {
+                let p = FloatsimdPersistor::new(dir);
+                p.save(&calxgloss_floatsimd::types::FloatsimdResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 floatsimd document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 floatsimd document loads")
+                        .metadata,
+                )
+            }),
+            ("type-database", |dir| {
+                let p = TypeDatabasePersistor::new(dir);
+                p.save(&calxgloss_typesdb::types::TypeDatabase::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 type-database document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 type-database document loads")
+                        .metadata,
+                )
+            }),
+            ("constants", |dir| {
+                let p = ConstPersistor::new(dir);
+                p.save(&calxgloss_consts::types::ConstResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 constants document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 constants document loads")
+                        .metadata,
+                )
+            }),
+            ("control-flow", |dir| {
+                let p = ControlFlowPersistor::new(dir);
+                p.save(&ControlFlowResult::new(ScanMetadata::new(PROGRAM)))
+                    .expect("a pre-P19 control-flow document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 control-flow document loads")
+                        .metadata,
+                )
+            }),
+            ("memory-lifecycle", |dir| {
+                let p = MemoryPersistor::new(dir);
+                p.save(&calxgloss_memory::types::MemoryResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 memory document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 memory document loads")
+                        .metadata,
+                )
+            }),
+            ("concurrency", |dir| {
+                let p = SyncPersistor::new(dir);
+                p.save(&calxgloss_sync::types::SyncResult::new(ScanMetadata::new(
+                    PROGRAM,
+                )))
+                .expect("a pre-P19 concurrency document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 concurrency document loads")
+                        .metadata,
+                )
+            }),
+            ("global-state", |dir| {
+                let p = GlobalStatePersistor::new(dir);
+                p.save(&GlobalStateResult::new(ScanMetadata::new(PROGRAM)))
+                    .expect("a pre-P19 global-state document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 global-state document loads")
+                        .metadata,
+                )
+            }),
+            ("error-handling", |dir| {
+                let p = ErrhandlingPersistor::new(dir);
+                p.save(&calxgloss_errhandling::types::ErrhandlingResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 error-handling document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 error-handling document loads")
+                        .metadata,
+                )
+            }),
+            ("algorithm-recognition", |dir| {
+                let p = AlgorithmPersistor::new(dir);
+                p.save(
+                    &calxgloss_algorithm::types::AlgorithmRecognitionResult::new(
+                        ScanMetadata::new(PROGRAM),
+                    ),
+                )
+                .expect("a pre-P19 algorithm document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 algorithm document loads")
+                        .metadata,
+                )
+            }),
+            ("string-context", |dir| {
+                let p = StringContextPersistor::new(dir);
+                p.save(&calxgloss_stringctx::types::StringContextResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 string-context document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 string-context document loads")
+                        .metadata,
+                )
+            }),
+            ("serialization", |dir| {
+                let p = SerializePersistor::new(dir);
+                p.save(&calxgloss_serialize::types::SerializeResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 serialization document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 serialization document loads")
+                        .metadata,
+                )
+            }),
+            ("type-inference", |dir| {
+                let p = TypeInferPersistor::new(dir);
+                p.save(&TypeInferenceResult::new(ScanMetadata::new(PROGRAM)))
+                    .expect("a pre-P19 type-inference document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 type-inference document loads")
+                        .metadata,
+                )
+            }),
+            ("callback-detection", |dir| {
+                let p = CallbackPersistor::new(dir);
+                p.save(&calxgloss_callback::types::CallbackResult::new(
+                    ScanMetadata::new(PROGRAM),
+                ))
+                .expect("a pre-P19 callback document saves");
+                (
+                    std::fs::read_to_string(p.path_for(PROGRAM))
+                        .expect("the saved document's bytes"),
+                    p.load(PROGRAM)
+                        .expect("a pre-P19 callback document loads")
+                        .metadata,
+                )
+            }),
+        ];
+        for (engine, fixture) in fixtures {
+            let dir = TempDir::new().expect("temp workspace");
+            let (raw, metadata) = fixture(dir.path());
+            assert!(
+                !raw.contains("\"coverage\""),
+                "{engine}: a pre-P19 document carries no coverage key at all — \
+                 its metadata was stamped by `ScanMetadata::new`"
+            );
+            assert!(
+                metadata.coverage.is_none(),
+                "{engine}: the loaded document names no coverage entry"
+            );
+            assert_eq!(
+                metadata.coverage_status(),
+                EffectiveCoverage::Unknown,
+                "{engine}: an absent coverage entry reads as unknown — never \
+                 as complete"
+            );
+        }
     }
 
     /// Every registered row, through one generic pass: a cold phase files

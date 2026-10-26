@@ -56,6 +56,11 @@ pub use calxgloss_decomp::ScanSource;
 /// counts, not a dump (the P19-7 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
+/// The facets a serialization scan declares, in order — the roster
+/// the record must name exactly once each. The serialization scan
+/// reads one facet: the decompiled bodies every detector reads.
+pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
+
 /// The coverage record every serialization scan stamps about itself
 /// (issue #351), beside the provenance and the timing.
 ///
@@ -1352,41 +1357,11 @@ mod tests {
     // Admitted scan coverage (issue #351)
     // ============================================================
 
-    /// The facets a serialization scan declares, in order — the roster
-    /// the record must name exactly once each. The serialization scan
-    /// reads one facet: the decompiled bodies every detector reads.
-    const DECLARED_FACETS: &[&str] = &["function-bodies"];
-
     /// The data-level verdict of the roster pin: empty means the record
     /// names every declared facet exactly once, and each fault spells one
     /// drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
-        let mut faults = Vec::new();
-        for declared in DECLARED_FACETS {
-            let hits = coverage
-                .facets
-                .iter()
-                .filter(|facet| facet.id == *declared)
-                .count();
-            if hits == 0 {
-                faults.push(format!(
-                    "declared facet `{declared}` is missing from the record"
-                ));
-            } else if hits > 1 {
-                faults.push(format!(
-                    "declared facet `{declared}` appears {hits} times in the record"
-                ));
-            }
-        }
-        for facet in &coverage.facets {
-            if !DECLARED_FACETS.contains(&facet.id.as_str()) {
-                faults.push(format!(
-                    "record names `{}`, a facet the engine never declared",
-                    facet.id
-                ));
-            }
-        }
-        faults
+        coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]

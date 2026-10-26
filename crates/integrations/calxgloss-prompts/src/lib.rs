@@ -4834,6 +4834,204 @@ mod tests {
         }
     }
 
+    /// The track-level doctrine pair (issue #352): one sweep over every
+    /// engine on the P19 track. For each, an empty findings list under a
+    /// complete record renders byte-identically to the unstamped silence
+    /// P19 shipped on — and never the same bytes as the same emptiness
+    /// under that engine's own falling-short record, whose section
+    /// carries its one admission line. The pin is per-engine in kind
+    /// (tickets #346-#351 each pinned their own pair); this sweep is the
+    /// track statement that no engine was left out, one failure report
+    /// naming the engine that broke it.
+    ///
+    /// typesdb is the one row whose pair has its own established shape
+    /// (issue #348): with no structures recovered the section stays shut
+    /// under either record — zero vtables is a property of the target,
+    /// not a gap beside entries — so the pair rides populated
+    /// structures, pinned after the sweep.
+    #[test]
+    fn the_whole_track_renders_empty_findings_under_complete_and_falling_short_coverage_never_alike()
+     {
+        let rows: [(
+            &str,
+            fn(&EvidenceBundle) -> String,
+            fn(&mut EvidenceBundle, CoverageInfo),
+            fn() -> calxgloss_types::ScanCoverage,
+            &str,
+            &str,
+        ); 14] = [
+            (
+                "library-api",
+                render_escalate_full,
+                |b, c| b.api_coverage = c,
+                api_admitting_coverage,
+                LIBRARIES_APIS_HEADING,
+                API_ADMISSION,
+            ),
+            (
+                "known-library",
+                render_module_context_full,
+                |b, c| b.libmatch_coverage = c,
+                libmatch_admitting_coverage,
+                KNOWN_LIBRARY_HEADING,
+                LIBMATCH_ADMISSION,
+            ),
+            (
+                "float-simd",
+                render_escalate_full,
+                |b, c| b.floatsimd_coverage = c,
+                floatsimd_admitting_coverage,
+                ESCALATE_FLOATSIMD_HEADING,
+                FLOATSIMD_ADMISSION,
+            ),
+            (
+                "constants",
+                render_escalate_full,
+                |b, c| b.consts_coverage = c,
+                consts_partial_coverage,
+                ESCALATE_CONSTANTS_HEADING,
+                CONSTS_ADMISSION,
+            ),
+            (
+                "control-flow",
+                render_escalate_full,
+                |b, c| b.control_flow_coverage = c,
+                control_flow_admitting_coverage,
+                ESCALATE_CONTROL_FLOW_HEADING,
+                CONTROL_FLOW_ADMISSION,
+            ),
+            (
+                "memory-lifecycle",
+                render_escalate_full,
+                |b, c| b.memory_coverage = c,
+                memory_admitting_coverage,
+                ESCALATE_MEMORY_HEADING,
+                MEMORY_ADMISSION,
+            ),
+            (
+                "concurrency",
+                render_escalate_full,
+                |b, c| b.sync_coverage = c,
+                sync_admitting_coverage,
+                ESCALATE_CONCURRENCY_HEADING,
+                SYNC_ADMISSION,
+            ),
+            (
+                "global-state",
+                render_escalate_full,
+                |b, c| b.global_state_coverage = c,
+                globalstate_admitting_coverage,
+                ESCALATE_GLOBAL_STATE_HEADING,
+                GLOBALSTATE_ADMISSION,
+            ),
+            (
+                "error-handling",
+                render_escalate_full,
+                |b, c| b.error_handling_coverage = c,
+                errhandling_admitting_coverage,
+                ESCALATE_ERROR_HANDLING_HEADING,
+                ERRHANDLING_ADMISSION,
+            ),
+            (
+                "callback-detection",
+                render_escalate_full,
+                |b, c| b.callback_coverage = c,
+                callback_admitting_coverage,
+                ESCALATE_CALLBACKS_HEADING,
+                CALLBACK_ADMISSION,
+            ),
+            (
+                "algorithm-recognition",
+                render_escalate_full,
+                |b, c| b.algorithm_coverage = c,
+                algorithm_admitting_coverage,
+                ESCALATE_RECOGNIZED_ALGORITHMS_HEADING,
+                ALGORITHM_ADMISSION,
+            ),
+            (
+                "string-context",
+                render_escalate_full,
+                |b, c| b.string_context_coverage = c,
+                stringctx_admitting_coverage,
+                ESCALATE_STRING_CONTEXT_HEADING,
+                STRINGCTX_ADMISSION,
+            ),
+            (
+                "serialization",
+                render_escalate_full,
+                |b, c| b.serialization_coverage = c,
+                serialize_admitting_coverage,
+                ESCALATE_SERIALIZATION_HEADING,
+                SERIALIZE_ADMISSION,
+            ),
+            (
+                // The empty type-inference admission surfaces on its
+                // convention and parameter-direction sections — the
+                // escalate heading the #351 pin established.
+                "type-inference",
+                render_escalate_full,
+                |b, c| b.type_inference_coverage = c,
+                typeinfer_admitting_coverage,
+                ESCALATE_CALLING_CONVENTION_HEADING,
+                TYPEINFER_ADMISSION,
+            ),
+        ];
+        for (engine, render, set_coverage, admitting, heading, admission) in rows {
+            let mut under_complete = EvidenceBundle::default();
+            set_coverage(
+                &mut under_complete,
+                CoverageInfo::from(&complete_coverage()),
+            );
+            assert_eq!(
+                render(&under_complete),
+                render(&EvidenceBundle::default()),
+                "{engine}: a complete record beside empty findings adds no bytes \
+                 to the render"
+            );
+            let mut under_falling_short = EvidenceBundle::default();
+            set_coverage(&mut under_falling_short, CoverageInfo::from(&admitting()));
+            assert_ne!(
+                render(&under_complete),
+                render(&under_falling_short),
+                "{engine}: empty findings under a complete record and under the \
+                 engine's falling-short record must never render the same bytes"
+            );
+            assert!(
+                render(&under_falling_short)
+                    .contains(&format!("## {heading}\n\nCoverage: {admission}\n\n")),
+                "{engine}: the falling-short side carries its one admission line \
+                 under its heading"
+            );
+        }
+
+        // The typesdb row, per its established shape (#348): the pair
+        // rides populated structures — complete adds nothing,
+        // falling-short adds its one line.
+        let mut structures = EvidenceBundle::default();
+        structures
+            .data_structures
+            .extend(data_structures_fixtures());
+        let unstamped = render_escalate_full(&structures);
+        structures.type_database_coverage = CoverageInfo::from(&complete_coverage());
+        let under_complete = render_escalate_full(&structures);
+        assert_eq!(
+            under_complete, unstamped,
+            "type-database: a complete record beside the structures adds no bytes"
+        );
+        structures.type_database_coverage = CoverageInfo::from(&typesdb_unavailable_coverage());
+        let under_falling_short = render_escalate_full(&structures);
+        assert_ne!(
+            under_complete, under_falling_short,
+            "type-database: findings under a complete record and under the \
+             engine's falling-short record must never render the same bytes"
+        );
+        assert!(
+            under_falling_short.contains(&format!("Coverage: {TYPESDB_ADMISSION}")),
+            "type-database: the falling-short side carries its one admission line \
+             beside the entries — its exact position is pinned by the #348 pair"
+        );
+    }
+
     /// Scans template source for `{% import "<path>" as <scope> %}`
     /// directives, returning each (path, scope) pair.
     fn imported_sections(source: &str) -> Vec<(&str, &str)> {
