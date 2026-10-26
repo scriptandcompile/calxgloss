@@ -52,7 +52,8 @@ The human who starts, stops, and steers the run, and whose overrides outrank the
 The run's ordered waiting list of units. The call graph sets the natural order; steering edits it.
 
 **Priority**:
-An operator-chosen elevation of a unit above the natural work order.
+An operator-chosen elevation of a unit above the natural work order, in two qualified surfaces: *scope priority* orders the run's work itself; *queue priority* (the reviewer's overlay elevation) only breaks ties between units at the same dependency depth.
+_Avoid_: bare priority where the two could be confused
 
 **Skip**:
 The operator's act of holding a unit out of translation work while the run goes on.
