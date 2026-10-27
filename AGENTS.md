@@ -44,7 +44,7 @@ no API key, $0).
 
 ### Coding standards
 
-Documented coding standards live in `docs/standards.md` — the Standards axis of the code-review skill checks diffs against it.
+Documented coding standards live in `docs/standards.md`. The code-review skill's Standards axis checks diffs against that file.
 
 ### Issue tracker
 
@@ -52,12 +52,12 @@ Issues and specs live in GitHub Issues at `scriptandcompile/calxgloss`, via the 
 
 ### Triage labels
 
-Default vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+The default triage label vocabulary is `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Multi-context: root `GLOSSARY-MAP.md` points to per-context `GLOSSARY.md` files (`crates/<context>/GLOSSARY.md`); ADRs in `docs/adr/` (system-wide) and `crates/<context>/docs/adr/` (context-scoped). See `docs/agents/domain.md`.
+Domain docs are split by context. The root `GLOSSARY-MAP.md` points to per-context `GLOSSARY.md` files (`crates/<context>/GLOSSARY.md`). ADRs live in `docs/adr/` (system-wide) and `crates/<context>/docs/adr/` (context-scoped). See `docs/agents/domain.md`.
 
 ### Commits
 
-Use plain English commits consisting of explanations of the work using the domain language terms.
+Write commit messages in plain English: explain the work using the domain terms from the glossaries.
