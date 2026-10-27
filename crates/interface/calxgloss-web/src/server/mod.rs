@@ -353,7 +353,7 @@ impl FromRef<CombinedState> for ActionsState {
 struct ClassificationResult {
     binary: BinaryIdentity,
     category: String,
-    strategy: String,
+    classification_strategy: String,
     crate_replacement: Option<String>,
     exported_symbols: usize,
     imported_symbols: usize,
@@ -421,7 +421,13 @@ pub struct ProgressEntry {
     pub binary: BinaryIdentity,
     pub function: String,
     pub attempt: u32,
-    pub strategy: String,
+    /// Retry strategy the current LLM-call attempt used — Pipeline's word,
+    /// never a batch outcome (issue #363). See [`outcome`](Self::outcome).
+    pub retry_strategy: String,
+    /// The outcome the batch recorded for this finished unit — `"batch_ok"`,
+    /// `"batch_failed"` or `"cancelled"` — its own leg, kept apart from the
+    /// retry strategy so neither name borrows the other's meaning.
+    pub outcome: Option<String>,
     pub started_at: std::time::Instant,
     /// The pipeline step this unit is currently in, derived from the latest
     /// phase-bearing `ProgressEvent`.
@@ -500,7 +506,7 @@ impl ProgressState {
             ProgressEvent::ClassificationComplete {
                 binary,
                 category,
-                strategy,
+                classification_strategy,
                 crate_replacement,
                 exported_symbols,
                 imported_symbols,
@@ -511,7 +517,7 @@ impl ProgressState {
                     ClassificationResult {
                         binary: binary.clone(),
                         category: category.clone(),
-                        strategy: strategy.clone(),
+                        classification_strategy: classification_strategy.clone(),
                         crate_replacement: crate_replacement.clone(),
                         exported_symbols: *exported_symbols,
                         imported_symbols: *imported_symbols,
@@ -621,7 +627,8 @@ impl ProgressState {
                 binary: unit.binary().clone(),
                 function: unit.function().to_string(),
                 attempt: 1,
-                strategy: String::new(),
+                retry_strategy: String::new(),
+                outcome: None,
                 started_at: std::time::Instant::now(),
                 phase,
                 phase_history: vec![PhaseRecord {
@@ -660,10 +667,12 @@ impl ProgressState {
 
             match event {
                 ProgressEvent::LlmCallStart {
-                    attempt, strategy, ..
+                    attempt,
+                    retry_strategy,
+                    ..
                 } => {
                     entry.attempt = *attempt;
-                    entry.strategy = strategy.clone();
+                    entry.retry_strategy = retry_strategy.clone();
                 }
                 // The tier the current attempt runs at; re-emitted on tier
                 // escalation, so the latest one wins.
@@ -713,23 +722,25 @@ impl ProgressState {
                 }
                 ProgressEvent::FunctionCompleted { success, .. } => {
                     // Batch-level completion marks the unit as done; the
-                    // strategy field records the outcome for the dashboard.
+                    // outcome leg names the result for the dashboard while
+                    // retry_strategy keeps naming the last attempt that ran
+                    // (issue #363).
                     entry.finished = true;
                     entry.succeeded = Some(*success);
-                    entry.strategy = if *success {
+                    entry.outcome = Some(if *success {
                         "batch_ok".to_string()
                     } else {
                         "batch_failed".to_string()
-                    };
+                    });
                 }
                 ProgressEvent::UnitCancelled { .. } => {
                     // The operator cancelled the in-flight unit (issue #91):
                     // terminal and failed like any other unfinished attempt,
-                    // but the strategy names why — the dashboard can tell a
+                    // but the outcome leg names why — the dashboard can tell a
                     // cancelled unit from one that simply failed.
                     entry.finished = true;
                     entry.succeeded = Some(false);
-                    entry.strategy = "cancelled".to_string();
+                    entry.outcome = Some("cancelled".to_string());
                 }
                 _ => {}
             }
@@ -754,7 +765,7 @@ impl ProgressState {
             .map(|v| super::ClassificationInfo {
                 binary: v.binary.clone(),
                 category: v.category.clone(),
-                strategy: v.strategy.clone(),
+                classification_strategy: v.classification_strategy.clone(),
                 crate_replacement: v.crate_replacement.clone(),
                 exported_symbols: v.exported_symbols,
                 imported_symbols: v.imported_symbols,

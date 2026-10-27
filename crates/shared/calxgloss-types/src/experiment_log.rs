@@ -13,9 +13,9 @@
 //! - A timestamp for when the entry was recorded
 //!
 //! These entries are collected into a [`PromptStrategyLog`] which can compute:
-//! - Pass rate per strategy per DLL category
+//! - Pass rate per retry strategy per DLL category
 //! - Total attempts, successes, and failures
-//! - Per-category and per-strategy aggregates
+//! - Per-category and per-retry-strategy aggregates
 //!
 //! The [`crate::analysis::PromptStrategyLogger`] handles persistence to
 //! `re/analysis/prompt_strategy_log.json`.
@@ -29,7 +29,7 @@
 //! let entry = PromptStrategyEntry {
 //!     binary: "game_logic.dll".into(),
 //!     dll_category: DllCategory::ProjectSpecific,
-//!     strategy: "compile_fix".to_string(),
+//!     retry_strategy: "compile_fix".to_string(),
 //!     success: false,
 //!     attempt: 1,
 //!     timestamp: 0, // set by logger
@@ -43,7 +43,7 @@ use crate::identity::BinaryIdentity;
 
 /// A single experiment entry recording the outcome of one translation attempt.
 ///
-/// Each entry captures which strategy was used, whether it succeeded, and
+/// Each entry captures which retry strategy was used, whether it succeeded, and
 /// which DLL category it operated on. The logger fills in the timestamp.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptStrategyEntry {
@@ -53,8 +53,12 @@ pub struct PromptStrategyEntry {
     /// The DLL classification category.
     pub dll_category: DllCategory,
 
-    /// The retry strategy label (e.g., `"compile_fix"`, `"test_fix"`, `"escalate"`).
-    pub strategy: String,
+    /// The attempt's retry-strategy label (`"compile_fix"`, `"test_fix"`,
+    /// `"escalate"`, …). The field stays a plain `String`, not the closed
+    /// [`crate::RetryStrategy`] set: the retry loop also labels its very
+    /// first attempt `"initial"` — not a re-attempt, so deliberately
+    /// outside that set (issue #363 reconciled the name; the set stays closed).
+    pub retry_strategy: String,
 
     /// Whether this attempt ultimately produced passing code.
     pub success: bool,
@@ -71,14 +75,14 @@ impl PromptStrategyEntry {
     pub fn new(
         binary: impl Into<BinaryIdentity>,
         dll_category: DllCategory,
-        strategy: impl Into<String>,
+        retry_strategy: impl Into<String>,
         success: bool,
         attempt: u32,
     ) -> Self {
         Self {
             binary: binary.into(),
             dll_category,
-            strategy: strategy.into(),
+            retry_strategy: retry_strategy.into(),
             success,
             attempt,
             timestamp: current_timestamp(),
@@ -89,7 +93,7 @@ impl PromptStrategyEntry {
 /// An aggregated view of experiment data across entries.
 ///
 /// This struct is produced by [`PromptStrategyLog::compute_stats`] and
-/// contains pass rates broken down by category and strategy.
+/// contains pass rates broken down by DLL category and retry strategy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptStrategyStats {
     /// Total entries in the log.
@@ -104,8 +108,8 @@ pub struct PromptStrategyStats {
     /// Per-category aggregates.
     pub by_category: Vec<CategoryStats>,
 
-    /// Per-strategy aggregates.
-    pub by_strategy: Vec<StrategyStats>,
+    /// Per-retry-strategy aggregates.
+    pub by_retry_strategy: Vec<StrategyStats>,
 }
 
 /// Pass rate statistics for a single DLL category.
@@ -126,11 +130,11 @@ pub struct CategoryStats {
 /// Pass rate statistics for a single retry strategy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyStats {
-    /// The strategy label.
-    pub strategy: String,
-    /// Total attempts using this strategy.
+    /// The retry-strategy label.
+    pub retry_strategy: String,
+    /// Total attempts using this retry strategy.
     pub total: usize,
-    /// Successful attempts using this strategy.
+    /// Successful attempts using this retry strategy.
     pub successes: usize,
     /// Failure rate (0.0–1.0).
     pub fail_rate: f64,
@@ -160,7 +164,7 @@ pub struct PromptStrategyTrim {
 
     /// Trimmed (total, successes) per retry strategy.
     #[serde(default)]
-    pub by_strategy: std::collections::HashMap<String, (usize, usize)>,
+    pub by_retry_strategy: std::collections::HashMap<String, (usize, usize)>,
 }
 
 impl PromptStrategyTrim {
@@ -183,8 +187,8 @@ impl PromptStrategyTrim {
             *suc += 1;
         }
         let (tot, suc) = self
-            .by_strategy
-            .entry(entry.strategy.clone())
+            .by_retry_strategy
+            .entry(entry.retry_strategy.clone())
             .or_insert((0, 0));
         *tot += 1;
         if entry.success {
@@ -273,28 +277,28 @@ impl PromptStrategyLog {
             })
             .collect();
 
-        // Group by strategy, merging the retained entries with the trimmed totals.
-        let mut strategy_map: std::collections::HashMap<String, (usize, usize)> =
+        // Group by retry strategy, merging the retained entries with the trimmed totals.
+        let mut retry_map: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
-            let (tot, suc) = strategy_map.entry(entry.strategy.clone()).or_insert((0, 0));
+            let (tot, suc) = retry_map.entry(entry.retry_strategy.clone()).or_insert((0, 0));
             *tot += 1;
             if entry.success {
                 *suc += 1;
             }
         }
-        for (strategy, (tot, suc)) in &self.trimmed.by_strategy {
-            let (acc_tot, acc_suc) = strategy_map.entry(strategy.clone()).or_insert((0, 0));
+        for (retry_strategy, (tot, suc)) in &self.trimmed.by_retry_strategy {
+            let (acc_tot, acc_suc) = retry_map.entry(retry_strategy.clone()).or_insert((0, 0));
             *acc_tot += tot;
             *acc_suc += suc;
         }
 
-        let by_strategy: Vec<StrategyStats> = strategy_map
+        let by_retry_strategy: Vec<StrategyStats> = retry_map
             .into_iter()
-            .map(|(strategy, (tot, suc))| {
+            .map(|(retry_strategy, (tot, suc))| {
                 let pass_rate = suc as f64 / tot as f64;
                 StrategyStats {
-                    strategy,
+                    retry_strategy,
                     total: tot,
                     successes: suc,
                     fail_rate: 1.0 - pass_rate,
@@ -308,7 +312,7 @@ impl PromptStrategyLog {
             total_successes: successes,
             total_failures: failures,
             by_category,
-            by_strategy,
+            by_retry_strategy,
         }
     }
 }
@@ -341,7 +345,7 @@ mod tests {
         );
         assert_eq!(entry.binary, "game_logic.dll");
         assert_eq!(entry.dll_category, DllCategory::ProjectSpecific);
-        assert_eq!(entry.strategy, "compile_fix");
+        assert_eq!(entry.retry_strategy, "compile_fix");
         assert!(!entry.success);
         assert_eq!(entry.attempt, 1);
         assert!(entry.timestamp > 0);
@@ -355,7 +359,7 @@ mod tests {
         assert_eq!(stats.total_successes, 0);
         assert_eq!(stats.total_failures, 0);
         assert!(stats.by_category.is_empty());
-        assert!(stats.by_strategy.is_empty());
+        assert!(stats.by_retry_strategy.is_empty());
     }
 
     #[test]
@@ -374,9 +378,9 @@ mod tests {
         assert_eq!(stats.total_successes, 1);
         assert_eq!(stats.total_failures, 0);
         assert_eq!(stats.by_category.len(), 1);
-        assert_eq!(stats.by_strategy.len(), 1);
+        assert_eq!(stats.by_retry_strategy.len(), 1);
         assert_eq!(stats.by_category[0].pass_rate, 1.0);
-        assert_eq!(stats.by_strategy[0].pass_rate, 1.0);
+        assert_eq!(stats.by_retry_strategy[0].pass_rate, 1.0);
     }
 
     #[test]
@@ -434,9 +438,9 @@ mod tests {
 
         // compile_fix: 1/3 = 0.333...
         let cf = stats
-            .by_strategy
+            .by_retry_strategy
             .iter()
-            .find(|s| s.strategy == "compile_fix")
+            .find(|s| s.retry_strategy == "compile_fix")
             .unwrap();
         assert_eq!(cf.total, 3);
         assert_eq!(cf.successes, 1);
@@ -444,9 +448,9 @@ mod tests {
 
         // test_fix: 1/2 = 0.5
         let tf = stats
-            .by_strategy
+            .by_retry_strategy
             .iter()
-            .find(|s| s.strategy == "test_fix")
+            .find(|s| s.retry_strategy == "test_fix")
             .unwrap();
         assert_eq!(tf.total, 2);
         assert_eq!(tf.successes, 1);
@@ -454,9 +458,9 @@ mod tests {
 
         // escalate: 1/1 = 1.0
         let es = stats
-            .by_strategy
+            .by_retry_strategy
             .iter()
-            .find(|s| s.strategy == "escalate")
+            .find(|s| s.retry_strategy == "escalate")
             .unwrap();
         assert_eq!(es.total, 1);
         assert_eq!(es.successes, 1);
@@ -480,7 +484,7 @@ mod tests {
 
         assert_eq!(deserialized.entries.len(), 1);
         assert_eq!(deserialized.entries[0].binary, "game_logic.dll");
-        assert_eq!(deserialized.entries[0].strategy, "compile_fix");
+        assert_eq!(deserialized.entries[0].retry_strategy, "compile_fix");
         assert!(!deserialized.entries[0].success);
         assert_eq!(deserialized.entries[0].attempt, 1);
     }
@@ -504,10 +508,10 @@ mod tests {
         assert_eq!(deserialized.total_entries, 1);
         assert_eq!(deserialized.total_successes, 1);
         assert_eq!(deserialized.by_category.len(), 1);
-        assert_eq!(deserialized.by_strategy.len(), 1);
+        assert_eq!(deserialized.by_retry_strategy.len(), 1);
     }
 
-    /// Build a varied entry for cap tests — binary, category, strategy and
+    /// Build a varied entry for cap tests — binary, category, retry strategy and
     /// success all cycle so aggregates can't match by accident.
     fn make_strategy_entry(i: usize) -> PromptStrategyEntry {
         PromptStrategyEntry::new(
@@ -535,7 +539,7 @@ mod tests {
     /// so two equal aggregates compare equal regardless of map order.
     fn sorted_stats_value(stats: PromptStrategyStats) -> serde_json::Value {
         let mut value = serde_json::to_value(stats).expect("serialize stats");
-        for (array_key, name_key) in [("by_category", "category"), ("by_strategy", "strategy")] {
+        for (array_key, name_key) in [("by_category", "category"), ("by_retry_strategy", "retry_strategy")] {
             value[array_key]
                 .as_array_mut()
                 .expect("breakdown is an array")
@@ -608,7 +612,7 @@ mod tests {
     #[test]
     fn test_log_without_trimmed_field_stays_compatible() {
         // Experiment logs written before the cap (issue #82) carry no `trimmed` field.
-        let json = r#"{"entries":[{"binary":"test.dll","dll_category":"ProjectSpecific","strategy":"initial","success":true,"attempt":1,"timestamp":1700000000}]}"#;
+        let json = r#"{"entries":[{"binary":"test.dll","dll_category":"ProjectSpecific","retry_strategy":"initial","success":true,"attempt":1,"timestamp":1700000000}]}"#;
         let log: PromptStrategyLog =
             serde_json::from_str(json).expect("old experiment logs must still load");
         assert_eq!(log.entries.len(), 1);

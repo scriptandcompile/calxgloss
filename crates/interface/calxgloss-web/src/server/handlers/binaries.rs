@@ -175,7 +175,7 @@ fn in_force_decision(
         },
         None => InForceDecision {
             category: record.category.clone(),
-            strategy: record.strategy.clone(),
+            strategy: record.classification_strategy.clone(),
             crate_replacement: record.crate_replacement.clone(),
             reason: recorded_reason.map(str::to_string),
             overridden: false,
@@ -942,7 +942,7 @@ mod tests {
         let record = ClassificationInfo {
             binary: "d3d9.dll".into(),
             category: "MicrosoftSdk".into(),
-            strategy: "CrateReplacement".into(),
+            classification_strategy: "CrateReplacement".into(),
             crate_replacement: Some("wgpu".into()),
             exported_symbols: 100,
             imported_symbols: 5,
@@ -981,7 +981,7 @@ mod tests {
         let record = ClassificationInfo {
             binary: "game_logic.dll".into(),
             category: "ProjectSpecific".into(),
-            strategy: "ReverseEngineer".into(),
+            classification_strategy: "ReverseEngineer".into(),
             crate_replacement: Some("recorded-crate".into()),
             exported_symbols: 1,
             imported_symbols: 1,

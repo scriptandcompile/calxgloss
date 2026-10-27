@@ -1164,7 +1164,7 @@ async fn test_pipeline_binary_start_refusals() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "done.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 10,
         imported_symbols: 4,
@@ -2259,7 +2259,7 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
         .expect("the cancelled unit is tracked");
     assert!(entry.finished, "the cancelled unit is terminal");
     assert_eq!(entry.succeeded, Some(false), "recorded as failed");
-    assert_eq!(entry.strategy, "cancelled", "recorded as cancelled");
+    assert_eq!(entry.outcome.as_deref(), Some("cancelled"), "recorded as cancelled");
 
     // The run itself is untouched — still running, and it moves on: the
     // pipeline ends the unit, starts the next, and that one can be
@@ -2337,7 +2337,7 @@ async fn test_ws_pushes_unit_phase_records() {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
-            strategy: "decompose".into(),
+            retry_strategy: "decompose".into(),
         },
         ProgressEvent::TranslationCompleted {
             binary: "game_logic.dll".into(),
@@ -4145,7 +4145,7 @@ async fn test_pipeline_phases_from_canned_events() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "dinput8.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 10,
         imported_symbols: 4,
@@ -4153,7 +4153,7 @@ async fn test_pipeline_phases_from_canned_events() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "PalMapping".into(),
+        classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 25,
         imported_symbols: 6,
@@ -4194,7 +4194,7 @@ async fn test_pipeline_phases_from_canned_events() {
         compiled: true,
         tests_passed: 3,
         tests_total: 3,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         tokens_used: Some(4000),
         compilation_errors: vec![],
         failed_tests: vec![],
@@ -4345,7 +4345,7 @@ async fn test_pipeline_phases_from_canned_events() {
 
     // d3d9: classified via PAL, batch pass in flight — no fabricated totals.
     let b = &binaries[2];
-    assert_eq!(b["strategy"], "PalMapping");
+    assert_eq!(b["classification_strategy"], "PalMapping");
     assert_eq!(
         b["processing"], true,
         "a started batch pass marks the binary as being worked on: {b}"
@@ -4447,14 +4447,14 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     // The previously classified binary hydrates from disk.
     let b = binary("eqmain.dll");
     assert_eq!(b["category"], "ProjectSpecific");
-    assert_eq!(b["strategy"], "ReverseEngineer");
+    assert_eq!(b["classification_strategy"], "ReverseEngineer");
     assert_eq!(b["processing"], false);
 
     // A tagged-object strategy hydrates to its variant name — not an
     // empty string that the UI would render as "Unclassified".
     let b = binary("steam_api64.dll");
     assert_eq!(b["category"], "KnownThirdParty");
-    assert_eq!(b["strategy"], "CrateReplacement");
+    assert_eq!(b["classification_strategy"], "CrateReplacement");
     assert_eq!(b["crate_replacement"], "steamworks");
 
     // Aggregate counts see both sources honestly.
@@ -4664,7 +4664,7 @@ async fn test_pipeline_pal_binaries_sort_last() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "PalMapping".into(),
+        classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 25,
         imported_symbols: 6,
@@ -4672,7 +4672,7 @@ async fn test_pipeline_pal_binaries_sort_last() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "dinput8.dll".into(),
         category: "MicrosoftSdk".into(),
-        strategy: "CrateReplacement".into(),
+        classification_strategy: "CrateReplacement".into(),
         crate_replacement: Some("dinput8-rs".into()),
         exported_symbols: 10,
         imported_symbols: 2,
@@ -4743,7 +4743,7 @@ async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "fmod.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "PalMapping".into(),
+        classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 0,
         imported_symbols: 1,
@@ -4751,7 +4751,7 @@ async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "ProjectSpecific".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 0,
         imported_symbols: 1,
@@ -4941,7 +4941,7 @@ async fn test_pipeline_pal_readiness_recomputes_per_poll() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "ProjectSpecific".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 0,
         imported_symbols: 1,
@@ -5372,13 +5372,13 @@ async fn test_progress_reports_phase_history() {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
         },
         ProgressEvent::LlmCallFailed {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
             error: "context window exceeded".into(),
         },
         tier("T2"),
@@ -5386,7 +5386,7 @@ async fn test_progress_reports_phase_history() {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
-            strategy: "decompose".into(),
+            retry_strategy: "decompose".into(),
         },
         ProgressEvent::LlmCallComplete {
             binary: "game_logic.dll".into(),
@@ -5405,7 +5405,7 @@ async fn test_progress_reports_phase_history() {
             tests_total: 5,
             compilation_errors: vec![],
             failed_tests: vec![],
-            strategy: "decompose".into(),
+            retry_strategy: "decompose".into(),
             tokens_used: None,
         },
         // A second unit that runs to completion: TranslationCompleted moves
@@ -5442,7 +5442,7 @@ async fn test_progress_reports_phase_history() {
         .expect("DrawPrimitive unit present");
     assert_eq!(unit["binary"].as_str(), Some("game_logic.dll"));
     assert_eq!(unit["attempt"].as_u64(), Some(2));
-    assert_eq!(unit["strategy"].as_str(), Some("decompose"));
+    assert_eq!(unit["retry_strategy"].as_str(), Some("decompose"));
     // Current phase: the attempt completed, so the unit is testing.
     assert_eq!(unit["phase"].as_str(), Some("testing"));
     assert_eq!(unit["finished"].as_bool(), Some(false));
@@ -5536,7 +5536,7 @@ async fn test_progress_enhanced_reports_live_records() {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
-            strategy: "decompose".into(),
+            retry_strategy: "decompose".into(),
         },
         ProgressEvent::TranslationAttemptCompleted {
             binary: "game_logic.dll".into(),
@@ -5548,14 +5548,14 @@ async fn test_progress_enhanced_reports_live_records() {
             tests_total: 5,
             compilation_errors: vec![],
             failed_tests: vec![],
-            strategy: "decompose".into(),
+            retry_strategy: "decompose".into(),
             tokens_used: None,
         },
         ProgressEvent::BehaviorDivergenceDetected {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
-            strategy: "decompose".into(),
+            retry_strategy: "decompose".into(),
             baseline_passed: 4,
             baseline_total: 5,
             edge_tests_passed: 2,
@@ -5585,7 +5585,7 @@ async fn test_progress_enhanced_reports_live_records() {
             binary: "kernel32.dll".into(),
             function: "FailedUnit".into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
         },
         ProgressEvent::TranslationAttemptCompleted {
             binary: "kernel32.dll".into(),
@@ -5597,7 +5597,7 @@ async fn test_progress_enhanced_reports_live_records() {
             tests_total: 3,
             compilation_errors: vec!["unresolved symbol".into()],
             failed_tests: vec![],
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
             tokens_used: None,
         },
         ProgressEvent::TranslationFailed {
@@ -5844,20 +5844,20 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
     });
     events.emit(ProgressEvent::LlmRequest {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         prompt: "translate DrawPrimitive".into(),
     });
     events.emit(ProgressEvent::LlmResponse {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         content: "fn draw_primitive() {}".into(),
         tokens_used: Some(4321),
     });
@@ -5865,7 +5865,7 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         attempt: 2,
-        strategy: "retry".into(),
+        retry_strategy: "retry".into(),
         error: "connection reset".into(),
     });
 
@@ -5897,7 +5897,7 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
     assert_eq!(request["binary"], "game_logic.dll");
     assert_eq!(request["function"], "DrawPrimitive");
     assert_eq!(request["attempt"], 1);
-    assert_eq!(request["strategy"], "direct");
+    assert_eq!(request["retry_strategy"], "direct");
     assert_eq!(request["content"], "translate DrawPrimitive");
     assert!(request["timestamp"].as_u64().expect("timestamp") > 0);
 
@@ -5910,7 +5910,7 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
     assert_eq!(failure["type"], "error");
     assert_eq!(failure["function"], "UpdateScene");
     assert_eq!(failure["attempt"], 2);
-    assert_eq!(failure["strategy"], "retry");
+    assert_eq!(failure["retry_strategy"], "retry");
     assert_eq!(failure["content"], "connection reset");
 }
 
@@ -5933,14 +5933,14 @@ async fn test_llm_io_clear_empties_the_persisted_log() {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         prompt: "translate DrawPrimitive".into(),
     });
     log.record(&ProgressEvent::LlmResponse {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         content: "fn draw_primitive() {}".into(),
         tokens_used: Some(4321),
     });
@@ -6816,7 +6816,7 @@ fn strategy_entry(
     serde_json::json!({
         "binary": binary,
         "dll_category": dll_category,
-        "strategy": strategy,
+        "retry_strategy": strategy,
         "success": success,
         "attempt": attempt,
         "timestamp": timestamp,
@@ -11876,7 +11876,7 @@ async fn test_headless_pipeline_phase_bar_live() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "PalMapping".into(),
+        classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 25,
         imported_symbols: 6,
@@ -11988,7 +11988,7 @@ async fn test_headless_pipeline_binary_rows() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "PalMapping".into(),
+        classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 25,
         imported_symbols: 6,
@@ -11996,7 +11996,7 @@ async fn test_headless_pipeline_binary_rows() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "dinput8.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "CrateReplacement".into(),
+        classification_strategy: "CrateReplacement".into(),
         crate_replacement: Some("wgpu".into()),
         exported_symbols: 10,
         imported_symbols: 4,
@@ -12008,7 +12008,7 @@ async fn test_headless_pipeline_binary_rows() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "engine.dll".into(),
         category: "ProjectSpecific".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 40,
         imported_symbols: 12,
@@ -12369,7 +12369,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "audio.dll".into(),
         category: "WindowsOs".into(),
-        strategy: "PalMapping".into(),
+        classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 3,
         imported_symbols: 2,
@@ -12528,7 +12528,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "ProjectSpecific".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 25,
         imported_symbols: 6,
@@ -13509,7 +13509,7 @@ async fn test_headless_scope_controls_panel() {
         events.emit(ProgressEvent::ClassificationComplete {
             binary: binary.into(),
             category: category.into(),
-            strategy: "ReverseEngineer".into(),
+            classification_strategy: "ReverseEngineer".into(),
             crate_replacement: None,
             exported_symbols: 1,
             imported_symbols: 0,
@@ -14500,7 +14500,7 @@ async fn test_headless_classification_override_panel() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "fmod.dll".into(),
         category: "UnknownThirdParty".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 10,
         imported_symbols: 4,
@@ -14634,7 +14634,7 @@ async fn test_headless_classification_override_honest_without_control() {
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "fmod.dll".into(),
         category: "UnknownThirdParty".into(),
-        strategy: "ReverseEngineer".into(),
+        classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 10,
         imported_symbols: 4,
@@ -15703,14 +15703,14 @@ async fn test_headless_llm_log_browser() {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         prompt: "translate DrawPrimitive from the decompile".into(),
     });
     log.record(&ProgressEvent::LlmResponse {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         content: "fn draw_primitive() {}".into(),
         tokens_used: Some(4321),
     });
@@ -15718,7 +15718,7 @@ async fn test_headless_llm_log_browser() {
         binary: "d3d9.dll".into(),
         function: "UpdateScene".into(),
         attempt: 2,
-        strategy: "compile_fix".into(),
+        retry_strategy: "compile_fix".into(),
         prompt: "fix the compile errors in UpdateScene".into(),
     });
 
@@ -15855,14 +15855,14 @@ async fn test_headless_llm_log_browser() {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         attempt: 3,
-        strategy: "direct".into(),
+        retry_strategy: "direct".into(),
         prompt: "translate UpdateScene".into(),
     });
     events.emit(ProgressEvent::LlmCallFailed {
         binary: "d3d9.dll".into(),
         function: "UpdateScene".into(),
         attempt: 4,
-        strategy: "retry".into(),
+        retry_strategy: "retry".into(),
         error: "connection reset".into(),
     });
     let mut appended = false;
@@ -15940,7 +15940,7 @@ async fn test_headless_live_view_renders_and_updates() {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
-            strategy: "decompose".into(),
+            retry_strategy: "decompose".into(),
         },
     ] {
         events.emit(event);
@@ -16028,7 +16028,7 @@ async fn test_headless_live_view_renders_and_updates() {
         tests_total: 3,
         compilation_errors: vec![],
         failed_tests: vec![],
-        strategy: "decompose".into(),
+        retry_strategy: "decompose".into(),
         tokens_used: None,
     });
     events.emit(ProgressEvent::TranslationCompleted {

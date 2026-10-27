@@ -161,7 +161,7 @@ pub async fn handle_translate(
             compiled = attempt.compiled,
             tests_passed = attempt.tests_passed,
             tests_total = attempt.tests_total,
-            strategy = %attempt.strategy,
+            retry_strategy = %attempt.retry_strategy,
             "Processing attempt"
         );
 
@@ -174,10 +174,10 @@ pub async fn handle_translate(
         println!(
             "\n{}",
             yellow_bold(&format!(
-                "Attempt {}/{} (strategy: {}) — {}",
+                "Attempt {}/{} (retry strategy: {}) — {}",
                 attempt.attempt,
                 pass.retry.max_attempts,
-                attempt.strategy,
+                attempt.retry_strategy,
                 if attempt.is_successful() {
                     green_bold("PASS")
                 } else {
@@ -233,8 +233,8 @@ pub async fn handle_translate(
                 .commit(
                     branch_info,
                     &format!(
-                        "re/translation/{}: translate {} (attempt {}, strategy: {})",
-                        function, binary, attempt.attempt, attempt.strategy
+                        "re/translation/{}: translate {} (attempt {}, retry strategy: {})",
+                        function, binary, attempt.attempt, attempt.retry_strategy
                     ),
                     &[&output_path_str],
                 )

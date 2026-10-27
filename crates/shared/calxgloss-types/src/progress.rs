@@ -93,7 +93,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
     },
     /// LLM call completed with generated code.
     LlmCallComplete {
@@ -109,7 +109,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
         /// The prompt text that will be sent to the LLM.
         prompt: String,
     },
@@ -118,7 +118,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
         /// The raw text content returned by the LLM.
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,8 +141,8 @@ pub enum ProgressEvent {
         /// Failing test summaries (if tests failed).
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         failed_tests: Vec<String>,
-        /// Which strategy produced this attempt.
-        strategy: String,
+        /// The retry strategy that produced this attempt.
+        retry_strategy: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         tokens_used: Option<usize>,
     },
@@ -157,7 +157,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         total_attempts: usize,
-        /// Which strategy ultimately succeeded.
+        /// Which retry strategy ultimately succeeded.
         #[serde(skip_serializing_if = "Option::is_none")]
         success_strategy: Option<String>,
     },
@@ -167,7 +167,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
         /// How many seconds the call has been running.
         elapsed_secs: u64,
     },
@@ -176,7 +176,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
         /// The error message from the LLM client.
         error: String,
     },
@@ -185,8 +185,8 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         /// The assigned category.
         category: String,
-        /// The strategy used.
-        strategy: String,
+        /// The classification strategy assigned.
+        classification_strategy: String,
         /// Crate replacement target (if any).
         #[serde(skip_serializing_if = "Option::is_none")]
         crate_replacement: Option<String>,
@@ -264,7 +264,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
         /// The names of the hallucinated API/function references.
         hallucinated_apis: Vec<String>,
     },
@@ -278,7 +278,7 @@ pub enum ProgressEvent {
         streak: usize,
         streak_start_attempt: u32,
         streak_end_attempt: u32,
-        strategy: String,
+        retry_strategy: String,
     },
     /// Behavior divergence detected — baseline tests pass but edge-case
     /// tests fail.
@@ -290,7 +290,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
         /// Baseline tests that passed.
         baseline_passed: usize,
         baseline_total: usize,
@@ -312,7 +312,7 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
         attempt: u32,
-        strategy: String,
+        retry_strategy: String,
         /// Why the model was considered exhausted.
         reason: String,
         /// How many seconds the call ran before the detector gave up.
@@ -482,11 +482,11 @@ impl std::fmt::Display for ProgressEvent {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
             } => {
                 write!(
                     f,
-                    "LLM call #{attempt} ({strategy}) for {function} ({binary})"
+                    "LLM call #{attempt} ({retry_strategy}) for {function} ({binary})"
                 )
             }
             ProgressEvent::LlmCallComplete {
@@ -505,25 +505,25 @@ impl std::fmt::Display for ProgressEvent {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 ..
             } => {
                 write!(
                     f,
-                    "LLM prompt sent: {function} ({binary}) attempt #{attempt} [{strategy}]"
+                    "LLM prompt sent: {function} ({binary}) attempt #{attempt} [{retry_strategy}]"
                 )
             }
             ProgressEvent::LlmResponse {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 content,
                 ..
             } => {
                 write!(
                     f,
-                    "LLM response received: {function} ({binary}) attempt #{attempt} [{strategy}] — {} chars",
+                    "LLM response received: {function} ({binary}) attempt #{attempt} [{retry_strategy}] — {} chars",
                     content.len()
                 )
             }
@@ -568,24 +568,24 @@ impl std::fmt::Display for ProgressEvent {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 error,
             } => {
                 write!(
                     f,
-                    "LLM call failed for {function} ({binary}) attempt #{attempt} [{strategy}]: {error}"
+                    "LLM call failed for {function} ({binary}) attempt #{attempt} [{retry_strategy}]: {error}"
                 )
             }
             ProgressEvent::LlmCallInProgress {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 elapsed_secs,
             } => {
                 write!(
                     f,
-                    "LLM call still in progress — {function} ({binary}) attempt #{attempt} [{strategy}] ({elapsed_secs}s elapsed)"
+                    "LLM call still in progress — {function} ({binary}) attempt #{attempt} [{retry_strategy}] ({elapsed_secs}s elapsed)"
                 )
             }
             ProgressEvent::ClassificationComplete {
@@ -656,12 +656,12 @@ impl std::fmt::Display for ProgressEvent {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 hallucinated_apis,
             } => {
                 write!(
                     f,
-                    "Hallucination detected for {function} ({binary}) attempt #{attempt} [{strategy}]: {} non-existent API(s) found",
+                    "Hallucination detected for {function} ({binary}) attempt #{attempt} [{retry_strategy}]: {} non-existent API(s) found",
                     hallucinated_apis.len()
                 )
             }
@@ -671,11 +671,11 @@ impl std::fmt::Display for ProgressEvent {
                 streak,
                 streak_start_attempt,
                 streak_end_attempt,
-                strategy,
+                retry_strategy,
             } => {
                 write!(
                     f,
-                    "Infinite loop detected for {function} ({binary}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{strategy}]",
+                    "Infinite loop detected for {function} ({binary}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{retry_strategy}]",
                     streak
                 )
             }
@@ -683,7 +683,7 @@ impl std::fmt::Display for ProgressEvent {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 baseline_passed,
                 baseline_total,
                 edge_tests_passed,
@@ -693,7 +693,7 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Behavior divergence detected for {function} ({binary}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, fault confidence {}/10)",
+                    "Behavior divergence detected for {function} ({binary}) attempt #{attempt} [{retry_strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, fault confidence {}/10)",
                     failing_edge_cases.len(),
                     fault_confidence
                 )
@@ -702,14 +702,14 @@ impl std::fmt::Display for ProgressEvent {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 reason,
                 elapsed_secs,
                 recommended_backoff_secs,
             } => {
                 write!(
                     f,
-                    "Resource exhaustion for {function} ({binary}) attempt #{attempt} [{strategy}]: {reason} ({elapsed_secs}s elapsed, backoff {recommended_backoff_secs}s)"
+                    "Resource exhaustion for {function} ({binary}) attempt #{attempt} [{retry_strategy}]: {reason} ({elapsed_secs}s elapsed, backoff {recommended_backoff_secs}s)"
                 )
             }
             ProgressEvent::PipelineStateChanged { previous, state } => {
@@ -1419,7 +1419,7 @@ mod tests {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
         };
         assert_eq!(
             unit_event.unit_key(),
@@ -1581,27 +1581,27 @@ mod tests {
                 binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
             },
             ProgressEvent::LlmRequest {
                 binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
                 prompt: "…".into(),
             },
             ProgressEvent::LlmCallInProgress {
                 binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
                 elapsed_secs: 5,
             },
             ProgressEvent::LlmResponse {
                 binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
                 content: "fn f() {}".into(),
                 tokens_used: None,
             },
@@ -1622,7 +1622,7 @@ mod tests {
                 tests_total: 5,
                 compilation_errors: vec![],
                 failed_tests: vec![],
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
                 tokens_used: None,
             },
             ProgressEvent::TranslationCompleted {
@@ -1670,7 +1670,7 @@ mod tests {
             binary: "d".into(),
             function: "f".into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
             error: "context window exceeded".into(),
         });
         let escalated = phase_of(ProgressEvent::ContextTierSelected {
@@ -1693,7 +1693,7 @@ mod tests {
                 binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
                 error: "timeout".into(),
             },
             ProgressEvent::TranslationFailed {
@@ -1712,7 +1712,7 @@ mod tests {
                 binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
                 hallucinated_apis: vec!["FakeApi".into()],
             },
             ProgressEvent::InfiniteLoopDetected {
@@ -1721,13 +1721,13 @@ mod tests {
                 streak: 3,
                 streak_start_attempt: 1,
                 streak_end_attempt: 3,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
             },
             ProgressEvent::BehaviorDivergenceDetected {
                 binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
-                strategy: "direct".into(),
+                retry_strategy: "direct".into(),
                 baseline_passed: 5,
                 baseline_total: 5,
                 edge_tests_passed: 1,
@@ -1738,7 +1738,7 @@ mod tests {
             ProgressEvent::ClassificationComplete {
                 binary: "d".into(),
                 category: "MicrosoftSdk".into(),
-                strategy: "crate_replacement".into(),
+                classification_strategy: "crate_replacement".into(),
                 crate_replacement: None,
                 exported_symbols: 1,
                 imported_symbols: 2,

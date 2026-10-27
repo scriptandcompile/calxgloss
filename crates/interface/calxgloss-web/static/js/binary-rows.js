@@ -79,9 +79,9 @@ function matchStrategy(strategy) {
 // Unclassified binaries report "Unclassified"; an unknown strategy
 // string renders honestly as-is rather than being guessed at.
 function shimStatus(b) {
-    const match = matchStrategy(b.strategy);
+    const match = matchStrategy(b.classification_strategy);
     if (match) return match.shim(b);
-    return { kind: "unknown", text: b.strategy || "Unclassified" };
+    return { kind: "unknown", text: b.classification_strategy || "Unclassified" };
 }
 
 // The compact PAL row (issue #244) branches on the same PalMapping
@@ -89,7 +89,7 @@ function shimStatus(b) {
 // A PAL binary is never a translation target, so its row tracks
 // classification and trait readiness instead of translation progress.
 function isPalRow(b) {
-    return matchStrategy(b.strategy)?.key === "PalMapping";
+    return matchStrategy(b.classification_strategy)?.key === "PalMapping";
 }
 
 // The compact row's state cell reads like a crate-replacement row's

@@ -73,7 +73,7 @@ pub(crate) fn log_token_usage(
     dll_name: &str,
     function: &str,
     attempt_num: u32,
-    strategy: &str,
+    retry_strategy: &str,
     tokens_used: Option<usize>,
     success: bool,
     workspace: Option<&std::path::Path>,
@@ -92,7 +92,7 @@ pub(crate) fn log_token_usage(
         dll_name,
         function,
         attempt_num,
-        strategy,
+        retry_strategy,
         tokens,
         success,
         context_tier,
@@ -174,10 +174,10 @@ pub(crate) struct FixPromptRequest<'a> {
 /// and template rendering. `Default` never comes through: re-sending the
 /// original prompt is selection, and the loop-side skip arm owns it.
 pub(crate) async fn build_fix_prompt(
-    strategy: RetryStrategy,
+    retry_strategy: RetryStrategy,
     req: &FixPromptRequest<'_>,
 ) -> String {
-    match strategy {
+    match retry_strategy {
         RetryStrategy::CompileFix => compile_fix::fix_prompt(req),
         RetryStrategy::TestFix => prompts::test_fix_prompt(req),
         RetryStrategy::Escalate => escalate::escalate_prompt(req).await,
@@ -207,7 +207,7 @@ mod tests {
             tests_passed: 0,
             tests_total: 1,
             failed_tests: vec!["Test 0: expected 4, got 5 \u{2014} mismatch".to_string()],
-            strategy: "test_fix".to_string(),
+            retry_strategy: "test_fix".to_string(),
             tokens_used: Some(9),
             context_tier: Some("Signature".to_string()),
         });
@@ -250,7 +250,7 @@ mod tests {
             tests_passed: 0,
             tests_total: 0,
             failed_tests: Vec::new(),
-            strategy: "compile_fix".to_string(),
+            retry_strategy: "compile_fix".to_string(),
             tokens_used: Some(9),
             context_tier: Some("Signature".to_string()),
         });

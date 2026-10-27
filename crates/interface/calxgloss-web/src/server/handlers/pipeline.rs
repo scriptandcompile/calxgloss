@@ -41,7 +41,8 @@ pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<Pro
                 binary: e.binary.clone(),
                 function: e.function.clone(),
                 attempt: e.attempt,
-                strategy: e.strategy.clone(),
+                retry_strategy: e.retry_strategy.clone(),
+                outcome: e.outcome.clone(),
                 phase: e.phase,
                 phase_history: e.phase_history.clone(),
                 finished: e.finished,
@@ -114,9 +115,9 @@ pub(crate) fn live_unit_progress(e: &ProgressEntry) -> LiveUnitProgress {
         phase_history: e.phase_history.clone(),
         elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
         attempt: e.attempt,
-        // An entry starts with an empty strategy; no strategy named yet
+        // An entry starts with an empty retry strategy; none named yet
         // means none to report, not a blank one.
-        retry_strategy: (!e.strategy.is_empty()).then(|| e.strategy.clone()),
+        retry_strategy: (!e.retry_strategy.is_empty()).then(|| e.retry_strategy.clone()),
         context_tier: e.context_tier.clone(),
         tier_label: e.tier_label.clone(),
         baseline: baseline.clone(),
@@ -125,6 +126,7 @@ pub(crate) fn live_unit_progress(e: &ProgressEntry) -> LiveUnitProgress {
         unit_confidence: derive_unit_confidence(e.compiled, &baseline),
         finished: e.finished,
         succeeded: e.succeeded,
+        outcome: e.outcome.clone(),
     }
 }
 
@@ -222,7 +224,7 @@ pub async fn api_get_pipeline(
         let is_pal = |d: &BinaryIdentity| {
             classifications
                 .get(d)
-                .is_some_and(|c| is_pal_strategy(&c.strategy))
+                .is_some_and(|c| is_pal_strategy(&c.classification_strategy))
         };
         // Issue #284: a pending focus reads as the front of the plan — the
         // live loop hoists it at the next binary boundary, and the served
@@ -315,7 +317,7 @@ pub async fn api_get_pipeline(
     let has_pal_row = dll_names_vec.iter().any(|d| {
         classifications
             .get(d)
-            .is_some_and(|c| is_pal_strategy(&c.strategy))
+            .is_some_and(|c| is_pal_strategy(&c.classification_strategy))
     });
     let pal_sources = has_pal_row
         .then(|| super::binaries::generated_pal_source_texts(combined.server.repo_path()));
@@ -334,7 +336,10 @@ pub async fn api_get_pipeline(
             // The summary rides only PalMapping rows; the per-binary
             // artifact reads stay bounded to those rows. No derived
             // trait means no summary — never a fabricated empty one.
-            if row.strategy.as_deref().is_some_and(is_pal_strategy) {
+            if row.classification_strategy
+                .as_deref()
+                .is_some_and(is_pal_strategy)
+            {
                 let categories = super::binaries::recorded_api_categories(
                     combined.server.repo_path(),
                     row.binary.as_str(),
@@ -424,7 +429,7 @@ pub(crate) fn disk_classifications(
             ClassificationInfo {
                 binary: binary.to_string().into(),
                 category: category.to_string(),
-                strategy,
+                classification_strategy: strategy,
                 crate_replacement: value
                     .get("crate_replacement")
                     .and_then(|v| v.as_str())
@@ -570,7 +575,7 @@ fn derive_phases(
         .filter(|binary| {
             classifications
                 .get(*binary)
-                .is_some_and(|c| is_pal_strategy(&c.strategy))
+                .is_some_and(|c| is_pal_strategy(&c.classification_strategy))
         })
         .collect();
 
@@ -705,7 +710,7 @@ fn derive_binaries(
             BinaryProgress {
                 binary: binary.clone(),
                 category: classification.map(|c| c.category.clone()),
-                strategy: classification.map(|c| c.strategy.clone()),
+                classification_strategy: classification.map(|c| c.classification_strategy.clone()),
                 crate_replacement: classification.and_then(|c| c.crate_replacement.clone()),
                 functions_total,
                 functions_translated,

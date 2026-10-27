@@ -71,7 +71,7 @@ pub async fn try_translate_with_retry(
 ) -> RetryResult {
     let mut result = RetryResult::new();
     let max = ctx.config.max_attempts;
-    let mut current_strategy = ctx.config.strategy;
+    let mut current_strategy = ctx.config.retry_strategy;
     let mut current_tier = initial_translation.context_tier;
     // W2.5: an operator `max_context_tier` constraint also caps the starting
     // tier — retries rebuild their prompts no higher than the cap.
@@ -225,7 +225,7 @@ pub async fn try_translate_with_retry(
                         tests_passed: 0,
                         tests_total: 0,
                         failed_tests: Vec::new(),
-                        strategy: format!("tier_escalation_failed({})", current_tier.label()),
+                        retry_strategy: format!("tier_escalation_failed({})", current_tier.label()),
                         tokens_used: None,
                         context_tier: Some(current_tier.label().to_string()),
                     });
@@ -297,7 +297,7 @@ pub async fn try_translate_with_retry(
                 tests_passed: 0,
                 tests_total: 0,
                 failed_tests: Vec::new(),
-                strategy: "skip_default".to_string(),
+                retry_strategy: "skip_default".to_string(),
                 tokens_used: None,
                 context_tier: Some(current_tier.label().to_string()),
             });
@@ -425,7 +425,7 @@ pub(crate) fn llm_call_with_keepalive<'a>(
     binary: &'a calxgloss_types::BinaryIdentity,
     function: &'a str,
     attempt_num: u32,
-    strategy: &str,
+    retry_strategy: &str,
     events: Option<&'a TranslationEvents>,
 ) -> impl std::future::Future<Output = Result<calxgloss_llm::LlmResponse, LlmError>> + 'a {
     let binary = binary.clone();
@@ -433,7 +433,7 @@ pub(crate) fn llm_call_with_keepalive<'a>(
     let messages = messages.to_vec();
     let events = events.cloned();
     let attempt = attempt_num;
-    let strategy = strategy.to_string();
+    let strategy = retry_strategy.to_string();
 
     async move {
         let keepalive_interval = std::time::Duration::from_secs(30);
@@ -454,7 +454,7 @@ pub(crate) fn llm_call_with_keepalive<'a>(
                         binary: dll_kp.clone(),
                         function: function_kp.clone(),
                         attempt: attempt_kp,
-                        strategy: strategy_kp.clone(),
+                        retry_strategy: strategy_kp.clone(),
                         elapsed_secs: secs,
                     });
                     elapsed += keepalive_interval;
@@ -476,7 +476,7 @@ pub(crate) fn llm_call_with_keepalive<'a>(
                         binary: binary.clone(),
                         function: function.clone(),
                         attempt,
-                        strategy: strategy.clone(),
+                        retry_strategy: strategy.clone(),
                         error: e.to_string(),
                     });
                 }
@@ -506,7 +506,7 @@ mod tests {
     fn test_retry_config_default() {
         let config = RetryConfig::default();
         assert_eq!(config.max_attempts, 3);
-        assert_eq!(config.strategy, RetryStrategy::CompileFix);
+        assert_eq!(config.retry_strategy, RetryStrategy::CompileFix);
         assert!(config.escalate_on_failure);
     }
 
@@ -520,7 +520,7 @@ mod tests {
             tests_passed: 5,
             tests_total: 5,
             failed_tests: Vec::new(),
-            strategy: "initial".to_string(),
+            retry_strategy: "initial".to_string(),
             tokens_used: Some(1024),
             context_tier: None,
         };
@@ -558,7 +558,7 @@ mod tests {
             tests_passed: 3,
             tests_total: 3,
             failed_tests: Vec::new(),
-            strategy: "initial".to_string(),
+            retry_strategy: "initial".to_string(),
             tokens_used: Some(512),
             context_tier: None,
         });
@@ -810,7 +810,7 @@ mod tests {
         let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
         let config = RetryConfig {
             max_attempts: 2,
-            strategy: RetryStrategy::CompileFix,
+            retry_strategy: RetryStrategy::CompileFix,
             escalate_on_failure: false,
             max_context_tier: None,
         };
@@ -927,7 +927,7 @@ mod tests {
         let mut rx = events.subscribe();
         let config = RetryConfig {
             max_attempts: 3,
-            strategy: RetryStrategy::CompileFix,
+            retry_strategy: RetryStrategy::CompileFix,
             escalate_on_failure: false,
             max_context_tier: None,
         };
@@ -992,10 +992,10 @@ mod tests {
             .filter_map(|ev| match ev {
                 ProgressEvent::TranslationAttemptCompleted {
                     attempt,
-                    strategy,
+                    retry_strategy,
                     success,
                     ..
-                } => Some((*attempt, strategy.clone(), *success)),
+                } => Some((*attempt, retry_strategy.clone(), *success)),
                 _ => None,
             })
             .collect();
@@ -1155,7 +1155,7 @@ mod tests {
         // dispatches all three retry prompts.
         let config = RetryConfig {
             max_attempts: 6,
-            strategy: RetryStrategy::CompileFix,
+            retry_strategy: RetryStrategy::CompileFix,
             escalate_on_failure: true,
             max_context_tier: Some(calxgloss_types::ContextTier::Signature),
         };
@@ -1178,11 +1178,11 @@ mod tests {
             "the canned code is broken on every attempt"
         );
         assert_eq!(result.attempts.len(), 6);
-        assert_eq!(result.attempts[1].strategy, "compile_fix");
-        assert_eq!(result.attempts[2].strategy, "test_fix");
-        assert_eq!(result.attempts[3].strategy, "escalate");
-        assert_eq!(result.attempts[4].strategy, "edge_case_fix");
-        assert_eq!(result.attempts[5].strategy, "compile_fix");
+        assert_eq!(result.attempts[1].retry_strategy, "compile_fix");
+        assert_eq!(result.attempts[2].retry_strategy, "test_fix");
+        assert_eq!(result.attempts[3].retry_strategy, "escalate");
+        assert_eq!(result.attempts[4].retry_strategy, "edge_case_fix");
+        assert_eq!(result.attempts[5].retry_strategy, "compile_fix");
 
         let mut captured: Vec<calxgloss_types::ProgressEvent> = Vec::new();
         while let Ok(ev) = rx.try_recv() {
@@ -1478,7 +1478,7 @@ mod tests {
 
         let config = RetryConfig {
             max_attempts: 2,
-            strategy: RetryStrategy::TestFix,
+            retry_strategy: RetryStrategy::TestFix,
             escalate_on_failure: false,
             max_context_tier: None,
         };
@@ -1506,7 +1506,7 @@ mod tests {
             "the failing suite rides into a retry"
         );
         let first = &result.attempts[0];
-        assert_eq!(first.strategy, "initial");
+        assert_eq!(first.retry_strategy, "initial");
         assert!(first.compiled, "the code does compile");
         assert_eq!(
             first.tests_total, 1,
@@ -1516,7 +1516,7 @@ mod tests {
             first.tests_passed, 0,
             "and honestly reports the suite as failed"
         );
-        assert_eq!(result.attempts[1].strategy, "test_fix");
+        assert_eq!(result.attempts[1].retry_strategy, "test_fix");
 
         // The retry prompt is the test-fix one, byte-built from the
         // attempt-1 verdict's payload — the record's failed-test lines are
@@ -1590,7 +1590,7 @@ mod tests {
 
         let config = RetryConfig {
             max_attempts: 3,
-            strategy: RetryStrategy::CompileFix,
+            retry_strategy: RetryStrategy::CompileFix,
             escalate_on_failure: false,
             max_context_tier: None,
         };
@@ -1709,7 +1709,7 @@ mod tests {
 
         let config = RetryConfig {
             max_attempts: 6,
-            strategy: RetryStrategy::CompileFix,
+            retry_strategy: RetryStrategy::CompileFix,
             escalate_on_failure: false,
             max_context_tier: None,
         };

@@ -174,6 +174,11 @@ function unitRowHtml(u) {
         : "—";
     const tier = u.context_tier ? `${u.context_tier}${u.tier_label ? ` (${u.tier_label})` : ""}` : "—";
     const strategy = u.retry_strategy || "—";
+    // The batch outcome rides its own record, never the retry-strategy
+    // chip — a finished unit shows both: what ran and how it ended.
+    const outcomeChip = u.outcome
+        ? `<span class="live-chip live-outcome" title="Batch outcome">outcome: ${escapeHtml(u.outcome)}</span>`
+        : "";
     const statusClass = u.finished ? (u.succeeded ? "finished-ok" : "finished-fail") : "in-flight";
     // Phases entered, in event order — tier escalations appear twice, so
     // the retry path stays visible on hover.
@@ -194,6 +199,7 @@ function unitRowHtml(u) {
             <div class="live-unit-meta">
                 <span class="live-chip" title="Context tier">tier: ${escapeHtml(tier)}</span>
                 <span class="live-chip" title="Retry strategy">strategy: ${escapeHtml(strategy)}</span>
+                ${outcomeChip}
                 <span class="live-chip" title="Attempt">attempt: ${u.attempt ?? "—"}</span>
                 ${passChip("baseline", "baseline", u.baseline || {})}
                 ${passChip("verification", "verification", u.verification || {})}

@@ -7,7 +7,7 @@ pub struct RetryConfig {
     pub max_attempts: u32,
 
     /// The strategy to use on the first retry attempt.
-    pub strategy: RetryStrategy,
+    pub retry_strategy: RetryStrategy,
 
     /// Whether to escalate context on subsequent failures.
     pub escalate_on_failure: bool,
@@ -22,7 +22,7 @@ impl Default for RetryConfig {
     fn default() -> Self {
         Self {
             max_attempts: 3,
-            strategy: RetryStrategy::CompileFix,
+            retry_strategy: RetryStrategy::CompileFix,
             escalate_on_failure: true,
             max_context_tier: None,
         }
@@ -107,7 +107,7 @@ pub struct TranslationAttempt {
     pub failed_tests: Vec<String>,
 
     /// The retry strategy used for this attempt (0 = initial, 1+ = retry).
-    pub strategy: String,
+    pub retry_strategy: String,
 
     /// Number of tokens the LLM used for this attempt, if reported.
     pub tokens_used: Option<usize>,
@@ -164,7 +164,7 @@ impl RetryResult {
         if attempt.is_successful() {
             self.success = true;
             self.rust_code = Some(attempt.rust_code.clone());
-            self.success_strategy = Some(attempt.strategy.clone());
+            self.success_strategy = Some(attempt.retry_strategy.clone());
         }
         self.attempts.push(attempt);
     }

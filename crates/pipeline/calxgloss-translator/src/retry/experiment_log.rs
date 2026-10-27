@@ -9,13 +9,14 @@
 /// # Arguments
 ///
 /// * `dll_name` — The DLL filename (e.g., `"game_logic.dll"`).
-/// * `strategy` — The retry strategy used (e.g., `"compile_fix"`, `"test_fix"`).
+/// * `retry_strategy` — The attempt's retry-strategy label (e.g., `"compile_fix"`,
+///   `"test_fix"`; the first attempt is labeled `"initial"`).
 /// * `success` — Whether this attempt succeeded.
 /// * `attempt_num` — The attempt number (1-based).
 /// * `workspace` — The workspace root path for the log file. `None` to skip logging.
 pub fn log_prompt_variant_experiment(
     dll_name: &str,
-    strategy: &str,
+    retry_strategy: &str,
     success: bool,
     attempt_num: u32,
     workspace: Option<&std::path::Path>,
@@ -28,7 +29,7 @@ pub fn log_prompt_variant_experiment(
     let entry = calxgloss_types::PromptStrategyEntry::new(
         dll_name,
         dll_category,
-        strategy,
+        retry_strategy,
         success,
         attempt_num,
     );

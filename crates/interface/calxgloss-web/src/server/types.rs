@@ -1570,7 +1570,13 @@ pub struct ProgressInfo {
     pub binary: BinaryIdentity,
     pub function: String,
     pub attempt: u32,
-    pub strategy: String,
+    /// Retry strategy of the current LLM-call attempt (issue #363) —
+    /// never a batch outcome; that rides [`outcome`](Self::outcome).
+    pub retry_strategy: String,
+    /// The batch outcome for a finished unit — "batch_ok" / "batch_failed"
+    /// / "cancelled" — `None` while the unit is still in flight.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// The pipeline step this unit is currently in.
     pub phase: TranslationPhase,
     /// Phases entered, in event order (re-entered phases appear again).
@@ -1621,7 +1627,7 @@ pub struct ClassificationInfo {
     /// DLL this classification is for.
     pub binary: BinaryIdentity,
     pub category: String,
-    pub strategy: String,
+    pub classification_strategy: String,
     pub crate_replacement: Option<String>,
     pub exported_symbols: usize,
     pub imported_symbols: usize,

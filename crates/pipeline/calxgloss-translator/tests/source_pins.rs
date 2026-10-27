@@ -359,7 +359,7 @@ fn the_public_retry_surface_compiles_from_outside_the_crate() {
     // as every production caller builds it.
     let config = RetryConfig {
         max_attempts: 3,
-        strategy: RetryStrategy::CompileFix,
+        retry_strategy: RetryStrategy::CompileFix,
         escalate_on_failure: true,
         max_context_tier: None,
     };

@@ -83,7 +83,7 @@ pub async fn handle_classify(
             events.emit(ProgressEvent::ClassificationComplete {
                 binary: c.binary.clone().into(),
                 category: format!("{:?}", c.category),
-                strategy: format!("{:?}", c.strategy),
+                classification_strategy: format!("{:?}", c.strategy),
                 crate_replacement: c.crate_replacement.clone(),
                 exported_symbols: c.exports_count,
                 imported_symbols: c.imports_count,

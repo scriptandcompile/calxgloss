@@ -142,7 +142,7 @@ pub(crate) fn emit_attempt(
     function: &str,
     result: &RetryResult,
     attempt_num: u32,
-    strategy: &str,
+    retry_strategy: &str,
 ) {
     if let (Some(em), Some(attempt)) = (events, result.attempts.last()) {
         let _ = em.emit(ProgressEvent::TranslationAttemptCompleted {
@@ -155,7 +155,7 @@ pub(crate) fn emit_attempt(
             tests_total: attempt.tests_total,
             compilation_errors: attempt.compilation_errors.clone(),
             failed_tests: attempt.failed_tests.clone(),
-            strategy: strategy.to_string(),
+            retry_strategy: retry_strategy.to_string(),
             tokens_used: attempt.tokens_used,
         });
     }
@@ -169,11 +169,11 @@ fn record_in_detector(
     prompt: &str,
     code: &str,
     success: bool,
-    strategy: &str,
+    retry_strategy: &str,
     attempt: u32,
 ) -> bool {
     run.loop_detector
-        .record_attempt(prompt, code, success, strategy, attempt);
+        .record_attempt(prompt, code, success, retry_strategy, attempt);
 
     // Check for infinite loop
     if let Some(signal) = run.loop_detector.detect() {
@@ -185,7 +185,7 @@ fn record_in_detector(
                 streak: signal.streak,
                 streak_start_attempt: signal.streak_start_attempt,
                 streak_end_attempt: signal.streak_end_attempt,
-                strategy: signal.strategy.clone(),
+                retry_strategy: signal.strategy.clone(),
             });
         }
         // Persist fault event for post-hoc analysis
@@ -194,7 +194,7 @@ fn record_in_detector(
                 &run.binary,
                 &run.function,
                 attempt,
-                strategy,
+                retry_strategy,
                 signal.streak,
                 signal.streak_start_attempt,
                 signal.streak_end_attempt,
@@ -232,7 +232,7 @@ pub(crate) async fn run_attempt(
     failure_history: &mut Vec<FailureHint>,
     unit: &AttemptUnit<'_>,
     path: AttemptPath,
-    strategy: &str,
+    retry_strategy: &str,
     attempt_num: u32,
     prompt: &str,
     attempt_start: std::time::Instant,
@@ -243,7 +243,7 @@ pub(crate) async fn run_attempt(
             binary: run.binary.clone(),
             function: run.function.clone(),
             attempt: attempt_num,
-            strategy: strategy.to_string(),
+            retry_strategy: retry_strategy.to_string(),
             prompt: prompt.to_string(),
         });
     }
@@ -254,7 +254,7 @@ pub(crate) async fn run_attempt(
             binary: run.binary.clone(),
             function: run.function.clone(),
             attempt: attempt_num,
-            strategy: strategy.to_string(),
+            retry_strategy: retry_strategy.to_string(),
         });
     }
 
@@ -265,7 +265,7 @@ pub(crate) async fn run_attempt(
         &run.binary,
         &run.function,
         attempt_num,
-        strategy,
+        retry_strategy,
         run.events,
     )
     .await
@@ -288,7 +288,7 @@ pub(crate) async fn run_attempt(
                             binary: run.binary.clone(),
                             function: run.function.clone(),
                             attempt: attempt_num,
-                            strategy: strategy.to_string(),
+                            retry_strategy: retry_strategy.to_string(),
                             reason: kind.to_string(),
                             elapsed_secs: signal.longest_request_secs,
                             recommended_backoff_secs: signal.recommended_backoff_secs,
@@ -311,7 +311,7 @@ pub(crate) async fn run_attempt(
                     &run.binary,
                     &run.function,
                     attempt_num,
-                    strategy,
+                    retry_strategy,
                     &fault,
                 );
             }
@@ -338,7 +338,7 @@ pub(crate) async fn run_attempt(
                 tests_passed: 0,
                 tests_total: 0,
                 failed_tests: Vec::new(),
-                strategy: strategy.to_string(),
+                retry_strategy: retry_strategy.to_string(),
                 tokens_used: None,
                 context_tier: Some(unit.tier.label().to_string()),
             });
@@ -348,12 +348,12 @@ pub(crate) async fn run_attempt(
                 &run.function,
                 result,
                 attempt_num,
-                strategy,
+                retry_strategy,
             );
             // Record failure history for informed prompting
             failure_history.push(FailureHint::new(
                 attempt_num,
-                strategy,
+                retry_strategy,
                 format!("LLM resource exhausted: {kind}"),
             ));
             return AttemptReport {
@@ -377,7 +377,7 @@ pub(crate) async fn run_attempt(
                 tests_passed: 0,
                 tests_total: 0,
                 failed_tests: Vec::new(),
-                strategy: strategy.to_string(),
+                retry_strategy: retry_strategy.to_string(),
                 tokens_used: None,
                 context_tier: Some(unit.tier.label().to_string()),
             });
@@ -387,7 +387,7 @@ pub(crate) async fn run_attempt(
                 &run.function,
                 result,
                 attempt_num,
-                strategy,
+                retry_strategy,
             );
             return AttemptReport {
                 outcome: AttemptOutcome::LlmCallError,
@@ -402,7 +402,7 @@ pub(crate) async fn run_attempt(
             binary: run.binary.clone(),
             function: run.function.clone(),
             attempt: attempt_num,
-            strategy: strategy.to_string(),
+            retry_strategy: retry_strategy.to_string(),
             content: response.content.clone(),
             tokens_used: response.tokens_used,
         });
@@ -424,7 +424,7 @@ pub(crate) async fn run_attempt(
             tests_passed: 0,
             tests_total: 0,
             failed_tests: Vec::new(),
-            strategy: strategy.to_string(),
+            retry_strategy: retry_strategy.to_string(),
             tokens_used,
             context_tier: Some(unit.tier.label().to_string()),
         });
@@ -434,7 +434,7 @@ pub(crate) async fn run_attempt(
             &run.function,
             result,
             attempt_num,
-            strategy,
+            retry_strategy,
         );
 
         // Log token usage (even with empty code, the LLM consumed tokens)
@@ -442,7 +442,7 @@ pub(crate) async fn run_attempt(
             &run.binary,
             &run.function,
             attempt_num,
-            strategy,
+            retry_strategy,
             tokens_used,
             false,
             run.workspace,
@@ -534,7 +534,7 @@ pub(crate) async fn run_attempt(
         prompt,
         &new_rust_code,
         attempt_success,
-        strategy,
+        retry_strategy,
         attempt_num,
     );
 
@@ -546,7 +546,7 @@ pub(crate) async fn run_attempt(
         tests_passed,
         tests_total,
         failed_tests: failed_tests.clone(),
-        strategy: strategy.to_string(),
+        retry_strategy: retry_strategy.to_string(),
         tokens_used,
         context_tier: Some(unit.tier.label().to_string()),
     };
@@ -557,7 +557,7 @@ pub(crate) async fn run_attempt(
         &run.function,
         result,
         attempt_num,
-        strategy,
+        retry_strategy,
     );
 
     // Log token usage to file
@@ -565,7 +565,7 @@ pub(crate) async fn run_attempt(
         &run.binary,
         &run.function,
         attempt_num,
-        strategy,
+        retry_strategy,
         tokens_used,
         result
             .attempts
@@ -595,7 +595,7 @@ pub(crate) async fn run_attempt(
         } else {
             "Unknown failure".to_string()
         };
-        failure_history.push(FailureHint::new(attempt_num, strategy, failure_desc));
+        failure_history.push(FailureHint::new(attempt_num, retry_strategy, failure_desc));
     }
 
     let outcome = if result.success {
@@ -605,7 +605,7 @@ pub(crate) async fn run_attempt(
         // only — today's loop breaks before this line on success).
         log_prompt_variant_experiment(
             &run.binary,
-            strategy,
+            retry_strategy,
             result.success,
             attempt_num,
             run.workspace,
@@ -632,7 +632,7 @@ pub(crate) async fn verify_and_record(
     result: &mut RetryResult,
     unit: &AttemptUnit<'_>,
     attempt_num: u32,
-    strategy: &str,
+    retry_strategy: &str,
     detector_prompt: &str,
     tokens_used: Option<usize>,
 ) -> AttemptReport {
@@ -715,7 +715,7 @@ pub(crate) async fn verify_and_record(
         tests_passed,
         tests_total,
         failed_tests,
-        strategy: strategy.to_string(),
+        retry_strategy: retry_strategy.to_string(),
         tokens_used,
         context_tier: Some(unit.tier.label().to_string()),
     };
@@ -726,7 +726,7 @@ pub(crate) async fn verify_and_record(
         &run.function,
         result,
         attempt_num,
-        strategy,
+        retry_strategy,
     );
 
     // Record in the infinite-loop detector (initial translation).
@@ -735,7 +735,7 @@ pub(crate) async fn verify_and_record(
         detector_prompt,
         unit.code_under_fix,
         result.success,
-        strategy,
+        retry_strategy,
         attempt_num,
     );
 
@@ -918,12 +918,12 @@ mod tests {
             match ev {
                 ProgressEvent::LlmRequest {
                     attempt,
-                    strategy,
+                    retry_strategy,
                     prompt,
                     ..
                 } => {
                     assert_eq!(attempt, 1);
-                    assert_eq!(strategy, "compile_fix");
+                    assert_eq!(retry_strategy, "compile_fix");
                     assert_eq!(prompt, "fix it");
                     seen.push("request");
                 }
@@ -1000,7 +1000,7 @@ mod tests {
         let experiments = experiment_entries(ws.path());
         assert_eq!(experiments.len(), 1);
         assert!(!experiments[0].success);
-        assert_eq!(experiments[0].strategy, "compile_fix");
+        assert_eq!(experiments[0].retry_strategy, "compile_fix");
     }
 
     #[tokio::test]

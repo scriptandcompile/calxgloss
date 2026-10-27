@@ -686,7 +686,7 @@ mod tests {
                     {
                         "binary": "game_logic.dll",
                         "attempt": 1,
-                        "strategy": "full_module",
+                        "retry_strategy": "full_module",
                         "timestamp": 1759053600
                     }
                 ]

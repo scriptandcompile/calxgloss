@@ -156,9 +156,10 @@ pub struct BinaryProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     /// Classification strategy (e.g. "PalMapping", "CrateReplacement",
-    /// "ReverseEngineer").
+    /// "ReverseEngineer"). Qualified word (issue #363): this leg carries
+    /// the classification strategy, never a retry strategy.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub strategy: Option<String>,
+    pub classification_strategy: Option<String>,
     /// Crate recommended for replacement, when the strategy names one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crate_replacement: Option<String>,
@@ -323,7 +324,7 @@ mod tests {
         let full = BinaryProgress {
             binary: "game_logic.dll".into(),
             category: Some("ProjectSpecific".into()),
-            strategy: Some("ReverseEngineer".into()),
+            classification_strategy: Some("ReverseEngineer".into()),
             crate_replacement: None,
             functions_total: Some(24),
             functions_translated: 10,
@@ -376,7 +377,7 @@ mod tests {
         let bare = BinaryProgress {
             binary: "unknown.dll".into(),
             category: None,
-            strategy: None,
+            classification_strategy: None,
             crate_replacement: None,
             functions_total: None,
             functions_translated: 0,

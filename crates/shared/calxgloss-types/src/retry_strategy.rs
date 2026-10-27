@@ -16,8 +16,9 @@
 //! stored at all.
 //!
 //! The experiment log ([`crate::experiment_log`]) deliberately keeps a plain
-//! `String` for its strategy field: it also records the first attempt under
-//! `"initial"`, which is not a retry strategy and so is not in this set.
+//! `String` for its `retry_strategy` field: it also records the first attempt
+//! under `"initial"`, which is not a retry strategy and so is not in this set
+//! (issue #363 kept the set closed and named the field for it).
 
 use serde::{Deserialize, Serialize};
 

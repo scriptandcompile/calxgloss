@@ -456,7 +456,7 @@ async fn retry_config_from_a_spec_with_no_policy_matches_the_hand_built_default(
     // Today's hand-built ladder with settings defaults: 3 attempts,
     // compile-fix, escalation always on, no context-tier cap.
     assert_eq!(pass.retry.max_attempts, 3);
-    assert_eq!(pass.retry.strategy, RetryStrategy::CompileFix);
+    assert_eq!(pass.retry.retry_strategy, RetryStrategy::CompileFix);
     assert!(pass.retry.escalate_on_failure, "escalation is always on");
     assert_eq!(
         pass.retry.max_context_tier, None,
@@ -483,7 +483,7 @@ async fn retry_config_from_a_spec_carrying_a_policy_matches_the_hand_built_ladde
     // Same construction the CLI commands write inline: the policy values
     // carry through, the fixed fields do not move.
     assert_eq!(pass.retry.max_attempts, 5);
-    assert_eq!(pass.retry.strategy, RetryStrategy::TestFix);
+    assert_eq!(pass.retry.retry_strategy, RetryStrategy::TestFix);
     assert!(pass.retry.escalate_on_failure);
     assert_eq!(pass.retry.max_context_tier, None);
 }

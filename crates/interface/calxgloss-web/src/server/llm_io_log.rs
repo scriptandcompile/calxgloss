@@ -63,8 +63,8 @@ pub struct LlmIoEntry {
     pub function: String,
     /// Retry attempt the call belongs to.
     pub attempt: u32,
-    /// Prompt strategy the attempt used.
-    pub strategy: String,
+    /// Retry strategy the attempt used.
+    pub retry_strategy: String,
     /// The prompt text, the response content, or the error message.
     pub content: String,
     /// Tokens the call consumed, when the event reported it (responses do,
@@ -107,14 +107,14 @@ impl LlmIoLog {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 prompt,
             } => Self::make_entry(
                 LlmIoEntryType::Request,
                 binary.as_str(),
                 function,
                 *attempt,
-                strategy,
+                retry_strategy,
                 prompt,
                 None,
             ),
@@ -122,7 +122,7 @@ impl LlmIoLog {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 content,
                 tokens_used,
             } => Self::make_entry(
@@ -130,7 +130,7 @@ impl LlmIoLog {
                 binary.as_str(),
                 function,
                 *attempt,
-                strategy,
+                retry_strategy,
                 content,
                 *tokens_used,
             ),
@@ -138,14 +138,14 @@ impl LlmIoLog {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 error,
             } => Self::make_entry(
                 LlmIoEntryType::Error,
                 binary.as_str(),
                 function,
                 *attempt,
-                strategy,
+                retry_strategy,
                 error,
                 None,
             ),
@@ -163,7 +163,7 @@ impl LlmIoLog {
         binary: &str,
         function: &str,
         attempt: u32,
-        strategy: &str,
+        retry_strategy: &str,
         content: &str,
         tokens_used: Option<usize>,
     ) -> LlmIoEntry {
@@ -172,7 +172,7 @@ impl LlmIoLog {
             binary: binary.to_string(),
             function: function.to_string(),
             attempt,
-            strategy: strategy.to_string(),
+            retry_strategy: retry_strategy.to_string(),
             content: content.to_string(),
             tokens_used,
             timestamp: current_timestamp(),
@@ -336,7 +336,7 @@ mod tests {
             binary: "game_logic.dll".into(),
             function: format!("Fun{n}"),
             attempt: n,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
             content: format!("prompt {n}"),
             tokens_used: None,
             timestamp: 1_700_000_000 + n as u64,
@@ -348,7 +348,7 @@ mod tests {
             binary: BinaryIdentity::new("game_logic.dll"),
             function: function.into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
             prompt: prompt.into(),
         }
     }
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(back[0].binary, "game_logic.dll");
         assert_eq!(back[0].function, "Fun1");
         assert_eq!(back[0].attempt, 1);
-        assert_eq!(back[0].strategy, "direct");
+        assert_eq!(back[0].retry_strategy, "direct");
         assert_eq!(back[0].content, "prompt 1");
         assert_eq!(back[0].tokens_used, Some(4321));
         assert_eq!(back[0].timestamp, 1_700_000_001);
@@ -393,14 +393,14 @@ mod tests {
             binary: BinaryIdentity::new("game_logic.dll"),
             function: "DrawPrimitive".into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
         });
         log.record(&llm_request("DrawPrimitive", "the prompt"));
         log.record(&ProgressEvent::LlmResponse {
             binary: BinaryIdentity::new("game_logic.dll"),
             function: "DrawPrimitive".into(),
             attempt: 1,
-            strategy: "direct".into(),
+            retry_strategy: "direct".into(),
             content: "fn draw() {}".into(),
             tokens_used: Some(120),
         });
@@ -408,7 +408,7 @@ mod tests {
             binary: BinaryIdentity::new("game_logic.dll"),
             function: "DrawPrimitive".into(),
             attempt: 2,
-            strategy: "retry".into(),
+            retry_strategy: "retry".into(),
             error: "connection reset".into(),
         });
 
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(entries[2].entry_type, LlmIoEntryType::Error);
         assert_eq!(entries[2].content, "connection reset");
         assert_eq!(entries[2].attempt, 2);
-        assert_eq!(entries[2].strategy, "retry");
+        assert_eq!(entries[2].retry_strategy, "retry");
     }
 
     #[test]

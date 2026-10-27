@@ -397,7 +397,7 @@ async fn wire_pass(
 
     let retry = RetryConfig {
         max_attempts: spec.retry_max_attempts.unwrap_or(3),
-        strategy: spec.retry_strategy.unwrap_or(RetryStrategy::CompileFix),
+        retry_strategy: spec.retry_strategy.unwrap_or(RetryStrategy::CompileFix),
         escalate_on_failure: true,
         max_context_tier: None,
     };

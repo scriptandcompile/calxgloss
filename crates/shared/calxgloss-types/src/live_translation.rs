@@ -157,6 +157,15 @@ pub struct LiveUnitProgress {
     /// says so, so an unfinished unit never looks failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub succeeded: Option<bool>,
+    /// The outcome the batch recorded for this unit — `"batch_ok"`,
+    /// `"batch_failed"`, or `"cancelled"`. Distinct leg from
+    /// [`retry_strategy`](Self::retry_strategy) (issue #363): a finished
+    /// unit's outcome never travels under a retry-strategy name, so the
+    /// attempt's strategy label stays honest after the unit is done. `None`
+    /// until a terminal batch event (function-completed / cancelled) names
+    /// one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 /// The live view payload: every unit the live pipeline is tracking.
@@ -233,6 +242,7 @@ mod tests {
             unit_confidence: derive_unit_confidence(Some(true), &PassStatus::from_counts(5, 5)),
             finished: false,
             succeeded: None,
+            outcome: None,
         }
     }
 
@@ -256,6 +266,18 @@ mod tests {
 
         let back: LiveUnitProgress = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, unit());
+
+        // A finished unit carries its outcome on its own leg — the retry
+        // strategy keeps naming the attempt that ran (issue #363).
+        let mut done = unit();
+        done.finished = true;
+        done.succeeded = Some(true);
+        done.outcome = Some("batch_ok".into());
+        let json = serde_json::to_value(&done).expect("serializes");
+        assert_eq!(json["outcome"], "batch_ok");
+        assert_eq!(json["retry_strategy"], "decompose");
+        let back: LiveUnitProgress = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, done);
     }
 
     #[test]
@@ -279,6 +301,7 @@ mod tests {
             unit_confidence: None,
             finished: false,
             succeeded: None,
+            outcome: None,
         };
         let json = serde_json::to_value(&fresh).expect("serializes");
         for key in [
@@ -288,6 +311,7 @@ mod tests {
             "compiled",
             "unit_confidence",
             "succeeded",
+            "outcome",
         ] {
             assert!(json.get(key).is_none(), "{key} must be absent: {json}");
         }

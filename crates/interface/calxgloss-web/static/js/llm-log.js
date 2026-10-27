@@ -3,7 +3,7 @@
 
    History comes from GET /api/llm-io (the persisted server-side log), so
    the view survives a page reload; live WebSocket entries append on top.
-   Filter selects (binary, function, attempt, strategy) and full-text
+   Filter selects (binary, function, attempt, retry strategy) and full-text
    search narrow the list, entries collapse to their metadata line, and
    each entry can be copied with one click.
    ========================================================================== */
@@ -19,7 +19,7 @@ const llmLogEntries = [];
 // to the server log, so the next history load must not show it twice. The
 // key ignores the timestamp — a live entry and its server-side twin are
 // stamped at slightly different moments — so two byte-identical calls
-// (same type, unit, attempt, strategy, and content) read as one entry.
+// (same type, unit, attempt, retry strategy, and content) read as one entry.
 const seenKeys = new Set();
 
 // Client-side window, matching the server's retention (MAX_LLM_IO_ENTRIES)
@@ -33,25 +33,25 @@ const llmLogFilters = {
     binary: "",
     function: "",
     attempt: "",
-    strategy: "",
+    retry_strategy: "",
     search: "",
 };
 
-const FILTER_FIELDS = ["binary", "function", "attempt", "strategy"];
+const FILTER_FIELDS = ["binary", "function", "attempt", "retry_strategy"];
 
 function entryKey(e) {
-    return `${e.type}|${e.binary}|${e.function}|${e.attempt}|${e.strategy}|${e.content}`;
+    return `${e.type}|${e.binary}|${e.function}|${e.attempt}|${e.retry_strategy}|${e.content}`;
 }
 
 /* One normalized entry, shared by the history load and the live WS path
    so both build the same shape. */
-function makeEntry(type, binary, func, attempt, strategy, content, tokensUsed, timestamp) {
+function makeEntry(type, binary, func, attempt, retryStrategy, content, tokensUsed, timestamp) {
     return {
         type,
         binary,
         function: func,
         attempt,
-        strategy,
+        retry_strategy: retryStrategy,
         content,
         tokensUsed: tokensUsed ?? null,
         timestamp,
@@ -89,7 +89,7 @@ export async function loadLlmLogHistory() {
             e.binary,
             e.function,
             e.attempt,
-            e.strategy,
+            e.retry_strategy,
             e.content,
             e.tokens_used,
             new Date(e.timestamp * 1000),
@@ -101,8 +101,8 @@ export async function loadLlmLogHistory() {
 }
 
 /* A live entry pushed over the WebSocket, appended on top of history. */
-export function addLlmLogEntry(type, binary, func, attempt, strategy, content, tokensUsed) {
-    pushEntry(makeEntry(type, binary, func, attempt, strategy, content, tokensUsed, new Date()));
+export function addLlmLogEntry(type, binary, func, attempt, retryStrategy, content, tokensUsed) {
+    pushEntry(makeEntry(type, binary, func, attempt, retryStrategy, content, tokensUsed, new Date()));
     refreshFilterOptions();
     renderLlmLog();
 }
@@ -132,7 +132,7 @@ function visibleEntries() {
         (!f.binary || e.binary === f.binary) &&
         (!f.function || e.function === f.function) &&
         (!f.attempt || String(e.attempt) === f.attempt) &&
-        (!f.strategy || e.strategy === f.strategy) &&
+        (!f.retry_strategy || e.retry_strategy === f.retry_strategy) &&
         (!needle || e.content.toLowerCase().includes(needle))
     );
 }
@@ -196,7 +196,7 @@ export function renderLlmLog() {
     container.innerHTML = visible.map((e) => {
         const typeLabel = e.type === "request" ? "Request" : e.type === "error" ? "⚠ Error" : "Response";
         const ts = e.timestamp.toLocaleTimeString();
-        const unit = `${e.binary}!${e.function} (attempt #${e.attempt}, ${e.strategy})`;
+        const unit = `${e.binary}!${e.function} (attempt #${e.attempt}, ${e.retry_strategy})`;
         // Honest token display: unmeasured entries show "—", never a fake 0.
         const tokens = e.tokensUsed != null ? `${e.tokensUsed} tokens` : "— tokens";
         const safe = escapeHtml(e.content);

@@ -538,7 +538,7 @@ pub async fn api_get_strategy_analytics_by_strategy(
 
     let mut totals: HashMap<&str, (usize, usize)> = HashMap::new();
     for entry in &entries {
-        let bucket = totals.entry(entry.strategy.as_str()).or_default();
+        let bucket = totals.entry(entry.retry_strategy.as_str()).or_default();
         bucket.0 += 1;
         if entry.success {
             bucket.1 += 1;

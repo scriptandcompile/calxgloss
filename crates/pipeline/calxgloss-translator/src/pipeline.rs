@@ -1073,7 +1073,7 @@ impl TranslationPipeline {
             binary: binary.to_string().into(),
             function: function.to_string(),
             attempt: 1,
-            strategy: "initial".to_string(),
+            retry_strategy: "initial".to_string(),
         });
 
         let prompt = match tier {
@@ -1180,7 +1180,7 @@ impl TranslationPipeline {
             binary: binary.to_string().into(),
             function: function.to_string(),
             attempt: 1,
-            strategy: "initial".to_string(),
+            retry_strategy: "initial".to_string(),
             prompt: prompt.clone(),
         });
 
@@ -1207,7 +1207,7 @@ impl TranslationPipeline {
             binary: binary.to_string().into(),
             function: function.to_string(),
             attempt: 1,
-            strategy: "initial".to_string(),
+            retry_strategy: "initial".to_string(),
             content: response.content.clone(),
             tokens_used: response.tokens_used,
         });
@@ -1421,10 +1421,10 @@ impl TranslationPipeline {
                 binary,
                 function,
                 strategy = %strategy,
-                configured = %config.strategy,
+                configured = %config.retry_strategy,
                 "Reviewer override forces the retry strategy"
             );
-            bounded_config.strategy = strategy;
+            bounded_config.retry_strategy = strategy;
         }
         let reviewer_hints = self.reviewer_hints_for(binary, function);
         let ctx = retry::RetryLoopCtx {
@@ -1978,7 +1978,7 @@ impl TranslationPipeline {
         binary: &str,
         function: &str,
         attempt: u32,
-        strategy: &str,
+        retry_strategy: &str,
         disassembly_lines: usize,
     ) -> Result<calxgloss_llm::LlmResponse> {
         let messages = vec![LlmMessage::user(prompt)];
@@ -1989,7 +1989,7 @@ impl TranslationPipeline {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 prompt_size = fault.response_size,
                 limit = fault.limit,
                 "Prompt exceeds model context limit — splitting function",
@@ -2003,7 +2003,7 @@ impl TranslationPipeline {
             let em_err = em.clone();
             let dll_s = binary.to_string();
             let function_s = function.to_string();
-            let strategy_s = strategy.to_string();
+            let strategy_s = retry_strategy.to_string();
 
             // Clone values before moving into the keepalive closure
             let dll_kp = dll_s.clone();
@@ -2021,7 +2021,7 @@ impl TranslationPipeline {
                         binary: dll_kp.clone().into(),
                         function: function_kp.clone(),
                         attempt,
-                        strategy: strategy_kp.clone(),
+                        retry_strategy: strategy_kp.clone(),
                         elapsed_secs: secs,
                     });
                     elapsed += interval;
@@ -2038,7 +2038,7 @@ impl TranslationPipeline {
                         binary: dll_s.clone().into(),
                         function: function_s.clone(),
                         attempt,
-                        strategy: strategy_s.clone(),
+                        retry_strategy: strategy_s.clone(),
                         error: e.to_string(),
                     });
                 }
@@ -2058,7 +2058,7 @@ impl TranslationPipeline {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 response_size = fault.response_size,
                 limit = fault.limit,
                 overflow = fault.overflow_chars,
@@ -2081,7 +2081,7 @@ impl TranslationPipeline {
                 binary,
                 function,
                 attempt,
-                strategy,
+                retry_strategy,
                 count = names.len(),
                 apis = ?names,
                 "Hallucinated API/function references detected",
@@ -2091,7 +2091,7 @@ impl TranslationPipeline {
                     binary: binary.to_string().into(),
                     function: function.to_string(),
                     attempt,
-                    strategy: strategy.to_string(),
+                    retry_strategy: retry_strategy.to_string(),
                     hallucinated_apis: names.clone(),
                 });
             }
@@ -5471,7 +5471,7 @@ void SetCursor(void)
                 &[status.clone(), describe.clone()],
                 &retry::RetryConfig {
                     max_attempts: 1,
-                    strategy: retry::RetryStrategy::CompileFix,
+                    retry_strategy: retry::RetryStrategy::CompileFix,
                     escalate_on_failure: false,
                     max_context_tier: None,
                 },
@@ -5498,7 +5498,7 @@ void SetCursor(void)
             "attempt 1 carries the accepted translation verbatim — the fresh \
              chain never reached the closed LLM port"
         );
-        assert_eq!(attempt.strategy, "initial", "the seed rides as attempt 1");
+        assert_eq!(attempt.retry_strategy, "initial", "the seed rides as attempt 1");
         assert!(
             attempt.tokens_used.is_none(),
             "a seeded attempt spends no LLM tokens"

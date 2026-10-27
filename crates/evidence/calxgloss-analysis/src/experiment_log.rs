@@ -20,7 +20,7 @@
 //!     {
 //!       "binary": "game_logic.dll",
 //!       "dll_category": "ProjectSpecific",
-//!       "strategy": "compile_fix",
+//!       "retry_strategy": "compile_fix",
 //!       "success": false,
 //!       "attempt": 1,
 //!       "timestamp": 1725000000
@@ -108,7 +108,7 @@ impl PromptStrategyLogger {
         } else {
             debug!(
                 binary = %log.entries.last().map(|e| &e.binary).unwrap_or(&Default::default()),
-                strategy = %log.entries.last().map(|e| &e.strategy).unwrap_or(&Default::default()),
+                retry_strategy = %log.entries.last().map(|e| &e.retry_strategy).unwrap_or(&Default::default()),
                 success = log.entries.last().map(|e| e.success).unwrap_or(false),
                 "Recorded experiment entry"
             );
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(stats.total_entries, 3);
         assert_eq!(stats.total_successes, 2);
         assert_eq!(stats.by_category.len(), 2);
-        assert_eq!(stats.by_strategy.len(), 2);
+        assert_eq!(stats.by_retry_strategy.len(), 2);
     }
 
     #[test]
