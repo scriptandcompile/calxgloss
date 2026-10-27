@@ -1,11 +1,11 @@
 //! Import-table scanning: binary-level API identification.
 //!
-//! Reads the binary's import table via [`ScanSource::imports`], classifies
-//! each entry against the [`MappingDatabase`], and produces [`ApiFinding`]s:
-//! identified imports carry their library, crate suggestion, and the
-//! entry's category and feature flags, while unidentified and ordinal-only
-//! imports are kept as entries with no library and no category — the
-//! issue's "import table entries" output.
+//! Reads the binary's import table via [`ScanSource::imports`] and
+//! classifies each entry against the [`MappingDatabase`], producing
+//! [`ApiFinding`]s. An identified import records its library, crate
+//! suggestion, and the entry's category and feature flags. An
+//! unidentified or ordinal-only import is kept as an entry with no
+//! library and no category — the issue's "import table entries" output.
 
 use tracing::debug;
 
@@ -22,8 +22,8 @@ pub struct ImportTableScanner {
 
 /// Confidence that a mapping-recognized import really is that library's API.
 const IDENTIFIED_CONFIDENCE: u8 = 90;
-/// Confidence for an import the database doesn't recognize — kept for
-/// completeness, identified by nothing.
+/// Confidence for an import the database does not recognize. It is kept
+/// for completeness, and identifies nothing.
 const UNIDENTIFIED_CONFIDENCE: u8 = 0;
 
 impl ImportTableScanner {
@@ -64,10 +64,10 @@ impl ImportTableScanner {
         Ok(findings)
     }
 
-    /// Classify one import name against the mapping database. Identified
-    /// entries carry the entry's category and feature flags; unidentified
-    /// and ordinal-only entries stay category-less — enrichment never
-    /// claims a category the evidence does not support.
+    /// Classify one import name against the mapping database. An
+    /// identified entry gets the entry's category and feature flags. An
+    /// unidentified or ordinal-only entry stays without a category:
+    /// enrichment never claims a category the evidence does not support.
     fn classify(&self, name: &str) -> ApiSignature {
         match self.mappings.lookup(name) {
             Some(entry) => ApiSignature {

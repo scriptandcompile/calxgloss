@@ -1,11 +1,12 @@
 //! Per-function API summaries: which APIs each function reaches, and how.
 //!
 //! The [`ApiSummaryDetector`] walks the built call graph and, for every
-//! function, records the identified APIs it reaches — directly, through a
-//! call edge leaving the function, or transitively, through intermediate
-//! functions — with the call path that reaches each one as evidence.
-//! A direct call is a stronger claim than a transitive path, and the
-//! confidence says so: 80 for a direct call, 60 for a transitive path.
+//! function, records the identified APIs it reaches. A function reaches
+//! an API directly, through a call edge leaving the function, or
+//! transitively, through intermediate functions. The call path that
+//! reaches each API is recorded as evidence. A direct call is a
+//! stronger claim than a transitive path, and the confidence shows it:
+//! 80 for a direct call, 60 for a transitive path.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -22,10 +23,11 @@ const TRANSITIVE_CONFIDENCE: u8 = 60;
 
 /// Reads a built call graph and records the APIs each function reaches.
 ///
-/// The detector matches call edges whose callee is an identified import —
-/// a name the [`MappingDatabase`] knows — and follows internal edges
-/// through the graph so a function that only reaches an API through
-/// helpers still gets the record, with the call path as evidence.
+/// The detector matches call edges whose callee is an identified import
+/// — a name the [`MappingDatabase`] knows. It also follows internal
+/// edges through the graph, so a function that only reaches an API
+/// through helpers still gets the record, with the call path as
+/// evidence.
 #[derive(Debug, Clone, Default)]
 pub struct ApiSummaryDetector {
     mappings: MappingDatabase,
@@ -47,7 +49,7 @@ impl ApiSummaryDetector {
     /// Summarize `graph`, one function at a time, in graph order.
     ///
     /// Within one function the direct calls come first, then the
-    /// transitive paths in breadth-first order; an API reached both ways
+    /// transitive paths in breadth-first order. An API reached both ways
     /// is recorded once, as the direct call. A graph node with no name
     /// is skipped with a warning — nothing can be said about it.
     pub fn detect(&self, graph: &[FunctionCallGraph]) -> Vec<ApiFinding> {
@@ -105,7 +107,7 @@ impl ApiSummaryDetector {
 
         // Transitive paths: breadth-first over internal edges, recording
         // each API at the shortest path that reaches it. The visited set
-        // is also the cycle guard — a call cycle is walked once.
+        // is also the cycle guard: each call cycle is walked once.
         let mut queue: VecDeque<(usize, String)> = VecDeque::new();
         let mut visited = HashSet::new();
         visited.insert(node.address);
@@ -149,9 +151,9 @@ impl ApiSummaryDetector {
     }
 
     /// The [`MappedApi`](crate::lib_mapping::MappedApi) record for an
-    /// edge that calls an identified import: an unresolved target
-    /// (outside the program) whose callee name the mapping database
-    /// knows.
+    /// edge that calls an identified import: the edge has an unresolved
+    /// target (outside the program) and the mapping database knows the
+    /// callee name.
     fn identified_api(&self, target: u64, callee_name: &str) -> Option<MappedApi> {
         if target != 0 || callee_name.is_empty() {
             return None;

@@ -1,33 +1,34 @@
 //! Platform-divergence detection over the classified import listing.
 //!
-//! A binary that imports both Win32 file APIs and POSIX/C-runtime stdio
-//! APIs straddles two platform families, and a translation that
-//! transliterates both families as unconditional calls compiles
-//! nowhere. [`detect_divergence`] reads that portability story off the
-//! classified import findings the
+//! A binary that imports both Win32 file APIs and POSIX/C-runtime
+//! stdio APIs uses two platform families at once. A translation that
+//! transliterates both families as unconditional calls compiles on
+//! neither platform. [`detect_divergence`] reads this portability fact
+//! from the classified import findings the
 //! [`ImportTableScanner`](crate::import_table) already emitted — no new
-//! [`ScanSource`](crate::engine::ScanSource) reads — and lands at most
-//! one binary-level [`PlatformDivergence`] claim per scan, naming both
-//! families and the triggering imports from both sides as evidence.
+//! [`ScanSource`](crate::engine::ScanSource) reads — and records at
+//! most one binary-level [`PlatformDivergence`] claim per scan. The
+//! claim names both families and lists the triggering imports from
+//! both sides as evidence.
 //!
 //! The honesty gate is the point of the module: the claim needs *both*
 //! families — at least one import whose mapping category names the
 //! Win32 family (`Win32Core`) **and** at least one naming the POSIX
 //! family (`POSIX`, or its C-runtime surface, `stdio`). A purely Win32
-//! or purely POSIX binary claims nothing; unidentified and
-//! ordinal-only imports carry no category and join neither side; the
+//! or purely POSIX binary claims nothing. Unidentified and
+//! ordinal-only imports have no category and join neither side. The
 //! platform-neutral categories (DirectX, SDL2, PNG, zlib, C++ STL)
-//! count on neither side; and only the import entries count — a usage
-//! finding repeats an import the listing already carries. Custom
-//! mappings join the gate by naming one of the gate's categories with
-//! their [`category`](crate::lib_mapping::LibraryMapping::category).
+//! count on neither side. Only the import entries count — a usage
+//! finding repeats an import the listing already has. Custom mappings
+//! join the gate by naming one of the gate's categories with their
+//! [`category`](crate::lib_mapping::LibraryMapping::category).
 
 use crate::types::{ApiFinding, Confidence, PlatformDivergence};
 
-/// Confidence of a divergence reading: each triggering import is an
-/// identified 90-confidence entry, but the portability claim over their
-/// pairing is an inference — level with the other structural readings
-/// at 70.
+/// Confidence of a divergence reading. Each triggering import is an
+/// identified entry at confidence 90, but the portability claim over
+/// their pairing is an inference. It sits at 70, level with the other
+/// structural readings.
 pub const DIVERGENCE_CONFIDENCE: u8 = 70;
 
 /// The Rust shape a divergence finding suggests: the platform-specific
@@ -35,23 +36,23 @@ pub const DIVERGENCE_CONFIDENCE: u8 = 70;
 /// unconditionally.
 pub const DIVERGENCE_SUGGESTION: &str = "translate the platform-specific calls behind cfg gates — the Win32 family under `#[cfg(windows)]`, the POSIX/stdio family under `#[cfg(unix)]` — not both families unconditionally";
 
-/// The mapping categories whose imports stand on the Win32 side of the
+/// The mapping categories whose imports count on the Win32 side of the
 /// gate, spelled with the PAL `ApiCategory` display names.
 const WIN32_CATEGORIES: &[&str] = &["Win32Core"];
 
-/// The mapping categories whose imports stand on the POSIX side of the
+/// The mapping categories whose imports count on the POSIX side of the
 /// gate — the POSIX family and its C-runtime stdio surface.
 const POSIX_CATEGORIES: &[&str] = &["POSIX", "stdio"];
 
-/// Read the platform families out of the classified import findings.
+/// Find the platform families in the classified import findings.
 ///
 /// Returns exactly one [`ApiFinding::PlatformDivergence`] when the
-/// listing carries both a Win32-category and a POSIX/stdio-category
-/// import — however many imports sit on either side, the cap is one
-/// claim per binary — and `None` otherwise. The claim's families name
-/// the categories that triggered it, Win32 side first, and its
-/// evidence lists the triggering imports from both sides, each spelled
-/// `api (category)`, each side in import-listing order.
+/// listing has both a Win32-category and a POSIX/stdio-category
+/// import. However many imports sit on either side, the cap is one
+/// claim per binary; otherwise this returns `None`. The claim's
+/// families are the categories that triggered it, Win32 side first.
+/// Its evidence lists the triggering imports from both sides, each
+/// spelled `api (category)`, each side in import-listing order.
 pub fn detect_divergence(findings: &[ApiFinding]) -> Option<ApiFinding> {
     let mut win32_categories: Vec<String> = Vec::new();
     let mut posix_categories: Vec<String> = Vec::new();
@@ -126,8 +127,8 @@ mod tests {
 
     #[test]
     fn the_mixed_listing_claims_exactly_one_divergence_finding() {
-        // Many imports on both sides still land one claim per binary —
-        // the Option return is itself the cap.
+        // Many imports on both sides still produce one claim per
+        // binary — the Option return is itself the cap.
         let listing = [
             import("CreateFileA", Some("Win32Core")),
             import("GetLastError", Some("Win32Core")),
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn only_import_entries_stand_on_the_gate() {
-        // A usage finding repeats an import the listing already carries;
+        // A usage finding repeats an import the listing already has;
         // the gate reads the import entries, not the usages.
         let listing = [
             usage("CreateFileA", "Win32Core"),

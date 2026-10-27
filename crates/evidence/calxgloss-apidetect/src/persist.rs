@@ -10,10 +10,10 @@
 //!     └── {binary}.toml  (derived: rendered dependency manifest, never read back)
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is
-//! the check a caller runs before deciding whether a scan is needed,
-//! and [`load`](Self::load) reads the whole document back — metadata
-//! and every finding — for the translation pipeline to query.
+//! A persisted result is also a cache. [`exists`](Self::exists) is the
+//! check a caller runs before deciding whether a scan is needed.
+//! [`load`](Self::load) reads the whole document back — metadata and
+//! every finding — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -85,7 +85,7 @@ impl ApiPersistor {
     /// Whether a persisted result exists for `binary`.
     ///
     /// This is the cache check: a caller that wants API findings without
-    /// re-running the scan asks here first and only drives the scan when
+    /// re-running the scan asks here first and only runs the scan when
     /// the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
@@ -239,10 +239,10 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the engine stamped inside its scan is what every later
-        // reader — the projection seam, the report, a `--show` months
-        // later — sees: statuses, ids, order, and limitation lines ride
-        // the persistor untouched (issue #346).
+        // What the evidence engine recorded inside its scan is what
+        // every later reader sees — the projection seam, the report, a
+        // `--show` months later. The persistor saves statuses, ids,
+        // order, and limitation lines untouched (issue #346).
         let dir = tempfile::tempdir().unwrap();
         let persistor = ApiPersistor::with_cache_dir(dir.path());
         let mut result = sample_result("eqmain.dll");
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn a_document_saved_before_the_deepening_loads_unchanged() {
-        // A document written before category and features existed: the
+        // A document written before category and features existed. The
         // enrichment fields are optional on disk, so it loads with no
         // category and no features, exactly as the old shape read.
         let dir = tempfile::tempdir().unwrap();

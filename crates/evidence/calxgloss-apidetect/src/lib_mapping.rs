@@ -1,29 +1,31 @@
 //! Library mapping database: known imports → library + Rust crate suggestion.
 //!
-//! A [`MappingDatabase`] maps import names to the library they belong to and
-//! the Rust crate that replaces them. The builtin table covers the eight
-//! libraries of the P9 scope (DirectX 9, SDL2, Win32, POSIX, PNG, zlib,
-//! stdio, C++ STL); [`MappingDatabase::with_library`] adds or replaces a
-//! whole library entry for custom binaries.
+//! A [`MappingDatabase`] maps import names to the library they belong to
+//! and the Rust crate that replaces them. The builtin table covers the
+//! eight libraries of the P9 scope (DirectX 9, SDL2, Win32, POSIX, PNG,
+//! zlib, stdio, C++ STL). [`MappingDatabase::with_library`] adds or
+//! replaces a whole library entry for custom binaries.
 //!
-//! Each entry also carries the enrichment the findings ride: a
-//! [`category`](LibraryMapping::category) — a plain string aligned with the
-//! PAL `ApiCategory` display names (Win32Core, DirectX, SDL2, POSIX, PNG,
-//! zlib, stdio, C++ STL) so prompt consumers see one vocabulary without the
-//! evidence crate depending on PAL — and the crate suggestion's optional
-//! [`features`](LibraryMapping::features), rendered into the `crate[feat]`
-//! form by the finding's suggestion accessor. A custom entry carries both
-//! like the builtin table; an entry that names no category claims none.
+//! Each entry also holds the enrichment its identified findings
+//! record: a [`category`](LibraryMapping::category) — a plain string
+//! aligned with the PAL `ApiCategory` display names (Win32Core,
+//! DirectX, SDL2, POSIX, PNG, zlib, stdio, C++ STL), so prompt
+//! consumers see one vocabulary without the evidence crate depending on
+//! PAL — and the crate suggestion's optional
+//! [`features`](LibraryMapping::features). The finding's suggestion
+//! accessor renders them into the `crate[feat]` form. A custom entry
+//! has both, like the builtin table. An entry that names no category
+//! claims none.
 //!
-//! Matching is by exact name — both the raw (possibly mangled) spelling and
-//! the demangled spelling are listed where they differ, because the import
-//! table and call-graph edges may carry either.
+//! Matching is by exact name. Where the raw (possibly mangled) and
+//! demangled spellings differ, both are listed, because the import
+//! table and call-graph edges may use either.
 
 use std::collections::HashMap;
 
 /// One library's entry in the mapping database: the import names it owns
 /// and the Rust crate that replaces them, with the category and feature
-/// flags the identified findings carry.
+/// flags an identified finding records.
 #[derive(Debug, Clone)]
 pub struct LibraryMapping {
     /// Library name (e.g. `"zlib"`, `"DirectX 9"`).
@@ -36,15 +38,15 @@ pub struct LibraryMapping {
     /// PAL `ApiCategory` display names (e.g. `"Win32Core"`, `"zlib"`);
     /// `None` when the entry claims no category.
     pub category: Option<String>,
-    /// Feature flags the crate suggestion carries (e.g. `"png"` for
+    /// Feature flags the crate suggestion includes (e.g. `"png"` for
     /// `image`), rendered into the `crate[feat]` suggestion form; empty
     /// when the suggestion needs no features.
     pub features: Vec<String>,
 }
 
-/// What the database knows about one import name: the record an identified
-/// finding is built from, with the library, crate suggestion, category, and
-/// feature flags the entry carries.
+/// What the database knows about one import name: the record an
+/// identified finding is built from, with the library, crate
+/// suggestion, category, and feature flags the entry holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappedApi {
     /// The library the import belongs to (e.g. `"zlib"`).
@@ -53,7 +55,7 @@ pub struct MappedApi {
     pub rust_crate: String,
     /// The API category the entry names, when it names one.
     pub category: Option<String>,
-    /// Feature flags the crate suggestion carries, empty when none.
+    /// Feature flags the crate suggestion includes, empty when none.
     pub features: Vec<String>,
 }
 
@@ -136,10 +138,10 @@ impl MappingDatabase {
 /// The builtin library mappings of [`MappingDatabase::builtin`].
 ///
 /// Each entry names its category with the PAL `ApiCategory` display
-/// spelling so prompt consumers see one vocabulary, and carries feature
-/// flags where the suggested crate has one that fits the library's
-/// surface (`image[png]`, `flate2[zlib]`); entries whose suggestion is
-/// plain std carry none.
+/// spelling, so prompt consumers see one vocabulary. Each entry lists
+/// feature flags where the suggested crate has one that fits the
+/// library's surface (`image[png]`, `flate2[zlib]`). Entries whose
+/// suggestion is plain std list none.
 fn builtin_mappings() -> Vec<LibraryMapping> {
     vec![
         LibraryMapping {

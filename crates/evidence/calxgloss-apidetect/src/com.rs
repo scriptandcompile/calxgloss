@@ -3,39 +3,41 @@
 //!
 //! A binary that imports `CoCreateInstance`, calls `QueryInterface`,
 //! and exports `?QueryInterface@IDataSource@@…` is driving a COM
-//! interface, but each of those reads as an unrelated entry.
-//! [`detect_com`] reads the COM story off the classified import
+//! interface, but each of those reads as an unrelated entry on its
+//! own. [`detect_com`] reads the COM signals from the classified import
 //! findings the [`ImportTableScanner`](crate::import_table) already
-//! emitted plus the names the built call graph already carries — no new
-//! [`ScanSource`](crate::engine::ScanSource) reads — and lands
+//! emitted plus the names the built call graph already holds — no new
+//! [`ScanSource`](crate::engine::ScanSource) reads. It records
 //! [`ComInterface`] claims: one per interface whose name a decorated
-//! import name recovers, naming the interface and the method names it
-//! saw and carrying the decorated names as evidence, or one binary-level
-//! runtime claim when the signals carry no name to recover. The Rust
-//! shape every COM claim points at is a trait carrying the interface's
-//! methods, not a pile of free functions.
+//! name recovers, naming the interface and the method names it saw and
+//! keeping the decorated names as evidence, or one binary-level
+//! runtime claim when the signals give no name to recover. Every COM
+//! claim points at the same Rust shape: model the interface as a Rust
+//! trait with its methods, not as a pile of free functions.
 //!
-//! The honesty gates are the point of the module: the three signal
-//! kinds are known COM runtime imports (`CoCreateInstance`,
+//! The honesty gates are the point of the module. There are three
+//! signal kinds: known COM runtime imports (`CoCreateInstance`,
 //! `CoTaskMemAlloc`, …), the IUnknown-shape method names — the *trio*
 //! `QueryInterface`/`AddRef`/`Release` together, since a lone `Release`
 //! import is too common a name to claim COM on — and MSVC-decorated
-//! method names whose qualified part names the interface. A binary with
-//! no COM signals claims nothing; a named-interface claim suppresses
-//! the runtime-level one and sits visibly above it in confidence; and
-//! the individual import entries stay beside the structural claim
-//! rather than being replaced by it.
+//! method names whose qualified part names the interface. A binary
+//! with no COM signals claims nothing. A named-interface claim
+//! suppresses the runtime-level one and sits visibly above it in
+//! confidence. The individual import entries stay beside the structural
+//! claim rather than being replaced by it.
 
 use crate::types::{ApiFinding, ComInterface, Confidence};
 
-/// Confidence of a named-interface claim: the interface name is
+/// Confidence of a named-interface claim. The interface name is
 /// recovered from a decorated name the binary itself spells, a solid
-/// structural read — level with the other structural readings at 70.
+/// structural read. It sits at 70, level with the other structural
+/// readings.
 pub const COM_NAMED_CONFIDENCE: u8 = 70;
 
-/// Confidence of a runtime-level claim: the COM signals are runtime
-/// imports or bare IUnknown-shape names with no interface behind them,
-/// a weaker read — visibly below a named-interface claim.
+/// Confidence of a runtime-level claim. The COM signals here are
+/// runtime imports or bare IUnknown-shape names with no interface
+/// behind them, a weaker read. The claim sits visibly below a
+/// named-interface claim.
 pub const COM_RUNTIME_CONFIDENCE: u8 = 50;
 
 /// The Rust shape a named-interface claim suggests: the interface
@@ -79,13 +81,13 @@ const IUNKNOWN_METHODS: &[&str] = &["QueryInterface", "AddRef", "Release"];
 
 /// Recover `(method, interface)` from an MSVC-decorated method name:
 /// `?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z` says
-/// `QueryInterface` on `IDataSource`. The name opens with `?`, the
-/// method token runs to the first `@`, and the qualified class path
-/// that follows closes with `@@` before the access code — its
-/// innermost (leftmost) segment names the interface. Anything else —
-/// a plain name, a decorated data object (`?IDataSource@@3UA@@A`, whose
-/// class segment comes out empty), a name with no `@@` closure — is not
-/// a decorated method name and recovers nothing.
+/// `QueryInterface` on `IDataSource`. The name opens with `?`. The
+/// method token runs to the first `@`. The qualified class path that
+/// follows closes with `@@` before the access code, and its innermost
+/// (leftmost) segment names the interface. Anything else is not a
+/// decorated method name and recovers nothing: a plain name, a
+/// decorated data object (`?IDataSource@@3UA@@A`, whose class segment
+/// comes out empty), or a name with no `@@` closure.
 fn decorated_method(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix('?')?;
     let (method, qualified) = rest.split_once('@')?;
@@ -105,9 +107,10 @@ fn decorated_method(name: &str) -> Option<(&str, &str)> {
     Some((method, class))
 }
 
-/// One interface's claim under construction: the name, the method
-/// names seen for it, and the decorated names behind them, each in
-/// first-seen order and each carried once however often it appears.
+/// The claim for one interface while it is being built: the name, the
+/// method names seen for it, and the decorated names behind them. Names
+/// are kept in first-seen order, and each name is kept once no matter
+/// how often it appears.
 struct InterfaceClaim {
     interface: String,
     methods: Vec<String>,
@@ -118,18 +121,18 @@ struct InterfaceClaim {
 /// call-graph names.
 ///
 /// The names read are the import entries' API names in listing order,
-/// then the call-graph node and callee names — the names the scan
-/// already holds, so no new [`ScanSource`](crate::engine::ScanSource)
+/// then the call-graph node and callee names. The scan already holds
+/// these names, so no new [`ScanSource`](crate::engine::ScanSource)
 /// reads are made. A decorated name groups its method under the
-/// interface it names; when at least one interface was recovered,
+/// interface it names. When at least one interface was recovered,
 /// [`detect_com`] returns one [`ApiFinding::ComInterface`] per
-/// interface, in first-seen order, at
-/// [`COM_NAMED_CONFIDENCE`]. When none was recovered but the listing
-/// carries COM runtime imports or the whole IUnknown trio, it returns
-/// exactly one runtime-level claim naming the signals seen as evidence,
-/// at the visibly lower [`COM_RUNTIME_CONFIDENCE`]. A listing with no
-/// COM signals returns nothing. Only import entries stand on the gate:
-/// a usage finding repeats an import the listing already carries.
+/// interface, in first-seen order, at [`COM_NAMED_CONFIDENCE`]. When
+/// none was recovered but the listing has COM runtime imports or the
+/// whole IUnknown trio, it returns exactly one runtime-level claim
+/// naming the signals seen as evidence, at the visibly lower
+/// [`COM_RUNTIME_CONFIDENCE`]. A listing with no COM signals returns
+/// nothing. Only import entries stand on the gate: a usage finding
+/// repeats an import the listing already has.
 pub fn detect_com(findings: &[ApiFinding], graph_names: &[String]) -> Vec<ApiFinding> {
     let mut interfaces: Vec<InterfaceClaim> = Vec::new();
     let mut runtime: Vec<String> = Vec::new();
@@ -240,8 +243,8 @@ mod tests {
     #[test]
     fn a_decorated_interface_recovers_its_name_and_method_listing() {
         // The named case is the point: three decorated names on one
-        // interface land one claim naming the interface, its methods,
-        // and the decorated names as evidence.
+        // interface produce one claim naming the interface, its
+        // methods, and the decorated names as evidence.
         let listing = [
             import("?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z"),
             import("?AddRef@IDataSource@@UEAAKXZ"),
@@ -290,8 +293,8 @@ mod tests {
     #[test]
     fn the_iunknown_shape_counts_as_com() {
         // The bare trio with no runtime import and no decoration still
-        // says the component model — one binary-level claim naming the
-        // signals seen.
+        // means the binary uses the component model: one binary-level
+        // claim naming the signals seen.
         let listing = [
             import("QueryInterface"),
             import("AddRef"),
@@ -329,8 +332,8 @@ mod tests {
 
     #[test]
     fn a_named_interface_suppresses_the_runtime_claim() {
-        // Runtime imports beside a recoverable name: the named regime
-        // wins, and the decorated names are the evidence — the runtime
+        // Runtime imports beside a recoverable name: the named claim
+        // wins, and the decorated names are the evidence. The runtime
         // imports stay as their own import entries beside the claim.
         let listing = [
             import("CoCreateInstance"),
@@ -368,8 +371,8 @@ mod tests {
 
     #[test]
     fn only_import_entries_stand_on_the_gate() {
-        // A usage finding repeats an import the listing already
-        // carries; the gate reads the import entries, not the usages.
+        // A usage finding repeats an import the listing already has;
+        // the gate reads the import entries, not the usages.
         let listing = [usage("CoCreateInstance"), usage("QueryInterface")];
         assert!(detect_com(&listing, &[]).is_empty());
     }
@@ -377,7 +380,7 @@ mod tests {
     #[test]
     fn call_graph_names_carry_the_signals_too() {
         // A decorated thunk name in the call graph, with no COM import
-        // in the listing, still lands the named claim.
+        // in the listing, still produces the named claim.
         let listing = [import("inflate")];
         let findings = detect_com(
             &listing,
@@ -447,7 +450,7 @@ mod tests {
     fn decorated_names_that_are_not_method_names_recover_nothing() {
         // A decorated data object (`?IDataSource@@3UA@@A`) and a name
         // with no `@@` closure are not decorated methods: no interface
-        // is recovered and no claim lands.
+        // is recovered and no claim is recorded.
         let listing = [
             import("?IDataSource@@3UA@@A"),
             import("?QueryInterface@IDataSource"),

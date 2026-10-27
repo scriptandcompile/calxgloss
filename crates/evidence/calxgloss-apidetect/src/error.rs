@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Errors that can occur during API identification operations.
 #[derive(Debug, Error)]
 pub enum ApiError {
-    /// An engine read through the analysis seam failed.
+    /// A read from the analysis engine through the seam failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -32,7 +32,7 @@ pub enum ApiError {
 
 /// Maps the shared JSON store's errors onto this crate's error type: the
 /// store's not-found becomes [`ApiError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// JSON errors become the existing pass-through variants.
 impl From<calxgloss_types::persist::PersistError> for ApiError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;
