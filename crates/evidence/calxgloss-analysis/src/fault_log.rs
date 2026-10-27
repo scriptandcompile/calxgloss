@@ -65,8 +65,9 @@ use tracing::{debug, warn};
 
 /// Logger for fault events.
 ///
-/// Each call to [`record`](Self::record) appends a fault event to the
-/// in-memory log and flushes it to the JSON file on disk.
+/// Each call to [`record`](Self::record) reads the JSON log file, appends the
+/// event to it, and writes the whole log back. The logger keeps no events in
+/// memory.
 ///
 /// The file path is `<workspace>/re/analysis/fault_log.json`.
 /// The directory structure is created automatically if it does not exist.
@@ -91,9 +92,10 @@ impl FaultLogger {
 
     /// Record a single fault event.
     ///
-    /// This appends the event to the in-memory log and persists the entire
-    /// log to disk. If persistence fails, the event is still kept in memory
-    /// and a warning is emitted.
+    /// This reads the current log file, appends the event, and writes the
+    /// entire log back. A log file that cannot be parsed is replaced with a
+    /// fresh log. If the write fails, a warning is emitted and the event is
+    /// not saved.
     pub fn record(&self, event: FaultEvent) {
         let log_path = self.log_path();
 

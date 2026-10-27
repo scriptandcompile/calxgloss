@@ -5,10 +5,9 @@
 //!
 //! # Purpose
 //!
-//! tracking pass rates per retry strategy
-//! per DLL category. This logger records every attempt outcome and
-//! stores it in a JSON file that can be read back to compute aggregate
-//! statistics (pass rate, fail rate, etc.) for analysis.
+//! Track pass rates per retry strategy, per DLL category. This logger records
+//! every attempt outcome to a JSON file. The file can be read back to compute
+//! aggregate statistics (pass rate, fail rate, etc.) for analysis.
 //!
 //! # File Format
 //!
@@ -53,8 +52,9 @@ use tracing::{debug, warn};
 
 /// Logger for prompt strategy experiment entries.
 ///
-/// Each call to [`record`](Self::record) appends an experiment entry to the
-/// in-memory log and flushes it to the JSON file on disk.
+/// Each call to [`record`](Self::record) reads the JSON log file, appends the
+/// entry to it, and writes the whole log back. The logger keeps no entries in
+/// memory.
 ///
 /// The file path is `<workspace>/re/analysis/prompt_strategy_log.json`.
 /// The directory structure is created automatically if it does not exist.
@@ -79,9 +79,10 @@ impl PromptStrategyLogger {
 
     /// Record a single experiment entry.
     ///
-    /// This appends the entry to the in-memory log and persists the entire
-    /// log to disk. If persistence fails, the entry is still kept in memory
-    /// and a warning is emitted.
+    /// This reads the current log file, appends the entry, and writes the
+    /// entire log back. A log file that cannot be parsed is replaced with a
+    /// fresh log. If the write fails, a warning is emitted and the entry is
+    /// not saved.
     pub fn record(&self, entry: PromptStrategyEntry) {
         let log_path = self.log_path();
 

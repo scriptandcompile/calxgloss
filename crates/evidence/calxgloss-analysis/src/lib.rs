@@ -1,8 +1,8 @@
 //! DLL classification, call graph analysis, and Windows API tagging.
 //!
 //! This crate provides the [`Analyzer`] struct, which orchestrates the analysis
-//! of target DLLs by combining engine scan data with the PAL mapping table
-//! from `calxgloss-pal`.
+//! of target DLLs by combining evidence engine scan data with the PAL mapping
+//! table from `calxgloss-pal`.
 //!
 //! # Main Capabilities
 //!

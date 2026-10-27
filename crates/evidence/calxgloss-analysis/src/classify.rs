@@ -265,7 +265,7 @@ pub fn known_third_party_crate(dll_name: &str) -> Option<&'static str> {
 
 /// Returns the lowercase DLL filename without the `.dll` extension.
 ///
-/// Returns `None` if the name is empty or doesn't end with `.binary`.
+/// Returns `None` if the name is empty or doesn't end with `.dll`.
 pub fn dll_base_name(dll_name: &str) -> Option<String> {
     let lower = dll_name.trim().to_lowercase();
     if lower.is_empty() {
@@ -333,10 +333,10 @@ pub fn crate_replacement_for(dll_name: &str, category: &DllCategory) -> Option<S
     }
 }
 
-/// Why the heuristics classified a DLL the way they did — one honest sentence
-/// naming the table or pattern that matched (or the absence of one). The
-/// classification override panel displays this next to the control, so the
-/// operator can see what they're changing their mind about.
+/// Why the heuristics classified a DLL the way they did: one honest sentence
+/// naming the table or pattern that matched, or saying that none matched. The
+/// classification override panel shows this sentence beside the control, so
+/// the operator can see what they are overriding.
 pub fn classification_reason(dll_name: &str, category: &DllCategory) -> String {
     match category {
         DllCategory::RuntimeLibrary => {
@@ -370,13 +370,13 @@ pub fn classification_reason(dll_name: &str, category: &DllCategory) -> String {
     }
 }
 
-/// Whether a parsed PE is a .NET managed assembly: its COM descriptor data
-/// directory (data directory #14) is non-empty — the marker every managed
-/// PE carries, and the one every PE tool uses for the "managed" verdict
-/// (issue #235). goblin maps an all-zero directory to `None`, so a `Some`
-/// here means the directory is present and non-empty. Imports of
-/// `mscoree.dll` / `clr.dll` / `coreclr.dll` corroborate the verdict but
-/// are not required for it.
+/// True when a parsed PE is a .NET managed assembly. The marker is a
+/// non-empty COM descriptor data directory (data directory #14). Every
+/// managed PE carries it, and it is the marker every PE tool uses for the
+/// "managed" verdict (issue #235). goblin maps an all-zero directory to
+/// `None`, so a `Some` here means the directory is present and non-empty.
+/// Imports of `mscoree.dll` / `clr.dll` / `coreclr.dll` corroborate the
+/// verdict but are not required for it.
 pub fn pe_is_managed(pe: &goblin::pe::PE) -> bool {
     pe.header
         .optional_header
@@ -385,10 +385,10 @@ pub fn pe_is_managed(pe: &goblin::pe::PE) -> bool {
         .is_some()
 }
 
-/// The same managed marker, read straight from a file: parse the PE and
-/// check the COM descriptor directory. A file that cannot be read or does
-/// not parse as a PE reports `false` — the caller's normal path surfaces
-/// that error; the managed check never invents a failure (issue #235).
+/// The same managed marker, read directly from a file: parse the PE, then
+/// check the COM descriptor directory. A file that cannot be read, or that
+/// does not parse as a PE, reports `false`. The caller's normal path
+/// surfaces that error; the managed check never invents a failure (issue #235).
 pub fn file_is_managed_pe(path: &std::path::Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
@@ -399,10 +399,10 @@ pub fn file_is_managed_pe(path: &std::path::Path) -> bool {
     }
 }
 
-/// Given a list of imports, returns the set of unique DLL names that are imported.
+/// Given a list of imports, returns the unique DLL names that are imported.
 ///
-/// This is useful for determining what external dependencies a target binary has,
-/// which informs the overall classification strategy.
+/// This tells you what external dependencies a target binary has, which
+/// informs the overall classification strategy.
 pub fn imported_dll_names(imports: &[Import]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();

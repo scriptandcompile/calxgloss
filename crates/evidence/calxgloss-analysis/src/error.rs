@@ -8,7 +8,7 @@ use thiserror::Error;
 /// Errors that can occur during analysis operations.
 #[derive(Debug, Error)]
 pub enum AnalysisError {
-    /// An engine read through the analysis seam failed.
+    /// A read from the analysis engine through the seam failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
