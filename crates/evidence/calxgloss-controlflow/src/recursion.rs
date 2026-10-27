@@ -1,19 +1,20 @@
 //! Self-recursion detection.
 //!
 //! A function that calls itself is reported with its self-call count and
-//! whether any call sits in tail position. The scan starts after the
-//! body's opening brace so the signature line — which contains the
+//! whether any call sits in tail position. The line scan starts after the
+//! body's opening brace, so the signature line — which contains the
 //! function's own name — never counts as a call.
 //!
-//! The record deepens in place off the control flow graph, the same
-//! graph the loop and density readings come off: a self-call the graph
-//! shows nested inside a loop body is flagged as a stack-depth
-//! multiplier, and the tail-call reading sharpens from the graph's tail
-//! position — the call block's only exit is the function's return, and
-//! that return hands back exactly the call's result — catching shapes
-//! spread over lines or nested in a block that the line rule misses.
-//! The line rule (`return name(...)`) stays as the floor, so the graph
-//! reading only ever adds tail calls, never drops one.
+//! The same control flow graph the loop and density readings use also
+//! sharpens this record in place. Where the graph shows a self-call
+//! nested inside a loop body, the record flags it as a stack-depth
+//! multiplier. The graph also sharpens the tail-call reading: a call
+//! counts as a tail call when the call block's only exit is the
+//! function's return and that return hands back exactly the call's
+//! result. This catches tail calls spread over several lines or nested
+//! in a block, which the line rule misses. The line rule
+//! (`return name(...)`) stays as the floor, so the graph reading only
+//! ever adds tail calls, never drops one.
 
 use calxgloss_types::Confidence;
 
@@ -68,9 +69,10 @@ impl RecursionDetector {
         let suggestion = if tail_call {
             "replace with loop { ... } (tail call)".to_string()
         } else if in_loop || calls >= 2 {
-            // A self-call a loop re-enters every iteration, or
-            // branching recursion: the call tree's depth can outgrow
-            // the stack, so name the explicit-stack alternative too.
+            // The self-call is one a loop re-enters every iteration, or
+            // the recursion branches: the call tree's depth can outgrow
+            // the stack, so the suggestion names the explicit-stack
+            // alternative too.
             format!(
                 "keep recursive fn {}(...) or carry the work on an explicit stack",
                 name
@@ -114,14 +116,14 @@ fn is_tail_return(line: &str, name: &str) -> bool {
     false
 }
 
-/// The graph's tail reading of a call site: the call sits in a block
-/// whose only exit is the function's return — the block ends at the
-/// `return` itself, or falls or jumps to a return block as its one and
-/// only way out — and that return hands back exactly what the call
-/// produced: `return name(...)` read across the block, or the
-/// spread-over-lines `v = name(...); ... return v;`. A combined result
-/// (`return name(x) + 1`) hands back more than the call, so it is not
-/// a tail call.
+/// The graph's tail reading of a call site. Two things must hold.
+/// First, the call sits in a block whose only exit is the function's
+/// return: the block ends at the `return` itself, or falls or jumps to
+/// a return block as its one and only way out. Second, that return
+/// hands back exactly what the call produced: `return name(...)` read
+/// across the block, or the spread-over-lines `v = name(...); ...
+/// return v;`. A combined result (`return name(x) + 1`) hands back
+/// more than the call, so it is not a tail call.
 fn graph_tail_call(cfg: &Cfg, lines: &[&str], line: usize, name: &str) -> bool {
     let Some(block) = cfg.block_at(line).and_then(|id| cfg.block(id)) else {
         return false;
@@ -156,7 +158,7 @@ fn graph_tail_call(cfg: &Cfg, lines: &[&str], line: usize, name: &str) -> bool {
     if let Some(args) = call_args(expr, name) {
         return returns_call_result(args);
     }
-    // `return v;` — the call's result parked in a local and handed
+    // `return v;` — the call's result stored in a local and handed
     // straight back. The assignment scan runs over the call block,
     // minus its own return line when the two share one block.
     if !is_identifier(expr) {
@@ -186,9 +188,9 @@ fn returns_assigned_call(lines: &[&str], start: usize, end: usize, name: &str, v
 }
 
 /// The text following the opening parenthesis when `s` starts with a
-/// bare call `name(` — the shape both tail readings check, at the
-/// return site and at the assignment site, before confirming nothing
-/// but the call's result follows.
+/// bare call `name(`. Both tail readings check this shape — at the
+/// return site and at the assignment site — before confirming that
+/// nothing but the call's result follows.
 fn call_args<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     s.strip_prefix(&format!("{name}("))
 }
@@ -196,9 +198,9 @@ fn call_args<'a>(s: &'a str, name: &str) -> Option<&'a str> {
 /// The right-hand side of the last plain `var =` assignment on the
 /// (string-blanked) line, or `None` when the line does not assign to
 /// `var`. Comparisons (`==`) and compound assignments (`+=`) are not
-/// plain assignments, and a store through a pointer (`*v =` or
-/// `p->v =`) does not bind `var` itself — the last assignment wins,
-/// so `v = name(x); v = 0;` on one line does not read as the call.
+/// plain assignments. A store through a pointer (`*v =` or `p->v =`)
+/// does not bind `var` itself. The last assignment wins, so
+/// `v = name(x); v = 0;` on one line does not read as the call.
 fn assignment_rhs<'a>(line: &'a str, var: &str) -> Option<&'a str> {
     let bytes = line.as_bytes();
     let mut from = 0usize;
@@ -280,10 +282,10 @@ pub(crate) fn count_ident_calls(line: &str, needle: &str) -> usize {
             _ => {}
         }
         if !in_string
-            // Byte-level so `idx` landing on a UTF-8 continuation byte of a
-            // multi-byte char (outside a string literal) cannot panic; the
-            // needle starts with an ASCII identifier byte, so a match can
-            // never begin mid-char anyway.
+            // Byte-level so `idx` landing on a UTF-8 continuation byte of
+            // a multi-byte char (outside a string literal) cannot panic.
+            // The needle starts with an ASCII identifier byte, so a match
+            // can never begin mid-char anyway.
             && bytes[idx..].starts_with(needle.as_bytes())
             && (idx == 0 || !(bytes[idx - 1].is_ascii_alphanumeric() || bytes[idx - 1] == b'_'))
         {
@@ -444,7 +446,7 @@ mod tests {
     #[test]
     fn a_tail_call_spread_over_lines_reads_as_a_tail_call() {
         // The Ghidra tail shape the line rule misses: the call's
-        // result parked in a local, then returned from the same block
+        // result stored in a local, then returned from the same block
         // whose only exit is that return.
         let code = body(
             "walk",

@@ -1,45 +1,46 @@
 //! Cross-function recursion readings over the bodies the scan keeps.
 //!
-//! The per-body detectors stop at a function's closing brace: two
+//! Each per-body detector stops at a function's closing brace. So two
 //! functions that call each other — the `A ↔ B` mutual-recursion shape,
-//! or the longer `A → B → C → A` ring — are invisible to every body
-//! read on its own. This module closes that gap over the bodies one
-//! scan already holds, mirroring the memory crate's cross-function
-//! pass (ADR-0027), the sync crate's (ADR-0033), and the callback
-//! crate's (ADR-0035): the call map is derived from the fetched bodies
-//! with the same identifier-boundary-aware, string-literal-blind
-//! call-site scan the recursion detector already uses
-//! ([`count_ident_calls`]), so no new [`ScanSource`](crate::engine::ScanSource)
-//! reads are made and the exactly-once-decompile guarantee and the
-//! skip-rate breaker survive untouched.
+//! or the longer `A → B → C → A` ring — are invisible to every reading
+//! of a single body. This module closes that gap over the bodies one
+//! scan already holds, the way the memory crate's cross-function pass
+//! (ADR-0027), the sync crate's (ADR-0033), and the callback crate's
+//! (ADR-0035) close theirs. It derives the call map from the fetched
+//! bodies with the same call-site scan the recursion detector already
+//! uses: identifier-boundary-aware and string-literal-blind
+//! (`count_ident_calls`). So the pass makes no new
+//! [`ScanSource`](crate::engine::ScanSource) reads, and the
+//! exactly-once-decompile guarantee and the skip-rate breaker stay
+//! intact.
 //!
-//! [`CrossFunctionAnalyzer::analyze`] runs the reading: every call edge
-//! between kept bodies becomes a directed edge, and every recursion
-//! cycle of length 2 or more in that graph lands one
+//! [`CrossFunctionAnalyzer::analyze`] does the reading. Every call edge
+//! between kept bodies becomes a directed edge in a graph, and every
+//! recursion cycle of length 2 or more in that graph lands one
 //! [`ControlFlowFinding::MutualRecursion`] on the cycle's earliest
-//! member in listing order, naming every member in cycle order. A
-//! plain self-call is *not* mutual recursion — the per-body recursion
-//! finding already covers it — so self-edges stay out of the graph
-//! whole. Each cycle is reported exactly once: the walk anchors a
-//! cycle at its earliest member and only walks through later ones, so
-//! the same ring never surfaces rotated onto another member. A
-//! function whose body never made it — skipped by the engine — is
-//! simply absent from `functions`, so it carries no edges and
-//! fabricates no cycle.
+//! member in listing order. The finding lists every member in cycle
+//! order. A plain self-call is *not* mutual recursion — the per-body
+//! recursion finding already covers it — so self-edges stay out of the
+//! graph entirely. The walk anchors each cycle at its earliest member
+//! and only walks through later members, so the same ring is never
+//! found a second time rotated onto another member. A function whose
+//! body never arrived — skipped by the analysis engine — is simply
+//! absent from `functions`, so it carries no edges and invents no
+//! cycle.
 
 use crate::recursion::count_ident_calls;
 use crate::types::{ControlFlowFinding, MutualRecursion};
 use calxgloss_decomp::DecompiledFunction;
 
-/// Confidence of a mutual-recursion cycle read across kept bodies:
-/// every edge of the cycle is an explicit call in a body the scan
-/// holds, so the claim sits level with an in-body self-call.
+/// Evidence confidence of a mutual-recursion cycle read across kept
+/// bodies: every edge of the cycle is an explicit call in a body the
+/// scan holds, so the claim scores the same as an in-body self-call.
 const MUTUAL_RECURSION_CONFIDENCE: u8 = 70;
 
-/// The Rust pattern a call cycle suggests: the cycle translates as one
-/// unit, which is what an explicit stack, a trampoline, or an
-/// enum-driven loop gives a translation when functions take turns on
-/// each other's stack.
+/// The Rust pattern a call cycle suggests: the whole cycle translates
+/// as one unit. When functions take turns calling each other, an
+/// explicit stack, a trampoline, or an enum-driven loop is how the
+/// translation replaces the cycle.
 const MUTUAL_RECURSION_SUGGESTION: &str = "translate the cycle together via an explicit stack, a \
                                            trampoline, or an enum-driven loop";
 
@@ -47,15 +48,15 @@ const MUTUAL_RECURSION_SUGGESTION: &str = "translate the cycle together via an e
 ///
 /// The analyzer is stateless: every reading comes from the bodies it
 /// is handed, so one analyzer serves an entire scan. It fetches
-/// nothing itself — the engine hands it the same [`DecompiledFunction`]
-/// values the per-function pass already decompiled, keeping the scan
-/// at one decompile per function.
+/// nothing itself — it only reads the [`DecompiledFunction`] values
+/// the per-function pass already decompiled, which keeps the scan at
+/// one decompile per function.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CrossFunctionAnalyzer;
 
 impl CrossFunctionAnalyzer {
-    /// An analyzer with no state — the call edges come out of the
-    /// bodies at call time.
+    /// An analyzer with no state — the call edges are computed from the
+    /// bodies when `analyze` runs.
     pub fn new() -> Self {
         Self
     }
@@ -64,14 +65,14 @@ impl CrossFunctionAnalyzer {
     /// order: every recursion cycle of length 2 or more in the call
     /// graph derived from `functions` lands one
     /// [`ControlFlowFinding::MutualRecursion`] on the cycle's earliest
-    /// member in listing order, naming every member in cycle order —
-    /// once per cycle, not once per edge and not once per member.
-    /// Cycles come out grouped by that earliest member, so the
-    /// findings themselves ride in listing order.
+    /// member in listing order. The finding lists every member in
+    /// cycle order — once per cycle, not once per edge and not once
+    /// per member. Cycles are found grouped by that earliest member,
+    /// so the findings come out in listing order.
     ///
-    /// A function whose body never made it — skipped by the engine —
-    /// is absent from `functions`, carries no edges, and fabricates no
-    /// cycle.
+    /// A function whose body never arrived — skipped by the analysis
+    /// engine — is absent from `functions`, carries no edges, and
+    /// invents no cycle.
     pub fn analyze(&self, functions: &[DecompiledFunction]) -> Vec<ControlFlowFinding> {
         let edges = call_edges(functions);
 
@@ -85,8 +86,8 @@ impl CrossFunctionAnalyzer {
         for start in 0..functions.len() {
             // Anchor the walk at `start` and only walk through later
             // members: every cycle has exactly one earliest member, so
-            // each ring is found exactly once, attached where the
-            // contract wants it.
+            // each ring is found exactly once and attached to that
+            // earliest member, where the contract above puts it.
             walk.visited[start] = true;
             walk.path.push(start);
             walk.walk(start, start);
@@ -149,9 +150,10 @@ fn call_edges(functions: &[DecompiledFunction]) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// Whether `body` carries a call to `name` — the recursion detector's
-/// scan over each line. The signature line names only the function
-/// itself, which is never a callee here, so whole-body lines are safe.
+/// Whether `body` contains a call to `name`, using the recursion
+/// detector's per-line scan. The signature line contains only the
+/// function's own name, which is never a callee here, so scanning the
+/// whole body is safe.
 fn body_calls(body: &str, name: &str) -> bool {
     let needle = format!("{name}(");
     body.lines()
@@ -159,8 +161,8 @@ fn body_calls(body: &str, name: &str) -> bool {
 }
 
 /// The one finding for the cycle `path` describes: members in cycle
-/// order starting from the earliest member, the ring closing back onto
-/// it as evidence.
+/// order starting from the earliest member, with the evidence string
+/// closing the ring back onto that first member.
 fn cycle_finding(functions: &[DecompiledFunction], path: &[usize]) -> ControlFlowFinding {
     let cycle: Vec<String> = path
         .iter()
@@ -283,9 +285,9 @@ mod tests {
 
     #[test]
     fn each_cycle_lands_once_however_many_edges_and_rotations_it_carries() {
-        // FUN_a ↔ FUN_b with three call sites between them, and the
-        // 3-cycle reached from every member's perspective: still one
-        // finding per cycle.
+        // FUN_a ↔ FUN_b spelled at two call sites on each side, plus
+        // the FUN_a → FUN_c → FUN_a ring reached again from every
+        // start index: still one finding per cycle.
         let findings = CrossFunctionAnalyzer::new().analyze(&[
             function("FUN_a", "  FUN_b(1);\n  FUN_b(2);\n  FUN_c(3);\n"),
             function("FUN_b", "  FUN_a(1);\n  FUN_a(2);\n"),
@@ -324,8 +326,8 @@ mod tests {
 
     #[test]
     fn calls_spelled_inside_string_literals_fabricate_no_edges() {
-        // FUN_b only names FUN_a inside a string literal, so the only
-        // visible edge is FUN_a → FUN_b and no ring closes.
+        // FUN_b only mentions FUN_a inside a string literal, so the
+        // only visible edge is FUN_a → FUN_b and no ring closes.
         let findings = CrossFunctionAnalyzer::new().analyze(&[
             function("FUN_a", "  FUN_b(1);\n"),
             function("FUN_b", "  puts(\"FUN_a(keeps calling me)\");\n"),

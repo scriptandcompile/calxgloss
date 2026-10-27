@@ -8,10 +8,11 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is the
-//! check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and every
-//! finding — for the translation pipeline to query.
+//! The persisted document doubles as a cache:
+//! [`exists`](ControlFlowPersistor::exists) is the check a caller runs
+//! before deciding whether a scan is needed, and
+//! [`load`](ControlFlowPersistor::load) reads the whole document back —
+//! metadata and every finding — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -34,8 +35,8 @@ use crate::types::ControlFlowResult;
 /// ```
 ///
 /// The default cache directory is `{workspace}/re/analysis/controlflow/`,
-/// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir)
-/// points the persistor at an explicit directory instead.
+/// set by [`new`](Self::new). Use [`with_cache_dir`](Self::with_cache_dir)
+/// to store results in an explicit directory instead.
 ///
 /// # Example
 ///
@@ -82,19 +83,19 @@ impl ControlFlowPersistor {
 
     /// Whether a persisted result exists for `binary`.
     ///
-    /// This is the cache check: a caller that wants control-flow findings
-    /// without re-running the scan asks here first and only drives the
-    /// scan when the answer is `false`.
+    /// This is the cache check: a caller that wants control-flow
+    /// findings without re-running the scan asks here first, and only
+    /// runs the scan when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
 
-    /// Saves a control-flow result to JSON, keyed on its metadata's
-    /// binary name.
+    /// Saves a control-flow result to JSON. The document's key is the
+    /// binary name held in the result's metadata.
     ///
-    /// Creates the cache directory hierarchy if it does not exist,
-    /// serializes the result, and writes it to disk — a rescan replaces
-    /// the previous document for the same binary.
+    /// The save creates the cache directory hierarchy if it does not
+    /// exist, serializes the result, and writes it to disk. Saving the
+    /// same binary again replaces the previous document.
     ///
     /// # Errors
     ///
@@ -242,10 +243,11 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #349).
+        // The coverage record the scan stamped passes through the
+        // persistor untouched: the same statuses, ids, order, and
+        // limitation lines come back — exactly what a later reader sees,
+        // whether the projection seam, the report, or a `--show` months
+        // later (issue #349).
         let dir = tempfile::tempdir().unwrap();
         let persistor = ControlFlowPersistor::with_cache_dir(dir.path());
         let mut saved = sample_result("eqmain.dll");

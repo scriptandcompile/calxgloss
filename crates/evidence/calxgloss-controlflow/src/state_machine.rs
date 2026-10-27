@@ -1,13 +1,17 @@
 //! State-machine pattern detection.
 //!
-//! A state machine in decompiler output looks like a switch-shaped chain on a
-//! state variable (`if (state == STATE_IDLE) ... else if (state ==
+//! A state machine in decompiler output looks like a switch-shaped chain
+//! on a state variable (`if (state == STATE_IDLE) ... else if (state ==
 //! STATE_RUN) ...`) whose case bodies assign new values to that same
-//! variable (transitions). The detector requires at least `min_states` arms
-//! with at least one named constant (matching the configurable name set,
-//! default `STATE_*` / `IDLE` / `RUNNING`), and reports the transition
-//! targets plus the idle state — a state that is compared but never entered
-//! by a transition assignment, or one with an idle-like name.
+//! variable (transitions).
+//!
+//! The detector looks at chains with at least `min_states` arms (default
+//! 3). A chain qualifies if it compares against at least one named state
+//! constant (matching the configurable name set, default `STATE_*` /
+//! `IDLE` / `RUNNING`), or if its bodies reassign the state variable.
+//! The report gives the transition targets and the idle state — a state
+//! the chain compares but that no transition assignment ever enters, or,
+//! failing that, a state with an idle-like name.
 
 use calxgloss_types::Confidence;
 
@@ -208,8 +212,8 @@ else if (local_4 == 3) {
     local_4 = 1;
 }
 ";
-        // Numeric-only chains qualify via their transition assignments, at
-        // the lower 60 confidence.
+        // Numeric-only chains qualify through their transition
+        // assignments, at the lower 60 evidence confidence.
         let findings = StateMachineDetector::default().detect("pump", code);
         assert_eq!(findings.len(), 1);
         assert_eq!(u8::from(findings[0].confidence), 60);
@@ -279,12 +283,14 @@ else if (mode == MODE_SLEEP) {
     mode = MODE_OFF;
 }
 ";
-        // With the default name set these constants are unnamed: still
-        // detected (via transitions) but at the lower confidence.
+        // With the default name set these constants are unnamed: the
+        // chain is still detected, through its transitions, but at the
+        // lower evidence confidence.
         let findings = StateMachineDetector::default().detect("blink", code);
         assert_eq!(findings.len(), 1);
         assert_eq!(u8::from(findings[0].confidence), 60);
-        // Swapping the name set names them and lifts confidence to 70.
+        // Swapping in the name set makes them named constants, and the
+        // evidence confidence rises to 70.
         let findings = StateMachineDetector::default()
             .with_state_names(&["MODE_*"])
             .detect("blink", code);
