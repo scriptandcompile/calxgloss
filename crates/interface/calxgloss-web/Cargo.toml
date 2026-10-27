@@ -78,5 +78,18 @@ tokio-tungstenite = "0.29"
 # installed on the machine.  It is kept here so CI can run it.
 headless_chrome = "1.0.18"
 
+# These two test targets build against the axum server stack, which only
+# exists under the `server` feature. `required-features` makes a feature-less
+# `cargo test` skip them cleanly instead of failing to compile them.
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+required-features = ["server"]
+
+[[test]]
+name = "accept_conflict"
+path = "tests/accept_conflict.rs"
+required-features = ["server"]
+
 [lints.cargo]
 unused_dependencies = "allow"
