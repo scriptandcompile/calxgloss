@@ -1,25 +1,26 @@
 //! Multi-function correlation: recognizing algorithms that span a call
 //! relationship.
 //!
-//! The other three detectors read one function at a time, so an algorithm
+//! The other three detectors read one function at a time. An algorithm
 //! spelled out across two bodies — a sort routine driving a comparator
-//! callback, a divide-and-conquer that splits its range and recurses —
-//! stays invisible to every one of them. [`CrossFunctionDetector`] is the
-//! fourth detector: it derives the program's call map from the bodies the
-//! scan already decompiles (the program-function names appearing in each
-//! fetched body) and matches [`CorrelationRelationship`] records against
-//! it, so the whole pass costs zero extra engine reads — the same
-//! spirit as typeinfer's shared caller-body cache. Its standard score
-//! lives beside the other detectors' in the
-//! [`confidence`](crate::confidence) module.
+//! callback, or a divide-and-conquer that splits its range and recurses —
+//! is invisible to each of them. [`CrossFunctionDetector`] is the fourth
+//! detector. It derives the program's call map from the scan's kept
+//! bodies: the program-function names that appear in each fetched body.
+//! It then matches [`CorrelationRelationship`] records against that call
+//! map, so the whole pass costs no extra analysis engine reads. This
+//! follows the same idea as typeinfer's shared caller-body cache. The
+//! detector's standard score lives in the
+//! [`confidence`](crate::confidence) module, beside the other
+//! detectors' standard scores.
 //!
 //! [`default_relationships`] carries the small, honest built-in set:
 //! recursive divide-and-conquer (a self-call plus a halving/split shape)
 //! and a sort driven by a comparator callback (a host call like `qsort`
-//! plus a comparator-shaped callee). Correlated detections are ordinary
-//! [`AlgorithmHint`] records marked [`CrossFunction`](DetectionMethod::CrossFunction)
-//! whose evidence names the partner function, so they flow through the
-//! same resolution, the same confidence floor, and the same prompt
+//! plus a comparator-shaped callee). A correlated detection is an
+//! ordinary [`AlgorithmHint`] record marked [`CrossFunction`](DetectionMethod::CrossFunction)
+//! whose evidence names the partner function. It therefore goes through
+//! the same resolution, the same confidence floor, and the same prompt
 //! rendering as every other hint.
 
 use std::collections::{HashMap, HashSet};
@@ -43,16 +44,16 @@ use regex::Regex;
 /// A relationship recognizes exactly one algorithm: its
 /// [`name`](Self::name) and [`category`](Self::category) are what a hint
 /// records when the relationship fits. The hinted function's body must
-/// carry a match for every [`body_patterns`](Self::body_patterns) regex —
-/// the call shape that ties it to a partner, spelled with the `{name}`
-/// placeholder when the partner is the function itself — and, when
-/// [`partner_patterns`](Self::partner_patterns) is not empty, some
-/// program function its body names must carry every partner shape. An
-/// empty partner set means the relationship needs no partner beyond the
-/// call the body patterns already prove: a self-call carries its own
-/// partner. Like the other pattern types, an entry may carry its own
+/// match every regex in [`body_patterns`](Self::body_patterns) — the
+/// call shape that ties it to a partner, spelled with the `{name}`
+/// placeholder when the partner is the function itself. When
+/// [`partner_patterns`](Self::partner_patterns) is not empty, one of the
+/// program functions the body names must also match every partner
+/// shape. An empty partner set means the body patterns already prove
+/// everything the relationship needs from a partner: a self-call is its
+/// own partner. Like the other pattern types, an entry may carry its own
 /// [`confidence`](Self::confidence) overriding the detector's standard
-/// score, and a [`min_lines`](Self::min_lines) floor refuses bodies too
+/// score, and a [`min_lines`](Self::min_lines) floor rejects bodies too
 /// small to carry a real relationship.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,7 +71,7 @@ pub struct CorrelationRelationship {
     /// Regex sources the partner callee's body must all match — the
     /// behavior the relationship demands of the partner, e.g. a
     /// comparator comparing two pointer touches. An empty set means the
-    /// relationship is carried by the hinted body alone.
+    /// hinted body alone proves the relationship.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partner_patterns: Vec<String>,
     /// Minimum number of body lines for the relationship to be
@@ -124,7 +125,7 @@ impl CorrelationRelationship {
         self
     }
 
-    /// Pay `confidence` instead of the standard score for the hints this
+    /// Override the standard score with `confidence` for the hints this
     /// relationship makes.
     pub fn with_confidence(mut self, confidence: u8) -> Self {
         self.confidence = Some(confidence);
@@ -136,21 +137,24 @@ impl CorrelationRelationship {
 // Detector
 // ============================================================
 
-/// Multi-function correlation over the call map the scan's own bodies
-/// carry.
+/// Multi-function correlation over the call map built from the scan's
+/// own bodies.
 ///
 /// The detector owns the relationship set a scan matches against:
 /// [`CorrelationRelationship`] records, configurable whole through
 /// [`with_relationships`](Self::with_relationships) or grown one at a
 /// time with [`add_relationship`](Self::add_relationship).
 /// [`with_default_relationships`](Self::with_default_relationships)
-/// builds a detector over [`default_relationships`]. The set's
-/// configuration order is scan order, the way every detector's has been:
-/// a function fitting two relationships reports both, first the one
-/// configured first. The detector holds no scan source and never reads
-/// the program itself — [`detect_correlations`](Self::detect_correlations)
-/// is handed the bodies the scan already fetched — so it adds no round
-/// trips and one detector serves a whole scan.
+/// builds a detector over [`default_relationships`].
+///
+/// The set's configuration order is the scan order, as with every other
+/// detector: a function fitting two relationships reports both, first
+/// the one configured first.
+///
+/// The detector holds no scan source and never reads the program
+/// itself: [`detect_correlations`](Self::detect_correlations) is handed
+/// the bodies the scan already fetched. It adds no analysis engine
+/// round trips, and one detector serves a whole scan.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CrossFunctionDetector {
     relationships: Vec<CorrelationRelationship>,
@@ -200,27 +204,30 @@ impl CrossFunctionDetector {
     /// The call map is derived here, from these bodies alone: a program
     /// function counts as called by another when its name appears in
     /// that body — as the callee of a call or as a callback handed to a
-    /// host — so the pass reads nothing from the engine and costs no extra
-    /// round trips. A relationship fits a function when the function's
-    /// body spans at least its [`min_lines`](CorrelationRelationship::min_lines)
-    /// and carries every [`body_patterns`](CorrelationRelationship::body_patterns)
-    /// shape (with `{name}` standing for the function's own name), and —
-    /// where the relationship demands partner shapes — one of the program
-    /// functions its body names, itself in `functions` and never the
-    /// function itself, carries every
+    /// host. So the pass reads nothing from the analysis engine and
+    /// costs no extra round trips.
+    ///
+    /// A relationship fits a function when the function's body spans at
+    /// least its [`min_lines`](CorrelationRelationship::min_lines) and
+    /// carries every [`body_patterns`](CorrelationRelationship::body_patterns)
+    /// shape, with `{name}` standing for the function's own name. Where
+    /// the relationship demands partner shapes, one of the program
+    /// functions its body names must also carry every
     /// [`partner_patterns`](CorrelationRelationship::partner_patterns)
-    /// shape in its own body. The first such partner in listing order is
-    /// the partner; a relationship reports once per function however
-    /// many partners would fit.
+    /// shape in its own body. That partner must itself be in `functions`
+    /// and must not be the function itself. The first such partner in
+    /// listing order is the partner; a relationship reports once per
+    /// function however many partners would fit.
     ///
     /// Each hint is marked [`CrossFunction`](DetectionMethod::CrossFunction)
     /// at [`CROSS_FUNCTION_CONFIDENCE`] — or at the relationship's own
-    /// [`confidence`](CorrelationRelationship::confidence) when it carries
-    /// one — and carries as its evidence the hinted body's first line
-    /// naming the partner function after the signature line, so the
-    /// claim always names the function it was made with. A relationship
-    /// that asserts nothing — no body shapes — fits nothing, and a regex
-    /// that will not compile can make no claim: it matches nothing.
+    /// [`confidence`](CorrelationRelationship::confidence) when it
+    /// carries one. Its evidence is the hinted body's first line naming
+    /// the partner function after the signature line, so the claim
+    /// always names the function it was made with. A relationship that
+    /// asserts nothing — no body shapes — fits nothing, and a regex that
+    /// will not compile can make no claim: it matches nothing.
+    ///
     /// Hints follow `functions` order, and within one function the
     /// relationships' configuration order, so two scans of the same
     /// program diff cleanly.
@@ -303,20 +310,25 @@ impl CrossFunctionDetector {
 /// driven by a comparator callback.
 ///
 /// The set starts small and honest: only relationships the derived call
-/// map can actually see. The divide-and-conquer relationship demands
-/// both halves of the shape — the self-call the recursion signature
-/// already reads, spelled with `{name}`, and the halving that splits
-/// the problem — so a plain recursion stays the control flow set's
-/// claim alone. The sort relationship demands the host call the C
-/// standard library sorts through, `qsort`, naming a callee the program
-/// itself carries whose body compares two pointer touches the way the
-/// library demands of its comparator — the same comparison shape the
-/// callback contracts read, seen from the caller's side.
+/// map can actually see.
+///
+/// The divide-and-conquer relationship demands both halves of the
+/// shape: the self-call, spelled with `{name}` — the call shape the
+/// recursion signature already reads — and the halving that splits the
+/// problem. A plain recursion without those halves stays the control
+/// flow set's claim alone.
+///
+/// The sort relationship demands a call to `qsort` — the host call the
+/// C standard library sorts through. That call must name a callee the
+/// program itself carries, and the callee's body must compare two
+/// pointer touches the way the library demands of its comparator. This
+/// is the same comparison shape the callback contracts read, seen from
+/// the caller's side.
 pub fn default_relationships() -> Vec<CorrelationRelationship> {
     // The comparison between two touched elements the library demands
-    // of its comparator — the callback contracts' own shape, read of
-    // the callee's body. The `[^-]` guard keeps a field-access arrow
-    // from reading as a comparison.
+    // of its comparator. It is the callback contracts' own shape, here
+    // read from the callee's body. The `[^-]` guard keeps a field-access
+    // arrow from reading as a comparison.
     let element_comparison = r"[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]";
 
     let divide_and_conquer = CorrelationRelationship::new(
@@ -377,10 +389,11 @@ fn named_functions<'b>(body: &'b str, program: &HashSet<&str>) -> HashSet<&'b st
 }
 
 /// The trimmed body line first naming `partner` as a whole word,
-/// searching only past the opening brace: the signature line — where a
-/// function's own name always appears, never call-shaped — must not
-/// stand as the evidence of a self-call. Falls back to the first line
-/// naming the partner anywhere in the body.
+/// searching only past the opening brace. The signature line always
+/// carries the function's own name, but never call-shaped, so it must
+/// not stand as the evidence of a self-call. If no line past the brace
+/// names the partner, this falls back to the first line naming the
+/// partner anywhere in the body.
 fn naming_line(body: &str, partner: &str) -> String {
     let shape = Regex::new(&format!(r"\b{}\b", regex::escape(partner)));
     let Ok(shape) = shape else {
@@ -480,8 +493,9 @@ mod tests {
 
     #[test]
     fn a_new_detector_starts_with_no_relationships() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Construction is free: the detector starts empty, compares
+        // equal however it is built, and a clone works the same as the
+        // original.
         let detector = CrossFunctionDetector::new();
         assert!(detector.relationships().is_empty());
         assert_eq!(detector, CrossFunctionDetector::default());
@@ -588,8 +602,9 @@ mod tests {
 
     #[test]
     fn a_self_call_without_a_split_claims_no_divide_and_conquer() {
-        // Plain recursion stays the control flow set's claim: without
-        // the halving shape the correlation relationship refuses.
+        // Plain recursion stays the control flow set's claim alone:
+        // without the halving shape, the correlation relationship
+        // rejects the body.
         let plain = function(
             "FUN_180050000",
             "void FUN_180050000(int *param_1,int param_2)",
@@ -697,9 +712,9 @@ mod tests {
 
     #[test]
     fn an_uncompilable_partner_pattern_claims_nothing() {
-        // A broken partner shape matches nothing, so no partner fits and
-        // the relationship makes no claim — the lenient rule can
-        // fabricate nothing, in either direction.
+        // A broken partner shape matches nothing, so no partner fits
+        // and the relationship makes no claim. The lenient rule cannot
+        // fabricate a match in either direction.
         let detector = CrossFunctionDetector::with_relationships([CorrelationRelationship::new(
             "sort",
             AlgorithmCategory::Sorting,

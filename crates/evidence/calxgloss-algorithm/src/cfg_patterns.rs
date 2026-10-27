@@ -30,14 +30,16 @@ use regex::Regex;
 ///
 /// The matcher owns the signature set a scan reads bodies against:
 /// [`AlgorithmPattern`] records, each a named bundle of regexes with a
-/// minimum line-count floor. The set is configurable — supply it whole
-/// through [`with_patterns`](Self::with_patterns) or grow it one
-/// signature at a time with [`add_pattern`](Self::add_pattern) — and
-/// [`patterns`](Self::patterns) reports it in configuration order, so
-/// two matchers built the same way scan identically and results diff
-/// cleanly. The matcher holds no scan source of its own and never
-/// writes back to the program; one matcher serves an entire scan and can
-/// be shared by reference across concurrent per-function passes.
+/// minimum line-count floor. Supply the set whole through
+/// [`with_patterns`](Self::with_patterns) or add signatures one at a
+/// time with [`add_pattern`](Self::add_pattern).
+/// [`patterns`](Self::patterns) reports the set in configuration order,
+/// so two matchers built the same way scan identically and their
+/// results diff cleanly.
+///
+/// The matcher holds no scan source of its own and never writes back to
+/// the program. One matcher serves an entire scan and can be shared by
+/// reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CfgPatternMatcher {
     patterns: Vec<AlgorithmPattern>,
@@ -83,29 +85,32 @@ impl CfgPatternMatcher {
     /// body fits.
     ///
     /// A signature fits when the body spans at least its
-    /// [`min_lines`](AlgorithmPattern::min_lines) lines and carries a
-    /// match for every regex in
-    /// [`match_patterns`](AlgorithmPattern::match_patterns) and none in
+    /// [`min_lines`](AlgorithmPattern::min_lines) lines, matches every
+    /// regex in [`match_patterns`](AlgorithmPattern::match_patterns),
+    /// and matches none of the regexes in
     /// [`exclude_patterns`](AlgorithmPattern::exclude_patterns). The
-    /// floor runs before any regex: a body shorter than it is too
-    /// small to carry a real control flow shape — tiny functions
-    /// accidentally fit broad signatures — so it is refused outright.
+    /// floor is checked before any regex: a body shorter than it is too
+    /// small to carry a real control flow shape — tiny functions would
+    /// otherwise fit broad signatures by accident — so it is refused
+    /// outright.
     ///
-    /// Each hint names the pattern and its category, is marked
+    /// Each hint names the pattern and its category and is marked
     /// [`CfgPattern`](DetectionMethod::CfgPattern) at
     /// [`CFG_CONFIDENCE`] — or at the pattern's own
-    /// [`confidence`](AlgorithmPattern::confidence) when it carries one —
-    /// and carries as its evidence the body line holding the first match
-    /// of the signature's first required regex. A signature that asserts
-    /// nothing — no required regexes — fits nothing, and a signature
-    /// carrying a regex that will not compile can make no claim: it
-    /// matches nothing, and an uncompilable exclusion rejects nothing.
+    /// [`confidence`](AlgorithmPattern::confidence) when it carries one.
+    /// Its evidence is the body line holding the first match of the
+    /// signature's first required regex.
     ///
-    /// A regex source may carry the `{name}` placeholder: the matcher
+    /// A signature that asserts nothing — no required regexes — fits
+    /// nothing. A signature carrying a regex that will not compile can
+    /// make no claim: it matches nothing, and an uncompilable exclusion
+    /// rejects nothing.
+    ///
+    /// A regex source may carry the `{name}` placeholder. The matcher
     /// replaces it with the scanned function's name, escaped for literal
-    /// matching, so a signature can speak of the function itself — the
-    /// shape recursion needs, since a self-call is only recognizable
-    /// against the function's own name.
+    /// matching, so a signature can name the scanned function itself.
+    /// That is the shape recursion needs: a self-call is only
+    /// recognizable against the function's own name.
     pub fn match_patterns(&self, func: &DecompiledFunction) -> Vec<AlgorithmHint> {
         let lines = func.body.lines().count();
         let name = regex::escape(&func.name);
@@ -141,9 +146,9 @@ impl CfgPatternMatcher {
                 continue;
             }
 
-            // Any exclusion present in the body makes the matched
-            // shapes read differently, so the signature refuses the
-            // body.
+            // An exclusion match means the shapes that did match no
+            // longer carry the meaning the signature assumes, so the
+            // signature rejects the body.
             let excluded = pattern.exclude_patterns.iter().any(|source| {
                 let source = source.replace("{name}", &name);
                 Regex::new(&source).is_ok_and(|shape| shape.is_match(&func.body))
@@ -174,16 +179,17 @@ impl CfgPatternMatcher {
 /// search, hash table lookup, state machine, recursion, and linked
 /// list traversal.
 ///
-/// Each signature reads the shapes the decompiler actually emits
-/// for its algorithm: the nested loop and temporary-mediated swap of a
-/// sort, the halved range of a binary search, the equality test and
-/// early exit of a linear scan, the modulo-folded bucket probe of a
-/// hash lookup, the else-if or switch chain over a state-named
-/// variable, a call carrying the scanned function's own name, and the
-/// walk of a cursor through `->` fields. The shapes overlap — a probe
-/// loop over buckets is also a linear scan — so exclusions keep each
-/// signature to the reading it means, and the line floor keeps tiny
-/// functions from fitting a broad shape.
+/// Each signature reads the shapes the decompiler actually emits for
+/// its algorithm: a sort's nested loop and its swap through a
+/// temporary, a binary search's halved range, a linear scan's equality
+/// test and early exit, a hash lookup's modulo-folded bucket probe, an
+/// else-if or switch chain over a state-named variable, a call naming
+/// the scanned function itself, and a cursor walking through `->`
+/// fields.
+///
+/// The shapes overlap: a probe loop over buckets is also a linear scan.
+/// The exclusions keep each signature to the reading it means, and the
+/// line floor keeps tiny functions from fitting a broad shape.
 pub fn default_patterns() -> Vec<AlgorithmPattern> {
     let comparison_sort = AlgorithmPattern {
         exclude_patterns: vec![r"\bqsort\b".into()],
@@ -325,8 +331,9 @@ mod tests {
 
     #[test]
     fn a_new_matcher_starts_with_no_signatures() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Construction is free: the matcher starts empty, compares
+        // equal however it is built, and a clone works the same as the
+        // original.
         let matcher = CfgPatternMatcher::new();
         assert!(matcher.patterns().is_empty());
         assert_eq!(matcher, CfgPatternMatcher::default());

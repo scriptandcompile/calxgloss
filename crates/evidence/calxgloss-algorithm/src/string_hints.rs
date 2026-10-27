@@ -1,29 +1,29 @@
 //! String-guided algorithm hints.
 //!
-//! This module provides [`StringHintEngine`], which carries the string
+//! This module provides [`StringHintEngine`]. It carries the string
 //! signatures — literal spellings that name a known algorithm, like
 //! `CRC` or `inflate` — that a function's decompiled body and the
 //! binary's string listing are scanned against. Each signature is a
 //! [`StringSignature`]: a named algorithm, its category, the marker
-//! spellings that suggest it, and whether those markers answer the
+//! spellings that suggest it, and whether those markers match the
 //! scanned text with case folded away.
 //!
 //! [`default_signatures`] carries the standard signature set — crc,
 //! checksum, inflate, deflate, gzip, bz2, lzo, serialize, deserialize,
 //! md5, sha, hmac, http, tcp, udp — and
-//! [`StringHintEngine::with_default_signatures`] builds an engine that
+//! [`StringHintEngine::with_default_signatures`] builds one that
 //! scans against it.
 //!
-//! A scan reports each algorithm at most once per function: when
+//! A scan reports each algorithm at most once per function. When
 //! several signatures name the same algorithm, the hint with the
 //! strongest evidence stands, in the place the algorithm first
 //! appeared.
 //!
-//! Unlike a control flow match, which reads the shapes inside one
-//! function, a string signature can also fire on program-wide evidence:
-//! a marker that appears only in the binary's string listing ties the
-//! program to the algorithm, not the function, so the engine weighs a
-//! listing-only match below a match the function's own body carries.
+//! A control flow match reads the shapes inside one function. A
+//! string signature can also match on program-wide evidence. A
+//! marker that appears only in the binary's string listing ties the
+//! algorithm to the program, not to the function, so a listing-only
+//! match scores below a match the function's own body carries.
 
 use crate::cfg_patterns::line_at;
 use crate::confidence::{BODY_CONFIDENCE, LISTING_CONFIDENCE};
@@ -43,12 +43,12 @@ use serde::{Deserialize, Serialize};
 /// [`name`](Self::name) and [`category`](Self::category) are what a
 /// hint records when one of its [`markers`](Self::markers) appears.
 /// Markers are matched as literal substrings of the scanned text, and
-/// a signature fits when any one of them appears — several spellings
-/// of the same algorithm (`CRC`, `crc32`) stand in one signature so
+/// a signature fits when any one of them appears. Several spellings
+/// of the same algorithm (`CRC`, `crc32`) sit in one signature, so
 /// the algorithm is reported once however many of them turn up. A
-/// signature answers only the exact casing its markers spell unless
+/// signature matches only the exact casing its markers spell unless
 /// it is built [`case_insensitive`](Self::case_insensitive), which
-/// folds case away so one marker answers every casing of it.
+/// folds case away so one marker matches every casing of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StringSignature {
@@ -60,18 +60,19 @@ pub struct StringSignature {
     /// `crc32` — a signature fits when any one of them appears.
     pub markers: Vec<String>,
     /// Whether the markers match the scanned text with case folded
-    /// away. A case-sensitive signature — the default — answers only
+    /// away. A case-sensitive signature — the default — matches only
     /// the exact spellings its markers carry.
     #[serde(default, skip_serializing_if = "is_false")]
     pub case_insensitive: bool,
-    /// Optional per-entry confidence (0–100) overriding the scores the
-    /// detector pays — body match
-    /// ([`BODY_CONFIDENCE`](crate::confidence::BODY_CONFIDENCE)),
+    /// Optional per-entry confidence (0–100). It overrides the scores
+    /// the detector pays — body match
+    /// ([`BODY_CONFIDENCE`](crate::confidence::BODY_CONFIDENCE)) and
     /// listing-only match
-    /// ([`LISTING_CONFIDENCE`](crate::confidence::LISTING_CONFIDENCE)) —
-    /// so a hand-tuned signature from a
-    /// [pattern database](crate::pattern_db) can claim more (or less)
-    /// trust than the standard set. Absent means the standard scores.
+    /// ([`LISTING_CONFIDENCE`](crate::confidence::LISTING_CONFIDENCE)).
+    /// A hand-tuned signature from a
+    /// [pattern database](crate::pattern_db) can therefore earn more
+    /// (or less) trust than the standard set. Absent means the
+    /// standard scores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
 }
@@ -95,9 +96,9 @@ impl StringSignature {
     }
 
     /// A signature whose markers match the scanned text with case
-    /// folded away: one marker answers every casing of it, so a set
-    /// can name an algorithm once instead of spelling it upper and
-    /// lower.
+    /// folded away: one marker then matches every casing of it, so a
+    /// signature can name an algorithm with one spelling instead of
+    /// spelling it upper and lower.
     pub fn case_insensitive(mut self) -> Self {
         self.case_insensitive = true;
         self
@@ -111,17 +112,18 @@ impl StringSignature {
 /// String-guided algorithm hinting over decompiled functions and the
 /// binary's string listing.
 ///
-/// The engine owns the signature set a scan reads against:
+/// The string engine owns the signature set a scan reads against:
 /// [`StringSignature`] records supplied whole through
-/// [`with_signatures`](Self::with_signatures) or grown one at a time
-/// with [`add_signature`](Self::add_signature), and
+/// [`with_signatures`](Self::with_signatures) or added one at a time
+/// with [`add_signature`](Self::add_signature).
 /// [`signatures`](Self::signatures) reports the set in configuration
 /// order, so two engines built the same way scan identically and
-/// results diff cleanly. The engine holds no scan source and never
-/// writes back to the program; one engine serves an entire scan and
-/// can be shared by reference across concurrent per-function passes,
-/// each handed that function's body beside the program's string
-/// listing.
+/// their results diff cleanly.
+///
+/// It holds no scan source and never writes back to the program. One
+/// string engine serves an entire scan and can be shared by reference
+/// across concurrent per-function passes; each pass is handed that
+/// function's body beside the program's string listing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StringHintEngine {
     signatures: Vec<StringSignature>,
@@ -167,30 +169,31 @@ impl StringHintEngine {
     /// a hint for each signature the function fits.
     ///
     /// A signature fits when one of its markers appears as a substring
-    /// of the body or of a listing string — compared at its exact
-    /// spelling, or with case folded away for a
+    /// of the body or of a listing string. The comparison uses the
+    /// marker's exact spelling, or, for a
     /// [`case_insensitive`](StringSignature::case_insensitive)
-    /// signature. The body is read first: a marker the function's own
-    /// text carries ties the algorithm to the function, while a
-    /// marker only the listing carries ties it to the program, so a
-    /// body match wins the hint's evidence and [`BODY_CONFIDENCE`],
-    /// and a listing-only match stands at [`LISTING_CONFIDENCE`]. A
-    /// signature carrying its own [`confidence`](StringSignature::confidence)
-    /// stands at that score for either reading instead. Each
-    /// signature yields at most one hint per function, however many of
-    /// its markers appear and however many places carry them; a
-    /// signature that asserts no marker fits nothing.
+    /// signature, folds case away. The body is read first. A marker
+    /// the function's own text carries ties the algorithm to the
+    /// function; a marker only the listing carries ties it to the
+    /// program. A body match therefore wins the hint's evidence and
+    /// scores [`BODY_CONFIDENCE`], and a listing-only match stands at
+    /// [`LISTING_CONFIDENCE`]. A signature carrying its own
+    /// [`confidence`](StringSignature::confidence) stands at that
+    /// score for either reading instead. Each signature yields at
+    /// most one hint per function, however many of its markers appear
+    /// and however many places carry them. A signature that asserts
+    /// no marker fits nothing.
     ///
-    /// Signatures that name the same algorithm report it once: the
-    /// hint with the strongest evidence stands, a tie keeps the
-    /// signature configured first, and the survivor holds the place
+    /// Signatures that name the same algorithm report it once. The
+    /// hint with the strongest evidence stands. A tie keeps the
+    /// signature configured first. The surviving hint holds the place
     /// the algorithm first appeared, so the hints keep configuration
     /// order and two scans diff cleanly.
     ///
-    /// Each hint names the signature and its category, is marked
-    /// [`StringHint`](DetectionMethod::StringHint), and carries as its
-    /// evidence the trimmed body line holding the first marker match —
-    /// or, for a listing-only match, the listing string itself.
+    /// Each hint names the signature and its category and is marked
+    /// [`StringHint`](DetectionMethod::StringHint). Its evidence is
+    /// the trimmed body line holding the first marker match — or, for
+    /// a listing-only match, the listing string itself.
     pub fn detect_string_hints(
         &self,
         func: &DecompiledFunction,
@@ -214,8 +217,8 @@ impl StringHintEngine {
                 evidence,
             };
             // One algorithm is reported once per function however
-            // many signatures name it: the stronger evidence takes
-            // the hint where the algorithm first stood.
+            // many signatures name it. Where the algorithm first
+            // stood is where the stronger hint now stands.
             match hints.iter_mut().find(|h| h.algorithm == hint.algorithm) {
                 Some(existing) => {
                     if hint.confidence > existing.confidence {
@@ -239,20 +242,23 @@ impl StringHintEngine {
 ///
 /// Each signature carries the spellings its algorithm actually
 /// appears under: the uppercase acronym where strings and names
-/// shout it (`CRC`, `HTTP`, `MD5Final`) and the lowercase spelling
+/// shout it (`CRC`, `HTTP`, `MD5Final`), and the lowercase spelling
 /// decompiled identifiers carry (`crc_table`, `inflate`,
-/// `sha1_block_data_order`), so one signature stands for both worlds
-/// even though the set matches case-sensitively — it spells both
-/// casings rather than leaning on the case-folding option, keeping
-/// every marker an exact spelling of what it saw. Markers are plain
-/// substrings, and the set leans on that deliberately: `crc` answers
-/// every `crc32` or `crc_table` spelling, and `http` every `https`.
-/// Where a substring would mislead, the set stays quiet — `sha` names
-/// its digit-suffixed family rather than the bare syllable, which
-/// prefixes common words like `shadow`. Where the overlap is real,
-/// it reads through: `deserialize` carries `serialize` as a
-/// substring, so a mention of one reads as the whole serialization
-/// family.
+/// `sha1_block_data_order`). One signature therefore stands for both
+/// worlds even though the set matches case-sensitively: it spells
+/// both casings instead of leaning on the case-folding option,
+/// keeping every marker an exact spelling of what it saw.
+///
+/// Markers are plain substrings, and the set leans on that
+/// deliberately: `crc` answers every `crc32` or `crc_table` spelling,
+/// and `http` every `https` spelling.
+///
+/// Where a substring would mislead, the set stays quiet: `sha` names
+/// its digit-suffixed family rather than the bare syllable, because
+/// the bare syllable prefixes common words like `shadow`. Where the
+/// overlap is real, it is accepted: `deserialize` carries `serialize`
+/// as a substring, so a mention of either one reads as the whole
+/// serialization family.
 pub fn default_signatures() -> Vec<StringSignature> {
     let crc = StringSignature::new("crc", AlgorithmCategory::Checksum, ["CRC", "crc"]);
     let checksum = StringSignature::new(
@@ -319,10 +325,11 @@ pub fn default_signatures() -> Vec<StringSignature> {
 // Scanning helpers
 // ============================================================
 
-/// The offset in `text` where `marker` first appears: a literal
-/// substring compared at its exact spelling, or with case folded away
-/// for a case-insensitive signature — the fold runs over characters,
-/// so the offset it reports stays a boundary of the original text.
+/// The offset in `text` where `marker` first appears. The comparison
+/// is a literal substring match at the marker's exact spelling, or
+/// with case folded away for a case-insensitive signature. The fold
+/// runs over characters, so the offset it reports is always a
+/// boundary in the original text.
 fn find_marker(text: &str, marker: &str, case_insensitive: bool) -> Option<usize> {
     if !case_insensitive {
         return text.find(marker);
@@ -401,8 +408,9 @@ mod tests {
 
     #[test]
     fn a_new_engine_starts_with_no_signatures() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Construction is free: the engine starts empty, compares
+        // equal however it is built, and a clone works the same as
+        // the original.
         let engine = StringHintEngine::new();
         assert!(engine.signatures().is_empty());
         assert_eq!(engine, StringHintEngine::default());
@@ -439,8 +447,9 @@ mod tests {
 
     #[test]
     fn an_engine_can_be_shared_across_scans() {
-        // One engine is driven concurrently over a program's functions,
-        // so sharing one by reference across tasks must stay sound.
+        // One string engine is driven concurrently over a program's
+        // functions, so sharing one by reference across tasks must
+        // stay sound.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<StringHintEngine>();
     }
@@ -491,8 +500,8 @@ void FUN_18003ab00(uint *param_1,uint param_2)
 
     #[test]
     fn a_body_without_the_marker_still_reads_the_string_listing() {
-        // The function's text names nothing, but the program carries
-        // the marker: a weak lead, weighed below a body match.
+        // The function's text names nothing, but the program's strings
+        // carry the marker: a weaker lead, scored below a body match.
         let engine = StringHintEngine::with_signatures([signature("crc32")]);
         let body = "void FUN_18003ab00(void)\n\n{\n  return;\n}";
         let hints = engine.detect_string_hints(
@@ -578,8 +587,8 @@ void FUN_18003ab00(uint *param_1,uint param_2)
 
     #[test]
     fn markers_match_the_scanned_text_case_sensitively() {
-        // A marker stands for its exact spelling: a lowercase `crc`
-        // in the text does not answer an uppercase `CRC` signature.
+        // A marker matches only its exact spelling: a lowercase `crc`
+        // in the text does not match an uppercase `CRC` signature.
         let engine = StringHintEngine::with_signatures([signature("crc32")]);
         let body = "void FUN_18003ab00(void)\n\n{\n  /* accumulate the crc */\n  return;\n}";
         assert!(engine.detect_string_hints(&function(body), &[]).is_empty());
@@ -591,8 +600,9 @@ void FUN_18003ab00(uint *param_1,uint param_2)
 
     #[test]
     fn a_case_insensitive_signature_answers_any_casing() {
-        // The marker's exact spelling is folded away: a lowercase
-        // `crc` in the body answers an uppercase `CRC` marker.
+        // Matching folds the marker's exact spelling away: a
+        // lowercase `crc` in the body matches an uppercase `CRC`
+        // marker.
         let engine = StringHintEngine::with_signatures([signature("crc32").case_insensitive()]);
         let body = "void FUN_18003ab00(void)\n\n{\n  /* accumulate the crc */\n  return;\n}";
         let hints = engine.detect_string_hints(&function(body), &[]);
@@ -830,8 +840,10 @@ void FUN_18003ab00(uint *param_1,uint param_2)
 
     #[test]
     fn a_table_folded_digest_loop_reads_as_crc() {
-        // The lowercase identifier spelling answers the signature's
-        // lowercase marker; the digit spellings ride along with it.
+        // The signature's lowercase `crc` marker matches the
+        // identifier spelling `crc_table` in the body. Because the
+        // marker is a plain substring, longer digit-suffixed
+        // spellings like `crc32` would match the same marker.
         assert_eq!(algorithms(&crc_body(), &[]), ["crc"]);
     }
 
