@@ -7,35 +7,38 @@
 //! scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
-//! the engine fetches each function's pseudo-C exactly once and reads
-//! it with all three, rather than having each detector pull its own
-//! copy. The frequency analyzer counts literals during that same
-//! pass, and its program-level findings are appended after the
-//! per-function ones. The context-naming reading (`naming`)
-//! walks the same bodies in that same pass, and the first qualifying
-//! name it saw across the scan rides each repeated value's record.
-//! After the walk, the flag-family merge (`flag_family`) ties the
-//! scan's own bitflag groups through shared bits and appends the
-//! merged program-level families after the named constants, and the
-//! known-magic reading (`protocol`) matches the full literal tally —
-//! before the frequency threshold applies — against a built-in table
-//! of well-known protocol/format magics and sentinels, appending one
-//! named `protocol_constant` finding per matched value after the
-//! families; the frequency pass skips matched values so each lands
-//! exactly once. The color-grouping reading (`color`) then groups
-//! the color-shaped values the tally still holds — ≤ 24-bit, not
-//! powers of two — into at most one program-level `color_constant`
-//! palette finding. The data-table reading (`data_table`) last walks
-//! the engine's data-object listing and what the kept bodies do with
+//! the scan fetches each function's pseudo-C exactly once and reads
+//! it with all three, instead of each detector pulling its own copy.
+//! The frequency analyzer counts literals during that same pass, and
+//! its program-level findings are appended after the per-function
+//! ones. The context-naming reading (`naming`) walks the same bodies
+//! in that same pass. The first qualifying name it saw across the
+//! scan becomes the name on each repeated value's record. After the
+//! walk, the scan's flag-family merge post-pass (`flag_family`)
+//! links the scan's own bitflag groups through shared bits, and the
+//! merged program-level families are appended after the named
+//! constants. The known-magic reading (`protocol`) matches the full
+//! literal tally — before the frequency threshold applies — against
+//! a built-in table of well-known protocol/format magics and
+//! sentinels, appending one named `protocol_constant` finding per
+//! matched value after the families. The frequency pass skips
+//! matched values, so each value lands exactly once. The
+//! color-grouping reading (`color`) then groups the color-shaped
+//! values the tally still holds — ≤ 24-bit, not powers of two —
+//! into at most one program-level `color_constant` palette finding.
+//! The data-table reading (`data_table`) last walks the analysis
+//! engine's data-object listing and what the kept bodies do with
 //! each object, appending one `data_table` finding per object whose
 //! bytes decode uniformly at one corroborated stride and which the
-//! gates leave alone — no kept body stores through its symbol, and no
-//! entry resolves to a function start the listing names — kept in
-//! listing order; it reads only existing seam methods (`data_items`,
-//! `read_memory`, `xrefs_to`), cached under ADR-0043, and writes
-//! nothing back to the program (ADR-0020). The scan is one sequential pass over the function listing — like
-//! sync, there is nothing to resolve between the detectors, they
-//! read disjoint shapes — and keeping the pass sequential keeps the
+//! gates leave alone — no kept body stores through its symbol, and
+//! no entry resolves to a function start the listing names — kept in
+//! listing order. It reads only existing seam methods
+//! (`data_items`, `read_memory`, `xrefs_to`), cached under ADR-0043,
+//! and writes nothing back to the program (ADR-0020).
+//!
+//! The scan is one sequential pass over the function listing. Like
+//! sync, there is nothing to resolve between the detectors: they
+//! read disjoint shapes. Keeping the pass sequential keeps the
 //! persisted finding list in a stable, diffable order.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,24 +60,24 @@ use crate::types::{BitflagGroup, ConstFinding, ConstResult, ScanMetadata};
 
 /// The decompiler a constant scan reads.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// The shared trait from the decompiler seam crate, re-exported here so
+/// the scan's generic shape names it where it always has. [`KunaSource`]
+/// implements it over the in-process analysis engine; tests implement it
+/// over canned bodies so the orchestration runs without a server. The
+/// futures are `Send` so a scan can be driven from an orchestrating
+/// task.
 pub use calxgloss_decomp::ScanSource;
 
 /// How many unreached names one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump, and the same bound floatsimd's admission carries
-/// (the P19 admitted-semantics track, issues #347 and #348).
+/// before the rest become a count. The prose stays bounded beside the
+/// counts, not a dump, and uses the same bound floatsimd's admission
+/// carries (the P19 admitted-semantics track, issues #347 and #348).
 const MAX_NAMED_LIMITS: usize = 5;
 
 /// The names one limitation line prints inline — at most
-/// [`MAX_NAMED_LIMITS`] of them — with the names it drops, beside
-/// `nameless` entries that carry no name to print at all, folded into a
-/// single trailing count.
+/// [`MAX_NAMED_LIMITS`] of them. The names it drops, and the `nameless`
+/// entries that carry no name to print at all, become a single trailing
+/// count.
 fn bounded_names(names: &[String], nameless: usize) -> Vec<String> {
     let mut shown = names
         .iter()
@@ -88,14 +91,13 @@ fn bounded_names(names: &[String], nameless: usize) -> Vec<String> {
     shown
 }
 
-/// The facet ids consts declares — the roster, spelled once here the
-/// way the CLI pairing pin (#342) spells its roster and the way
-/// apidetect (#346), floatsimd (#347) and typesdb (#348) spell
-/// theirs. Every facet a freshly stamped coverage record names is
-/// read against this list by the pin below, and every drift direction
-/// is a fault: a declared facet the scan stopped stamping, a facet
-/// stamped twice, and an id the scan invented outside the roster all
-/// fail loudly.
+/// The facet ids consts declares — the roster, written once here the
+/// way the CLI pairing pin (#342) writes its roster and the way
+/// apidetect (#346), floatsimd (#347) and typesdb (#348) write theirs.
+/// The pin below reads every facet a freshly stamped coverage record
+/// names against this list, and every drift direction is a fault: a
+/// declared facet the scan stopped stamping, a facet stamped twice, and
+/// an id the scan invented outside the roster all fail loudly.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies", "data-objects"];
 
 /// The coverage record every consts scan stamps about itself (issue
@@ -135,9 +137,9 @@ fn coverage_stamp(unreached: &[String], nameless: usize, unreadable: &[String]) 
             limitation: None,
         });
     } else {
-        // The names the scan can print, with the names it drops and the
-        // nameless entries that carry no name at all folded into one
-        // count beside them.
+        // The names the scan can print. The names it drops, and the
+        // nameless entries that carry no name at all, become one
+        // trailing count.
         let shown = bounded_names(unreached, nameless);
         let body = if bodies_total == 1 { "body" } else { "bodies" };
         facets.push(FacetCoverage {
@@ -186,10 +188,10 @@ fn coverage_stamp(unreached: &[String], nameless: usize, unreadable: &[String]) 
 
 /// Orchestrates the three detectors into one [`ConstResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a loaded [`KunaSource`]. Each detector carries no state
-/// and starts configured with its standard thresholds —
+/// It is generic over its [`ScanSource`], so tests can run the whole
+/// orchestration over canned bodies; [`new`](Self::new) builds one over
+/// a loaded [`KunaSource`]. Each detector carries no state and starts
+/// configured with its standard thresholds —
 /// [`with_bitmask`](Self::with_bitmask), [`with_sequential`](Self::with_sequential),
 /// and [`with_frequency`](Self::with_frequency) swap a detector's
 /// thresholds whole — so one instance of each serves the whole scan.
@@ -202,8 +204,8 @@ pub struct ConstEngine<S = KunaSource> {
 }
 
 impl ConstEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the three
-    /// detectors' standard thresholds.
+    /// A scan over a loaded Kuna program, using the three detectors'
+    /// standard thresholds.
     pub fn new(source: &KunaSource) -> ConstEngine<KunaSource> {
         ConstEngine {
             source: source.clone(),
@@ -215,8 +217,8 @@ impl ConstEngine<KunaSource> {
 }
 
 impl<S> ConstEngine<S> {
-    /// An engine whose decompiles come from `source`, scanning with
-    /// the three detectors' standard thresholds.
+    /// A scan whose decompiles come from `source`, using the three
+    /// detectors' standard thresholds.
     pub fn with_source(source: S) -> Self {
         ConstEngine {
             source,
@@ -253,37 +255,35 @@ impl<S> ConstEngine<S> {
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// per-function findings follow the function listing — function by
-    /// function, bitmask group then enum candidates — and the
-    /// program-level findings are appended after them: first the
-    /// named constants the frequency analyzer tallied across the pass,
-    /// each carrying the context name of the first qualifying
-    /// assignment or comparison the bodies made of its value, then
-    /// the flag families the scan's own bitflag groups merged into —
-    /// groups sharing at least one bit, transitively — then the
-    /// protocol constants the known-magic reading matched against the
-    /// full tally before the frequency threshold applied, then the
-    /// one color palette the color-grouping reading grouped from the
-    /// remaining color-shaped values, each internally sorted, so two
-    /// scans of the same program diff cleanly and name their
-    /// constants identically. A value the protocol table matches
-    /// lands only as its protocol finding: the frequency pass skips
-    /// matched values, and so does the color reading. The data-table
-    /// reading then appends one `data_table` finding per object the
-    /// data listing defines that the kept bodies index and whose
-    /// bytes decode uniformly at one corroborated stride — an object
-    /// a kept body stores through, or whose entries resolve to the
-    /// function starts the listing names, claims nothing — kept in
+    /// function, bitmask group then enum candidates. The program-level
+    /// findings are appended after them, in this order: the named
+    /// constants the frequency analyzer tallied across the pass, each
+    /// carrying the context name of the first qualifying assignment or
+    /// comparison the bodies made of its value; the flag families the
+    /// scan's own bitflag groups merged into — groups sharing at least
+    /// one bit, transitively; the protocol constants the known-magic
+    /// reading matched against the full tally before the frequency
+    /// threshold applied; and the one color palette the color-grouping
+    /// reading grouped from the remaining color-shaped values. Each
+    /// list is internally sorted, so two scans of the same program diff
+    /// cleanly and name their constants identically. A value the
+    /// protocol table matches lands only as its protocol finding: the
+    /// frequency pass and the color reading skip matched values. The
+    /// data-table reading then appends one `data_table` finding per
+    /// object the data listing defines that the kept bodies index and
+    /// whose bytes decode uniformly at one corroborated stride — an
+    /// object a kept body stores through, or whose entries resolve to
+    /// the function starts the listing names, claims nothing — kept in
     /// data-listing order.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
     /// listing itself — the server being down — aborts the run, since
-    /// then nothing was scanned.
-    /// But when more than half the listing fails to decompile, the
-    /// skip-rate breaker aborts the run too: that is the signature of
-    /// the bridge answering from the wrong program, and skipping on
-    /// would persist a phantom-clean record (issue #71).
-    /// The three detectors read disjoint
+    /// then nothing was scanned. But when more than half the listing
+    /// fails to decompile, the skip-rate breaker aborts the run too: a
+    /// high skip rate is the signature of the seam answering about the
+    /// wrong program, and skipping on would persist a record that looks
+    /// clean but is not (issue #71). The three detectors read disjoint
     /// shapes, so a function can carry findings of every kind at once
     /// and nothing is resolved between them.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<ConstResult>
@@ -292,16 +292,17 @@ impl<S> ConstEngine<S> {
     {
         let started = Instant::now();
         let functions = self.source.functions().await?;
-        // The data objects the engine's listing defines, read up front
-        // like the function listing: a failing data listing fails the
-        // run the same way.
+        // The data objects the data listing defines, read up front like
+        // the function listing: a failing data listing fails the run
+        // the same way.
         let data_objects = self.source.data_items().await?;
 
         let mut findings = Vec::new();
         let mut tally = ProgramTally::new();
         // The groups the walk built, kept only long enough for the
-        // flag-family merge to tie them through shared bits — the
-        // merge needs the detector's final contents, not the bodies.
+        // scan's flag-family merge post-pass to link them through
+        // shared bits — the merge needs the detector's final contents,
+        // not the bodies.
         let mut groups: Vec<BitflagGroup> = Vec::new();
         // The addresses the function listing names, as the data-table
         // reading's pointer gate resolves table entries against them:
@@ -309,8 +310,8 @@ impl<S> ConstEngine<S> {
         // the callback crate's jump-table territory, not a scalar.
         let function_starts: BTreeSet<u64> =
             functions.iter().map(|function| function.address).collect();
-        // What the bodies the walk reads do with each data object,
-        // parallel to the listing — the indexed reads a table claim
+        // What the kept bodies do with each data object, recorded
+        // parallel to the data listing: the indexed reads a table claim
         // rests on, and whether anything stores through the symbol.
         // Collected without keeping the bodies themselves.
         let mut table_usage: Vec<crate::data_table::ObjectUsage> =
@@ -321,17 +322,17 @@ impl<S> ConstEngine<S> {
         let mut names: BTreeMap<u64, String> = BTreeMap::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // What the bodies walk could not read, kept by name so the
-        // coverage record can say so beside the counts (issue #348):
-        // the listing entries whose decompile failed, and the nameless
-        // entries that carry no name to name.
+        // What the walk could not read, kept by name so the coverage
+        // record can say so beside the counts (issue #348): the listing
+        // entries whose decompile failed, and the nameless entries with
+        // no name to print.
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // into some other function's body; nothing can be said
+                // about it, so it passes unrecorded.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -351,12 +352,12 @@ impl<S> ConstEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
-                    // skipping on.
+                    // Skip-rate breaker: once more than half the
+                    // listing has failed to decompile, the seam is
+                    // answering about the wrong program, and an empty
+                    // result would persist as a record that looks
+                    // clean but is not. Abort with the counts instead
+                    // of skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::ConstError::DecompileBreaker {
                             failed: decompile_failures,
@@ -406,11 +407,11 @@ impl<S> ConstEngine<S> {
 
         // The protocol reading runs over the full tally before the
         // frequency threshold applies, so a recognised magic seen once
-        // still reports. A matched value lands exactly once: the
+        // still reports. A matched value lands exactly once: its
         // protocol claim is strictly stronger than the frequency-only
         // named-constant reading and carries the same usage data, so
         // the frequency pass is handed the tally with matched values
-        // removed and never also reports them.
+        // removed and never reports them again.
         let protocol = protocol_constants(&tally);
         let matched: std::collections::BTreeSet<u64> =
             protocol.iter().map(|record| record.value).collect();
@@ -433,22 +434,23 @@ impl<S> ConstEngine<S> {
         findings.extend(protocol.into_iter().map(ConstFinding::ProtocolConstant));
         // The color reading groups the color-shaped values the tally
         // still holds: a protocol-matched value already carries its
-        // strictly stronger claim, so it never joins a palette, and
-        // the palette lands last among the program-level findings.
+        // strictly stronger claim, so it never joins a palette. The
+        // palette lands after the protocol findings, before the
+        // data-table findings.
         findings.extend(color_palette(&frequency_tally).map(ConstFinding::ColorConstant));
         // The data-table reading (#278's tracer, #279's gates, #280's
-        // stride viability and tiers): objects the data listing defines
-        // that the bodies the walk read index, decoded coherently at a
-        // viable stride, land as program-level table findings after the
-        // palette, kept in listing order — an object any kept body
-        // stored through, or whose entries resolve to the function
-        // starts the listing, claims nothing. Several viable strides
-        // resolve through the engine's applied listing type or an
-        // indexed read's guard width, and the tier follows the
-        // evidence: 90 applied type, 70 decode plus indexed read, 50
-        // Xrefs-only, 30 bytes-only. The objects whose memory window
-        // never arrived come back beside the tables so the coverage
-        // record can name them (issue #348).
+        // stride viability and bands): objects the data listing
+        // defines, indexed by the kept bodies and decoded coherently
+        // at a viable stride, land as program-level table findings
+        // after the palette, kept in listing order — an object any
+        // kept body stored through, or whose entries resolve to the
+        // function starts the listing names, claims nothing. Several
+        // viable strides resolve through the analysis engine's applied
+        // listing type or an indexed read's guard width, and the band
+        // follows the evidence: 90 applied type, 70 decode plus
+        // indexed read, 50 Xrefs-only, 30 bytes-only. The objects
+        // whose memory window never arrived come back beside the
+        // tables so the coverage record can name them (issue #348).
         let (tables, unreadable_windows) = crate::data_table::data_tables(
             &self.source,
             &data_objects,
@@ -458,9 +460,10 @@ impl<S> ConstEngine<S> {
         .await;
         findings.extend(tables.into_iter().map(ConstFinding::DataTable));
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names its analysis engine and pin under `kuna`
+        // (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage where the truth lives,
+        // The scan admits its own coverage where the truth lives,
         // beside the provenance and the timing (issue #348).
         metadata.coverage = Some(coverage_stamp(&unreached, nameless, &unreadable_windows));
         metadata.duration_secs = started.elapsed().as_secs();
@@ -501,7 +504,7 @@ mod tests {
     }
 
     /// A listing entry at a chosen address, for tests where the
-    /// address itself is the point — the starts a table's entries
+    /// address itself is the point: the starts a table's entries
     /// resolve against.
     fn summary_at(name: &str, address: u64) -> FunctionSummary {
         FunctionSummary {
@@ -519,8 +522,8 @@ mod tests {
     }
 
     /// State shared by every clone of a [`FakeProgram`], so a test can
-    /// read what the scan did after the engine has consumed its
-    /// source.
+    /// still read what the scan did after the scan has consumed the
+    /// program as its source.
     #[derive(Debug, Default)]
     struct Stats {
         decompiles: Mutex<Vec<String>>,
@@ -560,16 +563,16 @@ mod tests {
             self.stats.decompiles.lock().unwrap().clone()
         }
 
-        /// The prior art from typesdb's vtable tests: a canned data
-        /// object in the listing plus the byte window `read_memory`
-        /// answers with at its address, length read off the bytes.
+        /// Copied from typesdb's vtable tests: a canned data object in
+        /// the listing, plus the byte window `read_memory` answers with
+        /// at its address; the length is read off the bytes.
         fn object_at(&mut self, label: &str, address: u64, bytes: Vec<u8>) {
             self.typed_object_at(label, address, "undefined", bytes);
         }
 
-        /// The same object carrying the type the engine's listing
-        /// applied — the applied type the detector resolves its stride
-        /// from (#280).
+        /// The same object carrying the type the analysis engine's
+        /// listing applied — the applied type the detector resolves its
+        /// stride from (#280).
         fn typed_object_at(&mut self, label: &str, address: u64, type_name: &str, bytes: Vec<u8>) {
             self.data_items.push(DataItem {
                 label: label.to_string(),
@@ -585,8 +588,8 @@ mod tests {
             self.memory.insert(address, bytes);
         }
 
-        /// The engine's cross-references into `address`: one `DATA`
-        /// xref from each named function's code site.
+        /// The analysis engine's cross-references into `address`: one
+        /// `DATA` xref from each named function's code site.
         fn xrefs_from(&mut self, address: u64, functions: &[&str]) {
             self.xrefs.insert(
                 address,
@@ -629,10 +632,11 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads. The scan answers the
-        // data-table reading's three — the data listing, canned memory
-        // windows, and canned cross-references — and answers the ones
-        // this engine never makes with empty or not-found data.
+        // The rest of the shared trait's reads. This canned program
+        // answers the data-table reading's three — the data listing,
+        // canned memory windows, and canned cross-references — and
+        // answers the reads this scan never makes with empty or
+        // not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
@@ -889,9 +893,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_composite_mask_beside_its_independently_seen_bits_completes_the_group() {
-        // A fake-program body combining 0x700 in a bitwise context
-        // beside bits 8, 9, and 10 each seen singly: the scan's group
-        // comes back complete — widened mask, widened width, the
+        // A FakeProgram body combining 0x700 in a bitwise context
+        // beside bits 8, 9, and 10 each seen singly. The scan's group
+        // comes back complete: widened mask, widened width, and the
         // composite line in the evidence.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
@@ -921,11 +925,11 @@ mod tests {
 
     #[tokio::test]
     async fn two_functions_sharing_a_flag_bit_yield_one_program_level_family() {
-        // The same flag surface read through two bodies — FUN_a
-        // carries bits 8 and 10, FUN_b bits 10 and 11: the scan keeps
-        // both per-function groups beside exactly one family record
-        // carrying the union of bits, the contributors ascending, and
-        // a confidence above the per-function tier.
+        // The same flag surface read through two bodies: FUN_a carries
+        // bits 8 and 10, FUN_b bits 10 and 11. The scan keeps both
+        // per-function groups beside exactly one family record carrying
+        // the union of bits, the contributors ascending, and a
+        // confidence above the per-function band.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -1028,12 +1032,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_single_use_table_magic_yields_a_protocol_constant_finding() {
-        // A fake-program body carrying a PNG magic in a comparison,
+        // A FakeProgram body carrying a PNG magic in a comparison,
         // seen exactly once in one function — far below the repetition
-        // threshold: the protocol reading matches it off the full
-        // tally anyway, naming the const after the table entry and
-        // naming the protocol, and the finding answers the using
-        // function's per-function lookup.
+        // threshold. The protocol reading matches it off the full
+        // tally anyway: the finding is named after the table entry,
+        // names the protocol, and answers the using function's
+        // per-function lookup.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -1079,9 +1083,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_table_value_that_clears_the_frequency_threshold_lands_once() {
-        // A table value repeated enough to clear the frequency bar too
-        // — 0xdeadbeef three times across two functions: it appears
-        // once, as the protocol finding, never also as a named
+        // A table value repeated enough to clear the frequency bar
+        // too: 0xdeadbeef appears three times across two functions. It
+        // lands once, as the protocol finding, never also as a named
         // constant, and the protocol record carries the full usage
         // data the frequency pass would have.
         let mut program = FakeProgram::empty();
@@ -1145,12 +1149,12 @@ mod tests {
 
     #[tokio::test]
     async fn two_palette_literals_across_two_functions_yield_one_color_finding() {
-        // FUN_a carries 0x123456 and FUN_b carries 0xff00ff, each in
-        // a call argument, each seen once — far below the repetition
-        // bar: the color reading groups the two color-shaped values
-        // off the tally into exactly one program-level palette
-        // naming both values and both functions, and the finding
-        // answers each using function's per-function lookup.
+        // FUN_a carries 0x123456 and FUN_b carries 0xff00ff, each in a
+        // call argument, each seen once — far below the repetition
+        // bar. The color reading groups the two color-shaped values off
+        // the tally into exactly one program-level palette naming both
+        // values and both functions, and the finding answers each using
+        // function's per-function lookup.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -1286,11 +1290,11 @@ mod tests {
         // Both functions carry every shape and one carries a table
         // magic, so the persisted list must group their per-function
         // findings by function in listing order — bitmask then enum —
-        // and append the program-level findings after them: the named
-        // constants, then the flag family the two identical groups
-        // merge into, then the protocol constant the magic matched,
-        // then the color palette the color reading grouped, never
-        // interleaved.
+        // and append the program-level findings after them, never
+        // interleaved: the named constants, then the flag family the
+        // two identical groups merge into, then the protocol constant
+        // the magic matched, then the color palette the color reading
+        // grouped.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -1357,11 +1361,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_where_every_decompile_fails_aborts() {
-        // The 2026-10-08 incident: the bridge answered the listing from
-        // one program and the decompiles from another, every decompile
-        // failed, and the scan nearly persisted a phantom-clean record
-        // under the target's name. The skip-rate breaker aborts with
-        // the counts instead, so nothing is persisted.
+        // The 2026-10-08 incident: the seam was answering about the
+        // wrong program — the listing from one program, the decompiles
+        // from another — every decompile failed, and the scan nearly
+        // persisted a record that looks clean but is not, filed under
+        // the target's name. The skip-rate breaker aborts with the
+        // counts instead, so nothing is persisted.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         let result = ConstEngine::with_source(program).scan("eqmain.dll").await;
@@ -1376,9 +1381,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
-        // The breaker is a circuit breaker, not a post-mortem: once
-        // most of the listing has failed, the remaining decompiles are
-        // wasted round-trips against the wrong program.
+        // The breaker is a fuse, not a post-mortem: once more than half
+        // the listing has failed, the remaining decompiles are wasted
+        // round-trips against the wrong program.
         let mut program = program();
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
@@ -1424,8 +1429,8 @@ mod tests {
     #[tokio::test]
     async fn a_failing_listing_fails_the_whole_run() {
         // With the listing gone nothing was scanned, so the run aborts
-        // rather than returning a result that looks empty by
-        // detection.
+        // rather than returning a result that looks like a scan that
+        // found no constants.
         let mut program = program();
         program.fail_listing = true;
         let result = ConstEngine::with_source(program).scan("eqmain.dll").await;
@@ -1479,8 +1484,9 @@ mod tests {
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
-        // Story 9 (#203): the record also names the engine that produced it —
-        // scan() copies the source's provenance through (#208).
+        // Story 9 (#203): the record also names the analysis engine
+        // that produced it — scan() copies the source's provenance
+        // through (#208).
         let engine = result
             .metadata
             .engine
@@ -1529,9 +1535,9 @@ mod tests {
         program
     }
 
-    /// Adds one more kept function — listing entry and body — so a
-    /// test can put a shape in a second body than the one that reads
-    /// the table.
+    /// Adds one more kept function, listing entry and body, so a test
+    /// can put a shape in a different body than the one that reads the
+    /// table.
     fn add_body(program: &mut FakeProgram, name: &str, body: &str) {
         program.listing.push(summary(name));
         program.bodies.insert(
@@ -1703,8 +1709,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_data_object_only_the_xrefs_name_claims_its_table_at_the_referenced_tier() {
-        // The mid rung of the confidence ladder: a clean decode the
-        // cross-references name a body reader for, but whose kept body
+        // The middle band of the confidence scale: a clean decode the
+        // cross-references name a body reader for, but whose kept-body
         // read the walk never saw — real use, no read to corroborate
         // the shape against. The reader's name is on the record and
         // the claim scores below the corroborated one.
@@ -1741,9 +1747,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_data_object_nothing_references_claims_its_table_at_the_raw_tier() {
-        // The floor of the ladder: bytes that decode cleanly with no
-        // body read and no reference at all stay on the record at a
-        // low score the human filters rather than being hidden.
+        // The bottom band: bytes that decode cleanly with no body read
+        // and no reference at all stay on the record at an honest low
+        // score the human filters, rather than being hidden.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -1778,12 +1784,12 @@ mod tests {
     async fn bytes_incoherent_at_every_width_claim_nothing() {
         // Viability before resolution: four u32 scalars whose u32
         // decode spreads three orders of magnitude past the coherent
-        // family's budget (1, 2, and two 4-billion-scale values), the
+        // family's budget (1, 2, and two 4-billion-scale values). The
         // u16 and u8 decodes hit the zero halves between them, the
         // wide u64 decode inherits the same spread across its two
         // entries, and the float decodes read the small values as
-        // denormal dust — no stride carries a coherent table at all,
-        // and the guard-sized read resolves nothing.
+        // denormals. No stride carries a coherent table at all, and
+        // the guard-sized read resolves nothing.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -1824,10 +1830,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_applied_uint_over_bytes_that_decode_at_three_widths_types_the_table() {
-        // The spec's top rung: the engine's own listing typed the
-        // object `uint` while the bytes decode coherently at u16, u32
-        // and u64 alike — the applied type resolves the multi-stride
-        // decode to u32 and out-ranks every decode-only tier.
+        // The top band of the confidence scale: the analysis engine's
+        // own listing typed the object `uint` while the bytes decode
+        // coherently at u16, u32 and u64 alike. The applied type
+        // resolves the multi-stride decode to u32, and the claim
+        // scores above every decode-only band.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -2006,8 +2013,9 @@ mod tests {
     #[tokio::test]
     async fn an_indexed_read_beats_function_xrefs_to_the_corroborated_tier() {
         // The two evidence paths over one clean decode: the body read
-        // corroborates at 70 where the Xrefs-only path lands at 50, and
-        // every reader the engine names stays on the record.
+        // corroborates at 70 where the Xrefs-only path lands at 50,
+        // and every reader the analysis engine names stays on the
+        // record.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003ac00")];
         program.bodies.insert(
@@ -2052,7 +2060,7 @@ mod tests {
         // The resolution the stride-viability ticket (#280) needs an
         // input for: bytes coherent at u16, u32 and u64, no guard to
         // size the read and no listing type to name the stride, stay
-        // unresolved — a table the engine cannot size claims nothing.
+        // unresolved — a table the scan cannot size claims nothing.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -2074,9 +2082,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_guard_that_contradicts_the_bytes_claims_nothing() {
-        // A guard naming width 1 over bytes that carry zero u8
-        // entries: the guard and the decode disagree, and the claim
-        // stays inside what both agree on.
+        // A guard naming the u8 width over bytes whose u8 decode
+        // carries zero-valued entries: the guard and the decode
+        // disagree, and the claim stays inside what both agree on.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -2100,8 +2108,8 @@ mod tests {
     async fn guards_naming_different_widths_claim_nothing() {
         // Two readers' guards imply different widths (12 entries of
         // u16 and 6 entries of u32 for the same object); the
-        // disagreement claims nothing, and the table's other findings
-        // stay untouched.
+        // disagreement claims nothing. The rule touches the table
+        // reading only, never the program's other findings.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -2179,7 +2187,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_body_that_stores_through_the_symbol_another_way_claims_nothing() {
-        // The decompiler spells a store through a symbol's address
+        // The decompiler writes a store through a symbol's address
         // several ways; every one of them is the same mutable state.
         let mut program = table_program();
         add_body(
@@ -2198,8 +2206,8 @@ mod tests {
         // jump-table reading owns that outright, so this one claims
         // nothing even though the bytes decode cleanly at u64 and a
         // guard picks that stride out of the widths the bytes allow.
-        // The pointed-to functions carry bodies because most of a
-        // listing failing to decompile aborts the whole scan.
+        // The pointed-to functions carry bodies because more than half
+        // a listing failing to decompile aborts the whole scan.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -2423,7 +2431,7 @@ mod tests {
     // -- admitted coverage (P19 admitted-semantics track, issue #348) -----
 
     /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
+    /// names every declared facet exactly once, and each fault names one
     /// drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
@@ -2481,9 +2489,9 @@ mod tests {
         // named function to a failed decompile and a nameless listing
         // entry it can name nothing about, and the data listing defines
         // an object whose memory window never arrives. The record says
-        // which parts it could not read, so findings filed almost
-        // nothing over this record read as "examined little" — the
-        // reading an escalate retry needs — never as "this binary has no
+        // which parts it could not read. A scan that filed almost
+        // nothing under this record reads as "examined little" — what
+        // an escalate retry needs — never as "this binary has no
         // constants".
         let mut program = table_program();
         program.listing.push(summary("FUN_18003e750"));
@@ -2569,8 +2577,8 @@ mod tests {
                 program.fail_decompiles.push(name);
             } else {
                 // A listing entry with no canned body fails to decompile
-                // too, which would trip the skip-rate breaker the walk
-                // runs over the whole listing.
+                // too, which would feed the failure count the skip-rate
+                // breaker weighs against the whole listing.
                 add_body(&mut program, &name, "  return;\n");
             }
         }
@@ -2622,9 +2630,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_xref_read_lands_the_table_with_no_referencing_functions() {
-        // The claim rests on the bytes and the body read; a failing
+        // The claim rests on the bytes and the body read: a failing
         // `xrefs_to` degrades the record's function list to empty
-        // (logged), it does not drop the table.
+        // (logged), and does not drop the table.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
