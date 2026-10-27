@@ -46,6 +46,10 @@ pub struct RetryLoopCtx<'a> {
     /// non-empty they seed the failure history, so the reviewer's knowledge
     /// reaches every failure-informed fix prompt from the first retry on.
     pub reviewer_hints: &'a [String],
+    /// The seam capability report the pipeline holds from the moment it
+    /// opened the batch's scan source (issue #355). The escalate arm folds
+    /// one family from this held copy; no prompt path re-asks the seam.
+    pub seam_report: &'a calxgloss_types::CapabilityReport,
 }
 
 /// Execute a translation with retry logic.
@@ -320,6 +324,7 @@ pub async fn try_translate_with_retry(
             history: &failure_history,
             workspace: ctx.workspace,
             source: ctx.source,
+            seam_report: ctx.seam_report,
         };
         let prompt = build_fix_prompt(current_strategy, &prompt_req).await;
 
@@ -815,6 +820,7 @@ mod tests {
             max_context_tier: None,
         };
 
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let ctx = RetryLoopCtx {
             verifier: &verifier,
             llm: &llm,
@@ -825,6 +831,7 @@ mod tests {
             resource_detector: None,
             fault_logger: None,
             reviewer_hints: &[],
+            seam_report: &seam_report,
         };
 
         let result = try_translate_with_retry(translation, &ctx).await;
@@ -932,6 +939,7 @@ mod tests {
             max_context_tier: None,
         };
 
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let ctx = RetryLoopCtx {
             verifier: &verifier,
             llm: &llm,
@@ -942,6 +950,7 @@ mod tests {
             resource_detector: None,
             fault_logger: Some(&fault_logger),
             reviewer_hints: &[],
+            seam_report: &seam_report,
         };
 
         let result = try_translate_with_retry(translation, &ctx).await;
@@ -1160,6 +1169,7 @@ mod tests {
             max_context_tier: Some(calxgloss_types::ContextTier::Signature),
         };
 
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let ctx = RetryLoopCtx {
             verifier: &verifier,
             llm: &llm,
@@ -1170,6 +1180,7 @@ mod tests {
             resource_detector: None,
             fault_logger: None,
             reviewer_hints: &[],
+            seam_report: &seam_report,
         };
 
         let result = try_translate_with_retry(translation, &ctx).await;
@@ -1283,6 +1294,7 @@ mod tests {
             history: history4.clone(),
             call_graph_context: Vec::new(),
             workspace: Some(ws.path().to_path_buf()),
+            seam_report: calxgloss_types::CapabilityReport::default(),
         })
         .await;
         assert_eq!(sent[&4], expected, "attempt 4 escalate prompt");
@@ -1482,6 +1494,7 @@ mod tests {
             escalate_on_failure: false,
             max_context_tier: None,
         };
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let ctx = RetryLoopCtx {
             verifier: &verifier,
             llm: &llm,
@@ -1492,6 +1505,7 @@ mod tests {
             resource_detector: None,
             fault_logger: None,
             reviewer_hints: &[],
+            seam_report: &seam_report,
         };
 
         let result = try_translate_with_retry(translation, &ctx).await;
@@ -1594,6 +1608,7 @@ mod tests {
             escalate_on_failure: false,
             max_context_tier: None,
         };
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let ctx = RetryLoopCtx {
             verifier: &verifier,
             llm: &llm,
@@ -1604,6 +1619,7 @@ mod tests {
             resource_detector: None,
             fault_logger: None,
             reviewer_hints: &[],
+            seam_report: &seam_report,
         };
 
         let result = try_translate_with_retry(translation, &ctx).await;
@@ -1713,6 +1729,7 @@ mod tests {
             escalate_on_failure: false,
             max_context_tier: None,
         };
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let ctx = RetryLoopCtx {
             verifier: &verifier,
             llm: &llm,
@@ -1723,6 +1740,7 @@ mod tests {
             resource_detector: None,
             fault_logger: Some(&fault_logger),
             reviewer_hints: &[],
+            seam_report: &seam_report,
         };
 
         let result = try_translate_with_retry(translation, &ctx).await;

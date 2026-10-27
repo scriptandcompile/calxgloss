@@ -52,14 +52,16 @@ pub use context::{
     ComplexityPromptData, DisassemblyPromptData, SignaturePromptData, WithTestsPromptData,
 };
 pub use error::PromptError;
+pub use templates::capability_for;
 pub use templates::{
-    AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
-    ConstInfo, ControlFlowInfo, ConventionInfo, CoverageInfo, DataTableInfo, EdgeCaseTemplate,
-    EdgeCaseTest, ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate, FloatsimdInfo,
-    FormattedTestResult, FullModuleTemplate, GlobalStateInfo, LibmatchInfo, MemoryInfo,
-    MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod,
-    ParameterDirectionInfo, SerializationInfo, ShimCode, SignatureTemplate, StringContextInfo,
-    StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, CapabilityInfo,
+    ConcurrencyInfo, ConstInfo, ControlFlowInfo, ConventionInfo, CoverageInfo, DataTableInfo,
+    EdgeCaseTemplate, EdgeCaseTest, ErrhandlingInfo, EscalateTemplate, EvidenceBundle, FixTemplate,
+    FloatsimdInfo, FormattedTestResult, FullModuleTemplate, GlobalStateInfo, LibmatchInfo,
+    MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef,
+    PalTraitMethod, ParameterDirectionInfo, SerializationInfo, ShimCode, SignatureTemplate,
+    StringContextInfo, StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo,
+    WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -3156,6 +3158,217 @@ mod tests {
                 "## {LIBRARIES_APIS_HEADING}\n\nCoverage: {API_ADMISSION}\n\n"
             )),
             "the empty list still carries the one admission line"
+        );
+    }
+
+    // ---- #355: the seam's own capability admission ----------------------
+
+    /// A reason line no other family in this repo invents — if a seam
+    /// admission ever leaks out of the imported-APIs section into another
+    /// family's section, this name travels with it and the pin faults.
+    const SEAM_UNREACHED: &str = "Zanthoxylum";
+
+    /// The one admission wording the section suite pins for the seam's
+    /// `imports` family (issue #355).
+    fn seam_imports_unavailable() -> calxgloss_types::FamilyCapability {
+        calxgloss_types::FamilyCapability {
+            id: "imports".to_string(),
+            status: calxgloss_types::AvailabilityStatus::Unavailable,
+            reason: Some(format!(
+                "{SEAM_UNREACHED} sessions never load the import table"
+            )),
+        }
+    }
+
+    const SEAM_IMPORTS_ADMISSION: &str =
+        "unavailable — Zanthoxylum sessions never load the import table";
+
+    /// The seam's answerable declaration for the same family — nothing to
+    /// admit, the shape Kuna files today.
+    fn seam_imports_answerable() -> calxgloss_types::FamilyCapability {
+        calxgloss_types::FamilyCapability {
+            id: "imports".to_string(),
+            status: calxgloss_types::AvailabilityStatus::Answerable,
+            reason: None,
+        }
+    }
+
+    /// The pinned wording stands at both ends of its journey (issue #355):
+    /// the shared capability type produces the admission line from its own
+    /// entry, and the prompt-side view carries that same line verbatim —
+    /// one set of words from the engine's declaration to the rendered line.
+    #[test]
+    fn the_seam_admission_wording_is_pinned_at_both_ends_of_its_journey() {
+        assert_eq!(
+            seam_imports_unavailable()
+                .admission()
+                .expect("unavailable admits"),
+            SEAM_IMPORTS_ADMISSION,
+            "the shared type's own admission is the pinned line"
+        );
+        assert_eq!(
+            CapabilityInfo::from(&seam_imports_unavailable()).admission,
+            SEAM_IMPORTS_ADMISSION,
+            "the template-side view carries the same line, word for word"
+        );
+        let report = calxgloss_types::CapabilityReport {
+            families: vec![seam_imports_unavailable()],
+        };
+        assert_eq!(
+            capability_for(&report, "imports").admission,
+            SEAM_IMPORTS_ADMISSION,
+            "folding the held report for one family yields the same line"
+        );
+    }
+
+    /// A declared-unavailable family appends exactly one bounded admission
+    /// line beside the entries, pinned byte-for-byte (issue #355) — and the
+    /// unreached family's name occurs exactly once in the whole prompt:
+    /// crossing into another family's section fails this pin.
+    #[test]
+    fn a_seam_unavailable_admission_appends_exactly_one_line_beside_entries() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.api_findings.push(api_fixture());
+        let clean = render_escalate_full(&bundle);
+        bundle.api_capability = CapabilityInfo::from(&seam_imports_unavailable());
+        let admitted = render_escalate_full(&bundle);
+        assert_eq!(
+            admitted,
+            clean.replace(
+                &format!("{LIBRARIES_APIS_SECTION_BODY}\n\n"),
+                &format!(
+                    "{LIBRARIES_APIS_SECTION_BODY}\n\nAnalysis engine: {SEAM_IMPORTS_ADMISSION}\n\n"
+                ),
+            ),
+            "the seam admission rides the section as exactly one line beside the entries"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {LIBRARIES_APIS_HEADING}"))
+                .count(),
+            1,
+            "the admission never opens a second section"
+        );
+        assert_eq!(
+            admitted.matches(SEAM_UNREACHED).count(),
+            1,
+            "the unreached family's name appears exactly once — never inside \
+             another family's section, never anywhere else in the prompt"
+        );
+    }
+
+    /// When the surface filed nothing, the admission line still says its
+    /// one thing: the section opens with its heading and the line, and
+    /// never a bare silence (issue #355).
+    #[test]
+    fn a_seam_admission_on_an_otherwise_empty_surface_opens_heading_and_line() {
+        let rendered = render_escalate_full(&EvidenceBundle {
+            api_capability: CapabilityInfo::from(&seam_imports_unavailable()),
+            ..Default::default()
+        });
+        assert!(
+            rendered.contains(&format!(
+                "## {LIBRARIES_APIS_HEADING}\n\nAnalysis engine: {SEAM_IMPORTS_ADMISSION}\n\n"
+            )),
+            "an empty filed surface under an unavailable seam still admits itself"
+        );
+        assert_eq!(
+            rendered.matches(SEAM_UNREACHED).count(),
+            1,
+            "one line, one name, one home"
+        );
+    }
+
+    /// The doctrine pair (issue #355): findings silence under an answerable
+    /// declaration and under an unavailable one must never share bytes —
+    /// an empty surface from a seam that admits the family is unreachable
+    /// says something, while silence from a seam that can answer says
+    /// nothing.
+    #[test]
+    fn empty_api_surface_under_answerable_and_unavailable_seams_never_render_alike() {
+        let under_answerable = render_escalate_full(&EvidenceBundle {
+            api_capability: CapabilityInfo::from(&seam_imports_answerable()),
+            ..Default::default()
+        });
+        assert_eq!(
+            under_answerable,
+            render_escalate_full(&EvidenceBundle::default()),
+            "an answerable family admits nothing, on an empty surface as anywhere"
+        );
+        let under_unavailable = render_escalate_full(&EvidenceBundle {
+            api_capability: CapabilityInfo::from(&seam_imports_unavailable()),
+            ..Default::default()
+        });
+        assert_ne!(
+            under_answerable, under_unavailable,
+            "an empty surface under an unavailable seam must render observably \
+             different bytes than the same emptiness under an answerable one"
+        );
+    }
+
+    /// Answerable and unknown (the report declaring nothing about the
+    /// family) render byte-identically to today — the empty-bundle pin
+    /// included (issue #355).
+    #[test]
+    fn answerable_and_undeclared_seam_families_render_byte_identically_to_silence() {
+        let untouched = render_escalate_full(&EvidenceBundle::default());
+        let mut bundle = EvidenceBundle::default();
+        bundle.api_findings.push(api_fixture());
+        let rich_clean = render_escalate_full(&bundle);
+
+        bundle.api_capability = CapabilityInfo::from(&seam_imports_answerable());
+        assert_eq!(
+            render_escalate_full(&bundle),
+            rich_clean,
+            "the seam saying 'answerable' adds no bytes anywhere"
+        );
+
+        let undeclared = calxgloss_types::CapabilityReport::default();
+        bundle.api_capability = capability_for(&undeclared, "imports");
+        assert_eq!(
+            bundle.api_capability,
+            CapabilityInfo::default(),
+            "an undeclared family folds to the empty view — silence, not absence"
+        );
+        assert_eq!(
+            render_escalate_full(&bundle),
+            rich_clean,
+            "an undeclared family adds no bytes anywhere"
+        );
+        assert_eq!(
+            render_escalate_full(&EvidenceBundle {
+                api_capability: capability_for(&undeclared, "imports"),
+                ..Default::default()
+            }),
+            untouched,
+            "the empty bundle is byte-identical under an all-silent report"
+        );
+    }
+
+    /// The seam admission and the scan's own coverage admission are two
+    /// different admits — one the document's, one the live engine's — and
+    /// when both fall short each keeps exactly its own line, in order,
+    /// never merging (issue #355).
+    #[test]
+    fn the_scan_admission_and_the_seam_admission_keep_their_own_lines() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.api_findings.push(api_fixture());
+        bundle.api_coverage = CoverageInfo::from(&api_admitting_coverage());
+        bundle.api_capability = CapabilityInfo::from(&seam_imports_unavailable());
+        let admitted = render_escalate_full(&bundle);
+        assert!(
+            admitted.contains(&format!(
+                "{LIBRARIES_APIS_SECTION_BODY}\n\nCoverage: {API_ADMISSION}\n\n\
+                 Analysis engine: {SEAM_IMPORTS_ADMISSION}\n\n"
+            )),
+            "both admissions ride, each as its own line, scan first"
+        );
+        assert_eq!(
+            admitted
+                .matches(&format!("## {LIBRARIES_APIS_HEADING}"))
+                .count(),
+            1,
+            "two admits, still one section"
         );
     }
 

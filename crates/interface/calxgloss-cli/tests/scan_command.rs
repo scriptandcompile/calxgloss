@@ -1621,3 +1621,49 @@ fn a_malformed_set_override_file_fails_naming_its_path() {
         );
     }
 }
+
+// ── #355: seam capability admission rides the scan run report ─────────────
+
+#[test]
+fn the_run_report_stays_silent_of_seam_admissions_when_the_seam_declares_answerable() {
+    // Issue #355 doctrine at the process seam: the Kuna seam declares every
+    // query family answerable, so a scan run report carries no seam
+    // admission line anywhere — byte-identical silence — and the
+    // run-equals-`--show` contract stands unchanged beside the seam line's
+    // recorded exemption (ADR-0054).
+    let ws = fixture_workspace();
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "controlflow",
+            "--binary",
+            "fixture-target",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the controlflow ride failed:\n{stdout}\n{stderr}");
+    assert!(
+        !stdout.contains("Seam:"),
+        "the seam declares every family answerable — the run report admits \
+         nothing about seam capability:\n{stdout}"
+    );
+
+    let (ok, show_stdout, stderr) = run(
+        cli(ws.path()).args([
+            "--target-dir",
+            ".",
+            "controlflow",
+            "--binary",
+            "fixture-target",
+            "--show",
+        ]),
+        ws.path(),
+    );
+    assert!(ok, "the controlflow show failed:\n{show_stdout}\n{stderr}");
+    assert_eq!(
+        stdout, show_stdout,
+        "the seam line sits at the same point on both paths — the run == \
+         --show equality contract stands under the all-answerable seam"
+    );
+}

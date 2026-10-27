@@ -298,6 +298,18 @@ pub struct TranslationPipeline {
     /// from the disk tier with zero live reads.
     cached_source: Mutex<Option<CachedScanSource>>,
 
+    /// The seam's capability report, pulled exactly once beside the
+    /// opening of the batch's cached scan source and held for the whole
+    /// batch (issue #355).
+    ///
+    /// The fetch rides [`begin_cached_source`](Self::begin_cached_source):
+    /// the report travels with the source it describes, and reading it
+    /// costs no additional engine read. A batch whose cache never opened
+    /// holds the live engine's own declaration instead — the same words,
+    /// read from the source its reads actually go through. Prompts never
+    /// re-ask the seam; they read this held copy.
+    seam_report: Mutex<calxgloss_types::CapabilityReport>,
+
     /// The scan phase's fan-out window high-water mark: the most evidence
     /// scans that ran at once during the latest
     /// [`run_prebatch_scans`](Self::run_prebatch_scans), recorded as each
@@ -403,6 +415,7 @@ impl TranslationPipeline {
             accepted_attempt_source: None,
             carry_over_seeds: Mutex::new(HashMap::new()),
             cached_source: Mutex::new(None),
+            seam_report: Mutex::new(calxgloss_types::CapabilityReport::default()),
             scan_window_high_water: Arc::new(AtomicUsize::new(0)),
             refresh_cache: false,
             stop: None,
@@ -1427,6 +1440,9 @@ impl TranslationPipeline {
             bounded_config.retry_strategy = strategy;
         }
         let reviewer_hints = self.reviewer_hints_for(binary, function);
+        // The batch's held seam declaration, read off the held copy for
+        // this prompt's fold — never a fresh ask of the seam (issue #355).
+        let seam_report = self.seam_report();
         let ctx = retry::RetryLoopCtx {
             verifier,
             llm: &self.llm,
@@ -1437,6 +1453,7 @@ impl TranslationPipeline {
             resource_detector: None,
             fault_logger: None,
             reviewer_hints: &reviewer_hints,
+            seam_report: &seam_report,
         };
         // Boxed for the same reason as above.
         let retry_loop: std::pin::Pin<
@@ -2141,6 +2158,13 @@ impl TranslationPipeline {
         let (Some(workspace), Some(binary_path)) =
             (self.workspace.as_deref(), self.binary_path.as_deref())
         else {
+            // No cache to open: the batch's reads will pass through to the
+            // live engine, so its own declaration is the one the prompts
+            // hold (issue #355) — pulled beside this decision, once.
+            *self
+                .seam_report
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = self.kuna.capability_report();
             return;
         };
 
@@ -2159,6 +2183,15 @@ impl TranslationPipeline {
                         .map_or_else(|| "(memo only)".to_string(), |d| d.display().to_string()),
                     "Batch engine reads will go through the shared cache"
                 );
+                // The seam's word travels with the source it describes:
+                // pulled exactly here, beside the source's opening, and a
+                // capability read costs no additional engine read (issue
+                // #355). Every later prompt reads this held copy.
+                *self
+                    .seam_report
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    source.capability_report();
                 *self
                     .cached_source
                     .lock()
@@ -2170,8 +2203,25 @@ impl TranslationPipeline {
                     error = %e,
                     "Could not open the batch read cache — reads will pass through to the engine"
                 );
+                // Same rule on the fallback path: the declaration belongs
+                // to whatever source the batch's reads go through.
+                *self
+                    .seam_report
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    self.kuna.capability_report();
             }
         }
+    }
+
+    /// The held seam capability report (issue #355): the declaration pulled
+    /// once at [`begin_cached_source`](Self::begin_cached_source), read by
+    /// the retry context's escalate fold for every fix prompt in the batch.
+    pub(crate) fn seam_report(&self) -> calxgloss_types::CapabilityReport {
+        self.seam_report
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The read source every batch consumer — the [`ScanJob`]s the fifteen
@@ -7351,6 +7401,84 @@ void SetCursor(void)
         assert!(
             callback_signature_map(workspace.path(), "eqmain.dll").is_empty(),
             "a corrupt document degrades the scan, never fails it"
+        );
+    }
+
+    // ---- #355: the seam declaration is pulled once and held -------------
+
+    #[tokio::test]
+    async fn the_batch_holds_the_seam_declaration_pulled_beside_the_source_open() {
+        // The fetch rides begin_cached_source and nothing else: the held
+        // report pairs one-for-one with the seam's own roster, equals the
+        // engine's live declaration byte-for-byte, and took no engine
+        // read — the call log is exactly what the source's opening left.
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        let held = pipeline.seam_report();
+        assert_eq!(
+            held,
+            pipeline.kuna().capability_report(),
+            "the held copy equals the opened source's declaration exactly"
+        );
+        let ids: Vec<&str> = calxgloss_decomp::QUERY_FAMILIES
+            .iter()
+            .map(|(family, _methods)| *family)
+            .collect();
+        assert_eq!(
+            held.roster_faults(&ids),
+            Vec::<String>::new(),
+            "the held report pairs one-for-one with the seam's own roster"
+        );
+        assert!(
+            held.families.iter().all(|entry| {
+                entry.status == calxgloss_types::AvailabilityStatus::Answerable
+                    && entry.admission().is_none()
+            }),
+            "Kuna declares its full roster answerable today — nothing admitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_capability_hold_costs_no_additional_engine_read_beyond_the_opening() {
+        // The pin the acceptance names: pulling the report beside opening
+        // the cached source adds zero engine reads. The engine call log
+        // over `begin_cached_source` — source opening plus capability
+        // fetch — stays empty: opening the cache never touched the
+        // engine either, and after the batch begins the log is still
+        // exactly as silent as before it began.
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        let reads_before = pipeline.kuna().decompile_calls().len();
+        pipeline.begin_cached_source(PROGRAM).await;
+        let _held = pipeline.seam_report();
+        assert_eq!(
+            pipeline.kuna().decompile_calls().len(),
+            reads_before,
+            "opening the cached source and holding its capability report \
+             took no decompile read from the engine"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_batch_with_no_cache_to_open_holds_the_live_engines_declaration() {
+        // The fallback arm beside the same fetch point: with no workspace
+        // there is no cache to open and the batch's reads go through the
+        // live engine — so the live engine's own declaration is the one
+        // held, pulled at the same one point, still with no engine read.
+        let pipeline = pipeline_with(fixture_kuna(), None);
+        let reads_before = pipeline.kuna().decompile_calls().len();
+        pipeline.begin_cached_source(PROGRAM).await;
+        let held = pipeline.seam_report();
+        assert_eq!(
+            held,
+            pipeline.kuna().capability_report(),
+            "the fallback holds the live source's declaration, not an emptier one"
+        );
+        assert_eq!(
+            pipeline.kuna().decompile_calls().len(),
+            reads_before,
+            "the fallback fetch read nothing from the engine"
         );
     }
 }

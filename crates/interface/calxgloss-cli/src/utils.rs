@@ -457,6 +457,35 @@ pub(super) fn print_coverage(coverage: Option<&calxgloss_types::ScanCoverage>) {
     }
 }
 
+/// The run report's seam admission lines (issue #355): one line per query
+/// family the **opened seam itself** declared unavailable, naming the family
+/// and the seam's own bounded reason — never a bare silence and never an
+/// invented answer. A family the seam declared answerable, and one its
+/// declaration never mentioned (which reads as unknown), print nothing:
+/// under an all-answerable declaration there is no line at all, and the
+/// whole report is byte-identical to before this line existed. The lines
+/// print on the run path only — a capability is live session state, and a
+/// `--show` re-render opens no seam to ask (ADR-0054).
+pub(super) fn seam_admission_lines(report: &calxgloss_types::CapabilityReport) -> Vec<String> {
+    report
+        .families
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .admission()
+                .map(|admission| format!("{} — {admission}", entry.id))
+        })
+        .collect()
+}
+
+/// Print each seam admission line beside the scan report, under a `Seam:`
+/// label column aligned with the coverage line's.
+pub(super) fn print_seam_admissions(report: &calxgloss_types::CapabilityReport) {
+    for line in seam_admission_lines(report) {
+        println_content(format!("  {}{}", white_bold("Seam:      "), dim(&line)));
+    }
+}
+
 // ============================================================
 // Dashboard accept/send-back helpers
 // ============================================================

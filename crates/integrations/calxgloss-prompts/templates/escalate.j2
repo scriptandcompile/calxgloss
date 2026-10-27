@@ -117,7 +117,7 @@ Pseudo-C:
 {% call sections::global_state_section(evidence.global_state_findings, "ADDITIONAL CONTEXT — GLOBAL STATE", evidence.global_state_coverage) %}{% endcall %}
 {% call floatsimd::floatsimd_section(evidence.floatsimd_findings, "ADDITIONAL CONTEXT — FLOAT/SIMD", evidence.floatsimd_coverage) %}{% endcall %}
 {% call string_context::string_context_section(evidence.string_findings, "ADDITIONAL CONTEXT — STRINGS", evidence.string_context_coverage) %}{% endcall %}
-{% call libraries_apis::libraries_apis_section(evidence.api_findings, "ADDITIONAL CONTEXT — LIBRARIES AND APIS", evidence.api_coverage) %}{% endcall %}
+{% call libraries_apis::libraries_apis_section(evidence.api_findings, "ADDITIONAL CONTEXT — LIBRARIES AND APIS", evidence.api_coverage, evidence.api_capability) %}{% endcall %}
 {% if !evidence.error_handling_findings.is_empty() %}
 ## ADDITIONAL CONTEXT — ERROR HANDLING
 

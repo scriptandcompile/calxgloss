@@ -819,6 +819,47 @@ impl From<&calxgloss_types::ScanCoverage> for CoverageInfo {
     }
 }
 
+/// What the analysis seam itself states about one query family — the
+/// template-side view of a `calxgloss_types::FamilyCapability` (issue #355).
+///
+/// Same default-empty discipline as [`CoverageInfo`]: a family the seam
+/// declared answerable, and one its declaration never mentioned (which
+/// reads as unknown), leave `admission` empty — the section renders
+/// byte-for-byte what it rendered before the seam spoke. Only an
+/// unavailable entry earns the one line, and its words are the shared
+/// admission wording, not a template-side invention.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct CapabilityInfo {
+    /// The declared availability word, as persisted — `answerable` or
+    /// `unavailable`; empty when the seam declared nothing about the family.
+    pub status: String,
+    /// The bounded admission line — `unavailable` plus the engine's own
+    /// reason when it gave one. Empty when there is nothing to admit.
+    pub admission: String,
+}
+
+impl From<&calxgloss_types::FamilyCapability> for CapabilityInfo {
+    fn from(entry: &calxgloss_types::FamilyCapability) -> Self {
+        Self {
+            status: entry.status.to_string(),
+            admission: entry.admission().unwrap_or_default(),
+        }
+    }
+}
+
+/// Resolve a family's [`CapabilityInfo`] from a held capability report:
+/// the entry when the seam declared one, and the default-empty view when
+/// it did not — absence reads as unknown, and unknown has nothing to
+/// render (issue #355).
+pub fn capability_for(report: &calxgloss_types::CapabilityReport, family: &str) -> CapabilityInfo {
+    report
+        .families
+        .iter()
+        .find(|entry| entry.id == family)
+        .map(CapabilityInfo::from)
+        .unwrap_or_default()
+}
+
 /// The decompiler-derived evidence every bundle-fed prompt template renders from.
 ///
 /// Every finding list a template may read, grouped into one struct so the
@@ -952,6 +993,15 @@ pub struct EvidenceBundle {
     /// it claims complete coverage; the libraries-apis include renders
     /// its one qualification line exactly when this carries an admission.
     pub api_coverage: CoverageInfo,
+    /// What the analysis seam itself states about the imported-APIs query
+    /// family (`imports`) — the held capability report's entry for that one
+    /// family, folded beside (never inside) the document's own
+    /// `api_coverage` (issue #355). Default-empty when the seam declared
+    /// the family answerable, declared nothing about it, or the pipeline
+    /// holds no report at all: the include then renders byte-identically
+    /// to before the seam spoke, and only an unavailable entry earns its
+    /// one admission line.
+    pub api_capability: CapabilityInfo,
     /// Constant and enum findings about this function made by the
     /// analysis pipeline.
     pub const_findings: Vec<ConstInfo>,

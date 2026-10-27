@@ -277,12 +277,18 @@ mod tests {
         history: &'a [FailureHint],
         source: &'a calxgloss_decomp::PipelineSource,
     ) -> FixPromptRequest<'a> {
+        // These adapter pins render compile/test/edge-case fix prompts —
+        // none reads the seam family — and all ride a report declaring
+        // nothing, the honest empty (issue #355).
+        static NO_SEAM: std::sync::OnceLock<calxgloss_types::CapabilityReport> =
+            std::sync::OnceLock::new();
         FixPromptRequest {
             unit,
             verdict,
             history,
             workspace: None,
             source,
+            seam_report: NO_SEAM.get_or_init(calxgloss_types::CapabilityReport::default),
         }
     }
 

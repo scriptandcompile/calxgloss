@@ -95,6 +95,29 @@ pub struct FamilyCapability {
     pub reason: Option<String>,
 }
 
+impl FamilyCapability {
+    /// The one admission line this entry earns, or `None` when there is
+    /// nothing to admit: an answerable family stays silent, an unavailable
+    /// one says so — with the engine's own reason line when it gave one
+    /// (issue #355).
+    ///
+    /// The single home of the wording, mirroring the coverage half's
+    /// [`ScanCoverage::admission`]: every consumer — a prompt section, a
+    /// run report — renders this same string, so the seam admits a family
+    /// in exactly one set of words end to end. An undeclared family never
+    /// reaches this method: absence reads as unknown, and unknown has no
+    /// admission — the seam said nothing, so nothing is said.
+    pub fn admission(&self) -> Option<String> {
+        match self.status {
+            AvailabilityStatus::Answerable => None,
+            AvailabilityStatus::Unavailable => Some(match &self.reason {
+                Some(reason) => format!("unavailable — {reason}"),
+                None => "unavailable".to_string(),
+            }),
+        }
+    }
+}
+
 /// The capability report an engine declares about the seam it stands behind:
 /// what it can answer right now and what it cannot, in one shared shape
 /// every consumer reads.
@@ -385,6 +408,86 @@ mod tests {
             orphan.roster_faults(&declared),
             ["report names `masked-byte-search`, a family the seam's roster never carried"],
             "an id no seam method stands behind fails loudly"
+        );
+    }
+
+    // ---- #355: the admission line's one wording home -------------------
+
+    #[test]
+    fn an_answerable_family_admits_nothing_and_an_unavailable_one_says_why() {
+        // The admission wording's home: an answerable entry has nothing to
+        // admit, and an unavailable entry says so in the one set of words
+        // every consumer — prompt section, run report — then renders
+        // identically, naming the engine's own reason and nothing invented.
+        let answered = FamilyCapability {
+            id: "imports".to_string(),
+            status: AvailabilityStatus::Answerable,
+            reason: None,
+        };
+        assert_eq!(answered.admission(), None, "answerable admits nothing");
+
+        let admitted = FamilyCapability {
+            id: "imports".to_string(),
+            status: AvailabilityStatus::Unavailable,
+            reason: Some("the import table is encrypted".to_string()),
+        };
+        assert_eq!(
+            admitted.admission().as_deref(),
+            Some("unavailable — the import table is encrypted"),
+            "the admission names the engine's own reason line verbatim"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_family_with_no_reason_still_admits_itself_alone() {
+        // A reason line is optional; the admission is not — an unavailable
+        // family with no sentence still gets its one word, never silence.
+        let admitted = FamilyCapability {
+            id: "xrefs".to_string(),
+            status: AvailabilityStatus::Unavailable,
+            reason: None,
+        };
+        assert_eq!(
+            admitted.admission().as_deref(),
+            Some("unavailable"),
+            "absence of a reason never means absence of an admission"
+        );
+    }
+
+    #[test]
+    fn the_report_hands_each_consumer_only_the_lines_it_declared() {
+        // A family the engine never declared reads unknown and has no entry
+        // to admit — so filtering a report's entries for admissions yields
+        // the unavailable lines, in declared order, and nothing for
+        // answerable or undeclared families: unknown renders as silence,
+        // and the seam's own silence is never dressed up as an admission.
+        let report = declared_report_fixture();
+        let lines: Vec<String> = report
+            .families
+            .iter()
+            .filter_map(|entry| entry.admission().map(|a| format!("{} — {a}", entry.id)))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            report
+                .families
+                .iter()
+                .filter(|entry| entry.status == AvailabilityStatus::Unavailable)
+                .count(),
+            "only unavailable entries earn a line"
+        );
+        assert_eq!(
+            report.availability_for("never-declared-family"),
+            EffectiveAvailability::Unknown,
+            "an undeclared family carries no entry and no admission"
+        );
+        assert!(
+            !report
+                .families
+                .iter()
+                .any(|entry| entry.admission().is_some()
+                    && entry.status == AvailabilityStatus::Answerable),
+            "answerable entries never yield an admission line"
         );
     }
 }

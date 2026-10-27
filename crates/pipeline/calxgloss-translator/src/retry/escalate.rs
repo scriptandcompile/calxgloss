@@ -28,6 +28,12 @@ pub struct EscalatePromptCtx {
     /// cache, algorithm recognition result, memory lifecycle result, and
     /// concurrency result.
     pub workspace: Option<std::path::PathBuf>,
+    /// The seam's capability report, held by the pipeline from the moment
+    /// it opened the batch's scan source (issue #355). The escalate fold
+    /// reads the `imports` family from this owned copy — the prompt never
+    /// goes back to the seam to ask, and the report's one fetch already
+    /// cost no additional engine read.
+    pub seam_report: calxgloss_types::CapabilityReport,
 }
 
 /// Build an escalated fix prompt that injects additional decompiler context.
@@ -53,6 +59,10 @@ async fn build_escalate_prompt_inner(
         &ctx.function_name,
         &ctx.call_graph,
     );
+    // The seam's own word rides beside the documents' (issue #355): one
+    // family's entry from the report held since the source was opened —
+    // this render reads no seam, only the held copy.
+    super::helpers::fold_seam_capability(&ctx.seam_report, &mut evidence);
     evidence.call_graph_neighbors =
         extract_call_graph_neighbors(&ctx.source, &ctx.call_graph, ctx.address).await;
     evidence.neighboring_functions =
@@ -128,6 +138,7 @@ pub(crate) async fn escalate_prompt(req: &crate::retry::FixPromptRequest<'_>) ->
         history: req.history.to_vec(),
         call_graph_context: req.unit.call_graph_context.to_vec(),
         workspace: req.workspace.map(std::path::PathBuf::from),
+        seam_report: req.seam_report.clone(),
     };
     if req.history.is_empty() {
         build_escalate_prompt_with_context(escalation_ctx).await
@@ -182,12 +193,23 @@ mod tests {
             structured_failed_cases: Vec::new(),
         };
         let source = source();
+        // A hand-declared seam report, exactly one family unavailable with
+        // its own reason (issue #355): this is the fake the pipeline would
+        // hold for a degraded engine, fed beside the real source.
+        let seam_report = calxgloss_types::CapabilityReport {
+            families: vec![calxgloss_types::FamilyCapability {
+                id: "imports".to_string(),
+                status: calxgloss_types::AvailabilityStatus::Unavailable,
+                reason: Some("Quincunx sessions never open the import table".to_string()),
+            }],
+        };
         let req = FixPromptRequest {
             unit: &unit,
             verdict: &verdict,
             history: &[],
             workspace: None,
             source: &source,
+            seam_report: &seam_report,
         };
         let prompt = escalate_prompt(&req).await;
         assert!(prompt.contains("DrawSprite"));
@@ -195,6 +217,22 @@ mod tests {
         assert!(prompt.contains("Compilation failed with 1 error(s)"));
         assert!(prompt.contains("unresolved name: GetProcAddress"));
         assert!(!prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+        // The seam's held word reaches the escalated prompt end to end
+        // (issue #355): one unavailable family, one admission line — and
+        // since the surface filed no API findings here, the section opens
+        // with its heading and that line, never a bare silence.
+        assert!(
+            prompt.contains(
+                "## ADDITIONAL CONTEXT — LIBRARIES AND APIS\n\n\
+                 Analysis engine: unavailable — Quincunx sessions never open the import table\n"
+            ),
+            "the seam admission rides the escalate prompt as its own line:\n{prompt}"
+        );
+        assert_eq!(
+            prompt.matches("Quincunx").count(),
+            1,
+            "the unreached family's reason crosses into no other section"
+        );
     }
 
     #[tokio::test]
@@ -209,6 +247,10 @@ mod tests {
             structured_failed_cases: Vec::new(),
         };
         let source = source();
+        // A report declaring nothing: every family reads unknown, and an
+        // undeclared family has no admission to render (issue #355) — the
+        // prompt stays byte-identical to before the seam spoke.
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let history = [FailureHint::new(
             2,
             "compile_fix",
@@ -220,11 +262,17 @@ mod tests {
             history: &history,
             workspace: None,
             source: &source,
+            seam_report: &seam_report,
         };
         let prompt = escalate_prompt(&req).await;
         assert!(prompt.contains("1 test(s) failed:"));
         assert!(prompt.contains("expected 7, got 9"));
         assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
         assert!(prompt.contains("Compilation failed: boom"));
+        assert!(
+            !prompt.contains("Analysis engine:"),
+            "an undeclared family admits nothing — the escalate prompt \
+             renders byte-identically to before the seam spoke"
+        );
     }
 }

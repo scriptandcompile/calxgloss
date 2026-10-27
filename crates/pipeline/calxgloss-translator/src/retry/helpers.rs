@@ -10,6 +10,25 @@ use calxgloss_prompts::{
 use calxgloss_types::{ApiCategory, ContextTier, TranslationRequest, WindowsApiCall};
 use tracing::debug;
 
+/// The query family the imported-APIs prompt section asks of the seam
+/// (issue #355) — the seam crate's own roster id for its import reads,
+/// spelled once here because this is where the escalate fold names it.
+pub(crate) const IMPORTS_FAMILY: &str = "imports";
+
+/// Fold the held seam capability report into one function's evidence
+/// bundle (issue #355): the `imports` family's entry from the report the
+/// pipeline pulled once at source-open time, beside (never inside) the
+/// document's own `api_coverage` coverage half. An answerable entry and an
+/// undeclared family both fold to the empty view the include renders
+/// silently — the seam's word only ever lands as the engine's own
+/// admission line, never a template-side invention.
+pub(crate) fn fold_seam_capability(
+    report: &calxgloss_types::CapabilityReport,
+    evidence: &mut EvidenceBundle,
+) {
+    evidence.api_capability = calxgloss_prompts::capability_for(report, IMPORTS_FAMILY);
+}
+
 /// Collect every synchronous per-analyzer evidence list for one function
 /// in a single pass — the bundle the escalate and module-context prompts
 /// read (issue #268).
@@ -3927,6 +3946,67 @@ mod tests {
         assert!(
             bundle.type_info.is_empty() && bundle.type_inference_coverage.admission.is_empty(),
             "a corrupt type-inference document fills neither readings nor coverage"
+        );
+    }
+
+    // ---- #355: the seam fold beside the gathered documents --------------
+
+    #[test]
+    fn the_fold_carries_one_unavailable_familys_own_line_into_the_bundle() {
+        // The fake: a hand-declared report with the imported-APIs family
+        // unavailable and its own bounded reason. The fold puts exactly
+        // that one admission line on the bundle, beside — never merged
+        // with — the document's own api_coverage half.
+        let report = calxgloss_types::CapabilityReport {
+            families: vec![calxgloss_types::FamilyCapability {
+                id: super::IMPORTS_FAMILY.to_string(),
+                status: calxgloss_types::AvailabilityStatus::Unavailable,
+                reason: Some("Quincunx sessions never open the import table".to_string()),
+            }],
+        };
+        let mut bundle = gather_function_evidence(None, "game_logic.dll", "DrawSprite", &[]);
+        super::fold_seam_capability(&report, &mut bundle);
+        assert_eq!(
+            bundle.api_capability.admission,
+            "unavailable — Quincunx sessions never open the import table",
+            "the fold carries the seam's own wording, word for word"
+        );
+        assert!(
+            bundle.api_coverage.admission.is_empty(),
+            "the seam's word never touches the document's coverage half"
+        );
+    }
+
+    #[test]
+    fn the_fold_leaves_the_bundle_empty_under_answerable_and_undeclared() {
+        // Answerable: declared, nothing to admit. Undeclared: reads as
+        // unknown, nothing to render. Both leave the bundle exactly as
+        // gather left it — the empty view the include renders silently.
+        let answerable = calxgloss_types::CapabilityReport {
+            families: vec![calxgloss_types::FamilyCapability {
+                id: super::IMPORTS_FAMILY.to_string(),
+                status: calxgloss_types::AvailabilityStatus::Answerable,
+                reason: None,
+            }],
+        };
+        let mut bundle = gather_function_evidence(None, "game_logic.dll", "DrawSprite", &[]);
+        super::fold_seam_capability(&answerable, &mut bundle);
+        assert!(
+            bundle.api_capability.admission.is_empty(),
+            "answerable admits nothing"
+        );
+        assert_eq!(
+            bundle.api_capability.status, "answerable",
+            "the fold carries the declaration's own word, and the include \
+             renders an empty admission as pure silence"
+        );
+
+        let undeclared = calxgloss_types::CapabilityReport::default();
+        super::fold_seam_capability(&undeclared, &mut bundle);
+        assert_eq!(
+            bundle.api_capability,
+            calxgloss_prompts::CapabilityInfo::default(),
+            "an undeclared family folds to silence, never to absence"
         );
     }
 }

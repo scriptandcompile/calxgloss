@@ -137,12 +137,14 @@ mod tests {
         let unit = unit();
         let verdict = verdict(vec!["unresolved import: GetProcAddress".to_string()]);
         let source = source();
+        let seam_report = calxgloss_types::CapabilityReport::default();
         let req = FixPromptRequest {
             unit: &unit,
             verdict: &verdict,
             history: &[],
             workspace: None,
             source: &source,
+            seam_report: &seam_report,
         };
 
         let plain = fix_prompt(&req);
@@ -166,6 +168,7 @@ mod tests {
             history: &history,
             workspace: None,
             source: &source,
+            seam_report: &seam_report,
         };
         let informed = fix_prompt(&req);
         assert!(informed.contains("PREVIOUS ATTEMPT HISTORY"));

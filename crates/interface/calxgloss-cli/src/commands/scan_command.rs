@@ -65,7 +65,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use calxgloss_decomp::PipelineSource;
+use calxgloss_decomp::{PipelineSource, ScanSource};
 use calxgloss_translator::scan_registry::{ScanContext, ScanLatches, ScanRunOptions, scan_rows};
 
 use crate::Settings;
@@ -339,6 +339,13 @@ pub(crate) async fn handle_scan_command(
     // shared read source and retained for the post-scan step.
     let source = load_kuna_source(settings, &flags.binary)?;
 
+    // The seam's own capability declaration, pulled exactly once beside
+    // the source's opening and held for the rest of the run (issue #355).
+    // Reading it costs no additional engine read — it is the engine's
+    // self-statement, not a query about the target — and the run report
+    // below prints from this copy, never a fresh ask.
+    let seam_report = source.capability_report();
+
     let options = ScanRunOptions {
         // The CLI's force-rescan contract: a scan command always
         // re-scans, so the phase's cached-hit short-circuit is bypassed
@@ -392,6 +399,14 @@ pub(crate) async fn handle_scan_command(
     }
 
     (entry.print)(document.as_ref(), workspace, &flags.binary)?;
+
+    // The seam admission lines, last (issue #355, ADR-0054): printed only
+    // when the opened seam itself admitted something — under Kuna's
+    // all-answerable declaration nothing prints and the whole report is
+    // byte-identical to before this line existed. The `--show` path never
+    // opens a seam to ask, so the line belongs to the run report alone:
+    // the recorded exemption to the run-equals-`--show` identity.
+    print_seam_admissions(&seam_report);
     Ok(())
 }
 
@@ -1683,6 +1698,53 @@ mod tests {
         assert!(
             unenriched.is_empty(),
             "without a type-inference document the callback scan stays un-enriched"
+        );
+    }
+
+    // ---- #355: the run report's seam admission lines --------------------
+
+    #[test]
+    fn seam_admission_lines_name_only_families_the_opened_seam_admitted() {
+        // A hand-declared report — the shape a degraded seam would hand
+        // the run: one family unavailable with its own bounded reason, one
+        // answerable, and one the declaration never mentions (unknown, and
+        // silent). Exactly one line, word for word in the shared admission
+        // wording. The `Zanthoxylum` name belongs to no other family's
+        // wording — if a line ever crossed into another family's report,
+        // these exact strings would fault.
+        let report = calxgloss_types::CapabilityReport {
+            families: vec![
+                calxgloss_types::FamilyCapability {
+                    id: "imports".to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Unavailable,
+                    reason: Some("Zanthoxylum sessions never open the import table".to_string()),
+                },
+                calxgloss_types::FamilyCapability {
+                    id: "strings".to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Answerable,
+                    reason: None,
+                },
+            ],
+        };
+        assert_eq!(
+            seam_admission_lines(&report),
+            ["imports — unavailable — Zanthoxylum sessions never open the import table"],
+            "one admitted family, one line; answerable and undeclared print nothing"
+        );
+    }
+
+    #[test]
+    fn a_full_answerable_declaration_yields_not_one_seam_line() {
+        // The real Kuna fixture's live declaration, run through the very
+        // function the run report prints from: an empty Vec — the report
+        // adds no bytes anywhere (the process-level pin pairs this with
+        // byte-identical run stdout and the run-equals-`--show` identity).
+        let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
+        let engine =
+            calxgloss_kuna::KunaSource::load(fixture.path()).expect("the fixture must load");
+        assert!(
+            seam_admission_lines(&engine.capability_report()).is_empty(),
+            "the real seam admits nothing — the run report stays silent"
         );
     }
 }

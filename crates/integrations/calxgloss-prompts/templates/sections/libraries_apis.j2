@@ -9,7 +9,14 @@
 {# section beside the heading when the scan stamped no findings but admits #}
 {# falling short — whenever the record carries an admission; a complete or #}
 {# missing record renders exactly what it rendered before. #}
-{% macro libraries_apis_section(findings, heading, coverage) %}
+{# The seam capability record (issue #355) arrives as CapabilityInfo #}
+{# strings: what the analysis seam itself states about the imported-APIs #}
+{# query family. The include appends exactly one "Analysis engine:" #}
+{# admission line, after the coverage line, beside the entries — or under #}
+{# its heading when the surface filed nothing at all — whenever the seam #}
+{# declared that family unavailable; an answerable or undeclared family #}
+{# renders exactly what it rendered before the seam spoke. #}
+{% macro libraries_apis_section(findings, heading, coverage, capability) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -32,6 +39,16 @@ Rust crate instead of transliterating the raw import or declaring it as an
 
 {% endif %}
 Coverage: {{ coverage.admission }}
+
+{% endif %}
+{% if !capability.admission.is_empty() %}
+{% if findings.is_empty() %}
+{% if coverage.admission.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+{% endif %}
+Analysis engine: {{ capability.admission }}
 
 {% endif %}
 {% endmacro %}

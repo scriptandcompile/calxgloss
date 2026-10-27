@@ -165,6 +165,9 @@ pub(crate) struct FixPromptRequest<'a> {
     pub workspace: Option<&'a std::path::Path>,
     /// The batch's shared scan source — the escalate adapter's neighbor pull.
     pub source: &'a calxgloss_decomp::PipelineSource,
+    /// The seam capability report held since the batch opened its scan
+    /// source — the escalate adapter's one-family fold (issue #355).
+    pub seam_report: &'a calxgloss_types::CapabilityReport,
 }
 
 /// The retry context's single door to the prompt builders: one closed
