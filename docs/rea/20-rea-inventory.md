@@ -1,7 +1,7 @@
 # REA complete inventory + native-relevance triage
 
-> Part of the [REA overview](README.md). Every capability REA ships, as a triage
-> table for the comparison. Sources: `README.md` "What you can analyze" table,
+> Part of the [REA overview](README.md). A triage table of every capability REA
+> ships, for the comparison. Sources: `README.md` "What you can analyze" table,
 > `docs/index.md`, `.agents/skills/`, `src/cliCommandNames.ts` (272 lines: CLI
 > command ↔ MCP tool mapping), `docs/mcp-contracts.md`. REA clone:
 > `/tmp/opencode/rea` @ `28a33ca` (2026-10-23).
@@ -13,11 +13,11 @@ worth a paragraph, ○ = out of scope.
 
 | Skill | Lines | What it is | Triage |
 |-------|-------|-----------|--------|
-| `reverse-engineer-anything/SKILL.md` | 452 | The user-facing RE skill (v45): when to use REA, connect/recovery discipline, target routing, evidence rules. +6 reference files (~1200 lines): `connection-and-recovery`, `evidence-workflows`, `native-and-artifacts` (532), `javascript-applications`, `android-applications`, `runtime-observation` | ● |
-| `rea-tool-design` | 20 | Dev skill: pointer to `docs/tool-design.md` philosophy | ◐ |
-| `rea-ci-tests-audit` | 112 | Dev skill: audit REA's own CI/test measurement | ○ (dev-only) |
-| `rea-changelog-update` | 134 | Dev skill: REA release-notes workflow | ○ (dev-only) |
-| `rea-analysis-optimization` | 113 | Dev skill: optimize REA's analysis performance; +`kuna-case-study.md` reference | ◐ (Kuna overlap with calxgloss!) |
+| `reverse-engineer-anything/SKILL.md` | 452 | The user-facing RE skill (v45): when to use REA, how to connect and recover the connection, how targets are routed to tools, and the rules for evidence. +6 reference files (~1200 lines): `connection-and-recovery`, `evidence-workflows`, `native-and-artifacts` (532), `javascript-applications`, `android-applications`, `runtime-observation` | ● |
+| `rea-tool-design` | 20 | Dev skill: points to the tool-design philosophy in `docs/tool-design.md` | ◐ |
+| `rea-ci-tests-audit` | 112 | Dev skill: audit of REA's own CI and test measurement | ○ (dev-only) |
+| `rea-changelog-update` | 134 | Dev skill: REA's release-notes workflow | ○ (dev-only) |
+| `rea-analysis-optimization` | 113 | Dev skill: making REA's analysis faster; +`kuna-case-study.md` reference | ◐ (Kuna overlap with calxgloss!) |
 
 ## 2. Deep native analysis (the engine/provider surface) — ●
 
@@ -101,17 +101,18 @@ interactions, filesystem effects; `process-capture.md`). Native desktop:
 - **Captures**: mitmproxy, tshark/pcap, packet field filters, sigrok logic
   signals, EVM bytecode, WASM artifacts (`compare_wasm_interfaces`).
 
-## 7. Agent-layer & product plumbing — ● (shapes harness design)
+## 7. Agent-layer & product plumbing — ● (it shapes agent-harness design)
 
-`npx rea-agents setup` (registers MCP + skill for 14+ agents: Claude Code,
-Codex, Cursor, Gemini CLI, opencode…), `rea doctor --client X`,
-connection/recovery ladder in the skill, compact-vs-full MCP input schema
-profiles, `capabilities`/`providers`/`server.json` discovery, MCP prompts
+`npx rea-agents setup` (registers the MCP server + skill for 14+ agents:
+Claude Code, Codex, Cursor, Gemini CLI, opencode…), `rea doctor --client X`,
+the step-by-step connection/recovery ladder written into the skill, MCP input
+schemas in two profiles (compact and full), discovery through
+`capabilities`/`providers`/`server.json`, MCP prompts
 (`docs/mcp-prompts.md`), error contract schema
 (`docs/user-visible-errors.csv`, `error-contract.schema.json`),
 `docs/agent-environments.md`, `docs/design/limits-and-recovery.md`.
 
-## 8. Repo engineering (REA's own quality machinery) — ◐
+## 8. Repo engineering (how REA checks its own quality) — ◐
 
 `docs/testing.md`, `docs/tool-design.md`, `docs/limits-and-recovery.md`,
 `docs/roadmap.md`, mutation-testing configs (stryker), `docs/verification/`

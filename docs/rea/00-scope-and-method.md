@@ -7,18 +7,19 @@
 
 **REA — "Reverse Engineer Anything"** ([morluto/rea](https://github.com/morluto/rea),
 [rea.tools](https://rea.tools/), npm package `rea-agents`) is a Node.js/TypeScript
-**MCP server + CLI** for reverse engineering, paired with an agent **skill** that
-teaches coding agents how to drive it. As of the revision reviewed here, REA is
-not primarily "a collection of skills" in the agent-skill sense — it is one
+**MCP server + CLI** for reverse engineering, together with an agent **skill**
+that teaches coding agents how to use it. As of the revision reviewed here, REA
+is not primarily "a collection of skills" in the agent-skill sense: it is one
 user-facing skill (`reverse-engineer-anything`, plus 6 reference files) and four
-*development* skills for working on REA itself. Its real capability surface is:
+*development* skills for working on REA itself. What gives REA its capability is:
 
 - **~150 MCP tools** (mirrored by ~180 CLI commands) spanning native binaries,
   JS/Electron, .NET, Android, firmware, WASM, EVM, packet captures, and more;
-- **~90 documentation guides** (~23k lines of markdown) that encode the
-  investigation workflow and evidence semantics per target type;
-- **analysis engine providers**: Hopper, Ghidra, IDA, Cutter/rizin, **Kuna**,
-  GNU objdump, GDB, Frida.
+- **~90 documentation guides** (~23k lines of markdown) that spell out, for
+  each type of target, the investigation steps and the rules for what counts as
+  evidence;
+- **engine providers** ("engine" here is REA's word): Hopper, Ghidra, IDA,
+  Cutter/rizin, **Kuna**, GNU objdump, GDB, Frida.
 
 ## Comparison scope
 
@@ -29,16 +30,17 @@ comparison covers REA capabilities relevant to that world:
 **In scope**
 
 - The 5 SKILL.md files (the user-facing skill in depth; dev skills summarized).
-- Deep native-binary analysis: Hopper/Ghidra/IDA/Kuna/objdump/rizin/Cutter/GDB
-  providers and the native investigation tool surface.
+- Deep native-binary analysis: the Hopper/Ghidra/IDA/Kuna/objdump/rizin/Cutter/GDB
+  providers, and REA's tools for investigating a native binary.
 - Native binary intelligence: headers, sections, symbols, certificates,
   embedded build metadata, crash dumps, firmware regions.
 - Reconstruction methodology: evidence contracts, evidence bundles, unknown
   tracking, coverage/readiness ledgers, function matching.
 - Runtime observation: Frida instrumentation, process capture, native UI/call
   observation, static↔runtime correlation, debuggers.
-- Agent-layer mechanics: setup/doctor, MCP prompts, connection recovery,
-  evidence-retention semantics — things that shape how an agent harness works.
+- Agent-layer mechanics: setup/doctor, MCP prompts, connection recovery, and
+  the rules for what happens to evidence after it is recorded — these shape how
+  an agent harness works.
 
 **Out of scope** (recorded in the inventory, not compared in depth)
 
@@ -53,14 +55,15 @@ comparison covers REA capabilities relevant to that world:
 1. **Baselines first**: `10-calxgloss-baseline.md` (this repo's capabilities,
    from README, `docs/Calxgloss.md`, `docs/data_flow.md`, ADR titles) and
    `20-rea-inventory.md` (complete REA surface with native-relevance triage).
-2. **Per-domain files** (`3x-*.md`): each covers one capability domain, states
-   what REA does concretely (named tools, flags, doc semantics), then a direct
-   **calxgloss comparison** section: overlap, calxgloss-only, REA-only, verdict.
+2. **Per-domain files** (`3x-*.md`): each covers one capability domain. First
+   they state what REA does concretely — naming the tools, flags, and what its
+   docs require — then they give a direct **calxgloss comparison** section:
+   overlap, calxgloss-only, REA-only, verdict.
 3. **Master index** (`README.md`): executive summary, capability matrix, and a
    gap analysis of ideas worth stealing.
 
-Every claim traces to a file:line or doc path — REA at `/tmp/opencode/rea`
-(clone, revision below), calxgloss at this repo.
+Every claim points to a file:line or doc path. REA claims use the clone at
+`/tmp/opencode/rea` (revision below); calxgloss claims use this repo.
 
 ## REA revision reviewed
 
