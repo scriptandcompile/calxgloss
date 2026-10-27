@@ -1436,131 +1436,191 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn every_ridden_command_files_shows_rescans_and_survives_a_failed_rescan() {
-        // The behavior suite over the whole ride table (issues #339–#341):
-        // every entry the pairing tests pin green rides this walk, so the
-        // fifteen entries here are the whole table — every engine in the
-        // roster is pinned through the generic handler (issue #342's
-        // completeness half).
-        // each routed command scans the fixture and files its document
-        // at the row's own `document_path` (the report's print rides the
-        // same Ok path), a `--show` over an unscanned workspace fails
-        // naming the exact producing command, a re-scan replaces the
-        // filed document outright, a failed re-scan leaves the previous
-        // document in place, and a `--show` over the filed document with
-        // the target gone succeeds — the entry never loads the engine to
-        // report what it already holds.
-        for (cli, entry) in ridden_table() {
-            let ws = fixture_workspace();
-            let settings = settings_over(ws.path());
-            let flags = ScanFlags {
-                binary: "fixture-target".to_string(),
-                show: false,
+    /// One entry's full scenario walk: `--show` over an unscanned
+    /// workspace fails naming the exact producing command; the scan ride
+    /// succeeds and files the document at the row's own path (the
+    /// report's print rides the same Ok path), readable back through the
+    /// entry; the re-scan replaces the filed document outright — the CLI
+    /// never adopts the cached-hit short-circuit; a failed re-scan leaves
+    /// the previous document in place; and a `--show` over the filed
+    /// document with the target gone succeeds — the entry never loads
+    /// the engine to report what it already holds.
+    async fn ride_one(cli: &'static str, entry: &ScanContribution) {
+        let ws = fixture_workspace();
+        let settings = settings_over(ws.path());
+        let flags = ScanFlags {
+            binary: "fixture-target".to_string(),
+            show: false,
+            no_tag: false,
+            set_override_file: None,
+            write_back: false,
+            confidence_floor: 0,
+        };
+
+        // Scenario: `--show` with nothing filed fails naming the
+        // command that would produce the document.
+        let error = handle_scan_command(
+            entry,
+            &ScanFlags {
+                binary: flags.binary.clone(),
+                show: true,
                 no_tag: false,
                 set_override_file: None,
                 write_back: false,
                 confidence_floor: 0,
+            },
+            ws.path(),
+            &settings,
+        )
+        .await
+        .expect_err(&format!(
+            "{cli} --show over an unscanned workspace must fail"
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("run `calxgloss {cli} --binary fixture-target`")),
+            "the {cli} remediation names the exact producing command, got: {error}"
+        );
+
+        // Scenario: the scan ride succeeds and files the document
+        // at the row's own path, readable back through the entry.
+        handle_scan_command(entry, &flags, ws.path(), &settings)
+            .await
+            .unwrap_or_else(|e| panic!("the {cli} ride must succeed: {e}"));
+        let row = scan_rows()
+            .into_iter()
+            .find(|row| row.name() == entry.row)
+            .expect("the entry names a registry row");
+        let filed = row.document_path(ws.path(), "fixture-target");
+        assert!(
+            filed.is_file(),
+            "{cli} must file its document at the row's own path: {}",
+            filed.display()
+        );
+        (entry.load)(ws.path(), "fixture-target")
+            .unwrap_or_else(|e| panic!("the filed {cli} document must read back: {e}"));
+
+        // Scenario: the re-scan replaces the filed document — the
+        // CLI never adopts the cached-hit short-circuit. Tamper the
+        // document first: a short-circuited run would fail loading
+        // the tamper, so a successful run IS the re-scan.
+        std::fs::write(&filed, r#"{"metadata":{"binary":"sentinel"}}"#)
+            .expect("tamper the filed document");
+        handle_scan_command(entry, &flags, ws.path(), &settings)
+            .await
+            .unwrap_or_else(|e| panic!("the {cli} re-scan must replace the tampered file: {e}"));
+        let replaced = std::fs::read_to_string(&filed).expect("the re-filed document");
+        assert!(
+            !replaced.contains("sentinel"),
+            "the {cli} re-scan must overwrite the filed document outright"
+        );
+
+        // Scenario: a failed re-scan leaves the previous document
+        // in place. With the target gone the engine load fails
+        // before the row runs, so nothing touches the filed file.
+        let before = std::fs::read(&filed).expect("the filed document");
+        std::fs::remove_file(ws.path().join("fixture-target")).expect("target gone");
+        handle_scan_command(entry, &flags, ws.path(), &settings)
+            .await
+            .expect_err(&format!("a {cli} run without its target must fail"));
+        assert_eq!(
+            std::fs::read(&filed).expect("the document after the failed re-scan"),
+            before,
+            "a failed {cli} re-scan must leave the previous document untouched"
+        );
+        (entry.load)(ws.path(), "fixture-target")
+            .unwrap_or_else(|e| panic!("the previous {cli} document must still parse: {e}"));
+
+        // Scenario: with the target gone but the document filed,
+        // `--show` still succeeds — the report path reads only the
+        // filed document, never the program.
+        handle_scan_command(
+            entry,
+            &ScanFlags {
+                binary: flags.binary.clone(),
+                show: true,
+                no_tag: false,
+                set_override_file: None,
+                write_back: false,
+                confidence_floor: 0,
+            },
+            ws.path(),
+            &settings,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("a {cli} --show over a filed document needs no engine: {e}"));
+    }
+
+    /// The one entry the ride table holds for `cli`.
+    fn ridden_entry(cli: &'static str) -> ScanContribution {
+        ridden_table()
+            .into_iter()
+            .find(|(name, _)| *name == cli)
+            .unwrap_or_else(|| panic!("the ride table holds a {cli} entry"))
+            .1
+    }
+
+    /// The fifteen walk tests below and the completeness guard both
+    /// expand from this one listing, so an engine joining the ride table
+    /// gets its own walk test or the guard fails.
+    macro_rules! for_each_ridden_cli {
+        ($f:ident) => {
+            $f!(rides_typesdb, "typesdb");
+            $f!(rides_controlflow, "controlflow");
+            $f!(rides_memory, "memory");
+            $f!(rides_sync, "sync");
+            $f!(rides_globalstate, "globalstate");
+            $f!(rides_consts, "consts");
+            $f!(rides_errhandling, "errhandling");
+            $f!(rides_floatsimd, "floatsimd");
+            $f!(rides_stringctx, "stringctx");
+            $f!(rides_apidetect, "apidetect");
+            $f!(rides_serialize, "serialize");
+            $f!(rides_callback, "callback");
+            $f!(rides_algorithm, "algorithm");
+            $f!(rides_libmatch, "libmatch");
+            $f!(rides_typeinfer, "typeinfer");
+        };
+    }
+
+    // The behavior suite over the whole ride table (issues #339-#341):
+    // every entry the pairing tests pin green rides this walk, so the
+    // fifteen entries here are the whole table - every engine in the
+    // roster is pinned through the generic handler (issue #342's
+    // completeness half). One test per entry: the fifteen walks each
+    // load their own engine, and as a single test they ran the whole
+    // table serially - over three minutes when the scans otherwise
+    // overlap across test threads.
+    macro_rules! define_ride_test {
+        ($name:ident, $cli:literal) => {
+            #[tokio::test]
+            async fn $name() {
+                let entry = ridden_entry($cli);
+                ride_one($cli, &entry).await;
+            }
+        };
+    }
+    for_each_ridden_cli!(define_ride_test);
+
+    #[test]
+    fn every_ridden_cli_gets_its_own_walk_test() {
+        // The completeness half of splitting the suite: a ride-table
+        // entry the walk-test macro does not name would quietly drop out
+        // of the behavior suite.
+        let mut walked = Vec::new();
+        macro_rules! collect_cli {
+            ($name:ident, $cli:literal) => {
+                walked.push($cli);
             };
-
-            // Scenario: `--show` with nothing filed fails naming the
-            // command that would produce the document.
-            let error = handle_scan_command(
-                &entry,
-                &ScanFlags {
-                    binary: flags.binary.clone(),
-                    show: true,
-                    no_tag: false,
-                    set_override_file: None,
-                    write_back: false,
-                    confidence_floor: 0,
-                },
-                ws.path(),
-                &settings,
-            )
-            .await
-            .expect_err(&format!(
-                "{cli} --show over an unscanned workspace must fail"
-            ));
-            assert!(
-                error
-                    .to_string()
-                    .contains(&format!("run `calxgloss {cli} --binary fixture-target`")),
-                "the {cli} remediation names the exact producing command, got: {error}"
-            );
-
-            // Scenario: the scan ride succeeds and files the document
-            // at the row's own path, readable back through the entry.
-            handle_scan_command(&entry, &flags, ws.path(), &settings)
-                .await
-                .unwrap_or_else(|e| panic!("the {cli} ride must succeed: {e}"));
-            let row = scan_rows()
-                .into_iter()
-                .find(|row| row.name() == entry.row)
-                .expect("the entry names a registry row");
-            let filed = row.document_path(ws.path(), "fixture-target");
-            assert!(
-                filed.is_file(),
-                "{cli} must file its document at the row's own path: {}",
-                filed.display()
-            );
-            (entry.load)(ws.path(), "fixture-target")
-                .unwrap_or_else(|e| panic!("the filed {cli} document must read back: {e}"));
-
-            // Scenario: the re-scan replaces the filed document — the
-            // CLI never adopts the cached-hit short-circuit. Tamper the
-            // document first: a short-circuited run would fail loading
-            // the tamper, so a successful run IS the re-scan.
-            std::fs::write(&filed, r#"{"metadata":{"binary":"sentinel"}}"#)
-                .expect("tamper the filed document");
-            handle_scan_command(&entry, &flags, ws.path(), &settings)
-                .await
-                .unwrap_or_else(|e| {
-                    panic!("the {cli} re-scan must replace the tampered file: {e}")
-                });
-            let replaced = std::fs::read_to_string(&filed).expect("the re-filed document");
-            assert!(
-                !replaced.contains("sentinel"),
-                "the {cli} re-scan must overwrite the filed document outright"
-            );
-
-            // Scenario: a failed re-scan leaves the previous document
-            // in place. With the target gone the engine load fails
-            // before the row runs, so nothing touches the filed file.
-            let before = std::fs::read(&filed).expect("the filed document");
-            std::fs::remove_file(ws.path().join("fixture-target")).expect("target gone");
-            handle_scan_command(&entry, &flags, ws.path(), &settings)
-                .await
-                .expect_err(&format!("a {cli} run without its target must fail"));
-            assert_eq!(
-                std::fs::read(&filed).expect("the document after the failed re-scan"),
-                before,
-                "a failed {cli} re-scan must leave the previous document untouched"
-            );
-            (entry.load)(ws.path(), "fixture-target")
-                .unwrap_or_else(|e| panic!("the previous {cli} document must still parse: {e}"));
-
-            // Scenario: with the target gone but the document filed,
-            // `--show` still succeeds — the report path reads only the
-            // filed document, never the program.
-            handle_scan_command(
-                &entry,
-                &ScanFlags {
-                    binary: flags.binary.clone(),
-                    show: true,
-                    no_tag: false,
-                    set_override_file: None,
-                    write_back: false,
-                    confidence_floor: 0,
-                },
-                ws.path(),
-                &settings,
-            )
-            .await
-            .unwrap_or_else(|e| {
-                panic!("a {cli} --show over a filed document needs no engine: {e}")
-            });
         }
+        for_each_ridden_cli!(collect_cli);
+
+        let table: Vec<&str> = ridden_table().into_iter().map(|(cli, _)| cli).collect();
+        assert_eq!(
+            walked, table,
+            "each ride-table CLI must get exactly one walk test, in table order"
+        );
     }
 
     #[tokio::test]
