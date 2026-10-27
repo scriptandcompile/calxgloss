@@ -155,9 +155,9 @@ async fn a_scan_persists_and_reads_back_the_same_document() {
 
 #[tokio::test]
 async fn the_shared_globals_index_names_the_functions_sharing_a_global() {
-    // The end-to-end rollup contract: two units touching one global
-    // land one index entry naming its writer and its reader, and the
-    // entry survives the document round trip.
+    // The end-to-end rollup contract: when two functions touch one
+    // global, the rollup produces one index entry naming its writer and
+    // its reader. The entry survives the document round trip.
     let mut bodies = HashMap::new();
     bodies.insert(
         "FUN_18003ab00".into(),
@@ -202,11 +202,12 @@ async fn the_shared_globals_index_names_the_functions_sharing_a_global() {
 
 #[tokio::test]
 async fn a_loaded_result_renders_into_the_escalate_prompt() {
-    // The whole escalate path, no external server needed: the persisted
-    // document on disk answers the by-function lookup, the records render
-    // into `GlobalStateInfo` prompt data, and the rendered escalate prompt
-    // carries the GLOBAL STATE section with each record's suggestion, kind,
-    // global, and evidence — the struct-vs-static steering included.
+    // The whole escalate path, with no external server needed. The
+    // persisted document on disk answers the by-function lookup, and the
+    // records render into `GlobalStateInfo` prompt data. The rendered
+    // escalate prompt includes the GLOBAL STATE section with each
+    // record's suggestion, kind, global, and evidence — the
+    // struct-vs-static steering included.
     let mut bodies = HashMap::new();
     bodies.insert(
         "FUN_18003ab00".into(),

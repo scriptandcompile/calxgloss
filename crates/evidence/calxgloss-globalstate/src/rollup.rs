@@ -2,22 +2,22 @@
 //!
 //! The per-function walk says what one body touches; the rollup says
 //! who shares what. It runs after that walk, over the same kept
-//! bodies — the ADR-0027 precedent, no new engine reads — grouping
-//! the access records the scan already made into one entry per global
-//! naming the functions that read it and the functions that write it.
-//! The entry is derived, not sighted: it adds no reading of its own,
-//! so its confidence is the best band among the accesses behind it
-//! and never upgrades itself.
+//! bodies — the ADR-0027 precedent, so it adds no new reads from the
+//! analysis engine. It groups the access records the scan already made
+//! into one entry per global, naming the functions that read it and
+//! the functions that write it. The entry is derived, not sighted: it
+//! adds no reading of its own, so its confidence is the best band
+//! among the accesses behind it and never rises above them.
 //!
-//! [`shared_globals`] answers in first-sighting order — the order a
-//! global first appears among the per-function records, which is
-//! listing order and then body order — with readers and writers in
-//! that same order and each function named once. So two scans of one
-//! program produce the same index and diff cleanly.
+//! [`shared_globals`] answers in first-sighting order: the order in
+//! which a global first appears among the per-function records, which
+//! is listing order and then body order. Readers and writers come in
+//! that same order, and each function is named once. So two scans of
+//! one program produce the same index and diff cleanly.
 //!
 //! [`state_sharing_pairs`] reads that index back for the translation
-//! orderer: each entry's first writer defines the global's
-//! representation and every other function the entry names reuses it.
+//! orderer. In each entry, the first writer defines the global's
+//! representation, and every other function the entry names reuses it.
 
 use std::collections::HashMap;
 
@@ -26,21 +26,21 @@ use crate::types::{GlobalStateFinding, SharedGlobalRecord};
 /// The shared-globals index for one scan's findings.
 ///
 /// One entry per global the scan saw, in first-sighting order. A
-/// function that reads and writes one global lands both lists; one
-/// that touches it repeatedly lands its list once. A global only one
-/// function touches still gets an entry — the index is the per-global
-/// picture of the binary's shared state, and consumers that pair
-/// functions (the sync gate, the DAG orderer) skip the degenerate
-/// entries themselves.
+/// function that reads and writes one global appears in both lists; a
+/// function that touches it repeatedly appears in its list once. A
+/// global only one function touches still gets an entry — the index is
+/// the per-global picture of the binary's shared state, and consumers
+/// that pair functions (the sync gate, the DAG orderer) skip the
+/// degenerate entries themselves.
 ///
 /// The input is the per-function records; index records already in
 /// the list are skipped, so rolling up an already-rolled list changes
 /// nothing.
 pub fn shared_globals(findings: &[GlobalStateFinding]) -> Vec<SharedGlobalRecord> {
     let mut index: Vec<SharedGlobalRecord> = Vec::new();
-    // Which entry indexes which global, so the grouping stays one
-    // linear pass and first-sighting order is the order entries were
-    // pushed.
+    // Records which entry belongs to which global, so the grouping
+    // stays one linear pass. First-sighting order is the order the
+    // entries were pushed.
     let mut positions: HashMap<&str, usize> = HashMap::new();
     for finding in findings {
         let (record, is_write) = match finding {
@@ -60,7 +60,7 @@ pub fn shared_globals(findings: &[GlobalStateFinding]) -> Vec<SharedGlobalRecord
         let entry = &mut index[position];
         // The entry is no more confident than the best access behind
         // it — a shape-only global stays shape-only, and an exact
-        // store lifts its entry to the exact band.
+        // store raises its entry to the exact band.
         if record.confidence > entry.confidence {
             entry.confidence = record.confidence;
         }
@@ -86,8 +86,9 @@ pub fn shared_globals(findings: &[GlobalStateFinding]) -> Vec<SharedGlobalRecord
 /// establishes no representation and contributes no pairs, and a definer
 /// that also reads its own global is not its own reuser.
 ///
-/// The pairs ride the index's own order: first-sighting order over
-/// entries, listing order within one — so two scans of one program feed
+/// The pairs follow the index's own order: first-sighting order over
+/// entries, and within one entry the writers in listing order first,
+/// then the readers in listing order — so two scans of one program feed
 /// the orderer the same pairs.
 pub fn state_sharing_pairs(
     index: impl IntoIterator<Item = impl std::borrow::Borrow<SharedGlobalRecord>>,
@@ -95,7 +96,7 @@ pub fn state_sharing_pairs(
     let mut pairs: Vec<(String, String)> = Vec::new();
     for entry in index {
         let record = entry.borrow();
-        // The definer is the first writer in listing order; a global
+        // The definer is the first writer in listing order. A global
         // only ever read has no unit that establishes its
         // representation, so it shares no pairs.
         let Some((definer, other_writers)) = record.writers.split_first() else {
@@ -195,7 +196,7 @@ mod tests {
     #[test]
     fn the_entry_scores_the_best_access_behind_it_and_never_upgrades() {
         // A global seen only shape-only stays at the shape band; one
-        // with an exact store behind it rides the exact band — the
+        // with an exact store behind it scores at the exact band. The
         // rollup adds no reading, so it cannot score above the best
         // access it groups.
         let findings = vec![
@@ -242,10 +243,10 @@ mod tests {
     #[test]
     fn the_state_sharing_pairs_run_from_the_first_writer_to_every_reuser() {
         // The DAG consumer's reading of the index (issue #256): the first
-        // writer in listing order defines, the other writers and the
-        // readers reuse — and a definer that also reads its own global
-        // is not its own reuser. A global one function alone writes
-        // contributes nothing.
+        // writer in listing order defines, and the other writers and the
+        // readers reuse. A definer that also reads its own global is not
+        // its own reuser. A global one function alone writes contributes
+        // nothing.
         let findings = vec![
             access("FUN_writer_two", "DAT_flag", true, 85),
             access("FUN_writer_one", "DAT_flag", true, 85),

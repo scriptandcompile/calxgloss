@@ -2,16 +2,16 @@
 //!
 //! The scan's reading is a per-function list of **access records**: one
 //! [`GlobalAccess`] per sighting of a program global in a function's
-//! body, naming the global, the evidence statement that carried the
-//! reading, and the confidence band it scored on the Evidence scale.
-//! [`GlobalStateFinding`] is the tagged union over the two access
-//! kinds and the cross-function rollup's index record — the serde
-//! `kind` tag spells the distinction in the persisted JSON — and
-//! [`GlobalStateResult`] is the whole per-binary document: the
-//! findings in scan order (per-function records grouped by function
-//! in listing order, the shared-globals index records last) plus the
-//! derived per-function [`FunctionPurity`] summary, so consumers
-//! never recompute whether a function touches globals.
+//! body. Each record names the global, quotes the evidence statement the
+//! reading came from, and gives the confidence band it scored on the
+//! Evidence scale. [`GlobalStateFinding`] is the tagged union over the two
+//! access kinds and the cross-function rollup's index record; the serde
+//! `kind` tag spells the distinction in the persisted JSON.
+//! [`GlobalStateResult`] is the whole per-binary document: the findings
+//! in scan order (per-function records grouped by function in listing
+//! order, the shared-globals index records last), plus the derived
+//! per-function [`FunctionPurity`] summary. Consumers never recompute
+//! whether a function touches globals.
 
 use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,7 @@ impl fmt::Display for AccessKind {
 ///
 /// The record is the artifact's atom: it names the function that made
 /// the access and the global it touched, quotes the access statement
-/// itself as the evidence, and carries the confidence band the reading
+/// itself as the evidence, and records the confidence band the reading
 /// scored on — an exact `DAT_*` store/load spelling above a shape-only
 /// sighting. The read/write distinction lives in the [`GlobalStateFinding`]
 /// tag wrapping the record, not in a field, so a persisted record can
@@ -85,8 +85,8 @@ pub struct GlobalAccess {
 
 /// One global-state finding, whichever kind it records.
 ///
-/// The union is what the persisted document carries, so one list holds
-/// every access for a binary and a consumer reads the shared shape —
+/// The persisted document stores findings as this union, so one list
+/// holds every access for a binary. A consumer reads the shared shape —
 /// function, global, evidence, confidence — through the accessors
 /// without naming the access kind first. The serde `kind` tag names the
 /// kind in the persisted JSON: `global_read`, `global_write`, or
@@ -117,8 +117,8 @@ pub enum GlobalStateFinding {
 /// the reviewer and the DAG consumer see: who mutates one piece of
 /// shared state, and which units touch the same global so ordering
 /// can tie them. A global only one function touches still gets an
-/// entry — the index is the per-global picture of the binary's
-/// shared state; consumers that pair functions skip the degenerate
+/// entry, because the index is the per-global picture of the binary's
+/// shared state. Consumers that pair functions skip the degenerate
 /// entries themselves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedGlobalRecord {
@@ -140,8 +140,8 @@ impl GlobalStateFinding {
     /// The function the finding is about.
     ///
     /// A rollup record is about a global, not a function, so it names
-    /// no single function and answers with the empty string — which
-    /// no listing entry ever spells, keeping rollup records out of
+    /// no single function and answers with the empty string — a name
+    /// no listing entry ever spells. This keeps rollup records out of
     /// every by-function lookup.
     pub fn function(&self) -> &str {
         match self {
@@ -162,9 +162,9 @@ impl GlobalStateFinding {
 
     /// The access statement quoted from the body.
     ///
-    /// A rollup record quotes no single statement — its evidence is
-    /// the per-function records it groups, which ride in the same
-    /// document — so it answers with the empty string.
+    /// A rollup record quotes no single statement, so it answers with
+    /// the empty string. Its evidence is the per-function records it
+    /// groups, which are stored in the same document.
     pub fn evidence(&self) -> &str {
         match self {
             GlobalStateFinding::GlobalRead(record) => &record.evidence,
@@ -185,7 +185,7 @@ impl GlobalStateFinding {
     /// The Rust pattern the access suggests.
     ///
     /// A rollup record suggests no pattern of its own — the steering
-    /// rides on the access records — so it answers with the empty
+    /// comes from the access records — so it answers with the empty
     /// string.
     pub fn suggestion(&self) -> &str {
         match self {
@@ -220,8 +220,8 @@ impl GlobalStateFinding {
 
     /// The shared-globals index record, when this finding is one.
     ///
-    /// The seam for consumers of the rollup — the reviewer's index
-    /// section and the DAG's state-sharing edges — who reach the
+    /// This is the seam for consumers of the rollup: the reviewer's
+    /// index section and the DAG's state-sharing edges. They reach the
     /// readers and writers without matching the union by hand.
     pub fn shared_global(&self) -> Option<&SharedGlobalRecord> {
         match self {
@@ -239,12 +239,12 @@ impl GlobalStateFinding {
 /// Render an access record as prompt data: the function that made the
 /// access, the access kind, the global it touched, the Rust pattern the
 /// access steers a translation toward, and the confidence and evidence
-/// behind the claim — so the module-context and escalate prompts show
-/// the shared state a function touches and how strongly each reading
-/// was made, and the translator stops inventing locals for globals.
-/// A rollup record renders through the same accessors; its empty
-/// function name keeps it out of every by-function lookup, so it never
-/// reaches a prompt.
+/// behind the claim. The module-context and escalate prompts therefore
+/// show the shared state a function touches and how strongly each
+/// reading was made, and the translator stops inventing locals for
+/// globals. A rollup record renders through the same accessors; its
+/// empty function name keeps it out of every by-function lookup, so it
+/// never reaches a prompt.
 impl From<&GlobalStateFinding> for calxgloss_prompts::GlobalStateInfo {
     fn from(finding: &GlobalStateFinding) -> Self {
         Self {
@@ -266,11 +266,11 @@ impl From<&GlobalStateFinding> for calxgloss_prompts::GlobalStateInfo {
 /// about one function's global traffic, stated so consumers never
 /// recompute it.
 ///
-/// A *pure* function touches no program global at all — its reading is
-/// the absence of access records for it, made explicit. The flag is
-/// what steers a translator holding a function that *does* touch
-/// globals to model that state in a struct rather than a Rust
-/// `static`; a pure function needs no such steering.
+/// A *pure* function touches no program global at all. Its summary makes
+/// that absence explicit: no access record exists for the function. The
+/// flag steers a translator of a function that *does* touch globals to
+/// model that state in a struct rather than a Rust `static`; a pure
+/// function needs no such steering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionPurity {
     /// The function the summary describes.
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn an_access_record_renders_into_prompt_data() {
-        // The prompt seam: an access record carries its whole claim
+        // The prompt seam: an access record passes its whole claim
         // into `GlobalStateInfo` — function, kind tag, global, the
         // steering suggestion the detector wrote, and the confidence
         // and evidence behind it.

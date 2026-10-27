@@ -1,39 +1,39 @@
 //! Global-state reference sets: which globals each function reads and writes.
 //!
 //! The decompiler names most globals by their Ghidra address (`DAT_0040a050`),
-//! so the question "what global state does this function touch?" cannot be
-//! answered from the listing alone. This crate answers it: it walks the
-//! decompiled body of every function in a binary and records each global
-//! access — reads and writes, with the evidence line and a confidence
-//! band — as a finding document, rolled up across functions into a
-//! shared-globals index, that downstream tickets consume: #254 injects
-//! the records into the translation prompt, and #255 has the sync engine
-//! consume them instead of re-deriving the same reading itself.
+//! so the listing alone cannot answer "what global state does this function
+//! touch?". This crate answers it. It walks the decompiled body of every
+//! function in a binary and records each global access — a read or a write,
+//! with the evidence line and a confidence band — into a finding document.
+//! A cross-function rollup groups the records into a shared-globals index.
+//! Downstream tickets consume the document: #254 injects the records into
+//! the translation prompt, and #255 has the sync engine consume them instead
+//! of deriving the same reading itself again.
 //!
 //! # Architecture
 //!
 //! * [`detector`] — the reading: [`GlobalStateDetector`] walks one function
 //!   body and produces [`GlobalAccess`] records plus a [`FunctionPurity`]
-//!   summary. The same rule is exposed as a pure reading — [`global_sites`]
-//!   with [`GlobalSite`] positions and kinds, and [`statement_at`] for the
-//!   evidence — which the sync crate's data-race pairing consumes directly
-//!   instead of re-deriving the sets itself. Global identification is
-//!   lexical: a plain identifier that is
-//!   not a decompiler local (`param_*`, `local_*`, `uVar1`, `iVar_2`, …),
-//!   not a type word, and not a declaration target, accessed outside call
-//!   arguments, string literals, qualified names and casts, is a global.
-//!   Names spelled `DAT_*` score above other plain identifiers — the exact
-//!   Ghidra spelling is positive evidence of a data reference, while a bare
-//!   name could still be a macro or a missed local.
+//!   summary. The same rule is also exposed as pure functions: [`global_sites`]
+//!   gives [`GlobalSite`] positions and kinds, and [`statement_at`] gives the
+//!   evidence. The sync crate's data-race pairing uses these directly instead
+//!   of deriving the same sets itself. Global identification is lexical: a
+//!   plain identifier is a global when it is not a decompiler local
+//!   (`param_*`, `local_*`, `uVar1`, `iVar_2`, …), not a type word, and not a
+//!   declaration target, and it is accessed outside call arguments, string
+//!   literals, qualified names and casts. Names spelled `DAT_*` score above
+//!   other plain identifiers — the exact Ghidra spelling is positive evidence
+//!   of a data reference, while a bare name could still be a macro or a
+//!   missed local.
 //! * [`types`] — the document model: [`GlobalStateFinding`] (a read or a
 //!   write of one global by one function, or one shared-globals index
 //!   record) and [`FunctionPurity`], aggregated into [`GlobalStateResult`].
 //! * [`rollup`] — the cross-function pass: [`shared_globals`] groups the
 //!   per-function records into the shared-globals index, one entry per
 //!   global naming its readers and writers.
-//! * [`engine`] — [`GlobalStateEngine`], the scan entry point: decompiles
-//!   every function through a [`calxgloss_types::scan::ScanSource`] and
-//!   runs the detector over each body, then the rollup over the records.
+//! * [`engine`] — [`GlobalStateEngine`], the scan entry point: it decompiles
+//!   every function through a [`calxgloss_decomp::ScanSource`], runs the
+//!   detector over each body, then runs the rollup over the records.
 //! * [`persist`] — [`GlobalStatePersistor`], the JSON document store, one
 //!   file per binary under `re/analysis/globalstate/`.
 //! * [`error`] — [`GlobalStateError`], the crate's error type.

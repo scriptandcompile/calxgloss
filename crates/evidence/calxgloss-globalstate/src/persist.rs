@@ -8,11 +8,11 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is
-//! the check a caller runs before deciding whether a scan is needed,
-//! and [`load`](Self::load) reads the whole document back — metadata,
-//! every access record, and the purity summary — for the translation
-//! pipeline and the downstream tickets to query.
+//! A persisted result doubles as a cache: [`exists`](GlobalStatePersistor::exists)
+//! is the check a caller runs before deciding whether a scan is needed,
+//! and [`load`](GlobalStatePersistor::load) reads the whole document back —
+//! metadata, every access record, and the purity summary — for the
+//! translation pipeline and the downstream tickets to query.
 
 use std::path::{Path, PathBuf};
 
@@ -26,8 +26,8 @@ use crate::types::GlobalStateResult;
 ///
 /// # File Layout
 ///
-/// Results are filed under a cache directory, named after the binary
-/// the scan read:
+/// Results are filed under a cache directory, one file per binary,
+/// named after the binary the scan read:
 ///
 /// ```text
 /// cache_dir/
@@ -86,7 +86,7 @@ impl GlobalStatePersistor {
     ///
     /// This is the cache check: a caller that wants global-state
     /// records without re-running the scan asks here first and only
-    /// drives the scan when the answer is `false`.
+    /// runs the scan when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
@@ -205,8 +205,8 @@ mod tests {
 
     #[test]
     fn the_shared_globals_index_survives_the_round_trip() {
-        // The rollup rides the same document as the access records:
-        // one entry per global, readers and writers intact.
+        // The rollup is stored in the same document as the access
+        // records: one entry per global, readers and writers intact.
         let dir = tempfile::tempdir().unwrap();
         let persistor = GlobalStatePersistor::new(dir.path());
         let mut result = sample_result("eqmain.dll");
@@ -346,10 +346,10 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #350).
+        // The coverage record the scan stamped passes through the
+        // persistor untouched: statuses, ids, order, limitation lines —
+        // exactly what a later reader (the projection seam, the report,
+        // a `--show` months later) sees (issue #350).
         let dir = tempfile::tempdir().unwrap();
         let persistor = GlobalStatePersistor::new(dir.path());
         let mut saved = sample_result("eqmain.dll");
