@@ -1,33 +1,32 @@
-//! Binary classification overrides — steering one target binary's category
-//! (issue #97, W2.8).
+//! Binary classification overrides — the operator's chosen category for one
+//! target binary (issue #97, W2.8).
 //!
-//! A misclassified binary silently skews every downstream report and routes
-//! the binary down the wrong strategy. The operator corrects it from the
-//! dashboard instead of a CLI re-run: the override names a category from the
-//! full [`DllCategory`] set, optionally a target crate for crate-replacement
-//! mode, and carries the `known_runtime` flag — per the Evidence glossary
-//! rule, a runtime-library classification is never a translation target, so
-//! both the category and the flag must be honored wherever the classification
-//! is consulted.
+//! A misclassified binary distorts every downstream report and sends the
+//! binary to the wrong strategy. The operator corrects it from the dashboard,
+//! not with a CLI re-run. An override records a category from the full
+//! [`DllCategory`] set, optionally a target crate for crate-replacement mode,
+//! and includes the `known_runtime` flag. Per the Evidence glossary rule, a
+//! runtime-library classification is never a translation target, so every
+//! reader of a classification must honor both the category and the flag.
 //!
 //! Two layers, mirroring [`overrides`](crate::overrides):
 //!
 //! * [`BinaryClassificationOverride`] is the plain serde record for one
-//!   binary, and [`ClassificationOverrides`] is the keyed map — the shape
-//!   persisted under the workspace's record tree and the shape the
+//!   binary, and [`ClassificationOverrides`] is the keyed map. Both are the
+//!   shape persisted under the workspace's record tree and the shape the
 //!   classification endpoints report.
 //! * [`ClassificationOverrideControl`] is the shared handle — `Arc`-backed
 //!   and cheaply cloneable, the same pattern as [`OverrideControl`] and
 //!   [`ScopeControl`](crate::ScopeControl). The web router's classification
-//!   endpoints drive it; the analyzer reads it before classification-strategy
-//!   dispatch.
+//!   endpoints change it; the analyzer reads it before dispatching a
+//!   classification strategy.
 //!
 //! Records are keyed by binary identity — the filename verbatim, the same
-//! identity [`BinaryIdentity`](crate::BinaryIdentity) spells. Unlike the
+//! identity [`BinaryIdentity`](crate::BinaryIdentity) describes. Unlike the
 //! per-unit override keys, the match is exact: two spellings of a filename
-//! are two different binaries until the operator steers them so. When the
-//! handle is opened over a workspace ([`ClassificationOverrideControl::open`])
-//! every mutation persists the map to `re/analysis/classification_overrides.json`,
+//! are two different binaries unless the operator overrides them separately.
+//! When the handle is opened over a workspace ([`ClassificationOverrideControl::open`])
+//! every change saves the map to `re/analysis/classification_overrides.json`,
 //! so a restarted run honors the overrides without re-entering anything.
 
 use std::collections::BTreeMap;
@@ -41,14 +40,14 @@ use crate::persist::{PersistError, analysis_dir, load_json, save_json};
 
 /// One binary's classification override.
 ///
-/// The category is required — an override that names no category is not a
+/// The category is required — an override that records no category is not a
 /// decision. The target crate applies only in crate-replacement mode
-/// (`MicrosoftSdk` / `KnownThirdParty`); the `known_runtime` flag carries
-/// the glossary rule: a runtime-library classification is never a
-/// translation target, whatever the category alone suggests.
+/// (`MicrosoftSdk` / `KnownThirdParty`). The `known_runtime` flag states the
+/// glossary rule: a runtime-library classification is never a translation
+/// target, whatever the category alone suggests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinaryClassificationOverride {
-    /// The category the operator wants this binary to carry.
+    /// The category the operator wants this binary to have.
     pub category: DllCategory,
     /// Target crate for crate-replacement mode; ignored otherwise.
     #[serde(default)]
@@ -60,15 +59,15 @@ pub struct BinaryClassificationOverride {
 }
 
 impl BinaryClassificationOverride {
-    /// Whether the override marks the binary as never a translation target —
-    /// the glossary rule, spelled once: the `known_runtime` flag or a
+    /// Whether this override means the binary is never a translation target —
+    /// the glossary rule, stated once: the `known_runtime` flag or a
     /// `RuntimeLibrary` category.
     pub fn is_runtime(&self) -> bool {
         self.known_runtime || self.category == DllCategory::RuntimeLibrary
     }
 
-    /// The strategy label the category routes to — the same dispatch the
-    /// analyzer's `Strategy` enum performs, spelled as the display strings
+    /// The strategy label this category leads to — the same dispatch the
+    /// analyzer's `Strategy` enum performs, written as the display strings
     /// (`"PalMapping"`, `"CrateReplacement"`, `"ReverseEngineer"`) the
     /// dashboard already matches on.
     pub fn strategy_label(&self) -> &'static str {
@@ -82,9 +81,9 @@ impl BinaryClassificationOverride {
         }
     }
 
-    /// Whether this override routes to crate replacement — the modes where
-    /// a target crate name means something, the same dispatch
-    /// [`Self::strategy_label`] spells.
+    /// Whether this override leads to crate replacement — the modes where a
+    /// target crate name means something, the same dispatch
+    /// [`Self::strategy_label`] gives.
     pub fn is_crate_replacement(&self) -> bool {
         matches!(
             self.category,
@@ -93,10 +92,10 @@ impl BinaryClassificationOverride {
     }
 
     /// The reason the analyzer records when this override is the decision
-    /// in force — spelled once so every reader (the analyzer's artifact,
-    /// the dashboard's binary detail panel) gives the same honest account:
-    /// an overridden classification is the operator's decision, not a
-    /// heuristic with a borrowed reason (issue #132).
+    /// in force. It is written once so every reader (the analyzer's
+    /// artifact, the dashboard's binary detail panel) gives the same honest
+    /// account: an overridden classification is the operator's decision, not
+    /// a heuristic result with a reason borrowed from elsewhere (issue #132).
     pub fn override_reason(&self) -> String {
         let label = serde_json::to_value(&self.category)
             .ok()
@@ -108,8 +107,8 @@ impl BinaryClassificationOverride {
 
 /// The persisted override map, keyed by binary identity (filename verbatim).
 ///
-/// A `BTreeMap` keeps the serialized record deterministic, so two runs that
-/// steered the same binaries write byte-identical files.
+/// A `BTreeMap` keeps the serialized record deterministic: two runs that
+/// overrode the same binaries write byte-identical files.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClassificationOverrides {
     /// Binary filename (verbatim) → its override record.
@@ -123,14 +122,14 @@ pub fn classification_override_records_path(workspace: impl AsRef<Path>) -> Path
     analysis_dir(workspace).join("classification_overrides.json")
 }
 
-/// Shared, cheaply-cloneable classification-override handle (issue #97, W2.8).
+/// A shared, cheaply cloneable classification-override handle (issue #97, W2.8).
 ///
-/// The web router's classification endpoints mutate it; the analyzer reads
-/// it before classification-strategy dispatch. Clones share the state,
-/// exactly like [`OverrideControl`](crate::OverrideControl). Built with
+/// The web router's classification endpoints change it; the analyzer reads it
+/// before choosing a classification strategy. Clones share the state, exactly
+/// like [`OverrideControl`](crate::OverrideControl). Build it with
 /// [`new`](ClassificationOverrideControl::new) (in-memory only) or
 /// [`open`](ClassificationOverrideControl::open) (loads the workspace's
-/// persisted records and re-persists every mutation).
+/// persisted records and saves every later change).
 #[derive(Debug, Clone)]
 pub struct ClassificationOverrideControl {
     inner: Arc<Mutex<ClassificationOverrideState>>,
@@ -144,8 +143,8 @@ struct ClassificationOverrideState {
 }
 
 impl ClassificationOverrideControl {
-    /// An empty, in-memory-only handle — the shape a run without a
-    /// workspace-backed override tree gets.
+    /// An empty, in-memory-only handle — what a run with no workspace to
+    /// save records in uses.
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(ClassificationOverrideState {
@@ -155,10 +154,10 @@ impl ClassificationOverrideControl {
         }
     }
 
-    /// Open a handle over a workspace: the persisted override map is loaded
+    /// Open a handle over a workspace. The persisted override map is loaded
     /// when present (a missing record is an empty map, not an error — the
-    /// run simply has nothing overridden yet), and every mutation
-    /// re-persists.
+    /// run simply has nothing overridden yet), and every later change is
+    /// saved again.
     pub fn open(workspace: impl AsRef<Path>) -> Self {
         let workspace = workspace.as_ref().to_path_buf();
         let records = match load_json(&classification_override_records_path(&workspace)) {
@@ -166,7 +165,7 @@ impl ClassificationOverrideControl {
             Err(PersistError::NotFound { .. }) => ClassificationOverrides::default(),
             Err(e) => {
                 // tracing is not a dependency of calxgloss-types (see
-                // dashboard/review.rs) — the corrupt record is named on
+                // dashboard/review.rs). The corrupt record is named on
                 // stderr, then treated as un-overridden.
                 eprintln!(
                     "warning: corrupt classification override records, starting un-overridden: {e}"
@@ -186,10 +185,10 @@ impl ClassificationOverrideControl {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Persist the current records when the handle is workspace-backed.
-    /// A mutation that cannot persist still reports the error — the caller
-    /// (an endpoint handler) must not silently claim success on a change
-    /// that will not survive a restart.
+    /// Save the current records when the handle is workspace-backed. A
+    /// change that cannot be saved still returns its error — the caller (an
+    /// endpoint handler) must not report success for a change that would not
+    /// survive a restart.
     fn persist(state: &ClassificationOverrideState) -> Result<(), PersistError> {
         let Some(ws) = state.workspace.as_ref() else {
             return Ok(());
@@ -198,14 +197,14 @@ impl ClassificationOverrideControl {
         Ok(())
     }
 
-    /// The override recorded for a binary, if any. Keyed by binary identity
-    /// — the filename verbatim, matched exactly.
+    /// The override recorded for a binary, if any. The lookup key is the
+    /// binary identity — the filename verbatim, matched exactly.
     pub fn get(&self, binary: &str) -> Option<BinaryClassificationOverride> {
         self.lock().records.overrides.get(binary).cloned()
     }
 
-    /// Apply an override to a binary — the record is replaced wholesale (the
-    /// classification endpoints pass the operator's form through as-is).
+    /// Set an override for a binary. The record is replaced entirely (the
+    /// classification endpoints pass the operator's form through unchanged).
     pub fn set(
         &self,
         binary: &str,
@@ -216,8 +215,8 @@ impl ClassificationOverrideControl {
         Self::persist(&state)
     }
 
-    /// Drop a binary's override. Idempotent — removing an absent override is
-    /// not an error; the binary falls back to its heuristic classification.
+    /// Remove a binary's override. Removing an absent override is not an
+    /// error; the binary then uses its heuristic classification again.
     pub fn remove(&self, binary: &str) -> Result<(), PersistError> {
         let mut state = self.lock();
         if state.records.overrides.remove(binary).is_some() {

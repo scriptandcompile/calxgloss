@@ -25,7 +25,7 @@ fn dependency_graph_roots() {
         ],
     };
 
-    // dll_classify has no dependents (nothing depends on it), so it's a root
+    // dll_classify depends on nothing, so it is a root
     let roots = graph.roots();
     assert_eq!(roots.len(), 1);
     assert_eq!(roots[0].unit_id, "dll_classify");
@@ -303,7 +303,7 @@ fn skipped_units_leave_dependency_order_and_next_unit() {
         make_unit("func_a", ReviewStatus::Queued, vec![]),
     ]);
 
-    // The dependency-ordered queue carries only active units — a skipped
+    // The dependency-ordered queue contains only active units — a skipped
     // unit must not be picked as next or appear in the ordered list.
     let ordered: Vec<&str> = dashboard
         .sorted_queue()
@@ -344,9 +344,10 @@ fn auto_block_preserves_skipped_units() {
 
 #[test]
 fn do_not_translate_units_stay_visible_sorted_after_skipped_and_counted_apart() {
-    // Issue #235: parked units remain in the review queue (honest parking,
-    // not a silent drop), sort at the very end — after manually skipped
-    // work — and are tallied separately from the active counts.
+    // Issue #235: do-not-translate units stay in the review queue (honest —
+    // they are kept, not silently dropped). They sort at the very end, after
+    // manually skipped work, and are tallied separately from the active
+    // counts.
     let dashboard = ReviewDashboard::new(vec![
         make_unit("func_dnt", ReviewStatus::DoNotTranslate, vec![]),
         make_unit("func_skip", ReviewStatus::Skipped, vec![]),
@@ -366,8 +367,8 @@ fn do_not_translate_units_stay_visible_sorted_after_skipped_and_counted_apart() 
 
 #[test]
 fn do_not_translate_units_leave_dependency_order_and_next_unit() {
-    // A parked unit is never served as next work and never appears in the
-    // dependency-ordered active section (issue #235).
+    // A do-not-translate unit is never offered as the next unit and never
+    // appears in the dependency-ordered active section (issue #235).
     let dashboard = ReviewDashboard::new(vec![
         make_unit("func_dnt", ReviewStatus::DoNotTranslate, vec![]),
         make_unit("func_a", ReviewStatus::Queued, vec![]),
@@ -390,8 +391,8 @@ fn do_not_translate_units_leave_dependency_order_and_next_unit() {
 
 #[test]
 fn auto_block_preserves_do_not_translate_units() {
-    // A parked binary stays parked whatever its dependencies do — the
-    // cascade never overwrites the derived do-not-translate verdict.
+    // A do-not-translate binary keeps that status whatever its dependencies
+    // do — the cascade never overwrites the derived verdict.
     let mut dashboard = ReviewDashboard::new(vec![
         make_unit("dep", ReviewStatus::SendBack, vec![]),
         make_unit("func_dnt", ReviewStatus::DoNotTranslate, vec!["dep".into()]),
@@ -429,10 +430,12 @@ fn work_kind_serialization() {
 
 #[test]
 fn recent_activity_is_ordered_newest_first_and_deterministic() {
-    // The web Recent activity panel slices the top of this list; an
-    // unsorted list follows the builder's filesystem order and cycles
-    // between rebuilds. Newest first, id tie-break, whatever the input order.
-    // Fixed base so the 5-minute pair is an exact tie, not microsecond drift.
+    // The web Recent activity panel takes the top of this list. An unsorted
+    // list follows the builder's filesystem order and changes between
+    // rebuilds. The order must be newest first, with an id tie-break,
+    // whatever the input order.
+    // A fixed base time makes the 5-minute pair an exact tie, not a
+    // microsecond drift.
     let base = Utc
         .timestamp_opt(1_767_000_000, 0)
         .single()
@@ -1009,8 +1012,8 @@ fn edge_type_defaults_to_dependency_and_survives_serde() {
 
 #[test]
 fn edge_without_type_deserializes_as_dependency() {
-    // Artifacts written before edge typing existed carry only from/to;
-    // every such edge *is* a scheduling dependency.
+    // Artifacts written before edge typing existed store only from/to.
+    // Every such edge *is* a scheduling dependency.
     let edge: DependencyEdge =
         serde_json::from_str(r#"{"from": "a", "to": "b"}"#).expect("legacy edge deserializes");
     assert_eq!(edge.edge_type, EdgeType::Dependency);
@@ -1028,7 +1031,8 @@ fn node_enrichment_survives_serde_and_legacy_artifacts() {
     assert_eq!(back.token_usage, Some(4096));
     assert_eq!(back.confidence, Some(0.5));
 
-    // Nodes persisted before enrichment existed still load, with None fields.
+    // Nodes persisted before the display fields existed still load, with
+    // None fields.
     let legacy = r#"{"unit_id": "id1", "name": "Name 1", "status": "Queued"}"#;
     let legacy: DependencyNode = serde_json::from_str(legacy).expect("legacy node deserializes");
     assert_eq!(legacy.binary, None);
@@ -1682,9 +1686,9 @@ fn dashboard_graph_order_is_stable_across_input_orders() {
         unit("dll_c", &[]),
     ];
 
-    // The builder's input order follows the filesystem and can be anything;
-    // the graph the web view re-lays-out on every refresh must not shuffle
-    // with it.
+    // The builder's input order follows the filesystem and can be anything.
+    // The web view runs its layout again on every refresh, so the graph's
+    // order must not change with the input order.
     let forward = ReviewDashboard::new(units.clone());
     let mut reversed = units;
     reversed.reverse();

@@ -9,9 +9,9 @@ use super::status::StatusCounts;
 use super::types::{ReviewStatus, WorkLevel};
 use super::work_unit::UnitOfWork;
 
-/// A dashboard view showing all units of work and their status.
+/// A dashboard view of all units of work and their status.
 ///
-/// Assembled from a list of [`UnitOfWork`] instances, this type provides:
+/// Built from a list of [`UnitOfWork`] instances, this type provides:
 /// - A dependency-sorted review queue
 /// - Aggregated status counts
 /// - A dependency graph for visualization
@@ -58,23 +58,23 @@ impl ReviewDashboard {
                 || unit.status == ReviewStatus::Skipped
                 || unit.status == ReviewStatus::DoNotTranslate
             {
-                // Skipped units stay in the queue (not the active section —
-                // `sorted_queue` and the counts treat them as inactive) so
-                // the queue view can render them and the reviewer can
-                // unskip them inline. Do-not-translate units (issue #235)
-                // stay visible the same way — parked, not dropped — but
-                // sort after every other status (see the queue sort below).
+                // Skipped units stay in the queue, not in the active section —
+                // `sorted_queue` and the counts treat them as inactive. Keeping
+                // them lets the queue view render them and the reviewer unskip
+                // them inline. Do-not-translate units (issue #235) stay visible
+                // the same way — kept in the queue, not dropped — but sort
+                // after every other status (see the queue sort below).
                 queue.push(unit.clone());
             }
 
             // Count statuses
             *counts.tally_mut(&unit.status) += 1;
 
-            // Add node to dependency graph with the correct processing level,
-            // carrying the unit's binary and confidence so the graph payload
-            // can encode them (issue #76). Token usage is not visible here —
-            // it lives in the token-usage log, and consumers that read it
-            // enrich the node later; absent values stay `None`.
+            // Add a node to the dependency graph with the correct processing
+            // level. Include the unit's binary and confidence so the graph
+            // payload records them (issue #76). Token usage is not visible
+            // here — it lives in the token-usage log, and consumers that read
+            // it add it to the node later; absent values stay `None`.
             graph.nodes.push(
                 super::graph::DependencyNode::with_level(
                     unit.id.clone(),
@@ -95,12 +95,12 @@ impl ReviewDashboard {
             }
         }
 
-        // Sort queue by dependency order (fewer deps first). Parked units
-        // sort past every active one: manually skipped units first (the
-        // reviewer stepped aside), then do-not-translate units (issue #235)
-        // at the very end, so parked work never competes for attention in
-        // a direct queue rendering (the CLI dashboard, the web queue view's
-        // stable tail).
+        // Sort the queue by dependency order (fewer deps first). Held-aside
+        // units sort past every active one: manually skipped units first (the
+        // reviewer's decision), then do-not-translate units (issue #235) at
+        // the very end. Held-aside work therefore never appears above active
+        // work in a plain queue rendering — the CLI dashboard, and the stable
+        // tail of the web queue view.
         queue.sort_by_key(|a| {
             (
                 match a.status {
@@ -113,8 +113,8 @@ impl ReviewDashboard {
         });
 
         // Stable graph order: the builder's input follows the filesystem, and
-        // the web graph view re-runs its layered layout on every refresh —
-        // an unstable node order made the binaries visibly reshuffle between
+        // the web graph view runs its layered layout again on every refresh.
+        // An unstable node order made the binaries visibly move between
         // refreshes. Sorting nodes and edges keeps the layout fixed while the
         // data itself is unchanged.
         graph.nodes.sort_by(|a, b| a.unit_id.cmp(&b.unit_id));
@@ -123,7 +123,7 @@ impl ReviewDashboard {
             .sort_by(|a, b| a.from.cmp(&b.from).then_with(|| a.to.cmp(&b.to)));
 
         // Recent activity: newest first, with an id tie-break so the order
-        // is stable across rebuilds — consumers slice the top of this list,
+        // is stable across rebuilds. Consumers take the top of this list,
         // and the builder's input order follows the filesystem.
         recent.sort_by(|a, b| {
             b.updated_at
@@ -239,12 +239,12 @@ impl ReviewDashboard {
     ///
     /// # Failing statuses
     ///
-    /// A unit is considered to be in a failing status if its status is any of:
+    /// A unit is in a failing status when its status is any of:
     /// - [`ReviewStatus::SendBack`] — sent back for fixes
     /// - [`ReviewStatus::PatchRequested`] — patch requested for a specific issue
     ///
-    /// These statuses indicate the unit is *not yet complete* and therefore
-    /// cannot serve as a valid dependency for downstream units.
+    /// These statuses mean the unit is *not yet complete*, so it cannot be a
+    /// valid dependency for downstream units.
     ///
     /// # Propagation
     ///
@@ -318,16 +318,18 @@ impl ReviewDashboard {
         // Phase 3: apply the blocking changes to the review queue
         let mut blocked_count = 0usize;
         for unit in &mut self.review_queue {
-            // Skip units that are already in a terminal status or already blocked.
-            // Also skip units that *are* the failing dependency itself — those
-            // should keep their original status (SendBack/PatchRequested) since
-            // the whole point of auto-blocking is about *dependents* of failing
-            // units, not the failing units themselves. A reviewer's explicit
-            // `Skipped` is likewise never overwritten — unskipping re-derives
-            // the state from the artifacts, where the cascade applies again.
-            // A derived `DoNotTranslate` (issue #235) is a system fact about
-            // the binary, not reviewer intent: it outranks the cascade too,
-            // so a parked binary stays parked whatever its dependencies do.
+            // Skip units that are already in a terminal status or already
+            // blocked. Also skip units that *are* the failing dependency
+            // itself — those keep their original status (SendBack /
+            // PatchRequested), because auto-blocking applies to the
+            // *dependents* of failing units, not to the failing units
+            // themselves. A reviewer's explicit `Skipped` is likewise never
+            // overwritten — unskipping re-derives the state from the
+            // artifacts, and the cascade applies again there. A derived
+            // `DoNotTranslate` (issue #235) is a system fact about the
+            // binary, not reviewer intent. The cascade never changes it
+            // either: a do-not-translate binary keeps that status whatever
+            // its dependencies do.
             if matches!(
                 unit.status,
                 ReviewStatus::Blocked

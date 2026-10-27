@@ -6,9 +6,9 @@
 //! `PipelineState`, W3's analytics) consume the same records without depending
 //! on the web crate.
 //!
-//! Honesty is the same load-bearing rule as in [`crate::pipeline_phase`]:
-//! anything the live event stream has not reported yet stays `None` or
-//! [`PassState::NotRun`] rather than becoming a fabricated zero, a vacuous
+//! Honesty follows the same rule as in [`crate::pipeline_phase`]: anything
+//! the live event stream has not reported yet stays `None` or
+//! [`PassState::NotRun`]. It never becomes a fabricated zero, a vacuous
 //! pass, or a guessed confidence.
 
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,7 @@ pub struct PassStatus {
 }
 
 impl PassStatus {
-    /// Nothing observed for this class yet — carries no counts, ever.
+    /// Nothing observed for this class yet — it has no counts, ever.
     pub fn not_run() -> Self {
         Self {
             state: PassState::NotRun,
@@ -158,11 +158,11 @@ pub struct LiveUnitProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub succeeded: Option<bool>,
     /// The outcome the batch recorded for this unit — `"batch_ok"`,
-    /// `"batch_failed"`, or `"cancelled"`. Distinct leg from
+    /// `"batch_failed"`, or `"cancelled"`. Its own field, separate from
     /// [`retry_strategy`](Self::retry_strategy) (issue #363): a finished
-    /// unit's outcome never travels under a retry-strategy name, so the
+    /// unit's outcome is never stored under a retry-strategy name, so the
     /// attempt's strategy label stays honest after the unit is done. `None`
-    /// until a terminal batch event (function-completed / cancelled) names
+    /// until a terminal batch event (function-completed / cancelled) records
     /// one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
@@ -197,12 +197,12 @@ impl LiveTranslationState {
 
 /// Unit confidence (0.0–1.0) derived from the verification evidence seen so far.
 ///
-/// The live stream never reports a trust score, so this is computed from what
-/// it does report: the share of baseline tests the latest verified attempt
-/// passed, discounted to `0.0` when that attempt did not compile. `None` while
-/// no attempt has been verified or no baseline test has run — an unverified
-/// unit has no evidence to score, and a made-up number would be exactly the
-/// fabrication these records exist to avoid.
+/// The live stream never reports a trust score, so this computes the score
+/// from what it does report: the share of baseline tests the latest verified
+/// attempt passed, set to `0.0` when that attempt did not compile. `None`
+/// while no attempt has been verified or no baseline test has run — an
+/// unverified unit has no evidence to score, and a made-up number would be
+/// exactly the fabrication these records exist to avoid.
 pub fn derive_unit_confidence(compiled: Option<bool>, baseline: &PassStatus) -> Option<f32> {
     let (passed, total) = (baseline.passed?, baseline.total?);
     if total == 0 {
@@ -267,8 +267,8 @@ mod tests {
         let back: LiveUnitProgress = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, unit());
 
-        // A finished unit carries its outcome on its own leg — the retry
-        // strategy keeps naming the attempt that ran (issue #363).
+        // A finished unit records its outcome in its own field — the retry
+        // strategy still names the attempt that ran (issue #363).
         let mut done = unit();
         done.finished = true;
         done.succeeded = Some(true);
@@ -315,7 +315,7 @@ mod tests {
         ] {
             assert!(json.get(key).is_none(), "{key} must be absent: {json}");
         }
-        // A not-run test class carries no counts either.
+        // A not-run test class has no counts either.
         assert_eq!(json["baseline"]["state"], "not_run");
         assert!(
             json["baseline"].get("passed").is_none() && json["baseline"].get("total").is_none(),

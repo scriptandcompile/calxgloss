@@ -1,29 +1,30 @@
-//! Per-unit reviewer overrides — steering one unit's next attempt (issue #96, W2.7).
+//! Per-unit reviewer overrides — the reviewer's decisions about one unit's
+//! next attempt (issue #96, W2.7).
 //!
-//! A reviewer steering a live run can override how one unit is translated:
-//! force the context tier (when the automatic selector handles it poorly),
-//! force the retry strategy (steer a failing unit down a different recovery
-//! path), append custom failure hints (what the reviewer knows about the
-//! function reaches the next attempt's prompt), skip this single unit (one
-//! hopeless function doesn't block the rest of its binary's pass), and
-//! record reviewer notes (the assessment survives alongside the unit's
-//! justification).
+//! A reviewer watching a live run can override how one unit is translated.
+//! An override can force the context tier, when the automatic selector
+//! handles it poorly. It can force the retry strategy, sending a failing
+//! unit down a different recovery path. It can append custom failure hints:
+//! what the reviewer knows about the function reaches the next attempt's
+//! prompt. It can skip this single unit, so one hopeless function does not
+//! block the rest of its binary's pass. And it can record reviewer notes,
+//! which survive alongside the unit's justification.
 //!
 //! Two layers live here, mirroring [`scope`](crate::scope):
 //!
 //! * [`FunctionOverride`] is the plain serde record for one unit, and
-//!   [`UnitOverrides`] is the keyed map — the shape persisted under the
-//!   workspace's record tree and the shape the override endpoints report.
+//!   [`UnitOverrides`] is the keyed map. Both are the shape persisted under
+//!   the workspace's record tree and the shape the override endpoints report.
 //! * [`OverrideControl`] is the shared handle — `Arc`-backed and cheaply
 //!   cloneable, the same pattern as [`ScopeControl`](crate::ScopeControl).
-//!   The web router's override endpoints drive it; the translator pipeline
-//!   reads it in the translation context builder (tier selection,
-//!   retry-strategy selection, hint append) and at queue selection (the
-//!   skip flag).
+//!   The web router's override endpoints change it. The translator pipeline
+//!   reads it in the translation context builder — for tier selection,
+//!   retry-strategy selection, and hint append — and at queue selection
+//!   (the skip flag).
 //!
 //! Records are keyed by unit key (`{binary}/{function}`, the same identity
-//! [`UnitKey`](crate::UnitKey) spells). When the handle is opened over a
-//! workspace ([`OverrideControl::open`]) every mutation persists the map to
+//! [`UnitKey`](crate::UnitKey) describes). When the handle is opened over a
+//! workspace ([`OverrideControl::open`]) every change saves the map to
 //! `re/analysis/unit_overrides.json`, so a restarted run honors the
 //! overrides without re-entering anything.
 
@@ -39,11 +40,11 @@ use crate::retry_strategy::RetryStrategy;
 
 /// One unit's reviewer override.
 ///
-/// Every field defaults to "not overridden" — the automatic behavior an
-/// un-steered unit runs under. The retry-strategy override is the shared
+/// Every field defaults to "not overridden" — the automatic behavior a unit
+/// with no override runs under. The retry-strategy override is the shared
 /// [`RetryStrategy`] enum: the persisted snake_case labels are its serde
 /// representation, so an unknown label is refused at deserialization and a
-/// typo'd force can never be stored.
+/// misspelled strategy can never be stored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionOverride {
     /// Forced context tier — the automatic selector is bypassed.
@@ -65,7 +66,7 @@ pub struct FunctionOverride {
 }
 
 impl FunctionOverride {
-    /// Whether the record overrides nothing — the shape a removed override
+    /// Whether the record overrides nothing — what a removed override
     /// leaves behind.
     pub fn is_empty(&self) -> bool {
         self.tier_override.is_none()
@@ -78,8 +79,8 @@ impl FunctionOverride {
 
 /// The persisted override map, keyed by unit key (`{binary}/{function}`).
 ///
-/// A `BTreeMap` keeps the serialized record deterministic, so two runs that
-/// steered the same units write byte-identical files.
+/// A `BTreeMap` keeps the serialized record deterministic: two runs that
+/// overrode the same units write byte-identical files.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnitOverrides {
     /// Unit key → its override record.
@@ -97,14 +98,14 @@ pub fn override_records_path(workspace: impl AsRef<Path>) -> PathBuf {
     analysis_dir(workspace).join("unit_overrides.json")
 }
 
-/// Shared, cheaply-cloneable per-unit override handle (issue #96, W2.7).
+/// A shared, cheaply cloneable per-unit override handle (issue #96, W2.7).
 ///
-/// The web router's override endpoints mutate it; the translator pipeline
+/// The web router's override endpoints change it; the translator pipeline
 /// reads it in the context builder and at queue selection. Clones share the
-/// state, exactly like [`ScopeControl`](crate::ScopeControl). Built with
+/// state, exactly like [`ScopeControl`](crate::ScopeControl). Build it with
 /// [`new`](OverrideControl::new) (in-memory only, the plain CLI path) or
 /// [`open`](OverrideControl::open) (loads the workspace's persisted records
-/// and re-persists every mutation).
+/// and saves every later change).
 #[derive(Debug, Clone)]
 pub struct OverrideControl {
     inner: Arc<Mutex<OverrideState>>,
@@ -118,7 +119,7 @@ struct OverrideState {
 }
 
 impl OverrideControl {
-    /// An empty, in-memory-only handle — the shape a non-live run gets.
+    /// An empty, in-memory-only handle — what a non-live run uses.
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(OverrideState {
@@ -128,9 +129,10 @@ impl OverrideControl {
         }
     }
 
-    /// Open a handle over a workspace: the persisted override map is loaded
+    /// Open a handle over a workspace. The persisted override map is loaded
     /// when present (a missing record is an empty map, not an error — the
-    /// run simply has nothing steered yet), and every mutation re-persists.
+    /// run simply has nothing overridden yet), and every later change is
+    /// saved again.
     pub fn open(workspace: impl AsRef<Path>) -> Self {
         let workspace = workspace.as_ref().to_path_buf();
         let records = match load_json(&override_records_path(&workspace)) {
@@ -138,8 +140,8 @@ impl OverrideControl {
             Err(PersistError::NotFound { .. }) => UnitOverrides::default(),
             Err(e) => {
                 // tracing is not a dependency of calxgloss-types (see
-                // dashboard/review.rs) — the corrupt record is named on
-                // stderr, then treated as unsteered.
+                // dashboard/review.rs). The corrupt record is named on
+                // stderr, then treated as no override at all.
                 eprintln!("warning: corrupt unit override records, starting unsteered: {e}");
                 UnitOverrides::default()
             }
@@ -156,10 +158,10 @@ impl OverrideControl {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Persist the current records when the handle is workspace-backed.
-    /// A mutation that cannot persist still reports the error — the caller
-    /// (an endpoint handler) must not silently claim success on a change
-    /// that will not survive a restart.
+    /// Save the current records when the handle is workspace-backed. A
+    /// change that cannot be saved still returns its error — the caller (an
+    /// endpoint handler) must not report success for a change that would not
+    /// survive a restart.
     fn persist(state: &OverrideState) -> Result<(), PersistError> {
         let Some(ws) = state.workspace.as_ref() else {
             return Ok(());
@@ -170,8 +172,8 @@ impl OverrideControl {
 
     /// Find the stored key for a unit: the exact unit key first, then a
     /// binary-case-insensitive match — the same matching rule the scope
-    /// filters use, so a skip entered under one spelling lands on a queue
-    /// item spelled another way.
+    /// filters use, so a skip entered under one spelling still matches a
+    /// queue item spelled another way.
     fn find_key(records: &UnitOverrides, binary: &str, function: &str) -> Option<String> {
         let exact = unit_override_key(binary, function);
         if records.overrides.contains_key(&exact) {
@@ -197,9 +199,10 @@ impl OverrideControl {
             .cloned()
     }
 
-    /// Apply an override to a unit — the record is replaced wholesale (the
-    /// override endpoints pass the reviewer's form through as-is). An empty
-    /// record removes the entry rather than storing a do-nothing override.
+    /// Set an override for a unit. The existing record is replaced entirely
+    /// (the override endpoints pass the reviewer's form through unchanged).
+    /// An empty record removes the entry rather than storing a do-nothing
+    /// override.
     pub fn set(
         &self,
         binary: &str,
@@ -217,8 +220,8 @@ impl OverrideControl {
         Self::persist(&state)
     }
 
-    /// Drop a unit's override. Idempotent — removing an absent override is
-    /// not an error; the unit falls back to automatic behavior.
+    /// Remove a unit's override. Removing an absent override is not an
+    /// error; the unit then uses its automatic behavior again.
     pub fn remove(&self, binary: &str, function: &str) -> Result<(), PersistError> {
         let mut state = self.lock();
         if let Some(key) = Self::find_key(&state.records, binary, function) {
@@ -228,8 +231,8 @@ impl OverrideControl {
         Ok(())
     }
 
-    /// Whether the unit's override carries the skip flag — the queue
-    /// selection filter reads this.
+    /// Whether the unit's override sets the skip flag. The queue selection
+    /// filter reads this.
     pub fn is_skipped(&self, binary: &str, function: &str) -> bool {
         self.get(binary, function).is_some_and(|o| o.skip)
     }
@@ -299,7 +302,7 @@ mod tests {
     #[test]
     fn persisted_strategy_labels_load_unchanged() {
         // Workspaces wrote these exact records while the field was a plain
-        // String — the typed field must read them byte-compatibly.
+        // String. The typed field must read them byte-compatibly.
         let record: FunctionOverride =
             serde_json::from_str(r#"{"retry_strategy_override": "edge_case_fix"}"#)
                 .expect("a pre-typing record still deserializes");
@@ -311,8 +314,9 @@ mod tests {
 
     #[test]
     fn unknown_strategy_label_is_refused_at_deserialization() {
-        // The web boundary gets its 4xx for free: the record itself rejects
-        // a typo'd force, so nothing downstream has to re-check the label.
+        // The web boundary gets its 4xx answer automatically: the record
+        // itself rejects a misspelled strategy, so nothing downstream has to
+        // re-check the label.
         let err =
             serde_json::from_str::<FunctionOverride>(r#"{"retry_strategy_override": "escalatte"}"#)
                 .expect_err("a typo'd strategy label must not deserialize");

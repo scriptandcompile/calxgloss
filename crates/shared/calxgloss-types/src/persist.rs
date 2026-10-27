@@ -1,29 +1,29 @@
 //! Shared JSON persistence plumbing for the workspace analysis artifacts.
 //!
-//! Every engine crate files its findings under the workspace analysis
-//! directory as pretty-printed JSON documents — the type database and call
-//! graph (one document per binary), the run logs (one fixed file each).
-//! The mechanics were hand-written once per crate: create the directory
-//! chain, `serde_json::to_string_pretty`, `fs::write`, read back, parse,
-//! and tell a missing file apart from a corrupt one. This module holds
-//! them once.
+//! Every crate that produces analysis findings stores them under the
+//! workspace analysis directory as pretty-printed JSON documents — the type
+//! database and call graph (one document per binary), the run logs (one
+//! fixed file each). Each crate used to hand-write the same mechanics:
+//! create the directory chain, `serde_json::to_string_pretty`, `fs::write`,
+//! read back, parse, and tell a missing file apart from a corrupt one.
+//! This module holds them once.
 //!
 //! Two layers:
 //!
 //! - [`save_json`] / [`load_json`] — the mechanics for one named file, plus
 //!   [`analysis_dir`] for the `re/analysis/` convention.
-//! - [`JsonStore<T>`] — a directory of per-key documents on top of those,
-//!   for persistors that file one document per binary.
+//! - [`JsonStore<T>`] — a directory of per-key documents built on those
+//!   mechanics, for persistors that store one document per binary.
 //!
 //! Each persistor (`TypeDatabasePersistor`, `CallGraphPersistor`, the
 //! analysis log loggers) keeps its own public API and wraps one of these.
-//! That persistor API is the seam: it is document-oriented and storage-
-//! agnostic, so a different backend (e.g. SQLite) replaces the store inside
-//! a persistor without touching any caller. No shared store *trait* is
-//! defined yet — with JSON as the only backend its shape would be guesswork,
-//! and a row-oriented backend wants different granularity (incremental
-//! queries, transactions) than whole-document save/load. Introduce the
-//! trait when a second real backend exists to shape it.
+//! That persistor API is the seam: it is document-oriented and
+//! storage-agnostic, so a different backend (e.g. SQLite) can replace the
+//! store inside a persistor without touching any caller. No shared store
+//! *trait* exists yet — with JSON as the only backend its shape would be
+//! guesswork, and a row-oriented backend wants different granularity
+//! (incremental queries, transactions) than whole-document save/load.
+//! Introduce the trait when a second real backend exists to shape it.
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -60,22 +60,24 @@ pub enum PersistError {
 
 /// The shared analysis directory convention: `{workspace}/re/analysis`.
 ///
-/// Every artifact the harness persists is filed under this directory —
-/// directly (the run logs) or in a per-engine subdirectory (`typesdb/`).
+/// Every artifact the harness persists is stored under this directory —
+/// directly (the run logs) or in a subdirectory named after the evidence
+/// engine that writes it (`typesdb/`).
 pub fn analysis_dir(workspace: impl AsRef<Path>) -> PathBuf {
     workspace.as_ref().join("re").join("analysis")
 }
 
-/// Monotonic counter keeping each [`save_json`] temp file name unique within
-/// this process; combined with the pid it is unique per writer, so concurrent
-/// saves (threads or processes) never collide on the same temp file.
+/// A monotonically increasing counter. It keeps each [`save_json`] temp file
+/// name unique within this process. Combined with the pid the name is unique
+/// per writer, so concurrent saves (threads or processes) never collide on
+/// the same temp file.
 static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Serializes `value` as pretty JSON and writes it to `path` atomically.
 ///
 /// Creates the parent directory chain if it does not exist. The document is
 /// written to a uniquely-named hidden temp file beside the target and then
-/// renamed onto it — rename is atomic on the platform, so a failed or
+/// renamed onto it. Rename is atomic on the platform, so a failed or
 /// interrupted save (crash, Ctrl-C) can never leave a half-written document
 /// where a valid one used to be: readers see either the previous document or
 /// the new one, never a truncated mix. A failed save removes its temp file.
@@ -108,7 +110,7 @@ pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), PersistErro
         std::fs::rename(&tmp, path)
     })();
     if let Err(source) = written {
-        // Best-effort: never leave temp residue behind on a failed save.
+        // Best-effort: a failed save never leaves a temp file behind.
         let _ = std::fs::remove_file(&tmp);
         return Err(PersistError::Io {
             path: path.to_path_buf(),
@@ -141,11 +143,11 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, PersistError> {
 
 /// A directory of per-key JSON documents, one file per key.
 ///
-/// The default naming files key `k` as `k.json`; [`with_naming`](Self::with_naming)
-/// takes any key→file-name rule (e.g. `{key}_call_graph.json`). The store
-/// knows nothing about the document's fields — the persistor wrapping it
-/// picks the key (usually the binary name) and keeps its own logging and
-/// error type.
+/// By default the store saves key `k` as `k.json`;
+/// [`with_naming`](Self::with_naming) takes any key→file-name rule (e.g.
+/// `{key}_call_graph.json`). The store knows nothing about the document's
+/// fields. The persistor that wraps it picks the key (usually the binary
+/// name) and keeps its own logging and error type.
 ///
 /// # Example
 ///
@@ -170,12 +172,14 @@ pub struct JsonStore<T> {
 }
 
 impl<T> JsonStore<T> {
-    /// Creates a store filing documents directly under `dir` as `{key}.json`.
+    /// Creates a store that saves documents directly under `dir` as
+    /// `{key}.json`.
     pub fn new(dir: impl AsRef<Path>) -> Self {
         Self::with_naming(dir, |key| format!("{key}.json"))
     }
 
-    /// Creates a store filing documents under `dir` with names from `name_for`.
+    /// Creates a store that saves documents under `dir`, with file names
+    /// produced by `name_for`.
     pub fn with_naming(
         dir: impl AsRef<Path>,
         name_for: impl Fn(&str) -> String + Send + Sync + 'static,
@@ -187,12 +191,12 @@ impl<T> JsonStore<T> {
         }
     }
 
-    /// The directory documents are filed under.
+    /// The directory that documents are saved in.
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Returns the path the document for `key` is filed under.
+    /// Returns the path where the document for `key` is saved.
     pub fn path_for(&self, key: &str) -> PathBuf {
         self.dir.join((self.name_for)(key))
     }
@@ -367,8 +371,9 @@ mod tests {
 
     // --- atomic save (issue #81) -----------------------------------------
 
-    /// A document big enough that a reader racing a save would reliably catch
-    /// a truncated write if the save were not atomic.
+    /// A document large enough that a reader running while a save is in
+    /// progress would reliably catch a truncated write, if the save were not
+    /// atomic.
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct BigDoc {
         round: u32,
@@ -382,8 +387,8 @@ mod tests {
         }
     }
 
-    /// A document whose serialization always fails, to exercise the
-    /// failed-save path without touching the filesystem layer.
+    /// A document whose serialization always fails. It exercises the
+    /// failed-save path without involving the filesystem layer.
     struct Unserializable;
 
     impl Serialize for Unserializable {

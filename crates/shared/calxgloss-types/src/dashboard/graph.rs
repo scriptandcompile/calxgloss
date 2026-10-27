@@ -10,11 +10,11 @@ use super::types::{ReviewStatus, WorkLevel};
 
 /// A node in the dependency graph of units of work.
 ///
-/// Beyond identity and status, a node carries display enrichment derived
+/// Besides identity and status, the node holds display information derived
 /// from the unit it represents: the associated binary, the unit's token
-/// usage, and its confidence. Each enrichment is optional — artifacts
-/// written before these fields existed, or units with no recorded value,
-/// leave them `None` rather than fabricating one.
+/// usage, and its confidence. Each piece of information is optional. An
+/// artifact written before these fields existed, or a unit with no recorded
+/// value, leaves it `None` rather than fabricating one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyNode {
     /// ID of the unit of work.
@@ -154,7 +154,7 @@ pub struct DependencyEdge {
     pub from: String,
     /// The unit that is depended upon.
     pub to: String,
-    /// The kind of relationship this edge encodes.
+    /// The kind of relationship this edge records.
     ///
     /// Defaults to [`EdgeType::Dependency`] so artifacts written before
     /// edge typing existed still deserialize honestly — every old edge

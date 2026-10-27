@@ -147,17 +147,19 @@ pub enum ReviewStatus {
     PatchRequested,
     /// The unit is blocked because one or more dependencies are not in a passing state.
     Blocked,
-    /// The reviewer explicitly skipped this unit. It leaves the active queue
-    /// (counts and dependency order) but stays visible in the queue view so
-    /// it can be unskipped; the skip is a reviewer decision, not a pipeline
-    /// verdict, so it survives rebuilds from the persisted skip record.
+    /// The reviewer explicitly skipped this unit. It leaves the active
+    /// queue (counts and dependency order) but stays visible in the queue
+    /// view so it can be unskipped. The skip is a reviewer decision, not a
+    /// pipeline verdict, so it survives rebuilds through the persisted
+    /// skip set.
     Skipped,
     /// The unit belongs to a binary classified `DoNotTranslate` — a .NET
     /// managed assembly the pipeline cannot decompile (issue #235). Unlike
-    /// [`Skipped`](Self::Skipped) this is a pipeline verdict derived from the
-    /// classification record, not a reviewer choice: it cannot be unskipped,
-    /// is never overwritten by the auto-blocking cascade, and sorts after
-    /// every other status at the end of the queue view.
+    /// [`Skipped`](Self::Skipped), this is a pipeline verdict derived from
+    /// the classification record, not a reviewer choice. The unit cannot be
+    /// unskipped, and the auto-blocking cascade never overwrites this
+    /// status. In the queue view it sorts after every other status, at the
+    /// end.
     DoNotTranslate,
 }
 

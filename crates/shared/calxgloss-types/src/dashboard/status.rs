@@ -32,9 +32,9 @@ impl StatusCounts {
             + self.do_not_translate
     }
 
-    /// The tally for one status. The single status→field mapping shared by
-    /// the initial counting in [`ReviewDashboard::new`] and later rewrites
-    /// (auto-blocking), so the two can't drift.
+    /// The tally for one status. This is the one status→field mapping that
+    /// the initial counting in [`ReviewDashboard::new`] and the later
+    /// rewrites (auto-blocking) share, so the two cannot drift apart.
     pub(crate) fn tally_mut(&mut self, status: &ReviewStatus) -> &mut usize {
         match status {
             ReviewStatus::Queued => &mut self.queued,
