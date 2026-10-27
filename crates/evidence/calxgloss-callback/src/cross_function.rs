@@ -5,38 +5,40 @@
 //! actual lifecycle of a callback — is invisible to each body read on
 //! its own. This module closes that gap over the bodies one scan
 //! already holds, mirroring the memory crate's cross-function pass
-//! (ADR-0027) and the sync crate's (ADR-0033): the chain and
-//! event-system maps are derived from the fetched bodies with the
-//! same call-site scans the detectors already use, so no new
-//! [`ScanSource`](crate::engine::ScanSource) reads are made and the
-//! exactly-once-decompile guarantee and the skip-rate breaker survive
-//! untouched.
+//! (ADR-0027) and the sync crate's (ADR-0033).
 //!
-//! [`CrossFunctionAnalyzer::analyze`] runs the readings: per body, the
-//! registrations the registration detector binds, the direct-call
-//! targets the shared call-site scan walks, and the tables the
-//! fp-array and jump-table detectors read being called — all keyed on
-//! the detectors' **configured name sets**, so custom spellings reach
-//! this pass through the same sets the per-body readings use and the
-//! two cannot disagree about what a registration or a table names. A
-//! registration's bound callback name standing as a direct call
-//! target in another kept body, or a table named at a registration
-//! site being the same table an fp-array or jump-table reading calls
-//! through, lands one [`CallbackFinding::Chain`] per (registering
-//! function, calling function) pair on the earlier function in
-//! listing order, naming the partner function, the callback, and the
-//! table, with both ends' call lines as evidence.
+//! The chain and event-system maps are derived from the fetched
+//! bodies with the same call-site scans the detectors already use.
+//! No new [`ScanSource`](crate::engine::ScanSource) reads are made,
+//! so the exactly-once-decompile guarantee and the skip-rate breaker
+//! survive untouched.
+//!
+//! [`CrossFunctionAnalyzer::analyze`] runs the readings. Per body it
+//! collects: the registrations the registration detector binds, the
+//! direct-call targets the shared call-site scan walks, and the
+//! tables being called that the fp-array and jump-table detectors
+//! read. Everything keys on the detectors' **configured name sets**,
+//! so custom spellings reach this pass through the same sets the
+//! per-body readings use, and the two cannot disagree about what a
+//! registration or a table names. When one kept body registers a
+//! callback and another kept body calls that callback directly by
+//! name — or calls through a table the registration site named — the
+//! pass records one [`CallbackFinding::Chain`] for the (registering
+//! function, calling function) pair. The finding attaches to the
+//! earlier function in listing order and names the partner function,
+//! the callback, and the table, with both ends' call lines as
+//! evidence.
 //!
 //! The pass then reconstructs **event systems**: two or more
 //! registrations to the same registration name across the scan, plus
 //! at least one dispatch site — an fp-array or jump-table reading —
-//! in any kept body, are the observer shape, landed as one
+//! in any kept body, are the observer shape. That is recorded as one
 //! [`CallbackFinding::EventSystem`] naming the registration point,
 //! the registered callbacks, and the dispatching functions. The
 //! reconstruction is a pattern inference over fragments, visibly
 //! weaker than the chain's two-ended evidence, and registrations with
 //! no visible dispatch site report nothing: a handful of unrelated
-//! callbacks is not over-read as an event architecture. Cross-function
+//! callbacks is not read as an event architecture. Cross-function
 //! findings — chains first, then event systems — append after the
 //! per-function findings, in listing order.
 
@@ -47,32 +49,32 @@ use crate::types::{CallbackChain, CallbackFinding, EventSystem};
 use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::line_at;
 
-/// Confidence of a chain read across two bodies: both ends are
-/// explicit body evidence — a recognized registration binding a named
-/// callback on one side, that callback (or the table it was handed
-/// through) being called on the other — so the claim sits level with
-/// an in-body registration.
+/// Confidence of a chain read across two bodies. Both ends are
+/// explicit body evidence: a recognized registration binds a named
+/// callback on one side, and that callback (or the table it was
+/// handed through) is called on the other. The claim therefore sits
+/// level with an in-body registration.
 const CHAIN_CONFIDENCE: u8 = 70;
 
 /// The Rust pattern a chain suggests: one boxed closure the
-/// registering function hands out and the calling function reaches
-/// through — the same closure shape a registration suggests, held
-/// across the boundary instead of inside one body.
+/// registering function hands out and the calling function calls
+/// through. This is the same closure shape a registration suggests,
+/// held across the function boundary instead of inside one body.
 const CHAIN_SUGGESTION: &str =
     "Box<dyn Fn(...)> shared between the registering and calling functions";
 
-/// Confidence of an event system reconstructed over the scan: many
-/// registrations to one point and a dispatch site somewhere speak of
-/// an observer architecture without either end being seen whole, a
-/// pattern inference over fragments — so the claim sits one rung
-/// below the chain's two-ended evidence.
+/// Confidence of an event system reconstructed over the scan. Many
+/// registrations to one point and a dispatch site somewhere point to
+/// an observer architecture without either end being seen whole — a
+/// pattern inference over fragments. The claim therefore sits one
+/// confidence band below the chain's two-ended evidence.
 const EVENT_SYSTEM_CONFIDENCE: u8 = 60;
 
 /// The Rust pattern an event system suggests: handlers pile onto one
-/// registration point and run through a dispatch table — the observer
-/// pattern, a registry of boxed closures behind the table, so the
-/// event architecture survives translation instead of scattering
-/// callbacks across opaque calls.
+/// registration point and run through a dispatch table — the
+/// observer pattern, a registry of boxed closures behind the table.
+/// This keeps the event architecture through translation instead of
+/// scattering callbacks across opaque calls.
 const EVENT_SYSTEM_SUGGESTION: &str =
     "Observer pattern: registered Box<dyn Fn(...)> handlers dispatched through a table";
 
@@ -81,9 +83,9 @@ const EVENT_SYSTEM_SUGGESTION: &str =
 /// The analyzer is stateless: every reading comes from the bodies it
 /// is handed and the three detectors' configured name sets it is
 /// given, so one analyzer serves an entire scan. It fetches nothing
-/// itself — the engine hands it the same [`DecompiledFunction`]
-/// values the per-function pass already decompiled, keeping the scan
-/// at one decompile per function.
+/// itself — the scan hands it the same [`DecompiledFunction`] values
+/// the per-function pass already decompiled, keeping the scan at one
+/// decompile per function.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CrossFunctionAnalyzer;
 
@@ -95,27 +97,29 @@ impl CrossFunctionAnalyzer {
     }
 
     /// The cross-function findings the program carries, in listing
-    /// order: for every pair of kept bodies in listing order, a
-    /// registration in one whose bound callback the other calls — by
-    /// name, or through the same table the registration site named —
-    /// lands one [`CallbackFinding::Chain`] on the earlier function,
-    /// naming the later one as its partner. A pair claims at most one
-    /// chain per direction (registering → calling), the first match
-    /// in body order winning, so one registration pair reads once
-    /// however many callbacks tie the two bodies.
+    /// order. For every pair of kept bodies, taken in listing order:
+    /// a registration in one body whose bound callback the other
+    /// body calls — by name, or through the same table the
+    /// registration site named — lands one [`CallbackFinding::Chain`]
+    /// on the earlier function, naming the later one as its partner.
+    /// A pair claims at most one chain per direction (registering →
+    /// calling), the first match in body order winning, so one
+    /// registration pair reads once however many callbacks tie the
+    /// two bodies.
     ///
-    /// After the chains, event-system reconstruction: registrations
-    /// grouped by the registration name they call, and two or more to
-    /// one name across the scan — with at least one dispatch site, an
-    /// fp-array or jump-table reading, in any kept body — land one
-    /// [`CallbackFinding::EventSystem`] naming the registration point,
-    /// the registered callbacks, and the dispatching functions,
-    /// attached to the earliest registering function. Groups with
-    /// fewer than two registrations, and registrations with no
-    /// dispatch site anywhere in sight, claim nothing.
+    /// After the chains comes event-system reconstruction:
+    /// registrations grouped by the registration name they call, and
+    /// two or more to one name across the scan — with at least one
+    /// dispatch site, an fp-array or jump-table reading, in any kept
+    /// body — land one [`CallbackFinding::EventSystem`] naming the
+    /// registration point, the registered callbacks, and the
+    /// dispatching functions, attached to the earliest registering
+    /// function. Groups with fewer than two registrations, and
+    /// registrations with no dispatch site anywhere in sight, claim
+    /// nothing.
     ///
-    /// A function whose body never made it — skipped by the engine —
-    /// is simply absent from `functions`, so it binds no registration,
+    /// A function whose body never made it — skipped by the scan — is
+    /// simply absent from `functions`, so it binds no registration,
     /// calls nothing, dispatches through nothing, and fabricates no
     /// chain or event system.
     pub fn analyze(
@@ -144,7 +148,7 @@ impl CrossFunctionAnalyzer {
                 let (earlier, later) = (&functions[i], &functions[j]);
                 // Both directions of one pair are different chains:
                 // the registering end and the calling end swap. Either
-                // way the finding attaches to the earlier function in
+                // way, the finding attaches to the earlier function in
                 // listing order.
                 for (reg_idx, call_idx) in [(i, j), (j, i)] {
                     if let Some(finding) = chain_for_pair(
@@ -221,13 +225,13 @@ fn table_calls(
     calls
 }
 
-/// The chain one pair of bodies carries, if any: the first
+/// The chain one pair of bodies carries, if any. The first
 /// registration the registering body binds whose bound callback the
 /// calling body calls — directly by name, or through a table under a
 /// name the registration site spelled — wins, and the pair claims no
-/// other. The finding attaches to `earlier`, the earlier of the two in
-/// listing order, whichever end registered, and names `later` as its
-/// partner.
+/// other. The finding attaches to `earlier`, the earlier of the two
+/// in listing order, whichever end registered, and names `later` as
+/// its partner.
 fn chain_for_pair(
     earlier: &DecompiledFunction,
     later: &DecompiledFunction,
@@ -270,18 +274,19 @@ fn chain_for_pair(
     None
 }
 
-/// The event systems the scan reconstructs: registrations grouped by
-/// the registration name they call, in first-seen listing order, and
-/// the bodies carrying a visible dispatch site — an fp-array or
+/// The event systems the scan reconstructs. Registrations are grouped
+/// by the registration name they call, in first-seen listing order,
+/// and the bodies carrying a visible dispatch site — an fp-array or
 /// jump-table reading, keyed on the table detectors' configured
-/// names. Two or more registrations to one name, with a dispatch site
-/// anywhere in the kept bodies, reconstruct one observer: one finding
-/// naming the registration point, the registered callbacks, and the
-/// dispatching functions, attached to the earliest registering
-/// function, carrying every registration and dispatch line as
-/// evidence. A group with fewer than two registrations, and
-/// registrations with no dispatch site in sight, claim nothing — a
-/// handful of unrelated callbacks is not an event architecture.
+/// names — are collected. Two or more registrations to one name, with
+/// a dispatch site anywhere in the kept bodies, reconstruct one
+/// observer: a single finding naming the registration point, the
+/// registered callbacks, and the dispatching functions, attached to
+/// the earliest registering function, carrying every registration and
+/// dispatch line as evidence. A group with fewer than two
+/// registrations, and registrations with no dispatch site in sight,
+/// claim nothing — a handful of unrelated callbacks is not an event
+/// architecture.
 fn event_systems(
     functions: &[DecompiledFunction],
     registrations: &[Vec<RegistrationSite>],
@@ -289,7 +294,7 @@ fn event_systems(
 ) -> Vec<CallbackFinding> {
     // The bodies that dispatch through a configured table, in listing
     // order: their existence gates every reconstruction, and their
-    // names and call lines ride into each finding.
+    // names and call lines go into every finding as evidence.
     let dispatchers: Vec<usize> = (0..functions.len())
         .filter(|&idx| !tables[idx].is_empty())
         .collect();
@@ -420,7 +425,7 @@ mod tests {
         assert_eq!(record.table, None, "a direct call runs through no table");
         assert_eq!(record.confidence.value(), CHAIN_CONFIDENCE);
         assert_eq!(record.suggestion, CHAIN_SUGGESTION);
-        // Both ends' call lines ride as evidence, each named by its
+        // Both ends' call lines stand as evidence, each named by its
         // function.
         assert_eq!(
             record.evidence,
@@ -432,8 +437,8 @@ mod tests {
     #[test]
     fn the_chain_attaches_to_the_earlier_function_whichever_end_registers() {
         // The calling function stands first in the listing; the
-        // finding still rides on it and names the registering one as
-        // its partner.
+        // finding still attaches to it and names the registering one
+        // as its partner.
         let record = one_chain(&[
             ("FUN_18003ab00", "  my_handler(param_1);\n"),
             ("FUN_18003e750", "  register_callback(my_handler);\n"),
@@ -601,7 +606,7 @@ mod tests {
     #[test]
     fn findings_come_back_in_listing_order() {
         // Pairs walk in listing order: the (a, b) chain before the
-        // (a, c) and (b, c) ones.
+        // (b, c) one.
         let findings = analyze(&[
             ("FUN_a", "  register_callback(handler_a);\n"),
             (
@@ -731,9 +736,9 @@ mod tests {
 
     #[test]
     fn two_registrations_to_one_name_and_a_dispatch_site_reconstruct_one_event_system() {
-        // Two hands hand handlers to one registration point, and a
-        // third body dispatches through a table: the observer shape,
-        // reconstructed at its own visibly weaker confidence.
+        // Two functions hand handlers to one registration point, and
+        // a third body dispatches through a table: the observer
+        // shape, reconstructed at its own visibly weaker confidence.
         let record = one_event_system(&[
             ("FUN_18003ab00", "  register_callback(handler_a);\n"),
             ("FUN_18003e750", "  register_callback(handler_b);\n"),
@@ -745,7 +750,7 @@ mod tests {
         assert_eq!(record.dispatchers, ["FUN_1800412a0"]);
         assert_eq!(record.confidence.value(), EVENT_SYSTEM_CONFIDENCE);
         assert_eq!(record.suggestion, EVENT_SYSTEM_SUGGESTION);
-        // The registration lines and the dispatch line ride as
+        // The registration lines and the dispatch line stand as
         // evidence, each named by its function.
         assert_eq!(
             record.evidence,
@@ -827,8 +832,8 @@ mod tests {
     #[test]
     fn the_event_system_attaches_to_the_earliest_registering_function() {
         // The dispatching body stands first in the listing; the
-        // finding still rides on the first body that registers to the
-        // point, and names the dispatching one as its dispatcher.
+        // finding still attaches to the first body that registers to
+        // the point, and names the dispatching one as its dispatcher.
         let record = one_event_system(&[
             ("FUN_18003ab00", "  handlers[uVar1](param_1);\n"),
             ("FUN_18003e750", "  register_callback(handler_a);\n"),
@@ -1006,8 +1011,9 @@ mod tests {
 
     #[test]
     fn event_system_findings_come_after_the_chain_findings() {
-        // One pair of bodies ties a chain and feeds the crowd: the
-        // two-ended chain reads first, the reconstruction follows.
+        // One pair of bodies yields a chain and also feeds a
+        // registration group: the two-ended chain reads first, the
+        // reconstruction follows.
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
@@ -1022,8 +1028,8 @@ mod tests {
 
     #[test]
     fn the_analyzer_can_be_shared_across_scans() {
-        // One analyzer is driven over every scan of an engine, so
-        // sharing one by reference across tasks must stay sound.
+        // One analyzer serves every scan, so sharing one by reference
+        // across tasks must stay sound.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CrossFunctionAnalyzer>();
     }

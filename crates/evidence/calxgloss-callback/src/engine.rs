@@ -8,15 +8,16 @@
 //! [`CallbackResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
-//! the engine fetches each function's pseudo-C exactly once and reads
-//! it with every wired detector, rather than having each detector pull
-//! its own copy; the cross-function pass reads those same kept
-//! bodies, so the scan stays at one decompile per function. The scan
-//! is then one sequential pass over the function listing: unlike
-//! typeinfer's competing families there is nothing to resolve between
-//! the detectors — they read disjoint body shapes — and keeping the
-//! pass sequential keeps the persisted finding list in a stable,
-//! diffable order.
+//! the scan fetches each function's pseudo-C exactly once and reads
+//! it with every configured detector, instead of letting each
+//! detector fetch its own copy. The cross-function pass reads those
+//! same kept bodies, so the scan stays at one decompile per function.
+//!
+//! The scan is one sequential pass over the function listing. Unlike
+//! typeinfer's competing families, the callback detectors have
+//! nothing to resolve between them — they read disjoint body
+//! shapes — and keeping the pass sequential keeps the persisted
+//! finding list in a stable, diffable order.
 
 use crate::callback_reg::CallbackRegDetector;
 use crate::cross_function::CrossFunctionAnalyzer;
@@ -35,16 +36,17 @@ use tracing::{info, warn};
 /// The decompiler a callback scan reads.
 ///
 /// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// so the engine's generic parameters can name it right where they
+/// use it. [`KunaSource`] implements it on top of the in-process
+/// analysis engine, and tests implement it over canned bodies so the
+/// whole orchestration runs without a server. The futures are `Send`
+/// so a scan can be driven from an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump (the P19-6 admitted-semantics track).
+/// How many unreached functions one coverage limitation line names
+/// inline before it reports the rest as a count. This keeps the
+/// admission line beside the counts bounded, not a name dump (the
+/// P19-6 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
 /// The facets a callback-detection scan declares, in order — the
@@ -52,24 +54,27 @@ const MAX_NAMED_UNREACHED: usize = 5;
 /// reads one facet: the decompiled bodies every detector reads.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
 
-/// The coverage record every callback-detection scan stamps about itself
-/// (issue #350), beside the provenance and the timing.
+/// The coverage record every callback-detection scan stamps about
+/// itself (issue #350), beside the provenance and the timing.
 ///
 /// The callback scan has one facet: `function-bodies`, the decompiled
-/// bodies every detector reads. The function listing is always read end
-/// to end — a failed listing aborts the run, and more than half failing
-/// to decompile trips the skip-rate breaker above — so what a finished
-/// scan can not have read is exactly the bodies it skipped along the
-/// way: a nameless listing entry, or a decompile that failed. The
-/// cross-function pass reads only the bodies this walk already kept, so
-/// it adds no coverage border of its own. With nothing skipped, the
-/// facet is `complete`, and that is the admission's point: a function
-/// no callback finding mentions was examined and clean, never silently
-/// unchecked. With any, the facet is `partial` and the limitation line
-/// names the unreached bodies (bounded at [`MAX_NAMED_UNREACHED`]), so
-/// silence and never-reaching are distinguishable in the filed record
-/// itself. The whole picture mirrors the single facet — there is nothing
-/// else this engine examines.
+/// bodies every detector reads. It always reads the function listing
+/// end to end: a failed listing aborts the run, and more than half
+/// failing to decompile trips the skip-rate breaker in the scan
+/// below. So what a finished scan cannot have read is exactly the
+/// bodies it skipped along the way: a nameless listing entry, or a
+/// decompile that failed. The cross-function pass reads only the
+/// bodies this walk already kept, so it adds no coverage border of
+/// its own.
+///
+/// With nothing skipped, the facet is `complete`. That is the point
+/// of the admission: a function no callback finding mentions was
+/// examined and clean, never silently unchecked. With anything
+/// skipped, the facet is `partial` and the limitation line names the
+/// unreached bodies, bounded at [`MAX_NAMED_UNREACHED`]. Silence and
+/// never-reaching are therefore distinguishable in the filed record
+/// itself. The whole picture mirrors the single facet — there is
+/// nothing else this scan examines.
 fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
     let total = unreached.len() + nameless;
     if total == 0 {
@@ -107,19 +112,18 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
 
 /// Orchestrates the callback detectors into one [`CallbackResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a loaded [`KunaSource`]. Each detector carries no state
-/// and starts configured with its standard name set —
-/// [`with_fp_array`](Self::with_fp_array),
+/// The engine is generic over its [`ScanSource`], so tests can run
+/// the whole orchestration over canned bodies; [`new`](Self::new)
+/// builds one over a loaded [`KunaSource`]. Each detector holds no
+/// state and starts with its standard name set, so one instance of
+/// each serves the whole scan; [`with_fp_array`](Self::with_fp_array),
 /// [`with_registration`](Self::with_registration),
 /// [`with_jump_table`](Self::with_jump_table) and
-/// [`with_plugin`](Self::with_plugin) swap a detector's set
-/// whole — so one instance of each serves the whole scan. A
-/// caller-composed [`SignatureMap`] injected through
-/// [`with_signatures`](Self::with_signatures) deepens the
-/// registration and chain suggestions in place; with no map the scan
-/// is exactly what it was.
+/// [`with_plugin`](Self::with_plugin) each replace one detector's
+/// set whole. A [`SignatureMap`] composed by the caller and injected
+/// through [`with_signatures`](Self::with_signatures) fills the real
+/// closure contracts into the registration and chain suggestions in
+/// place; with no map the scan is exactly what it was.
 #[derive(Debug, Clone)]
 pub struct CallbackEngine<S = KunaSource> {
     source: S,
@@ -190,11 +194,11 @@ impl<S> CallbackEngine<S> {
         self
     }
 
-    /// Fill the real closure contract into the suggestions whose
+    /// Fill the real closure contract into every suggestion whose
     /// callback `signatures` names.
     ///
-    /// A registration's bound callback — and a chain's callback — is
-    /// looked up by its spelled name in the map, and a hit renders
+    /// The map looks up a registration's bound callback, and a
+    /// chain's callback, by its spelled name. A hit renders
     /// `Box<dyn Fn(i32) -> bool>` in place of the open
     /// `Box<dyn Fn(...)>` (see [`crate::signatures`]). The map is
     /// composed by the **caller** from another scan's persisted
@@ -210,8 +214,8 @@ impl<S> CallbackEngine<S> {
         self
     }
 
-    /// Deepen `suggestion` in place when `callback` has a known
-    /// callable contract; anything else stands as written.
+    /// When `callback` has a known closure contract in the map, fill
+    /// it into `suggestion` in place; anything else stands as written.
     fn enrich(&self, callback: &str, suggestion: &mut String) {
         if let Some(signature) = self.signatures.get(callback) {
             *suggestion = enrich_suggestion(suggestion, signature);
@@ -219,32 +223,34 @@ impl<S> CallbackEngine<S> {
     }
 
     /// Detect callback tables across `binary`, decompiling each
-    /// function exactly once and reading it with every wired detector.
+    /// function exactly once and reading it with every configured
+    /// detector.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
-    /// findings follow the function listing — function by function,
-    /// and within one function the function-pointer array calls, then
-    /// the registrations, then the jump tables, then the plugin
-    /// shapes — and after every function the cross-function pass adds
-    /// its chain findings, in listing order, over the bodies this
-    /// walk already decompiled: no extra engine reads. So two
-    /// scans of the same program diff cleanly.
+    /// findings follow the function listing, function by function.
+    /// Within one function they come in detector order: the
+    /// function-pointer array calls, then the registrations, then the
+    /// jump tables, then the plugin shapes. After the whole walk,
+    /// the cross-function pass adds its findings — chains, then
+    /// event systems — in listing order, over the bodies this walk
+    /// already decompiled: no extra engine reads. So two scans of
+    /// the same program diff cleanly.
     ///
-    /// A function whose body the decompiler cannot produce (a thunk, a bad
-    /// entry point) is skipped with a warning; only a failure of the
-    /// listing itself — the server being down — aborts the run, since
-    /// then nothing was scanned. But when more than half the listing
-    /// fails to decompile, the skip-rate breaker aborts the run too:
-    /// that is the signature of the bridge answering from the wrong
-    /// program, and skipping on would persist a phantom-clean record
-    /// (issue #71). The detectors read disjoint body shapes, so a
-    /// function can carry findings of every kind at once and nothing
-    /// is resolved between them. Where a [`with_signatures`](Self::with_signatures)
-    /// map names a bound callback, the registration and chain
-    /// suggestions carry its real closure contract out of the scan —
-    /// into the persisted document, the CLI report, and the escalate
-    /// prompt alike.
+    /// A function whose body the decompiler cannot produce (a thunk, a
+    /// bad entry point) is skipped with a warning. Only a failure of
+    /// the listing itself — the server being down — aborts the run,
+    /// because then nothing was scanned. But when more than half the
+    /// listing fails to decompile, the skip-rate breaker aborts the
+    /// run too: that is the signature of the bridge answering from the
+    /// wrong program, and skipping on would persist a record that
+    /// looks clean but is not (issue #71). The detectors read disjoint
+    /// body shapes, so a function can carry findings of every kind at
+    /// once and nothing is resolved between them. Where a
+    /// [`with_signatures`](Self::with_signatures) map names a bound
+    /// callback, the registration and chain suggestions carry its
+    /// real closure contract out of the scan — into the persisted
+    /// document, the CLI report, and the escalate prompt alike.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<CallbackResult>
     where
         S: ScanSource,
@@ -256,17 +262,18 @@ impl<S> CallbackEngine<S> {
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // P19-6: which bodies the scan could NOT read, named where a name
-        // exists, counted where the listing entry is nameless — the
-        // coverage record below states it, so an unmentioned function
-        // means examined-and-clean, never silently unchecked.
+        // P19-6: keep track of which bodies the scan could not read —
+        // named where a name exists, counted where the listing entry
+        // is nameless. The coverage record below states this, so a
+        // function no finding mentions means examined and clean,
+        // never silently unchecked.
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // A nameless listing entry would send the by-name
+                // lookup into some other function's body. Nothing can
+                // be said about it, so it passes without a record.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -286,12 +293,12 @@ impl<S> CallbackEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
-                    // skipping on.
+                    // Skip-rate breaker: once more than half of the
+                    // listing has failed to decompile, the scan is
+                    // reading a program the analysis engine cannot
+                    // analyze, and an empty result would persist as a
+                    // record that looks clean but is not. Abort with
+                    // the counts instead of skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::CallbackError::DecompileBreaker {
                             failed: decompile_failures,
@@ -334,12 +341,12 @@ impl<S> CallbackEngine<S> {
 
         // The cross-function pass runs after the per-function walk,
         // over the bodies the scan already decompiled — no extra
-        // engine reads — and its findings append in listing
-        // order, after the per-function findings. A chain's callback
-        // is enriched like a registration's; the event-system
+        // engine reads — and its findings append in listing order,
+        // after the per-function findings. A chain's callback is
+        // enriched the same way a registration's is. The event-system
         // suggestion names a crowd of handlers whose contracts can
         // differ, so no single one of them stands for the crowd and
-        // the map never reaches it (ADR-0036).
+        // the signature map never applies to it (ADR-0036).
         let mut cross_findings = self.cross_function.analyze(
             &bodies,
             &self.registration,
@@ -354,14 +361,15 @@ impl<S> CallbackEngine<S> {
         findings.extend(cross_findings);
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source reports its analysis engine's name and version
+        // pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage inside its own scan, where
-        // the truth lives — not the registry row and not the CLI (issue
-        // #350): every listed body was read by every wired detector
-        // unless the scan says which ones it could not reach. The batch
-        // scan phase and the CLI's force-rescan file the same admission
-        // through the same single definition.
+        // The scan admits its own coverage where the truth lives, not
+        // the registry row and not the CLI (issue #350): every listed
+        // body was read by every configured detector unless the scan
+        // says which ones it could not reach. The batch scan phase
+        // and the CLI's force-rescan file the same admission through
+        // this one definition.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -468,7 +476,7 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads: this engine never makes
+        // The rest of the shared trait's reads: this scan never makes
         // them, so they answer with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
@@ -708,11 +716,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_where_every_decompile_fails_aborts() {
-        // The 2026-10-08 incident: the bridge answered the listing from
-        // one program and the decompiles from another, every decompile
-        // failed, and the scan nearly persisted a phantom-clean record
-        // under the target's name. The skip-rate breaker aborts with
-        // the counts instead, so nothing is persisted.
+        // The 2026-10-08 incident: the bridge answered the listing
+        // from one program and the decompiles from another, every
+        // decompile failed, and the scan nearly persisted a record
+        // that looked clean but was not under the target's name. The
+        // skip-rate breaker aborts with the counts instead, so
+        // nothing is persisted.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         let result = CallbackEngine::with_source(program)
@@ -738,9 +747,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
-        // The breaker is a circuit breaker, not a post-mortem: once
-        // most of the listing has failed, the remaining decompiles are
-        // wasted round-trips against the wrong program.
+        // The skip-rate breaker is a fuse, not a post-mortem: once
+        // more than half of the listing has failed, the remaining
+        // decompiles are wasted round-trips against the wrong program.
         let mut program = program();
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
@@ -785,9 +794,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_listing_fails_the_whole_run() {
-        // With the listing gone nothing was scanned, so the run aborts
-        // rather than returning a result that looks empty by
-        // detection.
+        // With the listing gone, nothing was scanned, so the run
+        // aborts rather than returning a result that looks like
+        // nothing was detected.
         let mut program = program();
         program.fail_listing = true;
         let result = CallbackEngine::with_source(program)
@@ -802,10 +811,10 @@ mod tests {
     #[tokio::test]
     async fn custom_name_sets_reach_every_detector() {
         // Swapping a detector's set whole reaches the scan: the
-        // configured custom spelling calls in the body, and the
-        // standard names the swap replaced call nothing — the plugin
-        // body spells both, standard first, and only the custom
-        // spellings land in the record.
+        // configured custom spellings match calls in the body, and
+        // the standard names the swap replaced match nothing. The
+        // plugin body spells both sets, standard first, and only the
+        // custom spellings land in the record.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0")];
         program.bodies.insert(
@@ -868,11 +877,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_callback_registered_in_one_function_and_called_in_another_lands_a_chain() {
-        // The lifecycle the per-body readings each see only half of:
-        // one function hands the handler over, another calls it by
-        // name. The chain lands on the earlier function in listing
-        // order, naming the partner, with both ends' call lines as
-        // evidence.
+        // Per-body readings each see only half of this lifecycle: one
+        // function hands the handler over, another calls it by name.
+        // The chain lands on the earlier function in listing order,
+        // naming the partner, with both ends' call lines as evidence.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -950,8 +958,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_registration_whose_callback_is_never_called_lands_no_chain() {
-        // The handler is handed away but no kept body ever calls it:
-        // an un-wired registration stays a registration, not a chain.
+        // The handler is handed over but no kept body ever calls it:
+        // a registration whose callback is never called stays a
+        // registration, not a chain.
         let result = scan(program()).await;
         assert!(
             result
@@ -1082,9 +1091,10 @@ mod tests {
     #[tokio::test]
     async fn two_registrations_and_a_dispatch_site_reconstruct_one_event_system() {
         // The scan's whole view: two bodies hand handlers to one
-        // registration point and a third dispatches through a table —
-        // the event architecture surfaces as one finding naming the
-        // point, the handlers, and the dispatching function.
+        // registration point and a third dispatches through a table.
+        // The scan reports the event architecture as one finding
+        // naming the point, the handlers, and the dispatching
+        // function.
         let mut program = FakeProgram::empty();
         program.listing = vec![
             summary("FUN_18003ab00"),
@@ -1176,10 +1186,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_fabricates_no_event_system() {
-        // Three registrations to one point, one of them in a body
-        // that never made it, and a dispatch site in a kept body:
-        // with only one kept registration the pass has fewer than
-        // two sites to group and claims no architecture.
+        // The registering body never made it. The kept bodies hold
+        // just one registration to the point, and a kept body carries
+        // a dispatch site: with fewer than two registrations to
+        // group, the pass claims no architecture.
         let mut program = FakeProgram::empty();
         program.listing = vec![
             summary("FUN_18003ab00"),
@@ -1332,8 +1342,9 @@ mod tests {
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
-        // Story 9 (#203): the record also names the engine that produced it —
-        // scan() copies the source's provenance through (#208).
+        // Story 9 (#203): the record also names the analysis engine
+        // that produced it — scan() copies the source's provenance
+        // through (#208).
         let engine = result
             .metadata
             .engine
@@ -1408,7 +1419,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_known_signature_fills_the_registration_closure_contract() {
-        // The contrast at the engine seam: the same canned body,
+        // The contrast at the decompiler seam: the same canned body,
         // scanned with a map naming the bound callback, renders the
         // real contract; scanned without one, it stays open.
         let enriched = CallbackEngine::with_source(registered_handler_program())
@@ -1431,7 +1442,7 @@ mod tests {
     #[tokio::test]
     async fn a_known_signature_fills_the_chain_closure_contract() {
         // The chain's callback is enriched the same way, and the
-        // prose around the placeholder rides on unchanged.
+        // prose around the placeholder stays unchanged.
         let enriched = CallbackEngine::with_source(registered_handler_program())
             .with_signatures(handler_signature_map())
             .scan("eqmain.dll")
@@ -1454,7 +1465,7 @@ mod tests {
         // An fp-array or jump-table callee is unnamed — there is no
         // name to look up — so even a map naming the tables keeps
         // their suggestions open. The registered callback in the same
-        // body is the only suggestion the map reaches.
+        // body is the only suggestion the map fills in.
         let mut signatures = handler_signature_map();
         signatures.insert(
             "handlers".to_string(),
@@ -1515,20 +1526,20 @@ mod tests {
     // Admitted scan coverage (issue #350)
     // ============================================================
 
-    /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
-    /// drift.
+    /// The data-level verdict of the roster pin: empty means the
+    /// record names every declared facet exactly once, and each fault
+    /// reports one drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
+        // The stamp comes from the scan itself, not the registry row
         // and not the CLI — the batch scan phase and the CLI's
         // force-rescan file the same admission through this one
         // definition. Every body was read here, so the record is
-        // complete and says nothing needs admitting.
+        // complete and admits nothing.
         let result = scan(program()).await;
         let coverage = result
             .metadata
@@ -1588,9 +1599,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_coverage_line_is_capped_at_five_names_and_counts_the_nameless() {
-        // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
+        // Bounded prose beside the counts: six decompile failures
+        // name five inline and count the sixth, and a nameless
+        // listing entry counts toward the total without taking a name
         // slot.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::empty();
