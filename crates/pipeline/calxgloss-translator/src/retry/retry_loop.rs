@@ -5,7 +5,10 @@ use crate::retry::attempt::{
     AttemptOutcome, AttemptPath, AttemptReport, AttemptRunCtx, AttemptUnit, emit_attempt,
     run_attempt, verify_and_record,
 };
-use crate::retry::helpers::build_escalated_prompt;
+use crate::retry::helpers::{
+    ESCALATE_REASK_FAMILIES, build_escalated_prompt, reask_admission_lines, tier_re_asks_seam,
+    unavailable_reask_families,
+};
 use crate::retry::{
     FixPromptRequest, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, UnitVerdict,
     build_fix_prompt,
@@ -48,7 +51,9 @@ pub struct RetryLoopCtx<'a> {
     pub reviewer_hints: &'a [String],
     /// The seam capability report the pipeline holds from the moment it
     /// opened the batch's scan source (issue #355). The escalate arm folds
-    /// one family from this held copy; no prompt path re-asks the seam.
+    /// one family from this held copy, and the ladder consults it before
+    /// dispatching an escalate-shaped strategy or tier step (issue #356)
+    /// — no prompt path and no retry decision ever re-asks the seam.
     pub seam_report: &'a calxgloss_types::CapabilityReport,
 }
 
@@ -315,6 +320,58 @@ pub async fn try_translate_with_retry(
             );
             continue;
         }
+        // The escalate posture consults the held report before it burns
+        // an attempt (issue #356): an escalate retry that would re-ask
+        // the seam for a family the engine itself declares it cannot
+        // answer right now can only re-produce today's empty context,
+        // so the ladder prunes the strategy and rotates to one that can
+        // actually close the unit. The pruning survives as reviewable
+        // evidence — an attempt record carrying the ladder's own
+        // `pruned_escalate` label and a failure hint naming the family
+        // beside the seam's own admission line, riding every following
+        // fix prompt's history beside the unit's other failure hints,
+        // never a silent skip. Unknown prunes nothing: only a declared
+        // `unavailable` blocks this arm, exactly P19's two-directional
+        // rule — absence reads unknown, unknown never reads absent.
+        if matches!(current_strategy, RetryStrategy::Escalate) {
+            let blocked = unavailable_reask_families(ctx.seam_report, ESCALATE_REASK_FAMILIES);
+            if !blocked.is_empty() {
+                let admission = reask_admission_lines(&blocked);
+                warn!(
+                    binary = %binary,
+                    function,
+                    pruned_strategy = %current_strategy,
+                    families = %admission,
+                    "Escalate retry pruned — the held report says the engine cannot answer a family it would re-ask"
+                );
+                let evidence = format!("Pruned: escalate would re-ask {admission}");
+                failure_history.push(FailureHint::new(attempt_num, "escalate", evidence.clone()));
+                result.add_attempt(TranslationAttempt {
+                    attempt: attempt_num,
+                    rust_code: initial_translation.rust_code.clone(),
+                    compiled: false,
+                    compilation_errors: vec![evidence],
+                    tests_passed: 0,
+                    tests_total: 0,
+                    failed_tests: Vec::new(),
+                    retry_strategy: "pruned_escalate".to_string(),
+                    tokens_used: None,
+                    context_tier: Some(current_tier.label().to_string()),
+                });
+                emit_attempt(
+                    ctx.events,
+                    &binary,
+                    &function,
+                    &result,
+                    attempt_num,
+                    "pruned_escalate",
+                );
+                if ctx.config.escalate_on_failure {
+                    current_strategy = ctx.config.next_strategy(current_strategy);
+                }
+                continue;
+            }
+        }
         // The wire strategy label is the Display spelling — byte-identical
         // to the literals the old inline arms paired with their prompts.
         let strategy_name = current_strategy.to_string();
@@ -370,26 +427,56 @@ pub async fn try_translate_with_retry(
             // prompt is actually rebuilt at the top of the next iteration).
             // W2.5: an operator `max_context_tier` constraint caps the walk —
             // escalation stops at the cap instead of going past it.
+            // Issue #356: a step onto a tier whose escalated prompt re-asks
+            // the seam is escalate-shaped the same way the strategy arm is —
+            // if the held report says a re-asked family is answerably
+            // unavailable, the step is pruned and its reason survives as a
+            // failure hint, while steps that re-ask nothing walk on.
             if let Some(next_tier) = ctx.config.next_tier_within_cap(current_tier) {
-                warn!(
-                    binary = %binary,
-                    function,
-                    old_tier = %current_tier,
-                    new_tier = %next_tier,
-                    "Context tier escalated"
-                );
-                if let Some(em) = ctx.events {
-                    let _ = em.emit(ProgressEvent::ContextTierSelected {
-                        binary: binary.clone(),
-                        function: function.clone(),
-                        tier: next_tier.to_string(),
-                        tier_label: next_tier.label().to_string(),
-                        complexity: current_tier.label().to_string(),
-                        api_call_count: 0,
-                    });
+                let blocked = if tier_re_asks_seam(next_tier) {
+                    unavailable_reask_families(ctx.seam_report, ESCALATE_REASK_FAMILIES)
+                } else {
+                    Vec::new()
+                };
+                if !blocked.is_empty() {
+                    let admission = reask_admission_lines(&blocked);
+                    warn!(
+                        binary = %binary,
+                        function,
+                        old_tier = %current_tier,
+                        new_tier = %next_tier,
+                        families = %admission,
+                        "Context tier escalation pruned — the escalated prompt would re-ask a family the engine cannot answer"
+                    );
+                    failure_history.push(FailureHint::new(
+                        attempt_num,
+                        "tier_escalation",
+                        format!(
+                            "Pruned: tier escalation to {} would re-ask {admission}",
+                            next_tier.label()
+                        ),
+                    ));
+                } else {
+                    warn!(
+                        binary = %binary,
+                        function,
+                        old_tier = %current_tier,
+                        new_tier = %next_tier,
+                        "Context tier escalated"
+                    );
+                    if let Some(em) = ctx.events {
+                        let _ = em.emit(ProgressEvent::ContextTierSelected {
+                            binary: binary.clone(),
+                            function: function.clone(),
+                            tier: next_tier.to_string(),
+                            tier_label: next_tier.label().to_string(),
+                            complexity: current_tier.label().to_string(),
+                            api_call_count: 0,
+                        });
+                    }
+                    current_tier = next_tier;
+                    tier_escalated = true;
                 }
-                current_tier = next_tier;
-                tier_escalated = true;
             }
         }
     }
@@ -1777,6 +1864,366 @@ mod tests {
                 calxgloss_types::FaultCategory::InfiniteLoop
             ),
             "the one fault is the loop fire, faults={faults:?}"
+        );
+    }
+
+    // ---- #356: the capability-aware ladder — an escalate-shaped retry that
+    // would re-ask a family the report calls unavailable prunes/rotates, with
+    // the decision itself surviving as reviewable evidence ----
+
+    /// A hand-declared report stating `id` is unanswerable right now, with the
+    /// engine's own reason. The engine never declares this family, so a ladder
+    /// that walks differently is demonstrably deciding off the held report, not
+    /// the live seam.
+    fn unavailable_report(id: &str, reason: &str) -> calxgloss_types::CapabilityReport {
+        calxgloss_types::CapabilityReport {
+            families: vec![calxgloss_types::FamilyCapability {
+                id: id.to_string(),
+                status: calxgloss_types::AvailabilityStatus::Unavailable,
+                reason: Some(reason.to_string()),
+            }],
+        }
+    }
+
+    /// One whole report-driven ladder run: what the walk recorded, what it
+    /// asked of the LLM and the seam, and what the stream said it chose.
+    struct CapLadderRun {
+        result: RetryResult,
+        kuna: calxgloss_kuna::KunaSource,
+        prompts: std::collections::BTreeMap<u32, String>,
+        completions: Vec<(u32, String)>,
+        tier_steps: Vec<String>,
+    }
+
+    async fn run_ladder_with_report(
+        report: calxgloss_types::CapabilityReport,
+        max_attempts: u32,
+        max_context_tier: Option<calxgloss_types::ContextTier>,
+    ) -> CapLadderRun {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        // Today's ladder-pin unit, with a real fixture function in the call
+        // graph so a rung that does re-ask the seam leaves its mark in the
+        // engine-call log.
+        let translation = Translation {
+            binary: "game_logic.dll".to_string().into(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: Vec::new(),
+            call_graph: vec!["UpdateScene".to_string()],
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+        let llm_base = alternating_broken_llm().await;
+        let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        // The clone shares the engine-call log — this handle reads what the
+        // batch's source wrote.
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna.clone());
+        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+        let events = calxgloss_types::TranslationEvents::new(256);
+        let mut rx = events.subscribe();
+        let config = RetryConfig {
+            max_attempts,
+            max_context_tier,
+            ..RetryConfig::default()
+        };
+        let ctx = RetryLoopCtx {
+            verifier: &verifier,
+            llm: &llm,
+            source: &source,
+            config: &config,
+            workspace: Some(ws.path()),
+            events: Some(&events),
+            resource_detector: None,
+            fault_logger: None,
+            reviewer_hints: &[],
+            seam_report: &report,
+        };
+
+        let result = try_translate_with_retry(translation, &ctx).await;
+        let mut prompts = std::collections::BTreeMap::new();
+        let mut completions = Vec::new();
+        let mut tier_steps = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                ProgressEvent::LlmRequest {
+                    attempt, prompt, ..
+                } => {
+                    prompts.insert(attempt, prompt);
+                }
+                ProgressEvent::TranslationAttemptCompleted {
+                    attempt,
+                    retry_strategy,
+                    ..
+                } => completions.push((attempt, retry_strategy)),
+                ProgressEvent::ContextTierSelected { tier_label, .. } => {
+                    tier_steps.push(tier_label)
+                }
+                _ => {}
+            }
+        }
+        CapLadderRun {
+            result,
+            kuna,
+            prompts,
+            completions,
+            tier_steps,
+        }
+    }
+
+    /// The strategy walk's labels, in order — the shape of the ladder on the wire.
+    fn walk(result: &RetryResult) -> Vec<&str> {
+        result
+            .attempts
+            .iter()
+            .map(|a| a.retry_strategy.as_str())
+            .collect()
+    }
+
+    /// A declared `Unavailable` on a family the escalate rung re-asks is the
+    /// one answer that prunes it: the rung rotates instead, and the prune
+    /// reads as reviewable evidence in the fault/hint channel — never a
+    /// silent skip, and never by asking the seam again.
+    #[tokio::test]
+    async fn a_report_calling_the_re_asked_family_unavailable_prunes_the_escalate_rung() {
+        let run = run_ladder_with_report(
+            unavailable_report("decompilation", "Zanthoxylum builds never produce a body"),
+            6,
+            Some(calxgloss_types::ContextTier::Signature),
+        )
+        .await;
+        assert!(
+            !run.result.success,
+            "the canned code is broken on every attempt"
+        );
+
+        // the escalate rung is swapped out of the walk — exactly the shape of
+        // today's skip_default precedent swapping the default off
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "test_fix",
+                "pruned_escalate",
+                "edge_case_fix",
+                "compile_fix"
+            ]
+        );
+
+        // the prune is recorded — family and reason named beside the other
+        // failure evidence, on an attempt carrying the ladder's own label
+        assert_eq!(
+            run.result.attempts[3].compilation_errors,
+            vec![
+                "Pruned: escalate would re-ask decompilation — unavailable — Zanthoxylum builds never produce a body"
+            ]
+        );
+        assert_eq!(
+            run.completions,
+            vec![
+                (1, "initial".to_string()),
+                (2, "compile_fix".to_string()),
+                (3, "test_fix".to_string()),
+                (4, "pruned_escalate".to_string()),
+                (5, "edge_case_fix".to_string()),
+                (6, "compile_fix".to_string()),
+            ]
+        );
+
+        // the decision read the held report, not the engine: the pruned rung
+        // never re-asked the seam, and nothing else in this walk asks it —
+        // the round-trip log stays empty
+        assert!(run.kuna.decompile_calls().is_empty());
+
+        // the pruned rung built no prompt, and the rung it rotated to carries
+        // the prune in its fix prompt's history, named exactly once
+        assert_eq!(
+            run.prompts.keys().copied().collect::<Vec<_>>(),
+            vec![2, 3, 5, 6],
+            "the pruned rung asked no LLM question"
+        );
+        let prompt5 = run
+            .prompts
+            .get(&5)
+            .expect("the rotated-to rung re-asks the LLM");
+        assert!(prompt5.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(prompt5.contains(
+            "Pruned: escalate would re-ask decompilation — unavailable — Zanthoxylum builds never produce a body"
+        ));
+        assert_eq!(prompt5.matches("Zanthoxylum").count(), 1);
+    }
+
+    /// Pruning is only ever about the family a rung re-asks: a report naming
+    /// a different family unavailable leaves the walk byte-identically today's,
+    /// and the re-ask still reaches the seam.
+    #[tokio::test]
+    async fn a_report_unavailable_about_another_family_leaves_the_ladder_today() {
+        let run = run_ladder_with_report(
+            unavailable_report("strings", "Ginkgo builds keep no string table"),
+            6,
+            Some(calxgloss_types::ContextTier::Signature),
+        )
+        .await;
+
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "test_fix",
+                "escalate",
+                "edge_case_fix",
+                "compile_fix"
+            ]
+        );
+        // the unblocked escalate rung still re-asks the seam exactly as today
+        assert!(
+            run.kuna
+                .decompile_calls()
+                .contains(&"UpdateScene".to_string()),
+            "an unblocked escalate rung must still re-ask the seam"
+        );
+        // and the unrelated family's reason never quotes itself into a prompt
+        for (attempt, prompt) in &run.prompts {
+            assert!(
+                !prompt.contains("Ginkgo"),
+                "attempt {attempt}'s prompt quotes an unrelated family's reason"
+            );
+        }
+    }
+
+    /// Today's Kuna declares every family on the seam roster answerable, so
+    /// the production ladder must walk exactly as it walked before the report
+    /// entered it — the all-answerable report admits nothing to prune on.
+    #[tokio::test]
+    async fn a_report_calling_every_family_answerable_walks_todays_ladder() {
+        let report = calxgloss_types::CapabilityReport {
+            families: calxgloss_decomp::QUERY_FAMILIES
+                .iter()
+                .map(|(id, _)| calxgloss_types::FamilyCapability {
+                    id: (*id).to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Answerable,
+                    reason: None,
+                })
+                .collect(),
+        };
+        let run =
+            run_ladder_with_report(report, 6, Some(calxgloss_types::ContextTier::Signature)).await;
+
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "test_fix",
+                "escalate",
+                "edge_case_fix",
+                "compile_fix"
+            ]
+        );
+        assert!(
+            run.kuna
+                .decompile_calls()
+                .contains(&"UpdateScene".to_string()),
+            "an answerable re-ask still reaches the seam"
+        );
+    }
+
+    /// A step ONTO ModuleContext re-asks the seam the same families the
+    /// escalate strategy arm does, so the same declared `Unavailable` holds
+    /// the tier walk at the last tier that asks nothing — recorded in the
+    /// same channel, the held step never silent.
+    #[tokio::test]
+    async fn a_blocked_seam_holds_the_tier_rung_from_stepping_onto_a_module_tier() {
+        let run = run_ladder_with_report(
+            unavailable_report("decompilation", "Zanthoxylum builds never produce a body"),
+            9,
+            None,
+        )
+        .await;
+
+        // the escalate rungs swap out (as before), and the climb walks to the
+        // last tier that re-asks nothing — and no further
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "escalated(disassembly)",
+                "pruned_escalate",
+                "edge_case_fix",
+                "escalated(with_tests)",
+                "test_fix",
+                "pruned_escalate",
+                "edge_case_fix"
+            ]
+        );
+        assert_eq!(run.tier_steps, vec!["disassembly", "with_tests"]);
+
+        // no rung ever re-asked the seam — the held report decided every step
+        assert!(run.kuna.decompile_calls().is_empty());
+
+        // every hold is reviewable: the final fix prompt's failure history
+        // carries both escalate prunes and the tier hold, each named by the
+        // seam's own admission wording
+        let last_prompt = run
+            .prompts
+            .get(&9)
+            .expect("the rung after the holds re-asks the LLM");
+        assert_eq!(
+            last_prompt
+                .matches(
+                    "Pruned: escalate would re-ask decompilation — unavailable — Zanthoxylum builds never produce a body"
+                )
+                .count(),
+            2,
+            "both escalate prunes survive as hints"
+        );
+        assert!(last_prompt.contains(
+            "Pruned: tier escalation to module_context would re-ask decompilation — unavailable — Zanthoxylum builds never produce a body"
+        ));
+        assert_eq!(last_prompt.matches("Zanthoxylum").count(), 3);
+    }
+
+    /// The matching control: with nothing declared unavailable, the identical
+    /// config walks today's full climb — escalate rungs included, every tier
+    /// stepped, the re-asks reaching the seam.
+    #[tokio::test]
+    async fn an_answerable_seam_walks_todays_full_tier_climb() {
+        let run =
+            run_ladder_with_report(calxgloss_types::CapabilityReport::default(), 9, None).await;
+
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "escalated(disassembly)",
+                "escalate",
+                "escalated(with_tests)",
+                "compile_fix",
+                "escalated(module_context)",
+                "escalate",
+                "escalated(full_module)"
+            ]
+        );
+        assert_eq!(
+            run.tier_steps,
+            vec!["disassembly", "with_tests", "module_context", "full_module"]
+        );
+        assert!(
+            run.kuna
+                .decompile_calls()
+                .contains(&"UpdateScene".to_string()),
+            "the unblocked ladder re-asks the seam along the climb"
         );
     }
 }

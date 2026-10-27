@@ -29,6 +29,82 @@ pub(crate) fn fold_seam_capability(
     evidence.api_capability = calxgloss_prompts::capability_for(report, IMPORTS_FAMILY);
 }
 
+/// The query families an escalate-shaped retry re-asks of the seam
+/// (issue #356): both re-read postures — the escalate strategy's prompt
+/// and the tier-escalated prompt at a tier that re-reads — resolve the
+/// neighbors through the seam's function listing and pull their
+/// signatures and bodies through its decompile. These are exactly the
+/// two families `extract_call_graph_neighbors` and
+/// `extract_neighboring_context` ask of the source; when a future arm
+/// starts asking the seam for another family's answers, the roster grows
+/// here and nowhere else.
+pub(crate) const ESCALATE_REASK_FAMILIES: &[&str] = &["function-inventory", "decompilation"];
+
+/// Whether the escalated prompt built at `tier` re-asks the seam (issue
+/// #356): the tier walk's context comes from the persisted translation
+/// record up through WithTests, while ModuleContext and FullModule pull
+/// neighbor lists and bodies through the scan source — the arms of
+/// [`build_escalated_prompt`](build_escalated_prompt) that read it.
+/// The retry ladder's tier gate branches on this, so a step the walk
+/// could take without any re-ask is never pruned.
+pub(crate) fn tier_re_asks_seam(tier: calxgloss_types::ContextTier) -> bool {
+    matches!(
+        tier,
+        calxgloss_types::ContextTier::ModuleContext | calxgloss_types::ContextTier::FullModule
+    )
+}
+
+/// The retry ladder's one consultation (issue #356): which of the
+/// families an escalate-shaped retry would re-ask does the held report
+/// read as answerably unavailable — declared, and stated by the engine
+/// to be unanswerable right now?
+///
+/// Only a declared `unavailable` blocks: an answerable family never
+/// blocks, and a family the report never declared — which reads
+/// `unknown` — never blocks either. Unknown must never be read as
+/// unavailable, exactly as absence must never be read as complete;
+/// P19's two-directional rule governs this axis too. An empty verdict
+/// means the ladder chooses exactly as it chose before the seam spoke.
+pub(crate) fn unavailable_reask_families<'a>(
+    report: &'a calxgloss_types::CapabilityReport,
+    families: &[&str],
+) -> Vec<&'a calxgloss_types::FamilyCapability> {
+    families
+        .iter()
+        .filter_map(|family| {
+            report.families.iter().find(|entry| {
+                entry.id == *family
+                    && entry.status == calxgloss_types::AvailabilityStatus::Unavailable
+            })
+        })
+        .collect()
+}
+
+/// The prune's reviewable reason (issue #356): every blocked family
+/// named beside the seam's own admission wording — the shared
+/// [`FamilyCapability::admission`](calxgloss_types::FamilyCapability::admission)
+/// home the run report's seam line already renders — joined into one
+/// line, so the pruned path always says which family went empty and why
+/// the engine says it cannot answer it.
+pub(crate) fn reask_admission_lines(blocked: &[&calxgloss_types::FamilyCapability]) -> String {
+    blocked
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} — {}",
+                entry.id,
+                // An unavailable entry always admits itself; the bare
+                // word is the fallback for an entry that gave no reason,
+                // exactly what `admission` itself spells.
+                entry
+                    .admission()
+                    .unwrap_or_else(|| "unavailable".to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Collect every synchronous per-analyzer evidence list for one function
 /// in a single pass — the bundle the escalate and module-context prompts
 /// read (issue #268).
