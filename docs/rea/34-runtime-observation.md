@@ -1,8 +1,10 @@
 # REA runtime observation — Frida, debug sessions, process scenarios, native UI
 
-> Part of the [REA overview](README.md). How REA gets *runtime* facts about
-> native targets: Frida injection, GDB/Rizin debug sessions, PTY process
-> scenarios, macOS native UI/call observation, and the static↔runtime join.
+> Part of the [REA overview](README.md). How REA gets *runtime* facts — facts
+> about a native target while it is actually executing, not just from its
+> bytes: Frida injection, GDB/Rizin debug sessions, PTY process
+> scenarios, macOS native UI/call observation, and connecting static and
+> runtime evidence.
 > Browser/Electron/JS/ADB/pcap lanes out of scope; provider table, crash cores
 > and Evidence semantics are in ch. 31/32/33, not repeated. REA clone
 > `/tmp/opencode/rea` @ `28a33ca`.
@@ -42,15 +44,16 @@ Remote endpoints carry host, token, cert, origin, keepalive (s, per Frida Core
 
 Distinct from the ch. 31 provider table: these are *live debugging* lanes.
 Sessions live only for the MCP server's lifetime, are **Linux-only**, and any
-unrestricted debugger command **retires the active binary-analysis session**, so
+unrestricted debugger command **closes the active binary-analysis session**, so
 a fresh provider cannot rebind over still-writing command effects
 (`docs/reverse-engineering-tools.md:3–13`).
 
 **GDB**: `start_gdb_session` → `gdb_console` → `gdb_session_status` →
 `close_gdb_session`; GDB/MI (`--nx --quiet --interpreter=mi3`, MI2 fallback,
-auto-load disabled); optional `inferior_tty` as durable sink for detached
-inferiors; closing with one live inferior and a verified TTY **auto-detaches it,
-which can resume execution**, annotated destructive; close confirms live thread
+auto-load disabled); optional `inferior_tty` gives detached inferior processes
+an output destination that outlives the session; closing with one live inferior
+and a verified TTY **auto-detaches it, which can resume execution**, annotated
+destructive; close confirms live thread
 groups and "never infers target ownership from a PID or path"; the console is
 unrestricted (shell, files, network in the REA user's context), output to 16 MiB
 (`:34–38`).
@@ -59,10 +62,10 @@ unrestricted (shell, files, network in the REA user's context), output to 16 MiB
 `rizin_debug_session_status` / close; explicit `inferior_tty` required;
 `dbg.exitkills=false` so the target may outlive the debugger; close *proves* the
 detach — `olj` descriptor list, detach only a unique `ptrace://` descriptor,
-verify `/proc/<pid>/fd/1,2` still name the selected TTY by device+inode (`:50`);
+verify `/proc/<pid>/fd/1,2` still point at the selected TTY by device+inode (`:50`);
 30 s startup, 120 s/frame, 64-frame history, no override (`:54`). Cores are a
-separate lane (ch. 32); the `trace_crash` prompt joins crash + static + capture
-Evidence (`docs/mcp-prompts.md:14`).
+separate lane (ch. 32); the `trace_crash` prompt brings crash, static, and
+capture Evidence together (`docs/mcp-prompts.md:14`).
 
 ### Process-behavior lane
 
@@ -123,7 +126,8 @@ for the PE-header comparison). The live native-UI tools are macOS-centric
 
 ### Static↔runtime correlation
 
-`correlate_static_and_runtime` is the join, deliberately humble about it.
+`correlate_static_and_runtime` is where the two kinds of evidence meet; it is
+deliberately humble about what it can show.
 Inputs: ≥1 *static comparison* Evidence record (output of
 `compare_functions`/`compare_artifacts` — dimensions `identity, pseudocode,
 assembly, comments, calls, references, strings_names, cfg`) + ≥1 *runtime
@@ -132,11 +136,12 @@ mappings**: a static selector (artifact logical path or one function dimension)
 bound to one runtime dimension with `side_alignment` and a hypothesis carrying
 an `expected_pattern` of `cochanged | static_only | runtime_only |
 both_unchanged` (`src/domain/staticRuntimeCorrelation.ts:28–47,64–89`). Per
-mapping it computes the `observed_pattern`, classifies each join
+mapping it computes the `observed_pattern`, classifies each pairing
 `hypothesis`/`contradiction`/`unresolved_branch`, and reports overall
-`correlated/contradicted/unknown/truncated` + counts (`:122–146`): the join is
-a static diff of a function (`calls` changed) plus the behavioral diff of its
-scenario captures (`filesystem` didn't) with an asserted hypothesis; REA marks
+`correlated/contradicted/unknown/truncated` + counts (`:122–146`). In plain
+terms: a static diff of one function (its `calls` changed) is put together with
+the behavioral diff of its scenario captures (whose `filesystem` didn't) and a
+stated hypothesis about the pair; REA marks
 contradictions — "matching patterns are hypotheses, not causality"
 (`references/evidence-workflows.md:57–58`). Nothing live is touched:
 `sessionEvidence` (`src/contracts/toolEffects.ts:722`).
@@ -150,8 +155,9 @@ which MCP `readOnlyHint`/`destructiveHint`/… derive
 (`src/contracts/toolEffects.ts:1–27`). `executesForeignCode` ("runs or drives
 code REA does not own") is set for `load_frida_script`, `gdb_console`,
 `rizin_debug_command`, `observe_native_calls`, `capture_native_ui_scenario`,
-`capture_process_scenario` (`:71–115,206–255,574–612,706–712`); pure-analysis
-joins (`compare_*`, `correlate_static_and_runtime`) are evidence-only.
+`capture_process_scenario` (`:71–115,206–255,574–612,706–712`); the
+pure-analysis comparisons (`compare_*`, `correlate_static_and_runtime`) only
+produce evidence.
 Annotations are "hints, not authorization controls"; REA "does not require
 permission grants or per-call approval flags" — requests name their target and
 lifecycle; MCP clients own the confirmation UI
@@ -178,7 +184,7 @@ and REA reports `cleanup_incomplete` rather than kill unverified (`:537–593`).
 | Granularity | Whole exported function: arguments → return/globals/observable output | Call entries: argument registers, receiver class, backtraces; terminal/exit/filesystem/UI dimensions |
 | Who drives | Nobody — inputs generated statically from exports + type evidence | Someone authors every scenario, breakpoint set, or script (agent or human) |
 | Equivalence claim | The baseline test *is the gate* — same inputs, both sides, blocks the commit | The comparison contract proves the *scenario* matched; differences/unknowns reported, never enforced |
-| Target formats | Windows PE32/PE32+ native DLLs (managed parked, ADR-0044) | Frida: any OS it supports (incl. Windows processes); LLDB trace: Mach-O; PTY capture: Linux/macOS; native UI: macOS; debug: Linux |
+| Target formats | Windows PE32/PE32+ native DLLs (managed PEs are parked, ADR-0044) | Frida: any OS it supports (incl. Windows processes); LLDB trace: Mach-O; PTY capture: Linux/macOS; native UI: macOS; debug: Linux |
 
 ### Where calxgloss's approach is stronger
 
@@ -234,7 +240,7 @@ exports only, one OS — but the only fully automated, replayable equivalence
 nothing it observes becomes a gate: every lane needs an author, and its honesty
 budget (limits, truncation, unknowns) is per-call overhead a hot pipeline won't
 pay. Steal the two highest-leverage facts — *which calls happened*, *what real
-callers passed* — and weld them into the gate.
+callers passed* — and build them into the gate.
 
 ### Steal ideas
 
@@ -253,8 +259,8 @@ callers passed* — and weld them into the gate.
    exit + finalization — with the five dimensions as the EXE verify signal.
 4. **Hypothesis ledger for the retry loop.** Log each unclosable unknown as a
    `correlate_static_and_runtime`-shaped mapping + expected pattern;
-   contradictions steer strategy escalation and survive as reviewable Evidence
-   (pairs with ch. 33's unknown-ledger steal).
+   contradictions steer retry-strategy escalation and survive as reviewable
+   evidence records (pairs with ch. 33's unknown-ledger steal).
 5. **Owned-process discipline in testgen.** When launching the original binary
    (hung calls, crash repro), bind launch-time identity to an ownership token
    and recheck before every kill instead of signaling a bare PID

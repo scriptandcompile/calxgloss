@@ -10,31 +10,36 @@
 
 ### The evidence contract
 
-Every Evidence-producing tool returns one canonical record: `normalized_result`
-(operation data), `evidence_id` (stable identity), `raw_result` (a distinct
-provider representation, `null` when none), and an always-present
-`analysis_profile` that participates in semantic identity — omission is
-rejected (mcp-contracts.md:16–27). It carries **limitations, coverage, and
-residual unknowns** as first-class fields (evidence-workflows.md:6). Coverage
-is a *producer-owned fact* — `coverage.status ∈ {complete, unknown}` per
-collection, consumers reject records lacking it, "limitations are explanatory
-and do not supply or infer coverage" (:37–57). Dossier `facet_availability`
-maps distinguish observed-absence from unobserved, so `compare_functions` keeps
-a dimension `unknown` for unavailable facets; an empty call list with partial
-coverage "is not proof that the function has no calls" (:59–84, 122–132).
+REA's *evidence contract* is the fixed record format that every
+Evidence-producing tool must return. The record has four parts:
+`normalized_result` (the operation data), `evidence_id` (a stable identity),
+`raw_result` (a distinct provider representation, `null` when none), and an
+always-present `analysis_profile` that participates in semantic identity —
+omission is rejected (mcp-contracts.md:16–27). It carries **limitations,
+coverage, and residual unknowns** as first-class fields
+(evidence-workflows.md:6). Coverage is a fact owned by the producing tool:
+`coverage.status ∈ {complete, unknown}` per collection, consumers reject
+records lacking it, and "limitations are explanatory and do not supply or
+infer coverage" (:37–57). A dossier's `facet_availability` map separates
+"checked and not found" from "not checked at all", so `compare_functions`
+keeps a dimension `unknown` for unavailable facets. An empty call list with
+partial coverage "is not proof that the function has no calls"
+(:59–84, 122–132).
 
-**Retained-reference vs inline-evidence modes.** `detail: "summary"` keeps the
-complete record in the session's Evidence ledger and returns a derived summary
-with `parent_evidence_id`; later questions read it through
+**Retained-reference vs inline-evidence modes.** REA can return a full
+record, or keep it in the session's Evidence ledger and return only a
+summary that points back to it. `detail: "summary"` is the second mode: the
+complete record stays in the ledger, the reply is a derived summary with
+`parent_evidence_id`, and later questions read the record through
 `inspect_analysis_view` without re-running the producer
 (mcp-contracts.md:306–362; evidence-workflows.md:8–12). Comparisons accept
 inline Evidence or a `{"kind":"retained-evidence","evidence_id":"ev_…"}`
-reference per side (:452–475). References live in the *connection's* ledger,
-cleared by `close_binary` — "keeping only an Evidence ID across close is
-insufficient"; export a bundle first (:477–495). Oversized replies hit the
-pinned 10 MiB stdio budget and return `resource_constraint` with a
-ready-to-call view continuation; the analysis "remains complete in the ledger"
-(:134–152, 194–204).
+reference per side (:452–475). References are kept in the *connection's*
+ledger, which `close_binary` clears — "keeping only an Evidence ID across
+close is insufficient"; export a bundle first (:477–495). A reply too large
+for the pinned 10 MiB stdio budget returns `resource_constraint` with a
+ready-to-call view continuation. The analysis "remains complete in the
+ledger" (:134–152, 194–204).
 
 **Compact schemas + error contract.** Advertised input schemas are re-projected
 for weak clients: the default `REA_MCP_INPUT_SCHEMA_PROFILE=compact` renders
@@ -115,7 +120,9 @@ effects left unknown (native-investigation.md:252–302).
 
 ### Reconstruction conformance: coverage, readiness, obligation ledgers
 
-REA's most distinctive layer — a machine-checkable notion of "reconstruction done":
+REA's most distinctive layer — a machine-checkable notion of "reconstruction
+done". REA's *obligation ledger* is the list of things the reconstruction must
+prove, each marked open or closed:
 
 - **Obligation ledgers** (`build_reconstruction_obligation_ledger`, CLI twin)
   turn authenticated Evidence into a deterministic claim list, *conservative by
@@ -183,12 +190,12 @@ follow `remediation.action` literally (:81–116).
 
 | REA | calxgloss |
 |---|---|
-| Evidence envelope: coverage/facet availability + limitations + unknowns on every record | Evidence engines emit typed claims into prompts with no first-class limitations/coverage fields; honesty lives in the *reviewer*, not the data (10-calxgloss-baseline.md) |
+| Evidence envelope: coverage/facet availability + limitations + unknowns on every record | Evidence engines emit typed claims into prompts with no first-class limitations/coverage fields; honesty is left to the *reviewer*, not the data (10-calxgloss-baseline.md) |
 | Justification discipline: cite Evidence IDs, keep a findings ledger (SKILL.md:387–390, 424–431) | Justification requirements enforced at commit + review UI (calxgloss-git, `calxgloss-web`) — same goal, different checkpoint: human gate vs per-record contract |
 | Unknown ledger: record/update/verify with required authority + optimistic revisions | Failure records + retry strategies `compile_fix`/`test_fix`/`escalate`/`edge_case_fix`/`auto` (`docs/data_flow.md` §8): functions are tracked, but resolution = the retry compiled and passed tests — no statement of *what evidence would establish the fact*, nothing auditable after the run |
 | Obligation ledger + coverage: declared case kinds, owner digest, comparable-authority verifier, `closure_digest` | Per-function unit of work + review queue + attempt branches: the branch commit *is* an owner with a content digest, the queue *is* an open-obligation list — but no case-kind requirements, no fail-closed "DLL complete" check, nothing digest-sealing overall status |
 | `verify_reconstruction` over a hand-authored finite spec | `calxgloss-testgen` auto-derives the spec by FFI-calling the real DLL, `calxgloss-verify` compiles + runs. calxgloss's verifier has the *stronger* authority in REA's own table — `controlled-replay` at `observed` confidence (reconstruction-coverage.md:19–24) — running continuously, not once |
-| Evidence bundles: portable, digest-validated, tamper-detectable handoff; `compare_bundles` history diffing | None. Git substitutes: attempt branches + scan cache (`re/cache/<binary>/<sha256>/`) persist state — but carry no Evidence identity, no authentication, nothing diffable as claims + unknowns |
+| Evidence bundles: portable, digest-validated, tamper-detectable handoff; `compare_bundles` history diffing | None. Git substitutes: attempt branches + scan read cache (`re/cache/<binary>/<sha256>/`) persist state — but carry no Evidence identity, no authentication, nothing diffable as claims + unknowns |
 | Byte-identity claims (DX-Ball: 63 compiled bytes) | Excluded by construction: PAL mapping (tiny-skia/wgpu) makes identical machine code impossible |
 | Verification receipts (md+json pairs pinning commands/costs/digests) | Verify results are pipeline-ephemeral; the attempt-branch commit is the only durable artifact of a verify pass |
 
@@ -221,9 +228,9 @@ resolution; obligation ledgers + fail-closed conformance evaluator; portable
 authenticated Evidence bundles + history diffing; byte-identity claims; dated
 verification receipts; the comparison tool family; limits/recovery contracts.
 
-On *verification execution* calxgloss is ahead: it runs the real DLL, feeds
-baselines automatically into a compile-test loop, and never needs a human to
-author claims. On *verification bookkeeping* REA is far ahead: it can say, in
+On *verification execution* calxgloss is ahead: it runs the real DLL, sends
+the captured baselines straight into a compile-test loop, and never needs a
+human to author claims. On *verification bookkeeping* REA is far ahead: it can say, in
 digest-checkable machine terms, which claims are open, who owns them, what
 evidence would close them — and refuse to call the whole thing done. calxgloss
 cannot currently distinguish "DLL fully translated" from "pipeline stopped with
@@ -235,8 +242,8 @@ nobody complaining"; that gap is REA's fail-closed ledger.
    emit what the evidence engines couldn't determine (ambiguous vtable target,
    unresolved this-pointer, un-called export) with `required_evidence` text, in
    REA's record/update/verify shape (sessionToolContracts.ts:147–166):
-   reviewers resolve them, `escalate` retries consume them, and the run leaves
-   an audit ledger instead of silent gaps.
+   reviewers resolve them, `escalate` retry strategies read them, and the run
+   leaves an audit trail instead of silent gaps.
 2. **Obligation ledger for restitching status.** Per unit of work: owner =
    attempt-branch commit digest; required case kinds (positive/negative/
    malformed — testgen can already classify its inputs); verifier =

@@ -26,11 +26,13 @@ description-matching and "analyze this codebase" is the common false trigger.
 
 **Reference-file split** (6 files, ~1,200 lines more): SKILL.md keeps what
 must be true *before the first tool call* — boundary, connect discipline,
-routing, summary-first economy, evidence honesty; deferred is situational
-depth: recovery (205), per-format (`native-and-artifacts.md`, 532), JS (240),
-Android (37), runtime observation (84), evidence recipes (106). Progressive
-disclosure: routing stays (you need the first tool name now), qlog heap
-settings load only on demand; the skill degrades gracefully when "that server
+routing, summary-first economy, evidence honesty. The separate files carry the
+situational depth: recovery (205), per-format (`native-and-artifacts.md`, 532),
+JS (240), Android (37), runtime observation (84), evidence recipes (106). The
+organising rule is *progressive disclosure* — the always-loaded text holds
+only what is needed right now: routing stays in SKILL.md because you need the
+first tool name immediately, while qlog heap settings load only when a qlog
+actually shows up. The skill degrades gracefully when "that server
 does not advertise retained references" (`:25–26`).
 
 ### Connection & recovery discipline — an error-recovery state machine
@@ -52,8 +54,9 @@ an observed blocker* (`connection-and-recovery.md:3–5`). States:
    may still be running) vs server `provider_timeout` (REA's budget — follow
    `remediation.action` literally; change fields or `REA_*` settings *only
    when the text names it*).
-4. **Retry automaton** (`:92–113`): drop → one retry if safe or
-   known-not-started, else restart the client; startup failure → one retry,
+4. **Retry automaton** (`:92–113`): drop → one retry, only if the dropped
+   action was safe or known not to have started, otherwise restart the client;
+   startup failure → one retry,
    then restart + `rea doctor`; never retry a failure returning "the same
    unchanged result"; `cleanup_incomplete` → retry the *exact cleanup owner*,
    block dependent work; retryable `resource_constraint` → wait and retry
@@ -175,7 +178,8 @@ development-workflow set — `grill-with-docs → to-spec → to-tickets →
 implement (tdd + code-review) → retro`, plus standing `diagnosing-bugs`,
 `research`, `handoff` — and `AGENTS.md` is the navigation/process layer:
 graft-first code context, GitHub Issues tracker, domain docs,
-`docs/standards.md` feeding the code-review Standards axis. Nothing teaches an
+`docs/standards.md`, used by the code-review skill's Standards axis. Nothing
+teaches an
 agent to *run* calxgloss's 23-command CLI. REA's dev skills are the same
 genre pointed at REA — the only genuine overlap between the two agent layers:
 bespoke and scope-limited ("an investigation alone does not authorize edits",
@@ -184,7 +188,7 @@ verdicts.
 
 | Failure mode | REA (agent-side) | calxgloss (harness / dev side) |
 |---|---|---|
-| Context bloat | progressive disclosure, compact profiles, summary+view paging, optional prompts | prompt built by code: 5 tiers + evidence digests; nothing to bloat during translation |
+| Context bloat | progressive disclosure, compact profiles, summary+view paging, optional prompts | prompt built by code: 5 context tiers + evidence digests; nothing to bloat during translation |
 | Stale registrations/knowledge | doctor, dry-run plans, version-skew rules, follow-the-connected-server rule | near-zero surface (nothing to go stale); the analog is stale docs/graft vs code — AGENTS.md mandates `graft build`; CHANGELOG+roadmap tick per commit |
 | Tool misuse | routing table, availability probe, banned unadvertised calls, never guess targets | tools are crate calls in the pipeline; misuse is a bug → `diagnosing-bugs` + tdd red test |
 | Bad LLM output | self-policed evidence rules | **fault monitors** (hallucination, infinite loop, divergence, exhaustion) + FFI baseline gate + human review UI |
@@ -207,7 +211,8 @@ available evidence, name what you can't."
 
 REA budgets the *catalog and transport* (13.3 KB compact schemas, output-
 schema profile, summary/retained-view paging, completion capped at 100);
-calxgloss budgets the *per-function prompt* (5 tiers, escalated on failure —
+calxgloss budgets the *per-function prompt* (5 context tiers, escalated on
+failure —
 mapped in chs. 31/33). Same axis, opposite ends: shrink the 150-tool catalog
 vs grow per-function context only where the cheap attempt failed. REA's optimization skill supplies the
 measurement discipline both should hold — count discovery, retries and
@@ -229,7 +234,7 @@ dated version-skew section; the recovery state machine.
 ### Verdict
 
 One question, opposite answers: *who orchestrates?* REA answers "the agent,
-armored by skill + server-side contracts" — its job, arbitrary analyst
+guarded by skill + server-side contracts" — its job, arbitrary analyst
 questions across ~30 artifact families, cannot be pre-encoded. calxgloss
 answers "the pipeline" — its job, one deterministic PE→Rust conversion
 unattended at scale, must not depend on an agent behaving.
@@ -245,7 +250,7 @@ for its 23-command surface beyond hand-written docs.
 1. **A "drive the calxgloss harness" skill for contributors** — REA's shape
    inward: short SKILL.md (when to run `classify` vs `translate` vs `auto` vs
    one evidence command; routing analogue: managed PE → parked (ADR-0044),
-   EXE vs DLL → which lane) + `references/` for per-engine recipes and the
+   EXE vs DLL → which lane) + `references/` for per-evidence-engine recipes and the
    failure playbook — progressive disclosure beats a 1,390-line design doc.
 2. **Deepen `calxgloss doctor` REA-style** — read-only but scopable
    (`--target/--endpoint/--config`), checking what actually breaks runs: LLM
