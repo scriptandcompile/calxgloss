@@ -1,15 +1,18 @@
-//! The API-identification engine: import table plus per-function summaries.
+//! The API-identification evidence engine: import table plus per-function
+//! summaries.
 //!
-//! [`ApiEngine`] runs the two detectors over one binary — the
-//! [`ImportTableScanner`] identifies the binary's imports, the
+//! [`ApiEngine`] runs the two detectors over one binary. The
+//! [`ImportTableScanner`] identifies the binary's imports, and the
 //! [`ApiSummaryDetector`] reads the built call graph for the APIs each
-//! function reaches — and the [divergence](crate::divergence) and
+//! function reaches. Then the [divergence](crate::divergence) and
 //! [com](crate::com) passes read the classified import listing and the
-//! graph names for the platform-divergence and COM claims, collecting
-//! everything into one [`ApiDetectionResult`]. The engine is generic
-//! over the shared [`ScanSource`] plus a [`CallGraphSource`] for the
-//! built graph, so tests can run the whole orchestration over canned
-//! data; [`new`](Self::new) builds one over a loaded [`KunaSource`].
+//! graph names for the platform-divergence and COM claims. Everything
+//! is collected into one [`ApiDetectionResult`].
+//!
+//! The evidence engine is generic over the shared [`ScanSource`] plus
+//! a [`CallGraphSource`] for the built graph, so tests can run the
+//! whole orchestration over canned data. [`new`](Self::new) builds one
+//! over a loaded [`KunaSource`].
 
 use std::time::Instant;
 
@@ -27,21 +30,22 @@ use crate::types::{ApiDetectionResult, ScanMetadata};
 
 /// The program facts an API scan reads.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned listings so the orchestration runs without
-/// a server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// This is the shared trait from the decompiler seam crate, re-exported
+/// here so the evidence engine's generic bounds name it directly.
+/// [`KunaSource`] implements it over the in-process analysis engine,
+/// and tests implement it over canned listings so the orchestration
+/// runs without a server. The futures are `Send` so an orchestrating
+/// task can drive a scan.
 pub use calxgloss_decomp::ScanSource;
 
 /// The built call graph an API scan reads.
 ///
-/// Deliberately outside [`ScanSource`]: the graph is not a single seam
-/// read but a composite of them, assembled by the call-graph builder —
-/// which reads through the shared seam itself — so the shared trait
-/// stays a listing of raw program facts and this small trait carries
-/// the one composite the summary detector needs.
+/// This trait is deliberately separate from [`ScanSource`]. The call
+/// graph is not one seam read — it is a composite of many, assembled
+/// by the call-graph builder, which reads through the shared seam
+/// itself. So [`ScanSource`] stays a listing of raw program facts, and
+/// this small trait supplies the one composite value the summary
+/// detector needs.
 pub trait CallGraphSource {
     /// The built call graph: one node per function, with its call edges.
     fn call_graph(
@@ -78,30 +82,31 @@ impl CallGraphSource for calxgloss_decomp::PipelineSource {
 }
 
 /// The facet ids apidetect declares — the roster, spelled once here
-/// the way the CLI pairing pin (#342) spells its roster. Every facet
-/// a freshly written coverage record names is read against this list
-/// by the pin below, and every drift direction is a fault: a declared
-/// facet the scan stopped stamping, a facet stamped twice, and an id
-/// the scan invented outside the roster all fail loudly. `delay-imports`
-/// belongs on the roster precisely because the engine parses no
-/// delay-import table — the roster names what the engine knows about,
-/// not only what it reads.
+/// the way the CLI pairing pin (#342) spells its roster. The pin below
+/// reads every facet a freshly written coverage record names against
+/// this list, and every drift direction is a fault: a declared facet
+/// the scan stopped stamping, a facet stamped twice, and an id the
+/// scan invented outside the roster all fail loudly. `delay-imports`
+/// belongs on the roster precisely because the evidence engine parses
+/// no delay-import table — the roster records what the evidence engine
+/// knows about, not only what it reads.
 pub const DECLARED_FACETS: &[&str] = &["import-table", "api-usage", "delay-imports"];
 
 /// The coverage record every apidetect scan stamps about itself (issue
 /// #346), beside the provenance and the timing.
 ///
-/// The import table is always `complete`: a failed import listing aborts
-/// the run, so a finished scan read the listing end to end. The
-/// per-function API reading is `complete` when the call graph built and
-/// `unavailable` with its reason when the scan degraded to the import
-/// table alone — the warning the run already logs lands in the document
-/// as well. `delay-imports` is always `unexamined`: parsing the delay-import
-/// table is outside what this engine was ever built to examine, and the
-/// admission is the point — the API picture carries its border. The
-/// whole picture is therefore `partial`: the border stands until an
-/// engine change moves it, never because the scan quietly skipped part
-/// of what it could read.
+/// The import table is always `complete`: a failed import listing
+/// aborts the run, so a finished scan read the listing end to end. The
+/// per-function API reading is `complete` when the call graph built,
+/// and `unavailable` with its reason when the scan degraded to the
+/// import table alone — the warning the run already logs lands in the
+/// document as well. `delay-imports` is always `unexamined`: parsing
+/// the delay-import table is outside what this evidence engine was
+/// ever built to examine, and the admission is the point — the API
+/// picture states its own border. The whole picture is therefore
+/// `partial`: the border stays until an evidence engine change moves
+/// it, never because the scan quietly skipped part of what it could
+/// read.
 fn coverage_stamp(call_graph_available: bool) -> ScanCoverage {
     let api_usage = if call_graph_available {
         FacetCoverage {
@@ -137,10 +142,10 @@ fn coverage_stamp(call_graph_available: bool) -> ScanCoverage {
 /// Orchestrates the import scanner and the summary detector into one
 /// [`ApiDetectionResult`].
 ///
-/// Each detector carries no state and starts configured with the builtin
-/// library mappings — [`with_import_scanner`](Self::with_import_scanner)
+/// Each detector holds no state and starts configured with the builtin
+/// library mappings. [`with_import_scanner`](Self::with_import_scanner)
 /// and [`with_summary_detector`](Self::with_summary_detector) swap a
-/// detector whole — so one instance of each serves the whole scan.
+/// detector whole, so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct ApiEngine<S = KunaSource> {
     source: S,
@@ -149,7 +154,7 @@ pub struct ApiEngine<S = KunaSource> {
 }
 
 impl ApiEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the
+    /// An evidence engine over a loaded Kuna program, scanning with the
     /// builtin library mappings.
     pub fn new(source: &KunaSource) -> ApiEngine<KunaSource> {
         ApiEngine {
@@ -161,8 +166,8 @@ impl ApiEngine<KunaSource> {
 }
 
 impl<S> ApiEngine<S> {
-    /// An engine whose imports and call graph come from `source`,
-    /// scanning with the builtin library mappings.
+    /// An evidence engine whose imports and call graph come from
+    /// `source`, scanning with the builtin library mappings.
     pub fn with_source(source: S) -> Self {
         ApiEngine {
             source,
@@ -189,22 +194,23 @@ impl<S> ApiEngine<S> {
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
-    /// findings follow the import listing — every import entry, in
+    /// findings follow the import listing: every import entry, in
     /// listing order, then the platform-divergence claim when the
     /// imports mix Win32 and POSIX/stdio families, then the COM claims
-    /// when the import and call-graph names carry COM signals — and
-    /// then the call graph, function by function, direct calls before
-    /// transitive paths, so two scans of the same program diff cleanly.
+    /// when the import and call-graph names show COM signals. Then
+    /// come the call-graph findings, function by function, direct
+    /// calls before transitive paths. Two scans of the same program
+    /// therefore diff cleanly.
     ///
-    /// A failure of the import listing — the server being down —
-    /// aborts the run, since then nothing was scanned. A call graph
-    /// that cannot be built degrades the run to the import table
-    /// alone, with a warning: the binary-level identifications stand
-    /// on their own, and the COM reading runs off the import listing
-    /// without the graph names. The scan also stamps a coverage
-    /// record admitting what it did not examine — including the
-    /// delay imports it never attempts — so the filed document says
-    /// what the scan examined and what it could not (issue #346).
+    /// A failure of the import listing — the server being down, for
+    /// example — aborts the run, since then nothing was scanned. A
+    /// call graph that cannot be built degrades the run to the import
+    /// table alone, with a warning: the binary-level identifications
+    /// stand on their own, and the COM reading runs off the import
+    /// listing without the graph names. The scan also stamps a
+    /// coverage record admitting what it did not examine — including
+    /// the delay imports it never attempts — so the filed document
+    /// says what the scan examined and what it could not (issue #346).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<ApiDetectionResult>
     where
         S: ScanSource + CallGraphSource,
@@ -213,10 +219,10 @@ impl<S> ApiEngine<S> {
         let binary = binary.into();
         let mut findings = self.scanner.scan(&self.source, &binary).await?;
         let imports = findings.len();
-        // The divergence reading comes off the classified import
+        // The divergence reading comes from the classified import
         // listing the scan already holds — no new ScanSource reads —
-        // and slots between the import entries and the usages so the
-        // scan-order contract stays diffable.
+        // and is placed between the import entries and the usages so
+        // the scan-order contract stays diffable.
         if let Some(divergence) = detect_divergence(&findings) {
             findings.push(divergence);
         }
@@ -233,11 +239,11 @@ impl<S> ApiEngine<S> {
             }
         };
 
-        // The COM reading comes off the classified import listing and
-        // the node and callee names the built graph already carries —
-        // no new ScanSource reads — and slots after the import entries
-        // (and any divergence claim) and before the usages so the
-        // scan-order contract stays diffable.
+        // The COM reading comes from the classified import listing and
+        // the node and callee names the built graph already holds —
+        // no new ScanSource reads — and is placed after the import
+        // entries (and any divergence claim) and before the usages so
+        // the scan-order contract stays diffable.
         let graph_names: Vec<String> = graph
             .iter()
             .flatten()
@@ -253,16 +259,18 @@ impl<S> ApiEngine<S> {
         }
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names its analysis engine and pin under `kuna`
+        // (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage inside its own scan, where
-        // the truth lives — not the registry row and not the CLI (issue
-        // #346): the import table was parsed end to end (a failed listing
-        // aborts the run above), the per-function API reading rode the
-        // graph when one built and says so when it did not, and delay
-        // imports sit outside what this engine was built to examine. The
-        // batch scan phase and the CLI's force-rescan therefore file the
-        // same admission through the same single definition.
+        // The evidence engine admits its own coverage inside its own
+        // scan, where the truth lives — not the registry row and not
+        // the CLI (issue #346). The import table was parsed end to end
+        // (a failed listing aborts the run above). The per-function
+        // API reading used the graph when one built, and says so when
+        // it did not. Delay imports sit outside what this evidence engine
+        // was built to examine. The batch scan phase and the CLI's
+        // force-rescan therefore file the same admission through the
+        // same single definition.
         metadata.coverage = Some(coverage_stamp(graph.is_some()));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -467,7 +475,7 @@ mod tests {
     async fn a_binary_mixing_win32_and_posix_imports_claims_platform_divergence() {
         // The fake-program scan surfaces the claim whole: binary-level,
         // naming both families, listing the triggering imports from both
-        // sides, at the fixed confidence, suggesting cfg gates.
+        // sides, at the fixed confidence, and suggesting cfg gates.
         let result = scan(FakeProgram::new(
             vec!["CreateFileA", "inflate", "fopen"],
             vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
@@ -525,9 +533,9 @@ mod tests {
     #[tokio::test]
     async fn a_binary_with_decorated_com_imports_claims_a_named_interface() {
         // The fake-program scan surfaces the named claim whole:
-        // binary-level, naming the recovered interface, carrying the
+        // binary-level, naming the recovered interface, keeping the
         // decorated names as evidence, at the named confidence,
-        // suggesting the trait shape.
+        // and suggesting the trait shape.
         let result = scan(FakeProgram::new(
             vec![
                 "CoCreateInstance",
@@ -565,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_only_com_imports_claim_one_lower_confidence_finding() {
         // No name to recover: one binary-level claim naming the COM
-        // runtime imports seen, at the visibly lower runtime tier.
+        // runtime imports seen, at the visibly lower runtime confidence.
         let result = scan(FakeProgram::new(
             vec!["CoCreateInstance", "CoTaskMemAlloc", "inflate"],
             vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
@@ -588,8 +596,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_com_finding_lands_after_import_entries_and_before_usages() {
-        // With both structural readings open, the COM claim slots after
-        // the import entries and the divergence claim, before usages.
+        // With both structural readings open, the COM claim is placed
+        // after the import entries and the divergence claim, before
+        // the usages.
         let result = scan(FakeProgram::new(
             vec!["CreateFileA", "malloc", "CoCreateInstance"],
             vec![node("FUN_a", 0x1000, vec![("malloc", 0)])],
@@ -615,9 +624,9 @@ mod tests {
 
     #[tokio::test]
     async fn call_graph_names_carry_the_com_reading_through_the_scan() {
-        // A decorated thunk name only in the call graph — no COM
-        // import — still lands the named claim, off the names the
-        // scan already holds.
+        // A decorated thunk name only in the call graph, with no COM
+        // import at all, still produces the named claim — using the
+        // names the scan already holds.
         let result = scan(FakeProgram::new(
             vec!["inflate"],
             vec![node(
@@ -685,8 +694,8 @@ mod tests {
 
     #[tokio::test]
     async fn scan_carries_category_and_features_onto_identified_findings() {
-        // The enrichment rides the fake-program scan whole: an identified
-        // import entry and its usage both carry the builtin entry's
+        // The enrichment survives the fake-program scan whole: an identified
+        // import entry and its usage both record the builtin entry's
         // category and feature flags, and the suggestion renders the
         // crate[feature] form; the unidentified import stays category-less.
         let result = scan(FakeProgram::new(
@@ -739,8 +748,8 @@ mod tests {
         let result = scan(FakeProgram::new(vec!["inflate"], Vec::new())).await;
         assert_eq!(result.metadata.binary, "game.exe");
         assert!(result.metadata.scanned_at > 0);
-        // Story 9 (#203): the record also names the engine that produced it —
-        // scan() copies the source's provenance through (#208).
+        // Story 9 (#203): the record also names the analysis engine that
+        // produced it — scan() copies the source's provenance through (#208).
         let engine = result
             .metadata
             .engine
@@ -767,9 +776,10 @@ mod tests {
 
     #[tokio::test]
     async fn scan_stamps_coverage_naming_every_declared_facet_once() {
-        // The stamp rides the engine's own scan, not the registry row and
-        // not the CLI — the batch scan phase and the CLI's force-rescan
-        // file the same admission through this one definition.
+        // The stamp comes from the evidence engine's own scan, not from
+        // the registry row and not from the CLI — the batch scan phase
+        // and the CLI's force-rescan file the same admission through
+        // this one definition.
         let result = scan(FakeProgram::new(
             vec!["inflate"],
             vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
@@ -807,9 +817,9 @@ mod tests {
     #[tokio::test]
     async fn a_degraded_call_graph_lands_api_usage_unavailable_with_its_reason() {
         // The warning the run already logs ("Call graph unavailable:
-        // reporting the import table alone") also rides the document: the
-        // facet that could not be read says why, beside the permanent
-        // delay-imports border that stands either way.
+        // reporting the import table alone") also lands in the
+        // document: the facet that could not be read says why, beside
+        // the permanent delay-imports border that stands either way.
         let result = ApiEngine::with_source(FakeProgram {
             fail_graph: true,
             ..FakeProgram::new(vec!["inflate"], Vec::new())

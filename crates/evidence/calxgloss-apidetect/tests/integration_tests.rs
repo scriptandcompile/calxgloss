@@ -13,8 +13,8 @@
 //!   then the COM claims, then usages function by function in call
 //!   graph order.
 //! - **Prompt rendering** — the loaded findings render into `ApiInfo`
-//!   prompt data and the escalate prompt carries the LIBRARIES AND APIS
-//!   section.
+//!   prompt data and the escalate prompt includes the LIBRARIES AND
+//!   APIS section.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //! - **FFI bindings artifact** — the loaded document re-renders into a
@@ -70,16 +70,16 @@ fn node(name: &str, address: u64, callees: Vec<(&str, u64)>) -> FunctionCallGrap
     }
 }
 
-/// A canned program implementing [`ScanSource`] and [`CallGraphSource`]:
-/// imports covering an
-/// identified zlib call, an identified Win32 call, an unidentified
-/// vendor function, and an identified POSIX call — the Win32 and POSIX
-/// imports together open the platform-divergence gate — plus a pair of
-/// interface-decorated names opening the COM reading on a named
-/// interface, and a call graph where `FUN_18003ab00` calls `inflate`
-/// directly and reaches `CreateFileA` through `FUN_18003c000` — one
-/// direct and one transitive usage — while `FUN_18003e750` calls
-/// nothing.
+/// A canned program implementing [`ScanSource`] and [`CallGraphSource`].
+///
+/// Its imports cover an identified zlib call, an identified Win32
+/// call, an unidentified vendor function, and an identified POSIX
+/// call — the Win32 and POSIX imports together open the
+/// platform-divergence gate — plus a pair of interface-decorated names
+/// opening the COM reading on a named interface. In the call graph,
+/// `FUN_18003ab00` calls `inflate` directly and reaches `CreateFileA`
+/// through `FUN_18003c000` — one direct and one transitive usage —
+/// while `FUN_18003e750` calls nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     imports: Vec<Symbol>,
@@ -218,11 +218,11 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
     // Imports first, in listing order — identified and unidentified
-    // alike, decorated names included — then the platform-divergence
+    // alike, decorated names included. Then the platform-divergence
     // claim the mixed Win32 and POSIX imports open, then the COM claim
-    // the decorated names recover, then usages function by function in
-    // call graph order, direct before transitive: the order two scans
-    // diff against.
+    // the decorated names recover. Then usages function by function in
+    // call graph order, direct before transitive. This is the order
+    // two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = ApiEngine::with_source(program())
         .scan("eqmain.dll")
@@ -276,7 +276,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was found for the function it is about to
-    // translate; the plain function and the unknown function carry
+    // translate. The plain function and the unknown function have
     // nothing, and import entries belong to the binary, not to any
     // function.
     let findings: Vec<&ApiFinding> = loaded.for_function("FUN_18003ab00").collect();
@@ -285,8 +285,8 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
     // Each record keeps its detector's detail and evidence through the
-    // round trip, so a prompt sees the call path that produced it — and
-    // the category and feature enrichment survives scan → persist → load.
+    // round trip, so a prompt sees the call path that produced it. The
+    // category and feature enrichment survives scan → persist → load.
     let ApiFinding::ApiUsage(direct) = findings[0] else {
         unreachable!("the direct call reads as a usage finding");
     };
@@ -318,7 +318,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     // The whole escalate path, no external server needed: the fixture
     // document on disk answers the per-function lookup, the findings
     // render into `ApiInfo` prompt data, and the rendered escalate
-    // prompt carries the LIBRARIES AND APIS section with each
+    // prompt includes the LIBRARIES AND APIS section with each
     // finding's suggestion, library, kind, confidence, and evidence.
     let workspace = TempDir::new().unwrap();
     let result = ApiEngine::with_source(program())
@@ -361,10 +361,10 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
 
 #[tokio::test]
 async fn the_platform_divergence_finding_survives_scan_persist_load_and_prompt() {
-    // The mixed-import fixture opens the gate: the claim rides the
-    // persisted document whole — families, evidence, confidence — and
-    // renders into the escalate prompt naming both families and the
-    // cfg-gated shape.
+    // The mixed-import fixture opens the gate. The claim survives into
+    // the persisted document whole — families, evidence, confidence —
+    // and renders into the escalate prompt naming both families and
+    // the cfg-gated shape.
     let workspace = TempDir::new().unwrap();
     let result = ApiEngine::with_source(program())
         .scan("eqmain.dll")
@@ -429,10 +429,10 @@ async fn the_platform_divergence_finding_survives_scan_persist_load_and_prompt()
 
 #[tokio::test]
 async fn the_com_interface_finding_survives_scan_persist_load_and_prompt() {
-    // The decorated-name fixture recovers a named interface: the claim
-    // rides the persisted document whole — name, method listing,
-    // evidence, confidence — and renders into the escalate prompt
-    // naming the interface and the trait-plus-methods shape.
+    // The decorated-name fixture recovers a named interface. The claim
+    // survives into the persisted document whole — name, method
+    // listing, evidence, confidence — and renders into the escalate
+    // prompt naming the interface and the trait-plus-methods shape.
     let workspace = TempDir::new().unwrap();
     let result = ApiEngine::with_source(program())
         .scan("eqmain.dll")
@@ -658,8 +658,9 @@ async fn the_dependency_manifest_artifact_regenerates_deterministically_from_a_l
     );
 
     // The whole file pinned verbatim: the zlib feature flag survived
-    // persistence and rides its crate, the entries are sorted, and the
-    // multi-crate suggestions render as quoted TOML keys.
+    // persistence and renders beside its crate entry, the entries are
+    // sorted, and the multi-crate suggestions render as quoted TOML
+    // keys.
     let expected = "\
 # Dependency manifest for eqmain.dll, rendered by `calxgloss apidetect`.
 # Derived artifact: regenerated from the API detection result on

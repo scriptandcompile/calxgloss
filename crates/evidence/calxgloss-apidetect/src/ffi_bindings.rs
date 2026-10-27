@@ -1,51 +1,55 @@
 //! Rendered artifacts derived from the persisted API detection result.
 //!
-//! Two pure render functions turn an [`ApiDetectionResult`] into reviewable
-//! files a reviewer reads side by side with the JSON:
-//! [`render_ffi_bindings`] emits one Rust source string — every import the
-//! mapping database could **not** replace with a crate gets an
-//! `extern "system"` declaration — and [`render_dependency_manifest`]
-//! emits one Cargo.toml-style manifest aggregating every crate the
-//! identified findings suggest. Both renderers are pure — data in, string
-//! out — and deterministic: they stamp no timestamp, so two renders of the
-//! same document are byte-identical and a rescan produces a reviewable
-//! diff, not churn.
+//! Two pure render functions turn an [`ApiDetectionResult`] into
+//! reviewable files a reviewer reads side by side with the JSON:
+//! [`render_ffi_bindings`] emits one Rust source string — every import
+//! the mapping database could **not** replace with a crate gets an
+//! `extern "system"` declaration — and
+//! [`render_dependency_manifest`] emits one Cargo.toml-style manifest
+//! aggregating every crate the identified findings suggest. Both
+//! renderers are pure — data in, string out — and deterministic: they
+//! stamp no timestamp, so two renders of the same document are
+//! byte-identical and a rescan produces a reviewable diff, not noise.
 //!
 //! The bindings rendering rules (ADR-0013's derived-rendered-artifact
 //! pattern, applied to API findings):
 //!
 //! - **Only imports with no crate replacement are declared.** An
-//!   identified import already names the crate standing in for it — the
-//!   translation calls that crate, not the raw import — so it gets no
-//!   declaration here.
+//!   identified import already records the crate standing in for it —
+//!   the translation calls that crate, not the raw import — so it gets
+//!   no declaration here.
 //! - **Grouped by library when known.** Entries whose import record
-//!   names a library render together under a `// {library}` comment, the
-//!   groups in first-appearance order and the entries within a group in
-//!   scan order; entries that know no library render without a header.
+//!   names a library render together under a `// {library}` comment,
+//!   the groups in first-appearance order and the entries within a
+//!   group in scan order; entries with no known library render without
+//!   a header.
 //! - **Sanitized identifiers, collision suffixes in render order.**
 //!   Decorated and ordinal-only names (`?QueryInterface@IDataSource@@…`,
 //!   `EXTERNAL:123`) become valid Rust identifiers (non-identifier
 //!   characters collapse to `_`), a Rust keyword gains a trailing `_`,
 //!   and a name already taken gains `_2`, `_3`, … in render order — so
 //!   two same-named imports still get distinct, stable declarations.
-//! - **No parameters, no return type.** The import table names the
-//!   import and nothing else; inventing a signature would dress a guess
-//!   up as evidence. The declaration says only that the symbol exists.
+//! - **No parameters, no return type.** The import table records the
+//!   import and nothing else; inventing a signature would present a
+//!   guess as if it were evidence. The declaration says only that the
+//!   symbol exists.
 //! - **Nothing to declare renders nothing.** A result with no
 //!   crate-less imports — an empty result included — renders an empty
 //!   string: no header, no empty block, no noise in the diff.
 //!
 //! The manifest rendering rules, same pattern:
 //!
-//! - **Crates aggregated once, sorted.** Every identified finding names
-//!   the crate standing in for it — import entries and the usage entries
-//!   that repeat them — and the manifest lists each crate exactly once,
-//!   the entries sorted by crate name so rescans diff cleanly.
+//! - **Crates aggregated once, sorted.** Every identified finding
+//!   records the crate standing in for it — import entries and the
+//!   usage entries that repeat them — and the manifest lists each
+//!   crate exactly once, the entries sorted by crate name so rescans
+//!   diff cleanly.
 //! - **Feature flags inlined, no versions.** A crate whose findings
-//!   carried feature flags renders as `name = { features = [...] }`, the
-//!   flags merged across the findings and sorted; a crate none flagged
-//!   renders as an empty table. The scan never verifies a crate version,
-//!   so the manifest never dresses an unverified version up as fact.
+//!   carried feature flags renders as `name = { features = [...] }`,
+//!   the flags merged across the findings and sorted; a crate none
+//!   flagged renders as an empty table. The scan never verifies a crate
+//!   version, so the manifest never states an unverified version as
+//!   fact.
 //! - **Unidentified imports contribute nothing**, and a result with no
 //!   identified crate — an empty result included — renders nothing.
 //!
@@ -165,9 +169,10 @@ fn sanitize_import_name(name: &str) -> String {
     out
 }
 
-/// The first free name: two import tables can spell the same symbol
+/// The first free name: one import table can list the same symbol
 /// twice, so a collision gains `_2`, `_3`, … in render order —
-/// deterministic, so re-renders never churn.
+/// deterministic, so re-renders of the same document always pick the
+/// same names.
 fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
     if taken.insert(base.to_string()) {
         return base.to_string();
@@ -190,7 +195,7 @@ fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
 /// same dependency — and the entries are sorted by crate name, with the
 /// feature flags the findings carried merged onto the crate and sorted.
 /// No version is claimed anywhere: the scan never verifies a crate
-/// version, so the manifest never dresses one up as fact. Nothing
+/// version, so the manifest never presents one as fact. Nothing
 /// volatile (timestamps, counts) is written, so the same document always
 /// renders to the same bytes. A result with no identified crate renders
 /// nothing: an empty string, not a header-only file.
@@ -362,7 +367,7 @@ mod tests {
 
     #[test]
     fn non_import_findings_get_no_declaration() {
-        // Divergence and COM claims name shapes, not linkable symbols,
+        // Divergence and COM claims describe shapes, not linkable symbols,
         // and usages repeat identified imports — only crate-less import
         // entries stand on the declaration list.
         let mut result = result_with(vec![import("VendorSpecialFunction")]);
@@ -494,7 +499,7 @@ mod tests {
     fn an_empty_result_renders_nothing() {
         // The empty-input behavior pinned by test: nothing to declare is
         // an empty string, not a header-only file — a rescan of a
-        // fully-identified binary never churns the artifact.
+        // fully-identified binary leaves the artifact unchanged.
         assert_eq!(render_ffi_bindings(&result_with(Vec::new())), "");
     }
 
@@ -629,8 +634,8 @@ flate2 = { features = [\"zlib\"] }
     #[test]
     fn no_versions_are_claimed_anywhere() {
         // The honesty rule: the scan never verifies a crate version, so
-        // the manifest never dresses one up as fact — no version key, no
-        // version string, nothing.
+        // the manifest never presents an unverified version as fact — no
+        // version key, no version string, nothing.
         let result = result_with(vec![
             mapped_import_with_features("inflate", "zlib", "flate2", &["zlib"]),
             mapped_import("CreateFileA", "Win32", "windows / std::fs"),

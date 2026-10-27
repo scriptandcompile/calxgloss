@@ -13,16 +13,17 @@
 //!   shape is cfg-gated calls, not both families transliterated
 //!   unconditionally.
 //! - `ComInterface`: a binary-level record — the binary drives a COM
-//!   interface, named when a decorated import name recovers it, with
-//!   the method listing it saw and the Rust shape a trait carrying
-//!   those methods.
+//!   interface. A decorated import name supplies the interface name
+//!   when one can be recovered. The record holds the method listing
+//!   the scan saw, and the Rust shape is a trait with those methods.
 //! - `ApiFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //!
-//! All types derive `Serialize`/`Deserialize`. `Confidence` is the shared
-//! 0–100 evidence score and `ScanMetadata` the shared per-binary scan
-//! provenance; both are re-exported so consumers name them through this
-//! crate, matching the sync, typeinfer, and memory convention.
+//! All types derive `Serialize`/`Deserialize`. `Confidence` is the
+//! shared 0–100 evidence score, and `ScanMetadata` is the shared
+//! per-binary scan provenance. Both are re-exported so consumers name
+//! them through this crate, as the sync, typeinfer, and memory crates
+//! do.
 
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
@@ -36,16 +37,16 @@ use crate::divergence::DIVERGENCE_SUGGESTION;
 
 /// One import-table entry, identified or not.
 ///
-/// A signature says the binary imports the API spelled [`api`](Self::api);
-/// when the name is in the [`MappingDatabase`](crate::lib_mapping::MappingDatabase),
-/// [`library`](Self::library) names the library it belongs to and
-/// [`rust_crate`](Self::rust_crate) the crate standing in for it, with the
-/// entry's [`category`](Self::category) and crate [`features`](Self::features)
-/// riding along when the mapping carries them. Unidentified and
-/// ordinal-only imports are kept as entries with both identity fields
-/// `None` and no category — the import table is reported whole, not
-/// filtered to what was recognized, and enrichment never claims a category
-/// the evidence does not support.
+/// The entry says the binary imports the API spelled [`api`](Self::api).
+/// When the name is in the [`MappingDatabase`](crate::lib_mapping::MappingDatabase),
+/// [`library`](Self::library) records the library it belongs to and
+/// [`rust_crate`](Self::rust_crate) the crate standing in for it. The
+/// entry also records its [`category`](Self::category) and the crate's
+/// [`features`](Self::features) when the mapping provides them.
+/// Unidentified and ordinal-only imports are kept as entries with both
+/// identity fields `None` and no category — the import table is
+/// reported whole, not filtered to what was recognized, and enrichment
+/// never adds a category the evidence does not support.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiSignature {
     /// The API name as the import table spells it, e.g. `inflate`.
@@ -57,16 +58,16 @@ pub struct ApiSignature {
     /// identified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rust_crate: Option<String>,
-    /// The API category the library entry names, spelled with the PAL
-    /// `ApiCategory` display names (e.g. `Win32Core`, `zlib`), when the
-    /// mapping carries one — unidentified and ordinal-only imports stay
-    /// category-less. Optional on disk so documents persisted before the
-    /// enrichment load unchanged.
+    /// The API category the library entry records, spelled with the
+    /// PAL `ApiCategory` display names (e.g. `Win32Core`, `zlib`),
+    /// when the mapping provides one — unidentified and ordinal-only
+    /// imports stay category-less. Optional on disk so documents
+    /// persisted before the enrichment load unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    /// Feature flags the crate suggestion carries, e.g. `png` for
-    /// `image`, empty when the suggestion needs none. Skipped when empty
-    /// so plain records stay byte-identical on disk.
+    /// Feature flags the crate suggestion comes with, e.g. `png` for
+    /// `image`, empty when the suggestion needs none. Skipped when
+    /// empty so plain records stay byte-identical on disk.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
     /// Confidence that the identification is right, 0–100.
@@ -79,12 +80,12 @@ pub struct ApiSignature {
 
 /// One API a function reaches, with the call path that reaches it.
 ///
-/// A usage says the function [`function`](Self::function) calls — or
-/// transitively reaches through its call graph — the API spelled
-/// [`api`](Self::api), belonging to [`library`](Self::library) and
-/// standing in for [`rust_crate`](Self::rust_crate). A direct call is a
-/// stronger claim than a transitive path, which the
-/// [`direct`](Self::direct) flag and the confidence carry; the call path
+/// The usage says the function [`function`](Self::function) calls the
+/// API spelled [`api`](Self::api) — directly, or transitively through
+/// its call graph. The API belongs to [`library`](Self::library) and
+/// stands in for [`rust_crate`](Self::rust_crate). A direct call is a
+/// stronger claim than a transitive path; the [`direct`](Self::direct)
+/// flag and the confidence record that difference. The call path
 /// itself is kept as [`evidence`](Self::evidence) so a reviewer (or a
 /// translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,15 +98,15 @@ pub struct ApiUsage {
     pub library: String,
     /// The Rust crate standing in for the API, e.g. `flate2`.
     pub rust_crate: String,
-    /// The API category the library entry names, spelled with the PAL
-    /// `ApiCategory` display names (e.g. `Win32Core`, `zlib`), when the
-    /// mapping carries one. Optional on disk so documents persisted
-    /// before the enrichment load unchanged.
+    /// The API category the library entry records, spelled with the
+    /// PAL `ApiCategory` display names (e.g. `Win32Core`, `zlib`),
+    /// when the mapping provides one. Optional on disk so documents
+    /// persisted before the enrichment load unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    /// Feature flags the crate suggestion carries, e.g. `png` for
-    /// `image`, empty when the suggestion needs none. Skipped when empty
-    /// so plain records stay byte-identical on disk.
+    /// Feature flags the crate suggestion comes with, e.g. `png` for
+    /// `image`, empty when the suggestion needs none. Skipped when
+    /// empty so plain records stay byte-identical on disk.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
     /// Whether the function calls the API directly rather than through
@@ -123,19 +124,22 @@ pub struct ApiUsage {
 // Platform-divergence records
 // ============================================================
 
-/// The binary-level claim that the binary straddles two platform API
-/// families.
+/// The binary-level claim that the binary uses two platform API
+/// families at once.
 ///
-/// A divergence says the import table carries at least one import whose
-/// mapping category names the Win32 family *and* at least one naming the
-/// POSIX family (the `POSIX` and `stdio` categories) — the gate the
-/// [`divergence`](crate::divergence) detector reads off the classified
-/// import listing. [`families`](Self::families) names both families as
-/// the categories spelled them, [`evidence`](Self::evidence) lists the
-/// triggering imports from both sides so a reviewer can check the claim
-/// against the import table, and the Rust shape the finding points at is
-/// cfg-gated calls — the suggestion accessor carries it. A purely Win32
-/// or purely POSIX binary claims nothing, so the record never exists.
+/// A divergence says the import table has at least one import whose
+/// mapping category indicates the Win32 family *and* at least one
+/// import whose category indicates the POSIX family (the `POSIX` and
+/// `stdio` categories). That is the gate the
+/// [`divergence`](crate::divergence) detector checks on the
+/// classified import listing. [`families`](Self::families) holds both
+/// families as the category names that triggered the claim, and
+/// [`evidence`](Self::evidence) lists the triggering imports from both
+/// sides, so a reviewer can check the claim against the import table.
+/// The Rust shape the finding points
+/// at is cfg-gated calls; the suggestion accessor gives that wording.
+/// A purely Win32 or purely POSIX binary claims nothing, so the record
+/// never exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformDivergence {
     /// The platform families seen, spelled with the mapping categories
@@ -159,18 +163,18 @@ pub struct PlatformDivergence {
 /// names, or the COM runtime itself when no interface name is
 /// recoverable.
 ///
-/// The [com](crate::com) detector reads the signals off the classified
-/// import listing and the call-graph names the scan already holds:
-/// known COM runtime imports, the IUnknown-shape method names, and
-/// interface-decorated import names. When a decorated name recovers an
-/// interface name, [`interface`](Self::interface) carries it,
-/// [`methods`](Self::methods) lists the method names seen for it, and
-/// [`evidence`](Self::evidence) keeps the decorated names so a reviewer
-/// can check the recovery against the import table. When no name is
-/// recoverable, one runtime-level claim names the COM signals seen with
-/// `interface` `None`, at a visibly lower confidence than a named
-/// claim. A binary with no COM signals claims nothing, so the record
-/// never exists.
+/// The [com](crate::com) detector reads its signals from the
+/// classified import listing and the call-graph names the scan
+/// already holds: known COM runtime imports, the IUnknown-shape method
+/// names, and interface-decorated import names. When a decorated name
+/// recovers an interface name, [`interface`](Self::interface) holds
+/// it, [`methods`](Self::methods) lists the method names seen for it,
+/// and [`evidence`](Self::evidence) keeps the decorated names so a
+/// reviewer can check the recovery against the import table. When no
+/// name is recoverable, one runtime-level claim records the COM
+/// signals seen with `interface` `None`, at a visibly lower confidence
+/// than a named claim. A binary with no COM signals claims nothing, so
+/// the record never exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComInterface {
     /// The interface name recovered from a decorated import name, e.g.
@@ -199,17 +203,18 @@ pub struct ComInterface {
 
 /// One API finding, whichever detector made it.
 ///
-/// The import-table scanner emits binary-level [`ApiSignature`] records;
-/// the [divergence](crate::divergence) detector emits one binary-level
-/// [`PlatformDivergence`] record when the imports mix platform
-/// families; the [com](crate::com) detector emits binary-level
-/// [`ComInterface`] records when the imports and call-graph names carry
-/// COM signals; the summary detector emits function-level [`ApiUsage`]
-/// records. The union is what the persisted result carries, so one list
-/// holds every finding for a binary and a consumer reads the shared
-/// shape — API, library, crate suggestion, confidence, evidence —
-/// without naming which detector produced it. The serde `kind` tag
-/// names the record shape in the persisted JSON.
+/// The import-table scanner emits binary-level [`ApiSignature`]
+/// records. When the imports mix platform families, the
+/// [divergence](crate::divergence) detector emits one binary-level
+/// [`PlatformDivergence`] record. When the imports and call-graph
+/// names show COM signals, the [com](crate::com) detector emits
+/// binary-level [`ComInterface`] records. The summary detector emits
+/// function-level [`ApiUsage`] records. The union is what the
+/// persisted result holds, so one list carries every finding for a
+/// binary and a consumer reads the shared shape — API, library, crate
+/// suggestion, confidence, evidence — without needing to know which
+/// detector produced it. The serde `kind` tag records the record
+/// shape in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ApiFinding {
@@ -237,10 +242,10 @@ impl ApiFinding {
         }
     }
 
-    /// The API the finding names, spelled for a report row — the two
-    /// platform families joined for a divergence claim, the recovered
-    /// interface name (or `COM runtime` for a nameless claim) for a COM
-    /// claim.
+    /// The API the finding refers to, spelled for a report row. For a
+    /// divergence claim this is the two platform families joined; for
+    /// a COM claim it is the recovered interface name, or
+    /// `COM runtime` when the claim has no name.
     pub fn target(&self) -> String {
         match self {
             ApiFinding::Import(record) => record.api.clone(),
@@ -253,9 +258,9 @@ impl ApiFinding {
         }
     }
 
-    /// The library the API belongs to, when identified — a divergence
-    /// claim names families, not one library, and a COM claim names an
-    /// interface, not a library, so both carry none.
+    /// The library the API belongs to, when identified. A divergence
+    /// claim states families, not one library, and a COM claim states
+    /// an interface, not a library, so both return none.
     pub fn library(&self) -> Option<&str> {
         match self {
             ApiFinding::Import(record) => record.library.as_deref(),
@@ -265,7 +270,7 @@ impl ApiFinding {
         }
     }
 
-    /// The Rust crate standing in for the API, when identified — a
+    /// The Rust crate standing in for the API, when identified. A
     /// divergence claim suggests a shape, not a crate, and a COM claim
     /// suggests a trait, not a crate.
     pub fn rust_crate(&self) -> Option<&str> {
@@ -277,9 +282,9 @@ impl ApiFinding {
         }
     }
 
-    /// The API category the finding's library entry names, spelled with
-    /// the PAL `ApiCategory` display names, when the mapping carries
-    /// one — a divergence claim names its families through
+    /// The API category the finding's library entry records, spelled
+    /// with the PAL `ApiCategory` display names, when the mapping
+    /// provides one. A divergence claim states its families through
     /// [`target`](Self::target), not through one category, and a COM
     /// claim names an interface.
     pub fn category(&self) -> Option<&str> {
@@ -303,12 +308,12 @@ impl ApiFinding {
     }
 
     /// The crate suggestion, spelled for prompt rows — empty when the
-    /// API was never identified. With feature flags the crate renders in
-    /// the `crate[feat1, feat2]` form; without them, the bare name. A
-    /// divergence claim carries the cfg-gated translation shape instead;
-    /// a named COM claim carries the trait shape with the interface's
-    /// method listing, and a runtime-level COM claim the trait shape
-    /// without names.
+    /// API was never identified. With feature flags the crate renders
+    /// in the `crate[feat1, feat2]` form; without them, the bare name.
+    /// A divergence claim returns the cfg-gated translation shape
+    /// instead. A named COM claim returns the trait shape with the
+    /// interface's method listing, and a runtime-level COM claim the
+    /// trait shape without names.
     pub fn suggestion(&self) -> String {
         match self {
             ApiFinding::PlatformDivergence(_) => DIVERGENCE_SUGGESTION.to_string(),
@@ -352,8 +357,8 @@ impl ApiFinding {
     }
 
     /// The serde `kind` tag — `import`, `platform_divergence`,
-    /// `com_interface`, or `api_usage` — naming the detector behind the
-    /// finding.
+    /// `com_interface`, or `api_usage` — which records which detector
+    /// made the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ApiFinding::Import(_) => "import",
@@ -372,10 +377,11 @@ impl ApiFinding {
 ///
 /// The document the [`ApiPersistor`](crate::persist::ApiPersistor) files
 /// under `re/analysis/apidetect/`, and the cache a caller loads instead
-/// of re-scanning: the binary-level import entries first, in listing
-/// order, then the platform-divergence claim when the imports mix
-/// families, then the COM claims when the names carry COM signals, then
-/// the function-level usages, function by function in call graph order.
+/// of re-scanning. The findings keep a fixed order: the binary-level
+/// import entries first, in listing order, then the
+/// platform-divergence claim when the imports mix families, then the
+/// COM claims when the names show COM signals, then the
+/// function-level usages, function by function in call graph order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiDetectionResult {
     /// Provenance of the scan that produced these findings.
@@ -417,14 +423,14 @@ impl ApiDetectionResult {
 /// One API finding in the shape an escalation prompt reads.
 ///
 /// The prompts crate owns the struct (like `ConcurrencyInfo` for sync
-/// findings); the conversion lives here so the finding's own accessors
-/// carry the mapping. An import entry becomes a row with an empty
-/// function and `kind = "import"`; a divergence claim carries an empty
-/// function, the joined families as its API, and `kind =
-/// "platform_divergence"`; a COM claim carries an empty function, the
-/// interface name (or `COM runtime`) as its API, and `kind =
-/// "com_interface"`; a usage carries its call path and
-/// `kind = "direct"` or `"transitive"`.
+/// findings). The conversion lives here so the finding's own
+/// accessors supply the mapping. An import entry becomes a row with
+/// an empty function and `kind = "import"`. A divergence claim
+/// becomes a row with an empty function, the joined families as its
+/// API, and `kind = "platform_divergence"`. A COM claim becomes a
+/// row with an empty function, the interface name (or `COM runtime`)
+/// as its API, and `kind = "com_interface"`. A usage keeps its call
+/// path and `kind = "direct"` or `"transitive"`.
 impl From<&ApiFinding> for calxgloss_prompts::ApiInfo {
     fn from(finding: &ApiFinding) -> Self {
         let kind = match finding {
