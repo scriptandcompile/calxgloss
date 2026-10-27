@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Errors that can occur during control-flow detection operations.
 #[derive(Debug, Error)]
 pub enum ControlFlowError {
-    /// An engine read through the analysis seam failed.
+    /// A read from the analysis engine, through the analysis seam, failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -30,20 +30,21 @@ pub enum ControlFlowError {
     EmptyFunctionName,
 
     /// Too many of the program's functions failed to decompile for the
-    /// scan to be trusted — the signature of the bridge answering from
-    /// the wrong program. The skip-rate breaker aborts the scan rather
-    /// than letting it persist a phantom-clean record.
+    /// scan to be trusted. A high skip rate is the signature of the seam
+    /// answering about the wrong program. The skip-rate breaker is a
+    /// fuse, not a post-mortem: it aborts the scan rather than letting
+    /// it persist a record that looks clean but is not.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
 
-    /// A control-flow scan failed for a DLL.
+    /// The control-flow scan of one target binary failed.
     #[error("control-flow scan failed for '{binary}': {reason}")]
     ScanFailed { binary: String, reason: String },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the
 /// store's not-found becomes [`ControlFlowError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// JSON errors become the existing I/O and JSON variants.
 impl From<calxgloss_types::persist::PersistError> for ControlFlowError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

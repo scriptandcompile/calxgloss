@@ -1,18 +1,20 @@
 //! Loop structure detection.
 //!
-//! The loop shapes Ghidra's pseudo-C leaves behind — counted `for`,
-//! conditional `while`, `do { } while`, and `goto`-back-to-label loops —
-//! are read off the per-body control flow graph, not re-scanned from the
-//! text, so the loop count, the nesting depth, and (later) the density
-//! and depth readings all come off one graph and cannot disagree.
+//! Ghidra's pseudo-C leaves behind four loop shapes: counted `for`,
+//! conditional `while`, `do { } while`, and `goto`-back-to-label loops.
+//! This detector reads them from the per-body control flow graph
+//! instead of re-scanning the text. The loop count, the nesting depth,
+//! and (later) the density and depth readings all come off one graph
+//! and cannot disagree.
 //!
-//! One finding lands per function, not per loop: the loop count, the
-//! maximum nesting depth, and the kinds seen. A spelled-out loop header
-//! is strong evidence (confidence 70); a body whose only loops are
-//! goto-driven is the weaker inference of a flattened loop (60).
-//! Nesting comes out at its real depth — a loop inside a chain case
-//! body reads deeper than a top-level loop, so a chain reading and a
-//! loop reading never contradict each other.
+//! The detector records one finding per function, not one per loop:
+//! the loop count, the maximum nesting depth, and the kinds seen. A
+//! spelled-out loop header is strong evidence and scores evidence
+//! confidence 70. A body whose only loops are goto-driven is the
+//! weaker inference of a flattened loop (60). Nesting is reported at
+//! its real depth: a loop inside a chain case body counts deeper than
+//! a top-level loop, so a chain reading and a loop reading never
+//! contradict each other.
 
 use calxgloss_types::Confidence;
 
@@ -54,10 +56,11 @@ impl LoopDetector {
             return None;
         }
 
-        // Depths are the graph's brace depths; re-anchor them to the
-        // body's statement level so a top-level loop reads 1 however the
-        // body text is wrapped, and each level of nesting — loop inside
-        // a loop, or inside a chain case body — adds one.
+        // The graph reports depths as brace depths. Re-anchor them to
+        // the body's statement level: a top-level loop reads 1 no
+        // matter how the body text is wrapped, and each level of
+        // nesting — a loop inside a loop, or a loop inside a chain
+        // case body — adds one.
         let base = statement_depth(code);
         let max_depth = loops
             .iter()
@@ -68,21 +71,21 @@ impl LoopDetector {
             // body's own statement level.
             .max(1) as usize;
 
-        // Kinds in first-seen body order, deduped: the body's own shape
-        // story, diff-stable across scans.
+        // The loop kinds are deduped in first-seen body order: the
+        // body's own shape story, diff-stable across scans.
         let mut kinds_seen: Vec<LoopKind> = Vec::new();
         for loop_ in loops {
             push_once(&mut kinds_seen, loop_.kind);
         }
 
-        // A spelled-out loop header is the strong reading; a goto back
-        // to a label is an inference over the jump, so a body whose only
-        // loops are goto-driven pays the lower rung.
+        // A spelled-out loop header is the strong reading. A goto back
+        // to a label is an inference over the jump, so a body whose
+        // only loops are goto-driven scores in the lower band.
         let structured = kinds_seen.iter().any(LoopKind::is_structured);
         let confidence = Confidence::new(if structured { 70 } else { 60 });
 
-        // The Rust structures the shapes correspond to, deduped the same
-        // way: do-while and goto both land on `loop`.
+        // The Rust structures the shapes correspond to, deduped the
+        // same way: do-while and goto both map to `loop`.
         let mut rust: Vec<&str> = Vec::new();
         for kind in &kinds_seen {
             push_once(&mut rust, kind.rust_shape());
@@ -115,8 +118,8 @@ impl LoopDetector {
     }
 }
 
-/// Push `item` onto `seen` unless it already sits there — the first-seen
-/// order both the kinds and the Rust shapes are deduped in.
+/// Adds `item` to `seen` unless it already sits there. Both the loop
+/// kinds and the Rust shapes are deduped in first-seen order.
 fn push_once<T: PartialEq>(seen: &mut Vec<T>, item: T) {
     if !seen.contains(&item) {
         seen.push(item);
@@ -124,13 +127,13 @@ fn push_once<T: PartialEq>(seen: &mut Vec<T>, item: T) {
 }
 
 /// The brace depth the function body's statements sit at. Ghidra's
-/// decompile wraps them in `{ ... }` under the signature line — the `{`
-/// on its own line, as the bridge reports it — so its statements sit
-/// one level in; a hand-written body that starts straight at the
-/// statements sits at zero. Mirrors the recursion detector's body-start
-/// scan; a signature carrying the opening brace inline reads one level
-/// deeper, the same approximation the CFG documents for braceless
-/// bodies.
+/// decompile wraps the statements in `{ ... }` under the signature
+/// line, with the `{` on its own line as the bridge reports it, so
+/// they sit one level in. A hand-written body that starts straight at
+/// the statements sits at zero. This mirrors the recursion detector's
+/// body-start scan. A signature that carries the opening brace inline
+/// reads one level deeper — the same approximation the CFG documents
+/// for braceless bodies.
 fn statement_depth(body: &str) -> i32 {
     i32::from(body.lines().any(|l| l.trim_start().starts_with('{')))
 }
@@ -238,7 +241,7 @@ loop_start:
 
     #[test]
     fn a_structured_header_lifts_a_goto_driven_body_to_70() {
-        // The weaker rung is only for a body whose ONLY loops are
+        // The lower band applies only to a body whose ONLY loops are
         // goto-driven; one spelled-out header is spelled-out evidence.
         // The goto targets the label block and the while heads its own
         // block, so the graph sees two loops, not one header claimed

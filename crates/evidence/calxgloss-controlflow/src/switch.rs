@@ -2,8 +2,9 @@
 //!
 //! Ghidra renders C `switch` statements as `if (var == CONST) { ... } else if
 //! (var == CONST) { ... }` chains. A chain with at least `min_cases` arms is
-//! reported as a switch-shaped construct; very wide chains (>=
-//! `wide_threshold`) get a dispatch-table suggestion instead of a `match`.
+//! reported as a switch-shaped construct. A chain that is at least
+//! `wide_threshold` arms wide gets a dispatch-table suggestion instead of
+//! a `match`.
 
 use calxgloss_types::Confidence;
 
@@ -15,7 +16,7 @@ use crate::types::SwitchChain;
 pub struct SwitchChainDetector {
     /// Minimum number of `==` arms for a chain to look like a switch.
     min_cases: usize,
-    /// Chain width at which a dispatch table beats a `match`.
+    /// Chain width at which a dispatch table is suggested over a `match`.
     wide_threshold: usize,
 }
 

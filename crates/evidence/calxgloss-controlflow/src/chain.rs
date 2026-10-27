@@ -2,10 +2,10 @@
 //!
 //! Ghidra renders switch-shaped code as `if (var == CONST) { ... }` followed
 //! by `else if (var == CONST) { ... }` arms (each `else` on its own line).
-//! This walker finds those chains — only arms sitting at the *same* brace
+//! This walker finds those chains. Only arms sitting at the *same* brace
 //! depth as the chain head count, so nested ifs inside a case body never
-//! extend a chain — and records each arm's body line range so detectors can
-//! inspect case bodies (state-machine transitions) after the fact.
+//! extend a chain. The walker also records each arm's body line range, so
+//! detectors can inspect case bodies (state-machine transitions) later.
 
 /// One arm of an if/else-if chain, with its body's line span `[start, end)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,8 +30,8 @@ pub(crate) struct IfChain {
 }
 
 /// Blank the inside of string literals with spaces, keeping the quotes and
-/// every byte position, so a later scan of the line sees the same shape
-/// without anything the strings spell: nothing a literal says counts.
+/// every byte position. A later scan of the line then sees the same shape
+/// with none of the literal's text: nothing a string literal says counts.
 pub(crate) fn outside_strings(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut in_string = false;

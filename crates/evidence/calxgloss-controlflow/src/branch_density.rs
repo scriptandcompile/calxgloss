@@ -1,27 +1,33 @@
 //! Branch density classification.
 //!
-//! The branching structure of one decompiled body is read off the
-//! per-body control flow graph, not re-scanned from the text: the
-//! conditional edges out of `if`/`else if` heads counted against the
-//! basic blocks decide whether the body reads as a dispatcher or a
-//! scan. Loop conditions are iteration, not branching, so they count
-//! as blocks and edges of the loop story the loop finding already
-//! tells — a loop scan stays a sequential scan here, and the two
-//! readings come off one graph and cannot disagree. A real `switch`
-//! is not modelled on the graph either (the chain detector reads
-//! switch chains textually), so a switch body counts no conditional
-//! edges and reads as a scan: the switch finding already names it.
+//! This detector reads the branching structure of one decompiled body
+//! from the per-body control flow graph, not by re-scanning the text.
+//! It counts the conditional edges leaving `if`/`else if` heads
+//! against the basic blocks. That ratio decides whether the body
+//! classifies as a dispatcher or a scan.
 //!
-//! One finding lands per function: a body at or above the heavy
-//! threshold reads as a dispatch-table candidate (a `match` or a
-//! dispatch table expresses a wide if/else-if ladder or many
-//! conditionals better than the ladder itself); below it reads as a
-//! sequential scan (keep it straight-line, or reach for an iterator).
+//! Loop conditions are iteration, not branching. Their blocks and
+//! edges belong to the loop story the loop finding already tells, and
+//! this detector does not count them as conditional edges: a body
+//! that only scans its loops stays a sequential scan here. The loop
+//! reading and this reading come from one graph and cannot disagree.
+//! A real `switch` is not modelled on the graph either — the chain
+//! detector reads switch chains from the text. A switch body
+//! therefore contributes no conditional edges and classifies as a
+//! scan: the switch finding already names it.
+//!
+//! The detector records one finding per function. A body at or above
+//! the heavy threshold classifies as a dispatch-table candidate (a
+//! `match` or a dispatch table expresses a wide if/else-if ladder, or
+//! many conditionals, better than the ladder itself). A body below it
+//! classifies as a sequential scan: keep it straight-line, or use an
+//! iterator.
+//!
 //! The classification is a structural inference, so it sits at
-//! confidence 60 — visibly weaker than a named shape like a switch
-//! chain — and carries the branch count and the block count as
-//! evidence. A body below the minimum block count reports nothing: a
-//! two-block accessor is neither a dispatcher nor a scan.
+//! evidence confidence 60 — visibly weaker than a named shape like a
+//! switch chain — and its evidence carries the branch count and the
+//! block count. A body below the minimum block count gets no finding:
+//! a two-block accessor is neither a dispatcher nor a scan.
 
 use calxgloss_types::Confidence;
 
@@ -49,8 +55,9 @@ impl Default for BranchDensityDetector {
 }
 
 impl BranchDensityDetector {
-    /// Create a detector with the default thresholds (four blocks
-    /// classify, and 0.6 conditional edges per block reads heavy).
+    /// Create a detector with the default thresholds (a body needs four
+    /// blocks to be classified at all, and 0.6 conditional edges per
+    /// block counts as branch-heavy).
     pub fn new() -> Self {
         Self::default()
     }
@@ -80,8 +87,9 @@ impl BranchDensityDetector {
 
         // Conditional edges are the taken / not-taken exits of an
         // if/else-if head. A loop head's condition is iteration, not
-        // dispatch — the loop finding names loops, so counting them
-        // here would let a plain loop scan read as a dispatcher.
+        // dispatch: the loop finding names loops, so counting those
+        // edges here would make a plain loop scan classify as a
+        // dispatcher.
         let branch_count = cfg
             .edges()
             .iter()
@@ -160,8 +168,8 @@ else {
 
     #[test]
     fn many_conditionals_read_as_a_dispatch_table_candidate() {
-        // Not one wide chain: four separate tests in a short body read
-        // just as branch-heavy.
+        // Not one wide chain: four separate conditionals in a short
+        // body read just as branch-heavy.
         let record = detect(
             "\
 if (x == 1) {
@@ -178,8 +186,9 @@ if (x == 4) {
 }",
         )
         .expect("four conditionals in eight blocks are branch-heavy");
-        // Seven, not eight: the last test's not-taken edge leaves the
-        // body, and an edge with no block to land on is no edge.
+        // Seven, not eight: the last conditional's not-taken edge
+        // leaves the body, and an edge with no block to land on is no
+        // edge.
         assert_eq!(record.branch_count, 7);
         assert_eq!(record.block_count, 8);
         assert_eq!(record.classification, BranchClassification::DispatchTable);
@@ -220,9 +229,9 @@ while (i < 10) {
 
     #[test]
     fn a_loop_with_one_guard_still_reads_as_a_sequential_scan() {
-        // The odd test inside a loop is a guard, not dispatch: two
-        // conditional edges across five blocks stay under the heavy
-        // threshold.
+        // The odd conditional inside a loop is a guard, not dispatch:
+        // two conditional edges across five blocks stay under the
+        // heavy threshold.
         let record = detect(
             "\
 total = 0;
