@@ -1,6 +1,6 @@
 # Interface
 
-The human touchpoints of the reverse-engineering effort: where a run is started and steered, where units are reviewed, and where results are reported. This context owns the language of the CLI commands, the web review surface, and the reports — the operator's side of every word other contexts define underneath.
+The human touchpoints of the reverse-engineering effort: where a run is started and steered, where units are reviewed, and where results are reported. This context owns the words for the CLI commands, the web review surface, and the reports — the operator's side of every word other contexts define underneath.
 
 ## Language
 
@@ -20,7 +20,7 @@ _Avoid_: conflating it with the retry-strategy value "auto" — unrelated, same 
 The self-check that loads the target through the analysis engine and reports what it saw — a machine-gateable result, not a description.
 
 **Scan command**:
-One of the fifteen manual entry points, one per evidence engine, each riding the pipeline's schedule row for its engine; `--show` prints the engine's filed document without running the scan.
+One of the fifteen manual entry points, one per evidence engine. Each uses the pipeline's schedule row for its engine. `--show` prints the engine's filed document without running the scan.
 
 **Refresh cache**:
 The request to re-read from the engine regardless of what the scan read cache holds.
@@ -40,7 +40,7 @@ The command that shows the configuration in force and which layer each value cam
 The command that writes the project's configuration template.
 
 **Settings fold**:
-The CLI's act of composing resolved settings into the pipeline's pass description — the fold lives here; the settings themselves are Shared's.
+The CLI's act of composing resolved settings into the pipeline's pass description. The fold itself belongs to this context; the words for the settings belong to Shared.
 
 ### Reviewing
 
@@ -49,7 +49,7 @@ The reviewer's act on a unit — *accept*, *send back*, *request patch* — each
 _Avoid_: reject — the CLI subcommand that carried the old word; retire it from every surface
 
 **Reviewer intent**:
-What the operator has decided and persisted — ordering, priorities, skips, overrides — held in its own records, never derived from artifacts, and never edited by any derived rebuild.
+What the operator has decided and persisted: ordering, priorities, skips, overrides. It lives in its own records. It is never derived from artifacts, and no derived rebuild may edit it.
 
 **Queue overlay**:
 The reviewer's persisted manual ordering and priority; it only breaks ties between units at the same dependency depth.
@@ -58,7 +58,7 @@ The reviewer's persisted manual ordering and priority; it only breaks ties betwe
 The reviewer's persisted skips, shown and honored on every dashboard rebuild.
 
 **Parked (status label)**:
-The review status a classified do-not-translate binary carries, distinct from a reviewer's skip.
+The review status carried by a binary that classification marked do-not-translate. It is distinct from a reviewer's skip.
 _Avoid_: Parked as a label — say *Do Not Translate*; *parking* is Evidence's classification act, not a status word
 
 **Decompiler context**:
@@ -66,28 +66,28 @@ The reviewer's view of the unit's decompiled body, in the decompile dialect.
 _Avoid_: "Ghidra Context" — the retired label for this surface
 
 **Attempt comparison**:
-The unit-detail view diffing one attempt against another, over exactly the attempts that exist — branches plus patch records, never anything invented.
+The unit-detail view that diffs one attempt against another. It compares exactly the attempts that exist — branches plus patch records — and never invents any.
 
 **LLM I/O log**:
 The kept record of prompts and responses the reviewer can read and search; old entries are honestly absent, not hidden.
 
 **Honest degradation**:
-The standing rule for every surface: a missing or corrupt artifact reads as *no artifact*, an unmeasured value renders blank, never zero.
+The standing rule for every surface: a missing or corrupt artifact reads as *no artifact*. An unmeasured value renders blank, never zero.
 
 ### Running and steering
 
 **Pipeline control**:
-The live-only run commands — pause, resume, stop, start, restart, cancel-current — refused with a name rather than silently ignored when they don't fit the run's state.
+The run commands that only live accepts — pause, resume, stop, start, restart, cancel-current. When one does not fit the run's state, it is refused, and the refusal names the command rather than silently ignoring it.
 
 **Cancel-current**:
 Aborting the in-flight unit at the earliest safe point and recording the attempt as a cancelled failure.
 
 **Focus**:
-Pulling one discovered binary to the front of the run with a single press.
+Moving one discovered binary to the front of the run with a single press.
 _Avoid_: park (the route comments' third sense of the word) — parking is Evidence's act
 
 **Scope controls**:
-Steering what a run touches — which binaries are in, held, or skipped; which functions are skipped or prioritized; and the budgets that bound what it consumes.
+Steering what a run touches: which binaries are in, held, or skipped; which functions are skipped or prioritized; and the budgets that bound what the run consumes.
 
 **Run request**:
 The start/restart form's choices: which phase runs, against which targets, over which slice of units.
@@ -95,10 +95,10 @@ The start/restart form's choices: which phase runs, against which targets, over 
 ### Reporting
 
 **Terminal dashboard**:
-The text review board built from branch state plus the persisted records — the same model the web renders.
+The text review board built from branch state and the persisted records. The web renders the same model.
 
 **Analytics on demand**:
-Numbers computed at request time from the persisted logs; no stored rollups — a second copy of the truth would drift.
+Numbers computed at request time from the persisted logs. There are no stored rollups, because a second copy of the truth would drift.
 
 **Persisted logs**:
 The fault, token-usage, and prompt-strategy records analytics reads; any count covers only the log's kept window, and that limit is stated rather than hidden.

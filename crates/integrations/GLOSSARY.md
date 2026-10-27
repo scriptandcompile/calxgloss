@@ -1,17 +1,17 @@
 # Integrations
 
-The engine-and-tooling side of the reverse-engineering effort: the analysis engine that loads the program and answers decompile questions, the local LLM that does the translating, the prompt templates that instruct it, and the Windows-API mappings that make translated code run anywhere. This context owns the language of the seam, the engine, the dialect, the cache, load budgets, and prompt templates.
+The engine-and-tooling side of the reverse-engineering effort: the analysis engine that loads the program and answers decompile questions, the local LLM that does the translating, the prompt templates that instruct it, and the Windows-API mappings that make translated code run anywhere. This context owns the words for the seam, the engine, the dialect, the cache, load budgets, and prompt templates.
 
 ## Language
 
 ### The seam and the engine
 
 **Analysis engine**:
-The component that loads the target binary and answers the decompile questions — always Kuna, in-process, since ADR-0041.
+The component that loads target binaries and answers decompile questions. It is always Kuna, running in-process, since ADR-0041.
 _Avoid_: bare "engine" (banned repo-wide); Ghidra as a live component — it is a retired engine, never the current one
 
 **Seam**:
-The fixed boundary between analysis engine and every consumer: reads flow through the *scan source*, writes through the *write-back source*. The seam outlives any engine that stands behind it.
+The fixed boundary between the analysis engine and every consumer. Reads flow through the *scan source*; writes flow through the *write-back source*. The seam stays in place even when the engine behind it is replaced.
 _Avoid_: bridge — that was the deleted HTTP mechanism; provider
 
 **Scan source**:
@@ -26,7 +26,7 @@ The in-process analysis engine; it reads the target binary inside the harness pr
 _Avoid_: server, headless, JVM
 
 **Loaded program**:
-The target binary as the engine holds it during a run — one engine thread holds it and answers one call at a time. Evidence engines and the pipeline read through it; it is what "the program" names.
+The target binary as the engine holds it during a run. One engine thread holds it and answers one call at a time. Evidence engines and the pipeline read it through this. It is what "the program" refers to.
 
 **Engine fault**:
 The single failure vocabulary for everything the engine refuses: a failed load, a missing answer, a malformed one.
@@ -35,13 +35,13 @@ _Avoid_: GhidraError (retired name)
 ### Dialect and format names
 
 **Decompile dialect**:
-The pseudo-C text flavor the engine serves — what bodies, listings, and the pipeline's text handling are written in, and what the engine faithfully reproduces.
+The pseudo-C text flavor the engine serves. Bodies, listings, and the pipeline's text handling are written in this flavor, and the engine reproduces it faithfully.
 
 **Ghidra names formats, never the engine**:
 Dialect spellings keep their historical names — `FUN_…`, `DAT_…`, `param_N`/`local_N`, `vftable`, the WARNING preamble — because they name a *format*; no live component is ever called Ghidra.
 
 **Decompile noise filter**:
-The seam's curation of engine text: shapes that would fake a structure (stack-guard patterns) are stripped so they never read as real; shapes that are evidence (spelled try/catch frames) pass through byte for byte.
+The seam's curation of engine text. Shapes that would fake a structure (stack-guard patterns) are stripped, so they are never read as real. Shapes that are evidence (spelled try/catch frames) pass through byte for byte.
 
 ### Cache and budgets
 
@@ -50,11 +50,11 @@ The seam-owned, two-tier on-disk store of decompiled answers that survives resta
 _Avoid_: Ghidra cache (the retired path name for it)
 
 **Load**:
-Bringing a target binary into the engine — the first act of every scan, and what doctor proves by doing.
+Bringing a target binary into the engine. It is the first act of every scan, and it is what doctor proves by actually doing it.
 _Avoid_: attach, spawn (retired lifecycle words)
 
 **Per-function budget**:
-The ceiling on what one function's analysis may consume — instructions, seconds, memory — refused loudly when exceeded rather than left to hang. Settings carry the budgets.
+The ceiling on what one function's analysis may consume — instructions, seconds, memory. When a budget is exceeded, the analysis is refused loudly rather than left to hang. The budgets are carried in settings.
 
 ### The LLM and its templates
 
@@ -62,17 +62,17 @@ The ceiling on what one function's analysis may consume — instructions, second
 The locally hosted model that does the translating; because it is local, failed output is cheap and asking again is the normal path.
 
 **Fault monitor**:
-A run's watchdog over LLM responses, ending an attempt when the response shows a characteristic failure — invented APIs, an unproductive loop, divergence, exhaustion.
+A run's watchdog over LLM responses. When a response shows a characteristic failure — invented APIs, an unproductive loop, divergence, exhaustion — the monitor ends the attempt.
 
 **Context window**:
-The single token budget — prompt plus output together — that the local LLM offers; the pressure it creates is what context tiers escalate against.
+The single token budget the local LLM offers — prompt plus output together. When that budget is tight, the pipeline escalates through the context tiers.
 
 **Prompt template**:
-The assembled ask that one LLM call sends; every template must be reachable from the pipeline — an unreachable one is deleted, never kept "for later".
+The assembled request that one LLM call sends. Every template must be reachable from the pipeline. If one stops being reachable, it is deleted, not kept "for later".
 _Avoid_: bare "prompt" (prompt tier and the LLM I/O log use the word differently)
 
 **Section include**:
-The shared per-evidence-engine snippet that prompt templates call; which evidence sections a prompt shows is a property of which includes that template calls.
+The shared snippet, one per evidence engine, that prompt templates call. Which evidence sections a prompt shows is decided by which includes that template calls.
 
 ### Windows-API mappings
 
@@ -86,4 +86,4 @@ One Windows API's route to its PAL counterpart — trait, crate suggestion, and 
 The kind an imported API belongs to, shared as the display vocabulary between the evidence side's API detection and PAL's mappings.
 
 **Shim**:
-The generated forwarding layer that routes Windows API calls to their PAL mappings so translated units link against a real surface.
+The generated forwarding layer that routes Windows API calls to their PAL mappings. It lets translated units link against a real surface.

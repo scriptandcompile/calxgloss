@@ -11,10 +11,10 @@ One function or struct definition produced by the reverse-engineering effort, de
 _Avoid_: work unit, task, job
 
 **Unit key**:
-A unit's identity string: `{file}/{function}`, where `{file}` is the binary identity. Carried verbatim through API payloads, review records, and artifact paths.
+A unit's identity string: `{file}/{function}`, where `{file}` is the binary identity. The key is passed through unchanged in API payloads, review records, and artifact paths.
 
 **Attempt**:
-One try at a unit; each attempt is a fresh translation. Attempts are numbered, and the number rides the attempt branch name.
+One try at a unit; each attempt is a fresh translation. Attempts are numbered, and the number appears in the attempt branch's name.
 _Avoid_: version, revision
 
 ### Targets and workspace
@@ -32,7 +32,7 @@ A target binary's filename verbatim, extension included — `game_logic.dll`, `e
 _Avoid_: stem, extension-stripped name (as an identity)
 
 **Paused target binary**:
-A target binary the operator has held out of the queue while the run keeps working on the rest — steering, not lifecycle. The binary stays in scope; its units simply never start being translated, and an in-flight hold takes effect at the next unit boundary. *Pause* on its own is the run-wide lifecycle control; a binary is *held* / *paused*.
+A target binary the operator has held out of the queue while the run keeps working on the rest. This is steering, not lifecycle. The binary stays in scope; its units simply never start being translated, and a hold that starts mid-flight takes effect at the next unit boundary. *Pause* on its own is the run-wide lifecycle control; a binary is *held* / *paused*.
 _Avoid_: stopped binary, suspended binary
 
 **Workspace**:
@@ -42,7 +42,7 @@ _Avoid_: repo_dir, workspace_root, output_dir
 ### Run and steering
 
 **Run**:
-One continuous working session of the pipeline, start to stop. Lifecycle controls act on the run; steering acts within it and takes effect at a **unit boundary** — where one unit's work ends and the next begins.
+One continuous working session of the pipeline, from start to stop. Lifecycle controls act on the whole run. Steering acts inside the run and takes effect at a **unit boundary** — the point where one unit's work ends and the next begins.
 _Avoid_: session, process
 
 **Operator**:
@@ -111,7 +111,7 @@ _Avoid_: reject
 What every unit presents to the reviewer: what and how it was translated, evidence of correctness, attempt history, and confidence.
 
 **Known gaps**:
-The limitations of a translation that its unit admits up front, presented alongside the justification.
+The limitations of a translation. The unit states them up front, alongside the justification.
 
 **Unit confidence**:
 The reviewer-facing trust in a unit, on a 0.0–1.0 scale.
@@ -120,7 +120,7 @@ _Avoid_: bare "confidence" — evidence confidence is a different scale, owned b
 ### Scan scheduling
 
 **Descriptor row**:
-One evidence engine's entry in the pipeline's pre-translation scan schedule. The schedule table's words — the table itself, its fan-out, a cached-hit short-circuit — are Pipeline's; what a row *means* — scan row name, per-binary document, facets — is Evidence's.
+One evidence engine's entry in the pipeline's pre-translation scan schedule. The schedule-table words belong to Pipeline: the table itself, its fan-out, and the cached-hit short-circuit. The words for what a row *means* belong to Evidence: scan row name, per-binary document, facets.
 
 ### Prompting
 
@@ -133,7 +133,7 @@ How a failed attempt is re-attempted: compile fix, test fix, escalation of conte
 _Avoid_: bare "strategy" — classification strategy belongs to Evidence
 
 **Evidence bundle**:
-One unit's gathered evidence over the evidence engines' per-binary documents: the single render input of the bundle-fed prompt templates. The bundle, not rendered strings, crosses the seam; missing evidence means sections omitted, never a failed prompt.
+One unit's gathered evidence, built from the evidence engines' per-binary documents. It is the single input rendered into the bundle-fed prompt templates. The bundle itself crosses the seam — not already-rendered strings. When evidence is missing, its sections are simply left out; a prompt never fails.
 
 ### History
 
