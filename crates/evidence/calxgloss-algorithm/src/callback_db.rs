@@ -1,23 +1,23 @@
 //! Callback pattern detection.
 //!
-//! This module provides [`CallbackPatternDb`], which carries the
-//! callback contracts — a known host function and the shape of the
-//! callback it takes — that analyzed functions are matched against,
-//! recognizing the functions that serve as callbacks rather than
-//! ordinary callees: qsort compare, bsearch compare, hash table
-//! comparator.
+//! This module provides [`CallbackPatternDb`], the database of
+//! callback contracts that analyzed functions are matched against. A
+//! contract names a known host function and the shape of the callback
+//! it takes. A function that fits a contract is recognized as one
+//! that serves as a callback rather than an ordinary callee: qsort
+//! compare, bsearch compare, hash table comparator.
 //!
 //! Each contract is a [`CallbackPattern`]: a named role, the host
 //! names that take the callback (matched against caller names through
 //! the call graph), the arity the contract expects, the body shapes
 //! the callback must carry, and the [`TypeHint`]s the contract
-//! implies for the callback's own signature — a qsort compare
+//! implies for the callback's own signature. A qsort compare
 //! callback's parameters are element pointers and its return an
 //! ordering integer, so recognizing the role types the function
 //! beside naming its algorithm.
 //!
 //! The contract set is configurable — supplied whole through
-//! [`with_patterns`](CallbackPatternDb::with_patterns) or grown one at
+//! [`with_patterns`](CallbackPatternDb::with_patterns) or added one at
 //! a time with [`add_pattern`](CallbackPatternDb::add_pattern) — and
 //! reported in configuration order, so two databases built the same
 //! way scan identically and results diff cleanly.
@@ -28,19 +28,20 @@
 //! scans against it.
 //!
 //! The usage half of a detection runs through
-//! [`match_callers`](CallbackPatternDb::match_callers): handed the
-//! analyzed function's caller names — read from the call graph — it
-//! reports the contracts whose hosts reach the function, the evidence
-//! that it serves a callback role rather than an ordinary callee.
+//! [`match_callers`](CallbackPatternDb::match_callers). It is handed
+//! the analyzed function's caller names, read from the call graph,
+//! and reports the contracts whose hosts reach the function. Those
+//! hosts are the evidence that the function serves a callback role
+//! rather than an ordinary callee.
 //!
 //! The full detection runs through
-//! [`detect_callback_patterns`](CallbackPatternDb::detect_callback_patterns):
-//! handed the analyzed function beside its caller names, it reports
-//! each contract the function fits on both halves at once — its own
-//! signature (the contract's arity and body shapes) and its usage (a
-//! host reaching it) — as a [`CallbackDetection`] pairing the
-//! [`AlgorithmHint`] naming the role with the contract whose type
-//! hints the fit carries over to the function's signature.
+//! [`detect_callback_patterns`](CallbackPatternDb::detect_callback_patterns).
+//! It is handed the analyzed function beside its caller names, and
+//! reports each contract the function fits on both halves at once:
+//! its own signature (the contract's arity and body shapes) and its
+//! usage (a host reaching it). Each report is a [`CallbackDetection`]:
+//! the [`AlgorithmHint`] naming the role, beside the contract whose
+//! type hints the fit carries over to the function's signature.
 
 use crate::confidence::CALLBACK_CONFIDENCE;
 use crate::types::{AlgorithmCategory, AlgorithmHint, DetectionMethod};
@@ -53,7 +54,8 @@ use serde::{Deserialize, Serialize};
 // Type hints
 // ============================================================
 
-/// Which position of a callback's own signature a [`TypeHint`] types.
+/// Which position of a callback's own signature a [`TypeHint`] gives
+/// a type to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeTarget {
@@ -66,22 +68,23 @@ pub enum TypeTarget {
 /// A type the callback contract implies for one position of the
 /// callback's signature.
 ///
-/// A contract states its callback's signature — a qsort compare
+/// A contract states its callback's signature: a qsort compare
 /// callback takes two element pointers and returns an ordering
-/// integer — so recognizing the role types the analyzed function's
-/// parameters and return beside naming its algorithm, without a
-/// separate inference pass.
+/// integer. Recognizing the role therefore gives the analyzed
+/// function types for its parameters and return, beside naming its
+/// algorithm, and no separate inference pass is needed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeHint {
-    /// Which position of the callback's signature this types.
+    /// Which position of the callback's signature this gives a type
+    /// to.
     pub target: TypeTarget,
     /// The suggested type in its C spelling, e.g. `const void *`.
     pub suggested_type: String,
 }
 
 impl TypeHint {
-    /// A hint typing the callback's parameter at `index` (0-based) as
-    /// `type_name`.
+    /// A hint giving the callback's parameter at `index` (0-based)
+    /// the type `type_name`.
     pub fn param(index: usize, type_name: impl Into<String>) -> Self {
         Self {
             target: TypeTarget::Param(index),
@@ -89,7 +92,7 @@ impl TypeHint {
         }
     }
 
-    /// A hint typing the callback's return value as `type_name`.
+    /// A hint giving the callback's return value the type `type_name`.
     pub fn return_value(type_name: impl Into<String>) -> Self {
         Self {
             target: TypeTarget::Return,
@@ -107,11 +110,14 @@ impl TypeHint {
 ///
 /// A pattern recognizes exactly one callback role: its
 /// [`name`](Self::name) and [`category`](Self::category) are what a
-/// detection records when the pattern fits. A function serves the
-/// role when its own signature fits the contract — it takes
-/// [`param_count`](Self::param_count) parameters and its body carries
-/// every shape in [`body_patterns`](Self::body_patterns) — and it is
-/// used as a callback: a caller matching one of
+/// detection records when the pattern fits.
+///
+/// A function serves the role when its own signature fits the
+/// contract and it is used as a callback. The signature half fits
+/// when the function takes exactly
+/// [`param_count`](Self::param_count) parameters and its body
+/// carries every shape in [`body_patterns`](Self::body_patterns). The
+/// usage half fits when a caller matching one of
 /// [`host_patterns`](Self::host_patterns) reaches it through the call
 /// graph. The [`type_hints`](Self::type_hints) are the types the
 /// contract implies for the callback's signature, which a fit carries
@@ -139,11 +145,14 @@ pub struct CallbackPattern {
     /// The types the contract implies for the callback's signature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_hints: Vec<TypeHint>,
-    /// Optional per-entry confidence (0–100) overriding the detector's
-    /// standard score ([`CALLBACK_CONFIDENCE`](crate::confidence::CALLBACK_CONFIDENCE))
-    /// for the hints this contract makes — a hand-tuned contract from a
-    /// [pattern database](crate::pattern_db) can claim more (or less)
-    /// trust than the standard set pays. Absent means the standard score.
+    /// Optional per-entry confidence (0–100) overriding the score the
+    /// detector pays for the hints this contract makes — its standard
+    /// score
+    /// ([`CALLBACK_CONFIDENCE`](crate::confidence::CALLBACK_CONFIDENCE)).
+    /// A hand-tuned contract from a
+    /// [pattern database](crate::pattern_db) can therefore claim more
+    /// (or less) trust than the standard set pays. Absent means the
+    /// standard score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
 }
@@ -193,9 +202,10 @@ impl CallbackPattern {
 /// caller that uses it that way.
 ///
 /// The pair is the usage half of a detection: the contract names the
-/// role the function serves, and the caller name is the evidence — the
-/// host that reaches the function through the call graph, kept so a
-/// detection can report *why* the function reads as this callback's.
+/// role the function serves, and the caller name is the evidence. The
+/// caller is the host that reaches the function through the call
+/// graph, kept so a detection can report *why* the function reads as
+/// this callback's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostMatch<'a> {
     /// The contract the function's usage fits.
@@ -213,8 +223,8 @@ pub struct HostMatch<'a> {
 /// serves, and the contract it fits.
 ///
 /// The pair is a full detection. The [`hint`](Self::hint) is the
-/// shared record — the recognized role, its category, and the host
-/// that reaches the function as its evidence — and the
+/// shared record: the recognized role, its category, and the host
+/// that reaches the function as its evidence. The
 /// [`pattern`](Self::pattern) is the contract behind it, whose
 /// [`type_hints`](CallbackPattern::type_hints) the fit carries over to
 /// the analyzed function's own signature: recognizing a qsort compare
@@ -236,13 +246,15 @@ pub struct CallbackDetection<'a> {
 ///
 /// The database owns the contract set a scan reads functions against:
 /// [`CallbackPattern`] records supplied whole through
-/// [`with_patterns`](Self::with_patterns) or grown one at a time with
-/// [`add_pattern`](Self::add_pattern), and [`patterns`](Self::patterns)
-/// reports the set in configuration order, so two databases built the
-/// same way scan identically and results diff cleanly. The database
-/// holds no scan source of its own and never writes back to the
-/// program; one database serves an entire scan and can be shared by
-/// reference across concurrent per-function passes.
+/// [`with_patterns`](Self::with_patterns) or added one at a time with
+/// [`add_pattern`](Self::add_pattern), and
+/// [`patterns`](Self::patterns) reports the set in configuration
+/// order, so two databases built the same way scan identically and
+/// results diff cleanly.
+///
+/// The database holds no scan source of its own and never writes back
+/// to the program. One database serves an entire scan and can be
+/// shared by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallbackPatternDb {
     patterns: Vec<CallbackPattern>,
@@ -251,8 +263,8 @@ pub struct CallbackPatternDb {
 impl CallbackPatternDb {
     /// A database with no contracts configured: nothing is recognized
     /// until a contract set arrives through
-    /// [`with_patterns`](Self::with_patterns) or contracts join one at
-    /// a time through [`add_pattern`](Self::add_pattern).
+    /// [`with_patterns`](Self::with_patterns) or contracts are added
+    /// one at a time through [`add_pattern`](Self::add_pattern).
     pub fn new() -> Self {
         Self::default()
     }
@@ -283,19 +295,22 @@ impl CallbackPatternDb {
     }
 
     /// Match the analyzed function's caller names against every
-    /// configured contract's host patterns, in configuration order, and
-    /// report each contract the function is used as a callback for.
+    /// configured contract's host patterns, in configuration order,
+    /// and report each contract the function is used as a callback
+    /// for.
     ///
-    /// The caller names are read from the call graph — the functions
-    /// that reach the analyzed one — and a contract matches when any
-    /// caller name carries a match for any of its
-    /// [`host_patterns`](CallbackPattern::host_patterns): being reached
+    /// The caller names are read from the call graph: they are the
+    /// functions that reach the analyzed one. A contract matches when
+    /// any caller name matches any of its
+    /// [`host_patterns`](CallbackPattern::host_patterns). Being reached
     /// by one of the hosts that take this callback is what separates a
-    /// callback from an ordinary callee. A contract reports once,
-    /// however many callers fit it, and the first caller name that
-    /// matched stands as the evidence. A contract with no host patterns
-    /// claims nothing, and a host pattern that will not compile can
-    /// make no claim: it matches nothing.
+    /// callback from an ordinary callee.
+    ///
+    /// A contract reports once, however many callers fit it, and the
+    /// first caller name that matched stands as the evidence. A
+    /// contract with no host patterns claims nothing, and a host
+    /// pattern that will not compile can make no claim: it matches
+    /// nothing.
     pub fn match_callers(
         &self,
         caller_names: impl IntoIterator<Item = impl AsRef<str>>,
@@ -330,27 +345,27 @@ impl CallbackPatternDb {
     /// A contract fits when both halves agree. The signature half: the
     /// function takes exactly the contract's
     /// [`param_count`](CallbackPattern::param_count) parameters — the
-    /// arity the decompiler's inferred signature carries — and its body
-    /// carries a match for every
+    /// arity the decompiler's inferred signature carries — and its
+    /// body carries a match for every
     /// [`body_patterns`](CallbackPattern::body_patterns) shape, the
-    /// behavior the contract demands of its callback; a contract
+    /// behavior the contract demands of its callback. A contract
     /// requiring no body shape fits on signature and usage alone. The
     /// usage half: a caller matching one of the contract's host
-    /// patterns reaches the function through the call graph — the
-    /// same reading [`match_callers`](Self::match_callers) reports,
-    /// and the matched caller name stands as the hint's evidence.
+    /// patterns reaches the function through the call graph — the same
+    /// reading [`match_callers`](Self::match_callers) reports, and the
+    /// matched caller name stands as the hint's evidence.
     ///
     /// Each fit is reported in configuration order as a
     /// [`CallbackDetection`]: an [`AlgorithmHint`] marked
     /// [`CallbackPattern`](DetectionMethod::CallbackPattern) at
     /// [`CALLBACK_CONFIDENCE`] — or at the contract's own
-    /// [`confidence`](CallbackPattern::confidence) when it carries one —
-    /// naming the contract and its category, beside the contract itself,
-    /// whose [`type_hints`](CallbackPattern::type_hints) the fit carries
-    /// over to the function's signature. A contract whose hosts never
-    /// reach the function claims nothing, a function of the wrong
-    /// arity fits no contract, and a body pattern that will not
-    /// compile can make no claim: it matches nothing.
+    /// [`confidence`](CallbackPattern::confidence) when it carries one
+    /// — naming the contract and its category, beside the contract
+    /// itself, whose [`type_hints`](CallbackPattern::type_hints) the
+    /// fit carries over to the function's signature. A contract whose
+    /// hosts never reach the function claims nothing, a function of
+    /// the wrong arity fits no contract, and a body pattern that will
+    /// not compile can make no claim: it matches nothing.
     pub fn detect_callback_patterns(
         &self,
         func: &DecompiledFunction,
@@ -394,24 +409,25 @@ impl CallbackPatternDb {
 /// the box — qsort compare, bsearch compare, and hash table
 /// comparator.
 ///
-/// Each contract reads what the host actually demands of its callback.
-/// The C standard library hands its compare callbacks the two elements
-/// being compared as opaque pointers and takes an ordering integer
-/// back, so both compare contracts demand a comparison between two
-/// pointer touches in the body; a hash table's comparator answers
-/// equality rather than ordering, and is reached through the
-/// insert/lookup helpers that probe a bucket. The host names are
-/// word-anchored so the caller reads as the host itself — the import
-/// symbol appearing in the call graph — and a name that merely
-/// carries the host's letters stays outside: `qsort_s`'s callback
-/// takes a context parameter the two-parameter contract does not
-/// expect.
+/// Each contract reads what the host actually demands of its
+/// callback. The C standard library hands its compare callbacks the
+/// two elements being compared as opaque pointers and takes an
+/// ordering integer back, so both compare contracts demand a
+/// comparison between two pointer touches in the body. A hash
+/// table's comparator answers equality rather than ordering, and it
+/// is reached through the insert/lookup helpers that probe a bucket.
+///
+/// The host names are word-anchored so the caller reads as the host
+/// itself — the import symbol appearing in the call graph. A name
+/// that merely carries the host's letters stays outside:
+/// `qsort_s`'s callback takes a context parameter the two-parameter
+/// contract does not expect.
 pub fn default_patterns() -> Vec<CallbackPattern> {
     // The comparison between the two compared elements: a pointer
     // touch, an ordering or equality operator inside the same
-    // statement, another pointer touch. The `[^-]` guard keeps a
-    // field-access arrow — `p->next`, whose `>` is no comparison —
-    // from reading as one.
+    // statement, another pointer touch. The `[^-]` guard stops a
+    // field-access arrow — `p->next`, whose `>` is not a comparison —
+    // from matching this shape.
     let element_comparison = r"[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]";
     // The equality test a hash comparator answers with: the same
     // shape, narrowed to `==`.
@@ -467,9 +483,10 @@ pub fn default_patterns() -> Vec<CallbackPattern> {
 mod tests {
     use super::*;
 
-    /// The qsort compare contract, spelled the way a real one reads:
-    /// the host names the callback, the arity and body shapes say what
-    /// it does, and the type hints carry the contract's signature.
+    /// The qsort compare contract, written the way a real contract
+    /// reads: the host names the callback, the arity and body shapes
+    /// say what it does, and the type hints carry the contract's
+    /// signature.
     fn qsort_compare() -> CallbackPattern {
         CallbackPattern::new(
             "qsort_compare",
@@ -496,8 +513,9 @@ mod tests {
 
     #[test]
     fn a_new_database_starts_with_no_contracts() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Construction is simple: the database starts empty, equals
+        // the default however it is built, and clones to an equal
+        // database.
         let db = CallbackPatternDb::new();
         assert!(db.patterns().is_empty());
         assert_eq!(db, CallbackPatternDb::default());
@@ -581,7 +599,7 @@ mod tests {
     fn a_callback_pattern_serde_round_trips() {
         let contract = qsort_compare();
         let json = serde_json::to_string(&contract).unwrap();
-        // Categories serialize snake_case, matching the workspace's
+        // Categories serialize as snake_case, matching the workspace's
         // serde convention.
         assert!(json.contains("\"category\":\"sorting\""));
         let back: CallbackPattern = serde_json::from_str(&json).unwrap();
@@ -655,8 +673,8 @@ mod tests {
 
     #[test]
     fn a_contract_reports_once_however_many_callers_fit() {
-        // Reached by the host twice over is still one role served: the
-        // first caller name that matched stands as the evidence.
+        // Reached by the host twice over is still one role served.
+        // The first caller name that matched stands as the evidence.
         let db = CallbackPatternDb::with_patterns([qsort_compare()]);
         let matches = db.match_callers(["qsort", "qsort"]);
         assert_eq!(matches.len(), 1);
@@ -696,8 +714,8 @@ mod tests {
 
     #[test]
     fn a_contract_with_no_host_patterns_claims_nothing() {
-        // A contract that names no host can say no caller reaches the
-        // function as its callback.
+        // A contract that names no host cannot claim that any caller
+        // reaches the function as its callback.
         let contract = CallbackPattern::new(
             "anonymous",
             AlgorithmCategory::Sorting,
@@ -719,8 +737,9 @@ mod tests {
 
     #[test]
     fn matches_follow_configuration_order() {
-        // Callers arrive in one order; contracts report in theirs, so
-        // two databases built alike report alike.
+        // Callers arrive in one order; contracts report in their own
+        // configuration order, so two databases built alike report
+        // alike.
         let db = CallbackPatternDb::with_patterns([qsort_compare(), bsearch_compare()]);
         let matches = db.match_callers(["bsearch", "qsort"]);
         let names: Vec<&str> = matches.iter().map(|m| m.pattern.name.as_str()).collect();
@@ -832,10 +851,10 @@ mod tests {
 
     #[test]
     fn a_wrong_arity_fits_no_contract() {
-        // The contract expects exactly its arity: a three-parameter
+        // The contract expects exactly its arity. A three-parameter
         // function (a `qsort_s`-style callback with a context
         // parameter) and a one-parameter function both stand outside
-        // the two-parameter contract even when the host reaches them.
+        // the two-parameter contract, even when the host reaches them.
         let db = CallbackPatternDb::with_patterns([qsort_compare()]);
         let three = callback("FUN_18003ab00", 3, &compare_body());
         let one = callback("FUN_18003ab01", 1, &compare_body());
@@ -845,9 +864,9 @@ mod tests {
 
     #[test]
     fn a_body_missing_the_required_shape_is_not_detected() {
-        // Reached by the host at the right arity, but the body carries
-        // no comparison between pointer touches — the signature half
-        // refuses what the usage half suggests.
+        // The host reaches the function at the right arity, but the
+        // body carries no comparison between pointer touches: the
+        // signature half refuses what the usage half suggests.
         let db = CallbackPatternDb::with_patterns([qsort_compare()]);
         let body = [
             "void log_pair(int param_1, int param_2) {",
@@ -888,7 +907,7 @@ mod tests {
 
     #[test]
     fn a_function_serving_two_contracts_reports_both_in_configuration_order() {
-        // One compare callback shape, two hosts that take it: each
+        // One compare callback shape, two hosts that take it. Each
         // contract the function serves reports once, in the order the
         // contracts were configured.
         let db = CallbackPatternDb::with_patterns([qsort_compare(), bsearch_compare()]);

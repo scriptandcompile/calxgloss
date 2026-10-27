@@ -1,32 +1,34 @@
 //! Algorithm recognition orchestration.
 //!
-//! [`AlgorithmEngine`] runs the detectors — control flow signature
-//! matching, string-guided hints, and callback pattern detection over
-//! each function, then multi-function correlation over the whole listing
-//! — and assembles their records into a single
+//! [`AlgorithmEngine`] runs the detectors. It matches control flow
+//! signatures, reads string-guided hints, and detects callback
+//! patterns over each function, then runs multi-function correlation
+//! over the whole listing. It assembles their records into a single
 //! [`AlgorithmRecognitionResult`] with its scan provenance.
 //!
-//! The control flow and callback detectors are pure text analysis over
-//! one decompiled body, and the string engine additionally reads the
-//! program's literal listing, so the engine fetches the listing and the
-//! literals exactly once and reads them with every function — the way
-//! the typeinfer detectors share one decompile. The scan is then one
-//! pass over the function listing, run with bounded concurrency — at
-//! most eight decompiles in flight — while results are collected in
-//! listing order, so the persisted hint list stays stable and diffable.
-//! Where several detectors claim one algorithm
-//! for one function, the scan reports it once with the strongest
-//! evidence — the [`confidence`](crate::confidence) module's resolution
-//! — and a configured minimum-confidence floor
+//! The control flow and callback detectors are pure text analysis
+//! over one decompiled body. The string engine additionally reads
+//! the program's literal listing, so the scan fetches the listing and
+//! the literals exactly once and reads them with every function — the
+//! way the typeinfer detectors share one decompile.
+//!
+//! The scan is then one pass over the function listing, run with
+//! bounded concurrency — at most eight decompiles in flight — while
+//! results are collected in listing order, so the persisted hint list
+//! stays stable and diffable. Where several detectors claim one
+//! algorithm for one function, the scan reports it once with the
+//! strongest evidence — the [`confidence`](crate::confidence)
+//! module's resolution — and a configured minimum-confidence floor
 //! ([`with_min_confidence`](AlgorithmEngine::with_min_confidence))
-//! keeps weak claims out of the persisted result. The callback detector
-//! is the only reader of the call graph, and it runs only for functions
-//! whose arity a configured contract could fit: a function of the wrong
-//! arity fits no contract however it is used, so fetching its callers
-//! would be a round trip guaranteed to be refused. The correlation
-//! detector reads no graph at all: it derives the call map from the
-//! bodies this scan already fetched, so it adds no round trip and runs
-//! once the whole listing is in hand.
+//! keeps weak claims out of the persisted result.
+//!
+//! The callback detector is the only reader of the call graph, and it
+//! runs only for functions whose arity a configured contract could
+//! fit: a function of the wrong arity fits no contract however it is
+//! used, so fetching its callers would be a round trip guaranteed to
+//! be refused. The correlation detector reads no graph at all. It
+//! derives the call map from the bodies this scan already fetched, so
+//! it adds no round trip and runs once the whole listing is in hand.
 
 use crate::callback_db::CallbackPatternDb;
 use crate::cfg_patterns::CfgPatternMatcher;
@@ -47,23 +49,25 @@ use tracing::{info, warn};
 /// The cap on decompiles one scan keeps in flight at once.
 ///
 /// The per-function pass runs several functions' program reads
-/// concurrently to hide the bridge's round-trip latency, but the
-/// bridge answers one program at a time: a bounded handful of
-/// in-flight decompiles is what shrinks wall time on a large binary
-/// without flooding it. The engine tests' concurrency accounting
-/// proves the scan never exceeds this cap (issue #156).
+/// concurrently to hide the bridge's round-trip latency. The bridge
+/// answers one program at a time, so the pass keeps only a bounded
+/// handful of decompiles in flight: that shrinks wall time on a large
+/// binary without overloading the bridge. The scan tests' concurrency
+/// accounting proves the scan never exceeds this cap (issue #156).
 const MAX_IN_FLIGHT_DECOMPILES: usize = 8;
 
 /// What one function's turn in the concurrent per-function pass produced.
 ///
-/// The pass runs each function's reads and detectors off the listing
-/// and hands the result back in listing order, so the assembled hint
-/// list is exactly the sequential walk's; the variants say what the
-/// scan owes the skip count and the breaker.
+/// The pass works down the function listing, running each function's
+/// reads and detectors, and hands the results back in listing order,
+/// so the assembled hint list is exactly what a sequential walk would
+/// assemble. The variants say what the scan owes the skip count and
+/// the breaker.
 enum PassOutcome {
-    /// The body, with the per-function hints read from it in detector
-    /// order — control flow, then string-guided, then callback — and
-    /// whether the caller fetch the callback detector needed failed.
+    /// The body, the per-function hints read from it in detector
+    /// order — control flow, then string-guided, then callback — and a
+    /// flag saying whether the caller fetch the callback detector
+    /// needed failed.
     Read {
         body: DecompiledFunction,
         hints: Vec<AlgorithmHint>,
@@ -74,25 +78,27 @@ enum PassOutcome {
     Failed { name: String },
     /// A nameless listing entry, skipped without a decompile.
     Nameless,
-    /// The breaker had already tripped before this function's decompile
-    /// was issued — the pass read nothing. The collector normally
-    /// aborts at the counted [`Failed`](PassOutcome::Failed) that
-    /// tripped the breaker before one of these lands; this is the
-    /// backstop that keeps the abort with the counts either way.
+    /// The breaker had already tripped before this function's
+    /// decompile was issued — the pass read nothing. The collector
+    /// normally aborts at the counted [`Failed`](PassOutcome::Failed)
+    /// that tripped the breaker, before one of these lands. This
+    /// variant is the backstop: it keeps the abort carrying the counts
+    /// either way.
     Halted,
 }
 
-/// The skip-rate breaker: one shared decompile-failure count a
+/// The skip-rate breaker: one shared decompile-failure count that a
 /// concurrent scan judges against the listing's size.
 ///
-/// The rule is the sequential scan's — the run is reading the wrong
-/// program once *most* of the listing has failed to decompile, more
-/// than half of it, and an empty result would persist as a
+/// The rule is the sequential scan's: the run is reading the wrong
+/// program once *most* of the listing — more than half of it — has
+/// failed to decompile, and an empty result would then persist as a
 /// phantom-clean record (issue #71). Under the concurrent pass the
-/// count lives beside the pass, not behind it: every failed decompile
-/// joins it as it lands, and every function not yet started consults
-/// it before issuing its decompile, so a tripped breaker stops new
-/// decompiles rather than merely ending the walk (issue #156).
+/// count is shared, not just counted along the walk: every failed
+/// decompile joins it as it lands, and every function not yet started
+/// consults it before issuing its decompile. A tripped breaker
+/// therefore stops new decompiles rather than merely ending the walk
+/// (issue #156).
 struct SkipRateBreaker {
     failures: AtomicUsize,
     total: usize,
@@ -129,45 +135,46 @@ impl SkipRateBreaker {
 
 /// The program reads a recognition scan performs.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// The shared trait from the decompiler seam crate, re-exported here,
+/// where [`AlgorithmEngine`]'s generic signature has always named it.
+/// [`KunaSource`] implements it over the in-process analysis engine,
+/// and tests implement it over canned bodies so the orchestration runs
+/// without a server. The futures are `Send` so a scan can be driven
+/// from an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreadable regions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump (the P19-7 admitted-semantics track).
+/// How many unreadable regions one coverage limitation line names by
+/// name before putting the rest into a count — bounded prose beside
+/// the counts, not a dump (the P19-7 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
-/// The facets an algorithm-recognition scan declares, in order —
-/// the roster the record must name exactly once each: the bodies
-/// every detector reads, and the caller edges the callback detector
-/// reads.
+/// The facets an algorithm-recognition scan declares, in order. The
+/// record must name each one exactly once: the bodies every detector
+/// reads, and the caller edges the callback detector reads.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies", "caller-edges"];
 
 /// The coverage record every algorithm-recognition scan stamps about
 /// itself (issue #351), beside the provenance and the timing.
 ///
-/// The algorithm scan reads two facets. `function-bodies` — the
-/// decompiled bodies every detector reads: the function listing and the
-/// program string listing are always read end to end (a failure of
-/// either aborts the run, and more than half the listing failing to
-/// decompile trips the skip-rate breaker), so what a finished scan can
-/// not have read is exactly the bodies it skipped: a nameless listing
-/// entry, or a decompile that failed. `caller-edges` — the call-graph
-/// reads the callback detector makes, issued only where some contract
-/// could fit: a failed fetch costs that function its callback readings
-/// and nothing else, so it is admitted by name rather than aborting
-/// the run. The correlation pass reads the call map off the bodies the
-/// scan already kept, so it adds no coverage border of its own. With
-/// nothing skipped, both facets are `complete`, and that is the
+/// The algorithm scan reads two facets. `function-bodies` covers the
+/// decompiled bodies every detector reads. The function listing and
+/// the program string listing are always read end to end: a failure
+/// of either aborts the run, and more than half the listing failing
+/// to decompile trips the skip-rate breaker. So what a finished scan
+/// can not have read is exactly the bodies it skipped: a nameless
+/// listing entry, or a decompile that failed. `caller-edges` covers
+/// the call-graph reads the callback detector makes, issued only
+/// where some contract could fit. A failed fetch costs that function
+/// its callback readings and nothing else, so it is admitted by name
+/// rather than aborting the run. The correlation pass reads the call
+/// map from the bodies the scan already kept, so it adds no coverage
+/// border of its own.
+///
+/// With nothing skipped, both facets are `complete`, and that is the
 /// admission's point: a function no hint mentions was examined and
-/// clean, never silently unchecked. With any, the facet is `partial`
-/// and its limitation line names the regions (bounded at
-/// [`MAX_NAMED_UNREACHED`]), so silence and never-reaching are
+/// clean, never silently unchecked. With any skip, the facet is
+/// `partial` and its limitation line names the regions (bounded at
+/// [`MAX_NAMED_UNREACHED`]), so silence and never-reaching stay
 /// distinguishable in the filed record itself. The whole picture
 /// mirrors the two facets together.
 fn coverage_stamp(
@@ -247,7 +254,7 @@ fn coverage_stamp(
 ///
 /// The pass holds this behind one [`Arc`] — every in-flight function
 /// read owns its handle — so no in-flight future borrows the scan's
-/// frame, and the scan future stays provably `Send + 'static` for the
+/// frame. That keeps the scan future provably `Send + 'static` for the
 /// translator's scan-phase fan-out (issue #240, rust#100013). The
 /// literals are program-wide evidence read by every function: one
 /// fetch, shared across the pass.
@@ -261,19 +268,23 @@ struct SharedPass<S> {
 
 /// Orchestrates the detectors into one [`AlgorithmRecognitionResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned bodies; [`new`](Self::new) builds one
-/// over a loaded [`KunaSource`]. Each detector carries no state and
-/// starts configured with its standard signature set —
-/// [`with_matcher`](Self::with_matcher), [`with_string_engine`](Self::with_string_engine),
+/// `AlgorithmEngine` is generic over its [`ScanSource`], so tests can
+/// run the whole orchestration over canned bodies;
+/// [`new`](Self::new) builds one over a loaded [`KunaSource`].
+///
+/// Each detector carries no state and starts configured with its
+/// standard signature set.
+/// [`with_matcher`](Self::with_matcher),
+/// [`with_string_engine`](Self::with_string_engine),
 /// [`with_callback_db`](Self::with_callback_db), and
-/// [`with_cross_detector`](Self::with_cross_detector) swap a detector's
-/// set whole, and [`with_pattern_database`](Self::with_pattern_database)
-/// swaps the three per-function sets at once from one
-/// [database document](crate::pattern_db) — so one instance of each
-/// serves the whole scan. A scan keeps every hint it resolves by
-/// default; [`with_min_confidence`](Self::with_min_confidence) sets a
-/// floor below which hints never reach the persisted result.
+/// [`with_cross_detector`](Self::with_cross_detector) swap a
+/// detector's set whole, and
+/// [`with_pattern_database`](Self::with_pattern_database) swaps the
+/// three per-function sets at once from one [database
+/// document](crate::pattern_db). One instance of each serves the
+/// whole scan. A scan keeps every hint it resolves by default;
+/// [`with_min_confidence`](Self::with_min_confidence) sets a floor
+/// below which hints never reach the persisted result.
 #[derive(Debug, Clone)]
 pub struct AlgorithmEngine<S = KunaSource> {
     source: S,
@@ -285,8 +296,8 @@ pub struct AlgorithmEngine<S = KunaSource> {
 }
 
 impl AlgorithmEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the
-    /// standard signature sets.
+    /// An `AlgorithmEngine` over a loaded Kuna program, scanning with
+    /// the standard signature sets.
     pub fn new(source: &KunaSource) -> AlgorithmEngine<KunaSource> {
         AlgorithmEngine {
             source: source.clone(),
@@ -300,8 +311,8 @@ impl AlgorithmEngine<KunaSource> {
 }
 
 impl<S> AlgorithmEngine<S> {
-    /// An engine whose program reads come from `source`, scanning with
-    /// the standard signature sets.
+    /// An `AlgorithmEngine` whose program reads come from `source`,
+    /// scanning with the standard signature sets.
     pub fn with_source(source: S) -> Self {
         AlgorithmEngine {
             source,
@@ -361,11 +372,11 @@ impl<S> AlgorithmEngine<S> {
 
     /// Persist only hints scoring `threshold` or higher.
     ///
-    /// Mirrors the typesdb engine's filter: the floor drops hints below
-    /// `threshold` and keeps those at or above it, and it applies after
-    /// conflict resolution — to the surviving claim — so a reading
-    /// another detector strengthened clears a threshold its first claim
-    /// would have missed.
+    /// This mirrors the typesdb evidence engine's filter: the floor
+    /// drops hints below `threshold` and keeps those at or above it.
+    /// It applies after conflict resolution — to the surviving claim —
+    /// so a reading another detector strengthened clears a threshold
+    /// its first claim would have missed.
     pub fn with_min_confidence(mut self, threshold: u8) -> Self {
         self.min_confidence = threshold;
         self
@@ -375,43 +386,46 @@ impl<S> AlgorithmEngine<S> {
     /// exactly once and reading it with all three per-function
     /// detectors, then correlating the whole listing.
     ///
-    /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
-    /// becomes the key a persisted result is filed under. The hints
-    /// follow the function listing — function by function, and within one
-    /// function the control flow matches, then the string-guided hints,
-    /// then the callback matches — and the correlation pass, which needs
-    /// every body in hand to derive the call map, then reports its own
-    /// hints in listing order, so two scans of the same program diff
+    /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
+    /// and becomes the key a persisted result is filed under. The
+    /// hints follow the function listing: function by function, and
+    /// within one function the control flow matches first, then the
+    /// string-guided hints, then the callback matches. The correlation
+    /// pass needs every body in hand to derive the call map, so it
+    /// runs after the whole listing is in and reports its own hints in
+    /// listing order. Two scans of the same program therefore diff
     /// cleanly.
     ///
-    /// The per-function pass is concurrent — up to eight functions'
-    /// reads in flight at once, so a large binary scans faster without
-    /// flooding the bridge — but each function's result is held until
-    /// the one before it lands, so the assembled hint list is identical
-    /// to the sequential walk's.
+    /// The per-function pass is concurrent: up to eight functions'
+    /// reads run in flight at once, so a large binary scans faster
+    /// without flooding the bridge. Each function's result is held
+    /// until the one before it lands, so the assembled hint list is
+    /// identical to the sequential walk's.
     ///
-    /// Where several detectors claim the same algorithm for one function,
-    /// the scan reports it once with its strongest evidence: a tie keeps
-    /// the claim the scan surfaced first, and the survivor stands where
-    /// that algorithm first appeared. Different algorithms claimed for
-    /// one function all stand. A configured minimum-confidence floor
+    /// Where several detectors claim the same algorithm for one
+    /// function, the scan reports it once with its strongest evidence:
+    /// a tie keeps the claim the scan surfaced first, and the survivor
+    /// stands where that algorithm first appeared. Different
+    /// algorithms claimed for one function all stand. A configured
+    /// minimum-confidence floor
     /// ([`with_min_confidence`](Self::with_min_confidence)) then drops
-    /// hints below the threshold — after resolution, so the floor judges
-    /// each algorithm's surviving strongest claim.
+    /// hints below the threshold — after resolution, so the floor
+    /// judges each algorithm's surviving strongest claim.
     ///
-    /// A function whose body the decompiler cannot produce (a thunk, a bad entry
-    /// point) is skipped with a warning, and a function whose callers
-    /// cannot be read keeps its other hints with only its callback
-    /// readings dropped. Only a failure of the program listing or the
-    /// string listing — the server being down — aborts the run: the
-    /// listing failure means nothing was scanned, and a listing failure
-    /// would silently cost every function its string-guided evidence.
-    /// But when more than half the listing fails to decompile, the
-    /// skip-rate breaker aborts the run too: that is the signature of
-    /// the bridge answering from the wrong program, and skipping on
-    /// would persist a phantom-clean record (issue #71). The breaker
-    /// counts failures across the concurrent pass, and once it trips no
-    /// new decompile is issued (issue #156).
+    /// A function whose body the decompiler cannot produce (a thunk, a
+    /// bad entry point) is skipped with a warning. A function whose
+    /// callers cannot be read keeps its other hints with only its
+    /// callback readings dropped. Only a failure of the program
+    /// listing or the string listing — the server being down — aborts
+    /// the run: a program listing failure means nothing was scanned,
+    /// and a string listing failure would silently cost every function
+    /// its string-guided evidence. But when more than half the listing
+    /// fails to decompile, the skip-rate breaker aborts the run too:
+    /// that is the signature of the bridge answering from the wrong
+    /// program, and skipping on would persist a phantom-clean record
+    /// (issue #71). The breaker counts failures across the concurrent
+    /// pass, and once it trips no new decompile is issued
+    /// (issue #156).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<AlgorithmRecognitionResult>
     where
         S: ScanSource + Clone,
@@ -420,18 +434,19 @@ impl<S> AlgorithmEngine<S> {
         let functions = self.source.functions().await?;
         let total = functions.len();
 
-        // The skip-rate breaker lives beside the concurrent pass, not
-        // behind it: every failed decompile joins the count as it
-        // lands, and every function not yet started reads the count
-        // before issuing its decompile — so once the run has clearly
-        // lost most of the listing, no new decompile is issued.
+        // The skip-rate breaker is shared across the concurrent pass,
+        // not counted along behind the walk: every failed decompile
+        // joins the count as it lands, and every function not yet
+        // started reads the count before issuing its decompile. Once
+        // the run has clearly lost most of the listing, no new
+        // decompile is issued.
         let breaker = Arc::new(SkipRateBreaker::new(total));
 
         // The concurrent pass owns its reads: one clone of the source
         // and the three per-function detectors, plus the one literals
         // fetch, shared behind one `Arc`. Every in-flight function read
         // holds its own handle, so the pass borrows nothing from this
-        // frame — the scan future stays provably `Send + 'static`,
+        // frame. The scan future stays provably `Send + 'static`,
         // which the translator's scan-phase fan-out needs to move the
         // scan onto a task (issue #240, rust#100013).
         let shared = Arc::new(SharedPass {
@@ -448,9 +463,10 @@ impl<S> AlgorithmEngine<S> {
             let breaker = Arc::clone(&pass_breaker);
             async move {
                 if function.name.is_empty() {
-                    // A nameless listing entry would send the name lookup
-                    // wandering into some other function's body; nothing can
-                    // be recognized about it, so it passes unrecorded.
+                    // A nameless listing entry has no name to look
+                    // up: a lookup on it could land in some other
+                    // function's body. Nothing can be recognized about
+                    // it, so it passes unrecorded.
                     warn!(
                         address = format_args!("{:#x}", function.address),
                         "Skipping function with no name"
@@ -536,9 +552,9 @@ impl<S> AlgorithmEngine<S> {
         let mut hints = Vec::new();
         let mut bodies: Vec<DecompiledFunction> = Vec::with_capacity(total);
         let mut skipped = 0usize;
-        // The regions this walk never reached, collected as the pass
-        // lands them in listing order, so the coverage record below can
-        // admit them by name (issue #351).
+        // Names of functions the parallel pass could not get a body for,
+        // collected in listing order as the pass lands them, so the
+        // coverage record below can admit them by name (issue #351).
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         let mut unreadable_edges: Vec<String> = Vec::new();
@@ -553,9 +569,9 @@ impl<S> AlgorithmEngine<S> {
                         unreadable_edges.push(body.name.clone());
                     }
                     hints.extend(own);
-                    // Keep the body: the correlation pass reads the call map
-                    // off the bodies this scan already fetched, so it costs
-                    // no extra round trip.
+                    // Keep the body: the correlation pass derives the
+                    // call map from the bodies this scan already
+                    // fetched, so it costs no extra round trip.
                     bodies.push(body);
                 }
                 PassOutcome::Nameless => {
@@ -579,12 +595,12 @@ impl<S> AlgorithmEngine<S> {
         hints.extend(self.cross.detect_correlations(&bodies));
 
         let mut metadata = ScanMetadata::new(binary);
-        // The engine admits its own coverage inside its own scan, where
-        // the skips happened, so the filed record says what the walk
-        // never read (issue #351) — and a complete record lets an
-        // unmentioned function read as examined and clean.
+        // The evidence engine records its coverage here, where the
+        // skips happened, so the filed record names what the scan never
+        // read (issue #351). A complete record lets an unmentioned
+        // function read as examined and clean.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless, &unreadable_edges));
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names its analysis engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         // Competing claims for one (function, algorithm) resolve to
@@ -655,7 +671,8 @@ mod tests {
     const A12A0: u64 = 0x1800_412a0;
 
     /// State shared by every clone of a [`FakeProgram`], so a test can
-    /// read what the scan did after the engine has consumed its source.
+    /// still read what the scan did after the scan has taken the
+    /// program as its source.
     #[derive(Debug, Default)]
     struct Stats {
         decompiles: Mutex<Vec<String>>,
@@ -773,7 +790,7 @@ mod tests {
             Ok(self.callers.get(&address).cloned().unwrap_or_default())
         }
 
-        // The rest of the shared trait's reads: this engine never makes
+        // The rest of the shared trait's reads: this scan never makes
         // them, so they answer with empty or not-found data.
         async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
             Ok(Vec::new())
@@ -818,9 +835,9 @@ mod tests {
         }
     }
 
-    /// A decompiled bubble sort: the outer pass, the inner sweep, the
-    /// ordering comparison, and the swap through `iVar4` — the shape the
-    /// standard control flow set reads as a comparison sort.
+    /// A decompiled bubble sort: the outer pass, the inner pass, the
+    /// ordering comparison, and the swap through `iVar4` — the shape
+    /// the standard control flow set reads as a comparison sort.
     fn sort_body() -> String {
         [
             "  int iVar2;",
@@ -1222,10 +1239,10 @@ mod tests {
 
     #[tokio::test]
     async fn decompiles_run_concurrently_but_never_exceed_the_cap() {
-        // The point of the parallel pass is overlap; the point of the
-        // cap is that the bridge never drowns. With every decompile
-        // held open, the fake's accounting proves the window: more than
-        // one in flight at a time, never more than the cap, and still
+        // The parallel pass exists to overlap work; the cap exists so
+        // the bridge is never overloaded. With every decompile held
+        // open, the fake's accounting proves the window: more than one
+        // in flight at a time, never more than the cap, and still
         // exactly one decompile per function (issue #156).
         let mut program = wide_program(20);
         program.slow_decompiles = true;
@@ -1246,11 +1263,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_concurrent_pass_produces_the_hint_list_of_the_sequential_walk() {
-        // The cap reorders nothing: with every decompile held open, the
-        // assembled hints are still function by function in listing
-        // order, detector by detector — byte for byte what the same
-        // program produces when each read lands before the next is
-        // issued.
+        // The cap reorders nothing. With every decompile held open,
+        // the assembled hints still arrive function by function in
+        // listing order, detector by detector — byte for byte what the
+        // same program produces when each read lands before the next
+        // is issued.
         let mut slow = program();
         slow.slow_decompiles = true;
         let concurrent = scan(slow).await;
@@ -1260,7 +1277,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_nameless_listing_entry_is_skipped() {
-        // An empty name would send the by-name lookup into an arbitrary
+        // A lookup on an empty name could land in an arbitrary
         // function's body, so the entry passes without a decompile.
         let mut program = program();
         program.listing.insert(0, summary("", 0x1800_00000));
@@ -1993,11 +2010,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
-        // force-rescan file the same admission through this one
-        // definition. Every body and every caller edge was read here,
-        // so the record is complete and says nothing needs admitting.
+        // The coverage stamp is written by the evidence engine's own
+        // scan, not by the registry row and not by the CLI — the batch
+        // scan phase and the CLI's force-rescan file the same
+        // admission through this one definition. Every body and every
+        // caller edge was read here, so the record is complete and
+        // says nothing needs admitting.
         let result = scan(program()).await;
         let coverage = result
             .metadata
@@ -2059,8 +2077,8 @@ mod tests {
     #[tokio::test]
     async fn the_bodies_line_is_capped_at_five_names_and_counts_the_nameless() {
         // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
+        // five inline and put the sixth into a count, and a nameless
+        // listing entry counts toward the total without taking a name
         // slot.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::empty();
@@ -2098,7 +2116,7 @@ mod tests {
     #[tokio::test]
     async fn the_caller_edge_line_is_capped_at_five_names_and_counts_the_rest() {
         // Six functions of contract arity, every caller fetch failing:
-        // five named inline, the sixth folded into a count. Bodies all
+        // five named inline, the sixth put into a count. Bodies all
         // decompile, so only the edge facet speaks.
         let mut program = FakeProgram::empty();
         for index in 0..12u64 {
