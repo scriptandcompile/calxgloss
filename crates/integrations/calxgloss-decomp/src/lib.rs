@@ -35,8 +35,9 @@
 //! The crate was named `calxgloss-ghidra` until ADR-0042 took up ADR-0041's
 //! deferred renames, and the scan read cache filed under `re/ghidra-cache`
 //! and then `re/decomp-cache` files under `re/cache` from ADR-0043; each
-//! on-disk rename resets old caches, which the cache-format version marker
-//! would have forced anyway once the engine changed.
+//! on-disk rename resets old caches, which the engine-identity field every
+//! manifest carries now forces by mechanism whenever the engine build
+//! changes anyway (#358).
 
 mod cache;
 mod error;
@@ -48,7 +49,7 @@ mod type_write_source;
 
 pub use cache::{
     CACHE_FORMAT_VERSION, CacheManifest, CachedScanSource, cache_root, cached_body, cached_exports,
-    cached_functions, is_surviving_scan, sha256_of_file,
+    cached_functions, current_engine_identity, is_surviving_scan, sha256_of_file,
 };
 pub use error::{EngineError, Result};
 pub use model::{

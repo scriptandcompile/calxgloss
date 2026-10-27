@@ -243,6 +243,7 @@ mod tests {
     use calxgloss_bdiff::{MatchFamily, PairingDocument, PairingRecord};
     use calxgloss_decomp::{
         CACHE_FORMAT_VERSION, CacheManifest, DecompiledFunction, FunctionSummary, Symbol,
+        current_engine_identity,
     };
     use calxgloss_types::{Confidence, persist::save_json};
 
@@ -265,8 +266,10 @@ mod tests {
     }
 
     /// File one version's scan document set: the manifest naming its own
-    /// directory, the function listing, the export listing, and one kept
-    /// body per function unless its body is blank.
+    /// directory and this run's engine build (the identity a warm open and
+    /// the surviving-scan check both compare, #358), the function listing,
+    /// the export listing, and one kept body per function unless its body
+    /// is blank.
     fn file_scan_documents(
         dir: &Path,
         hash: &str,
@@ -280,6 +283,7 @@ mod tests {
                 binary_sha256: hash.to_string(),
                 format_version: CACHE_FORMAT_VERSION,
                 program: BINARY.into(),
+                engine_identity: Some(current_engine_identity()),
             },
         )
         .expect("manifest filed");
@@ -532,6 +536,7 @@ mod tests {
                 binary_sha256: OLD_HASH.into(),
                 format_version: CACHE_FORMAT_VERSION,
                 program: BINARY.into(),
+                engine_identity: Some(current_engine_identity()),
             },
         )
         .expect("manifest filed");
@@ -549,6 +554,38 @@ mod tests {
         assert!(
             !persistor.exists(&key),
             "a cold sibling directory stands for no scan"
+        );
+    }
+
+    #[test]
+    fn a_sibling_filed_under_another_engine_identity_is_refused() {
+        // The surviving-sibling pairing contract keeps standing over the
+        // extended manifest (#358, the #328 pairing): a warm sibling whose
+        // manifest disagrees on the engine build that answered it — same
+        // hash, same program, same format version, nothing stale but the
+        // identity — is no surviving scan, and cross-engine pairing never
+        // happens. No version integer moved to force this refusal.
+        let ws = temp_workspace();
+        let (binary_file, new_hash) = target_binary(ws.path(), b"current bytes");
+        two_version_scans(ws.path(), &new_hash);
+        let old_dir = scan_dir(ws.path(), OLD_HASH);
+        save_json(
+            &old_dir.join("manifest.json"),
+            &CacheManifest {
+                binary_sha256: OLD_HASH.into(),
+                format_version: CACHE_FORMAT_VERSION,
+                program: BINARY.into(),
+                engine_identity: Some("kuna@v0.0.0@deadbee".into()),
+            },
+        )
+        .expect("the sibling re-filed under another engine build");
+
+        pair_previous_versions(ws.path(), BINARY, &binary_file);
+
+        let persistor = BdiffPersistor::new(ws.path());
+        assert!(
+            !persistor.exists(&BdiffPersistor::key_for(BINARY, OLD_HASH, &new_hash)),
+            "a sibling answered by another engine build pairs as no scan at all"
         );
     }
 

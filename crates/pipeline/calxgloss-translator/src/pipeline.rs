@@ -5351,6 +5351,7 @@ void SetCursor(void)
                 binary_sha256: old_hash.clone(),
                 format_version: calxgloss_decomp::CACHE_FORMAT_VERSION,
                 program: PROGRAM.into(),
+                engine_identity: Some(calxgloss_decomp::current_engine_identity()),
             },
         )
         .expect("the sibling manifest names its own directory");

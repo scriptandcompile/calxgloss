@@ -17,15 +17,28 @@
 //! directory, so staleness needs no invalidation logic; old hash directories
 //! are kept (for switching back to a previous build) until pruned by hand.
 //! A `manifest.json` in the directory records the binary hash, the cache
-//! format version, and the program name as the engine named it — a mismatch
-//! on any field (or a corrupt manifest) treats the directory as cold: it is
-//! wiped and rewritten, so a stale entry is never served. The format version
-//! went to 2 when Kuna became the only engine (issue #214): documents
-//! written by the retired Ghidra bridge are never replayed under Kuna. It
-//! went to 3 when the function listing dropped the engine's import pointer
-//! slots: a v2 `functions` document still names every IAT slot, and a
-//! consumer that decompiles each listed name then spends one read per
-//! import on an entry the engine refuses.
+//! format version, the program name as the engine named it, and the
+//! identity of the engine build that produced the documents — derived
+//! from the release-and-pin stamp the seam already carries beside every
+//! scan record (#358). A mismatch on any field (or a corrupt manifest)
+//! treats the directory as cold: it is wiped and rewritten, so a stale
+//! entry is never served. A manifest written before the identity field
+//! shipped carries no identity key at all, which reads as an unknown
+//! engine and likewise forces cold — never a hot replay of unknown-engine
+//! bytes, never an error.
+//!
+//! **Engine drift rides the identity, not the version integer** (#358).
+//! Kuna is compiled into the harness, so its answers move whenever the
+//! pinned crate moves — and the manifest identity moves with it, taking
+//! every older directory cold mechanically, on no maintainer memory and
+//! with no hand-bumped constant. [`CACHE_FORMAT_VERSION`] is the
+//! record-shape gate: it went to 3 when the function listing dropped the
+//! engine's import pointer slots — a v2 `functions` document still names
+//! every IAT slot, and a consumer that decompiles each listed name then
+//! spends one read per import on an entry the engine refuses — and to 4
+//! when the listing dropped ambiguous names too. Version 2 was recorded
+//! when Kuna became the only engine (issue #214); that engine-drift duty
+//! now belongs to the identity field, not the integer.
 //!
 //! **The directory has had three names** — `re/ghidra-cache` (ADR-0041's
 //! deferral), `re/decomp-cache` (ADR-0042's uptake), and `re/cache` from
@@ -46,7 +59,9 @@
 //! replays warm again. Deleting the cache directory (or the binary's whole
 //! identity directory) does the same by hand. Bumping
 //! [`CACHE_FORMAT_VERSION`] invalidates every cache at once when the record
-//! shape changes.
+//! shape changes; an engine-build change needs no bump at all — it moves
+//! every manifest's engine identity by itself, and mismatch forces cold
+//! (#358).
 //!
 //! **Degradation, never failure:** a missing or unreadable binary file drops
 //! the disk tier entirely and reads pass straight through to the engine; a
@@ -96,23 +111,29 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
 use tracing::{debug, warn};
 
-/// Cache-format version, recorded in every manifest. Bump when a cached
-/// document's shape changes: every existing directory then reads as cold
-/// instead of serving records the new readers cannot interpret. Version 2
-/// marks the Kuna-only engine (issue #214): the Ghidra bridge's documents
-/// are never replayed under a different engine's decompiler. Version 3 marks
-/// the function listing without import pointer slots — a v2 listing names
-/// each IAT slot, and no `decompile` of one can succeed. Version 4 marks the
-/// listing without ambiguous names either — a v3 listing names both thunk
-/// veneers of an import an MSVC link emitted twice, and the engine settles
-/// on neither, so no `decompile` of that name can succeed.
+/// The cache record-shape version, recorded in every manifest. Bump when a
+/// cached document's shape changes: every existing directory then reads as
+/// cold instead of serving records the new readers cannot interpret. Engine
+/// drift is not this integer's duty (#358): the manifest's engine-identity
+/// field names the engine build that wrote a directory and forces every
+/// older one cold mechanically when the pinned Kuna crate moves, no
+/// maintainer bumping a constant. Version 2 was recorded when Kuna became
+/// the only engine (issue #214) — at the time this integer was the only
+/// thing keeping the retired Ghidra bridge's documents from replaying
+/// under a different engine's decompiler; the identity carries that guard
+/// now. Version 3 marks the function listing without import pointer slots
+/// — a v2 listing names each IAT slot, and no `decompile` of one can
+/// succeed. Version 4 marks the listing without ambiguous names either — a
+/// v3 listing names both thunk veneers of an import an MSVC link emitted
+/// twice, and the engine settles on neither, so no `decompile` of that name
+/// can succeed.
 ///
 /// Public because the surviving-scan readers below answer only directories
 /// written under the current version (#298), and a consumer assembling a
 /// manifest for one needs the live value, not a hand-copy.
 pub const CACHE_FORMAT_VERSION: u32 = 4;
 
-/// The `manifest.json` beside a directory's cached documents. All three
+/// The `manifest.json` beside a directory's cached documents. All four
 /// fields must match this run's facts for the directory to be warm; the
 /// binary hash duplicates the directory name on purpose, so a renamed or
 /// moved directory is detected rather than trusted. The surviving-scan
@@ -121,10 +142,41 @@ pub const CACHE_FORMAT_VERSION: u32 = 4;
 pub struct CacheManifest {
     /// SHA-256 (hex) of the target binary's file bytes.
     pub binary_sha256: String,
-    /// The [`CACHE_FORMAT_VERSION`] this directory was written under.
+    /// The [`CACHE_FORMAT_VERSION`] this directory was written under —
+    /// the record-shape gate.
     pub format_version: u32,
     /// The program name as the engine named it.
     pub program: String,
+    /// The engine build that answered these reads, as
+    /// [`calxgloss_types::EngineProvenance::identity`] spells the stamp the
+    /// wrapped source carries beside every scan record (#358).
+    ///
+    /// This is the engine-drift guard: a directory filed under one engine
+    /// identity and opened under another reads cold — bumping the pinned
+    /// Kuna crate moves the identity without anyone touching a version
+    /// integer. A manifest written before the field shipped has no identity
+    /// key in its raw bytes, loads without error, and reads as no identity
+    /// at all — unknown never matches a compiled engine, so such a
+    /// directory forces cold rather than hot-replaying unknown-engine
+    /// bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_identity: Option<String>,
+}
+
+/// The engine-identity string ([`calxgloss_types::EngineProvenance::identity`])
+/// this build's engine stamps — the very stamp the seam's
+/// [`ScanSource::engine_provenance`] read answers with beside every scan
+/// record (#208, #358).
+///
+/// The manifest write leg (in [`CachedScanSource::build`]) and the
+/// surviving-scan comparison ([`is_surviving_scan`]) both answer through
+/// the seam's one construction of Kuna's stamp (`kuna_provenance`), so a
+/// pinned-Kuna bump moves the identity that gets written and the identity
+/// that gets compared in the same breath — and no hand-maintained constant
+/// feeds either. A consumer assembling a manifest, or a pin keeping a warm
+/// directory, needs this live value, not a hand-copy.
+pub fn current_engine_identity() -> String {
+    crate::scan_source::kuna_provenance().identity()
 }
 
 /// One cached read, identifying both its read and its argument.
@@ -232,10 +284,18 @@ impl CachedScanSource {
             Ok(Some(hash)) => {
                 let program = source.identity().to_string();
                 let dir = cache_root(&workspace).join(binary.as_str()).join(&hash);
+                // The manifest names which engine build answered: the
+                // identity rides solely the stamp the wrapped source
+                // carries beside every scan record, so bumping the pinned
+                // Kuna crate moves the manifest's identity with it — no
+                // hand-maintained constant feeds the cache's engine key
+                // (#358).
+                let engine_identity = source.engine_provenance().map(|stamp| stamp.identity());
                 let manifest = CacheManifest {
                     binary_sha256: hash,
                     format_version: CACHE_FORMAT_VERSION,
                     program,
+                    engine_identity,
                 };
                 match open_manifest(&dir, &manifest, refresh) {
                     Ok(()) => {
@@ -693,10 +753,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Establish the directory's manifest for this run.
 ///
 /// A matching manifest leaves the warm documents in place. A mismatch on
-/// any field — or a corrupt or absent manifest — means the directory's
-/// entries cannot be trusted: it is wiped (so no stale entry can be served
-/// later) and rewritten with this run's facts, leaving a cold but writable
-/// directory.
+/// any field — including an engine-identity mismatch between this run's
+/// engine build and the build that wrote the directory (#358) — or a
+/// corrupt or absent manifest means the directory's entries cannot be
+/// trusted: it is wiped (so no stale entry can be served later) and
+/// rewritten with this run's facts, leaving a cold but writable directory.
+/// A manifest written before the identity field shipped loads without
+/// error and carries no identity, mismatches this run's stamped identity,
+/// and follows the same cold path — unknown-engine bytes are never
+/// replayed hot (#358).
 ///
 /// `refresh` is the operator's escape hatch (issue #106): a refresh wipes
 /// and rewrites regardless of what the manifest says.
@@ -745,14 +810,19 @@ fn open_manifest(
 
 /// Whether `dir` holds a surviving scan: a hash directory whose manifest
 /// names the very hash it is filed under, at the current cache format
-/// version, with its function listing still on disk — a document set the
-/// pairing pass can read without an engine.
+/// version, under this run's engine build — the identity
+/// [`current_engine_identity`] names — with its function listing still on
+/// disk: a document set the pairing pass can read without an engine.
 ///
-/// The three checks are exactly the conditions [`open_manifest`] uses
+/// The four checks are exactly the conditions [`open_manifest`] uses
 /// before replaying a directory warm, with one difference: a surviving
 /// scan is only read, never opened. A mismatched or corrupt sibling is not
 /// wiped — it stands for a different version's bytes, and this run's
-/// manifest has no claim on it.
+/// manifest has no claim on it. A sibling filed under another engine
+/// build's identity is no surviving scan at all (#358): those bytes were
+/// answered by an engine this run cannot name, and no pairing may replay
+/// them; a manifest written before the identity field shipped reads as no
+/// identity, and stands refused the same way.
 pub fn is_surviving_scan(dir: &Path) -> bool {
     let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -761,6 +831,7 @@ pub fn is_surviving_scan(dir: &Path) -> bool {
         Ok(manifest) => {
             manifest.binary_sha256 == name
                 && manifest.format_version == CACHE_FORMAT_VERSION
+                && manifest.engine_identity.as_deref() == Some(current_engine_identity().as_str())
                 && dir.join("functions.json").is_file()
         }
         Err(err) => {
@@ -822,6 +893,7 @@ mod tests {
             binary_sha256: "abc".into(),
             format_version: CACHE_FORMAT_VERSION,
             program: "eqmain.dll".into(),
+            engine_identity: Some(current_engine_identity()),
         }
     }
 
@@ -989,6 +1061,13 @@ mod tests {
                 program: "other.exe".into(),
                 ..manifest.clone()
             },
+            // The engine-drift mismatch (#358): same bytes, same program,
+            // same record-shape version — only the engine build that
+            // answered differs. The identity alone forces cold.
+            CacheManifest {
+                engine_identity: Some("kuna@v9.9.9@abcdef0".into()),
+                ..manifest.clone()
+            },
         ] {
             open_manifest(&cache, &stale, false).expect("mismatch rewrites the manifest");
             assert!(
@@ -1019,6 +1098,161 @@ mod tests {
     }
 
     #[test]
+    fn a_manifest_filed_under_another_engine_identity_opens_cold() {
+        // AC (issue #358): a directory filed under one engine identity and
+        // opened under another is no surviving scan and stays no warm
+        // replay — the identity comparison alone forces the cold read,
+        // with no format-version change anywhere.
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let scan = root.path().join("eqmain.dll").join("abc");
+        let other_build = CacheManifest {
+            engine_identity: Some("kuna@v0.0.0@deadbee".into()),
+            ..sample_manifest()
+        };
+        assert_eq!(
+            other_build.format_version, CACHE_FORMAT_VERSION,
+            "the two builds differ only in identity — the record-shape version stands"
+        );
+        open_manifest(&scan, &other_build, false).expect("that build writes its manifest");
+        save_json(
+            &doc_path(&scan, &CacheKey::Functions),
+            &Vec::<FunctionSummary>::new(),
+        )
+        .expect("listing filed");
+
+        assert!(
+            !is_surviving_scan(&scan),
+            "a scan filed under another engine identity is not a surviving scan for this one"
+        );
+
+        open_manifest(&scan, &sample_manifest(), false).expect("mismatched identity rewrites");
+        assert!(
+            !doc_path(&scan, &CacheKey::Functions).is_file(),
+            "the other build's warm documents go cold — never replayed under this engine"
+        );
+        assert_eq!(
+            load_json::<CacheManifest>(&scan.join("manifest.json")).expect("rewritten manifest"),
+            sample_manifest(),
+            "the directory now names this run's engine build"
+        );
+    }
+
+    #[test]
+    fn a_manifest_written_before_the_identity_field_shipped_reads_unknown_and_goes_cold() {
+        // AC (issue #358): raw bytes from before this track — no identity
+        // key at all — load across the read path without error, read as an
+        // unknown engine, and force cold: never a hot replay of
+        // unknown-engine bytes, never corrupt, never an error.
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let scan = root.path().join("eqmain.dll").join("abc");
+        std::fs::create_dir_all(&scan).expect("scan dir");
+        let pre_track_bytes = format!(
+            "{{\"binary_sha256\":\"abc\",\"format_version\":{},\"program\":\"eqmain.dll\"}}",
+            CACHE_FORMAT_VERSION
+        );
+        std::fs::write(scan.join("manifest.json"), &pre_track_bytes)
+            .expect("pre-track manifest filed");
+        save_json(
+            &doc_path(&scan, &CacheKey::Functions),
+            &Vec::<FunctionSummary>::new(),
+        )
+        .expect("listing filed");
+
+        let loaded = load_json::<CacheManifest>(&scan.join("manifest.json"))
+            .expect("identity-less raw bytes load without error");
+        assert_eq!(
+            loaded.engine_identity, None,
+            "bytes carrying no identity key read as no identity — unknown, never guessed"
+        );
+
+        assert!(
+            !is_surviving_scan(&scan),
+            "a scan filed by an unknown engine build is not a surviving scan"
+        );
+
+        open_manifest(&scan, &sample_manifest(), false)
+            .expect("the identity-less manifest is replaced, not an error");
+        assert!(
+            !doc_path(&scan, &CacheKey::Functions).is_file(),
+            "unknown-engine documents are never served hot"
+        );
+        let rewritten =
+            load_json::<CacheManifest>(&scan.join("manifest.json")).expect("new manifest");
+        assert_eq!(
+            rewritten.engine_identity.as_deref(),
+            Some(current_engine_identity().as_str()),
+            "the rewritten manifest names this run's compiled engine identity"
+        );
+    }
+
+    #[test]
+    fn the_written_manifest_names_the_identity_the_engine_stamps() {
+        // AC (issue #358): a fresh directory's manifest identity is exactly
+        // the compiled release-and-pin strings the seam's provenance read
+        // answers with — and moving either stamped field moves the identity,
+        // so a pinned-Kuna bump forces cold with no constant to touch.
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let cache = dir.path().join("cache");
+        open_manifest(&cache, &sample_manifest(), false).expect("fresh open writes the manifest");
+        let written =
+            load_json::<CacheManifest>(&cache.join("manifest.json")).expect("manifest reads back");
+
+        let stamp = calxgloss_types::EngineProvenance {
+            name: "kuna".into(),
+            version: Some(calxgloss_kuna::KUNA_RELEASE.into()),
+            fingerprint: Some(calxgloss_kuna::KUNA_PIN_REV.into()),
+        };
+        assert_eq!(
+            written.engine_identity.as_deref(),
+            Some(stamp.identity().as_str()),
+            "the manifest identity is the compiled Kuna pin's release-and-pin strings, byte-for-byte"
+        );
+        assert_eq!(
+            current_engine_identity(),
+            stamp.identity(),
+            "and the identity the checks compare against is that same stamp — one construction, no drift"
+        );
+
+        for bumped in [
+            calxgloss_types::EngineProvenance {
+                version: Some("v99.999".into()),
+                ..stamp.clone()
+            },
+            calxgloss_types::EngineProvenance {
+                fingerprint: Some("0a2b3c4".into()),
+                ..stamp.clone()
+            },
+        ] {
+            assert_ne!(
+                current_engine_identity(),
+                bumped.identity(),
+                "moving one stamped field moves the identity — old directories go cold mechanically"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cache_never_spells_an_engine_identity_by_hand() {
+        // AC (issue #358): no hand-maintained constant feeds the cache's
+        // engine identity — the production half of this module derives it
+        // solely through the seam's own provenance stamp, spelling neither
+        // the compiled constants nor any release-or-pin literal itself.
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cache.rs"))
+            .expect("cache.rs reads");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the production half ahead of the tests");
+        for ghost in ["\"kuna@", "\"v1.", "KUNA_RELEASE", "KUNA_PIN_REV"] {
+            assert!(
+                !production.contains(ghost),
+                "the production cache spells an engine identity through {ghost} — \
+                 identity must ride the engine's own stamp, never a hand-copy"
+            );
+        }
+    }
+
+    #[test]
     fn a_warm_directory_reads_back_as_a_surviving_scan_with_its_documents() {
         // The #298 surface: the same conditions a warm open replays on,
         // and the readers answer the whole documents the write side kept,
@@ -1040,7 +1274,8 @@ mod tests {
 
         assert!(
             is_surviving_scan(&scan),
-            "a manifest naming its own directory, at the current format version, with a listing"
+            "a manifest naming its own directory, at the current format version, \
+             under this run's engine identity, with a listing"
         );
         assert_eq!(
             cached_functions(&scan).expect("the listing reads back"),

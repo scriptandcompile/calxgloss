@@ -35,6 +35,28 @@ pub struct EngineProvenance {
     pub fingerprint: Option<String>,
 }
 
+impl EngineProvenance {
+    /// This stamp's engine-build identity — the one string the scan read
+    /// cache records beside its documents so a directory filed by one
+    /// engine build is never replayed by another (issue #358).
+    ///
+    /// The identity carries exactly the three stamp fields — engine name,
+    /// pinned release, pinned source rev — joined by `@`, so bumping the
+    /// pinned engine crate moves the identity without anyone touching a
+    /// version integer. A field the source does not name rides the literal
+    /// `unknown` segment, keeping the identity three segments wide; a stamp
+    /// with less to name is a different build than one that names more, so
+    /// its identity differs too.
+    pub fn identity(&self) -> String {
+        format!(
+            "{}@{}@{}",
+            self.name,
+            self.version.as_deref().unwrap_or("unknown"),
+            self.fingerprint.as_deref().unwrap_or("unknown")
+        )
+    }
+}
+
 /// How far a scan got on one facet of its picture — the closed set an
 /// engine stamps about its own work.
 ///
@@ -378,6 +400,58 @@ mod tests {
         assert!(!json.contains("engine"), "no engine key: {json}");
         let back: ScanMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(back.engine, None);
+    }
+
+    #[test]
+    fn an_engine_identity_carries_only_the_stamp_fields() {
+        // The identity #358 keys the scan cache on is the stamp spelled
+        // out, joined by `@`: name, release, pin rev — nothing else.
+        let stamp = EngineProvenance {
+            name: "kuna".into(),
+            version: Some("v1.878".into()),
+            fingerprint: Some("cb68db1".into()),
+        };
+        assert_eq!(stamp.identity(), "kuna@v1.878@cb68db1");
+
+        // Each field is load-bearing: any one of them moving is a different
+        // engine build, and the identity moves with it — this is what makes
+        // a pinned-crate bump force cold reads mechanically.
+        let released = EngineProvenance {
+            version: Some("v1.879".into()),
+            ..stamp.clone()
+        };
+        let repinned = EngineProvenance {
+            fingerprint: Some("0a2b3c4".into()),
+            ..stamp.clone()
+        };
+        let renamed = EngineProvenance {
+            name: "kunnaproxy".into(),
+            ..stamp.clone()
+        };
+        assert_ne!(
+            released.identity(),
+            stamp.identity(),
+            "a release move shifts it"
+        );
+        assert_ne!(
+            repinned.identity(),
+            stamp.identity(),
+            "a pin move shifts it"
+        );
+        assert_ne!(
+            renamed.identity(),
+            stamp.identity(),
+            "an engine-name move shifts it"
+        );
+
+        // A stamp that names less still answers an identity — three
+        // segments wide, with `unknown` where a field is absent.
+        let nameless = EngineProvenance {
+            name: "kuna".into(),
+            version: None,
+            fingerprint: None,
+        };
+        assert_eq!(nameless.identity(), "kuna@unknown@unknown");
     }
 
     // -- coverage envelope (P19, issue #345) -----------------------------

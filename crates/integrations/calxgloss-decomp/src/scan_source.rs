@@ -230,6 +230,24 @@ pub(crate) async fn raw_decompile(source: &KunaSource, name: &str) -> Result<Dec
         .map_err(EngineError::from)
 }
 
+/// The compiled-in Kuna engine's own provenance stamp, spelled once.
+///
+/// The pin is the build: the release tag and the short commit of the
+/// checkout the engine and its embedded specs came from are the same
+/// facts `build.rs` read out of the lock file, so a scan record names
+/// exactly the engine source that produced it (issue #208). The trait's
+/// provenance read below and the scan cache's engine-identity manifest
+/// leg both answer through this one construction — bumping the pinned
+/// Kuna crate moves every stamp at once, and no hand-maintained constant
+/// feeds the cache's engine key (issue #358).
+pub(crate) fn kuna_provenance() -> EngineProvenance {
+    EngineProvenance {
+        name: "kuna".to_string(),
+        version: Some(calxgloss_kuna::KUNA_RELEASE.to_string()),
+        fingerprint: Some(calxgloss_kuna::KUNA_PIN_REV.to_string()),
+    }
+}
+
 /// The core scan reads answered by the in-process Kuna engine (issue #206).
 ///
 /// Every read the trait carries maps onto [`KunaSource`]'s inherent API,
@@ -439,16 +457,10 @@ impl ScanSource for KunaSource {
     }
 
     fn engine_provenance(&self) -> Option<EngineProvenance> {
-        // The pin is the build: the release tag and the short commit of
-        // the checkout the engine and its embedded specs came from are
-        // the same facts `build.rs` read out of the lock file, so a scan
-        // record names exactly the engine source that produced it
-        // (issue #208).
-        Some(EngineProvenance {
-            name: "kuna".to_string(),
-            version: Some(calxgloss_kuna::KUNA_RELEASE.to_string()),
-            fingerprint: Some(calxgloss_kuna::KUNA_PIN_REV.to_string()),
-        })
+        // The stamp this engine carries is the one construction the seam
+        // spells — beside every scan record and beside the cache manifest
+        // (#208, #358).
+        Some(kuna_provenance())
     }
 
     fn capability_report(&self) -> CapabilityReport {

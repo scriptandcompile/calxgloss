@@ -417,7 +417,18 @@ fn find_pe_signature(bytes: &[u8]) -> Option<usize> {
 
 #[tokio::test]
 async fn a_manifest_field_mismatch_yields_a_cold_cache() {
-    for field in ["binary_sha256", "format_version", "program"] {
+    // The engine-identity arms (#358): tampering the identity to another
+    // engine build's value, or taking the key out entirely to stand for a
+    // manifest written before the field shipped, must both read cold —
+    // never an error over the identity-less bytes, never a hot replay of
+    // bytes this run's engine cannot vouch for.
+    for field in [
+        "binary_sha256",
+        "format_version",
+        "program",
+        "engine_identity",
+        "engine_identity_absent",
+    ] {
         let (workspace, binary) = workspace_with_fixture();
         let first = cached_source(workspace.path(), &binary);
         first.functions().await.expect("first listing");
@@ -433,6 +444,15 @@ async fn a_manifest_field_mismatch_yields_a_cold_cache() {
         match field {
             "binary_sha256" => manifest["binary_sha256"] = serde_json::json!("stale-hash"),
             "format_version" => manifest["format_version"] = serde_json::json!(999),
+            "engine_identity" => {
+                manifest["engine_identity"] = serde_json::json!("kuna@v0.0.0@deadbee")
+            }
+            "engine_identity_absent" => {
+                manifest
+                    .as_object_mut()
+                    .expect("manifest object")
+                    .remove("engine_identity");
+            }
             _ => manifest["program"] = serde_json::json!("SomeOther.exe"),
         }
         std::fs::write(&manifest_path, manifest.to_string()).expect("manifest tampered");
@@ -705,6 +725,47 @@ fn the_cache_forwards_the_engine_provenance() {
         .engine_provenance()
         .expect("the wrapped Kuna source names its engine");
     assert_eq!(provenance.name, "kuna");
+}
+
+// ============================================================
+// Engine-identity cache key (issue #358)
+// ============================================================
+
+/// The manifest a fresh scan directory files names the engine identity the
+/// wrapped source already stamps beside every scan record, byte for byte:
+/// the compiled release-and-pin strings, so the next pinned-Kuna bump moves
+/// the written identity and the compared identity together and every older
+/// directory reads cold mechanically, with no hand-bumped constant in the
+/// chain.
+#[test]
+fn a_fresh_manifest_files_the_identity_the_seam_stamps() {
+    let (workspace, binary) = workspace_with_fixture();
+    let raw = KunaSource::load(&binary).expect("the fixture must load for scanning with Kuna");
+    let stamp = ScanSource::engine_provenance(&raw)
+        .expect("the wrapped Kuna source names its engine")
+        .identity();
+    assert!(
+        stamp.contains(calxgloss_kuna::KUNA_RELEASE)
+            && stamp.contains(calxgloss_kuna::KUNA_PIN_REV),
+        "the identity carries the compiled release and pin: {stamp}"
+    );
+
+    let cached = cached_source(workspace.path(), &binary);
+    let dir = cached.cache_dir().expect("the disk tier is on");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("manifest.json")).expect("manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(
+        manifest["engine_identity"].as_str(),
+        Some(stamp.as_str()),
+        "the manifest identity rides solely the provenance the seam already answers with"
+    );
+    assert_eq!(
+        manifest["engine_identity"].as_str(),
+        Some(calxgloss_decomp::current_engine_identity().as_str()),
+        "and it matches the identity the surviving-scan check compares against — one stamp, no drift"
+    );
 }
 
 // ============================================================
