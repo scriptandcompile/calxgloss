@@ -18,6 +18,23 @@ members = [
     "crates/shared/*",
 ]
 
+# Debuginfo generation and linking dominate the build cost of this workspace's
+# ~60 test binaries. Line tables keep usable backtraces (frames, file, line —
+# no variable inspection) at a fraction of the compile and link time.
+[profile.dev]
+debug = "line-tables-only"
+
+# Light optimization for third-party code. The Kuna decompiler's p-code
+# analysis is where most test time actually goes (perf samples land in its
+# slotmap lookups), and at opt-level 0 it runs several times slower than it
+# needs to — the same scan that costs minutes here costs seconds in release.
+# Dependencies change far less often than this repo's own crates, so they are
+# compiled once and reused, while first-party code stays at opt-level 0 for
+# fast incremental rebuilds.
+[profile.dev.package."*"]
+debug = "line-tables-only"
+opt-level = 1
+
 [workspace.dependencies]
 anyhow = "1.0.104"
 thiserror = "2.0.21"
