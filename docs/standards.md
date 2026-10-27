@@ -1,17 +1,17 @@
 # Coding Standards
 
-How code in this repo should be written. The `code-review` skill's Standards
-axis checks diffs against these rules; where a rule is already enforced by
-tooling (`cargo fmt`, clippy, `cargo check`), it is not repeated here.
+How code in this repo should be written. The Standards axis of the
+`code-review` skill checks diffs against these rules. Rules already enforced
+by tooling (`cargo fmt`, clippy, `cargo check`) are not repeated here.
 
 ## Workspace & crates
 
-- One crate per domain concern, named `calxgloss-<domain>` (kebab-case), living
-  under its context directory: `crates/<context>/calxgloss-<domain>`, where the
+- One crate per domain concern. Name it `calxgloss-<domain>` (kebab-case) and
+  put it in its context directory: `crates/<context>/calxgloss-<domain>`. The
   contexts are the five groups of `GLOSSARY-MAP.md` (pipeline, evidence,
-  integrations, interface, shared). The meta-lib sits at `crates/calxgloss`.
-  `[workspace] members` in the root `Cargo.toml` lists the meta-lib plus one
-  glob per context.
+  integrations, interface, shared). The meta-lib is at `crates/calxgloss`.
+  The `[workspace] members` list in the root `Cargo.toml` contains the
+  meta-lib plus one glob per context.
 - Package metadata is inherited: `version`, `edition`, `license`, `repository`
   use `workspace = true`. Every crate declares its own `description` — it is
   intentionally not a workspace field.
@@ -19,16 +19,17 @@ tooling (`cargo fmt`, clippy, `cargo check`), it is not repeated here.
   `Cargo.toml`; member crates reference them with `{ workspace = true }`.
   Pin a version directly in a member crate only for dev-only deps (e.g.
   `tempfile`).
-- Any lint allowance (`[lints.cargo]` / `#[allow(...)]`) must carry a comment
+- Any lint allowance (`[lints.cargo]` / `#[allow(...)]`) must have a comment
   explaining why it is needed.
 
 ## Crate anatomy
 
 Every library crate follows the same shape:
 
-- `lib.rs` opens with crate-level `//!` docs: a short description of what the
-  crate does, then an `# Architecture` section listing every module and one
-  line on each. Keep this section current when modules are added or renamed.
+- `lib.rs` starts with crate-level `//!` docs: a short description of what the
+  crate does, then an `# Architecture` section that lists every module and
+  gives one line for each. Keep this section current when modules are added or
+  renamed.
 - Conventional module names: `types.rs` (core data model), `engine.rs` (scan /
   orchestration), `persist.rs` (JSON persistence), `error.rs` (error type).
   Domain detectors/analyzers get their own module.
@@ -39,19 +40,21 @@ Every library crate follows the same shape:
 
 ## Error handling
 
-- Each crate defines its own error enum in `error.rs`: `thiserror`-based
-  (`#[derive(Debug, Error)]`), named `<Domain>Error` (e.g. `TypeInferError`),
-  one variant per failure mode, each variant with a `///` doc comment and an
-  `#[error("...")]` message that names what failed.
+- Each crate defines its own error enum in `error.rs`, based on `thiserror`
+  (`#[derive(Debug, Error)]`). Name it `<Domain>Error` (e.g. `TypeInferError`).
+  Give it one variant per failure mode, and give each variant a `///` doc
+  comment and an `#[error("...")]` message that says what failed.
 - `error.rs` also defines the crate-wide alias
   `pub type Result<T> = std::result::Result<T, XxxError>;`
-- Pass-through errors use `#[from]`. Cross-crate error mapping (e.g.
-  `calxgloss_types::persist::PersistError` → `TypeInferError`) is a hand-written
-  `From` impl with a doc comment explaining how each variant folds.
-- `anyhow` belongs only at binary entry points (`fn main() -> anyhow::Result<()>`
-  in `calxgloss-cli`). Library crates never leak `anyhow` in their public API.
+- Pass-through errors use `#[from]`. Map errors between crates (e.g.
+  `calxgloss_types::persist::PersistError` → `TypeInferError`) with a
+  hand-written `From` impl, and give it a doc comment that explains how each
+  variant is converted.
+- Use `anyhow` only at binary entry points (`fn main() -> anyhow::Result<()>`
+  in `calxgloss-cli`). Library crates never expose `anyhow` in their public
+  API.
 - No `unwrap()` / `expect()` in library code. They are allowed only in tests,
-  doc examples, and test helpers — and in tests they should carry a message
+  doc examples, and test helpers — and in tests they should have a message
   (`expect("log should exist")`).
 
 ## Documentation style
@@ -60,15 +63,15 @@ Every library crate follows the same shape:
 - Every public item — and every enum variant — gets a `///` doc comment.
 - Docs explain *why* and the behavior contract (ordering guarantees, tie
   rules, what gets persisted), not just restate the signature. Prose is plain
-  and specific; jargon from the domain glossary is fair game.
+  and specific. Jargon from the domain glossary is allowed.
 
 ## API & construction style
 
-- Constructors: `new()` takes the required inputs; optional configuration is
+- Constructors: `new()` takes the required inputs. Optional configuration is
   added through chainable `with_*()` methods (`with_config`, `with_cache_dir`,
   `with_patterns`).
-- Domain concepts get their own small types (enums, newtypes) rather than
-  strings or integers standing in for them. Closed sets of cases are enums.
+- Domain concepts get their own small types (enums, newtypes), not strings
+  or integers used in their place. Closed sets of cases are enums.
 - Conversions between layers are `From`/`Into` impls, not ad-hoc conversion
   functions at call sites.
 - Prefer deterministic, diff-friendly output ordering: results that get
@@ -76,8 +79,8 @@ Every library crate follows the same shape:
 
 ## Persistence
 
-- JSON artifacts are written by a `<Domain>Persistor` struct in `persist.rs`,
-  built on the shared JSON store in `calxgloss-types::persist`
+- A `<Domain>Persistor` struct in `persist.rs` writes JSON artifacts. It uses
+  the shared JSON store in `calxgloss-types::persist`
   (`JsonStore` / `PersistError`), not raw `serde_json` + `fs` calls.
 - Artifacts live under `<workspace_root>/re/analysis/<domain>/`
   (e.g. `re/analysis/typeinfer/`). The persistor takes the workspace root in
@@ -88,10 +91,10 @@ Every library crate follows the same shape:
 ## Logging & output
 
 - Library crates log with `tracing` macros (`debug!`, `info!`, `warn!`,
-  `error!`); pipeline entry points carry `#[instrument(...)]` with useful
-  fields. No `println!` in library code.
-- User-facing console output belongs to `calxgloss-cli` and
-  `calxgloss-reports` only.
+  `error!`). Annotate pipeline entry points with `#[instrument(...)]` and
+  useful fields. No `println!` in library code.
+- Only `calxgloss-cli` and `calxgloss-reports` may write user-facing console
+  output.
 
 ## Testing
 
@@ -100,12 +103,12 @@ Every library crate follows the same shape:
 - Tests that need a live external service (an LLM endpoint) are kept in
   separate files (e.g. `tests/live.rs`) so they can be run independently of
   the offline suite. The analysis engine needs no external service: Kuna
-  loads in-process, so engine tests run offline (issue #214).
+  loads in-process, so analysis engine tests run offline (issue #214).
 - Test fixtures are built by named helpers, not inline literals:
   `sample_*`, `make_*`, `*_fixture`, `temp_workspace()` (a `tempfile::TempDir`
   for anything touching the filesystem).
-- New detectors/engines get unit tests in the same commit and an integration
-  test that runs them over a canned program.
+- New detectors and evidence engines get unit tests in the same commit, plus
+  an integration test that runs them over a canned program.
 
 ## Changelog
 
@@ -114,9 +117,9 @@ Every library crate follows the same shape:
 - Describe what the change does for a user of the project — the capability
   added or the behavior repaired — not how it was implemented. Do not
   enumerate the structs, functions, templates, or fields a feature happened
-  to introduce; name an identifier only when it is itself user-facing (a CLI
-  command or flag, a config key, a persisted file path, a public concept like
-  a context tier).
+  to introduce. Mention an identifier only when it is itself user-facing (a
+  CLI command or flag, a config key, a persisted file path, a public concept
+  like a context tier).
 - Never mention the project's own test suite: no test counts, no "N unit
   tests / integration tests / live tests" tails, no entries for test-only
   changes. Testing *features* (baseline tests, the WithTests tier, test
@@ -124,8 +127,9 @@ Every library crate follows the same shape:
 - One bullet per feature, not per commit: group the pieces of one feature
   into a single entry, and merge repeated boilerplate across features (e.g.
   one entry covering all the evidence pre-analysis scans).
-- Chores stay out: clippy fixes, formatting passes, and dependency tweaks get
-  no entry; module splits get at most one summary line under `Refactored`.
+- Do not record chores: clippy fixes, formatting passes, and dependency
+  tweaks get no entry. Module splits get at most one summary line under
+  `Refactored`.
 - Bug fixes state the symptom and the fix, and keep the issue reference
   (`Fixes #54.`).
 
@@ -139,6 +143,6 @@ Every library crate follows the same shape:
   format, under `[Unreleased] → Added/Changed/Fixed`, written to the
   Changelog standard above) **and** a checkbox tick in `docs/roadmap.md`'s
   checklist, in the same commit.
-- New crates get a scaffold commit (manifest + lib.rs + error.rs) before
-  feature commits land on top.
+- New crates get a scaffold commit (manifest + lib.rs + error.rs) before any
+  feature commit.
 - After big code changes, refresh the graft graph (`graft build`).
