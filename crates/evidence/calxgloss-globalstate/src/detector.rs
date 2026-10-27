@@ -21,23 +21,26 @@
 //!   declared name (`HANDLE handle;`), and not a control keyword —
 //!   though a control keyword's *condition* still names its accesses.
 //!
-//! The kind is spelled by the body: the next non-space bytes open an
-//! assignment (`=`, never `==`, or a compound `+=`-style store) or the
-//! name sits next to an `++`/`--` bump — that's a write; everything
-//! else — a test, a return, a plain copy — reads. The confidence band
-//! is spelled by the name: a `DAT_*` spelling is the decompiler's own
-//! name for program data, an exact store/load sighting that scores
-//! high; any other plain identifier is a shape-only sighting — global
-//! position, unproven name — and scores lower. Nothing upgrades
-//! itself: repeated sightings of one name each keep their own band.
+//! The body itself decides the kind. If the bytes after the name open
+//! an assignment (`=`, never `==`, or a compound `+=`-style store), or
+//! the name sits next to an `++`/`--` bump, the access is a write.
+//! Everything else — a test, a return, a plain copy — reads.
 //!
-//! The rule is also exposed as a pure reading — [`global_sites`] names every
-//! access site with its byte position and kind, and [`statement_at`] quotes
-//! the statement that carried one — so a consumer that keys on where an
-//! access sits reads the same rule directly instead of re-deriving it: the
-//! sync crate's data-race pairing annotates these sites with its lock-span
-//! attribution, and a race finding and a persisted record can then never
-//! name different accesses for the same identifier.
+//! The name's spelling decides the confidence band. A `DAT_*` name is
+//! the decompiler's own spelling for program data, so that exact store
+//! or load sighting scores high. Any other plain identifier is a
+//! shape-only sighting — it sits in global position, but the name is
+//! unproven — and scores lower. Nothing upgrades itself: repeated
+//! sightings of one name each keep their own band.
+//!
+//! The rule is also exposed as a pure reading: [`global_sites`] returns
+//! every access site with its byte position and kind, and
+//! [`statement_at`] returns the statement that contains the access. A
+//! consumer that cares about where an access sits reads the same rule
+//! directly instead of deriving it again. The sync crate's data-race
+//! pairing does exactly that: it attributes its lock spans to these
+//! sites, so a race finding and a persisted record can never report
+//! different accesses for the same identifier.
 
 use crate::types::{AccessKind, GlobalAccess, GlobalStateFinding};
 use calxgloss_decomp::DecompiledFunction;
@@ -45,35 +48,35 @@ use calxgloss_types::{
     NON_CALL_KEYWORDS, closing_paren, is_ident_byte, skip_char, skip_string, skip_ws,
 };
 
-/// Confidence of an access whose global is spelled exactly as the
-/// decompiler names program data — a `DAT_*` store or load. The name
+/// Confidence of an access whose global carries the decompiler's exact
+/// spelling for program data — a `DAT_*` store or load. The name
 /// itself is the decompiler's claim that the identifier is a program
-/// symbol, and the body spells the access outright, so the reading
-/// sits high on the Evidence scale.
+/// symbol, and the body shows the access outright, so this reading
+/// scores high on the Evidence scale.
 pub const EXACT_SPELLING_CONFIDENCE: u8 = 85;
 
 /// Confidence of a shape-only sighting: a plain identifier in global
 /// position that the decompiler did not name with its own program-data
-/// spelling. The access is real body evidence, but the identifier's
-/// status as program data is the decompiler's naming convention
-/// inferred from shape, not stated — so the claim sits below every
-/// exact spelling, and no later pass raises it from the sighting's own
-/// repetition.
+/// spelling. The access itself is real body evidence, but the
+/// identifier being program data is only inferred from the
+/// decompiler's naming convention, never stated. So this claim scores
+/// below every exact spelling, and no later pass raises it just
+/// because the same name is sighted again.
 pub const SHAPE_ONLY_CONFIDENCE: u8 = 60;
 
-/// The Rust pattern a global read steers a translation toward: the
-/// global stays shared program state, read through it rather than
-/// frozen into an invented local.
+/// The suggestion attached to a global read. It asks the translation
+/// to keep the global as shared program state and read it there,
+/// rather than copying its value into an invented local.
 const READ_SUGGESTION: &str = "read the program global through shared state, not an invented local";
 
-/// The Rust pattern a global write steers a translation toward: the
-/// global's storage belongs in a struct the translation threads
+/// The suggestion attached to a global write. It asks the translation
+/// to keep the global's storage in a struct the translation passes
 /// through its units, not in a Rust `static`.
 const WRITE_SUGGESTION: &str = "model the program global as shared struct state, not a Rust static";
 
-// The band order is a contract, not a taste call: an exact store/load
-// spelling outranks a shape-only sighting. A test in this module pins
-// it, and the reading below keys on it.
+// The band order is a contract, not a taste call: an exact store or
+// load spelling outranks a shape-only sighting. A test in this module
+// pins the order down, and the reading below relies on it.
 
 /// The per-body global-access reading.
 ///
@@ -91,8 +94,8 @@ impl GlobalStateDetector {
 
     /// The global accesses one body makes, in body order: one finding
     /// per access site, tagged by the access kind the body spells,
-    /// each carrying the access statement as its evidence and the
-    /// band its name spelling scored.
+    /// each with the access statement as its evidence and the band
+    /// its name spelling scored.
     ///
     /// A name the rule rejects — a decompiler local, a literal's
     /// contents, a call's arguments, a qualified or member spelling, a
@@ -130,11 +133,12 @@ impl GlobalStateDetector {
 /// offset where the name starts, and the access kind the body spells
 /// at it.
 ///
-/// The site is the pure reading's atom — position included — for
-/// consumers that key on where an access sits: the sync crate's
-/// data-race pairing annotates each site with the lock spans that
-/// cover it and quotes its statement as evidence, so a race finding
-/// and a persisted record name the same accesses by construction.
+/// The site is the smallest piece the pure reading produces, position
+/// included. It is there for consumers that care about where an access
+/// sits: the sync crate's data-race pairing attributes to each site
+/// the lock spans that cover it, and quotes its statement as evidence.
+/// A race finding and a persisted record therefore report the same
+/// accesses by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalSite {
     /// The global accessed, spelled exactly as the body spells it.
@@ -149,8 +153,8 @@ pub struct GlobalSite {
 /// access site, in body order, by the crate's shared rule — the one
 /// rule every consumer reads by, so two crates can never disagree
 /// about the same identifier. [`GlobalStateDetector::detect`] is this
-/// reading turned into findings; a consumer that needs the access
-/// positions reads the sites directly and keeps its own attribution
+/// reading turned into findings. A consumer that needs the access
+/// positions reads these sites directly and adds its own attribution
 /// on top.
 pub fn global_sites(body: &str) -> Vec<GlobalSite> {
     global_name_sites(body)
@@ -171,15 +175,15 @@ fn is_exact_spelling(name: &str) -> bool {
 }
 
 /// Every plain-identifier site in a body that could name program
-/// data, in body order: outside string and char literals, not the
-/// tail of a member or qualified name, not the head of a qualified
-/// name, and not a callee — a call's whole argument list is skipped,
-/// so a lock object or an operation constant passed to a call names
-/// no access this reading can see. Control keywords keep their parens
-/// scanned — `if (DAT_flag)` still names an access — while type words
-/// in cast position (`(HANDLE)x`) or in front of a declared name
-/// (`HANDLE handle;`) name nothing. Whether the surviving name is a
-/// global rather than a local is decided by [`is_decompiler_local`].
+/// data, in body order. A site lies outside string and char literals,
+/// is not the tail or the head of a member or qualified name, and is
+/// not a callee: a call's whole argument list is skipped, so a lock
+/// object or an operation constant passed to a call is no access this
+/// reading can see. Control keywords keep their parens scanned —
+/// `if (DAT_flag)` still names an access — while type words in cast
+/// position (`(HANDLE)x`) or in front of a declared name
+/// (`HANDLE handle;`) name nothing. [`is_decompiler_local`] then
+/// decides whether a surviving name is a global rather than a local.
 fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
     let bytes = body.as_bytes();
     let mut sites = Vec::new();
@@ -199,9 +203,9 @@ fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
                 let end = name_end(bytes, i);
                 let name = &body[i..end];
                 if bytes.get(end) == Some(&b':') {
-                    // The head of a qualified name — `eqmain::counter`
-                    // — and its tail is rejected above, so the whole
-                    // spelling names nothing this reading keys on.
+                    // The head of a qualified name — `eqmain::counter`.
+                    // Its tail is rejected above, so this reading
+                    // records neither part of the spelling.
                     i = end;
                     continue;
                 }
@@ -209,7 +213,7 @@ fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
                 if bytes.get(open) == Some(&b'(') {
                     if NON_CALL_KEYWORDS.contains(&name) {
                         // A control header — `if (DAT_flag)` — is not
-                        // a call: only the keyword passes unrecorded,
+                        // a call: only the keyword is left unrecorded,
                         // and the condition still names its accesses.
                         i = end;
                     } else {
@@ -235,8 +239,8 @@ fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
 }
 
 /// The end of the plain identifier run starting at `start` — letters,
-/// digits, and underscores only, so a qualified or demangled
-/// spelling is never one name this reading keys on.
+/// digits, and underscores only, so a qualified or demangled spelling
+/// is never treated as a single name.
 fn name_end(bytes: &[u8], start: usize) -> usize {
     let mut end = start;
     while end < bytes.len() && is_ident_byte(bytes[end]) {
@@ -260,19 +264,21 @@ fn is_cast_word(bytes: &[u8], start: usize, end: usize) -> bool {
 
 /// Whether the name is followed by another name — a declaration's
 /// `TYPE name;` or a compound type spelling — where the first word
-/// is a type and the second is what it names. The declared name never
-/// enters the sites on its own: it is preceded by an identifier byte.
+/// is a type and the second is what it names. The type word is
+/// skipped here; the declared name is then judged like any other
+/// name, and in decompiler bodies it is one of the decompiler's local
+/// spellings, rejected by [`is_decompiler_local`].
 fn declares_a_name(bytes: &[u8], open: usize) -> bool {
     bytes
         .get(open)
         .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
 }
 
-/// Words a body carries that name no program data: the C control
-/// keywords and the decompiler's own literal and label spellings, plus
-/// the type words the cast-stripping readings already strip — kept
-/// here so a word some reading strips out of a cast is never read as
-/// a global either.
+/// Words a body contains that are not program data: the C control
+/// keywords, the decompiler's own literal and label spellings, and
+/// the type words the cast-stripping readings already strip. They are
+/// kept here so that a word some reading strips out of a cast is
+/// never read as a global either.
 fn is_body_noise(word: &str) -> bool {
     matches!(
         word,
@@ -296,8 +302,8 @@ fn is_body_noise(word: &str) -> bool {
 }
 
 /// Whether the word is one the decompiler writes as a type, never as
-/// program data — the primitive and decompiler-spelled type vocabulary
-/// a body carries in casts and declarations.
+/// program data — the primitive and decompiler-spelled type
+/// vocabulary that a body contains in casts and declarations.
 fn is_type_word(word: &str) -> bool {
     matches!(
         word,
@@ -341,8 +347,8 @@ fn is_type_word(word: &str) -> bool {
 /// Whether a name is one of the decompiler's own local spellings: a
 /// parameter, a stack slot, or one of the typed-variable families
 /// (`iVar1`, `uVar2`, `pcVar3`, …) — a `Var` followed by digits and
-/// nothing else. Anything else a body names is a program symbol,
-/// which is what makes it a global.
+/// nothing else. Any other name in a body is treated as a program
+/// symbol, and that is what makes it a global.
 fn is_decompiler_local(name: &str) -> bool {
     name.starts_with("param_")
         || name.starts_with("local_")
@@ -385,11 +391,12 @@ fn access_kind(body: &str, offset: usize, name_end: usize) -> AccessKind {
 }
 
 /// The one statement of the body around `offset`, trimmed and without
-/// its closing `;`: from the terminator that opens it (a `;`, `{`, or
-/// `}`) to the `;` that closes it, or the end of the line if the
-/// decompiler left the statement open. The statement, not the whole
-/// line: the claim is the access itself. A consumer quoting a site's
-/// evidence passes the site's own offset.
+/// its closing `;`. It runs from just after the terminator that opens
+/// it (a `;`, `{`, or `}`) to the `;` that closes it, or to the end of
+/// the line if the decompiler left the statement open. The evidence
+/// quotes the statement, not the whole line: the claim is the access
+/// itself. A consumer quoting a site's evidence passes the site's own
+/// offset.
 pub fn statement_at(body: &str, offset: usize) -> String {
     let bytes = body.as_bytes();
     let start = (0..offset)
@@ -411,8 +418,8 @@ pub fn statement_at(body: &str, offset: usize) -> String {
 mod tests {
     use super::*;
 
-    /// A decompiled function whose body carries `body` under a plain
-    /// signature line, the way the seam's decompiles arrive.
+    /// A decompiled function whose body holds `body` under a plain
+    /// signature line, shaped the way decompiles arrive over the seam.
     fn function(name: &str, body: &str) -> DecompiledFunction {
         DecompiledFunction {
             name: name.to_string(),
@@ -509,8 +516,9 @@ mod tests {
     #[test]
     fn a_shape_only_sighting_never_upgrades_itself() {
         // The same shape-only name sighted three times: each record
-        // keeps the shape band — repetition is not corroboration, and
-        // no pass here raises a sighting from its own count.
+        // keeps the shape band. Repetition is not corroboration, and
+        // no pass here raises a sighting's band just because the name
+        // appears again.
         let records = readings(
             "  g_counter = 1;\n\
              g_counter = g_counter + 1;\n\
@@ -677,10 +685,10 @@ mod tests {
 
     #[test]
     fn a_decompiler_local_named_in_two_bodies_is_not_a_global() {
-        // The contract the sync pairing's consumption rests on: the
-        // rule reads every body the same way, so a stack slot named
-        // in two bodies is still just a stack slot — never shared
-        // program data one function hands the other.
+        // The contract the sync pairing's use of this rule rests on:
+        // the rule reads every body the same way, so a stack slot
+        // named in two bodies is still just a stack slot — never
+        // shared program data one function hands the other.
         let writer =
             GlobalStateDetector::new().detect(&function("FUN_18003ab00", "  local_20 = 5;\n"));
         let reader =
@@ -716,8 +724,8 @@ mod tests {
     #[test]
     fn the_statement_a_consumer_quotes_is_the_access_itself() {
         // A locked body writes its acquire and release around the
-        // access; the evidence seam quotes the access statement, not
-        // the calls beside it.
+        // access. The evidence quoted here is the access statement
+        // itself, not the calls beside it.
         let body =
             "  EnterCriticalSection(&guard); DAT_counter = 5; LeaveCriticalSection(&guard);\n";
         let sites = global_sites(body);

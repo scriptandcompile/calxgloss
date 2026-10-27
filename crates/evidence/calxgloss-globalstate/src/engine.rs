@@ -1,18 +1,20 @@
 //! Global-state scan orchestration.
 //!
-//! [`GlobalStateEngine`] decompiles every function of one open program
-//! and reads each body with the [`GlobalStateDetector`], assembling the
-//! access records into a single [`GlobalStateResult`] with its scan
-//! provenance, the derived per-function [`FunctionPurity`] summary, and
-//! the shared-globals index the [`rollup`](crate::rollup) pass derives
-//! from the records once the walk ends.
+//! [`GlobalStateEngine`] decompiles every function of one open
+//! program and reads each body with the [`GlobalStateDetector`],
+//! assembling the access records into a single [`GlobalStateResult`].
+//! The result also holds the scan's provenance, the derived
+//! per-function [`FunctionPurity`] summary, and the shared-globals
+//! index that the [`rollup`](crate::rollup) pass derives from the
+//! records once the walk ends.
 //!
-//! The detector is pure text analysis over one decompiled body, so the
-//! engine fetches each function's pseudo-C exactly once and keeps the
-//! scan one sequential pass over the function listing: there is nothing
-//! to resolve between bodies — each record names its own function — and
-//! keeping the pass sequential keeps the persisted finding list grouped
-//! by function in listing order, stable and diffable across scans.
+//! The detector is pure text analysis over one decompiled body, so
+//! the scan fetches each function's pseudo-C exactly once. The scan is
+//! one sequential pass over the function listing: there is nothing to
+//! resolve between bodies — each record already names its own
+//! function — and keeping the pass sequential keeps the persisted
+//! finding list grouped by function in listing order, stable and
+//! diffable across scans.
 
 use crate::detector::GlobalStateDetector;
 use crate::error::Result;
@@ -25,16 +27,18 @@ use tracing::{info, warn};
 /// The decompiler a global-state scan reads.
 ///
 /// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// so the generic parameters of [`GlobalStateEngine`] can name it
+/// right where they use it. [`KunaSource`] implements it on top of
+/// the in-process analysis engine, and tests implement it over canned
+/// bodies so the whole orchestration runs without a server. The
+/// futures are `Send` so a scan can be driven from an orchestrating
+/// task.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump (the P19-6 admitted-semantics track).
+/// How many unreached functions one coverage limitation line names
+/// inline before it reports the rest as a count. This keeps the
+/// admission line beside the counts bounded, not a name dump (the
+/// P19-6 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
 /// The facets a global-state scan declares, in order — the roster
@@ -99,10 +103,10 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
 /// Orchestrates the per-body access reading into one
 /// [`GlobalStateResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a loaded [`KunaSource`]. The detector carries no state, so
-/// one instance serves the whole scan, and
+/// This evidence engine is generic over its [`ScanSource`], so tests
+/// can run the whole orchestration over canned bodies;
+/// [`new`](Self::new) builds one over a loaded [`KunaSource`]. The
+/// detector holds no state, so one instance serves the whole scan, and
 /// [`with_detector`](Self::with_detector) swaps it for a configured
 /// one.
 #[derive(Debug, Clone)]
@@ -144,21 +148,22 @@ impl<S> GlobalStateEngine<S> {
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — grouped by function in
-    /// listing order, and within one function in body order — with
-    /// the shared-globals index records appended after them, in
-    /// first-sighting order. The purity summary covers every function
-    /// whose body the scan kept, also in listing order. So two scans
-    /// of the same program diff cleanly.
+    /// listing order, and within one function in body order — and
+    /// after the whole walk the rollup appends the shared-globals
+    /// index records last, in first-sighting order. The purity
+    /// summary covers every function whose body the scan kept, also
+    /// in listing order. So two scans of the same program diff
+    /// cleanly.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a
     /// bad entry point) is skipped with a warning and claims no purity
-    /// entry — absence of a body is not evidence of purity; only a
+    /// entry — absence of a body is not evidence of purity. Only a
     /// failure of the listing itself — the server being down — aborts
-    /// the run, since then nothing was scanned. But when more than
+    /// the run, because then nothing was scanned. But when more than
     /// half the listing fails to decompile, the skip-rate breaker
     /// aborts the run too: that is the signature of the bridge
     /// answering from the wrong program, and skipping on would persist
-    /// a phantom-clean record (issue #71).
+    /// a record that looks clean but is not (issue #71).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<GlobalStateResult>
     where
         S: ScanSource,
@@ -170,17 +175,18 @@ impl<S> GlobalStateEngine<S> {
         let mut purity = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // P19-6: which bodies the scan could NOT read, named where a name
-        // exists, counted where the listing entry is nameless — the
-        // coverage record below states it, so an unmentioned function
-        // means examined-and-clean, never silently unchecked.
+        // P19-6: keep track of which bodies the scan could not read —
+        // named where a name exists, counted where the listing entry
+        // is nameless. The coverage record below states this, so a
+        // function no finding mentions means examined and clean,
+        // never silently unchecked.
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // A nameless listing entry would send the by-name
+                // lookup into some other function's body. Nothing can
+                // be said about it, so it passes without a record.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -200,12 +206,12 @@ impl<S> GlobalStateEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
-                    // skipping on.
+                    // Skip-rate breaker: once more than half of the
+                    // listing has failed to decompile, the scan is
+                    // reading a program the analysis engine cannot
+                    // analyze, and an empty result would persist as a
+                    // record that looks clean but is not. Abort with
+                    // the counts instead of skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::GlobalStateError::DecompileBreaker {
                             failed: decompile_failures,
@@ -221,10 +227,10 @@ impl<S> GlobalStateEngine<S> {
                 .iter()
                 .filter(|finding| matches!(finding, crate::GlobalStateFinding::GlobalRead(_)))
                 .count();
-            // The purity entry is derived from the same reading, so a
-            // consumer never recomputes it — and it is stated for
-            // every kept function, pure ones included: the flag's
-            // point is that the absence was checked.
+            // The purity entry comes from the same reading, so a
+            // consumer never recomputes it. It is stated for every
+            // function whose body the scan kept, pure ones included:
+            // the point of the flag is that the absence was checked.
             purity.push(FunctionPurity {
                 function: decompiled.name.clone(),
                 is_pure: records.is_empty(),
@@ -238,10 +244,11 @@ impl<S> GlobalStateEngine<S> {
         // The cross-function rollup (the ADR-0027 precedent): the
         // shared-globals index is derived from the per-function
         // records the walk just made — the same kept bodies, no new
-        // engine reads — and lands after them in the persisted list,
-        // so the scan-order contract holds unchanged: per-function
-        // findings grouped by function in listing order, rollup
-        // records last, and two scans of one program diff cleanly.
+        // reads from the analysis engine — and lands after them in
+        // the persisted list. The scan-order contract holds
+        // unchanged: per-function findings grouped by function in
+        // listing order, rollup records last, so two scans of one
+        // program diff cleanly.
         let index = crate::rollup::shared_globals(&findings);
         let shared_globals = index.len();
         findings.extend(
@@ -250,14 +257,15 @@ impl<S> GlobalStateEngine<S> {
                 .map(crate::GlobalStateFinding::SharedGlobal),
         );
 
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source reports its analysis engine's name and version
+        // pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage inside its own scan, where
-        // the truth lives — not the registry row and not the CLI (issue
-        // #350): every listed body was read by the detector unless the
-        // scan says which ones it could not reach. The batch scan
-        // phase and the CLI's force-rescan file the same admission
-        // through the same single definition.
+        // The scan admits its own coverage where the truth lives, not
+        // the registry row and not the CLI (issue #350): every listed
+        // body was read by the detector unless the scan says which
+        // ones it could not reach. The batch scan phase and the CLI's
+        // force-rescan file the same admission through this one
+        // definition.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -369,7 +377,7 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads: this engine never makes
+        // The rest of the shared trait's reads: this scan never makes
         // them, so they answer with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
@@ -487,8 +495,8 @@ mod tests {
     async fn scan_groups_findings_by_function_in_listing_order() {
         // The scan-order contract: both functions carry accesses, so
         // the persisted list must group their records by function in
-        // listing order — never interleaved — and the rollup entries
-        // land after the whole per-function group, never among it.
+        // listing order — never interleaved. The rollup entries land
+        // after the whole per-function group, never among it.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -558,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn the_purity_summary_covers_every_kept_function_in_listing_order() {
         // The derived summary states what the scan already knows: the
-        // impure function carries its read and write counts, and the
+        // impure function records its read and write counts, and the
         // pure one is recorded as pure — the absence was checked, not
         // assumed.
         let result = scan(program()).await;
@@ -626,7 +634,7 @@ mod tests {
         // The skip-rate breaker: every decompile failing is the
         // signature of the bridge answering from the wrong program,
         // and the scan aborts with the counts rather than persisting
-        // a phantom-clean record (issue #71).
+        // a record that looks clean but is not (issue #71).
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         let result = GlobalStateEngine::with_source(program)
@@ -643,9 +651,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
-        // The breaker is a circuit breaker, not a post-mortem: once
-        // most of the listing has failed, the remaining decompiles are
-        // wasted round-trips against the wrong program.
+        // The skip-rate breaker is a fuse, not a post-mortem: once
+        // more than half of the listing has failed, the remaining
+        // decompiles are wasted round-trips against the wrong
+        // program.
         let mut program = program();
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
@@ -686,9 +695,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_listing_fails_the_whole_run() {
-        // With the listing gone nothing was scanned, so the run aborts
-        // rather than returning a result that looks empty by
-        // detection.
+        // With the listing gone, nothing was scanned, so the run
+        // aborts rather than returning a result that looks like
+        // nothing was detected.
         let mut program = program();
         program.fail_listing = true;
         let result = GlobalStateEngine::with_source(program)
@@ -707,8 +716,9 @@ mod tests {
         // The metadata names the binary, carries a finish time, and
         // the duration is stamped from the wall clock — a canned scan
         // is instant, so it reads as zero seconds rather than never
-        // set. The record also names the engine that produced it:
-        // scan() copies the source's provenance through (#208).
+        // set. The record also names the analysis engine that
+        // produced it: scan() copies the source's provenance
+        // through (#208).
         let result = scan(program()).await;
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
@@ -735,20 +745,20 @@ mod tests {
     // Admitted scan coverage (issue #350)
     // ============================================================
 
-    /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
-    /// drift.
+    /// The data-level verdict of the roster pin: empty means the
+    /// record names every declared facet exactly once, and each fault
+    /// reports one drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
+        // The stamp comes from the scan itself, not the registry row
         // and not the CLI — the batch scan phase and the CLI's
         // force-rescan file the same admission through this one
         // definition. Every body was read here, so the record is
-        // complete and says nothing needs admitting.
+        // complete and admits nothing.
         let result = scan(program()).await;
         let coverage = result
             .metadata
@@ -808,9 +818,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_coverage_line_is_capped_at_five_names_and_counts_the_nameless() {
-        // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
+        // Bounded prose beside the counts: six decompile failures
+        // name five inline and count the sixth, and a nameless
+        // listing entry counts toward the total without taking a name
         // slot.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::empty();
