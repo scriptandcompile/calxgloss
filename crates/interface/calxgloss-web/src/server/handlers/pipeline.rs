@@ -336,7 +336,8 @@ pub async fn api_get_pipeline(
             // The summary rides only PalMapping rows; the per-binary
             // artifact reads stay bounded to those rows. No derived
             // trait means no summary — never a fabricated empty one.
-            if row.classification_strategy
+            if row
+                .classification_strategy
                 .as_deref()
                 .is_some_and(is_pal_strategy)
             {

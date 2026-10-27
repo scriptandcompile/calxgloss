@@ -2259,7 +2259,11 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
         .expect("the cancelled unit is tracked");
     assert!(entry.finished, "the cancelled unit is terminal");
     assert_eq!(entry.succeeded, Some(false), "recorded as failed");
-    assert_eq!(entry.outcome.as_deref(), Some("cancelled"), "recorded as cancelled");
+    assert_eq!(
+        entry.outcome.as_deref(),
+        Some("cancelled"),
+        "recorded as cancelled"
+    );
 
     // The run itself is untouched — still running, and it moves on: the
     // pipeline ends the unit, starts the next, and that one can be

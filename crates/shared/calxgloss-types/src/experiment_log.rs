@@ -281,7 +281,9 @@ impl PromptStrategyLog {
         let mut retry_map: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
-            let (tot, suc) = retry_map.entry(entry.retry_strategy.clone()).or_insert((0, 0));
+            let (tot, suc) = retry_map
+                .entry(entry.retry_strategy.clone())
+                .or_insert((0, 0));
             *tot += 1;
             if entry.success {
                 *suc += 1;
@@ -539,7 +541,10 @@ mod tests {
     /// so two equal aggregates compare equal regardless of map order.
     fn sorted_stats_value(stats: PromptStrategyStats) -> serde_json::Value {
         let mut value = serde_json::to_value(stats).expect("serialize stats");
-        for (array_key, name_key) in [("by_category", "category"), ("by_retry_strategy", "retry_strategy")] {
+        for (array_key, name_key) in [
+            ("by_category", "category"),
+            ("by_retry_strategy", "retry_strategy"),
+        ] {
             value[array_key]
                 .as_array_mut()
                 .expect("breakdown is an array")

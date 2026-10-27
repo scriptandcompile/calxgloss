@@ -5498,7 +5498,10 @@ void SetCursor(void)
             "attempt 1 carries the accepted translation verbatim — the fresh \
              chain never reached the closed LLM port"
         );
-        assert_eq!(attempt.retry_strategy, "initial", "the seed rides as attempt 1");
+        assert_eq!(
+            attempt.retry_strategy, "initial",
+            "the seed rides as attempt 1"
+        );
         assert!(
             attempt.tokens_used.is_none(),
             "a seeded attempt spends no LLM tokens"
