@@ -1,13 +1,13 @@
 //! Integration tests for the calxgloss-callgraph crate.
 //!
-//! These tests exercise multi-module workflows that unit tests cannot cover
-//! on their own:
+//! These tests cover workflows that span several modules — things a unit
+//! test cannot check on its own:
 //!
 //! - **Persistence round-trip** — build a graph in memory, save to disk,
 //!   load it back, and re-classify with root/leaf detectors.
 //!
-//! The engine-backed end-to-end build lives in `tests/kuna_source.rs`, over
-//! the fixture DLL — no server needed (issue #214).
+//! The end-to-end build backed by the live Kuna analysis engine lives in
+//! `tests/kuna_source.rs`, over the fixture DLL — no server needed (issue #214).
 
 use std::collections::HashMap;
 
@@ -20,7 +20,7 @@ use calxgloss_callgraph::{
 /// ---------------------------------------------------------------------------
 /// Helpers
 /// ---------------------------------------------------------------------------
-/// Build a small synthetic call graph (no live engine required).
+/// Build a small synthetic call graph (no live analysis engine needed).
 ///
 /// ```text
 /// main (Root) ──► helper (Middle) ──► Direct3DCreate9 (Leaf)
@@ -123,9 +123,9 @@ fn test_persistence_build_save_load_classify() {
     // 4. Classify the loaded graph.
     classify_graph(&mut loaded);
 
-    // 5. Verify that the "main" function is still Middle (it calls helper,
-    //    which is a leaf caller, but main itself does NOT directly call a
-    //    known API).
+    // 5. Verify that the "main" function is still Middle. helper is a leaf
+    //    (it directly calls the known APIs), but main itself does NOT
+    //    directly call a known API.
     let main_func = loaded
         .functions
         .iter()
@@ -314,7 +314,7 @@ fn test_classify_preserves_node_categories() {
 fn test_leaf_classify_returns_all_matched_categories() {
     let detector = LeafDetector::new();
 
-    // Build a function that crosses multiple API categories.
+    // Build a function that calls APIs from several different categories.
     let func = FunctionCallGraph {
         name: "full_init".to_string(),
         address: 0x1000,
@@ -369,16 +369,17 @@ fn test_leaf_classify_returns_all_matched_categories() {
 //  End-to-End: Realistic Game Plugin Pipeline
 // ===========================================================================
 
-/// Build a realistic "game_plugin.dll" synthetic call graph that mirrors the
-/// structure of a DirectX rendering plugin.
+/// Build a realistic "game_plugin.dll" synthetic call graph modeled on a
+/// DirectX rendering plugin.
 ///
 /// ```text
-/// DllMain ──► Initialize ──► Setup ──► CreateDevice ──► Direct3DCreate9 (Leaf)
-///                        │           └──► Render ──► Draw ──► MessageBoxW (Leaf)
-///                        │                   └──► UpdateParticles
-///                        │                           └──► D3D::DrawIndexedPrimitives
-///                        │                   └──► PollInput ──► XInputGetState (Leaf)
-///                        └──► Cleanup
+/// DllMain ──┬──► Initialize ──┬──► Setup ──┬──► CreateDevice
+///           │                 │           └──► Render ──┬──► Draw ──┬──► D3D::DrawIndexedPrimitives
+///           │                 │                          │           └──► MessageBoxW (Leaf)
+///           │                 │                          ├──► UpdateParticles ──► D3D::UpdateParticleBuffers
+///           │                 │                          └──► PollInput ──► XInputGetState (Leaf)
+///           │                 └──► Direct3DCreate9 (Leaf)
+///           └──► Cleanup
 /// ```
 fn game_plugin_graph() -> CallGraph {
     CallGraph {
@@ -552,8 +553,8 @@ fn game_plugin_graph() -> CallGraph {
 /// Full end-to-end integration test: build → classify → persist → reload →
 /// enrich → order → dependency graph on a realistic test DLL.
 ///
-/// This test exercises every major pipeline stage on a single synthetic call
-/// graph that mirrors a real DirectX rendering plugin (game_plugin.dll).
+/// It runs every major stage of the call-graph workflow over one synthetic
+/// call graph modeled on a DirectX rendering plugin (game_plugin.dll).
 #[test]
 fn test_end_to_end_realistic_plugin_pipeline() {
     let temp_dir = std::env::temp_dir().join("calxgloss_e2e_plugin");
@@ -569,8 +570,8 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     classify_graph(&mut graph);
 
     // Verify classification results.
-    // We check invariants rather than hardcoded categories, since leaf detection
-    // depends on the API signature database staying stable.
+    // We check invariants rather than hardcoded categories, because leaf
+    // detection depends on the detector's known-API signature list staying stable.
     let by_name: std::collections::HashMap<String, NodeCategory> = graph
         .functions
         .iter()
@@ -708,8 +709,8 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     // keeping only external API calls. Internal function references are
     // excluded from the callees list.
 
-    // DllMain: 1 caller (none expected - entry point), 0 callees after filtering
-    // (Initialize and Cleanup are internal functions)
+    // DllMain: no callers (it is the entry point), and no callees after
+    // filtering (Initialize and Cleanup are internal functions)
     let dllmain_ctx = &context_map["DllMain"];
     assert!(dllmain_ctx.callers.is_empty(), "DllMain has no callers");
     // DllMain's callees (Initialize, Cleanup) are internal, so filtered out
@@ -764,14 +765,14 @@ fn test_end_to_end_realistic_plugin_pipeline() {
         "MessageBoxW should be in the UI category"
     );
 
-    // PollInput: verify context structure is valid (XInputGetState may or may not be in API DB)
+    // PollInput: check the context structure is valid (XInputGetState may or may not be a known leaf API)
     let poll_ctx = &context_map["PollInput"];
     assert!(
         !poll_ctx.callers.is_empty(),
         "PollInput should have at least 1 caller"
     );
 
-    // UpdateParticles: no leaf APIs (D3D::UpdateParticleBuffers is not in API DB)
+    // UpdateParticles: no leaf APIs (D3D::UpdateParticleBuffers is not a known leaf API)
     let update_ctx = &context_map["UpdateParticles"];
     assert!(
         update_ctx.leaf_api_context.is_empty(),
@@ -800,7 +801,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     // Extract the ordered function names
     let ordered_names: Vec<_> = plan.iter().map(|p| p.name.as_str()).collect();
 
-    // Verify priority tiers: Root first, then Middle, then Leaf
+    // Verify the priority order: Root first, then Middle, then Leaf
     let mut last_priority = -1isize;
     let mut last_name = "";
     for plan_item in &plan {

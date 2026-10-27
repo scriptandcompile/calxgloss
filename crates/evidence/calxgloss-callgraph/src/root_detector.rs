@@ -107,10 +107,10 @@ pub struct RootDetectorConfig {
 
 /// Detects root (entry-point / runtime) functions in a call graph.
 ///
-/// Initialized with a comprehensive set of regex patterns covering
-/// C/C++ entry points, DLL entry points, VB6, .NET, MinGW, MSVC debug,
-/// and generic Ghidra entry functions that identify functions to skip
-/// or stub during translation.
+/// Name matching against a built-in set of regex patterns decides which
+/// functions to skip or stub during translation. The patterns cover C/C++
+/// entry points, DLL entry points, VB6, .NET, MinGW, MSVC debug, and
+/// generic Ghidra entry functions.
 ///
 /// # Built-in patterns
 ///
@@ -129,8 +129,8 @@ pub struct RootDetector {
 }
 
 impl RootDetector {
-    /// Creates a new `RootDetector` initialized with comprehensive
-    /// root-detection patterns across multiple runtime ecosystems:
+    /// Creates a new `RootDetector` with the full built-in pattern set,
+    /// covering entry points and initializers from several runtimes:
     ///
     /// | Category | Patterns |
     /// |----------|----------|
@@ -191,9 +191,9 @@ impl RootDetector {
                 action: RootAction::Skip,
             },
             // Linker import thunks: delay-load stubs (`DelayLoad_Foo`), IAT
-            // symbols (`_imp_Foo`), and Ghidra-named thunks (`thunk_Foo`).
-            // They own no logic — just a jump to the real API, which the
-            // caller's translation reaches through the API mappings instead.
+            // symbols (`_imp_Foo`), and thunks named by Ghidra (`thunk_Foo`).
+            // A thunk has no logic of its own — it just jumps to the real
+            // API, which the caller's translation reaches through the API mappings.
             RootPattern {
                 name_regex: Regex::new(r"^(DelayLoad_|_imp_|thunk_)").expect("valid root pattern"),
                 description: "Linker import thunk (delay-load / IAT / Ghidra)",
@@ -204,12 +204,12 @@ impl RootDetector {
         Self { patterns }
     }
 
-    /// Returns `true` if the function name matches any of the runtime
-    /// library DLL patterns (e.g. `msvcr80.dll`, `msvbvm60.dll`, `Qt5Core.dll`,
+    /// Returns `true` if the given DLL name matches one of the runtime
+    /// library name patterns (e.g. `msvcr80.dll`, `msvbvm60.dll`, `Qt5Core.dll`,
     /// `SDL2.dll`).
     ///
-    /// This is useful for detecting when an entire binary is a runtime library
-    /// rather than an application, allowing the entire graph to be skipped.
+    /// It detects when a whole target binary is a runtime library rather than
+    /// an application, so the whole call graph can be skipped.
     ///
     /// # Examples
     ///
@@ -245,8 +245,8 @@ impl RootDetector {
 
     /// Classifies a function by name and returns the appropriate [`RootAction`].
     ///
-    /// Iterates through all registered patterns and returns the action for the
-    /// first matching pattern. If no pattern matches, returns `RootAction::Translate`.
+    /// Checks every registered pattern in order and returns the action of the
+    /// first one that matches. If no pattern matches, returns `RootAction::Translate`.
     pub fn classify(&self, name: &str) -> RootAction {
         match self.matched_pattern(name) {
             Some(pattern) => {
@@ -259,10 +259,10 @@ impl RootDetector {
 
     /// The first registered pattern whose regex matches `name`, if any.
     ///
-    /// Where [`classify`](Self::classify) reports the action, this reports
-    /// the *rule* — so a caller can name why a function was classified
-    /// (the reason a translate request was refused, for instance) instead
-    /// of only what to do about it.
+    /// Where [`classify`](Self::classify) reports what to do, this reports
+    /// which rule matched — so a caller can say why a function was
+    /// classified that way (why a translate request was refused, for
+    /// instance), not only what to do about it.
     pub fn matched_pattern(&self, name: &str) -> Option<&RootPattern> {
         self.patterns.iter().find(|p| p.name_regex.is_match(name))
     }
@@ -520,8 +520,8 @@ mod tests {
         assert!(detector.is_root(&make_func("DelayLoad_cef_post_task")));
         assert!(detector.is_root(&make_func("_imp_ShellExecuteW")));
         assert!(detector.is_root(&make_func("thunk_FUN_180001000")));
-        // Anchored at the start: an app function merely *named* around a
-        // delay load still translates.
+        // The regex is anchored at the name start: an app function merely
+        // named after a delay load still translates.
         assert!(!detector.is_root(&make_func("initDelayLoad")));
         assert!(!detector.is_root(&make_func("my_imp_helper")));
         // And the action is a true skip, not a stub or a translation.
@@ -573,8 +573,8 @@ mod tests {
         assert_eq!(detector.classify("app_init"), RootAction::Translate);
     }
 
-    /// `matched_pattern` names the rule behind the classification, so a
-    /// refusal can explain itself; unmatched names report no pattern.
+    /// `matched_pattern` returns the rule behind the classification, so a
+    /// refusal can give its reason; names matching nothing report no rule.
     #[test]
     fn test_matched_pattern_names_the_matching_rule() {
         let detector = RootDetector::new();
