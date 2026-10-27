@@ -27,10 +27,10 @@
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
-// `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb, typeinfer, algorithm, and
-// memory convention.
+// `ScanMetadata` is the shared per-binary scan provenance, and `Confidence`
+// the shared 0–100 evidence confidence. Both are re-exported so consumers
+// name them through this crate, matching the convention of the typesdb,
+// typeinfer, algorithm, and memory crates.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -131,16 +131,16 @@ pub struct NamedConstant {
     pub count: usize,
     /// The functions that use the value, ascending.
     pub functions: Vec<String>,
-    /// The name the bodies gave the value — `SIZE_0x280` for a `size =
-    /// 0x280` standing in one of them — when a qualifying sighting
-    /// carried one (see `naming::context_names`). Optional on disk, skipped
-    /// when absent: documents persisted before context naming load
-    /// unchanged, and an un-named record serializes exactly as it did
-    /// before the field existed.
+    /// The name the bodies gave the value — `SIZE_0x280` from a
+    /// `size = 0x280` in one of them — present when one of the value's
+    /// qualifying sightings named it (see `naming::context_names`).
+    /// Optional on disk, skipped when absent: documents persisted before
+    /// context naming load unchanged, and an un-named record serializes
+    /// exactly as it did before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The Rust shape the value suggests, e.g. a named `const` — the
-    /// named form when [`name`](Self::name) carries one, the mechanical
+    /// named form when [`name`](Self::name) holds one, the mechanical
     /// `VALUE_0x…` form when not (see [`render_suggestion`](Self::render_suggestion)).
     pub suggestion: String,
     /// Confidence that the record is right, 0–100.
@@ -189,7 +189,7 @@ impl NamedConstant {
 /// describe one flags type: [`bits`](Self::bits) is their union,
 /// [`mask`](Self::mask) the union as a mask, and
 /// [`bit_width`](Self::bit_width) the position count the highest bit
-/// spans; [`functions`](Self::functions) names the contributing
+/// spans; [`functions`](Self::functions) lists the contributing
 /// functions, ascending. It reads like
 /// [`suggestion`](Self::suggestion) — one `bitflags!`-style struct
 /// naming the whole family at the width its highest bit fits — and
@@ -214,7 +214,7 @@ pub struct FlagFamily {
     /// carrying every bit the family spans.
     pub suggestion: String,
     /// Confidence that the record is right, 0–100. Fixed, and above
-    /// the per-function group's tier: the same flag surface
+    /// the per-function group's band: the same flag surface
     /// corroborated across several functions is stronger evidence
     /// than one body's word alone.
     pub confidence: Confidence,
@@ -234,7 +234,7 @@ pub struct FlagFamily {
 /// protocol/format magics and sentinels — with the evidence behind it.
 ///
 /// A record says one tallied literal — [`value`](Self::value) — is a
-/// recognised value: it equals a table entry, so it carries that
+/// recognised value: it equals a table entry, so the record stores that
 /// entry's [`name`](Self::name) (`PNG_MAGIC`) and
 /// [`protocol`](Self::protocol) label ("PNG image format") — a claim
 /// checkable against the table — beside the usage data the tally
@@ -248,7 +248,7 @@ pub struct FlagFamily {
 ///
 /// A table-matched value lands exactly once: the protocol claim is
 /// strictly stronger than the frequency-only named-constant reading
-/// and carries the same usage data, so the frequency pass skips
+/// and reports the same usage data, so the frequency pass skips
 /// matched values. Values outside the table are untouched and stay
 /// ordinary named constants.
 ///
@@ -272,7 +272,7 @@ pub struct ProtocolConstant {
     /// table entry, e.g. `const PNG_MAGIC: u32 = 0x89504e47;`.
     pub suggestion: String,
     /// Confidence that the record is right, 0–100. Fixed, and above
-    /// the frequency-only named-constant tier: the value is not just
+    /// the frequency-only named-constant band: the value is not just
     /// repeated, it is recognised, and the claim is checkable against
     /// the table.
     pub confidence: Confidence,
@@ -318,7 +318,7 @@ pub struct ColorConstant {
     /// color, e.g. `const COLOR_0x123456: u32 = 0x123456;`.
     pub suggestion: String,
     /// Confidence that the record is right, 0–100. Fixed, at the
-    /// named-constant tier: the shape reading is as suggestive as a
+    /// named-constant band: the shape reading is as suggestive as a
     /// repeated literal, no stronger.
     pub confidence: Confidence,
     /// The palette summary that supports the record — each value's
@@ -333,25 +333,27 @@ pub struct ColorConstant {
 
 /// The ceiling on a data table's inline `values` list. Beyond it the
 /// list truncates, `values_truncated` says so, and `count` still
-/// carries the full entry count.
+/// records the full entry count.
 pub const MAX_INLINE_TABLE_VALUES: usize = 512;
 
 /// One data-table reading of the whole program — a defined data object
 /// whose bytes decode coherently at one stride and whose claim the
 /// evidence backs.
 ///
-/// A record claims one defined data object — [`symbol`]/[`address`] —
-/// holding [`count`](Self::count) entries of
-/// [`element_type`](Self::element_type): the object's engine-listed
-/// length divided by the stride its whole byte run decodes coherently
-/// at — at least two entries, none zero or all equal, magnitudes in
-/// one bounded band (the entries are the [`values`](Self::values)).
-/// Where more than one stride decodes coherently, the engine's applied
-/// listing type (`uint`, `float [3]`) resolves the stride; failing it,
-/// the bounds guard on an indexed body read (`DAT_x[idx]` under
-/// `if (idx < N)`) sizes it; and a decode nothing resolves claims
-/// nothing. [`functions`](Self::functions) names the referencing
-/// functions from the engine's cross-references, ascending; a body
+/// A record says one defined data object — [`symbol`]/[`address`] —
+/// holds [`count`](Self::count) entries of
+/// [`element_type`](Self::element_type). The count is the object's
+/// length in the analysis engine's listing divided by the stride: the
+/// entry width at which the object's whole byte run decodes
+/// coherently. The claim needs at least two entries — none zero, not
+/// all equal, magnitudes in one bounded band — and the entries are
+/// the [`values`](Self::values). When several strides decode
+/// coherently, the analysis engine's applied listing type (`uint`,
+/// `float [3]`) resolves the stride. If that fails, a bounds guard on
+/// an indexed body read (`DAT_x[idx]` under `if (idx < N)`) sizes it.
+/// A decode that neither resolves claims nothing.
+/// [`functions`](Self::functions) lists the referencing functions,
+/// ascending, from the analysis engine's cross-references. A body
 /// indexing the object is never a write claim — mutation
 /// disqualification lands separately.
 ///
@@ -367,7 +369,7 @@ pub const MAX_INLINE_TABLE_VALUES: usize = 512;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataTable {
     /// The listing label of the data object, e.g. `DAT_1400a1b60` —
-    /// exactly as the engine's data listing names it.
+    /// exactly as the analysis engine's data listing names it.
     pub symbol: String,
     /// The object's address.
     pub address: u64,
@@ -376,7 +378,7 @@ pub struct DataTable {
     /// float type each; the integer claims the stride unless the
     /// listing's applied type names the float one.
     pub element_type: String,
-    /// The full entry count, whether or not `values` carries them all.
+    /// The full entry count, whether or not `values` holds them all.
     pub count: usize,
     /// The decoded entries, inline up to [`MAX_INLINE_TABLE_VALUES`];
     /// truncated beyond it. A float table's entries are the raw
@@ -386,34 +388,34 @@ pub struct DataTable {
     /// Whether `values` was truncated at the cap — `count` still
     /// records the full entry count.
     pub values_truncated: bool,
-    /// The functions that reference the object, from the engine's
-    /// cross-references, ascending.
+    /// The functions that reference the object, ascending, from the
+    /// analysis engine's cross-references.
     pub functions: Vec<String>,
     /// The Rust shape the reading suggests — `const` array, e.g.
     /// `const DAT_1400A1B60: [u16; 12];`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100, in the four table
-    /// families: 90 for a stride the engine's listing applied a type
-    /// for; 70 for a clean decode an indexed read in a kept body
-    /// corroborates, beside the corroborated jump-table reading; 50
-    /// for a clean decode the cross-references name readers for with
-    /// no kept body indexing it; and 30 for the raw decode alone,
-    /// nothing referencing the object — an honest low score on the
-    /// record rather than silence.
+    /// Confidence that the record is right, 0–100, in one of four
+    /// table bands: 90 when the analysis engine's listing applied a
+    /// type for the stride; 70 for a clean decode that an indexed read
+    /// in a kept body corroborates, beside the corroborated jump-table
+    /// reading; 50 for a clean decode the cross-references name
+    /// readers for with no kept body indexing it; and 30 for the raw
+    /// decode alone, with nothing referencing the object — an honest
+    /// low score on the record rather than silence.
     pub confidence: Confidence,
     /// What the claim rests on, strongest first: the applied listing
     /// type when it resolved the stride, then the indexed-read lines,
-    /// each prefixed with the function that carries it; a claim with
-    /// no read behind it states its decode and what referencing the
-    /// object amounts to instead.
+    /// each prefixed with the function it comes from. A claim with no
+    /// read behind it instead states its decode and how the object is
+    /// referenced.
     pub evidence: String,
 }
 
 impl DataTable {
-    /// The Rust identifier the label implies: the context-name
-    /// precedent — a meaningful listing label names the table as it
-    /// stands; a bare `DAT_*` or `switchD_*` label yields its
-    /// mechanical uppercase form, e.g. `DAT_1400a1b60` →
+    /// The Rust identifier the label implies, following the
+    /// context-name precedent: a meaningful listing label names the
+    /// table as it stands; a bare `DAT_*` or `switchD_*` label yields
+    /// its mechanical uppercase form, e.g. `DAT_1400a1b60` →
     /// `DAT_1400A1B60`.
     pub fn rust_name(symbol: &str) -> String {
         if is_bare_data_label(symbol) {
@@ -446,15 +448,15 @@ fn is_bare_data_label(label: &str) -> bool {
 
 /// One constant finding, whichever detector or post-pass made it.
 ///
-/// The detectors emit the concrete records and the engine's
-/// flag-family merge post-pass emits the family; the union is what
-/// the persisted result carries, so one list can hold every finding
-/// for a binary and a consumer reads the shared shape — function,
-/// suggestion, confidence, evidence — without naming which reading
-/// produced it. Like sync's disjoint families, the detectors read
-/// different shapes and make no competing claims, so nothing is
-/// resolved between variants. The serde `kind` tag names the record
-/// shape in the persisted JSON.
+/// The detectors emit the concrete records, and the scan's flag-family
+/// merge post-pass emits the family. The union is what the persisted
+/// result stores: one list can hold every finding for a binary, and a
+/// consumer reads the shared shape — function, suggestion, confidence,
+/// evidence — without needing to know which reading produced it. Like
+/// sync's disjoint families, the detectors read different shapes and
+/// make no competing claims, so nothing is resolved between variants.
+/// The serde `kind` tag identifies the record shape in the persisted
+/// JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConstFinding {
@@ -537,8 +539,8 @@ impl ConstFinding {
 
     /// The serde `kind` tag — `bitflag_group`, `enum_candidate`,
     /// `named_constant`, `flag_family`, `protocol_constant`,
-    /// `color_constant`, or `data_table` — naming the reading behind
-    /// the finding.
+    /// `color_constant`, or `data_table` — identifying the reading
+    /// behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ConstFinding::BitflagGroup(_) => "bitflag_group",
@@ -551,10 +553,10 @@ impl ConstFinding {
         }
     }
 
-    /// What the finding names, spelled for a report row: the group's
-    /// or family's bit mask, the run's value range, the repeated or
-    /// matched value, the palette's colors, or the table's label and
-    /// array shape.
+    /// What the finding is about, spelled for a report row: the
+    /// group's or family's bit mask, the run's value range, the
+    /// repeated or matched value, the palette's colors, or the
+    /// table's label and array shape.
     pub fn target(&self) -> String {
         match self {
             ConstFinding::BitflagGroup(record) => format!("{:#x}", record.mask),
@@ -604,7 +606,8 @@ impl From<&ConstFinding> for calxgloss_prompts::ConstInfo {
 /// Render a table record as the module-context prompt's data-tables
 /// record: the object's listing label, its element type, and its full
 /// entry count — enough for the first translation attempt to name the
-/// array and index it where the original offsets the object.
+/// array and index it where the original code uses offsets into the
+/// object.
 impl From<&DataTable> for calxgloss_prompts::DataTableInfo {
     fn from(record: &DataTable) -> Self {
         Self {
@@ -623,13 +626,13 @@ impl From<&DataTable> for calxgloss_prompts::DataTableInfo {
 /// The constant result for one binary — the document persisted to
 /// `re/analysis/consts/{dll}.json`.
 ///
-/// The findings are the readings' outputs in scan order: function by
-/// function the bitmask groups then the enum candidates, and after
-/// the per-function findings the program-level records — the named
-/// constants the frequency analyzer tallied across the whole pass,
-/// then the flag families the scan's own groups merged into, then
-/// the protocol constants the known-magic reading matched, then the
-/// color palette — each group internally sorted. The stable order
+/// The findings are the readings' outputs in scan order. Per-function
+/// findings come first: function by function, the bitflag groups, then
+/// the enum candidates. After them come the program-level records —
+/// the named constants the frequency analyzer tallied across the whole
+/// pass, then the flag families merged from the scan's own groups,
+/// then the protocol constants the known-magic reading matched, then
+/// the color palette — each group internally sorted. The stable order
 /// means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstResult {
@@ -651,13 +654,13 @@ impl ConstResult {
 
     /// The findings recorded for one function, e.g. `FUN_18003ab00`.
     ///
-    /// A program-level finding that names its contributing functions
-    /// — a named constant for every function that uses its value, a
-    /// flag family for every function that contributed bits, a
-    /// protocol constant for every function that uses the matched
-    /// value, the color palette for every function that uses one of
-    /// its colors — is yielded for each of them: the per-function
-    /// view a translation prompt reads.
+    /// A program-level finding that lists its contributing functions —
+    /// a named constant for every function that uses its value, a flag
+    /// family for every function that contributed bits, a protocol
+    /// constant for every function that uses the matched value, the
+    /// color palette for every function that uses one of its colors —
+    /// is yielded for each of them: the per-function view a translation
+    /// prompt reads.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ConstFinding> {
         self.findings
             .iter()
@@ -928,9 +931,10 @@ mod tests {
 
     #[test]
     fn documents_written_before_the_data_table_variant_load_unchanged() {
-        // The literal on-disk shape of pre-variant findings — the new
-        // variant changes no old tag, so a persisted document from
-        // before it exists still loads finding-for-finding unchanged.
+        // The exact on-disk shape of findings from before the new
+        // variant existed. The new variant changes no old tag, so a
+        // document persisted before it still loads, finding for
+        // finding unchanged.
         let json = r#"[
             {"kind": "named_constant", "value": 1024, "count": 5,
              "functions": ["FUN_18003ab00", "FUN_18003e750"],
@@ -966,9 +970,9 @@ mod tests {
 
     #[test]
     fn no_context_name_renders_the_mechanical_const_form() {
-        // A value the bodies never named keeps the spelling the deepening
-        // replaced — the deepening never loses a constant the scan used
-        // to report.
+        // A value the bodies never named keeps the mechanical
+        // spelling — context naming never loses a constant the scan
+        // already reported.
         assert_eq!(
             NamedConstant::render_suggestion(None, 0x400),
             "const VALUE_0x400: u32 = 0x400;"
@@ -994,8 +998,8 @@ mod tests {
 
     #[test]
     fn a_named_constant_without_a_context_name_omits_it_on_disk() {
-        // The empty-skip rule: an un-named record serializes exactly as
-        // it did before the deepening.
+        // The empty-skip rule: an un-named record serializes exactly
+        // as it did before the `name` field existed.
         let record = named_constant();
         let json = serde_json::to_string(&record).expect("named-constant record should serialize");
         assert!(!json.contains("\"name\""));
@@ -1006,8 +1010,9 @@ mod tests {
 
     #[test]
     fn a_document_written_before_the_name_field_loads_unchanged() {
-        // The exact shape a pre-deepening document carried on disk — no
-        // name key anywhere — still loads, with no name.
+        // The exact shape a document stored on disk before the
+        // `name` field existed — no name key anywhere — still loads,
+        // with no name.
         let json = r#"{
             "value": 1024,
             "count": 5,

@@ -11,12 +11,12 @@
 //!   function, the program-level named constants, flag families,
 //!   protocol constants, color palette, and data tables included),
 //!   and the persisted list keeps every finding in scan order:
-//!   function by function the bitmask groups then the enum
+//!   function by function the bitflag groups then the enum
 //!   candidates, and the program-level named constants, merged flag
 //!   families, protocol constants, color palette, and data tables
 //!   appended after them.
 //! - **Prompt rendering** — the loaded findings render into `ConstInfo`
-//!   prompt data and the escalate prompt carries the CONSTANTS section,
+//!   prompt data and the escalate prompt includes the CONSTANTS section,
 //!   the repeated literal's context-named `const` form included.
 //! - **Codegen artifact** — the loaded result re-renders to a
 //!   byte-identical Rust source string, every finding kind included,
@@ -59,11 +59,11 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
-/// A canned program implementing [`ScanSource`]: one function whose
-/// body carries a flag-bit pair, a four-case switch run, and a
-/// repeated magic number — one finding family per detector — and one
-/// plain function that repeats the magic number once so the frequency
-/// analyzer sees it across two functions.
+/// A canned program implementing [`ScanSource`]. One function's body
+/// holds a flag-bit pair, a four-case switch run, and a repeated magic
+/// number — one finding per detector — and one plain function repeats
+/// the magic number once so the frequency analyzer sees it across two
+/// functions.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -217,10 +217,11 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_tags_findings_by_kind_in_scan_order() {
-    // The three detectors read disjoint shapes in one pass, so what
-    // reaches disk is function by function in listing order — bitmask
-    // then enum — with the program-level named constants appended
-    // after them, each under its serde `kind` tag.
+    // The detectors read disjoint shapes in one pass, so what reaches
+    // disk is function by function in listing order — bitflag group
+    // then enum candidate — with the program-level named constants and
+    // the color palette appended after them, each under its serde
+    // `kind` tag.
     let workspace = TempDir::new().unwrap();
     let result = ConstEngine::with_source(program())
         .scan("eqmain.dll")
@@ -269,9 +270,9 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was found for the function it is about to
-    // translate: the shaped function carries all four kinds, and the
-    // plain function carries the named constant it uses and one of
-    // the palette's colors too.
+    // translate. The shaped function has findings of all four kinds,
+    // and the plain function gets the named constant it uses and one
+    // of the palette's colors too.
     let findings: Vec<&ConstFinding> = loaded.for_function("FUN_18003ab00").collect();
     assert_eq!(findings.len(), 4);
     let plain: Vec<&ConstFinding> = loaded.for_function("FUN_18003e750").collect();
@@ -310,13 +311,13 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
         constant.functions,
         vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
     );
-    // The context name the body's `size = 0x280;` gave the value rides
-    // the record through the persisted document.
+    // The context name the body's `size = 0x280;` gave the value stays
+    // on the record through the persisted document.
     assert_eq!(constant.name.as_deref(), Some("SIZE_0x280"));
     assert_eq!(constant.suggestion, "const SIZE_0x280: u32 = 0x280;");
 
-    // The color-shaped literals the bodies carry group into one
-    // palette through the round trip too.
+    // The color-shaped literals in the bodies also group into one
+    // palette, and the grouping survives the round trip too.
     let ConstFinding::ColorConstant(palette) = findings[3] else {
         unreachable!("the color-shaped literals read as a palette finding");
     };
@@ -332,7 +333,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     // The whole escalate path, no external server needed: the fixture
     // document on disk answers the per-function lookup, the findings
     // render into `ConstInfo` prompt data, and the rendered escalate
-    // prompt carries the CONSTANTS section with each finding's
+    // prompt includes the CONSTANTS section with each finding's
     // suggestion, kind, confidence, and evidence.
     let workspace = TempDir::new().unwrap();
     let result = ConstEngine::with_source(program())
@@ -377,10 +378,9 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
 #[tokio::test]
 async fn a_decomposed_composite_group_survives_the_round_trip_and_the_prompt() {
     // The widened group — bits completed by a decomposed composite
-    // mask — rides the persisted document with the existing record
-    // shape (no schema change) and renders into the escalate prompt's
-    // CONSTANTS section carrying the widened suggestion and the
-    // composite's evidence line.
+    // mask — is saved with the existing record shape (no schema
+    // change) and renders into the escalate prompt's CONSTANTS section
+    // with the widened suggestion and the composite's evidence line.
     let workspace = TempDir::new().unwrap();
     let mut composite = FakeProgram::empty();
     composite.listing = vec![summary("FUN_18003ab00")];
@@ -433,10 +433,10 @@ async fn a_decomposed_composite_group_survives_the_round_trip_and_the_prompt() {
 #[tokio::test]
 async fn a_merged_flag_family_survives_the_round_trip_and_the_prompt() {
     // Two functions reading one flag surface through a shared bit:
-    // the per-function groups ride the persisted document beside the
-    // merged family record, the family answers the per-function
-    // lookup of each contributor, and it renders into the escalate
-    // prompt's CONSTANTS section at its above-the-tier confidence.
+    // the persisted document keeps the per-function groups beside the
+    // merged family record, the family answers the per-function lookup
+    // of each contributor, and the escalate prompt's CONSTANTS section
+    // shows its confidence, one band above the per-function group's.
     let workspace = TempDir::new().unwrap();
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
@@ -490,8 +490,8 @@ async fn a_merged_flag_family_survives_the_round_trip_and_the_prompt() {
         calxgloss_consts::types::Confidence::new(80)
     );
 
-    // Each contributor's per-function lookup carries its own group
-    // plus the family it contributed to.
+    // The per-function lookup of each contributor returns its own
+    // group plus the family it contributed to.
     let findings: Vec<&ConstFinding> = loaded.for_function("FUN_18003e750").collect();
     assert_eq!(
         findings
@@ -533,11 +533,11 @@ async fn a_merged_flag_family_survives_the_round_trip_and_the_prompt() {
 #[tokio::test]
 async fn a_protocol_constant_survives_the_round_trip_and_the_prompt() {
     // A single-use magic in one body — far below the repetition
-    // threshold: the protocol finding rides the persisted document
-    // under its own kind tag with the table name and protocol label,
-    // answers the using function's per-function lookup, and renders
-    // into the escalate prompt's CONSTANTS section at its
-    // above-the-tier confidence.
+    // threshold. The protocol finding is saved under its own kind tag
+    // with the table name and protocol label, answers the using
+    // function's per-function lookup, and renders into the escalate
+    // prompt's CONSTANTS section at a confidence above the
+    // frequency-only named-constant band.
     let workspace = TempDir::new().unwrap();
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00")];
@@ -611,10 +611,10 @@ async fn a_protocol_constant_survives_the_round_trip_and_the_prompt() {
 #[tokio::test]
 async fn a_color_constant_survives_the_round_trip_and_the_prompt() {
     // Two color-shaped literals across two functions, each seen once
-    // — far below the repetition bar: the palette finding rides the
-    // persisted document under its own kind tag, answers each using
-    // function's per-function lookup, and renders into the escalate
-    // prompt's CONSTANTS section at the named-constant tier.
+    // — far below the repetition bar. The palette finding is saved
+    // under its own kind tag, answers each using function's
+    // per-function lookup, and renders into the escalate prompt's
+    // CONSTANTS section at the named-constant band.
     let workspace = TempDir::new().unwrap();
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
@@ -710,9 +710,9 @@ async fn a_color_constant_survives_the_round_trip_and_the_prompt() {
 #[tokio::test]
 async fn a_data_table_survives_the_round_trip_and_answers_its_referencing_function() {
     // A bounds-guarded indexed read over a defined data object: the
-    // table reading rides the persisted document under its own kind
-    // tag with every field intact, and answers the referencing
-    // function's per-function lookup.
+    // table reading is saved under its own kind tag with every field
+    // intact, and it answers the referencing function's per-function
+    // lookup.
     let workspace = TempDir::new().unwrap();
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00")];
@@ -778,7 +778,7 @@ async fn a_data_table_survives_the_round_trip_and_answers_its_referencing_functi
         .collect();
     assert_eq!(kinds, ["data_table"]);
 
-    // And it renders into prompt data at the corroborated tier.
+    // And it renders into prompt data at the corroborated band.
     let info = calxgloss_prompts::ConstInfo::from(tables[0]);
     assert_eq!(info.kind, "data_table");
     assert_eq!(info.confidence, 70);
@@ -810,10 +810,10 @@ async fn the_codegen_render_regenerates_byte_identically_from_a_loaded_document(
         "two renders of the same document are byte-identical"
     );
 
-    // The enum run and the context-named constant spell out as code;
-    // the lone per-function bitflag group merged into no family, so it
-    // contributes no block — the file names only what the findings
-    // support.
+    // The enum run and the context-named constant spell out as code.
+    // The lone per-function bitflag group merged into no family, so it
+    // contributes no block — the file spells out only what the
+    // findings support.
     assert!(
         first.contains("#[repr(i64)]\npub enum FUN_18003ab00_State {\n"),
         "{first}"
@@ -831,8 +831,8 @@ async fn the_codegen_render_regenerates_byte_identically_from_a_loaded_document(
 async fn two_separate_scans_render_byte_identical_codegen() {
     // The promise a reviewer leans on: rescanning the program and
     // re-rendering changes only what the scan actually learned, never
-    // the renderer's own ordering or formatting — and the header names
-    // only the binary, never either scan time.
+    // the renderer's own ordering or formatting — and the header
+    // mentions only the binary, never either scan time.
     let first = render_codegen(
         &ConstEngine::with_source(program())
             .scan("eqmain.dll")
@@ -860,8 +860,8 @@ async fn a_loaded_document_carrying_every_kind_renders_every_section() {
     // A program yielding a merged flag family, an enum run, a
     // context-named constant, a protocol magic, and a color palette:
     // the loaded document renders the whole reconstruction — the
-    // family's position-named bits, the run's value-named variants,
-    // and a const per named, protocol, and color record.
+    // family's bits named by position, the run's variants named by
+    // value, and a const per named, protocol, and color record.
     let workspace = TempDir::new().expect("workspace");
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
@@ -963,9 +963,9 @@ async fn a_rescan_replaces_the_cached_document() {
         .expect("first scan");
     persistor.save(&first).expect("save");
 
-    // A second scan of a program whose only function carries no shape
-    // replaces the document: the cache check still passes, but the
-    // findings are gone.
+    // A second scan of a program whose only function shows no constant
+    // shape replaces the document: the cache check still passes, but
+    // the findings are gone.
     let mut quiet = FakeProgram::empty();
     quiet.listing = vec![summary("FUN_18003e750")];
     quiet.bodies.insert(
