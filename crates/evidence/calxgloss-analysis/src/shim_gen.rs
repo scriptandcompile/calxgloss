@@ -1,8 +1,9 @@
 //! Shim source code generation.
 //!
 //! This module generates Rust source code for shim layers from a
-//! [`calxgloss_types::ShimLayer`] mapping table. Each shim layer bridges
-//! a Windows DLL's exported API surface to a target Rust crate's API.
+//! [`calxgloss_types::ShimLayer`] mapping table. Each shim layer forwards
+//! calls made to a Windows DLL's exported API surface to a target Rust
+//! crate's API.
 //!
 //! # Flow
 //!
@@ -21,8 +22,8 @@
 
 use calxgloss_types::{ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer};
 
-/// Configuration controlling how aggressively the generator fills in
-/// stubs versus leaving `TODO` markers for manual review.
+/// Controls how much of each function body the generator writes, and where
+/// it leaves `TODO` markers for manual review.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ShimGenerationMode {
     /// Generate complete, compilable code where possible. Leave `TODO` only
@@ -128,9 +129,9 @@ fn append_doc_header(output: &mut String, shim: &ShimLayer) {
 
 /// Collects the set of crate root dependencies needed by the shim.
 ///
-/// For known crates (wgpu, cpal, fmod-rs, vb6runtime), the crate root
-/// is returned. For unknown crates, the crate root is `"{{ crate_name }}"`
-/// as a placeholder.
+/// Known crates (wgpu, tiny-skia, cpal, fmod-rs, vb6runtime) map to their
+/// official crate root. An unknown crate uses its own name as the root, to
+/// be filled in during manual review.
 fn collect_crate_deps(shim: &ShimLayer) -> Vec<String> {
     let crate_root = shim_crate_root(&shim.target_crate);
     if shim.mappings.is_empty() {
@@ -443,13 +444,14 @@ fn format_shim_params(params: &[String]) -> String {
 /// Converts a Windows API parameter declaration to a Rust FFI-compatible type.
 ///
 /// Handles common Windows types:
-/// - `UINT`, `ULONG`, `DWORD`, `UCHAR`, `BYTE` → `u32` or `u8`
-/// - `INT`, `LONG`, `LPARAM`, `WPARAM` → `i32` or `i64`
-/// - `LPVOID`, `PVOID`, `*const c_void`, `HANDLE` → `*const c_void`
-/// - `LPCWSTR`, `LPCSTR`, `LPCTSTR`, `*const c_char` → `*const c_char`
-/// - `BOOL` → `i32` (Windows BOOL is 32-bit)
+/// - `UINT`, `ULONG`, `DWORD`, `BOOL`, `WPARAM` → `u32` (Windows BOOL is 32-bit)
+/// - `UCHAR`, `BYTE` → `u8`
+/// - `INT`, `LONG`, `LPARAM` → `i32`
+/// - `LPVOID`, `PVOID`, `HANDLE` and the other handle types → `*mut core::ffi::c_void`
+/// - `LPCWSTR`, `LPCSTR`, `LPCTSTR` → `*const core::ffi::c_char`
 /// - `HRESULT` → `i32`
-/// - `IDirect3D*9*`, `**` pointer types → `*mut c_void`
+/// - Types ending in `*` → `*mut core::ffi::c_void`; COM-style interface
+///   pointers ending in `**` or `***` → `*mut *mut core::ffi::c_void`
 fn convert_param_to_rust(param: &str) -> String {
     let trimmed = param.trim();
     if trimmed.is_empty() {
@@ -647,7 +649,8 @@ fn is_type_only(name: &str) -> bool {
         )
 }
 
-/// Escapes a crate API path for use in generated code.
+/// Prepares a crate API path for use in generated code. The current
+/// implementation returns the path unchanged.
 fn escape_crate_path(path: &str) -> String {
     path.to_string()
 }

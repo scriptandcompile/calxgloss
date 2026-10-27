@@ -9,8 +9,8 @@
 //!
 //! # Flow
 //!
-//! 1. DLL classification marks a DLL as [`CrateReplacement`] → exports are
-//!    collected from the engine.
+//! 1. DLL classification marks a DLL as [`CrateReplacement`] → its exports
+//!    are read through the analysis engine.
 //! 2. [`generate_shim_mappings`] builds a prompt with the DLL name, target
 //!    crate, export signatures, and crate context.
 //! 3. The LLM returns structured JSON describing each mapping:
@@ -64,10 +64,10 @@ use calxgloss_llm::{LlmClient, LlmMessage};
 use calxgloss_types::{Export, ShimLayer};
 use tracing::{debug, info, warn};
 
-/// Contextual hints about the target crate that are injected into the prompt.
+/// Hints about the target crate, injected into the LLM prompt.
 ///
-/// These hints help the LLM produce more accurate mappings by describing
-/// the target crate's philosophy, API style, and common patterns.
+/// They help the LLM produce more accurate mappings by describing what the
+/// crate is for, its API style, and its common patterns.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CrateContext {
     /// A one-sentence description of the crate's purpose.
@@ -328,10 +328,10 @@ Example output format:
 
 /// Parse an LLM response string into a [`ShimLayer`].
 ///
-/// The response is expected to be a JSON array of mapping objects. Each object
-/// must have at minimum `original_api` and `crate_api` fields.
+/// The response must be a JSON array of mapping objects. Each object needs
+/// at least the `original_api` and `crate_api` fields.
 ///
-/// If the response is not valid JSON or contains no mappings, returns an
+/// Invalid JSON or an empty mapping array returns an
 /// [`LlmError::EmptyResponse`].
 fn parse_shim_mappings(
     dll_name: &str,

@@ -1,25 +1,26 @@
 //! Shim test generation.
 //!
 //! This module generates Rust test code for shim layers from a
-//! [`calxgloss_types::ShimLayer`] mapping table. Each test verifies that
-//! a shim function correctly invokes the target crate API with properly
-//! transformed parameters.
+//! [`calxgloss_types::ShimLayer`] mapping table. Each test calls a shim
+//! function and checks that it reaches the target crate API the way its
+//! mapping describes.
 //!
 //! # Flow
 //!
 //! 1. After [`super::shim::generate_shim_mappings`] produces a [`ShimLayer`],
 //!    call [`generate_shim_tests`] to produce the test code.
 //! 2. The generated tests are written to `re/shims/<dll_name>/shim_tests.rs`.
-//! 3. Tests are compiled alongside the shim source and verify parameter
-//!    transforms, return value handling, and edge cases.
+//! 3. The generated tests compile alongside the shim source. They check the
+//!    crate API call, the return value handling, and edge cases; parameter
+//!    transforms are recorded as comments.
 //!
 //! # Generated Test Structure
 //!
 //! The output is a complete Rust test module containing:
-//! - A mock assertion helper for verifying crate API invocations
-//! - One test function per mapping (parameter correctness + return value)
-//! - Edge-case tests for boundary values identified in transforms
-//! - A summary test counting passing/failing mappings
+//! - Mock helpers that record crate API calls and provide assertions
+//! - One test function per mapping (checks the recorded call and return value)
+//! - Edge-case tests for boundary values named in the transforms
+//! - A summary test that checks the shim layer's mapping count
 //!
 //! # Example
 //!
@@ -37,9 +38,9 @@ use calxgloss_types::{ReturnMapping, ShimApiMapping, ShimLayer};
 /// Generates Rust test code for a shim layer.
 ///
 /// Given a [`ShimLayer`] with its API mappings, produces a complete Rust
-/// test module as a string. The generated code includes a mock assertion
-/// framework that verifies each mapping's parameter transforms and return
-/// value handling.
+/// test module as a string. The generated code includes mock helpers and
+/// assertions that check each mapping's crate API call and return value
+/// handling.
 ///
 /// # Arguments
 ///
@@ -49,22 +50,22 @@ use calxgloss_types::{ReturnMapping, ShimApiMapping, ShimLayer};
 ///
 /// For each mapping the generator creates:
 ///
-/// 1. A **parameter test** — `test_<original_api>_params` — verifies that
-///    calling the shim function with original-style parameters results in
-///    a call to the target crate API with correctly transformed parameters.
-///    The test checks:
-///    - All transform keywords are represented in the call arguments
-///    - Return value handling matches the [`ReturnMapping`]
-///    - Complex transforms (heap, lookup, context) produce stateful calls
+/// 1. A **parameter test** — `test_<function>_params`, named after the
+///    snake_case Rust name of the mapped function. The test calls the shim
+///    function and checks that the mock recorded exactly one call, to the
+///    expected target crate API path, and that return value handling
+///    matches the [`ReturnMapping`]. Each parameter transform is written
+///    into the test as a comment; a transform that mentions resource
+///    management gets a `TODO` note instead of an assertion.
 ///
-/// 2. An **edge-case test** — when parameter transforms mention boundary
-///    patterns like `"zero"`, `"null"`, `"max"`, `"empty"`, a separate test
-///    is generated for each distinct pattern to ensure the shim handles
-///    those inputs without panicking or mis-routing.
+/// 2. An **edge-case test** — when a parameter transform mentions a boundary
+///    pattern like `"zero"`, `"null"`, `"max"`, `"empty"`, the generator
+///    writes one test per distinct pattern. Each checks that the shim call
+///    still reaches the expected crate API without panicking or mis-routing.
 ///
-/// 3. A **summary test** — `test_all_shim_mappings_pass` — iterates all
-///    mappings and counts how many produced test functions, asserting
-///    the count matches the mapping table size.
+/// 3. A **summary test** — `test_all_shim_mappings_have_tests` — records
+///    the mapping table's size in the generated code and asserts the
+///    recorded count matches it.
 ///
 /// # Example output
 ///
@@ -151,13 +152,12 @@ fn append_test_module_header(output: &mut String, shim: &ShimLayer) {
 /// Generates helper functions that simulate the target crate API.
 ///
 /// These helpers record the arguments they are called with and provide
-/// assertions for verifying correctness. The helpers are necessary
-/// because the target crate may not be available at test compile time
-/// (shims are often generated before the crate dependency is added),
-/// and even when it is, mocking lets us verify *what* is passed
+/// assertions. They exist because the target crate may not be available at
+/// test compile time: shims are often generated before the crate dependency
+/// is added. Even when it is available, a mock shows *what* is passed
 /// without depending on the crate's runtime behavior.
 fn append_mock_helpers(output: &mut String, shim: &ShimLayer) {
-    // A thread-local vector that records every recorded call.
+    // A thread-local vector that records every mock call.
     output.push_str("    thread_local! {\n");
     output.push_str("        static MOCK_CALLS: std::cell::RefCell<Vec<MockCall>> = \n");
     output.push_str("            std::cell::RefCell::new(Vec::new());\n");
@@ -446,7 +446,8 @@ fn return_kind_name(return_mapping: &ReturnMapping) -> &'static str {
     }
 }
 
-/// Appends a return-value assertion appropriate for the mapping's return type.
+/// Appends a return-value assertion appropriate for the mapping's return
+/// type. A `Custom` mapping gets a `TODO` comment instead of an assertion.
 fn append_return_assertion(output: &mut String, mapping: &ShimApiMapping) {
     match &mapping.return_mapping {
         ReturnMapping::Void | ReturnMapping::Discarded => {
@@ -471,7 +472,10 @@ fn append_return_assertion(output: &mut String, mapping: &ShimApiMapping) {
     }
 }
 
-/// Appends assertions that parameter transforms are represented in the call.
+/// Writes each parameter transform into the generated test as a comment.
+/// A transform that mentions resource management also gets a `TODO` note
+/// to check shared-state access later. This appends no assertions on the
+/// recorded arguments.
 fn append_transform_assertions(output: &mut String, mapping: &ShimApiMapping) {
     if mapping.parameter_transforms.is_empty() {
         output.push_str("            // No parameter transforms — simple pass-through.\n");

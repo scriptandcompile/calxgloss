@@ -1,6 +1,6 @@
 //! End-to-end shim generation pipeline.
 //!
-//! This module orchestrates the full shim generation flow triggered by DLL
+//! This module runs the full shim generation flow, triggered by DLL
 //! classification: generate mappings → generate source → generate tests →
 //! verify → persist results.
 //!
@@ -62,10 +62,10 @@ use calxgloss_verify::Verifier;
 
 /// Convert a seam [`Symbol`] into a calxgloss [`Export`].
 ///
-/// engine symbols carry `(name, address, imported)` while the shim pipeline
-/// needs `(name, address, signature)`. Since shim mappings are produced by the
-/// LLM (which can infer signatures from context), the signature is left empty
-/// and will be filled in by the LLM if needed.
+/// The analysis engine's symbols carry `(name, address, imported)`; the shim
+/// pipeline needs `(name, address, signature)`. The signature is left empty
+/// here: the shim mappings come from the LLM, which infers signatures from
+/// context while it produces the mappings.
 fn symbol_to_export(sym: &calxgloss_decomp::Symbol) -> Export {
     Export {
         name: sym.name.clone(),
@@ -113,9 +113,9 @@ pub enum PipelineError {
 }
 
 /// Where a shim-pipeline run writes its artifacts and whether it commits them
-/// (issue #268) — the run options shared by [`ShimPipeline::run`] and
-/// [`generate_all_shims`], bundled so neither entry point carries three loose
-/// positional parameters.
+/// (issue #268). [`ShimPipeline::run`] and [`generate_all_shims`] share these
+/// options; bundling them keeps either entry point from having to take three
+/// separate parameters.
 #[derive(Clone, Copy)]
 pub struct ShimRunConfig<'a> {
     /// The workspace root directory. Artifacts are written to
@@ -127,7 +127,7 @@ pub struct ShimRunConfig<'a> {
     pub git: Option<&'a calxgloss_git::GitManager>,
 }
 
-/// Orchestrates the end-to-end shim generation flow for a single DLL.
+/// Runs the end-to-end shim generation flow for a single DLL.
 ///
 /// The pipeline executes the following steps:
 ///
@@ -190,9 +190,10 @@ impl ShimPipeline {
     /// A [`ShimPipelineResult`] containing the generated shim, verification
     /// results, and file paths on success.
     ///
-    /// On mapping generation failure, the pipeline produces a skeletal shim
-    /// (with `TODO` stubs) and returns the best-effort result so the
-    /// reviewer can still inspect and fix the output.
+    /// If LLM mapping generation fails, the pipeline keeps going with an
+    /// empty [`ShimLayer`] — only the DLL name and target crate, no mappings
+    /// and therefore no generated functions — and still returns the
+    /// best-effort result, so the reviewer can inspect and fix the output.
     #[instrument(skip(self, config), fields(binary = %self.dll_name, crate = %self.target_crate))]
     pub async fn run(
         &self,
@@ -407,15 +408,16 @@ fn persist_shim_artifacts(
 /// Run the shim pipeline for all crate-replacement DLLs in the given
 /// classification list.
 ///
-/// Fetches exports from the engine for each DLL, then runs the full
-/// generation → verify → persist pipeline.
+/// For each DLL this loads the file from `target_dir` through Kuna, reads
+/// its exports, and then runs the full generation → verify → persist
+/// pipeline.
 ///
 /// # Arguments
 ///
 /// * `classifications` — DLL classifications to process (filtered to
 ///   `CrateReplacement` strategy).
-/// * `session` — the scan source that answers the export queries;
-///   each DLL is verified against it with the wrong-program guard first.
+/// * `target_dir` — the directory holding the target binaries; each DLL is
+///   loaded from here through Kuna to read its exports.
 /// * `llm` — LLM client for mapping generation.
 /// * `verifier` — Verifier for compilation and test execution.
 /// * `config` — Workspace root for artifact persistence, the git-skip flag,
