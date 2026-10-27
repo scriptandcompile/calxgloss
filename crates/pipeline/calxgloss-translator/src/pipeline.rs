@@ -6446,43 +6446,99 @@ void SetCursor(void)
         }
     }
 
-    /// Every registered row, third shape: with its document directory
+    /// One registered row's third shape: with its document directory
     /// sabotaged the row warns and files nothing — and every other
-    /// registered row still files its own. One detector's trouble
-    /// never takes down the group.
-    #[tokio::test]
-    async fn a_sabotaged_registered_row_degrades_without_taking_the_group_down() {
-        for row in scan_rows() {
-            let dir = TempDir::new().expect("temp workspace");
-            // A plain file where the persistor needs its domain
-            // directory: the scan succeeds and only the save fails.
-            let document = row.document_path(dir.path(), PROGRAM);
-            let domain_dir = document
-                .parent()
-                .expect("the document path names its domain directory");
-            std::fs::create_dir_all(dir.path().join("re").join("analysis")).expect("analysis dir");
-            std::fs::write(domain_dir, "not a directory").expect("sabotage filed");
+    /// registered row still files its own. One detector's trouble never
+    /// takes down the group.
+    async fn a_sabotaged_row_degrades(row: &ScanDescriptor) {
+        let dir = TempDir::new().expect("temp workspace");
+        // A plain file where the persistor needs its domain
+        // directory: the scan succeeds and only the save fails.
+        let document = row.document_path(dir.path(), PROGRAM);
+        let domain_dir = document
+            .parent()
+            .expect("the document path names its domain directory");
+        std::fs::create_dir_all(dir.path().join("re").join("analysis")).expect("analysis dir");
+        std::fs::write(domain_dir, "not a directory").expect("sabotage filed");
 
-            let (pipeline, _) = cached_pipeline(dir.path());
-            pipeline.begin_cached_source(PROGRAM).await;
-            pipeline.run_prebatch_scans(PROGRAM).await;
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
 
-            assert!(
-                !document.exists(),
-                "the sabotaged {} row left no document behind",
-                row.name()
-            );
-            for other in scan_rows() {
-                if other.name() != row.name() {
-                    assert!(
-                        other.document_path(dir.path(), PROGRAM).is_file(),
-                        "the sabotaged {} row never took down the {} row",
-                        row.name(),
-                        other.name()
-                    );
-                }
+        assert!(
+            !document.exists(),
+            "the sabotaged {} row left no document behind",
+            row.name()
+        );
+        for other in scan_rows() {
+            if other.name() != row.name() {
+                assert!(
+                    other.document_path(dir.path(), PROGRAM).is_file(),
+                    "the sabotaged {} row never took down the {} row",
+                    row.name(),
+                    other.name()
+                );
             }
         }
+    }
+
+    /// The sabotage walk's row roster, as one macro listing: the fifteen
+    /// tests below and the completeness guard both expand from it, so a
+    /// row joining the registry gets its own walk or the guard fails.
+    macro_rules! for_each_registered_row {
+        ($f:ident) => {
+            $f!(sabotages_control_flow, "control-flow");
+            $f!(sabotages_memory_lifecycle, "memory-lifecycle");
+            $f!(sabotages_concurrency, "concurrency");
+            $f!(sabotages_global_state, "global-state");
+            $f!(sabotages_constants, "constants");
+            $f!(sabotages_error_handling, "error-handling");
+            $f!(sabotages_float_simd, "float-simd");
+            $f!(sabotages_type_database, "type-database");
+            $f!(sabotages_algorithm_recognition, "algorithm-recognition");
+            $f!(sabotages_string_context, "string-context");
+            $f!(sabotages_library_api, "library-api");
+            $f!(sabotages_serialization, "serialization");
+            $f!(sabotages_type_inference, "type-inference");
+            $f!(sabotages_callback_detection, "callback-detection");
+            $f!(sabotages_known_library, "known-library");
+        };
+    }
+
+    // The third shape over the whole registry: every row `scan_rows()`
+    // holds rides the sabotage walk, so the fifteen rows here are the
+    // whole table. One test per row rather than one loop over the table:
+    // each walk runs the entire scan phase, so the loop serialized
+    // fifteen scan phases — most of this binary's wall clock — where the
+    // fifteen tests overlap across test threads instead.
+    macro_rules! define_sabotage_test {
+        ($name:ident, $row:literal) => {
+            #[tokio::test]
+            async fn $name() {
+                let row = find_row($row);
+                a_sabotaged_row_degrades(&row).await;
+            }
+        };
+    }
+    for_each_registered_row!(define_sabotage_test);
+
+    #[test]
+    fn every_registered_row_gets_its_own_sabotage_test() {
+        // Splitting the walk must not quietly drop a row out of the
+        // suite: a registry row the macro listing does not name faults.
+        let mut walked = Vec::new();
+        macro_rules! collect_row {
+            ($name:ident, $row:literal) => {
+                walked.push($row);
+            };
+        }
+        for_each_registered_row!(collect_row);
+
+        let table: Vec<&str> = scan_rows().iter().map(ScanDescriptor::name).collect();
+        assert_eq!(
+            walked, table,
+            "each registry row must get exactly one sabotage test, in table order"
+        );
     }
 
     /// Every registered row, fourth shape: with no workspace configured
