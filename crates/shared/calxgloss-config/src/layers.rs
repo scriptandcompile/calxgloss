@@ -4,7 +4,7 @@ use tracing::debug;
 
 use crate::schema::{AnalysisSection, FileConfig, LlmSection};
 
-/// Which layer a resolved value came from.
+/// Which configuration layer a resolved value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     /// A command-line flag.
@@ -29,11 +29,11 @@ impl std::fmt::Display for Source {
     }
 }
 
-/// A value together with the layer that supplied it.
+/// A value together with the configuration layer that supplied it.
 ///
-/// Carrying the source alongside the value is what makes a three-layer
-/// configuration debuggable: a surprising value can be attributed to the layer
-/// that actually chose it, rather than guessed at.
+/// A value that says which configuration layer supplied it is easy to trace:
+/// when a setting is surprising, you can find the configuration layer that
+/// actually chose it instead of guessing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resolved<T> {
     /// The value in force.
@@ -42,23 +42,23 @@ pub struct Resolved<T> {
     pub source: Source,
 }
 
-/// The layers a setting can be supplied by, most specific first.
+/// The configuration layers a setting can be supplied by, most specific first.
 #[derive(Debug, Clone, Default)]
 pub struct Layers {
     /// Values from command-line flags.
     pub flags: FileConfig,
     /// Values from environment variables.
     pub env: FileConfig,
-    /// Values from the configuration file.
+    /// Values from the configuration file (the lowest configuration layer).
     pub file: FileConfig,
 }
 
 impl Layers {
-    /// Read the environment into a layer.
+    /// Read the environment variables into one configuration layer.
     ///
-    /// The variables are `CALXGLOSS_` plus the section and key, so
-    /// `CALXGLOSS_LLM_URL` sets `[llm] url`. A variable that is set but empty is
-    /// treated as absent: an empty `CALXGLOSS_LLM_URL=` in a shell profile
+    /// Each variable is `CALXGLOSS_` plus the section and key, so
+    /// `CALXGLOSS_LLM_URL` sets `[llm] url`. A variable that is set but empty
+    /// counts as absent: an empty `CALXGLOSS_LLM_URL=` in a shell profile
     /// should not blank out a working configuration.
     pub fn from_env() -> Self {
         Self {
@@ -88,13 +88,13 @@ impl Layers {
         }
     }
 
-    /// Resolve one setting across every layer.
+    /// Resolve one setting across all four configuration layers and the default.
     ///
-    /// `default` applies only when no layer has a value. `None` comes back when
-    /// no layer *and* no default supply one, which is the case the caller turns
-    /// into a message naming the ways to provide it. A setting cannot be
-    /// invented at that point, so the absence is reported rather than papered
-    /// over with a placeholder.
+    /// The first layer with a value wins. The `default` value applies only
+    /// when no configuration layer has one. If neither any layer nor the
+    /// default supplies a value, this returns `None`. The caller then reports
+    /// the missing setting and names the ways to provide it, because no
+    /// sensible stand-in can be invented here.
     pub fn resolve<T>(
         &self,
         flag: Option<T>,
@@ -123,8 +123,9 @@ fn var(name: &str) -> Option<String> {
 
 /// Read a numeric environment variable, ignoring one that does not parse.
 ///
-/// A malformed value is skipped rather than fatal, so a typo in a shell profile
-/// degrades to the next layer instead of breaking every command.
+/// A malformed value is skipped instead of treated as fatal, so a typo in a
+/// shell profile makes the next configuration layer win rather than breaking
+/// every command.
 macro_rules! numeric_var {
     ($name:expr, $ty:ty) => {
         var($name).and_then(|v| match v.trim().parse::<$ty>() {
@@ -159,11 +160,11 @@ mod tests {
     use crate::{ConfigError, EXAMPLE, FileConfig, Layers, LlmSection, PROJECT_FILE, load};
     use std::path::{Path, PathBuf};
 
-    /// Saves and restores environment variables on drop.
+    /// Saves environment variables and puts them back when it is dropped.
     ///
-    /// This is the correct way to temporarily change `HOME`, `XDG_CONFIG_HOME`,
-    /// or other process-wide variables from a test: the guard's `Drop` impl
-    /// always restores the original state even if the test panics, and the
+    /// This is the safe way for a test to change process-wide variables such
+    /// as `HOME` or `XDG_CONFIG_HOME` for a while. The guard's `Drop` impl
+    /// always restores the original state, even if the test panics, and the
     /// guard holds the previous values so they are never lost.
     struct EnvGuard {
         vars: Vec<(&'static str, Option<String>)>,
@@ -250,9 +251,9 @@ timeout_secs = 900
 
     #[test]
     fn test_a_stale_ghidra_section_is_refused_by_name() {
-        // Issue #214: Kuna is the only analysis engine. A leftover [ghidra]
-        // block is an unknown section — the parse error names it, and the
-        // printed example shows the file that replaces it.
+        // Issue #214: the Kuna analysis engine is the only analysis engine. A
+        // leftover [ghidra] block is an unknown section: the parse error names
+        // it, and the printed example shows the file that replaces it.
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),
@@ -349,7 +350,7 @@ install_dir = "/opt/ghidra_12.1.2_PUBLIC"
 
     #[test]
     fn test_a_stale_analysis_engine_key_is_refused_by_name() {
-        // Issue #214: the engine is no longer a choice; a leftover
+        // Issue #214: the analysis engine is no longer a choice; a leftover
         // `engine = ` line is an unknown key, refused by name.
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), "c.toml", "[analysis]\nengine = \"kuna\"\n");
@@ -372,7 +373,8 @@ install_dir = "/opt/ghidra_12.1.2_PUBLIC"
 
     #[test]
     fn test_the_decompile_budget_keys_come_from_the_file_layer() {
-        // Issue #211: the per-function budgets ride with the engine choice.
+        // Issue #211: the per-function budgets are ordinary settings — they are
+        // read from the `[analysis]` table like every other key.
         let dir = tempfile::tempdir().unwrap();
         let toml = "[analysis]\nmax_fn_instructions = 5000\nmax_fn_seconds = 30\nmax_fn_memory_mib = 512\n";
         let path = write(dir.path(), "c.toml", toml);

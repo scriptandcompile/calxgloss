@@ -28,16 +28,16 @@ pub struct FileConfig {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AnalysisSection {
-    /// Per-function instruction budget for the Kuna engine — the control-flow
+    /// Per-function instruction budget for the Kuna analysis engine — the control-flow
     /// walk stops after this many instructions and the function fails by name.
     /// Kuna's own default applies when unset; `0` means "no limit".
     pub max_fn_instructions: Option<u64>,
 
-    /// Per-function wall-clock budget, in seconds, for the Kuna engine.
+    /// Per-function wall-clock budget, in seconds, for the Kuna analysis engine.
     /// Kuna's own default (no limit) applies when unset; `0` means "no limit".
     pub max_fn_seconds: Option<u64>,
 
-    /// Per-function resident-memory budget, in MiB, for the Kuna engine.
+    /// Per-function resident-memory budget, in MiB, for the Kuna analysis engine.
     /// Kuna's own default (no limit) applies when unset; `0` means "no limit".
     pub max_fn_memory_mib: Option<u64>,
 }

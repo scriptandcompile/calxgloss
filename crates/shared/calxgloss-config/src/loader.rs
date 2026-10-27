@@ -120,10 +120,10 @@ fn read(path: &Path) -> Result<FileConfig, ConfigError> {
         source,
     })?;
 
-    // `deny_unknown_fields` is the refusal for stale engine surface (issue
-    // #214): a leftover `[ghidra]` block or `engine` key fails here naming
-    // the offending field, and the `expected` example shows the file that
-    // replaces it — the operator sees exactly what to delete.
+    // `deny_unknown_fields` is what refuses a stale analysis-engine setting
+    // (issue #214): a leftover `[ghidra]` block or `engine` key fails here,
+    // naming the offending field. The `expected` example shows the file that
+    // replaces it, so the operator sees exactly what to delete.
     toml::from_str(&text).map_err(|e| ConfigError::Invalid {
         path: path.to_path_buf(),
         problem: e.to_string(),

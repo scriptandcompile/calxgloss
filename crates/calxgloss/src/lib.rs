@@ -51,7 +51,7 @@ pub use calxgloss_types::{
 };
 
 // ============================================================
-// calxgloss-decomp — the analysis seam, and calxgloss-kuna — the engine
+// calxgloss-decomp — the analysis seam, and calxgloss-kuna — the analysis engine
 // ============================================================
 
 pub use calxgloss_decomp::CachedScanSource;
@@ -310,7 +310,7 @@ pub use calxgloss_errhandling::{
 // `PairingDocument` already names the per-version-pair document, and a
 // second alias spelled like a result would read as the same thing.
 // The pass and the persistor are named beside the types because the
-// pairing document has no engine — `pair_versions` is the whole scan.
+// pairing document has no separate engine pass — `pair_versions` is the whole scan.
 pub use calxgloss_bdiff::BdiffError;
 pub use calxgloss_bdiff::{
     BODY_EQUAL_CONFIDENCE, BODY_SIMILARITY_FLOOR, CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry,
