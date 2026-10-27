@@ -1,15 +1,15 @@
 //! Error types for the calxgloss-consts crate.
 //!
-//! This module defines `ConstError`, the unified error type used
-//! throughout the constant detection crate for decompiler fetches,
-//! detector runs, and JSON persistence.
+//! This module defines `ConstError`, the one error type the constant
+//! detection crate uses everywhere: for decompiler fetches, detector
+//! runs, and JSON persistence.
 
 use thiserror::Error;
 
 /// Errors that can occur during constant detection operations.
 #[derive(Debug, Error)]
 pub enum ConstError {
-    /// An engine read through the analysis seam failed.
+    /// A read by the analysis engine through the seam failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -29,10 +29,11 @@ pub enum ConstError {
     #[error("empty function name")]
     EmptyFunctionName,
 
-    /// Too many of the program's functions failed to decompile for the
-    /// scan to be trusted — the signature of the bridge answering from
-    /// the wrong program. The skip-rate breaker aborts the scan rather
-    /// than letting it persist a phantom-clean record.
+    /// Too many of the program's functions failed to decompile, so the
+    /// scan's result cannot be trusted. A high failure rate is the
+    /// signature of the seam answering about the wrong program. The
+    /// skip-rate breaker aborts the scan instead of persisting a
+    /// record that looks clean but is not.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
 
@@ -41,9 +42,10 @@ pub enum ConstError {
     ScanFailed { binary: String, reason: String },
 }
 
-/// Maps the shared JSON store's errors onto this crate's error type: the
-/// store's not-found becomes [`ConstError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// Converts the shared JSON store's errors into this crate's error
+/// type. The store's not-found error becomes [`ConstError::NotFound`];
+/// its I/O and JSON errors become the matching pass-through variants
+/// above.
 impl From<calxgloss_types::persist::PersistError> for ConstError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

@@ -8,29 +8,29 @@
 //! another repeated number: it has a name and a protocol or format it
 //! belongs to, and the scan can say so.
 //!
-//! The reading is pure and adds no engine reads: [`protocol_constants`]
-//! walks the program-wide tally the engine built during its single
-//! pass and reports one [`ProtocolConstant`] record per tallied value
-//! that matches the built-in table. The match reads the *full* tally
-//! before the frequency threshold applies, so a magic-number check
-//! that appears exactly once in one parser still reports — the
-//! repetition bar is a heuristic about arbitrary values, not about
-//! recognised ones.
+//! The reading is pure and adds no analysis-engine reads:
+//! [`protocol_constants`] walks the program-wide tally the scan built
+//! during its single pass and reports one [`ProtocolConstant`] record
+//! per tallied value that matches the built-in table. The match reads
+//! the *full* tally before the frequency threshold applies, so a
+//! magic-number check that appears exactly once in one parser still
+//! reports. The repetition bar is a heuristic about arbitrary values,
+//! not about recognised ones.
 //!
 //! The table is the honesty bar: it is small, built-in, and every
 //! entry names a protocol or format a reviewer can check. A value
 //! outside the table is untouched and stays an ordinary named
-//! constant; a near-miss value — one bit off a known magic — claims
-//! nothing. A matched value lands exactly once: the protocol claim is
-//! strictly stronger than the frequency-only named-constant reading
-//! and carries the same usage data, so the engine's frequency pass
-//! skips matched values.
+//! constant. A near-miss value — one bit off a known magic — claims
+//! nothing. Each matched value produces exactly one finding: the
+//! protocol claim is strictly stronger than the frequency-only
+//! named-constant reading and carries the same usage data, so the
+//! scan's frequency pass skips matched values.
 
 use crate::frequency::{ConstantOccurrences, ProgramTally};
 use crate::types::{Confidence, NamedConstant, ProtocolConstant};
 
 /// The fixed confidence of a table-matched value: above the
-/// frequency-only named-constant tier (60) — the value is not merely
+/// frequency-only named-constant band (60) — the value is not merely
 /// repeated, it is recognised, and the claim is checkable against the
 /// table — and below the flag family's corroborated 80.
 const PROTOCOL_CONFIDENCE: u8 = 75;
@@ -38,7 +38,7 @@ const PROTOCOL_CONFIDENCE: u8 = 75;
 /// One built-in table entry: a well-known magic or sentinel value, the
 /// constant name it suggests, and the protocol or format it belongs
 /// to. The name is the spelling the suggestion renders the `const`
-/// with; the protocol label is the claim a reviewer checks.
+/// with. The protocol label is the claim a reviewer checks.
 struct TableEntry {
     value: u64,
     name: &'static str,
@@ -46,11 +46,11 @@ struct TableEntry {
 }
 
 /// The built-in table of well-known protocol/format magics and
-/// sentinels. It is kept sorted by value for tidiness, but the sort
-/// is decorative: [`protocol_constants`] walks the program-wide tally,
-/// a `BTreeMap` keyed by value, so matched findings come out in
-/// ascending value order regardless of how the table is arranged, and
-/// two scans of one program name their constants identically.
+/// sentinels. The entries are listed in roughly value order, but that
+/// order is decorative: [`protocol_constants`] walks the program-wide
+/// tally, a `BTreeMap` keyed by value, so matched findings come out
+/// in ascending value order regardless of how the table is arranged,
+/// and two scans of one program name their constants identically.
 ///
 /// The table is deliberately small: every entry is a value whose
 /// meaning is settled enough to name — a file-format signature or a
@@ -156,7 +156,7 @@ pub(crate) fn protocol_constants(tally: &ProgramTally) -> Vec<ProtocolConstant> 
         .collect()
 }
 
-/// The one record a table entry and its tally occurrences add up to:
+/// The record one table entry and its tally occurrences add up to:
 /// the table's name and protocol label, the usage data, and a
 /// suggestion naming the `const` after the table entry.
 fn render_constant(entry: &TableEntry, occurrences: &ConstantOccurrences) -> ProtocolConstant {
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn the_matched_confidence_sits_above_the_frequency_only_tier() {
         // A recognised value is stronger evidence than a merely
-        // repeated one: the fixed tier beats the named constant's 60.
+        // repeated one: the fixed 75 beats the named constant's 60.
         let findings = protocol_constants(&tally(&[("FUN_18003ab00", &[0xcafebabe])]));
         assert_eq!(findings[0].confidence, Confidence::new(75));
         assert!(findings[0].confidence.value() > 60);

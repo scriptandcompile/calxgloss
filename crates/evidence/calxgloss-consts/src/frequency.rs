@@ -1,18 +1,18 @@
 //! Repeated magic-number frequency analysis.
 //!
 //! [`FrequencyAnalyzer`] counts the integer literals used across the
-//! whole program — the same decompiled bodies the per-function
-//! detectors read — and reports the values used often enough and in
-//! enough functions to be named constants rather than situational
-//! literals. A value repeated across the program is a constant the
-//! translation should name once instead of transliterating at every
+//! whole program, reading the same decompiled bodies the per-function
+//! detectors read. It reports the values used often enough, and in
+//! enough functions, to be named constants rather than one-off
+//! literals at a use site. A value repeated across the program is a
+//! constant the translation should name once, not copy out at every
 //! use site.
 //!
-//! The report also carries the name the bodies gave the value when
-//! they gave it one: [`constants`](FrequencyAnalyzer::constants) takes
-//! the context names the naming reading (`naming`) derived
-//! from those same bodies and rides them onto the records, rendering
-//! the named `const` form into the suggestion.
+//! The report also carries the name the bodies gave the value, when
+//! they gave it one. [`constants`](FrequencyAnalyzer::constants)
+//! takes the context names the naming reading (`naming`) derived from
+//! those same bodies, puts them on the records, and renders the named
+//! `const` form into the suggestion.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -49,17 +49,18 @@ impl ConstantOccurrences {
 }
 
 /// The program-wide literal tally the analyzer reads: each value to
-/// its occurrences. The engine builds it during the single scan pass,
-/// one [`literals`](FrequencyAnalyzer::literals) call per body.
+/// its occurrences. The scan builds it during the single pass, one
+/// [`literals`](FrequencyAnalyzer::literals) call per body.
 pub type ProgramTally = BTreeMap<u64, ConstantOccurrences>;
 
 /// Counts integer literals across the program and reports the values
 /// that read as named constants.
 ///
-/// The analyzer is stateless configuration; [`with_default_thresholds`]
-/// sets the standard bar — three or more uses across two or more
-/// functions, with the trivially small values `0`, `1`, and `2`
-/// excluded — and [`with_thresholds`](Self::with_thresholds) swaps it
+/// The analyzer holds no scan state — only its threshold settings.
+/// [`with_default_thresholds`](Self::with_default_thresholds) sets the
+/// standard bar: three or more uses across two or more functions, with
+/// the trivially small values `0`, `1`, and `2` excluded.
+/// [`with_thresholds`](Self::with_thresholds) replaces the thresholds
 /// whole.
 #[derive(Debug, Clone)]
 pub struct FrequencyAnalyzer {
@@ -109,17 +110,16 @@ impl FrequencyAnalyzer {
     /// used first and ties by ascending value, so two scans of the
     /// same program list the constants in a stable order.
     ///
-    /// A value becomes a finding at [`min_occurrences`](Self::min_occurrences)
-    /// uses across [`min_functions`](Self::min_functions) functions:
-    /// one function repeating a literal is a local habit, a value
-    /// carried across the program is a constant.
+    /// A value becomes a finding at `min_occurrences` uses across
+    /// `min_functions` functions: one function repeating a literal is
+    /// a local habit, a value used across the program is a constant.
     ///
-    /// `names` carries the context names the naming reading derived from
-    /// the same bodies (`naming::context_names`): a qualified value the bodies
-    /// named rides the record with that name and a suggestion rendering
-    /// the named `const` form; a value they never named keeps the
-    /// mechanical `VALUE_0x…` spelling. A name for a value that never
-    /// qualified rides nothing.
+    /// `names` holds the context names the naming reading derived from
+    /// the same bodies (`naming::context_names`). A qualified value
+    /// the bodies named gets that name on its record, and its
+    /// suggestion renders the named `const` form. A value the bodies
+    /// never named keeps the mechanical `VALUE_0x…` spelling. A name
+    /// for a value that never qualified is ignored.
     pub fn constants(
         &self,
         tally: &ProgramTally,
@@ -163,7 +163,7 @@ impl FrequencyAnalyzer {
 mod tests {
     use super::*;
 
-    /// Tally canned bodies the way the engine does: one
+    /// Tally canned bodies the way the scan does: one
     /// [`literals`](FrequencyAnalyzer::literals) read per function.
     fn tally(entries: &[(&str, &[u64])]) -> ProgramTally {
         let analyzer = FrequencyAnalyzer::with_default_thresholds();
@@ -186,7 +186,7 @@ mod tests {
         tally
     }
 
-    /// Canned context names the way the engine hands them over: the
+    /// Canned context names the way the scan passes them over: the
     /// value-to-name map the naming reading built from the bodies,
     /// empty when the bodies named nothing.
     fn names(entries: &[(u64, &str)]) -> BTreeMap<u64, String> {
@@ -313,9 +313,9 @@ mod tests {
 
     #[test]
     fn a_context_name_from_the_bodies_names_the_constant() {
-        // The naming reading over the same bodies rides the record: the
-        // name lands on the record and the suggestion renders the named
-        // `const` form instead of the mechanical one.
+        // The naming reading's result for the same bodies reaches the
+        // record: the name lands on the record and the suggestion
+        // renders the named `const` form instead of the mechanical one.
         let tally = tally(&[
             ("FUN_18003ab00", &[0x280, 0x280]),
             ("FUN_18003e750", &[0x280]),
@@ -328,9 +328,9 @@ mod tests {
 
     #[test]
     fn a_value_the_bodies_never_named_keeps_the_mechanical_form() {
-        // The deepening never loses a constant the scan used to report:
-        // a qualified value with no qualifying sighting still lands,
-        // un-named and mechanically suggested.
+        // The scan never loses a qualified constant over a missing
+        // name: a qualified value with no qualifying sighting still
+        // lands, un-named and mechanically suggested.
         let tally = tally(&[
             ("FUN_18003ab00", &[0x400, 0x400]),
             ("FUN_18003e750", &[0x400]),

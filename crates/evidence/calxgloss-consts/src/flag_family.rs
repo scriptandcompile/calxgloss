@@ -1,15 +1,15 @@
 //! Program-level flag-family merging.
 //!
-//! [`merge_families`] is the engine's post-pass over the per-function
-//! bitflag groups the scan just built: groups sharing at least one
-//! bit — directly or through a chain of shared bits — merge
+//! [`merge_families`] is the scan's post-pass over the per-function
+//! bitflag groups the scan just built. Groups that share at least one
+//! bit — directly, or through a chain of shared bits — merge
 //! transitively into one program-level [`FlagFamily`] record naming
 //! the union of bits, the mask and width they span, and the
-//! contributing functions. Families sharing no bits stay separate,
-//! and a group sharing no bit with any other forms no family of its
-//! own — its per-function record already says everything that body
-//! shows. The merge consumes the detector's final group contents: no
-//! bodies are kept and no new reads are made.
+//! contributing functions. Families sharing no bits stay separate.
+//! A group sharing no bit with any other forms no family of its own:
+//! its per-function record already says everything that body shows.
+//! The merge consumes the detector's final group contents: no bodies
+//! are kept and no new reads are made.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -18,19 +18,19 @@ use crate::bitmask::flags_suggestion;
 use crate::types::{BitflagGroup, Confidence, FlagFamily};
 
 /// The fixed confidence of a merged family: above the per-function
-/// group's 70 — the same flag surface corroborated across several
+/// group's 70. The same flag surface corroborated across several
 /// functions is stronger evidence than one body's word alone.
 const FAMILY_CONFIDENCE: u8 = 80;
 
 /// The whole flag families among `groups`: every set of two or more
-/// groups tied through shared bits, transitively, rendered as one
-/// program-level record. Families come out sorted by mask, and each
-/// record's bits and contributing functions are ascending, so two
-/// scans of one program render identical families.
+/// groups connected through shared bits, transitively, rendered as
+/// one program-level record. Families come out sorted by mask, and
+/// each record's bits and contributing functions are ascending, so
+/// two scans of one program render identical families.
 pub(crate) fn merge_families(groups: &[BitflagGroup]) -> Vec<FlagFamily> {
     // Union-find over the group indices: two groups sharing a bit are
-    // tied, and ties chain — a group sharing a bit with either half
-    // of a pair joins the whole.
+    // connected, and the connections chain — a group sharing a bit
+    // with either half of a pair joins the whole set.
     let mut parent: Vec<usize> = (0..groups.len()).collect();
     fn root(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
@@ -58,7 +58,7 @@ pub(crate) fn merge_families(groups: &[BitflagGroup]) -> Vec<FlagFamily> {
     }
 
     // A lone group is not a merge: what survives is what actually
-    // merged — two or more groups tied through shared bits.
+    // merged — two or more groups connected through shared bits.
     let mut families: Vec<FlagFamily> = clusters
         .into_values()
         .filter(|members| members.len() > 1)
@@ -68,12 +68,12 @@ pub(crate) fn merge_families(groups: &[BitflagGroup]) -> Vec<FlagFamily> {
     families
 }
 
-/// Render one merged cluster of groups as the program-level record:
-/// the union of bits and mask, the width the highest bit spans, the
-/// contributing functions ascending, the whole-family struct, and
-/// evidence naming each contributing group's function and its own
-/// bits — so the merge reads checkable against the per-function
-/// records it consumed.
+/// Render one merged cluster of groups as the program-level record.
+/// The record holds: the union of bits and mask, the width the
+/// highest bit spans, the contributing functions ascending, and the
+/// whole-family struct. Its evidence names each contributing group's
+/// function and its own bits, so the merge can be checked against the
+/// per-function records it consumed.
 fn render_family(members: Vec<&BitflagGroup>) -> FlagFamily {
     let bits: Vec<u32> = members
         .iter()
@@ -128,7 +128,7 @@ mod tests {
     use super::*;
 
     /// A hand-built per-function group over `bits`, exactly the shape
-    /// the bitmask detector hands the engine.
+    /// the bitmask detector passes on to the scan.
     fn group(function: &str, bits: &[u32]) -> BitflagGroup {
         let mask: u64 = bits.iter().fold(0u64, |acc, bit| acc | (1u64 << bit));
         let bit_width = bits[bits.len() - 1] + 1;
@@ -146,7 +146,8 @@ mod tests {
     #[test]
     fn groups_sharing_a_bit_merge_into_one_family() {
         // FUN_a carries bits 8 and 10, FUN_b bits 10 and 11: the
-        // shared bit 10 ties them into one family spanning 8, 10, 11.
+        // shared bit 10 joins them into one family spanning bits
+        // 8, 10, 11.
         let groups = [
             group("FUN_18003ab00", &[8, 10]),
             group("FUN_18003e750", &[10, 11]),
@@ -167,7 +168,7 @@ mod tests {
 
     #[test]
     fn contributing_functions_are_listed_ascending() {
-        // The listing hands the groups in descending-name order; the
+        // The caller passes the groups in descending name order; the
         // family still names its contributors ascending.
         let groups = [
             group("FUN_18003e750", &[10, 11]),
@@ -185,7 +186,8 @@ mod tests {
     #[test]
     fn a_transitive_chain_merges_into_one_family() {
         // No bit stands in all three groups, but each pair shares
-        // one: the chain ties the whole into a single family.
+        // one: the chain connects the whole set into a single
+        // family.
         let groups = [
             group("FUN_18003ab00", &[8, 10]),
             group("FUN_18003e750", &[10, 12]),
@@ -202,8 +204,8 @@ mod tests {
 
     #[test]
     fn families_sharing_no_bits_stay_separate() {
-        // Two pairs, each tied internally, nothing shared between
-        // them: two families, never one.
+        // Two pairs, each connected within itself and sharing nothing
+        // with the other: two families, never one.
         let groups = [
             group("FUN_18003ab00", &[8, 10]),
             group("FUN_18003e750", &[10, 11]),

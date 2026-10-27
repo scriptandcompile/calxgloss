@@ -2,22 +2,22 @@
 //!
 //! The frequency pass already tallies every literal the decompiled
 //! bodies carry; this module reads that same tally for a shape it
-//! throws away — *which tallied values are color-shaped*. A palette
-//! of `0xRRGGBB` literals scattered across the program reads as
-//! nothing today; grouped, it is one claim the scan can make: these
-//! values are colors, and the translation should name them.
+//! throws away — *which tallied values are color-shaped*. `0xRRGGBB`
+//! literals scattered across the program say nothing on their own.
+//! Grouped, they are one claim the scan can make: these values are
+//! colors, and the translation should name them.
 //!
-//! The reading is pure and adds no engine reads:
-//! [`color_palette`] walks the program-wide tally the engine built
+//! The reading is pure and adds no analysis-engine reads:
+//! [`color_palette`] walks the program-wide tally the scan built
 //! during its single pass and reports at most one [`ColorConstant`]
 //! record for the whole binary.
 //!
-//! The gates are the honesty bar: a qualifying literal fits in 24
+//! The gates are the honesty bar. A qualifying literal fits in 24
 //! bits — an `0xRRGGBB`-shaped value — and is not a power of two, so
-//! flag bits are never read as colors; and the binary must show at
-//! least two distinct qualifying values, since a lone `0x123456` may
-//! be an offset and claims nothing. There is no color-name matching:
-//! the claim is "these are colors", never "this one is red".
+//! flag bits are never read as colors. And the binary must show at
+//! least two distinct qualifying values; a lone `0x123456` may be an
+//! offset and claims nothing. There is no color-name matching: the
+//! claim is "these are colors", never "this one is red".
 
 use std::collections::BTreeSet;
 
@@ -25,8 +25,8 @@ use crate::frequency::{ConstantOccurrences, ProgramTally};
 use crate::types::{ColorConstant, Confidence};
 
 /// The fixed confidence of a palette finding: at the named-constant
-/// tier (60) — the color shape is as suggestive as a repeated
-/// literal, no stronger; the claim is only "these are colors".
+/// band (60) — the color shape is as suggestive as a repeated
+/// literal, no stronger. The claim is only "these are colors".
 const COLOR_CONFIDENCE: u8 = 60;
 
 /// The color shape's ceiling: an `0xRRGGBB` value fits in 24 bits;
@@ -203,7 +203,7 @@ mod tests {
     fn the_record_suggests_named_colors_and_keeps_the_palette_as_evidence() {
         // The claim's shape: a named `const` per color in the
         // suggestion, the per-value usage summary as evidence, and
-        // the fixed confidence at the named-constant tier.
+        // the fixed confidence at the named-constant band.
         let palette = color_palette(&tally(&[
             ("FUN_18003ab00", &[0x123456, 0x123456]),
             ("FUN_18003e750", &[0xff00ff]),

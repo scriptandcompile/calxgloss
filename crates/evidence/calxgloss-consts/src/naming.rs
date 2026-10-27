@@ -2,24 +2,25 @@
 //!
 //! The frequency pass already reads every decompiled body to tally its
 //! literals; this module reads the same bodies for the one fact the
-//! tally throws away — *which identifier sits beside the literal*. When
-//! a repeated literal is assigned to or compared against a named
+//! tally throws away — *which identifier sits beside the literal*.
+//! When a repeated literal is assigned to or compared against a named
 //! variable (`size = 0x280`, `mode == 3`), the bodies plainly say what
-//! the value is, and the constant gains a name derived from that
+//! the value is. The constant then gains a name derived from that
 //! identifier — `SIZE_0x280` — instead of the mechanical
 //! `VALUE_0x280` the tally alone could offer.
 //!
-//! The reading is pure and adds no engine reads: [`context_names`]
-//! walks the shared tokenizer's stream over one body and reports, in
-//! body order, each literal an assignment or comparison names. The
-//! engine keeps the first qualifying sighting per value across the
-//! whole scan, so naming is deterministic and two scans of one program
-//! name their constants identically.
+//! The reading is pure and adds no analysis-engine reads:
+//! [`context_names`] walks the shared tokenizer's stream over one body
+//! and reports, in body order, each literal an assignment or
+//! comparison names. The scan keeps the first qualifying sighting of
+//! each value across the whole scan. Naming is therefore deterministic
+//! and two scans of one program name their constants identically.
 //!
 //! The naming gate is the honesty rule: Ghidra's placeholder spellings —
 //! `local_10`, `uVar1`, `FUN_`, `DAT_`, `param_1`, a bare letter plus
-//! digits — name nothing, because the decompiler minted them. A name
-//! only ever rides on an identifier that actually means something.
+//! digits — name nothing, because the decompiler minted them. A
+//! constant's name only ever comes from an identifier that actually
+//! means something.
 
 use crate::tokenize::{TokenKind, tokenize};
 
@@ -64,12 +65,12 @@ pub(crate) fn context_names(body: &str) -> Vec<(u64, String)> {
 }
 
 /// Whether an identifier is one of Ghidra's placeholder spellings,
-/// minted for something the decompiler could not name — a stack slot
+/// minted for something the decompiler could not name: a stack slot
 /// (`local_10`), an undefined variable (`uVar1`, `iVar2`, `bVar3`,
 /// `sVar4`), a parameter (`param_1`), a nameless function (`FUN_…`) or
 /// global (`DAT_…`), or a bare letter plus digits (`a1`). None of them
-/// carries meaning the scan could hang a constant name on, so they
-/// never name one; a real identifier — `size`, `mode`, even a bare `x`
+/// carries meaning the scan could use to name a constant, so they
+/// never name one. A real identifier — `size`, `mode`, even a bare `x`
 /// a human left behind — passes.
 fn is_placeholder(identifier: &str) -> bool {
     if ["local_", "param_", "FUN_", "DAT_"]
@@ -87,9 +88,9 @@ fn is_placeholder(identifier: &str) -> bool {
         return false;
     }
     if identifier[1..].starts_with("Var") {
-        // Strictly the `<letter>Var<digits>` shape Ghidra mints — a real
-        // word like `aVariable` starts with a letter + "Var" but is not
-        // a placeholder.
+        // The check is strictly the `<letter>Var<digits>` shape Ghidra
+        // mints: a real word like `aVariable` starts with a letter +
+        // "Var" but is not a placeholder.
         let rest = &identifier[4..];
         return !rest.is_empty() && rest.bytes().all(|c| c.is_ascii_digit());
     }
