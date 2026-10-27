@@ -1,19 +1,19 @@
 //! Plugin architecture detection.
 //!
-//! This module provides [`PluginDetector`], which carries the
-//! dynamic-loading names a scan reads decompiled bodies against — the
+//! This module provides [`PluginDetector`]. The detector holds the
+//! dynamic-loading names a scan checks decompiled bodies against: the
 //! module-load spellings (`LoadLibrary`, `LoadLibraryEx`, `dlopen`),
 //! the entry-point-resolve spellings (`GetProcAddress`, `dlsym`), and
 //! the standard plugin entry-point names (`Plugin_Init`,
-//! `GetPluginInfo`, `GetExportTable`, `RegisterPlugin`, and kin) — and
-//! reads each body's dynamic-loading shape.
+//! `GetPluginInfo`, `GetExportTable`, `RegisterPlugin`, and the
+//! related spellings). It reads each body's dynamic-loading shape.
 //!
-//! A plugin architecture is the dynamic half of callback dispatch:
-//! where the other detectors read a table or registration inside one
-//! binary, this one reads a boundary that crosses binaries — a module
-//! loaded at run time, its entry points resolved by name, and a host
-//! API table (a struct of function pointers) handed into an entry
-//! point so the plugin can call back:
+//! A plugin architecture is the dynamic half of callback dispatch.
+//! The other detectors read a table or registration inside one
+//! binary; this detector reads a boundary that crosses binaries: a
+//! module loaded at run time, its entry points resolved by name, and
+//! a host API table (a struct of function pointers) handed into an
+//! entry point so the plugin can call back:
 //!
 //! ```c
 //! hMod = LoadLibrary("plugin.dll");
@@ -21,14 +21,15 @@
 //! Plugin_Init(&host_api);
 //! ```
 //!
-//! [`PluginDetector::detect`] runs the reading: a full load-and-resolve
-//! pair in one body is one finding at [`PLUGIN_CONFIDENCE`], a lone
-//! resolve call or a lone entry-point name without its partner is a
-//! fragment at [`PLUGIN_FRAGMENT_CONFIDENCE`], and a host API table
-//! passed into an entry point deepens the same finding rather than
-//! making a second one. A lone load call — a DLL pulled in for its
-//! exports, with no entry point resolved — says nothing about a plugin
-//! boundary and passes unrecorded.
+//! [`PluginDetector::detect`] runs the reading. A full
+//! load-and-resolve pair in one body is one finding at
+//! [`PLUGIN_CONFIDENCE`]. A lone resolve call or a lone entry-point
+//! name without its partner is a fragment at
+//! [`PLUGIN_FRAGMENT_CONFIDENCE`]. A host API table passed into an
+//! entry point deepens the same finding instead of making a second
+//! one. A lone load call — a DLL pulled in for its exports, with no
+//! entry point resolved — says nothing about a plugin boundary and is
+//! not recorded.
 
 use crate::callback_reg::{direct_calls, is_decompiler_minted, strip_to_identifier};
 use crate::types::PluginArchitecture;
@@ -42,23 +43,23 @@ use calxgloss_types::{CallSite, line_at};
 
 /// Plugin architecture detection over decompiled functions.
 ///
-/// The detector owns three name sets a scan reads bodies against: the
-/// module-load names, the entry-point-resolve names, and the plugin
-/// entry-point names — plain callee spellings, matched whole. The sets
-/// are configurable — supply them whole through
-/// [`with_names`](Self::with_names) or grow them one name at a time
-/// with [`add_load`](Self::add_load), [`add_resolve`](Self::add_resolve)
-/// and [`add_entry_point`](Self::add_entry_point) — and
+/// The detector owns three name sets a scan checks bodies against:
+/// the module-load names, the entry-point-resolve names, and the
+/// plugin entry-point names. All are plain callees, matched whole.
+/// The sets are configurable: supply them all at once through
+/// [`with_names`](Self::with_names), or add names one at a time with
+/// [`add_load`](Self::add_load), [`add_resolve`](Self::add_resolve)
+/// and [`add_entry_point`](Self::add_entry_point).
 /// [`loads`](Self::loads), [`resolves`](Self::resolves) and
 /// [`entry_points`](Self::entry_points) report them in configuration
 /// order, so two detectors built the same way scan identically and
 /// results diff cleanly. The standard sets ([`default_load_names`],
-/// [`default_resolve_names`], [`default_entry_point_names`]) name the
+/// [`default_resolve_names`], [`default_entry_point_names`]) hold the
 /// Win32 and POSIX loader spellings and the entry-point conventions
-/// binaries most often use; a program that loads or exports under
+/// most common in binaries. A program that loads or exports under
 /// different names configures those through
-/// [`with_names`](Self::with_names). The detector holds no engine
-/// client of its own and never writes back to the program; one
+/// [`with_names`](Self::with_names). The detector holds no scan
+/// source of its own and never writes back to the program. One
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -69,11 +70,11 @@ pub struct PluginDetector {
 }
 
 impl PluginDetector {
-    /// A detector with no names configured: every body it is handed
-    /// reads nothing until the standard sets arrive through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_load`](Self::add_load) and its
-    /// siblings.
+    /// A detector with no names configured. It finds nothing in any
+    /// body it is handed until the standard sets arrive through
+    /// [`with_default_names`](Self::with_default_names) or names are
+    /// added one at a time through [`add_load`](Self::add_load) and
+    /// its siblings.
     pub fn new() -> Self {
         Self::default()
     }
@@ -138,22 +139,23 @@ impl PluginDetector {
         &self.entry_points
     }
 
-    /// The plugin-architecture shape one function's body carries.
+    /// The plugin-architecture reading for one function's body.
     ///
-    /// The reading walks the body's direct calls in source order —
-    /// outside string literals, whole names only — and reports at most
-    /// one [`PluginArchitecture`] for the body: the first configured
-    /// load call, the first configured resolve call, and the first
-    /// configured entry-point call it sees. A load-and-resolve pair is
-    /// the full shape, kept at [`PLUGIN_CONFIDENCE`] with the load
-    /// call's line as evidence; a lone resolve call or a lone
-    /// entry-point name is a fragment, kept at
-    /// [`PLUGIN_FRAGMENT_CONFIDENCE`] with the lone call's line. The
-    /// first entry-point argument that names a plain identifier the
-    /// decompiler did not mint is read as the host API table and
-    /// deepens the same finding — it never makes a second one. A body
-    /// with only a load call, or with none of the configured names,
-    /// reports nothing, so two scans of one body diff cleanly.
+    /// The reading walks the body's direct calls in source order,
+    /// outside string literals, matching whole names only. It reports
+    /// at most one [`PluginArchitecture`] for the body, naming the
+    /// first configured load call, the first configured resolve call,
+    /// and the first configured entry-point call it sees. A
+    /// load-and-resolve pair is the full shape: kept at
+    /// [`PLUGIN_CONFIDENCE`] with the load call's line as evidence. A
+    /// lone resolve call or a lone entry-point name is a fragment,
+    /// kept at [`PLUGIN_FRAGMENT_CONFIDENCE`] with the lone call's
+    /// line. The first entry-point argument that names a plain
+    /// identifier the decompiler did not mint is read as the host API
+    /// table; it deepens the same finding and never makes a second
+    /// one. A body with only a load call, or with none of the
+    /// configured names, reports nothing, so two scans of one body
+    /// diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<PluginArchitecture> {
         let calls = direct_calls(&func.body);
         let mut load: Option<&CallSite> = None;
@@ -223,9 +225,9 @@ impl PluginDetector {
 const PLUGIN_CONFIDENCE: u8 = 70;
 
 /// Confidence of a fragment: a lone resolve call or a lone entry-point
-/// name half-sees the shape. The other half — the load, or the host
-/// side that resolved and called the entry point — is not in this
-/// body, so the claim is one rung weaker than the full pair.
+/// name shows only half the shape. The other half — the load, or the
+/// host side that resolved and called the entry point — is not in
+/// this body, so the claim scores one band below the full pair.
 const PLUGIN_FRAGMENT_CONFIDENCE: u8 = 60;
 
 /// The Rust pattern a plugin architecture suggests: a trait-object
@@ -234,12 +236,13 @@ const PLUGIN_FRAGMENT_CONFIDENCE: u8 = 60;
 /// a trait instead of opaque loader calls.
 const PLUGIN_SUGGESTION: &str = "Box<dyn Plugin> (loader crate)";
 
-/// The host API table an entry-point call's arguments carry: the first
-/// top-level argument that names a plain identifier once its cast and
-/// leading `&` are stripped. Decompiler-minted names (`local_10`,
-/// `param_2`, `uVar3`) name storage the decompiler invented, not a
-/// table the program named, and `NULL` hands nothing over, so they
-/// pass by; a literal or an unnamed expression names no table either.
+/// The host API table named by an entry-point call's arguments: the
+/// first top-level argument that names a plain identifier once its
+/// cast and leading `&` are stripped. Decompiler-minted names
+/// (`local_10`, `param_2`, `uVar3`) name storage the decompiler
+/// invented, not a table the program named. `NULL` hands nothing
+/// over. Those arguments are skipped; a literal or an unnamed
+/// expression names no table either.
 fn host_table_arg(args: &[&str]) -> Option<String> {
     args.iter()
         .copied()
@@ -253,9 +256,9 @@ fn host_table_arg(args: &[&str]) -> Option<String> {
 
 /// The standard module-load names: the Win32 spellings (`LoadLibrary`,
 /// `LoadLibraryEx`) and the POSIX one (`dlopen`) a scan recognizes as
-/// pulling a module in at run time. These are conventions, not laws: a
-/// program that loads under a different name configures it through
-/// [`PluginDetector::with_names`].
+/// pulling a module in at run time. These are conventions, not laws:
+/// a program that loads modules under a different name configures its
+/// own names through [`PluginDetector::with_names`].
 pub fn default_load_names() -> Vec<String> {
     ["LoadLibrary", "LoadLibraryEx", "dlopen"]
         .into_iter()
@@ -396,9 +399,10 @@ mod tests {
     #[test]
     fn a_load_and_resolve_pair_is_one_plugin_finding() {
         // The full load-and-resolve shape: the module load and the
-        // entry-point resolve in one body, at pattern confidence, with
-        // the loader call as evidence. The entry-point name inside
-        // GetProcAddress's literal argument is prose, not a call.
+        // entry-point resolve in one body, at the full-pair
+        // confidence, with the loader call's line as evidence. The
+        // entry-point name inside GetProcAddress's literal argument
+        // is prose, not a call.
         let record = one("\
   hMod = LoadLibrary(\"plugin.dll\");
   init = (code *)GetProcAddress(hMod, \"Plugin_Init\");");
@@ -425,8 +429,8 @@ mod tests {
 
     #[test]
     fn a_lone_resolve_call_is_a_fragment_finding() {
-        // A resolve with no visible load half-sees the shape: kept,
-        // but one rung weaker than the pair.
+        // A resolve call with no visible load shows only half the
+        // shape: kept, but one band below the pair.
         let record = one("  init = GetProcAddress(hMod, \"Plugin_Init\");");
         assert_eq!(record.load, None);
         assert_eq!(record.resolve.as_deref(), Some("GetProcAddress"));
@@ -439,9 +443,9 @@ mod tests {
 
     #[test]
     fn a_lone_entry_point_name_is_a_fragment_finding() {
-        // A direct call to a configured entry-point name with no
-        // loader shape in sight is the plugin boundary half-seen from
-        // the call side.
+        // A direct call to a configured entry-point name, with no
+        // loader calls in the body, shows the plugin boundary from the
+        // call side alone.
         let record = one("  Plugin_Init(&host_api);");
         assert_eq!(record.load, None);
         assert_eq!(record.resolve, None);
@@ -461,8 +465,8 @@ mod tests {
     #[test]
     fn a_resolve_and_entry_point_without_a_load_stay_a_fragment() {
         // Both halves of the resolve side are visible but the load is
-        // not, so the full shape is still not claimed; the earlier
-        // lone call carries the evidence.
+        // not, so the full shape is not claimed. The evidence is the
+        // earlier of the two lone calls.
         let record = one("\
   init = GetProcAddress(hMod, \"Plugin_Init\");
   Plugin_Init(&host_api);");
@@ -479,8 +483,8 @@ mod tests {
     #[test]
     fn a_host_api_table_deepens_the_finding_rather_than_making_a_second() {
         // The full shape plus the entry-point call plus the host API
-        // table it is handed: one finding, deepened — the entry point
-        // and the table land in the same record, and the evidence
+        // table handed into it: one deepened finding. The entry point
+        // and the table go into the same record, and the evidence
         // stays the loader call.
         let record = one("\
   hMod = LoadLibrary(\"plugin.dll\");
@@ -504,9 +508,9 @@ mod tests {
 
     #[test]
     fn two_loader_pairs_in_one_body_make_one_finding() {
-        // The body either carries a plugin architecture or it does
-        // not: the first pair's spellings and load line are the
-        // record, and a second module loaded in the same body deepens
+        // A body either has a plugin architecture or it does not: the
+        // record keeps the first pair's spellings and the first load
+        // line, and a second module loaded in the same body adds
         // nothing and duplicates nothing.
         let record = one("\
   hMod1 = LoadLibrary(\"a.dll\");
@@ -559,9 +563,9 @@ mod tests {
 
     #[test]
     fn a_detector_with_no_names_reports_nothing() {
-        // The engine's default sets are what makes these names match;
-        // a bare detector reads even the fullest shape as ordinary
-        // calls.
+        // The standard default sets are what make these names match:
+        // a bare detector, with no names configured, reads even the
+        // fullest shape as ordinary calls.
         let detector = PluginDetector::new();
         let func = function(
             "\
@@ -574,8 +578,8 @@ mod tests {
 
     #[test]
     fn custom_names_match_like_the_standard_ones() {
-        // A program that loads and exports under project spellings
-        // configures them and reads the same.
+        // A program that uses its own spellings for loading and
+        // exporting configures them and gets the same reading.
         let detector = PluginDetector::with_names(["OpenModule"], ["BindEntry"], ["InitPlugin"]);
         let func = function(
             "\
@@ -604,7 +608,8 @@ mod tests {
     #[test]
     fn a_decompiler_minted_entry_point_argument_names_no_table() {
         // `param_1` is the decompiler's own storage name: the entry
-        // point is still half-seen, but no table is claimed for it.
+        // point is still recorded as a fragment, but no table is
+        // claimed for it.
         let record = one("  Plugin_Init(param_1);");
         assert_eq!(record.entry_point.as_deref(), Some("Plugin_Init"));
         assert_eq!(record.host_table, None);

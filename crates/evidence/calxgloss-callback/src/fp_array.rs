@@ -1,22 +1,23 @@
 //! Function-pointer array detection.
 //!
-//! This module provides [`FpArrayDetector`], which carries the table
-//! names a scan reads decompiled bodies against — the handler-array
-//! spellings a program keeps its dispatch in, `handlers` and
-//! `callback_table` and their kin — and reads each indexed indirect
-//! call as a call through an array of function pointers.
+//! This module provides [`FpArrayDetector`]. The detector holds the
+//! table names a scan checks decompiled bodies against: the
+//! handler-array spellings where a program keeps its dispatch, like
+//! `handlers` and `callback_table` and the spellings related to them.
+//! It reads each indexed indirect call as a call through an array of
+//! function pointers.
 //!
 //! The decompiler renders a call through a function-pointer array element
 //! into one of three shapes: the bare indexed call `handlers[i](args)`
 //! when the array's element type is known, the dereference
 //! `(*handlers[i])(args)` when it is not, and the cast dereference
-//! `(*(int (**)(int))handlers[i])(args)` when the call site carries an
+//! `(*(int (**)(int))handlers[i])(args)` when the call site has an
 //! explicit function-pointer cast. All three read the same way here:
 //! a configured table name, indexed, called.
 //!
 //! [`FpArrayDetector::detect`] runs the reading: it walks a decompiled
 //! body's indexed calls in source order and emits one [`FpArrayCall`]
-//! per call site — a table call needs no pairing to complete the
+//! per call site. A table call needs no pairing to complete the
 //! picture, so one call is a whole finding.
 
 use crate::types::FpArrayCall;
@@ -30,17 +31,18 @@ use calxgloss_types::{closing_paren, is_ident_byte, line_at, skip_string, skip_w
 
 /// Function-pointer array detection over decompiled functions.
 ///
-/// The detector owns the table-name set a scan reads bodies against:
-/// plain identifier spellings, matched whole. The set is configurable
-/// — supply it whole through [`with_names`](Self::with_names) or grow
-/// it one name at a time with [`add_name`](Self::add_name) — and
-/// [`names`](Self::names) reports it in configuration order, so two
-/// detectors built the same way scan identically and results diff
-/// cleanly. The standard set ([`default_fp_array_tables`]) names the
-/// handler-array spellings decompiled binaries most often use; a
-/// program that files its dispatch under a different name configures
-/// it through [`with_names`](Self::with_names). The detector holds no
-/// scan source of its own and never writes back to the program; one
+/// The detector owns the set of table names a scan checks bodies
+/// against. Names are plain identifiers, matched whole. The set is
+/// configurable: supply it all at once through
+/// [`with_names`](Self::with_names), or add names one at a time with
+/// [`add_name`](Self::add_name). [`names`](Self::names) reports it in
+/// configuration order, so two detectors built the same way scan
+/// identically and results diff cleanly. The standard set
+/// ([`default_fp_array_tables`]) holds the handler-array spellings
+/// most common in decompiled binaries. A program that names its
+/// dispatch table differently configures its own names through
+/// [`with_names`](Self::with_names). The detector holds no scan
+/// source of its own and never writes back to the program. One
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -49,10 +51,10 @@ pub struct FpArrayDetector {
 }
 
 impl FpArrayDetector {
-    /// A detector with no names configured: every body it is handed
-    /// reads nothing until the standard set arrives through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_name`](Self::add_name).
+    /// A detector with no names configured. It finds nothing in any
+    /// body it is handed until the standard set arrives through
+    /// [`with_default_names`](Self::with_default_names) or names are
+    /// added one at a time through [`add_name`](Self::add_name).
     pub fn new() -> Self {
         Self::default()
     }
@@ -81,17 +83,18 @@ impl FpArrayDetector {
         &self.names
     }
 
-    /// The function-pointer array calls one function's body carries.
+    /// The function-pointer array calls found in one function's body.
     ///
     /// The reading walks the body's indexed indirect calls in source
-    /// order — outside string literals, whole names only, through the
-    /// bare `table[i](args)`, dereference `(*table[i])(args)`, and
-    /// cast-dereference `(*(cast)table[i])(args)` shapes — and
-    /// reports every call through a configured table name as one
-    /// [`FpArrayCall`]: the table is the name as written, the
-    /// suggestion the boxed-closure array the elements read as, and
-    /// the evidence the call's own line. Findings come back in call
-    /// order, so two scans of one body diff cleanly.
+    /// order, outside string literals, matching whole names only. It
+    /// reads the bare `table[i](args)`, dereference
+    /// `(*table[i])(args)`, and cast-dereference
+    /// `(*(cast)table[i])(args)` shapes, and reports every call
+    /// through a configured table name as one [`FpArrayCall`]: the
+    /// table is the name as written, the suggestion is the
+    /// boxed-closure array the elements read as, and the evidence is
+    /// the call's own line. Findings come back in call order, so two
+    /// scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<FpArrayCall> {
         let mut calls = Vec::new();
         for site in indexed_calls(&func.body, &self.names) {
@@ -118,28 +121,30 @@ impl FpArrayDetector {
 const FP_ARRAY_CONFIDENCE: u8 = 70;
 
 /// The Rust pattern a function-pointer array call suggests: an array
-/// of boxed closures, so the handler table survives translation as
-/// data the compiler can check instead of an opaque indirect call.
+/// of boxed closures, so the translated code keeps the handler table
+/// as data the compiler can check, instead of an opaque indirect
+/// call.
 const FP_ARRAY_SUGGESTION: &str = "Vec<Box<dyn Fn(...)>>";
 
-/// An indexed indirect call found in a body: the table name and the
-/// byte offset of the table name.
+/// An indexed indirect call found in a body: its table name, and the
+/// byte offset where that name starts.
 struct IndexedCallSite<'a> {
     table: &'a str,
     offset: usize,
 }
 
 /// Every indexed indirect call `table[...]` in the body whose table
-/// name is configured, scanned outside string literals so a stray
-/// name in a format string cannot be read as a call. A name preceded
-/// by an identifier byte is the tail of a longer identifier, and one
-/// preceded by `:` is a qualified name the decompiler resolved to a
-/// different symbol; neither matches a plain table — a table reached
-/// through an object (`obj.handlers[i]`, `p->callbacks[i]`) does, the
-/// same table spelled through a field. The call must actually be
-/// called: the indexed read `x = handlers[i];` stores a pointer and
-/// says nothing about dispatch. A call whose brackets or argument
-/// list never close — a truncated decompile — yields nothing.
+/// name is configured. The scan skips string literals, so a stray
+/// name in a format string cannot be read as a call. A name with an
+/// identifier byte in front of it is the tail of a longer
+/// identifier. A name with `:` in front of it is a qualified name the
+/// decompiler resolved to a different symbol. Neither matches a plain
+/// table name. A table reached through an object (`obj.handlers[i]`,
+/// `p->callbacks[i]`) does match: it is the same table, spelled
+/// through a field. The call must actually be called: the indexed
+/// read `x = handlers[i];` stores a pointer and says nothing about
+/// dispatch. A call whose brackets or argument list never close — a
+/// truncated decompile — yields nothing.
 fn indexed_calls<'a>(body: &'a str, names: &[String]) -> Vec<IndexedCallSite<'a>> {
     let bytes = body.as_bytes();
     let mut calls = Vec::new();
@@ -184,7 +189,7 @@ fn indexed_calls<'a>(body: &'a str, names: &[String]) -> Vec<IndexedCallSite<'a>
 /// The bare shape `table[i](args)` puts the `(` straight after the
 /// `]`. The dereference and cast shapes wrap the read — `(*table[i])`
 /// and `(*(cast)table[i])`, however the table itself is reached
-/// (`p->handlers[i]`) — so the `(` follows the wrapping `)`: the `)`
+/// (`p->handlers[i]`) — so the `(` follows the wrapping `)`. The `)`
 /// after the `]` must close a parenthesis whose contents start with
 /// `*`, and the call's `(` follows it. A read that is not called — an
 /// assignment or a comparison — has no such `(` and returns `None`.
@@ -257,13 +262,14 @@ fn matching_open_paren_back(bytes: &[u8], close: usize) -> Option<usize> {
 // The standard name set
 // ============================================================
 
-/// The standard table names: the handler-array spellings a scan
-/// recognizes as function-pointer tables out of the box — the
-/// `handlers` family and the `callbacks` family, the plain `dispatch`
-/// and `funcs` spellings, and the `fn_table` and `events` spellings a
-/// message loop or event system keeps its targets in. These are
-/// conventions, not laws: a program that files its dispatch under a
-/// different name configures it through [`FpArrayDetector::with_names`].
+/// The standard table names: the handler-array spellings the scan
+/// recognizes as function-pointer tables without any configuration —
+/// the `handlers` family and the `callbacks` family, the plain
+/// `dispatch` and `funcs` spellings, and the `fn_table` and `events`
+/// spellings a message loop or event system keeps its targets in.
+/// These are conventions, not laws: a program that names its dispatch
+/// table differently configures its own names through
+/// [`FpArrayDetector::with_names`].
 pub fn default_fp_array_tables() -> Vec<String> {
     [
         "handlers",
@@ -468,8 +474,8 @@ mod tests {
 
     #[test]
     fn a_truncated_body_detects_nothing() {
-        // An unclosed bracket or argument list is a partial decompile;
-        // nothing can be said about the call it was reaching for.
+        // An unclosed bracket or argument list is a partial decompile,
+        // so nothing can be said about the intended call.
         assert!(detect("  (*(int (**)(int))handlers[uVar1])(param_1;").is_empty());
         assert!(detect("  (*handlers[uVar1])(param_1").is_empty());
     }
@@ -483,8 +489,8 @@ mod tests {
 
     #[test]
     fn custom_names_behave_like_the_standard_ones() {
-        // The name set is swappable whole: a program that files its
-        // dispatch under its own spelling scans the same way.
+        // The name set is replaced whole: a program that uses its own
+        // spelling for its dispatch table scans the same way.
         let detector = FpArrayDetector::with_names(["msg_table"]);
         let calls = detector.detect(&function("  (*(code *)msg_table[uVar1])(param_1);"));
         assert_eq!(calls.len(), 1);

@@ -4,7 +4,7 @@
 //! cover on their own:
 //!
 //! - **Scan to disk** — [`CallbackEngine`] scans a canned program, the
-//!   [`CallbackPersistor`] files the result in the workspace layout, and
+//!   [`CallbackPersistor`] saves the result in the workspace layout, and
 //!   loading it back yields the same result the scan returned.
 //! - **Consumption** — the loaded result answers the lookups a
 //!   translation pipeline makes (the findings recorded for one
@@ -16,9 +16,9 @@
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //! - **Signature enrichment** — a contract rendered from an injected
-//!   [`SignatureMap`] at scan time rides the finding through the
-//!   persisted document into the prompt data unchanged, and a scan
-//!   without the map keeps the open `(...)` suggestion.
+//!   [`SignatureMap`] at scan time is recorded on the finding, saved
+//!   through the persisted document into the prompt data unchanged, and
+//!   a scan without the map keeps the open `(...)` suggestion.
 //!
 //! The fake program implements [`ScanSource`], so the whole flow runs
 //! without an external server.
@@ -54,12 +54,12 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
-/// A canned program implementing [`ScanSource`]: one function whose
-/// body carries a cast-dereference call through `handlers`, a bare
-/// indexed call through `dispatch`, a `register_callback` call, a
+/// A canned program implementing [`ScanSource`]. One function's body
+/// contains a cast-dereference call through `handlers`, a bare indexed
+/// call through `dispatch`, a `register_callback` call, a
 /// bounds-checked switch-table dispatch, and a load-and-resolve plugin
-/// shape with a host API table, and one plain function that finds
-/// nothing.
+/// shape with a host API table. One plain function has no shapes to
+/// find.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -202,8 +202,9 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 async fn the_persisted_document_keeps_findings_in_scan_order() {
     // The detectors read disjoint shapes in one pass, so what reaches
     // disk is function by function in listing order and, within one
-    // function, the call order the body carries — the order two scans
-    // diff against.
+    // function, grouped by detector: the fp-array calls, the
+    // registrations, the jump tables, and the plugin shapes, in that
+    // order — the order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = CallbackEngine::with_source(program())
         .scan("eqmain.dll")
@@ -247,7 +248,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was found for the function it is about to
-    // translate; the plain function carries nothing.
+    // translate; the plain function has no findings.
     let findings: Vec<&CallbackFinding> = loaded.for_function("FUN_18003ab00").collect();
     assert_eq!(findings.len(), 5);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
@@ -311,7 +312,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     // The whole escalate path, no external server needed: the fixture
     // document on disk answers the per-function lookup, the findings
     // render into `CallbackInfo` prompt data, and the rendered escalate
-    // prompt carries the CALLBACKS section with each finding's
+    // prompt includes the CALLBACKS section with each finding's
     // suggestion, kind, confidence, and evidence.
     let workspace = TempDir::new().unwrap();
     let result = CallbackEngine::with_source(program())
@@ -368,7 +369,7 @@ async fn a_rescan_replaces_the_cached_document() {
         .expect("first scan");
     persistor.save(&first).expect("save");
 
-    // A second scan of a program whose only function carries no shape
+    // A second scan of a program whose only function has no shape
     // replaces the document: the cache check still passes, but the
     // findings are gone.
     let mut quiet = FakeProgram::empty();
@@ -433,8 +434,8 @@ async fn results_for_two_binaries_stay_independent() {
 async fn chain_findings_survive_the_scan_persist_and_prompt_walk() {
     // The callback lifecycle across two functions: one hands
     // `my_handler` to `register_callback`, the other calls it by
-    // name. The chain rides the tagged union to disk and back, and
-    // renders into the escalate prompt through the usual accessors.
+    // name. The chain is saved in the tagged union, loaded back, and
+    // rendered into the escalate prompt through the usual accessors.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(
@@ -484,7 +485,7 @@ async fn chain_findings_survive_the_scan_persist_and_prompt_walk() {
     assert!(record.evidence.contains("my_handler(param_1);"));
     assert!(chains[0].target().contains("my_handler"));
 
-    // The cross-function finding lands after the per-function
+    // The cross-function finding is ordered after the per-function
     // findings, so the persisted document stays diffable.
     let order: Vec<(&str, &str)> = loaded
         .findings
@@ -533,10 +534,10 @@ async fn chain_findings_survive_the_scan_persist_and_prompt_walk() {
 
 #[tokio::test]
 async fn event_system_findings_survive_the_scan_persist_and_prompt_walk() {
-    // The event architecture across three functions: two hand
+    // The event architecture across three functions: two pass
     // handlers to `register_callback`, a third dispatches through a
-    // table. The reconstructed observer rides the tagged union to
-    // disk and back, and renders into the escalate prompt through the
+    // table. The reconstructed observer is saved in the tagged union,
+    // loaded back, and rendered into the escalate prompt through the
     // usual accessors.
     let mut program = FakeProgram::empty();
     program.listing = vec![
@@ -585,8 +586,9 @@ async fn event_system_findings_survive_the_scan_persist_and_prompt_walk() {
         .collect();
     assert_eq!(events.len(), 1, "one event system per registration point");
 
-    // The record keeps the point, the handlers, and the dispatchers
-    // through the round trip, at the reconstruction's own confidence.
+    // The record keeps the registration point, the handlers, and the
+    // dispatcher functions through the round trip, at the
+    // reconstruction's own confidence.
     let CallbackFinding::EventSystem(record) = events[0] else {
         unreachable!("the register-crowd-plus-dispatch shape reads as an event_system finding");
     };
@@ -599,7 +601,7 @@ async fn event_system_findings_survive_the_scan_persist_and_prompt_walk() {
     assert!(record.evidence.contains("handlers[uVar1](param_1);"));
     assert!(events[0].target().contains("register_callback"));
 
-    // The cross-function finding lands after the per-function
+    // The cross-function finding is ordered after the per-function
     // findings, so the persisted document stays diffable.
     let order: Vec<(&str, &str)> = loaded
         .findings
@@ -650,10 +652,11 @@ async fn event_system_findings_survive_the_scan_persist_and_prompt_walk() {
 
 #[tokio::test]
 async fn enriched_suggestions_survive_the_scan_persist_and_prompt_walk() {
-    // The enrichment is scan-time, not prompt-time: the contract an
-    // injected signature map renders rides the registration and the
-    // chain into the persisted document and reaches the escalate
-    // prompt as the same string the CLI report prints.
+    // The enrichment is scan-time, not prompt-time: the contract
+    // rendered from an injected signature map is recorded on the
+    // registration and on the chain, saved into the persisted
+    // document, and reaches the escalate prompt as the same string the
+    // CLI report prints.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(

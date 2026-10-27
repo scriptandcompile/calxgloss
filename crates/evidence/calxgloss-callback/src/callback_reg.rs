@@ -1,23 +1,23 @@
 //! Callback registration detection.
 //!
-//! This module provides [`CallbackRegDetector`], which carries the
-//! registration call names a scan reads decompiled bodies against —
-//! the `register_callback` and `set_on_message` spellings a program
-//! uses to hand a handler to a dispatcher — and reads each recognized
-//! call with its callback argument bound.
+//! This module provides [`CallbackRegDetector`]. The detector holds
+//! the registration call names a scan checks decompiled bodies
+//! against: the `register_callback` and `set_on_message` spellings a
+//! program uses to hand a handler to a dispatcher. It reports each
+//! recognized call whose callback argument names a handler.
 //!
-//! A registration call is the explicit half of callback dispatch:
-//! where the fp-array detector reads a table being called, this one
-//! reads a handler being *given away* — `register_callback(my_handler)`
-//! says a function reference crosses a boundary the Rust translation
-//! must keep as a first-class closure.
+//! A registration call is the explicit half of callback dispatch.
+//! The fp-array detector reads a table being called; this detector
+//! reads a handler being *given away*. `register_callback(my_handler)`
+//! says a function reference crosses a boundary that the Rust
+//! translation must keep as a first-class closure.
 //!
 //! [`CallbackRegDetector::detect`] runs the reading: it walks a
 //! decompiled body's direct calls in source order and emits one
 //! [`CallbackRegistration`] per recognized call that names its
-//! callback — a registration whose callback argument is a literal or
+//! callback. A registration whose callback argument is a literal or
 //! an unnamed expression says nothing a prompt could act on, so it
-//! passes unrecorded.
+//! is not recorded.
 
 use crate::types::CallbackRegistration;
 use calxgloss_decomp::DecompiledFunction;
@@ -27,13 +27,14 @@ use calxgloss_types::{
     skip_string, skip_ws,
 };
 
-/// The scan: plain-identifier callees, qualified tails and member
-/// accesses skipped, and C keywords are not calls. The registration
-/// read re-derives the argument text itself, so the scan's arguments
-/// go unused.
+/// Options for the shared direct-call scan: the callee must be a
+/// plain identifier, so qualified tails and member accesses are
+/// skipped, and C keywords are not treated as calls. The
+/// registration reading parses the argument text itself, so the
+/// arguments this scan captures go unused.
 ///
-/// Shared with the plugin detector, which reads the same direct-call
-/// shape for its loader pairs and entry-point calls.
+/// The plugin detector shares this scan: it reads the same direct
+/// calls to find its loader pairs and entry-point calls.
 pub(crate) const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>:",
@@ -52,29 +53,30 @@ pub(crate) fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 
 /// Callback registration detection over decompiled functions.
 ///
-/// The detector owns the registration-name set a scan reads bodies
-/// against: plain callee spellings, matched whole. The set is
-/// configurable — supply it whole through [`with_names`](Self::with_names)
-/// or grow it one name at a time with [`add_name`](Self::add_name) —
-/// and [`names`](Self::names) reports it in configuration order, so
-/// two detectors built the same way scan identically and results diff
-/// cleanly. The standard set ([`default_registration_names`]) names
-/// the snake-case and Win32-style spellings decompiled binaries most
-/// often use; a program that registers under a different name
-/// configures it through [`with_names`](Self::with_names). The
-/// detector holds no scan source of its own and never writes back
-/// to the program; one detector serves an entire scan and can be
-/// shared by reference across concurrent per-function passes.
+/// The detector owns the set of registration names a scan checks
+/// bodies against. Names are plain callees, matched whole. The set is
+/// configurable: supply it all at once through
+/// [`with_names`](Self::with_names), or add names one at a time with
+/// [`add_name`](Self::add_name). [`names`](Self::names) reports it in
+/// configuration order, so two detectors built the same way scan
+/// identically and results diff cleanly. The standard set
+/// ([`default_registration_names`]) holds the snake-case and
+/// Win32-style spellings most common in decompiled binaries. A
+/// program that registers callbacks under a different name configures
+/// its own names through [`with_names`](Self::with_names). The
+/// detector holds no scan source of its own and never writes back to
+/// the program. One detector serves an entire scan and can be shared
+/// by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallbackRegDetector {
     names: Vec<String>,
 }
 
 impl CallbackRegDetector {
-    /// A detector with no names configured: every body it is handed
-    /// reads nothing until the standard set arrives through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_name`](Self::add_name).
+    /// A detector with no names configured. It finds nothing in any
+    /// body it is handed until the standard set arrives through
+    /// [`with_default_names`](Self::with_default_names) or names are
+    /// added one at a time through [`add_name`](Self::add_name).
     pub fn new() -> Self {
         Self::default()
     }
@@ -103,19 +105,19 @@ impl CallbackRegDetector {
         &self.names
     }
 
-    /// The callback registrations one function's body carries.
+    /// The callback registrations found in one function's body.
     ///
-    /// The reading walks the body's direct calls in source order —
-    /// outside string literals, whole names only — and reports every
-    /// call to a configured registration name whose callback argument
-    /// names a function as one [`CallbackRegistration`]: the
-    /// registration is the callee spelling, the callback the argument
-    /// with its cast and address-of stripped, the suggestion the
-    /// stored closure the boundary reads as, and the evidence the
-    /// call's own line. A call whose callback argument is a literal,
-    /// a decompiler temporary, or an unnamed expression binds nothing
-    /// and passes unrecorded. Findings come back in call order, so
-    /// two scans of one body diff cleanly.
+    /// The reading walks the body's direct calls in source order,
+    /// outside string literals, matching whole names only. It reports
+    /// every call to a configured registration name whose callback
+    /// argument names a function as one [`CallbackRegistration`]: the
+    /// registration is the callee spelling, the callback is the
+    /// argument with its cast and address-of stripped, the suggestion
+    /// is the stored closure the boundary reads as, and the evidence
+    /// is the call's own line. A call whose callback argument is a
+    /// literal, a decompiler temporary, or an unnamed expression
+    /// binds nothing and is not recorded. Findings come back in call
+    /// order, so two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<CallbackRegistration> {
         self.detect_sites(func)
             .into_iter()
@@ -128,12 +130,12 @@ impl CallbackRegDetector {
     /// call's arguments spell, in argument order, bound callback
     /// included.
     ///
-    /// The cross-function pass reads through this so a table handed
+    /// The cross-function pass reads through this. A table handed
     /// over at a registration site — `register_callback(&handler_table,
     /// on_message)` naming `handler_table` beside its handler — is
-    /// matched against a partner body's table calls without a second
-    /// walk or a second argument parse: the two readings cannot
-    /// disagree about what a registration site names.
+    /// then matched against a partner body's table calls with no
+    /// second walk and no second argument parse. The two readings
+    /// cannot disagree about what a registration site names.
     pub(crate) fn detect_sites(&self, func: &DecompiledFunction) -> Vec<RegistrationSite> {
         let mut registrations = Vec::new();
         for call in direct_calls(&func.body) {
@@ -175,10 +177,10 @@ pub(crate) struct RegistrationSite {
     /// The registration finding the per-body reading reports.
     pub(crate) record: CallbackRegistration,
     /// Every top-level argument that strips to a plain identifier, in
-    /// argument order — the bound callback among them. A decompiler-
-    /// minted name is kept: it names storage, and the cross-function
-    /// pass only matches against configured table names it could never
-    /// collide with.
+    /// argument order — the bound callback among them. A
+    /// decompiler-minted name is kept: it names storage. The
+    /// cross-function pass only matches against configured table
+    /// names, which it can never collide with.
     pub(crate) named: Vec<String>,
 }
 
@@ -205,13 +207,15 @@ fn argument_open(body: &str, after_callee: usize) -> Option<usize> {
     (bytes.get(open) == Some(&b'(')).then_some(open)
 }
 
-/// The plain identifiers a registration call's arguments spell: each
-/// top-level argument read as a candidate name — `(callback_t)handler`
-/// and `&handler` name the same handler the bare spelling does — with
-/// the ones that are not bare identifiers dropped.
+/// The plain identifiers named by a registration call's arguments.
+/// Each top-level argument is read as a candidate name:
+/// `(callback_t)handler` and `&handler` name the same handler as the
+/// bare spelling. Arguments that are not bare identifiers are
+/// dropped.
 ///
-/// [`bound_callback`] picks the callback from these; the cross-function
-/// pass reads the whole list to match a table named at the site.
+/// The registration reading picks the callback from these; the
+/// cross-function pass reads the whole list to match a table named at
+/// the site.
 fn argument_names(args: &str) -> Vec<String> {
     top_level_args(args)
         .into_iter()
@@ -316,12 +320,13 @@ pub(crate) fn is_decompiler_minted(name: &str) -> bool {
 // The standard name set
 // ============================================================
 
-/// The standard registration names: the spellings a scan recognizes
-/// as callback registrations out of the box — the snake-case
-/// `register_*` and `set_*` spellings a C codebase writes by hand and
-/// the PascalCase `Set*` spellings a Win32-flavored codebase exports.
-/// These are conventions, not laws: a program that registers under a
-/// different name configures it through [`CallbackRegDetector::with_names`].
+/// The standard registration names: the spellings the scan
+/// recognizes as callback registrations without any configuration —
+/// the snake-case `register_*` and `set_*` spellings a C codebase
+/// writes by hand, and the PascalCase `Set*` spellings a
+/// Win32-flavored codebase exports. These are conventions, not laws:
+/// a program that registers under a different name configures its
+/// own names through [`CallbackRegDetector::with_names`].
 pub fn default_registration_names() -> Vec<String> {
     [
         "register_callback",
@@ -454,8 +459,9 @@ mod tests {
 
     #[test]
     fn a_leading_object_argument_does_not_steal_the_binding() {
-        // `set_on_message(this, handler)` hands the receiver first;
-        // the handler is the argument that names a function.
+        // `set_on_message(this, handler)` passes the receiver as the
+        // first argument; the handler is the argument that names a
+        // function.
         let registrations = detect("  set_on_message(this,msg_handler);");
         assert_eq!(registrations.len(), 1);
         assert_eq!(registrations[0].callback, "msg_handler");
@@ -549,8 +555,8 @@ mod tests {
 
     #[test]
     fn custom_names_behave_like_the_standard_ones() {
-        // The name set is swappable whole: a program that registers
-        // under its own spelling scans the same way.
+        // The name set is replaced whole: a program that registers
+        // under its own name scans the same way.
         let detector = CallbackRegDetector::with_names(["HookMessage"]);
         let registrations = detector.detect(&function("  HookMessage(wnd_proc);"));
         assert_eq!(registrations.len(), 1);

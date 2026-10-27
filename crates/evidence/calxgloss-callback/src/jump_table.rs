@@ -1,14 +1,15 @@
 //! Jump-table dispatch detection.
 //!
-//! This module provides [`JumpTableDetector`], which carries the
-//! data-symbol prefixes that mark an unnamed dispatch table — Ghidra's
-//! `DAT_`, `LAB_` and `switchD` spellings — and reads each indexed
-//! indirect call through one as a jump-table dispatch.
+//! This module provides [`JumpTableDetector`]. It holds the data-symbol
+//! prefixes that mark an unnamed dispatch table — Ghidra's `DAT_`,
+//! `LAB_` and `switchD` spellings — and records each indexed indirect
+//! call through such a table as a jump-table dispatch.
 //!
-//! A jump table is the implicit half of callback dispatch: where the
-//! fp-array detector reads a *named* table being called, this one reads
-//! a table the decompiler could not name — the callee is a minted data
-//! symbol indexed by a variable and called through a code cast:
+//! A jump table is callback dispatch with no name to point at. The
+//! fp-array detector finds calls through a *named* table; this detector
+//! finds calls through a table the decompiler could not name. The
+//! callee there is a decompiler-minted data symbol, indexed by a
+//! variable and called through a code cast:
 //!
 //! ```c
 //! if (index < 4) {
@@ -17,13 +18,13 @@
 //! (*(code *)(DAT_18011711c + index * 8))(a, b);
 //! ```
 //!
-//! [`JumpTableDetector::detect`] runs the reading: it reports each such
-//! call (and the `switch(&switchD_*)[index]` header form) once per table
-//! symbol, sizing the table from a bounds check on the index
+//! [`JumpTableDetector::detect`] does the reading. It reports each such
+//! call — and the `switch(&switchD_*)[index]` header form — once per
+//! table symbol. It sizes the table from a bounds check on the index
 //! (`idx < N` → N entries, `idx <= N` → N + 1) or from the number of
 //! `SYM_caseD_*` labels the decompiler emitted. A table with a known
-//! size below [`MIN_TARGETS`] is an ordinary small branch, not a
-//! dispatch, and passes unrecorded.
+//! size below [`MIN_TARGETS`] entries is an ordinary small branch, not
+//! a dispatch, and is not recorded.
 
 use crate::types::JumpTable;
 use calxgloss_decomp::DecompiledFunction;
@@ -35,27 +36,27 @@ use calxgloss_types::skip_literal;
 
 /// Jump-table dispatch detection over decompiled functions.
 ///
-/// The detector owns the data-symbol prefix set a scan reads bodies
-/// against: a table symbol counts when it starts with one of the
+/// The detector keeps the set of data-symbol prefixes a scan reads
+/// bodies against: a table symbol counts when it starts with one of the
 /// configured prefixes. The set is configurable — supply it whole
-/// through [`with_prefixes`](Self::with_prefixes) or grow it one prefix
-/// at a time with [`add_prefix`](Self::add_prefix) — and
+/// through [`with_prefixes`](Self::with_prefixes) or add prefixes one at
+/// a time with [`add_prefix`](Self::add_prefix) — and
 /// [`prefixes`](Self::prefixes) reports it in configuration order. The
 /// standard set ([`default_table_prefixes`]) covers Ghidra's minted
-/// spellings; a binary whose tables carry project names configures
-/// those instead. The detector holds no scan source of its own and
-/// never writes back to the program; one detector serves an entire
-/// scan.
+/// spellings; a binary whose tables have project names configures those
+/// instead. The detector holds no scan source of its own and never
+/// writes back to the program; one detector serves an entire scan.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JumpTableDetector {
     prefixes: Vec<String>,
 }
 
 impl JumpTableDetector {
-    /// A detector with no prefixes configured: every body it is handed
-    /// reads nothing until the standard set arrives through
-    /// [`with_default_prefixes`](Self::with_default_prefixes) or
-    /// prefixes join one at a time through [`add_prefix`](Self::add_prefix).
+    /// A detector with no prefixes configured. Every body it is handed
+    /// finds nothing until the standard set is configured through
+    /// [`with_default_prefixes`](Self::with_default_prefixes), or
+    /// prefixes are added one at a time through
+    /// [`add_prefix`](Self::add_prefix).
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,19 +85,20 @@ impl JumpTableDetector {
         &self.prefixes
     }
 
-    /// The jump-table dispatches one function's body carries.
+    /// The jump-table dispatch findings for one function's body.
     ///
-    /// The reading walks the body line by line and reports each
-    /// indexed indirect call whose callee starts with `*` and names a
-    /// configured-prefix data symbol — plus the
-    /// `switch(&SYM)[index]` header form — once per table symbol, in
-    /// first-call order. The table is sized from a bounds check on the
-    /// index or from `SYM_caseD_*` label counts; a sized table below
-    /// [`MIN_TARGETS`] entries is a branch, not a dispatch, and passes
-    /// unrecorded. A sized table reads at [`JUMP_TABLE_CONFIDENCE`]
-    /// with an exact-size suggestion; an unsized one still reports, at
-    /// [`UNSIZED_TABLE_CONFIDENCE`], because the indexed code call itself is
-    /// the evidence.
+    /// The reading walks the body line by line. It reports each indexed
+    /// indirect call whose callee starts with `*` and names a data
+    /// symbol with a configured prefix, plus the `switch(&SYM)[index]`
+    /// header form, once per table symbol at its first call; the
+    /// findings come in that order. The table is sized from a bounds
+    /// check on the index or from `SYM_caseD_*` label counts. A sized
+    /// table below [`MIN_TARGETS`] entries is a branch, not a dispatch,
+    /// and is not recorded. A sized table is reported at
+    /// [`JUMP_TABLE_CONFIDENCE`] with an exact-size suggestion; an
+    /// unsized table is still reported, at
+    /// [`UNSIZED_TABLE_CONFIDENCE`], because the indexed code call is
+    /// itself the evidence.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<JumpTable> {
         let mut tables = Vec::new();
         let mut seen: Vec<&str> = Vec::new();
@@ -276,8 +278,9 @@ fn bracket_index_at(haystack: &str, open: usize) -> Option<String> {
     None
 }
 
-/// Size the table: the count of distinct `SYM_caseD_*` labels the
-/// decompiler emitted, else a bounds check on the index variable.
+/// Work out the table's size: use the count of distinct `SYM_caseD_*`
+/// labels the decompiler emitted, or else a bounds check on the index
+/// variable.
 fn target_count(body: &str, symbol: &str, index: &str) -> Option<usize> {
     // Switch tables: the decompiler emits one `SYM_caseD_x` label per
     // entry.
@@ -297,9 +300,10 @@ fn target_count(body: &str, symbol: &str, index: &str) -> Option<usize> {
     labels.sort();
     labels.dedup();
     if !labels.is_empty() {
-        // The labels are the ground truth for a switch's arms: even
-        // when fewer than the threshold are visible, reporting the
-        // count lets the caller's threshold skip a small switch.
+        // The labels are the ground truth for a switch's arms. The
+        // count is returned even when fewer than the threshold are
+        // visible, so the caller's threshold check still skips a small
+        // switch.
         return Some(labels.len());
     }
     // Bounds check: `idx < N` → N, `idx <= N` → N + 1 (mirrored forms
@@ -411,9 +415,10 @@ fn is_simple_ident(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// The record for one dispatch: a `switchD` table reads as `match`
-/// arms, any other as a fixed-size array of `fn` pointers; the size,
-/// when one was read, lands in both the suggestion and the record.
+/// Build the record for one dispatch. A `switchD`/`switchdataD` table
+/// reads as `match` arms; any other table reads as an array of `fn`
+/// pointers. When a size was read, it goes into both the suggestion and
+/// the record.
 fn build_table(
     func: &DecompiledFunction,
     symbol: &str,
@@ -473,9 +478,10 @@ fn matching_close_paren(s: &str) -> Option<usize> {
     None
 }
 
-/// Given the index of a `)`, return the index of the `(` that closes
-/// at it: the group that is open across the whole scan and whose
-/// closing paren sits exactly at `close`.
+/// Given the index of a `)`, return the index of the `(` of the group
+/// whose closing paren sits exactly at `close`. The search runs forward
+/// from the start of the line; groups that close before `close` are
+/// skipped.
 fn matching_paren_back(line: &str, close: usize) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut depth = 0usize;
@@ -519,8 +525,8 @@ fn matching_paren_back(line: &str, close: usize) -> Option<usize> {
 /// Ghidra's spellings for the unnamed data symbols that back jump
 /// tables: `DAT_` for unnamed globals, `LAB_` for unnamed labels, and
 /// the `switchD`/`switchdataD` families for compiler-generated switch
-/// address tables. These are the decompiler's own mintings, not
-/// project names: a binary whose tables carry names configures them
+/// address tables. These names come from the decompiler, not from the
+/// project. A binary whose tables have project names configures them
 /// through [`JumpTableDetector::with_prefixes`].
 pub fn default_table_prefixes() -> Vec<String> {
     ["DAT_", "LAB_", "switchD", "switchdataD"]
@@ -625,7 +631,8 @@ mod tests {
     fn lab_symbols_are_detected_at_pattern_confidence() {
         let record = one("  (*(&LAB_1800015a0)[index])();\n");
         assert_eq!(record.table, "LAB_1800015a0");
-        // No bounds, no labels: pattern-only, lower confidence.
+        // No bounds check and no case labels: the size is unknown, so
+        // the confidence is the lower one.
         assert_eq!(record.target_count, None);
         assert_eq!(record.confidence, 60);
         assert_eq!(record.suggestion, "[fn(...)]");
