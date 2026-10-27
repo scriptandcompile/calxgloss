@@ -1,8 +1,9 @@
 //! Call graph context enrichment for LLM prompt injection.
 //!
-//! The [`ContextEnricher`] produces structured context data for each function
-//! in a call graph, designed to be injected into LLM prompts so the translator
-//! understands the calling and called environment.
+//! The [`ContextEnricher`] builds structured context data for each function
+//! in a call graph. The data is meant to be injected into LLM prompts, so
+//! the translator can see which functions call a function and which
+//! functions that function calls.
 //!
 //! # MVP Context Fields
 //!
@@ -59,9 +60,9 @@ pub struct CallEdgeInfo {
 
 /// A group of callees belonging to the same leaf API category.
 ///
-/// When a function calls multiple known APIs of the same category
-/// (e.g., both `MessageBox` and `CreateWindowEx` are UI APIs),
-/// they are bundled together for compact context presentation.
+/// When a function calls several known APIs of one category, they are
+/// bundled into a single group so the context stays compact. For example,
+/// both `MessageBox` and `CreateWindowEx` are UI APIs.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CalleeGroup {
     /// The API category this group belongs to.
@@ -93,9 +94,13 @@ pub struct FunctionContext {
     pub address: u64,
     /// Functions that call this one, with call site metadata.
     pub callers: Vec<CallEdgeInfo>,
-    /// This function's callees, split into internal calls and categorized API calls.
+    /// This function's callees, as named references. The list is
+    /// capped to the configured limit, and when internal callee
+    /// filtering is on it drops callees that are functions in the
+    /// same graph.
     pub callees: Vec<CallEdgeInfo>,
-    /// Callees grouped by leaf API category (only APIs from the known signature list).
+    /// Callees that match the leaf detector's known API signatures,
+    /// grouped by leaf API category.
     pub categorized_callees: Vec<CalleeGroup>,
     /// Leaf API context: matched API signatures with Rust crate suggestions.
     pub leaf_api_context: Vec<LeafApiContext>,
@@ -106,9 +111,9 @@ pub struct FunctionContext {
 
 /// Configuration for context enrichment behavior.
 ///
-/// Controls how caller/callee data is limited and filtered when producing
-/// [`FunctionContext`] objects, preventing excessively large prompts
-/// for functions with many neighbors.
+/// Limits and filters the caller and callee data that goes into each
+/// [`FunctionContext`], so a function with many neighbors cannot produce
+/// an excessively large prompt.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextEnricherConfig {
     /// Maximum number of callers to include per function context.
@@ -117,8 +122,9 @@ pub struct ContextEnricherConfig {
     /// Maximum number of callees to include per function context.
     /// A value of 0 means no limit.
     pub max_callees: usize,
-    /// When true, filters out callees that exist as nodes in the same
-    /// call graph (internal functions), keeping only external API calls.
+    /// When true, drops callees that are themselves nodes in the same
+    /// call graph (internal functions), keeping only callees that sit
+    /// outside the graph.
     pub filter_internal_callees: bool,
     /// If the total neighbor count (callers + callees) for a function
     /// exceeds this value, that function's context is skipped entirely.
@@ -139,15 +145,15 @@ impl Default for ContextEnricherConfig {
 
 /// Produces enriched context data for all functions in a call graph.
 ///
-/// The enricher uses the [`LeafDetector`] to classify callees into
-/// API categories and attach Rust crate suggestions for context enrichment.
+/// The enricher uses the [`LeafDetector`] to classify callees into API
+/// categories and attach Rust crate suggestions.
 ///
-/// The enricher also applies limiting, filtering, and size-based
-/// heuristics to keep context data manageable for LLM prompt injection:
+/// The enricher also limits and filters the data so each function's
+/// context stays small enough for LLM prompt injection:
 ///
-/// - Top-N limiting on callers and callees
-/// - Internal callee filtering (excludes same-graph functions)
-/// - Size-based enrichment skipping for highly-connected functions
+/// - Top-N limits on callers and callees
+/// - Internal callee filtering (functions in the same graph are dropped)
+/// - Enrichment is skipped entirely for functions with too many neighbors
 ///
 /// # Example
 ///
@@ -190,11 +196,13 @@ impl ContextEnricher {
     ///
     /// The enrichment process:
     ///
-    /// 1. Builds address-to-function and address-to-name lookups from the graph.
-    /// 2. For each function, checks if neighbor count exceeds the skip threshold
-    ///    and marks the context as skipped if so.
-    /// 3. Applies top-N limiting and internal callee filtering per [`ContextEnricherConfig`].
-    /// 4. Classifies each callee using the leaf detector for API categorization.
+    /// 1. Builds an address-to-function lookup and the set of the graph's
+    ///    own addresses.
+    /// 2. For each function, compares the neighbor count to the skip
+    ///    threshold and marks the context as skipped when it exceeds it.
+    /// 3. Applies top-N limiting and internal callee filtering per
+    ///    [`ContextEnricherConfig`].
+    /// 4. Classifies each callee with the leaf detector for API categorization.
     /// 5. Collects leaf API context (matched APIs with Rust crate suggestions).
     ///
     /// Returns an empty vector if the graph contains no functions.
@@ -279,7 +287,8 @@ impl ContextEnricher {
             })
             .collect();
 
-        // Check size-based enrichment skipping BEFORE limiting/filtering.
+        // Decide on size-based skipping from the raw neighbor counts,
+        // before any limiting or filtering.
         let context_skipped = self.config.max_neighbor_count > 0
             && (func.callers.len() + func.callees.len()) > self.config.max_neighbor_count;
 
@@ -345,8 +354,8 @@ impl ContextEnricher {
 
     /// Groups this function's callees by leaf API category.
     ///
-    /// Only callees that match the leaf detector's known API signatures
-    /// are included. Internal function calls are excluded from categorization.
+    /// Categorization is by name: a callee is grouped when its name
+    /// matches one of the leaf detector's registered API signatures.
     fn build_categorized_callees(&self, func: &FunctionCallGraph) -> Vec<CalleeGroup> {
         let matched = match self.leaf_detector.classify(func) {
             Some(sigs) => sigs,
@@ -362,7 +371,8 @@ impl ContextEnricher {
                 .push(sig.api_name);
         }
 
-        // Convert to ordered list.
+        // Collect the groups into a list. The groups come out of a
+        // HashMap, so their order is not fixed.
         groups
             .into_iter()
             .map(|(category, apis)| CalleeGroup { category, apis })
@@ -396,12 +406,12 @@ impl Default for ContextEnricher {
     }
 }
 
-/// Returns the list of function contexts that were skipped during enrichment
-/// due to exceeding the neighbor count threshold.
+/// Returns the function contexts that enrichment skipped because the
+/// function had more neighbors than the configured threshold.
 ///
-/// Skipped contexts have [`FunctionContext::context_skipped`] set to `true`.
-/// They serve as placeholders so the output vector aligns with the input
-/// graph's function ordering.
+/// A skipped context has [`FunctionContext::context_skipped`] set to
+/// `true`. Skipped contexts stay in the output vector as placeholders,
+/// so the vector keeps the input graph's function order.
 pub fn skipped_contexts(contexts: &[FunctionContext]) -> Vec<&FunctionContext> {
     contexts.iter().filter(|c| c.context_skipped).collect()
 }
@@ -740,7 +750,7 @@ mod tests {
 
         assert_eq!(contexts.len(), 3);
 
-        // Check root function has caller info
+        // The root function has neither callers nor callees.
         let root_ctx = contexts
             .iter()
             .find(|c| c.name == "root_fn")
@@ -755,6 +765,9 @@ mod tests {
             .expect("middle_fn not found");
         assert_eq!(middle_ctx.callers.len(), 1);
         assert_eq!(middle_ctx.callees.len(), 1);
+        // Empty because none of middle_fn's callees match a known API
+        // signature: the enricher classifies callees by name, not by the
+        // function's own category.
         assert!(middle_ctx.leaf_api_context.is_empty()); // not leaf itself
 
         // Check leaf function has caller + leaf API context

@@ -1,26 +1,27 @@
 //! Translation ordering for the call graph-assisted translation pipeline.
 //!
-//! The [`TranslationOrderer`] produces a priority-ordered list of functions
-//! for the translation pipeline, based on their classification as Root,
-//! Middle, or Leaf in the call graph.
+//! The [`TranslationOrderer`] turns a call graph into a priority-ordered
+//! list of functions for the translation pipeline. The order follows each
+//! function's call-graph classification: Root, Middle, or Leaf.
 //!
 //! # Algorithm
 //!
-//! 1. Classify each function into a priority tier:
-//!    - **Root** (priority 0) — entry points and runtime init; handled first
-//!      so their dependents can be resolved.
-//!    - **Middle** (priority 1) — application logic; ordered topologically
-//!      so that callers are translated after their callees.
-//!    - **Leaf** (priority 2) — functions calling known third-party APIs;
-//!      handled last so that context enrichment is complete.
-//! 2. Within each tier, perform a topological sort based on call graph edges.
-//!    Functions with no internal callees within the tier come first.
-//! 3. When the orderer is given a state-sharing edge set — derived from the
-//!    persisted shared-globals index, never from a scan — each global's
-//!    first definer is placed before the other functions that touch it,
-//!    within the same tier. The set extends the call-graph edges rather
-//!    than replacing them: an empty set leaves the order exactly as step 2
-//!    produces it.
+//! 1. Put every function into one of three priority bands:
+//!    - **Root** (priority 0) — entry points and runtime init. Handled
+//!      first, so the functions that depend on them can be resolved.
+//!    - **Middle** (priority 1) — application logic. Sorted topologically
+//!      within the band, so a caller is translated after its callees.
+//!    - **Leaf** (priority 2) — functions that call known third-party
+//!      APIs. Handled last, once context enrichment is complete.
+//! 2. Within each band, sort the functions topologically using the
+//!    call-graph edges that stay inside that band. A function with no
+//!    callees inside its own band comes first.
+//! 3. When the orderer is given a state-sharing edge set — taken from the
+//!    persisted shared-globals index, never from a running scan — it also
+//!    places each global's first definer before the other functions that
+//!    touch it, within the same band. These edges extend the call-graph
+//!    edges; they never replace them. An empty set leaves the order
+//!    exactly as step 2 produces it.
 //!
 //! # Example
 //!
@@ -99,7 +100,7 @@ impl StateSharingEdges {
     }
 }
 
-/// Priority tier for a function in the translation pipeline.
+/// Priority band for a function in the translation pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TranslationPriority {
     /// Root functions — entry points and runtime init. Handled first.
@@ -111,7 +112,7 @@ pub enum TranslationPriority {
 }
 
 impl TranslationPriority {
-    /// Returns a human-readable label for this priority tier.
+    /// Returns a human-readable label for this priority band.
     pub fn label(&self) -> &'static str {
         match self {
             TranslationPriority::Root => "root",
@@ -139,14 +140,14 @@ pub struct FunctionTranslationPlan {
     pub name: String,
     /// The function's entry address.
     pub address: u64,
-    /// Priority tier for translation ordering.
+    /// Priority band for translation ordering.
     pub priority: TranslationPriority,
     /// Call-graph classification of the function.
     ///
-    /// This carries the full [`NodeCategory`] so that the translation
-    /// pipeline can distinguish between entry points (Root) and runtime
-    /// library functions (Skip) — both map to the same
-    /// [`TranslationPriority::Root`] but require different handling.
+    /// This keeps the full [`NodeCategory`] so that the translation
+    /// pipeline can tell entry points (Root) apart from runtime library
+    /// functions (Skip): both map to the same
+    /// [`TranslationPriority::Root`], but they need different handling.
     pub category: NodeCategory,
     /// Number of functions that call this one.
     pub caller_count: usize,
@@ -165,25 +166,31 @@ pub struct FunctionTranslationPlan {
 /// 1. Build an address-to-function lookup from the call graph.
 /// 2. Assign each function a [`TranslationPriority`] based on its
 ///    [`NodeCategory`].
-/// 3. Within each priority tier, perform a topological sort using the
-///    call graph edges restricted to that tier, extended by any
+/// 3. Within each priority band, perform a topological sort using only
+///    the call-graph edges that stay inside that band, plus any
 ///    [`StateSharingEdges`] supplied via [`Self::with_state_sharing`].
-/// 4. Functions that form cycles or reference addresses outside the graph
-///    are placed at the end of their tier.
+/// 4. A function is ready once every callee it has inside its own band
+///    is placed. Functions that form cycles never become ready this way
+///    and are placed at the end of their band, in address order. Call
+///    edges that point outside the band or outside the graph are ignored.
 ///
 /// # Order Guarantee
 ///
-/// The returned list is a [`VecDeque`] so that the translation pipeline can
-/// efficiently dequeue the next function to translate.  The order satisfies:
+/// The returned list is a [`VecDeque`] so that the translation pipeline
+/// can efficiently dequeue the next function to translate. The order
+/// satisfies:
 ///
 /// - All root functions appear before all middle functions.
 /// - All middle functions appear before all leaf functions.
-/// - Within each tier, a function appears after all of its internal callers
-///   (i.e., callees before callers within the same tier).
-/// - When state-sharing edges are supplied, within each tier a global's
-///   first definer appears before the other functions that touch it.
+/// - Within each band, a function appears after all of its callees that
+///   are in the same band (callees before callers). Functions appended
+///   at the end of a band because they form a cycle are the exception.
+/// - When state-sharing edges are supplied, within each band a global's
+///   first definer appears before the other functions that touch it,
+///   unless a cycle among those functions forces the same exception.
 pub struct TranslationOrderer {
-    /// Maximum number of functions to order per DLL. Zero means unlimited.
+    /// Maximum number of functions to order per target binary. Zero
+    /// means unlimited.
     max_functions: usize,
     /// State-sharing edges from the persisted shared-globals index, empty
     /// when none were supplied (issue #256).
@@ -199,21 +206,22 @@ impl TranslationOrderer {
         }
     }
 
-    /// Creates a new `TranslationOrderer` that limits ordering to
-    /// at most `max_functions` per DLL.
+    /// Creates a new `TranslationOrderer` that orders at most
+    /// `max_functions` functions per target binary.
     pub fn with_max_functions(mut self, max_functions: usize) -> Self {
         self.max_functions = max_functions;
         self
     }
 
-    /// Extends the ordering input with state-sharing edges derived from the
-    /// persisted shared-globals index (issue #256, part of #225). The edges
-    /// ride the same per-tier topological sort as the call-graph edges:
-    /// within a tier, a global's first definer precedes the other functions
-    /// that touch it. Cycles among state-sharing units fall back to the
-    /// existing tie-break — they are appended at the end of their tier in
-    /// address order, never dropped. An empty set leaves today's dependency
-    /// order exactly in force.
+    /// Adds state-sharing edges to the ordering input. They come from the
+    /// persisted shared-globals index (issue #256, part of #225). These
+    /// edges go through the same per-band topological sort as the
+    /// call-graph edges: within a band, a global's first definer is
+    /// placed before the other functions that touch it. If the
+    /// state-sharing edges form a cycle, the existing tie-break takes
+    /// over — the functions involved are appended at the end of their
+    /// band in address order and are never dropped. An empty set leaves
+    /// today's dependency order exactly in force.
     pub fn with_state_sharing(mut self, edges: StateSharingEdges) -> Self {
         self.state_sharing = edges;
         self
@@ -233,7 +241,8 @@ impl TranslationOrderer {
             return Ok(VecDeque::new());
         }
 
-        // Build an address-to-index lookup for quick neighbor resolution.
+        // Map each address to the index of its function, so a call edge
+        // can quickly find the function it points to.
         let mut addr_to_index: HashMap<u64, usize> = HashMap::with_capacity(graph.functions.len());
         let mut seen_addresses: HashSet<u64> = HashSet::new();
 
@@ -248,18 +257,18 @@ impl TranslationOrderer {
             addr_to_index.insert(func.address, i);
         }
 
-        // Group functions by priority tier.
+        // Group functions by priority band.
         let mut tiers: HashMap<TranslationPriority, Vec<usize>> = HashMap::new();
         for (i, func) in graph.functions.iter().enumerate() {
             let priority: TranslationPriority = func.node_category.clone().into();
             tiers.entry(priority).or_default().push(i);
         }
 
-        // Topologically sort each tier and collect the final plan.
+        // Topologically sort each band and collect the final plan.
         let mut plan: VecDeque<FunctionTranslationPlan> =
             VecDeque::with_capacity(graph.functions.len());
 
-        // Process tiers in priority order (Root → Middle → Leaf).
+        // Process the bands in priority order (Root → Middle → Leaf).
         for priority in [
             TranslationPriority::Root,
             TranslationPriority::Middle,
@@ -333,12 +342,12 @@ impl TranslationOrderer {
         Ok(plan)
     }
 
-    /// Performs a topological sort on the given tier of function indices.
+    /// Topologically sorts one band of function indices.
     ///
-    /// Uses Kahn's algorithm.  Edges only consider callees that are
-    /// within the same tier, extended by the state-sharing edges whose
-    /// definer and reuser both resolve to this tier.  Functions that form
-    /// cycles or reference unknown addresses are placed at the end of the
+    /// Uses Kahn's algorithm. A call edge only counts when its callee is
+    /// in the same band; a state-sharing edge only counts when both its
+    /// definer and its reuser resolve to this band. Functions left over
+    /// in cycles, which the sort can never place, go at the end of the
     /// sorted list.
     fn topological_sort_tier(
         &self,
@@ -349,9 +358,10 @@ impl TranslationOrderer {
     ) -> Vec<usize> {
         let tier_set: HashSet<usize> = tier_indices.iter().copied().collect();
 
-        // Build in-degree map for internal edges only.
-        // We want callees before callers, so edges go from caller → callee
-        // and in-degree of a node = number of callers within the tier.
+        // Build the in-degree map using only edges inside this band.
+        // We want callees before callers, so each adjacency edge points
+        // from the callee to the caller, and a node's in-degree is the
+        // number of its callees inside the band.
         let mut in_degree: HashMap<usize, usize> = HashMap::new();
         let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
 
@@ -370,11 +380,11 @@ impl TranslationOrderer {
             }
         }
 
-        // State-sharing edges ride the same sort (issue #256): the definer
-        // must be placed before each function that reuses its global.  The
-        // index names functions by name, so resolve names to this tier's
-        // nodes — a name outside the tier (or outside the graph) simply
-        // contributes nothing here.
+        // State-sharing edges join the same sort (issue #256): the
+        // definer must be placed before each function that reuses its
+        // global. The index names functions by name, so resolve those
+        // names to this band's nodes — a name outside the band (or
+        // outside the graph) simply contributes nothing here.
         let mut name_to_index: HashMap<&str, usize> = HashMap::new();
         for &idx in tier_indices {
             name_to_index
@@ -485,7 +495,7 @@ mod tests {
         }
     }
 
-    // ─── Tier classification tests ───
+    // ─── Priority band classification tests ───
 
     #[test]
     fn test_translation_priority_from_node_category() {
@@ -592,8 +602,8 @@ mod tests {
         let plan = orderer.order(&graph).unwrap();
 
         assert_eq!(plan.len(), 2);
-        // Middle tier: game_loop
-        // Leaf tier: render_frame
+        // Middle band: game_loop
+        // Leaf band: render_frame
         assert_eq!(plan[0].name, "game_loop");
         assert_eq!(plan[0].priority, TranslationPriority::Middle);
         assert_eq!(plan[1].name, "render_frame");
@@ -603,7 +613,8 @@ mod tests {
     #[test]
     fn test_topological_order_within_tier() {
         // app_init calls game_loop, which calls render_frame.
-        // All middle-tier; topological sort should put callee before caller.
+        // All three are in the middle band; the topological sort should
+        // put each callee before its caller.
         let graph = CallGraph {
             binary: "topo.dll".to_string(),
             functions: vec![
@@ -635,7 +646,7 @@ mod tests {
         let plan = orderer.order(&graph).unwrap();
 
         assert_eq!(plan.len(), 3);
-        // render_frame (no internal callers) → game_loop → app_init
+        // render_frame (no callees inside the band) → game_loop → app_init
         assert_eq!(plan[0].name, "render_frame");
         assert_eq!(plan[1].name, "game_loop");
         assert_eq!(plan[2].name, "app_init");
@@ -852,8 +863,9 @@ mod tests {
 
     #[test]
     fn test_function_with_no_internal_callees_comes_first_in_tier() {
-        // Two middle functions: A calls B, neither has callees in the same tier
-        // (B's callees point to leaf functions outside the tier).
+        // Two middle functions. The caller's only call edge leaves the
+        // band (leaf_func is not in the band); callee_in_tier has no
+        // call edges at all.
         let graph = CallGraph {
             binary: "no_internal.dll".to_string(),
             functions: vec![
@@ -878,14 +890,16 @@ mod tests {
         let plan = orderer.order(&graph).unwrap();
 
         assert_eq!(plan.len(), 2);
-        // callee_in_tier has no internal callees (leaf_func is outside tier), so it comes first
+        // Both functions have no callees inside the band, so both start
+        // ready; callee_in_tier wins the tie-break because its address
+        // is lower (leaf_func is outside the band).
         assert_eq!(plan[0].name, "callee_in_tier");
         assert_eq!(plan[1].name, "caller");
     }
 
     #[test]
     fn test_cyclic_functions_appended_at_end_of_tier() {
-        // A calls B, B calls A — cycle within the same tier.
+        // A calls B, B calls A — a cycle inside one band.
         let graph = CallGraph {
             binary: "cycle.dll".to_string(),
             functions: vec![
@@ -940,8 +954,8 @@ mod tests {
         }
     }
 
-    /// The edges the real index-to-pairs seam derives from the given
-    /// entries — the same path the pipeline consumer takes.
+    /// Builds edges from the given index entries the same way the real
+    /// pipeline seam does — the path a pipeline consumer takes.
     fn edges_from(entries: &[SharedGlobalRecord]) -> StateSharingEdges {
         StateSharingEdges::from_pairs(state_sharing_pairs(entries))
     }
@@ -1003,10 +1017,10 @@ mod tests {
 
     #[test]
     fn test_first_definer_precedes_reusers_within_tier() {
-        // Three middle functions with no call edges between them: address
-        // order alone queues the lower-addressed reader first. The index
-        // names one writer and two readers — the writer defines the
-        // global's representation, and it must lead.
+        // Three middle functions with no call edges between them: with
+        // no edges, address order alone puts the lower-addressed reader
+        // first. The index names one writer and two readers — the writer
+        // defines the global's representation, and it must come first.
         let graph = CallGraph {
             binary: "shared.dll".to_string(),
             functions: vec![
@@ -1036,9 +1050,10 @@ mod tests {
 
     #[test]
     fn test_first_writer_in_listing_order_is_the_definer() {
-        // Two writers of one global: the index lists the first-sighting
-        // writer first, and that one — not the lower-addressed second —
-        // establishes the representation and goes first.
+        // Two functions write one global. The index lists the writer it
+        // sighted first ahead of the other one, and that first-sighted
+        // writer — not the one with the lower address — establishes the
+        // representation and is ordered first.
         let graph = CallGraph {
             binary: "twowriters.dll".to_string(),
             functions: vec![
@@ -1073,9 +1088,9 @@ mod tests {
 
     #[test]
     fn test_readers_only_global_adds_no_edges() {
-        // A global no function writes establishes no representation — the
-        // degenerate index entry contributes nothing, and the tier keeps
-        // today's address order.
+        // A global no function writes establishes no representation. The
+        // degenerate index entry contributes nothing, and the band keeps
+        // its plain address order.
         let graph = CallGraph {
             binary: "readonly.dll".to_string(),
             functions: vec![
@@ -1098,10 +1113,11 @@ mod tests {
 
     #[test]
     fn test_state_sharing_cycles_fall_back_to_tie_break() {
-        // Two globals, each function defining the one the other reuses —
-        // the state-sharing edges form a cycle. Kahn's drain stops; the
-        // cycle pair falls to the existing tie-break: appended at the end
-        // of the tier in address order, no hang, no dropped unit.
+        // Two globals: each function defines the global the other one
+        // reuses, so the state-sharing edges form a cycle. Kahn's drain
+        // stops before the pair. The existing tie-break takes over: the
+        // pair is appended at the end of the band in address order, with
+        // no hang and no dropped unit.
         let graph = CallGraph {
             binary: "sharing_cycle.dll".to_string(),
             functions: vec![
@@ -1134,9 +1150,9 @@ mod tests {
 
     #[test]
     fn test_state_sharing_edges_stay_within_tier() {
-        // A definer in the middle tier and a reuser in the leaf tier:
-        // tiers are sorted independently, so the cross-tier pair
-        // contributes nothing — the middle tier keeps its own order and
+        // A definer in the middle band and a reuser in the leaf band.
+        // Bands are sorted independently, so a pair that crosses bands
+        // contributes nothing: the middle band keeps its own order, and
         // the leaf unit is neither moved nor dropped.
         let graph = CallGraph {
             binary: "crosstown.dll".to_string(),
@@ -1176,10 +1192,10 @@ mod tests {
 
     #[test]
     fn test_edges_come_from_the_persisted_index_without_a_scan() {
-        // The orderer consumes the artifact the global-state scan wrote:
-        // this document was hand-written and saved through the persistor
-        // — no engine, no scan — and loading it yields the edges that put
-        // the definer first.
+        // The orderer reads the artifact the global-state scan writes.
+        // Here the document was hand-written and saved through the
+        // persistor — no analysis engine, no scan — and loading it back
+        // yields the edges that put the definer first.
         let dir = tempfile::tempdir().expect("temp workspace");
         let persistor = GlobalStatePersistor::new(dir.path());
         let mut result = GlobalStateResult::new(ScanMetadata::new("eqmain.dll"));
