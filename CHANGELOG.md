@@ -319,126 +319,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Output & pipeline
 
-- **Crate-based output layout** — `translate` and `batch-translate` now produce `crates/<dll_stripped>/Cargo.toml` and one `src/<function>.rs` per function (DLL/EXE extension stripped, e.g. `EqGame.exe` → crate `EqGame`), with an auto-generated `mod.rs` registering every translated function.
-- **Complexity-based prompt selection** — functions are classified by instruction count, branch density, call depth, and API-category diversity, and routed to a Minimal, Standard, Rich, or Detailed prompt with matching Ghidra context.
-- **Failure-informed retry prompts** — every retry strategy injects a "PREVIOUS ATTEMPT HISTORY" section into the prompt when prior attempts failed, so the LLM can learn from specific past mistakes.
-- **Per-attempt token usage logging** — every LLM call (initial, retry, and tier-escalated attempts) records token counts with DLL, function, attempt, strategy, context tier, and outcome to `re/analysis/token_usage.json`; the batch summary prints a total-tokens line.
-- **Experiment logging** — each retry attempt is recorded to `re/analysis/prompt_strategy_log.json` with category, strategy, and outcome, and aggregate pass/fail stats can be computed from it.
+- **Crate-based output layout** — `translate` and `batch-translate` now write a Rust crate per DLL: `crates/<dll_stripped>/Cargo.toml`, one `src/<function>.rs` per function, and an auto-generated `mod.rs` that registers every translated function. The DLL or EXE extension is stripped from the crate name (e.g. `EqGame.exe` → crate `EqGame`).
+- **Complexity-based prompt selection** — the tool classifies each function by instruction count, branch density, call depth, and API-category diversity. It then sends the function to a Minimal, Standard, Rich, or Detailed prompt, with matching Ghidra context.
+- **Failure-informed retry prompts** — when earlier attempts failed, every retry strategy adds a "PREVIOUS ATTEMPT HISTORY" section to the prompt, so the LLM can see and avoid the earlier mistakes.
+- **Per-attempt token usage logging** — every LLM call records its token counts to `re/analysis/token_usage.json`. This covers initial, retry, and tier-escalated attempts, each with its DLL, function, attempt, strategy, context tier, and outcome. The batch summary prints a total-tokens line.
+- **Experiment logging** — each retry attempt is recorded to `re/analysis/prompt_strategy_log.json` with its category, strategy, and outcome, so aggregate pass/fail statistics can be computed from that file.
 
 #### Context tiers
 
-- **Context tier selection** — five context tiers (`Signature`, `Disassembly`, `WithTests`, `ModuleContext`, `FullModule`) define how much context is sent to the LLM per function; the starting tier is chosen automatically from function complexity and API call count. Each tier has its own prompt, from a minimal signature-only prompt up to full-module context with neighboring functions, shared data structures, shim layer source, and PAL trait definitions.
-- **Automatic context tier escalation** — a failed retry can bump the context tier to the next level and rebuild the prompt with escalated context, independently of strategy escalation.
+- **Context tier selection** — five context tiers (`Signature`, `Disassembly`, `WithTests`, `ModuleContext`, `FullModule`) control how much context the LLM receives for one function. The starting tier is chosen automatically from function complexity and API call count. Each tier has its own prompt, from a minimal signature-only prompt up to full-module context with neighboring functions, shared data structures, shim layer source, and PAL trait definitions.
+- **Automatic context tier escalation** — after a failed attempt, a retry can step the context tier up one level and rebuild the prompt with the larger context. This works independently of retry-strategy escalation.
 
 #### Fault detection & analysis logging
 
-- **Fault logging** — detected faults are persisted to `re/analysis/fault_log.json` with aggregate statistics.
-- **Context-window detection** — LLM responses are checked against the model limit for truncation markers and oversized prompts are pre-checked; disassembly can be split into chunks for the LLM.
-- **Hallucination detection** — generated code is cross-referenced against Ghidra symbols and the PAL catalogue; non-existent API references are logged and emitted as progress events.
-- **Infinite-loop detection** — repeated identical (prompt, output) pairs across retries are detected before more tokens are wasted on a dead-end path.
-- **Behavior-divergence detection** — code that passes baseline tests but fails generated edge-case inputs is flagged in the retry loop with confidence scoring and recovery advice.
-- **Resource-exhaustion monitoring** — repeated failures and timeouts (OOM, swap thrash, HTTP 429/503/507) are tracked; the retry loop backs off, logs faults, and can suggest queueing work or switching models.
+- **Fault logging** — detected faults are saved to `re/analysis/fault_log.json` with aggregate statistics.
+- **Context-window detection** — the tool checks LLM responses against the model limit for truncation markers, and it checks oversized prompts before sending them. Disassembly can be split into chunks for the LLM.
+- **Hallucination detection** — generated code is checked against Ghidra symbols and the PAL catalogue. References to APIs that do not exist are logged and emitted as progress events.
+- **Infinite-loop detection** — when the same (prompt, output) pair repeats across retries, the run detects it before more tokens are spent on the dead end.
+- **Behavior-divergence detection** — code that passes baseline tests but fails generated edge-case inputs is flagged in the retry loop, with confidence scoring and recovery advice.
+- **Resource-exhaustion monitoring** — repeated failures and timeouts (OOM, swap thrash, HTTP 429/503/507) are tracked. The retry loop backs off, records faults, and can suggest queueing work or switching models.
 
 #### New analysis crates
 
-All evidence results are saved as per-binary JSON documents under `re/analysis/<name>/<dll>.json`, carry shared scan provenance (binary name, finish timestamp, duration), and score findings with a shared 0–100 `Confidence` type.
+Each scan saves its results as a per-binary JSON document under `re/analysis/<name>/<dll>.json`. Every document carries scan provenance shared by all scans (binary name, finish timestamp, duration), and every finding is scored with the shared 0–100 `Confidence` type.
 
-- **`calxgloss-typesdb` — data structure recovery**: recovers named types from the Ghidra Type Manager, detects vtables (resolving method pointers and the MSVC RTTI chain to class and base-class names, flagging COM interfaces), and infers struct candidates from string literals.
-- **`calxgloss-typeinfer` — type inference**: detects C++ `this` pointers from vtable dispatch, narrows parameter types from string-function usage and integer bit patterns, and propagates types from known signatures (`malloc`, `strlen`, `CreateFileW`, …); competing readings are resolved by confidence.
+- **`calxgloss-typesdb` — data structure recovery**: recovers named types from the Ghidra Type Manager. It detects vtables — resolving method pointers and following the MSVC RTTI chain to class and base-class names, and flagging COM interfaces — and it infers struct candidates from string literals.
+- **`calxgloss-typeinfer` — type inference**: detects C++ `this` pointers from vtable dispatch, narrows parameter types from string-function usage and integer bit patterns, and propagates types from known signatures (`malloc`, `strlen`, `CreateFileW`, …). Competing readings are resolved by confidence.
 - **`calxgloss-algorithm` — algorithm recognition**: recognizes algorithm families (sorting, hashing, checksums, compression, …) from control-flow signatures, string markers, and callback contracts (e.g. a `qsort` compare function).
 - **`calxgloss-memory` — memory lifecycle / RAII detection**: pairs allocations with releases (suggesting `Box<T>`/`Vec<T>`, or stack allocation for short-lived blocks), handle opens with closes (RAII guard suggestions), and reference-count bumps with drops (`Rc<T>`, narrowed to `Arc<T>` when shared across threads).
-- **`calxgloss-sync` — concurrency detection**: pairs lock acquires with releases (`Mutex`/`RwLock`), detects interlocked/atomic calls (`AtomicU32`/`AtomicU64`), and thread spawns with or without joins (`std::thread::spawn` vs `tokio::spawn`).
-- **`calxgloss-callback` — callback & function-pointer detection**: finds calls through function-pointer arrays, registration→callback pairs, and jump-table dispatches, suggesting `Vec<Box<dyn Fn(...)>>`, `Box<dyn Fn(...)>`, or `match`/dispatch tables.
-- **`calxgloss-controlflow` — control-flow pattern recognition**: detects switch-shaped if-else chains, self-recursion (with tail-call detection), and state-machine patterns, suggesting `match`, loops, or `enum State`.
+- **`calxgloss-sync` — concurrency detection**: pairs lock acquires with releases (`Mutex`/`RwLock`), detects interlocked/atomic calls (`AtomicU32`/`AtomicU64`), and detects thread spawns with or without joins (`std::thread::spawn` vs `tokio::spawn`).
+- **`calxgloss-callback` — callback & function-pointer detection**: finds calls through function-pointer arrays, registration→callback pairs, and jump-table dispatches, and suggests `Vec<Box<dyn Fn(...)>>`, `Box<dyn Fn(...)>`, or `match`/dispatch tables.
+- **`calxgloss-controlflow` — control-flow pattern recognition**: detects switch-shaped if-else chains, self-recursion (with tail-call detection), and state-machine patterns, and suggests `match`, loops, or `enum State`.
 - **`calxgloss-stringctx` — string & configuration context**: classifies strings into nine categories (format strings, paths, error messages, …), maps strings to functions through body parsing and xrefs, and infers argument types from format specifiers.
-- **`calxgloss-apidetect` — library & API identification**: identifies linked libraries from the import table and maps them to Rust crates (DirectX 9, SDL2, zlib, PNG, the C runtime, …), and summarizes which APIs each function reaches directly or through its callees.
+- **`calxgloss-apidetect` — library & API identification**: identifies linked libraries from the import table and maps them to Rust crates (DirectX 9, SDL2, zlib, PNG, the C runtime, …). For each function it summarizes which APIs the function reaches directly and which through its callees.
 - **`calxgloss-consts` — constant & enum recovery**: recovers bitflag groups from bitwise operations, enum candidates from contiguous switch cases, and repeated literals as named constants.
-- **`calxgloss-serialize` — endianness & serialization detection**: detects byte-swap calls, bit-packing shift/mask chains, and magic-byte comparisons (PNG, gzip, ZIP), suggesting `byteorder` readers, field masking, or format decoders.
+- **`calxgloss-serialize` — endianness & serialization detection**: detects byte-swap calls, bit-packing shift/mask chains, and magic-byte comparisons (PNG, gzip, ZIP), and suggests `byteorder` readers, field masking, or format decoders.
 
 #### `calxgloss-ghidra`
 
-- **New bridge capabilities** — auto-paged string, data-type, and data-item listings, struct layout and enum value lookups, raw memory reads, function tagging, and multi-program support (list open programs and switch which one queries run against).
+- **New Ghidra bridge capabilities** — the bridge can now page through string, data-type, and data-item listings automatically, look up struct layouts and enum values, read raw memory, and tag functions. It also supports multiple open programs: it can list them and switch which one queries run against.
 
 #### `calxgloss-cli`
 
-- **On-demand analysis commands** — `typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`, `controlflow`, `callback`, `stringctx`, `apidetect`, `consts`, and `serialize` each run their scan against the program open in Ghidra and save the result to the matching `re/analysis/<name>/<dll>.json` cache the batch pipeline consumes. `--show` prints a cached result (counts, confidence, findings) without connecting to Ghidra; `--no-tag` keeps the vtable scan read-only.
-- **`auto` subcommand** — detects project state and continues the workflow automatically: scans the target directory for DLLs, runs classification when records are missing, then batch-translates. Running with no subcommand is equivalent to `auto`. Supports `--target`, `--dlls`, `--all-functions`, `--classify-only`, `--skip-git`.
-- **`init` subcommand** — creates a `calxgloss.toml` with a fully commented template of every `[ghidra]` and `[llm]` key.
-- **`auto-shim` subcommand** — generates shim layers for all crate-replacement DLLs: API mappings (LLM) → source code → tests → verify → persist to `re/shims/<dll>/`, committed to git.
-- **`dashboard` subcommand** — builds and renders a review dashboard from git branches and records, with `view`, `accept`, `reject`, and `accept-all` (dependency-ordered batch acceptance) and a `--follow` watch mode.
-- **`serve` subcommand** — starts the web review UI HTTP server (port 3000 by default).
-- **`live` subcommand** — runs batch translation and the web UI concurrently in one process, streaming progress over WebSocket.
-- **`gc` subcommand** — archives stale unmerged translation branches to `refs/archive/…` instead of deleting them, with `--days` and `--dry-run`.
-- **Config-driven directories** — `target_dir` and `workspace` can be set in `calxgloss.toml` or overridden by the global `--target-dir` / `--workspace` flags; `live` and `serve` use CWD unless explicitly overridden.
-- **Incremental git commits during batch translation** — each function is committed and merged as soon as it succeeds, rather than deferring all git work to the end of the batch.
-- **`classify` generates shim layer suggestions** — complexity estimates for crate-replacement DLLs are persisted to `re/shims/suggestions.json`.
+- **On-demand analysis commands** — the `typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`, `controlflow`, `callback`, `stringctx`, `apidetect`, `consts`, and `serialize` commands each run their scan against the program open in Ghidra and save the result to the matching `re/analysis/<name>/<dll>.json` cache that the batch pipeline reads. `--show` prints a cached result (counts, confidence, findings) without connecting to Ghidra. `--no-tag` keeps the vtable scan read-only.
+- **`auto` subcommand** — checks the project's state and continues the workflow by itself: it scans the target directory for DLLs, runs classification when records are missing, and then batch-translates. Running with no subcommand is the same as `auto`. It supports `--target`, `--dlls`, `--all-functions`, `--classify-only`, and `--skip-git`.
+- **`init` subcommand** — creates a `calxgloss.toml` containing a fully commented template of every `[ghidra]` and `[llm]` key.
+- **`auto-shim` subcommand** — generates shim layers for all crate-replacement DLLs, in one flow: API mappings (LLM) → source code → tests → verify → persist to `re/shims/<dll>/`, committed to git.
+- **`dashboard` subcommand** — builds and renders the review dashboard from git branches and records. It supports `view`, `accept`, `reject`, and `accept-all` (batch acceptance in dependency order), plus a `--follow` mode that keeps watching for changes.
+- **`serve` subcommand** — starts the web review UI's HTTP server (port 3000 by default).
+- **`live` subcommand** — runs batch translation and the web UI together in one process, streaming progress over a WebSocket.
+- **`gc` subcommand** — archives stale unmerged translation branches to `refs/archive/…` instead of deleting them. It supports `--days` and `--dry-run`.
+- **Config-driven directories** — `target_dir` and `workspace` can be set in `calxgloss.toml` or overridden by the global `--target-dir` / `--workspace` flags. `live` and `serve` use the current directory unless explicitly overridden.
+- **Incremental git commits during batch translation** — each function is committed and merged as soon as it succeeds, instead of leaving all git work to the end of the batch.
+- **`classify` generates shim layer suggestions** — for crate-replacement DLLs, `classify` saves complexity estimates as shim suggestions to `re/shims/suggestions.json`.
 
 #### Git & review workflow
 
-- **Review records** — accepting a branch writes an acceptance record to `re/accepts/`, sending it back writes a rejection record to `re/rejections/`, and archiving renames a stale branch to `refs/archive/…` so it stays reachable.
-- **Shim-layer dependency enforcement on branch creation** — branch creation can check that required shim layers (e.g. `d3d9.dll` → `re/shim/wgpu`) are already merged, in `Skip`/`Warn`/`Enforce` modes.
-- **Dependency graph** — a DAG of DLL classifications → shim layers → function translations is built from classifications and call graph data, persisted to `re/analysis/dependency_graph.json`, and topologically ordered (level-aware) for batch operations.
-- **Shim layer generation** — API mappings are generated by the LLM, shim source code (complete or skeletal) and per-mapping tests with mock call recorders are generated from the mapping table, and shim layers are verified in a sandboxed Cargo project.
+- **Review records** — accepting a branch writes an acceptance record to `re/accepts/`. Sending it back writes a rejection record to `re/rejections/`. Archiving renames a stale branch to `refs/archive/…` so it stays reachable.
+- **Shim-layer dependency enforcement on branch creation** — branch creation can check that the required shim layers (e.g. `d3d9.dll` → `re/shim/wgpu`) are already merged. It runs in one of three modes: `Skip`, `Warn`, or `Enforce`.
+- **Dependency graph** — the tool builds a graph (a DAG) of DLL classifications → shim layers → function translations from classification and call-graph data. It saves the graph to `re/analysis/dependency_graph.json` and orders it topologically, level by level, for batch operations.
+- **Shim layer generation** — the LLM generates the API mappings. Shim source code (complete or skeletal) and per-mapping tests with mock call recorders are generated from the mapping table, and each shim layer is verified in a sandboxed Cargo project.
 
 #### Web review UI
 
-- **Axum API server** (`server` feature) — dashboard, unit detail, dependency graph, dependency-sorted queue, line-by-line diff, Ghidra context, and health endpoints, plus accept / send-back / patch review actions wired into git and the translation pipeline (a patch request spawns a retry translation).
+- **Axum API server** (`server` feature) — endpoints for the dashboard, unit detail, dependency graph, dependency-sorted queue, line-by-line diff, Ghidra context, and health checks, plus accept / send-back / patch review actions that run through git and the translation pipeline. A patch request starts a retry translation.
 - **WebSocket progress streaming** — pipeline milestones, per-attempt status, and full LLM request/response events stream to the UI; a live "LLM I/O" tab shows the log.
-- **Dependency-sorted review queue** — queue endpoints and the dashboard report dependency-ordered units with queue metadata and position; `Blocked` units are flagged.
-- **Diff & Ghidra context viewers** — tabbed detail panel with line-by-line highlighted diffs against `main` and decompiler/disassembly context from on-disk analysis artifacts.
-- **Interactive dependency graph** — layered layout with Bézier edges, hover tooltips, click-to-select with neighbor highlighting, click-to-detail, status dots, fit-to-view, wheel zoom toward cursor, and keyboard shortcuts.
-- **Live progress panel** — per-DLL classification/strategy, in-progress translation with progress bar, and batch completion counts; completed functions mark their unit `Complete` in real time.
-- **Stale branch cleanup** — a "Stale Branches" dashboard card and a "Branch Cleanup" view list unmerged branches past a staleness threshold and archive them from the UI.
+- **Dependency-sorted review queue** — the queue endpoints and the dashboard report units in dependency order, with queue metadata and position. `Blocked` units are flagged.
+- **Diff & Ghidra context viewers** — a tabbed detail panel with line-by-line highlighted diffs against `main`, and decompiler/disassembly context read from on-disk analysis artifacts.
+- **Interactive dependency graph** — layered layout with Bézier edges, hover tooltips, click-to-select that highlights the node's neighbors, click-to-detail, status dots, fit-to-view, wheel zoom toward the cursor, and keyboard shortcuts.
+- **Live progress panel** — per-DLL classification/strategy, in-progress translation with a progress bar, and batch completion counts. A completed function marks its unit `Complete` in real time.
+- **Stale branch cleanup** — a "Stale Branches" dashboard card and a "Branch Cleanup" view list unmerged branches past the staleness threshold and archive them from the UI.
 
 #### `calxgloss-types`
 
-- **Review dashboard data model** — work units, review statuses, dependency graph, status counts, and review actions shared across reports, web, and CLI, replacing the duplicate scaffolding in `calxgloss-web`.
-- **Dependency-ordered queueing** — units carry processing levels (classification → shim → PAL → test → function → integration → fix), the dependency graph topologically sorts with level tie-breaking, and the dashboard auto-blocks units whose dependencies are in a failing state.
-- **Typed progress events** — a serializable `ProgressEvent` enum (translation milestones, per-attempt completion, context tier selection, fault detections, LLM request/response) published over a broadcast channel for WebSocket transport.
-- **Shim layer types** — API mappings, layers, complexity scores, and per-DLL shim suggestions with estimated complexity and confidence, produced from classification data without an LLM call.
+- **Review dashboard data model** — work units, review statuses, the dependency graph, status counts, and review actions are now one set of records shared by the reports, web, and CLI, replacing the duplicate scaffolding in `calxgloss-web`.
+- **Dependency-ordered queueing** — units carry a processing level (classification → shim → PAL → test → function → integration → fix). The dependency graph sorts them topologically, breaking ties by level, and the dashboard automatically blocks units whose dependencies are in a failing state.
+- **Typed progress events** — progress reports travel as typed, serializable events: translation milestones, per-attempt completion, context tier selection, fault detections, and LLM request/response. They are published on a broadcast channel so they can reach the web UI over a WebSocket.
+- **Shim layer records** — shared records describe API mappings, shim layers, and complexity scores, plus per-DLL shim suggestions with estimated complexity and confidence. These are computed from classification data, without an LLM call.
 
 ### Changed
 
 #### Vocabulary
 
-- **Unified on *workspace*** — one directory, one name: `--repo-dir` is now `--workspace`, the config key `repo_dir` is now `workspace`, and `CALXGLOSS_REPO_DIR` is now `CALXGLOSS_WORKSPACE`. `translate`/`batch-translate` lost `--output-dir` (output always lands in the resolved workspace), and dead per-command `--repo` flags are gone.
-- **Terminology corrections** — `ContextTier::Stub` → `Signature` ("stub" is reserved for mocks); FFI *stub* → FFI *binding* (the generated block calls the real DLL); `WorkUnitKind`/`WorkUnitLevel` → `WorkKind`/`WorkLevel`; `ReviewStatus::Merged` dropped (merging is the git effect of Accept, not a second verdict); the scratch PAL package renamed `calxgloss-pal` → `calxgloss-verify-pal`.
-- **Confidence scales disambiguated** — evidence confidence (0–100, shared `Confidence` type), unit confidence (`unit_confidence`, 0.0–1.0), and fault-diagnosis confidence (`fault_confidence`, 0–10) now have distinct names.
+- **Unified on *workspace*** — one directory, one name: the `--repo-dir` flag is now `--workspace`, the config key `repo_dir` is now `workspace`, and the environment variable `CALXGLOSS_REPO_DIR` is now `CALXGLOSS_WORKSPACE`. `translate` and `batch-translate` no longer take `--output-dir` — output always lands in the resolved workspace — and the dead per-command `--repo` flags are gone.
+- **Terminology corrections** — `ContextTier::Stub` is renamed `Signature`, because "stub" is reserved for mocks. An FFI *stub* is now called an FFI *binding*: the generated block calls the real DLL. `WorkUnitKind`/`WorkUnitLevel` are renamed `WorkKind`/`WorkLevel`. `ReviewStatus::Merged` is dropped: merging is the git effect of Accept, not a second verdict. The scratch PAL package is renamed `calxgloss-pal` → `calxgloss-verify-pal`.
+- **Confidence scales disambiguated** — the three confidence values now have separate names: evidence confidence (0–100, the shared `Confidence` type), unit confidence (`unit_confidence`, 0.0–1.0), and fault-diagnosis confidence (`fault_confidence`, 0–10).
 
 #### Workspace layout
 
-- **Reorganized `crates/` into the 5-context layout from `GLOSSARY-MAP.md`** — `crates/pipeline/`, `crates/evidence/`, `crates/integrations/`, `crates/interface/`, and `crates/shared/`, with the meta-crate re-exporting every library crate except `calxgloss-web`.
+- **Reorganized `crates/` into the 5-context layout from `GLOSSARY-MAP.md`** — the crate tree now has `crates/pipeline/`, `crates/evidence/`, `crates/integrations/`, `crates/interface/`, and `crates/shared/`. The meta-crate re-exports every library crate except `calxgloss-web`.
 
 #### GhidraMCP 6.x migration
 
-- **Migrated `calxgloss-ghidra` to the bethington GhidraMCP bridge** (v6.0.0, replacing the deprecated LaurieWired extension): snake_case endpoint surface, JSON response and error support, and name-based decompilation resolved through `search_functions`.
+- **Migrated `calxgloss-ghidra` to the bethington GhidraMCP bridge** (v6.0.0, replacing the deprecated LaurieWired extension) — the client now speaks the bridge's snake_case endpoints, handles JSON responses and JSON errors, and resolves decompilation by function name through `search_functions`.
 
 #### Pipeline & prompts
 
-- **Evidence pre-analysis in batch translation** — `batch_translate` and `batch_translate_from_callgraph` run each evidence scan (type database, type inference, algorithm, memory, sync, callback, control flow, string context, API, constants, serialization) at the start of a batch when its cache file is missing; a missing workspace, unreachable Ghidra server, or failed save only logs a warning and the batch proceeds.
-- **Analysis context in prompts** — the escalate prompt (and, for control flow, the ModuleContext and FullModule translation tiers) reads the persisted evidence caches and renders sections for recognized algorithms, memory lifecycle, concurrency, callbacks, control flow, strings, APIs, and constants; a missing or corrupt cache degrades to no context rather than failing the prompt.
-- **Type and data-structure context from persisted caches** — the previously stubbed prompt context extractors now load the type inference and type database caches and keep the records tied to the target function.
-- **Translation attempts record their context tier**, enabling post-hoc analysis of which context scope yields the best pass rates.
-- **Boxed pipeline futures** — the retry loop's futures are boxed so downstream `Send` checks stop at the boundary instead of overflowing the compiler's trait-evaluation recursion limit.
-- **`classify_dlls` reads PE headers** for accurate per-DLL export/import counts instead of the stale counts from whichever program happens to be open in Ghidra.
-- **Classification records persisted to disk** — `classify` writes `re/classify/{dll}.json` and commits to `main`; later `auto` runs skip re-classification.
+- **Evidence pre-analysis in batch translation** — `batch_translate` and `batch_translate_from_callgraph` now run each evidence scan (type database, type inference, algorithm, memory, sync, callback, control flow, string context, API, constants, serialization) at the start of a batch whenever its cache file is missing. A missing workspace, an unreachable Ghidra server, or a failed save only logs a warning; the batch proceeds.
+- **Analysis context in prompts** — the escalate prompt, and for control flow also the ModuleContext and FullModule translation tiers, now read the persisted evidence caches and render sections for recognized algorithms, memory lifecycle, concurrency, callbacks, control flow, strings, APIs, and constants. A missing or corrupt cache means no context for that section, not a failed prompt.
+- **Type and data-structure context from persisted caches** — the prompt context extractors that were previously stubbed now load the type inference and type database caches, and keep the records tied to the target function.
+- **Translation attempts record their context tier**, so operators can later see which context scope yields the best pass rates.
+- **`classify_dlls` reads PE headers** for accurate per-DLL export/import counts, instead of the stale counts from whichever program happens to be open in Ghidra.
+- **Classification records persisted to disk** — `classify` now writes `re/classify/{dll}.json` and commits it to `main`; later `auto` runs skip re-classification.
 
 ### Fixed
 
-- **Wrapped decompiler signatures parse** — Ghidra's multi-line signature lines failed to parse, so every engine that scans all functions silently skipped those functions (~41 of eqmain.dll's 4,358). Signatures are now joined until the parameter list or body begins. Fixes #54.
-- **Dashboard dependency edges (issue #10)** — the builder now wires the shim→function dependency edge the branch-creation policy already checks, so a sent-back shim cascades `Blocked` to everything translating on top of it; the classify edge's DLL matching and shim unit classification were also corrected. The `Blocked` cascade no longer leaves `StatusCounts` stale.
-- **Review verdict durability (issue #9)** — the dashboard builder now reads send-back and patch-request records, so `SendBack`/`PatchRequested` survive rebuilds and failing roots can cascade `Blocked`. Patch records written before this change read unchanged.
-- **`read_all_patch_records` walked the wrong tree depth** — it never found records at `re/patches/{dll}/{function}/vN.json`, leaving `PendingReview` unreachable in built dashboards.
-- **Review actions 500'd on slashed unit ids** — accept/send-back/patch failed at the audit-trail write because nested parent directories under `re/actions/` were not created.
+- **Wrapped decompiler signatures parse** — Ghidra sometimes writes one function signature across several lines, and those lines failed to parse. Every scan that reads the whole function listing silently skipped those functions — about 41 of eqmain.dll's 4,358. Signature lines are now joined until the parameter list or body begins. Fixes #54.
+- **Dashboard dependency edges (issue #10)** — the dashboard builder now records the shim→function dependency edge that the branch-creation policy already enforces, so a sent-back shim cascades `Blocked` to everything translating on top of it. The builder also matched the classify edge to the wrong DLL and classified shim units wrongly; both are corrected. The `Blocked` cascade no longer leaves `StatusCounts` stale.
+- **Review verdict durability (issue #9)** — the dashboard builder now reads send-back and patch-request records, so `SendBack` and `PatchRequested` verdicts survive a dashboard rebuild and failing roots can cascade `Blocked`. Patch records written before this change read unchanged.
+- **Patch records were never found** — the patch-record reader walked the wrong tree depth, so it never found records at `re/patches/{dll}/{function}/vN.json`, and `PendingReview` was unreachable in built dashboards. The walk depth is corrected.
+- **Review actions 500'd on slashed unit ids** — accept, send-back, and patch requests failed when writing the audit trail for unit ids containing `/`, because the nested parent directories under `re/actions/` were not created. They are now created.
 - **Default allocator names missed Ghidra's underscore-form `operator_new`/`operator_delete`** — the live 6.x decompiler writes the underscore form in function bodies, so whole-name matching never fired and allocation findings were missed. The default sets now carry both spellings. Fixes #6.
-- **`println_content` blanked lines carrying multi-byte characters** — the report-line padding helper compared byte length against the column width while truncation counted characters, printing some short lines empty. It now counts visible characters.
-- **Axum 0.8 route syntax** — routers used the legacy `:id` capture syntax that panicked on startup; all routes now use `{id}`.
-- **Static file serving** — assets resolved against the process CWD instead of the crate directory, and the fallback extractor was incompatible with `fallback_service`, so JS and CSS returned 404.
-- **Live units 404'd in the unit detail endpoint** — the endpoint now consults the live progress state and creates synthetic in-progress units.
+- **Report lines blanked on multi-byte characters** — the report-line padding helper compared byte length against the column width while truncation counted characters, printing some short lines empty. It now counts visible characters.
+- **Web server panicked at startup (Axum 0.8)** — the routers used the legacy `:id` capture syntax, which Axum 0.8 rejects at startup. All routes now use the `{id}` syntax.
+- **Static file serving** — JS and CSS returned 404: assets resolved against the process CWD instead of the crate directory, and the fallback handler was set up wrong. Both are fixed.
+- **Live units 404'd in the unit detail endpoint** — a function still translating in this run had no stored unit to look up. The endpoint now consults the live progress state and creates a synthetic in-progress unit.
 - **LLM request/response log rendered HTML-entity-encoded** — content now renders as raw text with minimal escaping, so JSON and code display correctly.
-- **`showDetail` body scope** — the error handler could not reference `body`; the declaration moved outside the `try/catch`.
-- **`merge_to_main` stale main reference** — a cached ref handle caused merged branch file changes to be lost on hard reset.
-- **Empty cross-reference responses** — a 200 with empty body from GhidraMCP (no callers/callees) is now treated as a valid empty result instead of an error.
+- **Unit detail error handler crashed** — when the detail view failed, its error handler could not reference the code body it meant to report, because the declaration was inside the `try/catch`. The declaration moved outside it.
+- **Merged branch changes lost on hard reset** — the merge kept a cached reference to `main` that had gone stale, so a hard reset undid the merged branch's file changes. The cached reference is gone.
+- **Empty cross-reference responses** — GhidraMCP answers 200 with an empty body when a function has no callers/callees. The client treated that as an error; it is now treated as a valid empty result.
 - **Trims leading/trailing whitespace** from disassembly and decompiler output before sending to the LLM, keeping prompts cleaner and avoiding wasted tokens.
 
 ### Removed
@@ -447,16 +446,16 @@ All evidence results are saved as per-binary JSON documents under `re/analysis/<
 
 ### Refactored
 
-- **Shared JSON persistence plumbing** (`calxgloss-types::persist`) — `save_json`/`load_json`/`analysis_dir` and a generic `JsonStore<T>` now back every evidence persistor and the analysis log persistors, replacing hand-written I/O in each crate.
-- **Module splits across the workspace** — oversized files were split into focused modules: the CLI binary, the Ghidra/LLM/testgen clients, prompt templates/builders, the reports dashboard, the translator pipeline, the verify engine, the git manager, the analyzer, config, the dashboard types, the PAL crate, and the web handlers.
-- **Shared CLI output helpers** — crate-setup and function-writing logic extracted into `utils.rs`, eliminating duplication between `translate` and `batch-translate`.
-- **Shared types** — the duplicated `WindowsApiCall` collapsed into one type; a `display_serde_label!` macro replaces `Display` boilerplate on snake_case serde enums; Ghidra wire shapes and persisted recovered shapes now convert through `From` impls instead of scattered field-by-field copies.
+- **Shared JSON persistence plumbing** (`calxgloss-types::persist`) — one shared JSON store now backs every evidence scan's saved document and the analysis log files, replacing the hand-written file I/O each crate carried.
+- **Module splits across the workspace** — oversized files were split into focused modules: the CLI binary, the Ghidra/LLM/testgen clients, the prompt templates and builders, the reports dashboard, the translator pipeline, the verification crate, the git manager, the analyzer, config, the dashboard types, the PAL crate, and the web handlers.
+- **Shared CLI output helpers** — the crate-setup and function-writing logic moved into `utils.rs`, so `translate` and `batch-translate` share it instead of duplicating it.
+- **Shared types** — the duplicated `WindowsApiCall` is now one type. A macro replaces the `Display` boilerplate on snake_case serde enums, and Ghidra wire shapes and persisted recovered shapes now convert through `From` impls instead of scattered field-by-field copies.
 
 ### Documentation
 
-- **Docs restructure** — `step_by_step.md` split into `docs/roadmap.md`, an archived frozen plan, and `docs/adr/0001-bethington-ghidra-mcp-bridge.md`; the `Documentation/` folder merged into `docs/`.
-- **`docs/standards.md`** — documented coding standards (workspace/crate conventions, error handling, persistence, logging, testing, commit/process rules) for the `code-review` skill's Standards axis.
-- **Ghidra docs split by lifespan** — the v6.0.0 endpoint mapping and record-format reference moved to `docs/ghidra_endpoint_map.md`; `ghidra_integration.md` stays the lifecycle-integration design doc.
+- **Docs restructure** — `step_by_step.md` was split into `docs/roadmap.md`, an archived frozen plan, and `docs/adr/0001-bethington-ghidra-mcp-bridge.md`; the `Documentation/` folder merged into `docs/`.
+- **`docs/standards.md`** — documents the repo's coding standards (workspace and crate conventions, error handling, persistence, logging, testing, commit and process rules) for the `code-review` skill's Standards axis.
+- **Ghidra docs split by lifespan** — the v6.0.0 endpoint mapping and record-format reference live in `docs/ghidra_endpoint_map.md`; `ghidra_integration.md` stays the lifecycle-integration design doc.
 - **Removed internal-roadmap references** from doc-comments and inline comments across the workspace; Rustfmt reformatting pass.
 
 ## [0.1.0] — 2025-09-27
@@ -464,51 +463,51 @@ All evidence results are saved as per-binary JSON documents under `re/analysis/<
 ### Added
 
 #### `calxgloss-translator`
-- **Batch translation** (`batch-translate` CLI subcommand) — translate multiple functions from a single DLL in one invocation; enumerates all exported functions via `--all-functions` or accepts a comma-separated list via `--functions`; per-function pass/fail reporting with a summary showing success/failure counts and pass rate; `--skip-git` for dry-run mode; automatically commits and merges each successful function to a git branch
-- Full translation pipeline: end-to-end GhidraMCP → analysis → test generation → LLM → Rust code workflow, direct translation from pre-collected data, and parameter estimation from decompiler output
-- **Retry logic** — strategy escalation on failure (CompileFix / TestFix / Escalate) with compile-fix and test-fix prompts
+- **Batch translation** (`batch-translate` CLI subcommand) — translates multiple functions from a single DLL in one invocation. It enumerates all exported functions with `--all-functions` or takes a comma-separated list with `--functions`. Every function gets a pass/fail report, and the summary shows success and failure counts with the pass rate. `--skip-git` runs the batch without touching git. Each successful function is automatically committed and merged to a git branch.
+- **Full translation pipeline** — an end-to-end workflow: GhidraMCP → analysis → test generation → LLM → Rust code. It also translates directly from pre-collected data and estimates parameters from decompiler output.
+- **Retry logic** — on failure, the translator escalates its retry strategy (CompileFix / TestFix / Escalate), with dedicated compile-fix and test-fix prompts.
 
 #### `calxgloss-ghidra`
-- GhidraMCP HTTP client with session management, DLL queries (list, info, imports, exports), function queries (disassembly, decompiler, call graph, full analysis), and tracing instrumentation
+- **GhidraMCP HTTP client** — keeps a session against the GhidraMCP bridge and answers DLL queries (list, info, imports, exports) and function queries (disassembly, decompiler output, call graph, full analysis), with tracing logs throughout.
 
 #### `calxgloss-llm`
-- Local LLM client (Ollama/vLLM compatible): non-streaming and SSE streaming completions via the OpenAI-compatible `chat/completions` API, builder-pattern config, code-fence stripping, and tracing instrumentation
+- **Local LLM client** (Ollama/vLLM compatible) — sends non-streaming and SSE streaming completions through the OpenAI-compatible `chat/completions` API, strips code fences from replies, and carries tracing logs.
 
 #### `calxgloss-prompts`
-- Prompt templates with the Askama template engine: translation prompts covering disassembly, decompiler output, Windows API mappings, and baseline tests, plus compile-fix and test-fix prompts
+- **Prompt templates built with the Askama template engine** — translation prompts covering disassembly, decompiler output, Windows API mappings, and baseline tests, plus compile-fix and test-fix prompts.
 
 #### `calxgloss-pal`
-- Platform abstraction layer with full Windows API → Rust equivalent mapping table: 100+ mappings across 10 categories (Win32 Core, GDI, DirectX, Win32 GUI, Audio, COM, Win32 Networking, Win32 Registry, VB6 Runtime)
+- **Platform abstraction layer** with a full Windows API → Rust equivalent mapping table: 100+ mappings across 10 categories (Win32 Core, GDI, DirectX, Win32 GUI, Audio, COM, Win32 Networking, Win32 Registry, VB6 Runtime).
 
 #### `calxgloss-analysis`
-- DLL classification, call graph analysis, and Windows API tagging: classification heuristics with lookup tables for 70+ Windows OS DLLs, 15 Microsoft SDK DLLs (→ wgpu/tiny-skia/skrifa), and 40 known third-party DLLs (→ fmod-rs/cpal/mlua/pyo3/flate2/vb6runtime etc.); `PalMapping` / `CrateReplacement` / `ReverseEngineer` strategies; disassembly scanning for dynamically-loaded APIs
+- **DLL classification, call graph analysis, and Windows API tagging** — classification heuristics with lookup tables for 70+ Windows OS DLLs, 15 Microsoft SDK DLLs (→ wgpu/tiny-skia/skrifa), and 40 known third-party DLLs (→ fmod-rs/cpal/mlua/pyo3/flate2/vb6runtime etc.). A classified DLL takes one of the `PalMapping` / `CrateReplacement` / `ReverseEngineer` strategies. The analysis also scans disassembly for dynamically-loaded APIs.
 
 #### `calxgloss-testgen`
-- FFI binding generation with comprehensive Windows type parsing (60+ type mappings, calling conventions, pointer handling), test input generation with signature-based and disassembly-driven edge case detection, baseline runner for temporary Cargo project compilation and execution, and JSON baseline save/load to `re/baseline/{dll}/{function}/baseline.json`
+- **Test generation** — generates FFI bindings with comprehensive Windows type parsing (60+ type mappings, calling conventions, pointer handling). Test inputs are generated with signature-based and disassembly-driven edge case detection. A baseline runner compiles and runs the tests in a temporary Cargo project, and baseline results save/load as JSON at `re/baseline/{dll}/{function}/baseline.json`.
 
 #### `calxgloss-verify`
-- Sandboxed verification: scaffolds a temporary Cargo project, runs `cargo check`, and verifies behavior against baseline tests; test harness generator and `cargo test` output parsing; PAL stub types for graphics, audio, filesystem, window, and thread abstractions
+- **Sandboxed verification** — scaffolds a temporary Cargo project, runs `cargo check`, and verifies behavior against baseline tests. It generates the test harness and parses `cargo test` output, and provides PAL stub types for graphics, audio, filesystem, window, and thread abstractions.
 
 #### `calxgloss-git`
-- Git automation for the translation workflow: branch naming `re/{dll}/{function}v{N}`, fast-forward and 3-way merges, patch record JSON files for failed translations, and branch/commit/merge/revert operations
+- **Git automation for the translation workflow** — names branches `re/{dll}/{function}v{N}`, performs fast-forward and 3-way merges, writes patch record JSON files for failed translations, and provides branch, commit, merge, and revert operations.
 
 #### `calxgloss-reports`
-- Terminal report formatting: colored ANSI output for translation, verification, and classification reports with pass-rate color-coding, and batch summary output with per-function checkmarks/crosses
+- **Terminal report formatting** — colored ANSI output for translation, verification, and classification reports, with pass-rate color-coding and batch summaries that mark each function with a checkmark or cross.
 
 #### `calxgloss-web`
-- Web UI data models and axum API router scaffold behind the `server` feature flag; dependency-sorted review queue with status counts
+- **Web UI data models and an axum API router scaffold** behind the `server` feature flag, including a dependency-sorted review queue with status counts.
 
 #### `calxgloss` (meta-lib)
-- Meta-lib re-exporting all workspace crates
+- **Meta-lib** re-exporting all workspace crates.
 
 #### `calxgloss-config`
-- Configuration crate with multi-source config loading (file, env, flag precedence), section validation, typed settings, and searched-path diagnostics
+- **Configuration crate** — loads settings from file, environment, and flags in that precedence order, validates each section, exposes typed settings, and reports the paths it searched when a value is missing.
 
 #### `calxgloss-types`
-- Shared data structures with module organization: DLL analysis, function metadata, test cases, translation, verification, and Git automation
+- **Shared data structures**, organized by module: DLL analysis, function metadata, test cases, translation, verification, and Git automation.
 
 #### `calxgloss-cli`
-- Full CLI binary: `clap`-based `classify`, `translate`, and `verify` subcommands wiring the full pipeline (Ghidra → analysis → test generation → LLM prompt → code → write → verify → git branch/commit/merge → report), with configurable retries, LLM config, and `tracing-subscriber` logging
+- **Full CLI binary** — `clap`-based `classify`, `translate`, and `verify` subcommands run the full pipeline (Ghidra → analysis → test generation → LLM prompt → code → write → verify → git branch/commit/merge → report), with configurable retries, LLM config, and `tracing-subscriber` logging.
 
 #### Infrastructure
-- Project scaffolding with 14 workspace crates and a workspace root `Cargo.toml` with shared dependencies
+- **Project scaffolding** — 14 workspace crates and a workspace-root `Cargo.toml` with shared dependencies.
