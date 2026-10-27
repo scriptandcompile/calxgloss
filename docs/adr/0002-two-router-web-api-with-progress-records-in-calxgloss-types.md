@@ -6,39 +6,41 @@
 
 ## Context
 
-The web UI was a review gate: it showed each unit's *result* but told the
-operator nothing about the *process* — pipeline phase position, in-flight unit
-phases, token spend, server state. The route table itself was three duplicated
-router builders, and the WS-only registration of `/api/pipeline` and
-`/api/progress` was an accident of that duplication, not a decision.
+The web UI was a review gate. It showed each unit's *result*, but it told
+the operator nothing about the *process*: where the pipeline stood among its
+phases, which phases in-flight units were in, token spend, and server state.
+The route table was three duplicated router builders. The WS-only
+registration of `/api/pipeline` and `/api/progress` came from that
+duplication. It was not a decision.
 
 ## Decision
 
 Consolidate into **one shared route table where every endpoint declares its
 router set**:
 
-- Server management (`/api/server/*`) and the enhanced `/health` → **all
-  routers** (`serve` and `live`).
-- Live progress (`/api/progress`, `/api/progress/enhanced`, the WS upgrade) →
-  **live router only**; plain `serve` has no live state to report.
-- `/api/pipeline` → **shared**, answering an honest empty payload on plain
-  `serve` rather than 404 (issue #61 precedent).
+- Server management (`/api/server/*`) and the enhanced `/health` register on
+  **all routers** (`serve` and `live`).
+- Live progress (`/api/progress`, `/api/progress/enhanced`, the WS upgrade)
+  registers on the **live router only**. Plain `serve` has no live state to
+  report.
+- `/api/pipeline` is **shared**. On plain `serve` it answers with an honest
+  empty payload rather than a 404 (issue #61 precedent).
 
-Cross-context progress records — `PipelinePhase`, `PhaseProgress`,
+The cross-context progress records — `PipelinePhase`, `PhaseProgress`,
 `BinaryProgress`, `TranslationPhase`, `LiveTranslationState` — live in
-**`calxgloss-types`**, not the web crate or the CLI, so later tracks (W2's
-`PipelineState`, W3's analytics) consume them without depending on the web
-crate.
+**`calxgloss-types`**, not in the web crate or the CLI. That lets later
+tracks — W2's `PipelineState` and W3's analytics — use them without
+depending on the web crate.
 
-Every `PhaseProgress` carries an explicit state
-(`NotStarted` / `InProgress` / `Complete` / `NoDataSource`); phases with no
-backing data source (Restitching, Documentation) render as "no data source" —
-**the UI must never fabricate progress**. Unmeasured values render as `—`,
-never a zero.
+Every `PhaseProgress` has an explicit state (`NotStarted` / `InProgress` /
+`Complete` / `NoDataSource`). A phase with no backing data source
+(Restitching, Documentation) renders as "no data source". **The UI must
+never fabricate progress.** An unmeasured value renders as `—`, never a
+zero.
 
 ## Consequences
 
-The router-declaration rule binds every future endpoint ("every new endpoint
-must state which router(s) it registers in"). The shared-types placement paid
-off exactly as planned: W2 and W3–W4 reused those records. Honest degradation
-became the standing vocabulary for all later web work.
+The router-declaration rule applies to every future endpoint: "every new
+endpoint must state which router(s) it registers in". The shared-types
+placement worked out exactly as planned: W2 and W3–W4 reused those records.
+Honest degradation became the standing vocabulary for all later web work.
