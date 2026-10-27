@@ -2,11 +2,11 @@
 
 Reverse Engineering Harness
 
-**Name etymology:** *Calx* (the pure, calcined residue left after burning away impurities) + *gloss* (the layer of translation and interpretation between languages). In alchemy, calcination burns away everything non-essential, leaving only the irreducible form. That is what this harness does: it burns away the assembly to reveal the essential logic, then adds a gloss — a Rust translation layer — to make it readable, buildable, and cross-platform.
+**Name etymology:** *Calx* (the pure residue left after fire burns away impurities) + *gloss* (the layer of translation and interpretation between languages). In alchemy, calcination burns away everything non-essential and leaves only the irreducible form. This harness works the same way. It removes the assembly to reveal the essential logic, then adds a gloss — a Rust translation layer — to make the result readable, buildable, and cross-platform.
 
 ## Objective
 
-Build an agent harness that reverse engineers project executables and DLLs with the Kuna analysis engine loaded in-process behind the decompiler seam, transforming disassembled code into **cross-platform Rust source code** through a test-driven decompilation workflow. The output runs on Windows, macOS, and Linux with identical observable behavior.
+Build an agent harness that reverse engineers the project's executables and DLLs. It uses the Kuna analysis engine, loaded in-process behind the decompiler seam. It transforms disassembled code into **cross-platform Rust source code** through a test-driven decompilation workflow. The output runs on Windows, macOS, and Linux with identical observable behavior.
 
 ## Core Philosophy
 
@@ -14,8 +14,8 @@ Build an agent harness that reverse engineers project executables and DLLs with 
 2. **Cross-platform by default** — Windows APIs and libraries map to their closest cross-platform Rust equivalents
 3. **Test-driven decompilation** — tests capture original behavior; Rust code must pass those tests
 4. **Incremental restitching** — swap in Rust implementations one at a time, verifying each swap
-5. **LLM-first, discard-when-wrong** — the LLM is the primary engine. Use it aggressively and freely. Throwing away incorrect LLM output is cheap when hosted locally; the cost of not using it is far higher
-6. **Source-control backed reversibility** — every unit of work lands as a commit on its function's attempt branch. The system is always restorable, diffable, and reviewable. No state is lost.
+5. **LLM-first, discard-when-wrong** — the Local LLM does the translating. Use it aggressively and freely. When the LLM is hosted locally, throwing away incorrect output is cheap. The cost of not using it is far higher
+6. **Source-control backed reversibility** — every unit of work is committed to its function's attempt branch. The system can always be restored, diffed, and reviewed. No state is lost.
 7. **Human-in-the-loop review** — a web UI provides structured review of every unit of work, its justification, and its dependency relationships
 
 ## Architecture
@@ -64,40 +64,40 @@ Build an agent harness that reverse engineers project executables and DLLs with 
   calxgloss-git (branch per function attempt) · calxgloss-reports (terminal output)
 ```
 
-The original design's **Restitch Engine** (Phase 6 — swapping translated
-functions back into a working binary) is not yet implemented: the dashboard
-reports it as a phase with no backing data source until the engine exists.
-Everything else in the diagram above is shipped.
+The original design's **Restitch Engine** belongs to Phase 6: it swaps
+translated functions back into a working binary. It is not yet implemented.
+Until that engine exists, the dashboard reports the phase as having no backing
+data source. Everything else in the diagram above is shipped.
 
 ## LLM Orchestration & Fault Tolerance
 
-**The LLM is the primary engine.** It is locally hosted, so the marginal cost of asking it to try, fail, and retry is near-zero. The system is designed to use the LLM constantly, aggressively, and without restraint — discarding failed work is the normal path.
+**The LLM does the translating.** It is hosted locally, so asking it to try, fail, and try again costs almost nothing. The system is built to use the LLM constantly, aggressively, and without restraint. Discarding failed work is the normal path.
 
 ### LLM-First Principle
 
 - **Ask, don't guess.** Every translation decision goes through the LLM. Even simple `mov` → `+` mappings are confirmed.
-- **Fail fast, discard freely.** If the LLM produces incorrect code (tests fail, compilation fails, behavior diverges), the branch is abandoned and a new attempt is made. This is the expected flow, not an exception.
-- **Multiple attempts per function.** A single function may go through 3–10+ LLM rounds: initial translation, first test run, fix attempts, refactoring, edge-case handling. Each round is a new branch, a new commit.
-- **Context window management.** The LLM's context window is a resource to be managed, not a constraint to be avoided. When context is exhausted, the system splits the work and retries.
+- **Fail fast, discard freely.** If the LLM produces incorrect code (tests fail, compilation fails, or behavior diverges), the branch is abandoned and a new attempt starts. This is the expected flow, not an exception.
+- **Multiple attempts per function.** One function may go through 3–10+ LLM rounds: the first translation, the first test run, fix attempts, refactoring, and edge-case handling. Each round gets its own branch and commit.
+- **Context window management.** The LLM's context window is a resource to manage, not a limit to work around. When it runs out, the system splits the work and retries.
 
 ### Fault Detection & Recovery
 
-The harness continuously monitors LLM interactions and detects common failure modes:
+A fault monitor watches the LLM's responses throughout the run and detects these common failures:
 
 | Fault | Detection | Recovery |
 |-------|-----------|----------|
-| **Context window exceeded** | LLM returns error / truncated response | Split the function into smaller chunks; retry with focused context (only the relevant basic block or control-flow region) |
-| **LLM hallucination** (invents non-existent APIs, wrong function signatures) | Test failure, compilation error, mismatch against the engine's symbol cross-references | Branch off from the last known good commit; prompt the LLM with the engine's actual symbols and disassembly as ground truth |
+| **Context window exceeded** | The LLM returns an error or a truncated response | Split the function into smaller chunks; retry with focused context (only the relevant basic block or control-flow region) |
+| **LLM hallucination** (invents non-existent APIs, wrong function signatures) | Test failure, compilation error, or a mismatch against the analysis engine's symbol cross-references | Start a new branch from the last known good commit; give the LLM the analysis engine's actual symbols and disassembly as ground truth |
 | **Infinite compilation-fix loops** | Same prompt → same bad output repeated 3+ times | Escalate to a different prompt strategy (e.g., ask for decompiled pseudo-C instead of raw disassembly; or ask for a minimal reproducer first) |
-| **Wrong behavior but passes tests** | Tests are insufficient / missing edge cases | Enrich the test suite with edge cases read from the scan documents (branch conditions, boundary checks); retry with expanded test coverage |
-| **LLM produces code that compiles but diverges on input X** | Test suite covers more inputs than the LLM saw | Feed the failing test case back to the LLM as a concrete example; ask it to patch |
+| **Wrong behavior but passes tests** | Tests are not enough; edge cases are missing | Add edge cases to the test suite, read from the scan documents (branch conditions, boundary checks); retry with wider test coverage |
+| **LLM produces code that compiles but diverges on input X** | Test suite covers more inputs than the LLM saw | Send the failing test case to the LLM as a concrete example; ask it to patch |
 | **Resource exhaustion** (local LLM OOM, GPU swap) | System monitoring detects high memory/CPU | Reduce context size, switch to smaller model, or queue work for later |
 | **Slow responses** (large context, model overloaded) | Latency exceeds threshold | Stream the prompt into smaller chunks; use the smaller/faster model for simple tasks, reserve large-context model for complex translations |
 | **Prompt corruption / formatting errors** | JSON parse failure, missing fields in LLM output | Retry with stricter output schema; use structured output enforcement |
 
 ### Context Management Strategy
 
-The harness manages LLM context in tiers:
+The harness manages the LLM's context in context tiers:
 
 | Tier | Content | When Used |
 |------|---------|-----------|
@@ -107,7 +107,7 @@ The harness manages LLM context in tiers:
 | **Tier 3 — Module context** | Tier 2 + neighboring functions + shared data structures | Complex inter-function translations, data flow analysis |
 | **Tier 4 — Full module + crate shims** | Tier 3 + shim layer code + PAL trait definitions | Restitching, integration-level work |
 
-**Rule:** Always start with the smallest tier that can do the job. Escalate only when the LLM reports failure.
+**Rule:** Always start with the smallest context tier that can do the job. Escalate only when the LLM reports failure.
 
 ### Branching Strategy for LLM Work
 
@@ -126,7 +126,7 @@ main
 └── re/phase2_audio_function              # Audio function RE unit
 ```
 
-Every LLM attempt is a branch. Failed branches are kept (they are not deleted) because they may contain useful patterns for future attempts. Only after a human approves the final version does the work get merged.
+Every LLM attempt gets its own branch. Failed branches are kept, not deleted, because they may contain useful patterns for later attempts. The work is merged only after a human accepts the final version.
 
 ## Source-Control Backed Reversibility
 
@@ -151,12 +151,12 @@ A **unit of work** is the smallest atomic piece of the reverse engineering proce
 
 ### Dependency-Aware Branching
 
-Branches are created with awareness of their dependencies:
+A branch is created with its dependencies in mind:
 
-1. **Shim layers branch first.** All shim layer branches (`re/shim_wgpu`, `re/shim_cpal`) are created and merged before functions that depend on them.
+1. **Shim layer branches come first.** All shim layer branches (`re/shim_wgpu`, `re/shim_cpal`) are created and merged before the functions that depend on them.
 2. **PAL trait branches precede function branches.** A trait must exist before functions that call it.
-3. **DLL classification branches precede all.** Classification determines what gets shimmed vs. reverse engineered.
-4. **Dependent functions branch from their dependencies.** A function that calls another function in the same DLL branches from the translated dependency.
+3. **DLL classification branches come before all others.** Classification decides which DLLs get a shim and which get reverse engineered.
+4. **A dependent function branches from its dependency.** A function that calls another function in the same DLL starts its branch from that dependency's translated code.
 
 ```
 Dependency Graph → Branch Creation Order:
@@ -201,12 +201,12 @@ Context size: 128k tokens
 ### No Deletion Policy
 
 - **Failed branches are never deleted.** They remain as historical record and may contain useful patterns.
-- **Revert commits are preferred over force-push.** Changes are undone via revert commits, preserving the full history.
+- **Revert commits are preferred over force-push.** A change is undone with a revert commit, so the full history is kept.
 - **The main branch always contains only reviewed, accepted work.** Unreviewed work lives exclusively on feature branches.
 
 ## Web Review UI
 
-A web-based interface provides structured human review of every unit of work. The LLM is used relentlessly; the human is the quality gate.
+A web interface provides structured human review of every unit of work. The LLM is used for everything. The human is the final quality check.
 
 ### UI Layout
 
@@ -254,11 +254,11 @@ A web-based interface provides structured human review of every unit of work. Th
 | Action | Effect |
 |--------|--------|
 | **Accept** | Merge branch into `main`. Unit is complete. |
-| **Send Back** | Return to LLM with reviewer comments. New attempt created on new branch. |
-| **Request Patch** | Ask LLM to fix a specific issue (identified in the UI). New attempt on new branch. |
-| **Skip / unskip (queue checkbox)** | Reviewer intent persisted in the skip set; the unit leaves the work queue until unskipped. Distinct from a classified *Do Not Translate*. |
-| **Compare attempts** | See the full sequence of LLM attempts for this unit and diff any two of them — branches plus patch records, never anything invented. |
-| **Decompiler Context** | See the original disassembly, decompiler output, and engine annotations that informed the translation. |
+| **Send Back** | The unit goes back to the LLM with the reviewer's comments. A new attempt starts on a new branch. |
+| **Request Patch** | Ask the LLM to fix one specific issue (identified in the UI). A new attempt starts on a new branch. |
+| **Skip / unskip (queue checkbox)** | Reviewer intent is saved in the skip set. The unit leaves the queue until the reviewer unskips it. This is distinct from a classified *Do Not Translate*. |
+| **Compare attempts** | Shows every LLM attempt for this unit; any two can be diffed — branches plus patch records, nothing invented. |
+| **Decompiler Context** | Shows the original disassembly, decompiler output, and analysis engine annotations that informed the translation. |
 
 ### Justification Requirements
 
@@ -279,18 +279,18 @@ The UI renders a dependency graph showing:
 - Which translated functions call other translated functions (vs. FFI)
 - The merge path: how each branch traces back to its base commits
 
-This lets the reviewer understand not just whether one unit is correct, but how it fits into the whole.
+The reviewer sees not only whether one unit is correct, but where it fits in the whole.
 
 ### Review Queue Management
 
 - Units are presented in dependency order (no function is reviewed before its dependencies are accepted)
 - The reviewer can reorder the queue manually for batch review
-- Units that have been sitting in the queue >24 hours are highlighted as stale
+- Units that have waited in the queue for more than 24 hours are highlighted as stale
 - A global "Accept All Pending" button accepts everything in dependency order
 
 ## Cross-Platform Translation Strategy
 
-The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows APIs to cross-platform Rust equivalents. During translation, every Windows API call is tagged and replaced with the appropriate PAL trait method.
+The harness keeps a **Platform Abstraction Layer (PAL)**. It maps Windows APIs to cross-platform Rust equivalents. During translation, every Windows API call is tagged and replaced with its PAL trait method.
 
 ### Windows Library → Rust Crate Mapping
 
@@ -391,7 +391,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
    - Extract all imported functions (what the DLL depends on)
    - Build a classification report: which DLLs need reverse engineering vs. which can be replaced
 
-   **Key Principle:** We are reverse engineering the *entire program structure* but we do NOT reverse engineer libraries that have crate equivalents. Even if a crate needs a shim layer to match the original library's API exactly, that is vastly easier than reverse engineering from disassembly.
+   **Key Principle:** We are reverse engineering the *entire program structure*, but we do NOT reverse engineer libraries that have crate equivalents. Even when a crate needs a shim layer to match the original library's API exactly, that is far easier than reverse engineering from disassembly.
 
 3. **Windows API Cataloguing**
    - Extract every imported function from every DLL
@@ -406,8 +406,8 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
    - For each import, record: API name, source DLL, called functions, translation target crate
 
 4. **Analysis Engine Load**
-   - The analysis engine loads the target binary in-process — nothing to attach to, spawn, or install
-   - Related DLLs enter the loaded program beside it; decompile answers come back through the seam's scan read cache
+   - The analysis engine loads the target binary in-process. There is nothing to attach to, spawn, or install
+   - Related DLLs enter the loaded program alongside it; decompiled answers reach consumers through the seam's scan read cache
 
 5. **Symbol & Structure Extraction**
    - Extract all symbols: exports, imports, global variables
@@ -422,7 +422,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
 
 ### Phase 2: Disassembly & Platform API Recognition
 
-**Goal:** Break down binaries and tag every Windows API call for cross-platform translation.
+**Goal:** Disassemble the binaries and tag every Windows API call for cross-platform translation.
 
 1. **Function-Level Disassembly**
    - For each function, extract the full disassembly listing from the analysis engine
@@ -514,7 +514,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
 **Goal:** Create tests that verify the current behavior of each disassembled function.
 
 1. **Stub Creation**
-   - For each function, create a FFI stub in Rust that calls the original binary
+   - For each function, create an FFI binding in Rust that calls the original binary
    - Map original types to Rust equivalents (integers, pointers, structs)
    - Generate a harness that can invoke the original function with controlled inputs
 
@@ -524,7 +524,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
      - Boundary values (zero, max, negative, null)
      - Typical/expected values
      - Edge cases identified in the disassembly (comparisons, checks)
-   - Use the engine's analysis hints (type information, comments) to guide inputs
+   - Use the analysis engine's findings (type information, comments) to guide the inputs
 
 3. **Output Observation**
    - For each test input, invoke the original function via FFI
@@ -555,7 +555,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
    - Generate Rust code incrementally, respecting dependency order
 
 3. **Type Refinement**
-   - Use the engine's type information as starting point
+   - Use the analysis engine's type information as a starting point
    - Refine types based on usage patterns in disassembly
    - Replace raw pointers with safe Rust types where possible
    - Use `enum` for tagged unions, `struct` for records
@@ -629,7 +629,7 @@ The harness maintains a **Platform Abstraction Layer (PAL)** that maps Windows A
 4. **Iterative Expansion**
    - As more functions are translated to Rust, reduce the assembly footprint
    - Each iteration reduces the FFI/linkage surface area
-   - Target: fully Rust implementation with minimal assembly residue
+   - Target: a fully Rust implementation with as little assembly left as possible
 
 ### Phase 7: Documentation & Artifacts
 
@@ -699,29 +699,29 @@ STAGE 3: Integration
 
 ## Key Design Decisions
 
-1. **DLL classification drives strategy**: Every DLL is classified before work begins. Only project-specific and unknown third-party DLLs are reverse engineered. Known libraries (Windows SDK, DirectX, sound/physics/game engines, charting libs) are replaced with Rust crates.
+1. **DLL classification decides strategy**: Every DLL is classified before work begins. Only project-specific and unknown third-party DLLs are reverse engineered. Known libraries (Windows SDK, DirectX, sound/physics/game engines, charting libs) are replaced with Rust crates.
 
 2. **Crate-first, shim always**: When a Rust crate equivalent exists, use it. Write a shim layer to translate the original DLL's API surface to the crate's API. This is orders of magnitude easier than reverse engineering.
 
-3. **Test-driven decompilation**: Tests are the ground truth. If the Rust code passes the tests, it's correct by definition of the observed behavior.
+3. **Test-driven decompilation**: Tests are the ground truth. If the Rust code passes the tests, it is correct by definition of the observed behavior.
 
 4. **Incremental restitching**: Never replace the entire binary at once. Swap in Rust functions one at a time, verifying each swap.
 
 5. **The analysis engine as single source of truth**: Disassembly, decompiler output, and type info from the loaded program are the authoritative reference. No guessing.
 
-6. **Safety boundary**: All unsafe FFI calls to the original binary are isolated in a dedicated module. The translation target is to eliminate each unsafe block.
+6. **Safety boundary**: All unsafe FFI calls to the original binary are isolated in a dedicated module. The goal of translation is to eliminate each unsafe block.
 
 7. **No binary reconstruction**: We do not attempt to rebuild the original executable format. The output is a Rust project that functionally replaces the original.
 
 8. **Reverse engineer program structure, not libraries**: The goal is to reverse engineer the entire application architecture and program-specific logic, while replacing known library dependencies with their crate equivalents.
 
-9. **LLM-first, discard-when-wrong**: The locally-hosted LLM is the primary translation engine. Use it aggressively and without restraint. Every failed attempt is cheap — branch, try, fail, discard, retry. The cost of incorrect output is a few git branches; the cost of not using the LLM is a project that never gets translated.
+9. **LLM-first, discard-when-wrong**: The Local LLM does the translating. Use it aggressively and without restraint. Every failed attempt is cheap: branch, try, fail, discard, retry. The cost of incorrect output is a few git branches. The cost of not using the LLM is a project that never gets translated.
 
-10. **Source-control backed reversibility**: Every unit of work is a Git branch and commit. No state is lost. Failed branches are kept as historical record. The system is always restorable, diffable, and reviewable. Human review gates what reaches `main`.
+10. **Source-control backed reversibility**: Every unit of work is a Git branch and commit. No state is lost. Failed branches are kept as a historical record. The system can always be restored, diffed, and reviewed. Human review decides what reaches `main`.
 
 11. **Human-in-the-loop review via web UI**: The LLM does the work; the human validates it. Every unit of work is presented with justification, test results, attempt history, and dependency context. The reviewer accepts, sends back, or requests patches.
 
-12. **Context-tiered LLM usage**: Always start with the smallest LLM context that can do the job. Escalate from function stub → disassembly → disassembly+tests → module context → full module only when lower tiers fail. This minimizes token usage while maximizing LLM effectiveness.
+12. **Context-tiered LLM usage**: Always start with the smallest context tier that can do the job. Escalate from function stub → disassembly → disassembly and tests → module context → full module only when a lower context tier fails. This keeps token usage low while keeping the LLM effective.
 
 ## Risk Mitigation
 
@@ -729,30 +729,30 @@ STAGE 3: Integration
 |------|-----------|
 | The analysis engine misidentifies function boundaries | Cross-reference decompiler output with CFG; manual override capability |
 | Non-deterministic behavior (timing, memory layout) | Focus tests on observable I/O; avoid timing-dependent tests |
-| Complex calling conventions | Use the engine's calling convention analysis; verify with FFI stubs |
+| Complex calling conventions | Use the analysis engine's calling convention analysis; verify with FFI bindings |
 | Position-independent code | Handle relative addressing in translation; test with varied load addresses |
 | Anti-reversing techniques | Note in translation confidence; may require manual intervention |
-| Data segment ambiguity | Use the engine's data type analysis; verify with usage-pattern tests |
+| Data segment ambiguity | Use the analysis engine's data type analysis; verify with usage-pattern tests |
 | Misclassified DLL (false positive for crate replacement) | Verify shim layer passes all original behavior tests before removing FFI; fallback to RE if shim fails |
 | Crate API diverges from original DLL | Implement comprehensive shim tests covering all observed call patterns; patch shim iteratively |
 | No crate exists for known third-party DLL | Fall back to reverse engineering; treat as unknown third-party category |
-| LLM context window exhausted | Tiered context strategy; split functions into smaller chunks; retry with focused context |
+| LLM context window exhausted | Escalate through the context tiers; split functions into smaller chunks; retry with focused context |
 | LLM produces incorrect code consistently | Multiple retry strategies escalate: context split → different prompt template → different model → manual intervention |
 | Human reviewer becomes bottleneck | Web UI batch actions, dependency-ordered queue, and clear justifications keep review throughput high |
 | Branch sprawl (hundreds of failed branches) | Automated cleanup of branches older than 7 days with no reviewer interaction; archived to `refs/archive/` |
 
 ## Tooling Requirements
 
-- **Analysis engine**: The Kuna engine crate (`calxgloss-decomp`) loads the target binary in-process behind the decompiler seam and serves disassembly, decompiler output, and symbol queries, with the scan read cache in front of it (ADR-0041)
+- **Analysis engine**: The Kuna engine crate (`calxgloss-decomp`) loads the target binary in-process behind the decompiler seam. It answers disassembly, decompiler output, and symbol queries. The scan read cache sits in front of it (ADR-0041)
 - **Rust toolchain**: `cargo`, `rustc` with unstable features for inline assembly if needed
 - **FFI bindings**: `bindgen` or manual FFI definitions for original binary interface
-- **Test framework**: `cargo test` with arbitrary test generation capabilities
-- **Binary analysis**: `ldd`/`objdump` for supplementary dependency and format info
+- **Test framework**: `cargo test`, with support for generating tests automatically
+- **Binary analysis**: `ldd`/`objdump`, for extra dependency and file-format information
 - **Local LLM**: Locally-hosted model (e.g., vLLM, Ollama, llama.cpp) with sufficient context window (128k+ tokens)
 - **Git**: Version control for all units of work; branch naming automation
-- **Web UI framework**: Rust-based web server (e.g., `axum` or `actix-web`) serving a plain HTML/JS/CSS frontend for the review interface
+- **Web UI framework**: a Rust web server (e.g., `axum` or `actix-web`) that serves a plain HTML/JS/CSS frontend for the review interface
 - **LLM client library**: `reqwest` + JSON parsing for local LLM API communication (OpenAI-compatible or Ollama API)
-- **Prompt template engine**: Handle structured prompt generation with context-tier variables
+- **Prompt templates**: Generate prompts in a structured way, using context tier variables
 - **Dependency graph visualization**: Render graph of branches, dependencies, and merge paths (e.g., `d3-graph` or `vis.js` in the web UI)
 
 ## Output Structure
@@ -794,11 +794,11 @@ recompiled_project/
 
 ## Minimal Viable Product
 
-Before building the full system with web UI, fault detection, tiered context management, and dependency-aware branching, the MVP delivers a working reverse engineering loop with the absolute minimum infrastructure. The MVP proves the core concept: **can an LLM reliably translate disassembled functions to Rust that passes behavior tests?**
+The MVP comes before the full system. The full system adds the web UI, fault detection, tiered context management, and dependency-aware branching. The MVP delivers a working reverse engineering loop with the absolute minimum infrastructure. It answers one question: **can an LLM reliably translate disassembled functions to Rust that passes behavior tests?**
 
 ### MVP Goals
 
-1. Translate a single function from a single DLL from disassembly to working Rust
+1. Translate a single function from a single DLL's disassembly into working Rust
 2. Generate baseline tests that capture the original behavior
 3. Verify the Rust implementation matches the original
 4. Commit the result to git with a readable diff
@@ -824,7 +824,7 @@ Before building the full system with web UI, fault detection, tiered context man
 
 #### 1. CLI-Only Interface
 
-No web UI implementation in the MVP. The web UI crate (`calxgloss-web`) is scaffolded in the workspace but all review happens via terminal output (stdout). The harness outputs to stdout and writes files.
+The MVP has no web UI. The workspace includes a scaffold for the web UI crate (`calxgloss-web`), but all review happens through terminal output (stdout). The harness prints to stdout and writes files.
 
 ```bash
 # Classify DLLs
@@ -860,7 +860,7 @@ Output is plain text or JSON. A human reads the terminal to review.
 
 #### 4. Test Generation (Minimal)
 
-- Generate FFI stubs for the target function
+- Generate FFI bindings for the target function
 - Generate 10-20 test inputs (boundaries, typical values, null/zero)
 - Run against original binary, capture outputs
 - Run against Rust implementation, compare
@@ -1020,7 +1020,7 @@ If the MVP succeeds on even one function, the full system (with web UI, fault de
 
 ## Workspace and Directory Structure
 
-The harness manages two distinct directory sets. Understanding this separation is critical to how the system operates.
+The harness manages two distinct directory sets. Keeping them separate is critical to how the system works.
 
 ### Source Directory
 
@@ -1030,7 +1030,7 @@ The **source directory** is the original project being reverse engineered. It co
 - Text files, scripts, documentation from the original project
 - Any ancillary files the original program depends on at runtime
 
-The harness **never modifies** the source directory. It reads from it, copies what is needed for testing and verification, but the source directory is treated as an immutable artifact — the ground truth from which all analysis flows.
+The harness **never modifies** the source directory. It reads from the directory and copies what is needed for testing and verification. The source directory is treated as an immutable artifact — it is the ground truth, and all analysis starts from it.
 
 ### Resultant Directory
 
@@ -1039,7 +1039,7 @@ The **resultant directory** is the output workspace where all reverse engineerin
 - The destination for all translated code, test artifacts, analysis documents, and review materials
 - The place where the project is rebuilt, tested, and verified
 
-The resultant directory is created fresh for each reverse engineering target. It contains everything needed to build, test, and run the translated version of the original project.
+The harness creates the resultant directory fresh for each reverse engineering target. It contains everything needed to build, test, and run the translated version of the original project.
 
 #### Resultant Directory Layout
 
@@ -1164,7 +1164,7 @@ The resultant workspace contains **at least one Rust project per EXE/DLL** in th
 | `ui_framework.dll` is entirely independent | Keep as its own project |
 | Multiple small DLLs with few functions each | Consolidate into a single crate |
 
-The decision to split or consolidate is documented in `docs/plans/` and recorded in `workspace_config.json`.
+The harness documents each decision to split or consolidate in `docs/plans/` and records it in `workspace_config.json`.
 
 #### Git Source Control in Resultant Directory
 
@@ -1172,7 +1172,7 @@ The resultant directory is **always under git**. The harness:
 - Initializes a fresh git repo for each reverse engineering target
 - Configures `.gitignore` to exclude build artifacts, binaries, and LLM cache
 - Uses the branch naming convention defined in the Source-Control section
-- Every harness operation (classification, test generation, translation, review) creates commits
+- Creates commits for every harness operation (classification, test generation, translation, review)
 
 ```bash
 # Initial setup creates:
@@ -1264,7 +1264,7 @@ control flow or external state mutation observed.
 
 ##### Analysis Document Format
 
-Technical analysis documents are structured as:
+Technical analysis documents have this structure:
 
 ```markdown
 # DLL Dependency Analysis: <dll_name>
@@ -1318,7 +1318,7 @@ The `source/` directory in the resultant workspace contains **selective copies**
 | User data, personal files | Privacy |
 | Dependencies already classified as crate replacements | Not needed if we have the crate |
 
-The harness automates this selection using the DLL classification results and the scans' import/export findings to determine what is actually required for testing and verification.
+The harness automates this selection. It uses the DLL classification results and the scans' import/export findings to work out what is actually needed for testing and verification.
 
 #### Workspace Configuration
 
@@ -1373,15 +1373,15 @@ The `workspace_config.json` file tracks harness state and decisions:
 }
 ```
 
-This file is updated by the harness after each major operation and is also human-editable for overriding harness decisions (e.g., changing a DLL's strategy from "reverse_engineer" to "crate_replacement" if the human discovers a crate the harness missed).
+The harness updates this file after each major operation. Humans can also edit it to override harness decisions — for example, changing a DLL's strategy from "reverse_engineer" to "crate_replacement" if the human discovers a crate the harness missed.
 
 1. All selected functions have Rust implementations that pass their behavior tests
 2. The combined system (Rust + FFI/assembly) produces identical output to the original binary for all tested inputs
 3. The project builds successfully on Windows, macOS, and Linux with `cargo build --target <target>`
 4. The PAL abstraction produces identical observable behavior across all three platforms
-5. The translation confidence is documented per function, including which Windows APIs were replaced
+5. Every function documents its translation confidence, including which Windows APIs were replaced
 6. The restitched build compiles and runs on all target platforms
 7. Every unit of work has a Git branch, a structured commit, and a review entry in the web UI
 8. LLM fault detection catches and recovers from context exhaustion, hallucination, and infinite retry loops automatically
 9. The web UI presents every unit in dependency order with justification, test results, and attempt history
-10. Failed LLM branches are preserved (not deleted) and available for pattern analysis
+10. Failed LLM branches stay preserved (never deleted) and remain available for pattern analysis
