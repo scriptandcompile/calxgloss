@@ -458,7 +458,7 @@ pub(super) fn print_coverage(coverage: Option<&calxgloss_types::ScanCoverage>) {
 }
 
 // ============================================================
-// Dashboard accept/reject helpers
+// Dashboard accept/send-back helpers
 // ============================================================
 
 /// Walk up from CWD to find the Git repository root.

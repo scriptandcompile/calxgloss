@@ -315,7 +315,7 @@ fn main() -> Result<()> {
         Command::Dashboard {
             follow: _,
             interval: _,
-            command: Some(DashboardSubcommand::Reject { target, reason }),
+            command: Some(DashboardSubcommand::SendBack { target, reason }),
         } => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

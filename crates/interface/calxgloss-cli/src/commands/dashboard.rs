@@ -1,4 +1,4 @@
-//! Dashboard-related handlers: dashboard, view, accept, reject, accept-all.
+//! Dashboard-related handlers: dashboard, view, accept, send-back, accept-all.
 
 use anyhow::{Context, Result};
 use calxgloss::ReviewStatus;
@@ -199,11 +199,11 @@ pub async fn handle_dashboard_accept(target: &str) -> Result<()> {
     Ok(())
 }
 
-/// Handle the `dashboard reject <target> --reason "..."` subcommand.
+/// Handle the `dashboard send-back <target> --reason "..."` subcommand.
 ///
-/// Records the rejection in `re/rejections/{binary}/{function}/vN.json`.
+/// Records the send-back in `re/rejections/{binary}/{function}/vN.json`.
 pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Result<()> {
-    info!(target = %target, reason = ?reason, "Handling dashboard reject");
+    info!(target = %target, reason = ?reason, "Handling dashboard send-back");
 
     let view_target =
         ViewTarget::parse(target).context("Invalid target format. Use: <binary>/<function>/vN")?;
@@ -211,7 +211,7 @@ pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Resu
         binary = %view_target.binary,
         function = %view_target.function,
         attempt = ?view_target.specific_attempt,
-        "Parsed reject target"
+        "Parsed send-back target"
     );
 
     let reason = reason.unwrap_or("no reason provided");
@@ -224,25 +224,25 @@ pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Resu
     let branch_name = resolve_branch(&git, &view_target)
         .context("Could not find a matching branch for this unit")?;
 
-    info!(branch = %branch_name, "Resolved branch for rejection");
+    info!(branch = %branch_name, "Resolved branch for the send-back");
 
-    // Parse the branch name into a GitBranch for the reject operation
+    // Parse the branch name into a GitBranch for the send-back operation
     let (binary, function, attempt) = parse_branch_for_accept(&branch_name);
     let branch = GitBranch::new(&binary, &function, attempt).context("Invalid branch name")?;
 
-    // Perform the rejection
+    // Perform the send-back
     println!();
     println!(
         "  {} Branch '{}' will be sent back for fixes.",
         red_bold("✗"),
         branch.name
     );
-    println!("  {} Rejection reason: \"{}\"", bold("Reason:"), reason);
+    println!("  {} Send-back reason: \"{}\"", bold("Reason:"), reason);
 
     match git.reject_branch(&branch, reason) {
         Ok(rejection_path) => {
             println!(
-                "  {} Rejection recorded at: {}",
+                "  {} Send-back recorded at: {}",
                 green_bold("✓"),
                 rejection_path.display()
             );
@@ -255,12 +255,12 @@ pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Resu
         }
         Err(e) => {
             println!(
-                "  {} Failed to reject branch '{}': {}",
+                "  {} Failed to send branch back '{}': {}",
                 red_bold("✗"),
                 branch.name,
                 e
             );
-            return Err(anyhow::anyhow!("Reject failed: {}", e));
+            return Err(anyhow::anyhow!("Send-back failed: {}", e));
         }
     }
 

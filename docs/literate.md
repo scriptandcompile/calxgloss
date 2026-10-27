@@ -943,7 +943,7 @@ The `Command` enum (`cli_types.rs:L197-L1041`) is the full surface: `init`,
 `doctor` (checks the Kuna engine loads the target; `--fix` is accepted for
 compatibility but has nothing to install), `classify`,
 `translate`, `batch-translate`, `auto`, `serve`, `live`, `verify`,
-`dashboard` — whose `view`/`accept`/`reject`/`accept-all` subcommands live in
+`dashboard` — whose `view`/`accept`/`send-back`/`accept-all` subcommands live in
 `DashboardSubcommand` (`cli_types.rs:L1045-L1135`) — `auto-shim`, `gc`,
 `config`, and one command per evidence engine (`typesdb`, `typeinfer`,
 `algorithm`, `memory`, `sync`, `globalstate`, `consts`, `callback`,

@@ -813,7 +813,7 @@ pub(super) enum Command {
     /// Use `--follow` to watch for changes and auto-refresh.
     /// Use subcommands to act on units:
     /// - `accept <target>` — merge the unit's branch into main
-    /// - `reject <target> --reason "..."` — send back with comments
+    /// - `send-back <target> --reason "..."` — send back with comments
     /// - `view <target>` — inspect a single unit of work in detail
     Dashboard {
         /// Follow mode: continuously watch for new/changed branches
@@ -1081,27 +1081,27 @@ pub(super) enum DashboardSubcommand {
         target: String,
     },
 
-    /// Reject a unit and send it back for fixes
+    /// Send a unit back for fixes
     ///
-    /// Records the rejection reason in `re/rejections/{binary}/{function}/vN.json`
+    /// Records the send-back reason in `re/rejections/{binary}/{function}/vN.json`
     /// so the dashboard can display send-back history.
     ///
     /// # Arguments
     ///
     /// * `<target>` — Unit identifier in the format `binary/function` or `binary/function/vN`
-    /// * `--reason` — Optional rejection reason (shown in the dashboard)
+    /// * `--reason` — Optional send-back reason (shown in the dashboard)
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss dashboard reject game_logic/DrawPrimitive/v2 --reason "wrong shader mapping"
+    /// calxgloss dashboard send-back game_logic/DrawPrimitive/v2 --reason "wrong shader mapping"
     /// ```
-    Reject {
-        /// Unit to reject: `<binary>/<function>` or `<binary>/<function>/vN`
+    SendBack {
+        /// Unit to send back: `<binary>/<function>` or `<binary>/<function>/vN`
         #[arg(value_name = "TARGET")]
         target: String,
 
-        /// Rejection reason (optional)
+        /// Send-back reason (optional)
         #[arg(long, short)]
         reason: Option<String>,
     },
@@ -1113,7 +1113,7 @@ pub(super) enum DashboardSubcommand {
     /// the acceptance record.
     ///
     /// Only units with status `Queued` or `PendingReview` are accepted.
-    /// Already-accepted or rejected units are skipped silently.
+    /// Already-accepted or sent-back units are skipped silently.
     ///
     /// # Arguments
     ///

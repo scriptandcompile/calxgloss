@@ -786,7 +786,7 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 | GET | `/api/units/{id}/attempts` / `attempts/diff` | Persisted attempt list + side-by-side diff |
 | GET | `/api/units/{id}/decomp` | Unit's engine-side view (decompiled context for the unit) |
 | POST | `/api/units/{id}/accept` | Merge branch into main + write acceptance record |
-| POST | `/api/units/{id}/send-back` | Record rejection reason |
+| POST | `/api/units/{id}/send-back` | Record send-back reason |
 | POST | `/api/units/{id}/patch` | Request retry translation |
 | POST | `/api/units/{id}/skip` / `unskip` | Skip state (`re/review/skips.json`) |
 | GET/POST | `/api/batch/accept` / `send-back` / `skip` | Batch review actions over a unit set |
@@ -814,7 +814,7 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 The web UI can act on translation units:
 
 - **Accept** — merges the `re/{binary}/{function}v{N}` branch into `main`, writes `re/accepts/{dll}/{function}/v{N}.json` with timestamp
-- **Reject/Send-Back** — writes `re/rejections/{dll}/{function}/v{N}.json` with reason (branch is NOT deleted)
+- **Send-Back** — writes `re/rejections/{dll}/{function}/v{N}.json` with reason (branch is NOT deleted)
 - **Request Patch** — queues a retry (increments version, creates new branch)
 - **Skip / Unskip** — keeps a unit out of (or back in) the translation queue
 - **Cancel current unit** — aborts the in-flight unit at the earliest safe point
