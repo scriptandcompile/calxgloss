@@ -706,3 +706,40 @@ fn the_cache_forwards_the_engine_provenance() {
         .expect("the wrapped Kuna source names its engine");
     assert_eq!(provenance.name, "kuna");
 }
+
+// ============================================================
+// Capability report pass-through (issue #354)
+// ============================================================
+
+/// A cache never changes capabilities, it only caches answers — so the
+/// wrapped engine's declaration rides `CachedScanSource` and
+/// `PipelineSource` byte-identically, and a source whose engine declares
+/// nothing would propagate the same empty, fully-unknown declaration the
+/// trait default hands up.
+#[test]
+fn the_cache_and_pipeline_wrappers_pass_the_capability_report_through_byte_identically() {
+    let (workspace, binary) = workspace_with_fixture();
+    let raw = KunaSource::load(&binary).expect("the fixture must load for scanning with Kuna");
+    let raw_report = ScanSource::capability_report(&raw);
+    let raw_bytes = serde_json::to_string(&raw_report).expect("the report serializes");
+    assert!(
+        !raw_report.families.is_empty(),
+        "the wrapped Kuna source declares its full roster"
+    );
+
+    let cached = cached_source(workspace.path(), &binary);
+    let cached_bytes =
+        serde_json::to_string(&cached.capability_report()).expect("the report serializes");
+    assert_eq!(
+        cached_bytes, raw_bytes,
+        "the cache passes the wrapped source's report through untouched"
+    );
+
+    let pipeline = calxgloss_decomp::PipelineSource::from(cached.clone());
+    let pipeline_bytes =
+        serde_json::to_string(&pipeline.capability_report()).expect("the report serializes");
+    assert_eq!(
+        pipeline_bytes, raw_bytes,
+        "the pipeline wrapper forwards the wrapped source's report byte-for-byte"
+    );
+}

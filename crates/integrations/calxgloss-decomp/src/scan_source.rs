@@ -41,7 +41,7 @@ use crate::model::{
     StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
 };
 use calxgloss_kuna::KunaSource;
-use calxgloss_types::EngineProvenance;
+use calxgloss_types::{AvailabilityStatus, CapabilityReport, EngineProvenance, FamilyCapability};
 
 /// The read-only program facts every evidence engine pulls from the engine.
 ///
@@ -146,7 +146,70 @@ pub trait ScanSource {
     fn engine_provenance(&self) -> Option<EngineProvenance> {
         None
     }
+
+    /// What the engine behind this source can currently answer, family by
+    /// family.
+    ///
+    /// The seam's own answer surface, declared by the engine: one entry per
+    /// query family — the families of [`QUERY_FAMILIES`], paired to this
+    /// trait's own query methods — naming whether the engine can answer it
+    /// *right now*, with a bounded reason line when it cannot (issue #354,
+    /// ADR-0053's honesty doctrine applied one level up). The report is
+    /// live session state, read once when a source opens and held for the
+    /// run; it never persists into a scan document, whose admitted coverage
+    /// stays the persisted half.
+    ///
+    /// The default declares nothing: every family then reads
+    /// [`EffectiveAvailability::Unknown`](calxgloss_types::EffectiveAvailability)
+    /// — never answerable, so an undeclared question can never be treated
+    /// as an answer, and never unavailable, so unknown never reads absent.
+    /// That leaves every existing implementor and offline fake program
+    /// byte-for-byte as it behaved, exactly the `engine_provenance`
+    /// precedent. [`KunaSource`] names its full roster, and
+    /// [`CachedScanSource`](crate::CachedScanSource) and
+    /// [`PipelineSource`] forward the wrapped source's report untouched: a
+    /// cache never changes capabilities, it only caches answers.
+    fn capability_report(&self) -> CapabilityReport {
+        CapabilityReport::default()
+    }
 }
+
+/// The seam's query families, paired one-for-one against its own query
+/// methods: each entry names one family's stable, machine-comparable id and
+/// the trait methods that answer it.
+///
+/// The trait's fourteen program-query reads group into twelve question
+/// families — the three Type Manager reads (`data_types`, `struct_layout`,
+/// `enum_values`) ask as one family, the rest one method each — while the
+/// two self-knowledge reads (`engine_provenance`, `capability_report`)
+/// answer no program question and belong to no family. This roster is the
+/// declared side of the seam crate's roster pin (issue #354): the pin pairs
+/// it against the trait's own methods (a method no family claims, a family
+/// claiming a method the trait does not carry, and a method claimed twice
+/// each fault loudly) and against the capability report every source
+/// declares (missing, doubled, and orphaned entries fault through the
+/// shared `CapabilityReport::roster_faults`). Every future seam-primitive
+/// track (P28's masked byte search, P29's call paths) enters by growing
+/// this roster inside its own change — the pin is what makes forgetting
+/// fault. Family ids are how consumers — prompts, retry decisions, and
+/// P21's unknown records — name a family across the whole track.
+pub const QUERY_FAMILIES: &[(&str, &[&str])] = &[
+    ("function-inventory", &["functions"]),
+    ("decompilation", &["decompile"]),
+    ("disassembly", &["disassembly"]),
+    ("strings", &["strings"]),
+    ("caller-edges", &["callers"]),
+    ("xrefs", &["xrefs_to"]),
+    (
+        "type-database",
+        &["data_types", "struct_layout", "enum_values"],
+    ),
+    ("data-items", &["data_items"]),
+    ("imports", &["imports"]),
+    ("exports", &["exports"]),
+    ("image-base", &["image_base"]),
+    ("memory-reads", &["read_memory"]),
+];
 
 /// The engine's decompile mapped to the seam's shape, raw — the text as the
 /// engine rendered it, before the decompiler-noise pre-filter has seen it.
@@ -387,6 +450,33 @@ impl ScanSource for KunaSource {
             fingerprint: Some(calxgloss_kuna::KUNA_PIN_REV.to_string()),
         })
     }
+
+    fn capability_report(&self) -> CapabilityReport {
+        // Kuna declares its full roster honestly today: every query
+        // family the seam exposes, all answerable, none with a reason to
+        // admit. The declaration is built from the seam's own family
+        // roster, so it can never drift from the seam's shape — and the
+        // day a pinned Kuna cannot answer a family, that day's roster is
+        // exactly where the admission appears, reasoned (issue #354).
+        full_roster_report()
+    }
+}
+
+/// Every family on the seam's own roster, each answerable and none
+/// admitted — the declaration [`KunaSource`] makes today, and the report
+/// the seam crate's roster pin pairs one-for-one against
+/// [`QUERY_FAMILIES`] in its own tests.
+fn full_roster_report() -> CapabilityReport {
+    CapabilityReport {
+        families: QUERY_FAMILIES
+            .iter()
+            .map(|(family, _)| FamilyCapability {
+                id: (*family).to_string(),
+                status: AvailabilityStatus::Answerable,
+                reason: None,
+            })
+            .collect(),
+    }
 }
 
 /// The one concrete read source a translation batch hands to every consumer.
@@ -529,6 +619,332 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Cached(cache) => ScanSource::engine_provenance(cache),
             Self::Kuna(source) => ScanSource::engine_provenance(source),
+        }
+    }
+
+    fn capability_report(&self) -> CapabilityReport {
+        // Capabilities forward like identity, untouched: the cache tier
+        // never changes capabilities, it only caches answers, and both
+        // arms stand behind the same engine — so the report the pipeline
+        // holds is exactly the report the engine declared, byte for byte
+        // (issue #354). A source whose engine declares nothing propagates
+        // the empty, fully-unknown declaration the trait default hands up.
+        match self {
+            Self::Cached(cache) => ScanSource::capability_report(cache),
+            Self::Kuna(source) => ScanSource::capability_report(source),
+        }
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calxgloss_types::EffectiveAvailability;
+
+    /// The reads that answer self-knowledge rather than a program
+    /// question, so they stand outside every family by design. A new
+    /// identity or self-describing read joins this list on purpose; a new
+    /// program query never does — the roster pairing demands its family.
+    const NON_QUERY_READS: &[&str] = &["engine_provenance", "capability_report"];
+
+    /// The family ids the seam's roster declares.
+    fn declared_families() -> Vec<&'static str> {
+        QUERY_FAMILIES.iter().map(|(family, _)| *family).collect()
+    }
+
+    /// The query methods the seam trait itself declares, read off this
+    /// file's own source. The roster pairs against the trait this way so
+    /// the pin stands on the seam's actual shape rather than a second
+    /// hand-kept list: a method added to the trait with no family entry
+    /// in the roster faults, and so does a roster entry naming a method
+    /// the trait does not carry.
+    fn seam_query_methods() -> Vec<String> {
+        let source = include_str!("scan_source.rs");
+        let marker = "pub trait ScanSource {";
+        let body = &source[source
+            .find(marker)
+            .expect("the seam declares its own trait")
+            + marker.len()..];
+        let mut depth = 1usize;
+        let mut methods = Vec::new();
+        let stripped = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace('{', " { ")
+            .replace('}', " } ");
+        let mut tokens = stripped.split_whitespace();
+        while let Some(token) = tokens.next() {
+            match token {
+                "{" => depth += 1,
+                "}" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                "fn" if depth == 1 => {
+                    let name = tokens.next().expect("a method name follows `fn`");
+                    methods.push(
+                        name.split('(')
+                            .next()
+                            .expect("a method name ends at its parameter list")
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        methods.retain(|name| !NON_QUERY_READS.contains(&name.as_str()));
+        methods
+    }
+
+    /// The data-level verdict of the roster pairing: does the roster give
+    /// every query method of the trait exactly one family, and does every
+    /// family entry name a method the trait actually carries? Each fault
+    /// spells one drift in its own words, so the drift can only ever fail
+    /// loudly.
+    fn roster_pairing_faults(methods: &[String], roster: &[(&str, &[&str])]) -> Vec<String> {
+        let mut faults = Vec::new();
+        for method in methods {
+            let claims = roster
+                .iter()
+                .filter(|(_, family_methods)| family_methods.contains(&method.as_str()))
+                .count();
+            if claims == 0 {
+                faults.push(format!("seam method `{method}` has no family entry"));
+            } else if claims > 1 {
+                faults.push(format!(
+                    "seam method `{method}` is claimed by {claims} families"
+                ));
+            }
+        }
+        for (family, family_methods) in roster {
+            for method in *family_methods {
+                if !methods.iter().any(|m| m == *method) {
+                    faults.push(format!(
+                        "family `{family}` names `{method}`, a method the seam does not carry"
+                    ));
+                }
+            }
+        }
+        faults
+    }
+
+    /// A source that answers the seam's queries and names no capability
+    /// at all — what every test fake and offline stand-in gets from the
+    /// trait default without writing a line about itself.
+    struct SilentSource;
+
+    impl ScanSource for SilentSource {
+        async fn functions(&self) -> Result<Vec<FunctionSummary>> {
+            Ok(Vec::new())
+        }
+
+        async fn decompile(&self, _name: &str) -> Result<DecompiledFunction> {
+            Ok(DecompiledFunction {
+                name: String::new(),
+                signature: String::new(),
+                body: String::new(),
+            })
+        }
+
+        async fn strings(&self) -> Result<Vec<StringLiteral>> {
+            Ok(Vec::new())
+        }
+
+        async fn callers(&self, _address: u64) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
+            Ok(Vec::new())
+        }
+
+        async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+            Ok(Vec::new())
+        }
+
+        async fn struct_layout(&self, _name: &str) -> Result<StructLayout> {
+            Ok(StructLayout {
+                name: String::new(),
+                size: 0,
+                alignment: 0,
+                fields: Vec::new(),
+            })
+        }
+
+        async fn enum_values(&self, _name: &str) -> Result<EnumDefinition> {
+            Ok(EnumDefinition {
+                name: String::new(),
+                size: 0,
+                members: Vec::new(),
+            })
+        }
+
+        async fn data_items(&self) -> Result<Vec<DataItem>> {
+            Ok(Vec::new())
+        }
+
+        async fn imports(&self) -> Result<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn exports(&self) -> Result<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn image_base(&self) -> Result<u64> {
+            Ok(0)
+        }
+
+        async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+    }
+
+    // -- the roster pin: report pairs the roster, roster pairs the trait --
+
+    #[test]
+    fn the_roster_pairs_the_seams_own_query_methods_one_for_one() {
+        // ADR-0053's engine-stamps/roster-pins doctrine one level up
+        // (issue #354): the seam declares the families and pairs them
+        // against its own trait — every query method of the trait belongs
+        // to exactly one family, and every family names methods the trait
+        // actually carries. A future seam-primitive track (P28, P29)
+        // grows the trait and must grow this roster in the same change,
+        // or this pin faults.
+        let methods = seam_query_methods();
+        assert_eq!(
+            methods.len(),
+            QUERY_FAMILIES.iter().map(|(_, m)| m.len()).sum::<usize>(),
+            "the parsed trait and the roster agree on the query-method count"
+        );
+        assert!(
+            roster_pairing_faults(&methods, QUERY_FAMILIES).is_empty(),
+            "the roster must pair every seam method exactly once: {:?}",
+            roster_pairing_faults(&methods, QUERY_FAMILIES)
+        );
+    }
+
+    #[test]
+    fn a_trait_method_with_no_family_entry_fails_the_roster_pairing_loudly() {
+        // The P28/P29 posture proven in-test: a new query method whose
+        // family the roster was never grown to carry names itself.
+        let mut methods = seam_query_methods();
+        methods.push("masked_byte_search".into());
+        assert_eq!(
+            roster_pairing_faults(&methods, QUERY_FAMILIES),
+            ["seam method `masked_byte_search` has no family entry"],
+            "a seam method no family entry answers fails loudly"
+        );
+    }
+
+    #[test]
+    fn a_roster_entry_naming_no_method_fails_the_roster_pairing_loudly() {
+        let mut roster: Vec<(&str, &[&str])> = QUERY_FAMILIES.to_vec();
+        roster.push(("ghost-reads", &["no_such_read"]));
+        assert_eq!(
+            roster_pairing_faults(&seam_query_methods(), &roster),
+            ["family `ghost-reads` names `no_such_read`, a method the seam does not carry"],
+            "a family entry naming a method no seam query is fails loudly"
+        );
+    }
+
+    #[test]
+    fn one_method_claimed_by_two_families_fails_the_roster_pairing_loudly() {
+        let mut roster: Vec<(&str, &[&str])> = QUERY_FAMILIES.to_vec();
+        roster.push(("second-inventory", &["functions"]));
+        assert_eq!(
+            roster_pairing_faults(&seam_query_methods(), &roster),
+            ["seam method `functions` is claimed by 2 families"],
+            "a method two families both claim fails loudly"
+        );
+    }
+
+    #[test]
+    fn the_declared_report_pairs_the_roster_one_for_one() {
+        // The report side of the same pin: Kuna's declaration names every
+        // family on the roster exactly once and nothing the roster never
+        // carried.
+        assert!(
+            full_roster_report()
+                .roster_faults(&declared_families())
+                .is_empty(),
+            "a fresh Kuna declaration must pair one-for-one with the seam's families"
+        );
+    }
+
+    #[test]
+    fn a_seam_method_with_no_family_entry_in_the_report_fails_loudly() {
+        // `decompile` answers through the `decompilation` family; drop
+        // that entry and the seam's own read stands uncovered, naming
+        // itself as the fault.
+        let mut report = full_roster_report();
+        report.families.retain(|entry| entry.id != "decompilation");
+        assert_eq!(
+            report.roster_faults(&declared_families()),
+            ["declared family `decompilation` is missing from the report"],
+            "a seam method whose family the engine stopped declaring fails loudly"
+        );
+    }
+
+    #[test]
+    fn a_family_entry_doubled_in_the_report_fails_loudly() {
+        let mut report = full_roster_report();
+        let doubled = report.families[0].clone();
+        report.families.push(doubled);
+        assert_eq!(
+            report.roster_faults(&declared_families()),
+            ["declared family `function-inventory` appears 2 times in the report"],
+            "a family declared twice fails loudly"
+        );
+    }
+
+    #[test]
+    fn a_family_entry_naming_no_seam_method_fails_loudly() {
+        let mut report = full_roster_report();
+        report.families.push(FamilyCapability {
+            id: "masked-byte-search".into(),
+            status: AvailabilityStatus::Answerable,
+            reason: None,
+        });
+        assert_eq!(
+            report.roster_faults(&declared_families()),
+            ["report names `masked-byte-search`, a family the seam's roster never carried"],
+            "an entry no seam method stands behind fails loudly"
+        );
+    }
+
+    // -- the honest default: declared-absent reads unknown, both ways -----
+
+    #[test]
+    fn a_source_that_declares_nothing_reads_every_family_as_unknown() {
+        // The trait default is the honest default, and the pin the whole
+        // track reads: a family never declared reads unknown — never
+        // answerable, so an undeclared question can never be treated as
+        // an answer, and never unavailable, so unknown never reads absent
+        // (issue #354). The cache and pipeline wrappers propagate this
+        // same empty declaration untouched.
+        let report = SilentSource.capability_report();
+        assert!(
+            report.families.is_empty(),
+            "the trait default declares nothing"
+        );
+        for (family, _) in QUERY_FAMILIES {
+            let availability = report.availability_for(family);
+            assert_eq!(
+                availability,
+                EffectiveAvailability::Unknown,
+                "`{family}` was never declared, so it reads unknown"
+            );
+            assert_ne!(availability, EffectiveAvailability::Answerable);
+            assert_ne!(availability, EffectiveAvailability::Unavailable);
         }
     }
 }

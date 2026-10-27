@@ -9,14 +9,14 @@
 //! artifact layout reads back. The engine-native API is pinned in
 //! `calxgloss-kuna/tests/kuna_scan.rs`.
 
-use calxgloss_decomp::{EngineError, PipelineSource, ScanSource, Xref};
+use calxgloss_decomp::{EngineError, PipelineSource, QUERY_FAMILIES, ScanSource, Xref};
 use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
 use calxgloss_testfixtures::{
     EXPORT_NAMES, IMPORT_DLL_NAMES, IMPORT_FUNCTIONS, STRING_LITERALS, TARGET_FILE_NAME,
 };
 use calxgloss_types::{
-    BinaryIdentity, DllCategory, DllInfo, Export, FunctionInfo, Import, analysis_dir, load_json,
-    save_json,
+    BinaryIdentity, DllCategory, DllInfo, EffectiveAvailability, Export, FunctionInfo, Import,
+    analysis_dir, load_json, save_json,
 };
 
 /// The loader's spelling of a fixture name: MinGW COFF symbols carry a
@@ -459,6 +459,34 @@ fn the_seam_names_its_engine() {
             && KUNA_PIN_REV.len() == 7
             && KUNA_PIN_REV.chars().all(|c| c.is_ascii_hexdigit()),
         "the pin names a short git commit: {KUNA_RELEASE} @ {KUNA_PIN_REV}"
+    );
+}
+
+/// The seam's own capability read (issue #354): the live Kuna source over
+/// the fixture declares its full roster honestly — every query family the
+/// seam exposes named exactly once, all answerable, none with a reason to
+/// admit — pairing one-for-one against the seam crate's family roster.
+/// Today every family is answerable, so there is nothing to admit; the
+/// day a pin cannot answer one, the day's declaration is where that
+/// appears, reasoned, and this pin fails.
+#[test]
+fn the_kuna_source_declares_its_full_answer_surface() {
+    let report = fixture_pipeline_source().capability_report();
+    let declared: Vec<&str> = QUERY_FAMILIES.iter().map(|(family, _)| *family).collect();
+    assert!(
+        report.roster_faults(&declared).is_empty(),
+        "the live report must pair one-for-one with the seam's families"
+    );
+    for (family, _) in QUERY_FAMILIES {
+        assert_eq!(
+            report.availability_for(family),
+            EffectiveAvailability::Answerable,
+            "Kuna can answer `{family}` on its own seam today"
+        );
+    }
+    assert!(
+        report.families.iter().all(|entry| entry.reason.is_none()),
+        "a fully answerable roster gives consumers nothing to admit"
     );
 }
 

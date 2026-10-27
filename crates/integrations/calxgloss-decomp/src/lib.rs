@@ -55,5 +55,5 @@ pub use model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionSummary,
     StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref, rva_from_va,
 };
-pub use scan_source::{PipelineSource, ScanSource};
+pub use scan_source::{PipelineSource, QUERY_FAMILIES, ScanSource};
 pub use type_write_source::{NewStructField, TypeWriteSource};

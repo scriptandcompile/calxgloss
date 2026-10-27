@@ -544,6 +544,15 @@ impl ScanSource for CachedScanSource {
         // produced it (issue #208).
         ScanSource::engine_provenance(&self.inner.source)
     }
+
+    fn capability_report(&self) -> calxgloss_types::CapabilityReport {
+        // A cache never changes capabilities, it only caches answers, so
+        // the wrapped engine's declaration passes through untouched —
+        // byte-identically on a warm replay as on the cold first read
+        // (issue #354). A source whose engine declares nothing propagates
+        // the empty, fully-unknown declaration.
+        ScanSource::capability_report(&self.inner.source)
+    }
 }
 
 // ============================================================

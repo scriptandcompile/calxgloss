@@ -53,6 +53,7 @@
 /// accumulator, so `compute_stats` still covers the whole run's history.
 pub const MAX_LOG_ENTRIES: usize = 10_000;
 
+pub mod capability;
 pub mod classification_overrides;
 pub mod complexity;
 pub mod confidence;
@@ -83,6 +84,9 @@ pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
 
+pub use capability::{
+    AvailabilityStatus, CapabilityReport, EffectiveAvailability, FamilyCapability,
+};
 pub use classification_overrides::{
     BinaryClassificationOverride, ClassificationOverrideControl, ClassificationOverrides,
     classification_override_records_path,
