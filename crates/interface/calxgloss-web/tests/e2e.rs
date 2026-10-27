@@ -3,8 +3,10 @@
 //! These tests spin up the axum server in a real git repository with sample data,
 //! then verify both API responses and headless-browser rendering.
 //!
-//! Run API-level tests: `cargo test --features server --test e2e`
-//! Run browser tests:   `cargo test --features server --test e2e headless -- --ignored`
+//! Run everything, API and browser tests alike:
+//! `cargo test --features server --test e2e`
+//! Browser tests skip themselves at runtime when no Chrome/Chromium is
+//! installed; set `$CHROME` to name a browser binary outside the usual search.
 
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_translator::assembly::PipelineSpec;
@@ -9098,9 +9100,7 @@ async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
 /// narrows everything. The CSV builder (exposed as
 /// `window.calxglossFaultsCsv`) is pinned against the same fixture.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_faults_view_renders_filters_and_exports() {
     let fixture = TestFixture::new();
     write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
@@ -9110,7 +9110,9 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Faults tab.
@@ -9217,9 +9219,7 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
 /// With no fault log at all, the Faults tab says so plainly — no wall of
 /// zeros, no error.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_faults_view_honest_empty_state() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -9228,7 +9228,9 @@ async fn test_headless_faults_view_honest_empty_state() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Faults tab.
@@ -9284,9 +9286,7 @@ async fn test_headless_faults_view_honest_empty_state() {
 /// The fixture timestamps are relative to now so the 7-day window keeps
 /// holding exactly one attempt whenever the test runs.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_token_usage_view_renders_cost_and_time_range() {
     let fixture = TestFixture::new();
     let now = std::time::SystemTime::now()
@@ -9324,7 +9324,9 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Token Usage tab.
@@ -9475,9 +9477,7 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
 /// With no token usage log at all — or a corrupt one — the Token Usage tab
 /// says so plainly: no wall of zeros, no error.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_token_usage_view_honest_empty_state() {
     for kind in ["missing", "corrupt"] {
         let fixture = TestFixture::new();
@@ -9493,7 +9493,9 @@ async fn test_headless_token_usage_view_honest_empty_state() {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let browser = launch_headless_browser();
+        let Some(browser) = launch_headless_browser() else {
+            return;
+        };
         let tab = open_dashboard_tab(&browser, fixture.port());
 
         // Switch to the Token Usage tab.
@@ -9550,9 +9552,7 @@ async fn test_headless_token_usage_view_honest_empty_state() {
 /// The fixture timestamps are relative to now so the 7-day window keeps
 /// holding exactly the two recent attempts whenever the test runs.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
     let fixture = TestFixture::new();
     let now = std::time::SystemTime::now()
@@ -9594,7 +9594,9 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Strategy Analytics tab.
@@ -9694,9 +9696,7 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
 /// With no prompt-strategy log at all — or a corrupt one — the Strategy
 /// Analytics tab says so plainly: no wall of zeros, no error.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_strategy_analytics_view_honest_empty_state() {
     for kind in ["missing", "corrupt"] {
         let fixture = TestFixture::new();
@@ -9712,7 +9712,9 @@ async fn test_headless_strategy_analytics_view_honest_empty_state() {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let browser = launch_headless_browser();
+        let Some(browser) = launch_headless_browser() else {
+            return;
+        };
         let tab = open_dashboard_tab(&browser, fixture.port());
 
         // Switch to the Strategy Analytics tab.
@@ -9763,9 +9765,7 @@ async fn test_headless_strategy_analytics_view_honest_empty_state() {
 /// per-tier table — with an unmeasured tier rendering an em dash, never
 /// a fabricated number. The time-range filter re-renders in place.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     let fixture = TestFixture::new();
     let now = std::time::SystemTime::now()
@@ -9838,7 +9838,9 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the LLM Metrics tab.
@@ -9963,9 +9965,7 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
 /// With no token usage log at all — or a corrupt one — the LLM Metrics
 /// tab says so plainly: no wall of zeros, no error.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_llm_metrics_view_honest_empty_state() {
     for kind in ["missing", "corrupt"] {
         let fixture = TestFixture::new();
@@ -9981,7 +9981,9 @@ async fn test_headless_llm_metrics_view_honest_empty_state() {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let browser = launch_headless_browser();
+        let Some(browser) = launch_headless_browser() else {
+            return;
+        };
         let tab = open_dashboard_tab(&browser, fixture.port());
 
         // Switch to the LLM Metrics tab.
@@ -10031,9 +10033,7 @@ async fn test_headless_llm_metrics_view_honest_empty_state() {
 /// the override chip on the overridden row, the function counts, and the
 /// token totals — all read straight from the persisted history.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binaries_view_renders_rows() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
@@ -10043,7 +10043,9 @@ async fn test_headless_binaries_view_renders_rows() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Binaries tab.
@@ -10103,9 +10105,7 @@ async fn test_headless_binaries_view_renders_rows() {
 /// ones carry no `binary` field — the Binaries tab says so plainly: no
 /// empty table shell, no wall of zeros, no error.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binaries_view_honest_empty_state() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -10114,7 +10114,9 @@ async fn test_headless_binaries_view_honest_empty_state() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Binaries tab.
@@ -10155,9 +10157,7 @@ async fn test_headless_binaries_view_honest_empty_state() {
 /// unit's review status, and the shortcut to the existing
 /// classification-override flow.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binaries_detail_panel_expands() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
@@ -10167,7 +10167,9 @@ async fn test_headless_binaries_detail_panel_expands() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Binaries tab and wait for the rows.
@@ -10286,9 +10288,7 @@ async fn wait_for_shim_tracker(tab: &headless_chrome::Tab, needle: &str) -> bool
     false
 }
 
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binaries_detail_shim_tracker() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
@@ -10299,7 +10299,9 @@ async fn test_headless_binaries_detail_shim_tracker() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -10356,9 +10358,7 @@ async fn test_headless_binaries_detail_shim_tracker() {
     }
 }
 
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binaries_detail_shim_tracker_honest_states() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
@@ -10390,7 +10390,9 @@ async fn test_headless_binaries_detail_shim_tracker_honest_states() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -10484,9 +10486,7 @@ async fn wait_for_pal_tracker(tab: &headless_chrome::Tab, needle: &str) -> bool 
 /// generated scratch PAL crate defines it) and one missing marker
 /// (PlatformCore — nothing defines it).
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binaries_detail_pal_tracker() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
@@ -10497,7 +10497,9 @@ async fn test_headless_binaries_detail_pal_tracker() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -10573,9 +10575,7 @@ async fn test_headless_binaries_detail_pal_tracker() {
 /// Issue #134: a binary with no persisted API-call artifacts shows the
 /// honest empty state — no fabricated trait list.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binaries_detail_pal_tracker_honest_empty_state() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
@@ -10586,7 +10586,9 @@ async fn test_headless_binaries_detail_pal_tracker_honest_empty_state() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -11557,32 +11559,42 @@ async fn test_build_dashboard_api() {
 // Headless browser test (requires Chromium/Chrome installed)
 // ─────────────────────────────────────────────────────────────
 
-/// Launch headless Chrome with the flags that work inside containers/CI.
+/// Launch headless Chrome with the flags that work inside containers/CI, or
+/// return `None` — printing a skip note — when no browser is installed.
+/// `default_executable` checks `$CHROME`, then `google-chrome-stable`,
+/// `chromium`, and friends on PATH, so the browser tests run by default
+/// wherever a browser exists and pass trivially (loudly) where none does.
 ///
 /// Chrome's CDP calls are **blocking**, so every browser test must run on a
 /// multi-thread runtime (`#[tokio::test(flavor = "multi_thread")]`): on the
 /// default current-thread runtime the blocking calls starve the axum server
 /// task spawned by the same test, the page is never served, and navigation
 /// times out with "The event waited for never came".
-fn launch_headless_browser() -> headless_chrome::Browser {
+fn launch_headless_browser() -> Option<headless_chrome::Browser> {
     use headless_chrome::{Browser, LaunchOptionsBuilder};
 
-    Browser::new(
-        LaunchOptionsBuilder::default()
-            .headless(true)
-            .args(vec![
-                std::ffi::OsStr::new("--no-sandbox"),
-                std::ffi::OsStr::new("--disable-gpu"),
-                std::ffi::OsStr::new("--disable-dev-shm-usage"),
-                // Wide viewport: narrow windows clamp the pipeline row's
-                // head track to its minimum and mask column-alignment
-                // bugs that only appear once tracks grow with content.
-                std::ffi::OsStr::new("--window-size=1400,900"),
-            ])
-            .build()
-            .expect("build chrome launch options"),
+    if headless_chrome::browser::default_executable().is_err() {
+        eprintln!("skipping browser test: no Chrome/Chromium found (set $CHROME to name one)");
+        return None;
+    }
+    Some(
+        Browser::new(
+            LaunchOptionsBuilder::default()
+                .headless(true)
+                .args(vec![
+                    std::ffi::OsStr::new("--no-sandbox"),
+                    std::ffi::OsStr::new("--disable-gpu"),
+                    std::ffi::OsStr::new("--disable-dev-shm-usage"),
+                    // Wide viewport: narrow windows clamp the pipeline row's
+                    // head track to its minimum and mask column-alignment
+                    // bugs that only appear once tracks grow with content.
+                    std::ffi::OsStr::new("--window-size=1400,900"),
+                ])
+                .build()
+                .expect("build chrome launch options"),
+        )
+        .expect("launch headless chrome"),
     )
-    .expect("launch headless chrome")
 }
 
 /// Open a tab on the fixture's server and wait for the page to load.
@@ -11641,12 +11653,7 @@ fn eval_count(tab: &headless_chrome::Tab, expr: &str) -> i64 {
 /// The actual data rendering is verified by the API-level tests above,
 /// which are faster and don't require a browser installation.
 ///
-/// This test is marked `#[ignore]` because it requires
-/// Chromium/Chrome to be installed on the test machine.
-///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_browser_page_loads() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -11655,7 +11662,9 @@ async fn test_headless_browser_page_loads() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     // Navigate to the server's root (HTML page) and wait for it to load.
     let tab = open_dashboard_tab(&browser, fixture.port());
 
@@ -11722,9 +11731,7 @@ async fn test_headless_browser_page_loads() {
 /// the card must render the values served by `GET /api/server/status` —
 /// version, uptime, and the pipeline state.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_server_status_card() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -11733,7 +11740,9 @@ async fn test_headless_server_status_card() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The card renders asynchronously once the dashboard fetches settle;
@@ -11792,9 +11801,7 @@ async fn test_headless_server_status_card() {
 /// the panel must render with shutdown/restart buttons and a log-level
 /// selector populated with the levels the server accepts.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_server_control_panel() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -11803,7 +11810,9 @@ async fn test_headless_server_control_panel() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The panel renders asynchronously once the dashboard fetches settle;
@@ -11862,9 +11871,7 @@ async fn test_headless_server_control_panel() {
 /// 8 total, including Phase 2.5 (PAL Design) — and Restitching and
 /// Documentation must render as no-data-source, never as zero progress.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_pipeline_phase_bar_live() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -11897,7 +11904,9 @@ async fn test_headless_pipeline_phase_bar_live() {
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The bar renders asynchronously once the pipeline fetch settles;
@@ -11969,9 +11978,7 @@ async fn test_headless_pipeline_phase_bar_live() {
 /// drives its per-binary endpoint, and on a router with no scope handle
 /// attached the server's honest 503 reason surfaces as an error toast.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_pipeline_binary_rows() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -12034,7 +12041,9 @@ async fn test_headless_pipeline_binary_rows() {
     // Give the event-forwarding task time to drain the channel.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Rows render asynchronously once the pipeline fetch settles;
@@ -12348,9 +12357,7 @@ async fn test_headless_pipeline_binary_rows() {
 /// buttons. A live reclassification to a translation strategy restores the
 /// full row and moves it up into table order on the next refresh.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_pipeline_pal_rows_compact() {
     let fixture = TestFixture::new();
     // d3d9.dll: classified PalMapping on disk, with function artifacts
@@ -12380,7 +12387,9 @@ async fn test_headless_pipeline_pal_rows_compact() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // game_logic.dll (full row) plus audio.dll and d3d9.dll (compact —
@@ -12579,9 +12588,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
 /// drives the lifecycle endpoints — and the buttons gate by the server's
 /// own transition table at every step.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_controls_header_tracks_live_state() {
     let fixture = TestFixture::new();
     let events = TranslationEvents::new(128);
@@ -12597,7 +12604,9 @@ async fn test_headless_controls_header_tracks_live_state() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let header_state = || {
@@ -12758,9 +12767,7 @@ async fn test_headless_controls_header_tracks_live_state() {
 /// POST /api/pipeline/restart with the chosen selectors — the header moves
 /// back to running and the live loop's request slot carries the choices.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_restart_dialog_drives_endpoint() {
     let fixture = TestFixture::new();
     let events = TranslationEvents::new(128);
@@ -12781,7 +12788,9 @@ async fn test_headless_restart_dialog_drives_endpoint() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The header settles on complete, which unlocks Restart.
@@ -12933,9 +12942,7 @@ async fn test_headless_restart_dialog_drives_endpoint() {
 /// slot. The run-level machine never moves in either direction. Mirrors
 /// the restart-dialog endpoint test.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binary_translation_toggle_matrix() {
     let fixture = TestFixture::new();
     let events = TranslationEvents::new(128);
@@ -12967,7 +12974,9 @@ async fn test_headless_binary_translation_toggle_matrix() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Rows render asynchronously once the pipeline fetch settles; poll
@@ -13139,9 +13148,7 @@ async fn test_headless_binary_translation_toggle_matrix() {
 /// the rows, and the fetched order already honors the pending focus: the
 /// dashboard shows what the live run will do at its next binary boundary.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_focus_reorders_served_pipeline_rows() {
     let fixture = TestFixture::new();
     let events = TranslationEvents::new(128);
@@ -13165,7 +13172,9 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let row_order = || {
@@ -13236,9 +13245,7 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
 /// Paused, and the success toast names both halves of the swap. The
 /// run-level machine never moves: the row button steers, never walks.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_binary_start_swaps_the_rows() {
     let fixture = TestFixture::new();
     let events = TranslationEvents::new(128);
@@ -13272,7 +13279,9 @@ async fn test_headless_binary_start_swaps_the_rows() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let row_order = || {
@@ -13377,9 +13386,7 @@ async fn test_headless_binary_start_swaps_the_rows() {
 /// to the live mode — and confirming drives the existing
 /// POST /api/server/shutdown, taking the accept loop down.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_shutdown_dialog_drives_endpoint() {
     let fixture = TestFixture::new();
     let events = TranslationEvents::new(128);
@@ -13394,7 +13401,9 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Shut Down Server is available from the very first snapshot.
@@ -13473,9 +13482,7 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
 /// endpoint end to end, with the rendered state following the server's
 /// answer rather than a local guess.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_scope_controls_panel() {
     let fixture = TestFixture::new();
     // The run is already steered: one priority function and constraints in
@@ -13521,7 +13528,9 @@ async fn test_headless_scope_controls_panel() {
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let checked = |id: &str| {
@@ -13823,9 +13832,7 @@ async fn test_headless_scope_controls_panel() {
 /// says so honestly and disables itself — the controls header's honesty
 /// rule, same shape (issue #95, W2.6).
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_scope_controls_honest_without_control() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -13834,7 +13841,9 @@ async fn test_headless_scope_controls_honest_without_control() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let mut honest = false;
@@ -13871,9 +13880,7 @@ async fn test_headless_scope_controls_honest_without_control() {
 /// clicking a unit backed by canned token-usage and fault-log artifacts
 /// must render the four process sections — tier, faults, tokens, strategies.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_unit_process_sections() {
     let fixture = TestFixture::new();
     write_canned_run_telemetry(&fixture);
@@ -13883,7 +13890,9 @@ async fn test_headless_unit_process_sections() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
@@ -13980,9 +13989,7 @@ async fn test_headless_unit_process_sections() {
 /// tiers, token counts, and commit identities from the seeded logs and
 /// patch records — and no "nothing to compare" note.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_unit_attempts_list_metadata() {
     let fixture = TestFixture::new();
     write_token_usage_fixture(
@@ -14016,7 +14023,9 @@ async fn test_headless_unit_attempts_list_metadata() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -14079,9 +14088,7 @@ async fn test_headless_unit_attempts_list_metadata() {
 /// shows exactly one attempt entry and the "nothing to compare" note —
 /// the panel never pretends a diff is possible.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_unit_attempts_single_attempt_note() {
     let fixture = TestFixture::new();
     // A queued unit with one branch and no patch records or logs.
@@ -14092,7 +14099,9 @@ async fn test_headless_unit_attempts_single_attempt_note() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -14171,9 +14180,7 @@ fn add_attempt_branch_with_commit(fixture: &TestFixture, attempt: u32, file_stem
 /// additions and deletions styled per the dark theme — and picking a
 /// different pair changes the rendered diff.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_unit_attempt_diff_side_by_side() {
     let fixture = TestFixture::new();
     add_attempt_branch_with_commit(&fixture, 3, "draw_primitive_v3");
@@ -14183,7 +14190,9 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -14301,9 +14310,7 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
 /// drives the endpoint end to end, with the rendered state following the
 /// record the server echoes back.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_unit_overrides_tab() {
     let fixture = TestFixture::new();
     write_canned_run_telemetry(&fixture);
@@ -14332,7 +14339,9 @@ async fn test_headless_unit_overrides_tab() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view and open the telemetry-backed unit's detail.
@@ -14485,9 +14494,7 @@ async fn test_headless_unit_overrides_tab() {
 /// adopts the override the server echoes back, and the record persists in
 /// the workspace for the next run.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_classification_override_panel() {
     let fixture = TestFixture::new();
     write_canned_classification_record(&fixture, "fmod.dll", "UnknownThirdParty");
@@ -14511,7 +14518,9 @@ async fn test_headless_classification_override_panel() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Wait for the row, then click its Classify button.
@@ -14623,9 +14632,7 @@ async fn test_headless_classification_override_panel() {
 /// no classification-override control attached, the panel renders the
 /// server's honest refusal instead of controls (issue #97).
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_classification_override_honest_without_control() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -14645,7 +14652,9 @@ async fn test_headless_classification_override_honest_without_control() {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let mut listed = false;
@@ -14696,9 +14705,7 @@ async fn test_headless_classification_override_honest_without_control() {
 /// canned per-binary call-graph record must render the Windows API mappings
 /// and call graph context sections with the artifact's names.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_unit_analysis_sections() {
     let fixture = TestFixture::new();
     write_canned_analysis_context(&fixture);
@@ -14708,7 +14715,9 @@ async fn test_headless_unit_analysis_sections() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
@@ -14789,9 +14798,7 @@ async fn test_headless_unit_analysis_sections() {
 /// the token-usage log, the pipeline panel must show a time estimate and the
 /// review queue must render a per-unit effort column.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_pipeline_estimate_and_queue_effort() {
     let fixture = TestFixture::new();
     write_token_usage_log(&fixture, true);
@@ -14807,7 +14814,9 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     emit_canned_batch_summary(&events);
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The pipeline panel renders asynchronously; poll until the time
@@ -14870,9 +14879,7 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
 /// reorders and persists the manual order, and clicking the chip cycles and
 /// persists the priority — both landing in `re/review/queue_overlay.json`.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_queue_priority_and_reorder() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
@@ -14883,7 +14890,9 @@ async fn test_headless_queue_priority_and_reorder() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
@@ -15025,9 +15034,7 @@ async fn test_headless_queue_priority_and_reorder() {
 /// re-renders checked with a Skipped badge — and the skip persists to
 /// `re/review/skips.json`; unchecking restores the unit.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_queue_skip_checkbox() {
     let fixture = TestFixture::new();
 
@@ -15037,7 +15044,9 @@ async fn test_headless_queue_skip_checkbox() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
@@ -15173,9 +15182,7 @@ async fn test_headless_queue_skip_checkbox() {
 /// selected units — persisted through the per-unit skip logic, after which
 /// the selection clears.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_queue_multiselect_batch_actions() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
@@ -15186,7 +15193,9 @@ async fn test_headless_queue_multiselect_batch_actions() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
@@ -15319,9 +15328,7 @@ async fn test_headless_queue_multiselect_batch_actions() {
 /// maps to a red→green hue (null stays neutral), and the kind/status/binary
 /// selects combine with AND — the summary reports how many nodes survive.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_graph_filters_and_encoding() {
     let fixture = TestFixture::new();
 
@@ -15364,7 +15371,9 @@ async fn test_headless_graph_filters_and_encoding() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let eval_str = |expr: &str| -> Option<String> {
@@ -15529,9 +15538,7 @@ async fn test_headless_graph_filters_and_encoding() {
 /// share URL encodes the active filters and the zoom/pan camera, and opening
 /// that URL in a fresh tab restores the same filters and viewport.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_graph_export_and_share_url() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -15540,7 +15547,9 @@ async fn test_headless_graph_export_and_share_url() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let eval_str = |expr: &str| -> Option<String> {
@@ -15686,9 +15695,7 @@ async fn test_headless_graph_export_and_share_url() {
 /// WebSocket entries on top of the history — without duplicating them when
 /// the history reloads on the next view entry.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_llm_log_browser() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -15726,7 +15733,9 @@ async fn test_headless_llm_log_browser() {
         prompt: "fix the compile errors in UpdateScene".into(),
     });
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     let visible_count = || {
@@ -15892,9 +15901,10 @@ async fn test_headless_llm_log_browser() {
     )
     .expect("re-enter llm-log view");
     tokio::time::sleep(Duration::from_millis(500)).await;
+    let reloaded = visible_count();
     assert!(
-        visible_count() == 5,
-        "history reload must not duplicate the live entries"
+        reloaded == 5,
+        "history reload must not duplicate the live entries — got {reloaded} entries"
     );
 
     tab.close_target().ok();
@@ -15907,9 +15917,7 @@ async fn test_headless_llm_log_browser() {
 /// strategy, attempt, baseline/verification status, confidence — and must
 /// update the row when a later event lands over the WebSocket.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_live_view_renders_and_updates() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -15951,7 +15959,9 @@ async fn test_headless_live_view_renders_and_updates() {
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Live tab.
@@ -16089,9 +16099,7 @@ async fn test_headless_live_view_renders_and_updates() {
 /// tab must say the live view needs a running pipeline — never render an
 /// empty list that masquerades as an idle run.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_live_view_honest_without_live_mode() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -16100,7 +16108,9 @@ async fn test_headless_live_view_honest_without_live_mode() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     tab.evaluate(
@@ -16144,9 +16154,7 @@ async fn test_headless_live_view_honest_without_live_mode() {
 /// from the dashboard units, and a token budget visual driven by the
 /// token-usage log and a user-set budget.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_dashboard_summary_sections() {
     let fixture = TestFixture::new();
     write_token_usage_log(&fixture, false);
@@ -16157,7 +16165,9 @@ async fn test_headless_dashboard_summary_sections() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Category cards: one per DllCategory, with the fixture's counts.
@@ -16252,9 +16262,7 @@ async fn test_headless_dashboard_summary_sections() {
 /// on — clicking the pipeline tab and reloading must land back on the
 /// pipeline view, not the dashboard.
 ///
-/// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_reload_keeps_current_tab() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
@@ -16263,7 +16271,9 @@ async fn test_headless_reload_keeps_current_tab() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let browser = launch_headless_browser();
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the pipeline tab.

@@ -73,9 +73,9 @@ tracing-subscriber = { workspace = true }
 urlencoding = "2"
 # WebSocket client for the live-push e2e tests (same version axum's ws feature uses).
 tokio-tungstenite = "0.29"
-# Headless Chrome — only needed for the E2E browser test.
-# The test is gated behind #[ignore] because Chrome must be
-# installed on the machine.  It is kept here so CI can run it.
+# Headless Chrome — used by the e2e browser tests. They skip themselves at
+# runtime (a one-line capability check) when no Chrome/Chromium is installed,
+# so the tests need no `#[ignore]` gate and CI runs them wherever a browser exists.
 headless_chrome = "1.0.18"
 
 # These two test targets build against the axum server stack, which only
