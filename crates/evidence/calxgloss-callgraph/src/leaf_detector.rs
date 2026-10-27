@@ -1,8 +1,8 @@
-//! Leaf function detection for call graph analysis.
+//! Finding leaf functions in the call graph.
 //!
 //! The [`LeafDetector`] identifies functions that call known third-party or
-//! system APIs (e.g. Direct3D, GDI, User32, Kernel32), enabling context
-//! enrichment during translation.
+//! system APIs (e.g. Direct3D, GDI, User32, Kernel32). That identification
+//! is what lets translation enrich its context.
 //!
 //! # Expanded Detection (Task 13)
 //!
@@ -11,7 +11,7 @@
 //! | Fuzzy matching | Matches API name variations (A/W suffixes, stdcall decoration) |
 //! | DLL-qualified names | Matches `d3d9.Direct3DCreate9` and similar prefixed names |
 //! | Transitive detection | Detects leaf functions reachable through intermediate functions |
-//! | Expanded APIs | 100+ Windows APIs across 10 categories |
+//! | Expanded APIs | 100+ APIs across 10 categories |
 //!
 //! # Algorithm
 //!
@@ -100,14 +100,14 @@ pub struct ApiSignature {
     pub rust_crate: String,
 }
 
-/// Transitive leaf context: a function detected as a leaf caller
-/// through reach analysis (not by direct API call, but by calling
-/// a function that ultimately calls an API).
+/// Context for a transitive leaf caller: a function detected as an API
+/// caller by reach analysis rather than by a direct API call. It calls a
+/// function that itself directly or transitively calls a known API.
 #[derive(Debug, Clone)]
 pub struct TransitiveLeafContext {
-    /// The intermediate function that bridges to the API.
+    /// The intermediate function through which the call chain reaches the API.
     pub intermediate_function: String,
-    /// The API address reached through the intermediate.
+    /// The address of the API reached through the intermediate function.
     pub api_address: u64,
     /// The matched API signature.
     pub api_signature: ApiSignature,
@@ -115,11 +115,11 @@ pub struct TransitiveLeafContext {
 
 /// Detects leaf (API-calling) functions in a call graph.
 ///
-/// Initialized with a comprehensive set of known API signatures
-/// across categories (Direct3D, GDI, User32, Kernel32, COM, Audio,
-/// Network, Crypto, Vulkan, OpenGL).  A function is classified as
-/// a leaf if any of its callees match a registered API signature,
-/// including fuzzy matches for common name variations.
+/// It starts with a comprehensive set of known API signatures across the
+/// categories Direct3D, GDI, User32, Kernel32, COM, Audio, Network, Crypto,
+/// Vulkan, OpenGL. A function is classified as a leaf if any of its callees
+/// matches a registered API signature. Fuzzy matches for common name
+/// variations also count.
 ///
 /// # Fuzzy Matching
 ///
@@ -135,7 +135,7 @@ pub struct TransitiveLeafContext {
 pub struct LeafDetector {
     /// Lookup set of known API names for O(1) exact matching.
     api_names: HashSet<String>,
-    /// All registered API signatures (used to return matched details).
+    /// All registered API signatures; they supply the details returned for a match.
     api_signatures: Vec<ApiSignature>,
 }
 
@@ -158,7 +158,7 @@ impl LeafDetector {
     ///
     /// # Expanded categories (Task 13 additions)
     ///
-    /// - **Vulkan**: `vkCreateInstance`, `vkCreateDevice`, `vkSwapchain` variants
+    /// - **Vulkan**: `vkCreateInstance`, `vkCreateDevice`, `vkCreateSwapchainKHR`
     /// - **OpenGL**: `wglCreateContext`, `wglSwapBuffers`, `gl*` entrypoints
     /// - **DirectX 11-12**: `D3D11CreateDevice`, `D3D12CreateDevice`
     /// - **More User32**: `SetWindowText`, `GetWindowText`, `SendMessage`, `PostMessage`
@@ -1013,21 +1013,21 @@ impl LeafDetector {
         self.classify(func).is_some()
     }
 
-    /// Performs transitive leaf analysis across the entire call graph.
+    /// Runs transitive leaf analysis across the entire call graph.
     ///
-    /// Starting from functions that are direct leaf callers (identified
-    /// by [`classify`]), this method traces the call graph to find
+    /// It starts from the functions that are direct leaf callers (found by
+    /// [`Self::classify`]) and walks the caller edges backwards to find the
     /// intermediate functions that eventually reach known APIs.
     ///
-    /// Returns a list of [`TransitiveLeafContext`] entries, each describing
-    /// an intermediate function that bridges to a leaf API.
+    /// Returns a list of [`TransitiveLeafContext`] entries, one for each
+    /// intermediate function and each API signature reached through it.
     ///
     /// # Algorithm
     ///
     /// 1. Build an address-to-function lookup from the graph.
     /// 2. Identify all direct leaf functions (those with matched API callees).
     /// 3. For each direct leaf, find all callers, then their callers, etc.
-    /// 4. Stop at depth `max_depth` (default 3) to avoid excessive traversal.
+    /// 4. Stop at depth `max_depth` (fixed at 3) to keep traversal bounded.
     pub fn transitive_leaf_analysis(&self, graph: &CallGraph) -> Vec<TransitiveLeafContext> {
         if graph.functions.is_empty() {
             return Vec::new();
@@ -1068,7 +1068,8 @@ impl LeafDetector {
         }
 
         while let Some((current_addr, depth)) = queue.pop_front() {
-            // Get the APIs that flow through current_addr (direct or transitive)
+            // The API signatures reachable at current_addr, whether as a
+            // direct leaf or as a transitive leaf
             let current_sigs: Vec<ApiSignature> = direct_leaves
                 .get(&current_addr)
                 .into_iter()
