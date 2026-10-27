@@ -1,9 +1,10 @@
-//! Caller-supplied callable signatures that deepen the scan's suggestions.
+//! Callable signatures supplied by the caller, used to complete the
+//! scan's suggestions.
 //!
 //! A registration or chain finding names the callback it binds, but the
 //! closure it suggests stays open — `Box<dyn Fn(...)>` — because no
 //! single body spells the callback's contract. The type-inference scan
-//! reads that contract piecemeal across the binary: parameter records
+//! reads that contract in pieces across the binary: parameter records
 //! from the bodies that use them, a return record from the callers that
 //! consume the value. A caller of this crate (the CLI `callback`
 //! command, the batch pre-analysis) composes those records into a
@@ -13,10 +14,10 @@
 //! placeholder in.
 //!
 //! The callback crate never reads the type-inference document itself —
-//! the integration is injection only, so no dependency on the
-//! type-inference crate lands here (ADR-0036). An empty map, or a name
-//! the map does not carry, leaves every suggestion exactly as the
-//! detectors wrote it.
+//! the integration is injection only, so this crate never depends on
+//! the type-inference crate (ADR-0036). An empty map, or a name the map
+//! does not contain, leaves every suggestion exactly as the detectors
+//! wrote it.
 
 use std::collections::HashMap;
 
@@ -26,7 +27,7 @@ use std::collections::HashMap;
 /// inference scan's per-function readings: the parameter types in
 /// parameter order, and the return type when one was read. Types are
 /// carried as the narrowed C text the inference produced (`i32`,
-/// `char *`) — this crate renders them into the Rust closure contract
+/// `char *`); this crate renders them into the Rust closure contract
 /// verbatim, so the caller never pre-translates anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableSignature {
@@ -34,12 +35,12 @@ pub struct CallableSignature {
     /// parameters carries no entry at all rather than an empty list:
     /// the inference records cannot tell a zero-parameter callback
     /// from one whose parameters were never read, and `Fn()` would
-    /// assert an arity nobody read (ADR-0036).
+    /// claim an arity no reading established (ADR-0036).
     pub param_types: Vec<String>,
     /// The return type as C text, `None` when no return reading
-    /// stands. A `void` return rides as `Some("void")` and drops its
-    /// clause at render time — the decision is the renderer's, so a
-    /// hand-built map gets the same contract as a composed one.
+    /// stands. A `void` return is stored as `Some("void")` and loses
+    /// its clause at render time. The renderer makes this decision, so
+    /// a hand-built map gets the same contract as a composed one.
     pub return_type: Option<String>,
 }
 
@@ -61,19 +62,19 @@ impl CallableSignature {
 
 /// A map of function name to its known callable contract.
 ///
-/// Keyed by the callback's spelled name — the same spelling the
-/// registration detector bound — so the engine's lookup needs no
+/// The key is the callback's spelled name — the same spelling the
+/// registration detector bound — so the scan's lookup needs no
 /// normalization beyond what the decompiler itself printed.
 pub type SignatureMap = HashMap<String, CallableSignature>;
 
-/// Deepen `suggestion`'s `Fn(...)` placeholder with `signature`'s
-/// real contract, replacing the first placeholder only.
+/// Fill `suggestion`'s `Fn(...)` placeholder with `signature`'s real
+/// contract, replacing the first placeholder only.
 ///
-/// The registration and chain suggestions share the `Fn(...)`
-/// placeholder in their templates, so one substitution point keeps
-/// the templates the source of truth for everything around the
-/// contract; a suggestion carrying no placeholder (a `match` for a
-/// jump table, a `Vec` for an fp array) passes through untouched.
+/// The registration and chain templates share this `Fn(...)`
+/// placeholder, so there is one substitution point and the templates
+/// stay the source of truth for everything around the contract. A
+/// suggestion with no placeholder (a `match` for a jump table, a `Vec`
+/// for an fp array) passes through untouched.
 pub fn enrich_suggestion(suggestion: &str, signature: &CallableSignature) -> String {
     suggestion.replacen("Fn(...)", &signature.contract(), 1)
 }

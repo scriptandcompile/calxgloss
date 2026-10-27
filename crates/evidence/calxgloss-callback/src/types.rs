@@ -14,10 +14,13 @@
 //!   (`LoadLibrary`/`GetProcAddress`, `dlopen`/`dlsym`), a plugin
 //!   entry-point name, and the host API table passed into one.
 //! - `CallbackChain`: a callback registered in one function and
-//!   called in another — the lifecycle the per-body detectors each
-//!   saw only half of — read by the cross-function pass over the
-//!   bodies the scan keeps.
-//! - `CallbackFinding`: the union over the five record kinds — one
+//!   called in another. The per-body detectors each saw only half of
+//!   this lifecycle; the cross-function pass reads it over the bodies
+//!   the scan keeps.
+//! - `EventSystem`: many registrations to one registration point across
+//!   the kept bodies, plus a visible dispatch site — a reconstructed
+//!   observer.
+//! - `CallbackFinding`: the union over the six record kinds — one
 //!   finding whichever detector or pass made it — serde-tagged by
 //!   `kind`.
 //! - `CallbackResult`, `ScanMetadata`: the persisted per-binary result
@@ -40,9 +43,9 @@ use serde::{Deserialize, Serialize};
 /// the evidence behind it.
 ///
 /// A record says the function calls through the indexed table named by
-/// [`table`](Self::table) — a call shaped `(*handlers[i])(args)`, where
+/// [`table`](Self::table). The call is shaped `(*handlers[i])(args)`:
 /// the callee is an element of a function-pointer array rather than a
-/// named function — which reads like [`suggestion`](Self::suggestion):
+/// named function. The call suggests [`suggestion`](Self::suggestion):
 /// an array of boxed closures, `Vec<Box<dyn Fn(...)>>`, so the handler
 /// table survives translation as data the Rust compiler can check
 /// instead of an opaque indirect call. The call line is kept as
@@ -74,14 +77,14 @@ pub struct FpArrayCall {
 ///
 /// A record says the function calls a recognized registration function —
 /// [`registration`](Self::registration), spelled e.g.
-/// `register_callback` — and passes it a named callback the finding
-/// binds in [`callback`](Self::callback), a function reference or
-/// address-of the decompiler names directly. The registration reads like
-/// [`suggestion`](Self::suggestion): a `Box<dyn Fn(...)>` closure stored
-/// or passed where the original kept a raw function pointer, so the
-/// callback boundary survives translation. The registration line is kept
-/// as [`evidence`](Self::evidence) so a reviewer (or a translation
-/// prompt) can check the reasoning.
+/// `register_callback` — and passes it a named callback, which the
+/// finding binds in [`callback`](Self::callback): a function reference
+/// or address-of the decompiler names directly. The registration
+/// suggests [`suggestion`](Self::suggestion): a `Box<dyn Fn(...)>`
+/// closure stored or passed where the original kept a raw function
+/// pointer, so the callback boundary survives translation. The
+/// registration line is kept as [`evidence`](Self::evidence) so a
+/// reviewer (or a translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackRegistration {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -115,11 +118,14 @@ pub struct CallbackRegistration {
 /// through a table of function addresses typically bracketed by a bounds
 /// check or a switch over computed cases. When the bounds check or
 /// switch is visible, [`target_count`](Self::target_count) carries how
-/// many entries the dispatch spans. The dispatch reads like
-/// [`suggestion`](Self::suggestion): a Rust `match` over the index at
-/// three or more targets, or a function-pointer array when the table is
-/// data-driven. The call line is kept as [`evidence`](Self::evidence) so
-/// a reviewer (or a translation prompt) can check the reasoning.
+/// many entries the dispatch spans; a table with a visible size below
+/// three entries is an ordinary branch and is not recorded at all. The
+/// dispatch suggests [`suggestion`](Self::suggestion): a Rust `match`
+/// over the index when the table symbol is the decompiler's own
+/// `switchD` case table, and a function-pointer array of the read size
+/// for any other table. The call line is kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JumpTable {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -151,19 +157,19 @@ pub struct JumpTable {
 /// One plugin-architecture observation about one function, with the
 /// evidence behind it.
 ///
-/// A record says the function carries a dynamic-loading shape: the
-/// loader pair [`load`](Self::load) and [`resolve`](Self::resolve) —
+/// A record says the function has a dynamic-loading shape: the loader
+/// pair [`load`](Self::load) and [`resolve`](Self::resolve) —
 /// `LoadLibrary`/`GetProcAddress` or `dlopen`/`dlsym` — loading a
 /// module and resolving entry points through it, and/or a direct call
 /// to a configured plugin entry-point name
 /// ([`entry_point`](Self::entry_point), spelled e.g. `Plugin_Init`)
 /// that takes the host API table named in [`host_table`](Self::host_table)
 /// as its argument. A full load-and-resolve pair reads at
-/// [`confidence`](Self::confidence) 70; a lone resolve call or a lone
-/// entry-point name is a fragment, kept at 60. The shape reads like
+/// [`confidence`](Self::confidence) 70. A lone resolve call or a lone
+/// entry-point name is a fragment, kept at 60. The shape suggests
 /// [`suggestion`](Self::suggestion): a trait-object plugin boundary —
 /// a `Box<dyn Plugin>` handed out by a loader crate — so the plugin
-/// contract survives translation instead of collapsing into opaque
+/// contract survives translation instead of turning into opaque
 /// loader calls. The loader call line is kept as
 /// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
 /// can check the reasoning.
@@ -208,23 +214,23 @@ pub struct PluginArchitecture {
 ///
 /// A record says a callback registered in one function — the name the
 /// registration detector binds at a recognized registration call — is
-/// called in another kept body: either its own spelling stands as a
-/// direct call target in the partner body, or the name the
+/// called in another kept body. The partner body either calls the
+/// callback's own spelling directly as a call target, or the name the
 /// registration site names is a configured table and the partner body
-/// dispatches through that same [`table`](Self::table) — one
-/// callback's lifecycle spanning two bodies, each of which the
-/// per-function detectors saw only half of. The finding is attached
-/// to the earlier of the two functions in listing order and names the
-/// other as [`partner`](Self::partner); the callback rides in
-/// [`callback`](Self::callback) and the table it is called through,
+/// dispatches through that same [`table`](Self::table). Either way,
+/// one callback's lifecycle spans two bodies, and the per-function
+/// detectors saw only half of each one. The finding attaches to the
+/// earlier of the two functions in listing order and names the other
+/// as [`partner`](Self::partner). The callback is kept in
+/// [`callback`](Self::callback), and the table it is called through,
 /// when the chain runs through one, in [`table`](Self::table). Both
 /// ends are explicit body evidence, so the record reads at
-/// [`confidence`](Self::confidence) 70 — level with an in-body
-/// registration — and reads like [`suggestion`](Self::suggestion):
-/// one boxed closure shared across the boundary. Both ends' call
-/// lines ride as [`evidence`](Self::evidence) — the registration line
-/// and the call line — so a reviewer (or a translation prompt) can
-/// check the reasoning against both bodies.
+/// [`confidence`](Self::confidence) 70 — the same level as an in-body
+/// registration — and suggests [`suggestion`](Self::suggestion): one
+/// boxed closure shared across the boundary. Both ends' call lines —
+/// the registration line and the call line — are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning against both bodies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackChain {
     /// The function the record is about — the earlier of the pair in
@@ -233,7 +239,7 @@ pub struct CallbackChain {
     /// The other function in the chain: the one that called when this
     /// one registered, or registered when this one called.
     pub partner: String,
-    /// The callback the chain carries, spelled as the registration
+    /// The callback the chain records, spelled as the registration
     /// bound it, e.g. `my_handler`.
     pub callback: String,
     /// The table the callback is called through — the same table name
@@ -261,21 +267,21 @@ pub struct CallbackChain {
 /// One reconstructed event system across the kept bodies, with the
 /// evidence behind it.
 ///
-/// A record says the scan handed callbacks to one registration point —
+/// A record says the scan found callbacks registered at two or more
+/// sites across the kept bodies to one registration point —
 /// [`registration`](Self::registration), spelled e.g.
-/// `register_callback` — at two or more sites across the kept bodies,
-/// the bound handlers named in [`callbacks`](Self::callbacks), while
-/// at least one kept body dispatches through a table: the functions
-/// named in [`dispatchers`](Self::dispatchers) each carry an fp-array
-/// or jump-table reading. Many hands handing handlers to one point and
-/// a table being called through — the observer shape, reconstructed
-/// as a pattern inference over fragments rather than seen whole from
-/// two ends like a chain, so the record reads at
-/// [`confidence`](Self::confidence) 60, one rung under the chain's
-/// two-ended evidence. The shape reads like
+/// `register_callback` — with the bound handlers named in
+/// [`callbacks`](Self::callbacks), while at least one kept body
+/// dispatches through a table: the functions named in
+/// [`dispatchers`](Self::dispatchers) each carry an fp-array or
+/// jump-table reading. Many registrations to one point plus a table
+/// being called through is the observer shape. The record is a
+/// pattern inference over fragments, not a two-ended sighting like a
+/// chain, so it reads at [`confidence`](Self::confidence) 60, one
+/// band under the chain's two-ended evidence. The shape suggests
 /// [`suggestion`](Self::suggestion): an observer registry of boxed
 /// closures dispatched through a table. The registration lines and
-/// the dispatch lines ride as [`evidence`](Self::evidence), each
+/// the dispatch lines are kept as [`evidence`](Self::evidence), each
 /// prefixed with its function, so a reviewer (or a translation
 /// prompt) can check the reconstruction against the bodies. The
 /// finding attaches to the earliest registering function in listing
@@ -285,7 +291,7 @@ pub struct EventSystem {
     /// The function the record is about — the earliest of the
     /// registering functions in listing order.
     pub function: String,
-    /// The registration point the handlers pile onto, e.g.
+    /// The registration point all of the registrations call, e.g.
     /// `register_callback`.
     pub registration: String,
     /// The callbacks the registrations bound, spelled as the
@@ -314,11 +320,11 @@ pub struct EventSystem {
 /// One callback finding, whichever detector or pass made it.
 ///
 /// The detectors and the cross-function pass emit the concrete
-/// records; the union is what the persisted result carries, so one
+/// records; the union is what the persisted result stores, so one
 /// list can hold every finding for a binary and a consumer reads the
 /// shared shape — function, suggestion, confidence, evidence —
 /// without naming which reading produced it. Unlike typeinfer's
-/// competing families, the readings read disjoint body shapes and
+/// competing families, these readings read disjoint body shapes and
 /// can't make competing claims for one target, so nothing is resolved
 /// between variants. The serde `kind` tag names the record shape in
 /// the persisted JSON.
@@ -468,12 +474,12 @@ impl From<&CallbackFinding> for calxgloss_prompts::CallbackInfo {
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the function-pointer array
 /// calls, then the registrations, then the jump tables, then the
-/// plugin shapes — and after every function, the cross-function
-/// pass's chain findings and then its event-system findings, in
+/// plugin shapes. After every function come the cross-function
+/// pass's chain findings, then its event-system findings, in
 /// listing order. The readings cover disjoint shapes, so a function
-/// can carry findings of every kind at
-/// once and none competes with another; the stable order means two
-/// scans of the same program diff cleanly.
+/// can hold findings of every kind at once and none competes with
+/// another. The stable order means two scans of the same program
+/// diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackResult {
     /// Provenance of the scan that produced these findings.
@@ -1039,7 +1045,7 @@ mod tests {
 
     #[test]
     fn a_result_without_findings_omits_them_and_reads_back_empty() {
-        // Documents persisted before a finding landed still load, and an
+        // A document written without findings still loads, and an
         // empty scan stays small on disk.
         let result = CallbackResult::new(ScanMetadata::new("eqmain.dll"));
         let json = serde_json::to_string(&result).expect("empty callback result should serialize");

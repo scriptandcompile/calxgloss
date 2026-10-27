@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Errors that can occur during callback detection operations.
 #[derive(Debug, Error)]
 pub enum CallbackError {
-    /// An engine read through the analysis seam failed.
+    /// An analysis-engine read through the seam failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -30,9 +30,10 @@ pub enum CallbackError {
     EmptyFunctionName,
 
     /// Too many of the program's functions failed to decompile for the
-    /// scan to be trusted — the signature of the bridge answering from
-    /// the wrong program. The skip-rate breaker aborts the scan rather
-    /// than letting it persist a phantom-clean record.
+    /// scan to be trusted. A high skip rate is the signature of a
+    /// bridge answering about the wrong program, so the skip-rate
+    /// breaker aborts the scan rather than persisting a record that
+    /// looks clean but is not.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
 
@@ -43,7 +44,7 @@ pub enum CallbackError {
 
 /// Maps the shared JSON store's errors onto this crate's error type: the
 /// store's not-found becomes [`CallbackError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// JSON errors become the matching pass-through variants.
 impl From<calxgloss_types::persist::PersistError> for CallbackError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

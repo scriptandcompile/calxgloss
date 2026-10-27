@@ -25,8 +25,8 @@ use crate::types::CallbackResult;
 ///
 /// # File Layout
 ///
-/// Results are filed under a cache directory, named after the binary the
-/// scan read:
+/// Each result is one JSON file in the cache directory, named after
+/// the binary the scan read:
 ///
 /// ```text
 /// cache_dir/
@@ -83,7 +83,7 @@ impl CallbackPersistor {
     /// Whether a persisted result exists for `binary`.
     ///
     /// This is the cache check: a caller that wants callback findings
-    /// without re-running the scan asks here first and only drives the
+    /// without re-running the scan asks here first and only runs the
     /// scan when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
@@ -365,10 +365,10 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #350).
+        // The coverage record the scan wrote passes through the
+        // persistor untouched — statuses, ids, order, limitation lines
+        // — exactly what a later reader sees: the projection seam, the
+        // report, or a `--show` months later (issue #350).
         let dir = tempfile::tempdir().unwrap();
         let persistor = CallbackPersistor::new(dir.path());
         let mut saved = sample_result("eqmain.dll");
