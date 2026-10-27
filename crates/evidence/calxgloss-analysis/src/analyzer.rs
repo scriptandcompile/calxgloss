@@ -46,9 +46,10 @@ pub enum Strategy {
     DoNotTranslate,
 }
 
-/// The strategy a category routes to — the single dispatch every
-/// classification path (heuristic or overridden) shares. The crate name
-/// rides along in the crate-replacement modes.
+/// The one function that turns a category into a strategy. Every
+/// classification path — heuristic or overridden — goes through it. In
+/// the crate-replacement modes, the caller also passes a crate name,
+/// which is stored in the strategy.
 fn strategy_for_category(category: &DllCategory, crate_replacement: Option<&str>) -> Strategy {
     match category {
         DllCategory::WindowsOs => Strategy::PalMapping,
@@ -88,34 +89,36 @@ pub struct DllClassification {
     /// Rust crate name. `None` for `WindowsOs` and `ProjectSpecific` DLLs.
     pub crate_replacement: Option<String>,
 
-    /// Whether this binary is a known runtime library — never a translation
-    /// target (the Evidence glossary rule: consumers must check this flag
-    /// alongside `category`, never the category alone). A `RuntimeLibrary`
-    /// category always implies it; an operator override can set it for any
-    /// category, or clear it when overriding a runtime-named binary back to
-    /// a translated one.
+    /// Whether this binary is a known runtime library, which means it is
+    /// never a translation target (the Evidence glossary rule: consumers
+    /// must check this flag alongside `category`, never the category
+    /// alone). A `RuntimeLibrary` category always sets the flag. An
+    /// operator override can set the flag for any category, or clear it
+    /// when an override turns a runtime-named binary back into a
+    /// translation target.
     #[serde(default)]
     pub known_runtime: bool,
 
-    /// Why this classification was chosen — the table or pattern the
-    /// heuristics matched (or the operator's override). Displayed next to
-    /// the classification override control; older records carry none.
+    /// Why this classification was chosen: the table or pattern the
+    /// heuristics matched, or the operator's override. It is displayed
+    /// next to the classification override control. Older records carry
+    /// no reason.
     #[serde(default)]
     pub reason: String,
 }
 
 /// Complete analysis result for a single function.
 ///
-/// Produced by [`Analyzer::analyze_function`]. Aggregates decompiler function data
-/// with tagged Windows API calls and call graph information.
+/// Produced by [`Analyzer::analyze_function`]. Combines the decompiler's
+/// function data with tagged Windows API calls and call graph information.
 #[derive(Debug, Clone)]
 pub struct FunctionAnalysis {
     /// The function's basic information (name, address, DLL).
     pub function_info: FunctionInfo,
 
     /// Windows API calls identified within this function, tagged with their
-    /// PAL mappings. Derived from cross-referencing disassembly/imports against
-    /// the PAL mapping table.
+    /// PAL mappings. Found by matching the function's disassembly and
+    /// imports against the PAL mapping table.
     pub tagged_apis: Vec<WindowsApiCall>,
 
     /// Call graph neighbors from the scan.
@@ -150,24 +153,24 @@ pub struct FunctionAnalysis {
 /// ```
 #[derive(Debug, Clone)]
 pub struct Analyzer {
-    /// The program facts, pulled through the analysis seam.
+    /// The program facts, read through the analysis seam.
     source: PipelineSource,
 
     /// Windows API → Rust equivalent mapping table.
     api_mappings: ApiMappings,
 
-    /// The shared classification-override handle (issue #97, W2.8) — when
-    /// attached, every classification consults it before strategy dispatch,
-    /// so an operator's correction from the dashboard routes the binary
-    /// without a CLI re-run.
+    /// The shared classification-override handle (issue #97, W2.8). When
+    /// attached, every classification checks it before choosing a strategy,
+    /// so an operator's correction from the dashboard changes what happens
+    /// to the binary without a CLI re-run.
     classification_overrides: Option<ClassificationOverrideControl>,
 }
 
 impl Analyzer {
-    /// Creates a new analyzer over the pipeline's scan source and API
+    /// Creates a new analyzer from the pipeline's scan source and API
     /// mappings.
     ///
-    /// The analyzer pulls DLL/function metadata through the scan source and
+    /// The analyzer reads DLL/function metadata through the scan source and
     /// uses the API mappings to tag Windows API calls with their PAL
     /// replacements.
     pub fn new(source: PipelineSource, api_mappings: ApiMappings) -> Self {
@@ -178,9 +181,10 @@ impl Analyzer {
         }
     }
 
-    /// Attach the shared [`ClassificationOverrideControl`] handle the web
-    /// router's classification endpoints drive. Every classification this
-    /// analyzer builds then consults it before strategy dispatch.
+    /// Attach the shared [`ClassificationOverrideControl`] handle that the
+    /// web router's classification endpoints drive. From then on, every
+    /// classification this analyzer builds checks the handle before
+    /// choosing a strategy.
     pub fn with_classification_overrides(
         mut self,
         overrides: ClassificationOverrideControl,
@@ -199,12 +203,13 @@ impl Analyzer {
     ///
     /// # A note on the symbol counts
     ///
-    /// The engine holds one program at a time and exposes no per-DLL routing,
-    /// so `exports_count` and `imports_count` are the counts for the loaded
-    /// program — not necessarily for the DLL named in `binary`. The category
-    /// itself comes from the filename and is unaffected. Call this when the
-    /// loaded program is the DLL you mean; otherwise the counts describe
-    /// something else while still being attached to `binary`.
+    /// The analysis engine holds one program at a time and cannot route a
+    /// query to a specific DLL, so `exports_count` and `imports_count` are
+    /// the counts for the loaded program — not necessarily for the DLL
+    /// named in `binary`. The category itself comes from the filename and
+    /// is unaffected. Call this when the loaded program is the DLL you
+    /// mean. Otherwise the counts describe a different binary while still
+    /// being attached to `binary`.
     ///
     /// # Example
     ///
@@ -241,9 +246,9 @@ impl Analyzer {
         Ok(self.build_classification(binary, exports.len(), imports.len(), false))
     }
 
-    /// Build a classification from filename, symbol counts, and the PE
-    /// managed marker. `is_managed` is the COM-descriptor fact from the
-    /// binary's PE headers (issue #235); callers without a file to parse
+    /// Build a classification from the filename, the symbol counts, and the
+    /// PE managed marker. `is_managed` is the COM-descriptor fact read from
+    /// the binary's PE headers (issue #235). Callers without a file to parse
     /// pass `false` and get the name-only heuristics.
     fn build_classification(
         &self,
@@ -280,20 +285,21 @@ impl Analyzer {
         classification
     }
 
-    /// The classification decision for one binary: the operator's override
-    /// if one is recorded (issue #97, W2.8), then the PE managed fact
-    /// (issue #235), then the filename heuristics. Both the category and
-    /// the `known_runtime` flag come out of this one decision — per the
-    /// Evidence glossary rule a runtime-library classification is never a
-    /// translation target, so an override to `RuntimeLibrary` always
-    /// carries the flag, and overriding a runtime-named binary to another
-    /// category clears it. A managed assembly is a parked target, not a
-    /// runtime library, so `DotNetManaged` keeps the flag false.
+    /// The one place where a binary's classification is decided. It checks,
+    /// in order: the operator's override, if one is recorded (issue #97,
+    /// W2.8); then the PE managed fact (issue #235); then the filename
+    /// heuristics. Both the category and the `known_runtime` flag come out
+    /// of this one decision. Per the Evidence glossary rule, a
+    /// runtime-library classification is never a translation target, so an
+    /// override to `RuntimeLibrary` always carries the flag. Overriding a
+    /// runtime-named binary to another category clears the flag. A managed
+    /// assembly is a parked target, not a runtime library, so
+    /// `DotNetManaged` keeps the flag false.
     ///
     /// Precedence: operator override > PE .NET check > name-table
-    /// heuristics — a managed binary whose name happens to match a known
-    /// table is still parked honestly, and the operator's word outranks
-    /// the PE fact.
+    /// heuristics. A managed binary whose name happens to match a known
+    /// table is still parked honestly. The operator's word outranks the PE
+    /// fact.
     ///
     /// Returns `(category, crate_replacement, known_runtime, reason)`.
     fn classify_decision(
@@ -336,16 +342,16 @@ impl Analyzer {
 
     /// Classifies each of the named DLLs.
     ///
-    /// Symbol counts are read from the PE header on disk (via `goblin`), which
-    /// gives accurate per-DLL export/import counts. If a DLL file is missing
-    /// from `target_dir` the call falls back to the currently-loaded
-    /// program.
+    /// Symbol counts are read from the PE header on disk (via `goblin`),
+    /// which gives accurate per-DLL export/import counts. If a DLL file is
+    /// missing from `target_dir`, the call fails with an error naming the
+    /// path — it does not fall back to the currently-loaded program.
     ///
-    /// The DLL names are supplied by the caller because the engine has no way to
-    /// enumerate them: it serves a single open program and exposes no listing of
-    /// what else a target links against. Where the list comes from — a
-    /// directory scan, a manifest, a hand-written list — is the caller's
-    /// decision.
+    /// The DLL names are supplied by the caller because the analysis engine
+    /// has no way to list them: it serves a single open program and does
+    /// not list what else a target links against. Where the list comes
+    /// from — a directory scan, a manifest, a hand-written list — is the
+    /// caller's decision.
     ///
     /// # Example
     ///
@@ -393,7 +399,7 @@ impl Analyzer {
 
         let dll_path = target_dir.join(binary);
 
-        // Try PE header parse first — gives accurate per-DLL counts.
+        // Parse the PE header on disk — this gives accurate per-DLL counts.
         let bytes = std::fs::read(&dll_path)
             .with_context(|| format!("Failed to read {}", dll_path.display()))?;
         let pe = goblin::pe::PE::parse(&bytes)
@@ -401,8 +407,8 @@ impl Analyzer {
 
         let exports_count = pe.exports.len();
         let imports_count = pe.imports.len();
-        // The managed marker rides on the same PE parse the counts come
-        // from — no extra file read (issue #235).
+        // The managed marker comes from the same PE parse as the counts —
+        // no extra file read (issue #235).
         let is_managed = pe_is_managed(&pe);
 
         Ok(self.build_classification(binary, exports_count, imports_count, is_managed))
@@ -418,7 +424,7 @@ impl Analyzer {
     ///
     /// * `binary` — The DLL the function belongs to. Recorded on the result; the
     ///   lookup itself is against the loaded program, which must be this DLL.
-    /// * `function` — The function name, as the engine lists it.
+    /// * `function` — The function name, exactly as the analysis engine lists it.
     ///
     /// # Example
     ///
@@ -441,11 +447,10 @@ impl Analyzer {
     pub async fn analyze_function(&self, binary: &str, function: &str) -> Result<FunctionAnalysis> {
         debug!(binary, function, "Analyzing function");
 
-        // The seam has no lookup that returns a function without an address,
-        // so the name is resolved through the function listing first. A
-        // partial match is refused rather than guessed at, since silently
-        // analysing the wrong function would produce a plausible but
-        // irrelevant translation.
+        // The seam cannot look up a function by name alone, so the name is
+        // matched against the function listing first. A partial match is
+        // refused rather than guessed at: analysing the wrong function
+        // silently would produce a plausible but irrelevant translation.
         let listing = ScanSource::functions(&self.source).await?;
         let found = listing
             .into_iter()
@@ -471,8 +476,8 @@ impl Analyzer {
             .collect();
 
         // Tag Windows API calls among the names the decompiled body calls,
-        // intersected with the program's imports — the calls the engine can
-        // see are the ones worth tagging.
+        // kept to the names that are also program imports — only the calls
+        // the analysis engine can see are worth tagging.
         let callees = calxgloss_decomp::parse::callees_from_decompiled(&decompiled.body);
         let called_imports: Vec<String> = callees
             .iter()
@@ -482,7 +487,7 @@ impl Analyzer {
         let tagged_apis = self.tag_windows_apis("", &called_imports)?;
 
         // The seam has no call-graph endpoint. Callers come from the
-        // cross-references to the entry; callees are scraped from the
+        // cross-references to this function; callees are read from the
         // decompiled body, which cannot see calls made through a function
         // pointer.
         let callers = ScanSource::callers(&self.source, found.address)
@@ -495,8 +500,8 @@ impl Analyzer {
                 name: decompiled.name.clone(),
                 address: found.address,
                 binary: binary.to_string().into(),
-                // The seam carries no disassembly read — the engine answers
-                // pseudo-C — so the record keeps the field empty.
+                // The seam has no disassembly read — the analysis engine
+                // answers in pseudo-C — so this record keeps the field empty.
                 disassembly: String::new(),
                 decompiler_output: decompiled.body,
                 windows_apis: Vec::new(),
@@ -518,20 +523,28 @@ impl Analyzer {
         Ok(analysis)
     }
 
-    /// Tags Windows API calls found in disassembly and imports.
+    /// Tags Windows API calls found in the imports list and the
+    /// disassembly text.
     ///
-    /// Cross-references the function's imports and the DLL's import list against
-    /// the PAL mapping table. For each import that matches a known Windows API,
-    /// records the API name, its category, and the PAL mapping target.
+    /// Each import name is looked up in the PAL mapping table. For each
+    /// name that matches a known Windows API, records the API name, its
+    /// category, and the PAL mapping target. Table entries whose names
+    /// also appear in the disassembly text are tagged too, even when they
+    /// are not imports.
     ///
-    /// This is a pure analysis function that reaches no engine at all —
-    /// it works with the text and import list provided.
+    /// This function is pure: it reads no analysis engine at all. It
+    /// works with the provided text and import list.
     ///
     /// # Arguments
     ///
-    /// * `disassembly` — The function's listing text; an import is tagged
-    ///   when its name appears in it (an empty string tags every import).
+    /// * `disassembly` — The function's listing text. A mapped API name
+    ///   that appears in this text is tagged even when it is not in
+    ///   `imports`; an empty string skips this extra scan.
     /// * `imports` — The list of imports for the DLL containing the function.
+    ///   Ghidra reports an import as a name and an external slot with no
+    ///   module attached, so these are names rather than [`Import`] values;
+    ///   the module a symbol came from is not available from the analysis
+    ///   side and is not needed to look up a mapping.
     ///
     /// # Example
     ///
@@ -553,13 +566,6 @@ impl Analyzer {
     /// # Ok(())
     /// # }
     /// ```
-    ///
-    /// # Arguments
-    ///
-    /// * `imports` — Imported symbol names. Ghidra reports an import as a name
-    ///   and an external slot with no module attached, so these are names rather
-    ///   than [`Import`] values; the module a symbol came from is not available
-    ///   from the analysis side and is not needed to look up a mapping.
     pub fn tag_windows_apis(
         &self,
         disassembly: &str,
@@ -567,7 +573,7 @@ impl Analyzer {
     ) -> Result<Vec<WindowsApiCall>> {
         debug!(imports_count = imports.len(), "Tagging Windows APIs");
 
-        // Collect function names from disassembly to check for direct API references
+        // `seen` guards duplicate tagging: each API is tagged once.
         let mut tagged = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
@@ -609,7 +615,7 @@ impl Analyzer {
         Ok(tagged)
     }
 
-    /// Classifies a `DllInfo` struct directly, without needing engine reads.
+    /// Classifies a `DllInfo` struct directly — no analysis engine reads.
     ///
     /// Useful when you already have DLL metadata (e.g., from a cached analysis
     /// or manual inspection) and just need to determine the classification
@@ -651,7 +657,7 @@ impl Analyzer {
     /// This is the primary integration point between the call graph analysis
     /// pipeline and the rest of the system. It:
     ///
-    /// 1. Fetches all function metadata from the engine.
+    /// 1. Fetches all function metadata from the analysis engine.
     /// 2. Classifies each function as [`Root`](calxgloss_types::NodeCategory::Root),
     ///    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
     ///    [`Middle`](calxgloss_types::NodeCategory::Middle).
@@ -664,8 +670,8 @@ impl Analyzer {
     ///
     /// # Returns
     ///
-    /// A fully classified call graph, or an error if engine data cannot
-    /// be fetched or the graph cannot be persisted.
+    /// A fully classified call graph, or an error if the analysis engine's
+    /// data cannot be read or the graph cannot be persisted.
     ///
     /// # Example
     ///
@@ -740,13 +746,13 @@ impl Analyzer {
 
     /// Detect the complexity of a function from its disassembly and API usage.
     ///
-    /// This is the primary mechanism for deciding how much context to
-    /// inject into the LLM prompt. Simple functions get minimal context;
-    /// complex functions get rich contextual information.
+    /// This is the main way to decide how much context to put into the LLM
+    /// prompt. Simple functions get minimal context; complex functions get
+    /// rich contextual information.
     ///
     /// # Arguments
     ///
-    /// * `disassembly` — The raw disassembly text from the engine.
+    /// * `disassembly` — The raw disassembly text.
     /// * `tagged_apis` — The Windows API calls identified in the function,
     ///   used to determine API-category diversity.
     ///
@@ -1365,9 +1371,9 @@ mod tests {
 
     #[test]
     fn test_classification_override_routes_away_from_heuristic_strategy() {
-        // fmod.dll heuristically routes to crate replacement; an override
-        // to WindowsOs routes it to PAL mapping instead — observable in
-        // which strategy the binary lands on.
+        // The filename heuristics send fmod.dll to crate replacement; an
+        // override to WindowsOs sends it to PAL mapping instead, which is
+        // visible in the strategy the classification records.
         let analyzer = analyzer_with_override(
             "fmod.dll",
             override_record(DllCategory::WindowsOs, None, false),
@@ -1382,7 +1388,7 @@ mod tests {
     #[test]
     fn test_classification_override_crate_replacement_mode_carries_the_target_crate() {
         // Overriding to crate-replacement mode with a target crate: the
-        // shim layer lands where the operator pointed it.
+        // suggestion names the crate the operator chose.
         let analyzer = analyzer_with_override(
             "game_logic.dll",
             override_record(DllCategory::KnownThirdParty, Some("mlua"), false),
@@ -1404,9 +1410,9 @@ mod tests {
 
     #[test]
     fn test_classification_override_to_runtime_library_sets_known_runtime() {
-        // The Evidence glossary rule: a runtime-library classification is
-        // never a translation target — the flag must follow the category
-        // even when the record left it false.
+        // Per the Evidence glossary rule, a runtime-library classification
+        // is never a translation target: the flag must follow the category
+        // even when the override record left it false.
         let analyzer = analyzer_with_override(
             "game_logic.dll",
             override_record(DllCategory::RuntimeLibrary, None, false),
@@ -1421,9 +1427,9 @@ mod tests {
 
     #[test]
     fn test_classification_override_clears_the_runtime_flag_for_other_categories() {
-        // msvcr100.dll heuristically reads as a runtime library; overriding
-        // it to ProjectSpecific must clear the flag — the operator is
-        // making it a translation target on purpose.
+        // The heuristics read msvcr100.dll as a runtime library. Overriding
+        // it to ProjectSpecific must clear the flag: the operator is
+        // deliberately making it a translation target.
         let heuristic = test_analyzer().classify_dll_info(&dll_info("msvcr100.dll"));
         assert_eq!(heuristic.category, DllCategory::RuntimeLibrary);
         assert!(heuristic.known_runtime);
@@ -1442,8 +1448,8 @@ mod tests {
 
     #[test]
     fn test_classification_override_keyed_verbatim() {
-        // The override is keyed by binary identity — a differently spelled
-        // filename keeps its heuristic classification.
+        // The override is keyed by the exact binary name. A differently
+        // spelled filename keeps its heuristic classification.
         let analyzer = analyzer_with_override(
             "Fmod.dll",
             override_record(DllCategory::WindowsOs, None, false),
@@ -1476,13 +1482,14 @@ mod tests {
 
     // ── .NET managed assembly detection (issue #235) ──
 
-    /// A minimal PE32+ image, byte-assembled: DOS header → PE signature →
-    /// COFF header → optional header with 16 data directories → one section.
-    /// `managed` fills the COM descriptor directory (#14) and backs it with
-    /// the full chain goblin walks for a real .NET binary — a section mapping
-    /// the directory's RVA, a COR20 header, and a metadata root carrying the
-    /// `BSJB` signature; a native image leaves every directory zero (goblin
-    /// reads those as absent).
+    /// A minimal PE32+ image, assembled byte by byte: DOS header → PE
+    /// signature → COFF header → optional header with 16 data directories →
+    /// one section. When `managed` is set, the fixture fills the COM
+    /// descriptor directory (#14) and provides the full chain goblin walks
+    /// for a real .NET binary: a section mapping the directory's RVA, a
+    /// COR20 header, and a metadata root carrying the `BSJB` signature. A
+    /// native image leaves every directory zero, and goblin reads those as
+    /// absent.
     fn minimal_pe_bytes(managed: bool) -> Vec<u8> {
         let mut pe = vec![0u8; 0x400];
         pe[0..2].copy_from_slice(b"MZ");
@@ -1529,8 +1536,8 @@ mod tests {
         pe
     }
 
-    /// Classifies fixture PEs written into a temp target dir through the
-    /// analyzer's classification seam — the same seam the `classify`
+    /// Classifies fixture PEs written into a temp target dir, through the
+    /// analyzer's file-based classification — the same path the `classify`
     /// command drives.
     async fn classify_fixtures(
         analyzer: &Analyzer,
@@ -1568,8 +1575,8 @@ mod tests {
 
     #[tokio::test]
     async fn managed_pe_fact_outranks_the_name_tables() {
-        // fmod.dll heuristically reads as known third-party; a managed
-        // fmod.dll is still parked honestly (story 25).
+        // The name heuristics read fmod.dll as known third-party. A
+        // managed fmod.dll is still parked honestly (story 25).
         let analyzer = test_analyzer();
         let classifications = classify_fixtures(&analyzer, &[("fmod.dll", minimal_pe_bytes(true))])
             .await
@@ -1592,8 +1599,8 @@ mod tests {
 
     #[tokio::test]
     async fn operator_override_wins_over_managed_detection() {
-        // The escape hatch is real: overriding a managed-detected binary
-        // to a normal strategy routes it back to translation (story 21).
+        // The escape hatch is real: an override to a normal strategy sends
+        // a managed-detected binary back to translation (story 21).
         let analyzer = analyzer_with_override(
             "managed_app.dll",
             override_record(DllCategory::ProjectSpecific, None, false),
@@ -1610,8 +1617,8 @@ mod tests {
 
     #[tokio::test]
     async fn corrupt_pe_fails_classification_exactly_as_today() {
-        // The .NET check rides the existing parse — it does not change
-        // what a corrupt binary does (story 26).
+        // The .NET check uses the existing PE parse. It does not change
+        // what a corrupt PE does (story 26).
         let analyzer = test_analyzer();
         let result =
             classify_fixtures(&analyzer, &[("broken.dll", b"MZnot-a-real-pe".to_vec())]).await;
