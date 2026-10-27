@@ -404,7 +404,7 @@ function handleWSMessage(event) {
             event.binary,
             event.function,
             event.attempt,
-            event.strategy,
+            event.retry_strategy,
             event.prompt
         );
     } else if (event.event === "llm_response") {
@@ -414,20 +414,22 @@ function handleWSMessage(event) {
             event.binary,
             event.function,
             event.attempt,
-            event.strategy,
+            event.retry_strategy,
             event.content,
             event.tokens_used
         );
     } else if (event.event === "llm_call_failed") {
         console.warn("[WS] LLM call failed:", event.binary, event.function, event.error);
-        // Content matches the server log's raw error string (no "Error:"
-        // prefix) so the dedup key lines up with the persisted twin.
+        // Content and strategy must match the server log's persisted twin
+        // exactly — raw error string (no "Error:" prefix), and
+        // `retry_strategy` is the serialized field name — so the dedup
+        // key lines up when history reloads.
         addLlmLogEntry(
             "error",
             event.binary,
             event.function,
             event.attempt,
-            event.strategy,
+            event.retry_strategy,
             event.error
         );
     }

@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fix prompts quote the code that actually failed (#334, track P38)** — after attempt N fails, attempt N+1's prompt now names **N's own code** and quotes **N's own failure evidence** — its compile errors, or its structured failing test cases — instead of re-quoting the initial translation and its stale evidence while the loop quietly repaired a different body than the one that had just failed. The failing verdict's payload rides from the record the loop already wrote; no second verification is spent re-gathering it, and the verifier is now asked exactly once per candidate code.
 - **A fired loop detector stops the token burn (#334, track P38)** — when the infinite-loop detector fires mid-chain — the LLM returning the same failing code three attempts running — the run now **ends at that attempt**: its one event and one fault record stand, and no further LLM request is sent. Before this the fire was observed, recorded, and stepped over: the chain burned every remaining configured attempt on code the detector had already called a loop.
 
+#### Review UI
+
+- **Reopening the LLM call log no longer doubles the calls it already showed** — leaving and re-entering the review UI's LLM call log listed every call twice: the entry the view received live and the same call read back from the persisted log never recognized each other as one, because the live entry's retry-strategy half read a name the server never sends and so never matched its persisted twin. Live entries now carry the strategy the server actually persists, and each call shows exactly once, live or reloaded.
+
 ### Removed
 
 #### Retry loop (internal)
