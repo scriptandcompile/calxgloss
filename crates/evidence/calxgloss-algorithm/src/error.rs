@@ -1,15 +1,15 @@
 //! Error types for the calxgloss-algorithm crate.
 //!
-//! This module defines `AlgorithmError`, the unified error type used
-//! throughout the algorithm recognition crate for decompiler and string
-//! fetches, detector runs, and JSON persistence.
+//! This module defines `AlgorithmError`, the one error type used
+//! throughout the algorithm recognition crate — for decompiler and
+//! string fetches, detector runs, and JSON persistence.
 
 use thiserror::Error;
 
-/// Errors that can occur during algorithm recognition operations.
+/// Errors that can occur during algorithm recognition.
 #[derive(Debug, Error)]
 pub enum AlgorithmError {
-    /// An engine read through the analysis seam failed.
+    /// A read from the analysis engine through the seam failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -30,21 +30,21 @@ pub enum AlgorithmError {
     EmptyFunctionName,
 
     /// Too many of the program's functions failed to decompile for the
-    /// scan to be trusted — the signature of the bridge answering from
-    /// the wrong program. The skip-rate breaker aborts the scan rather
-    /// than letting it persist a phantom-clean record.
+    /// scan to be trusted — a high skip rate is the signature of reading
+    /// the wrong program. The skip-rate breaker aborts the scan instead
+    /// of persisting a record that looks clean but is not.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
 
-    /// An algorithm recognition scan failed for a DLL.
+    /// An algorithm recognition scan failed for one target binary.
     #[error("algorithm recognition scan failed for '{binary}': {reason}")]
     ScanFailed { binary: String, reason: String },
 
     /// A `--patterns` pattern database file could not be read: it is
-    /// missing, unreadable, or not a valid pattern document. The path is
-    /// named so the operator knows which file to fix — a malformed
-    /// database fails the run loudly rather than silently degrading
-    /// recognition to a partial set.
+    /// missing, unreadable, or not a valid pattern document. The error
+    /// names the path so the operator knows which file to fix: a
+    /// malformed database fails the run loudly instead of quietly
+    /// reducing recognition to a partial set.
     #[error("could not read pattern database {}: {source}", .path.display())]
     PatternDatabase {
         path: std::path::PathBuf,
@@ -53,9 +53,9 @@ pub enum AlgorithmError {
     },
 }
 
-/// Maps the shared JSON store's errors onto this crate's error type: the
-/// store's not-found becomes [`AlgorithmError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants. Pattern
+/// Maps the shared JSON store's errors onto this crate's error type. The
+/// store's not-found becomes [`AlgorithmError::NotFound`], and its I/O
+/// and JSON errors become the existing pass-through variants. Pattern
 /// database loading deliberately does not use this conversion — it maps
 /// to [`AlgorithmError::PatternDatabase`] instead, so the failure names
 /// the file the operator passed.

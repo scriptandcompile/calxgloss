@@ -1,32 +1,32 @@
 //! Confidence scoring and conflict resolution.
 //!
 //! The confidence *score* itself is the shared [`calxgloss_types::Confidence`]
-//! type (a 0–100 value) every engine rates evidence with; this module is
-//! where the algorithm scan's scoring model lives.
+//! type (a 0–100 value) that every evidence engine rates its findings
+//! with; this module holds the algorithm scan's scoring model.
 //!
 //! The standard scores — [`CFG_CONFIDENCE`], [`BODY_CONFIDENCE`],
 //! [`LISTING_CONFIDENCE`], [`CALLBACK_CONFIDENCE`],
-//! [`CROSS_FUNCTION_CONFIDENCE`] — are the score composition per
-//! detection method: each detector reads its standard score from here,
-//! so tuning the model is a one-module change.
+//! [`CROSS_FUNCTION_CONFIDENCE`] — give each detection method its
+//! standard value. Every detector reads its standard score from this
+//! module, so tuning the model is a one-module change.
 //!
 //! [`resolve_conflicts`] is the cross-detector half of the model. Each
 //! detector already reports one algorithm once per function, but the
 //! detectors read a body independently, so a finished scan can still
-//! carry several claims for one (function, algorithm) pair — the CRC
-//! loop's own text and a program-wide listing marker both name `crc`.
-//! Resolution collapses each pair to its single strongest claim: the
-//! highest confidence wins, a tie keeps the claim the scan surfaced
-//! first, and the survivor stands where that algorithm first appeared,
-//! so the list keeps scan order and two scans of the same program diff
-//! cleanly. Claims naming *different* algorithms for one function never
-//! conflict — a function doing a hash lookup and a recursion reports
-//! both.
+//! contain several claims for one (function, algorithm) pair: the CRC
+//! loop's own text and a program-wide listing marker both report
+//! `crc`. Resolution reduces each pair to its single strongest claim.
+//! The highest confidence wins; a tie keeps the claim the scan
+//! surfaced first; and the winning claim stays where that algorithm
+//! first appeared in the list. The resolved list therefore keeps scan
+//! order, and two scans of the same program diff cleanly. Claims about
+//! *different* algorithms for one function never conflict — a function
+//! showing a hash lookup and a recursion reports both.
 //!
-//! The engine's minimum-confidence floor
+//! The scan's minimum-confidence floor
 //! ([`with_min_confidence`](crate::engine::AlgorithmEngine::with_min_confidence))
-//! applies to the resolved survivors, so a claim another detector
-//! strengthened clears a threshold its first claim would have missed.
+//! applies to the resolved survivors, so a claim that another detector
+//! strengthened passes a floor its first claim alone would have missed.
 //!
 //! [`calxgloss_types::Confidence`]: calxgloss_types::Confidence
 
@@ -38,48 +38,49 @@ use crate::types::AlgorithmHint;
 // Score composition per detection method
 // ============================================================
 
-/// Confidence of a control flow match: the body carries every shape the
-/// signature requires and clears its line floor, which is real
-/// evidence, but regexes over decompiled pseudo-C approximate the
-/// algorithm rather than prove it — the hint stays a hypothesis for
+/// Confidence of a control flow match. The body contains every shape
+/// the signature requires and meets its minimum line count — that is
+/// real evidence. But regexes over decompiled pseudo-C approximate an
+/// algorithm rather than prove it, so the hint stays a hypothesis for
 /// the translation prompt, not a fact applied to the program.
 pub const CFG_CONFIDENCE: u8 = 60;
 
-/// Confidence of a string body match: the function's own decompiled
-/// text carries the marker, so the algorithm's name sits right where
-/// the function's behavior is spelled out — but a substring hit is
-/// approximate, a `CRC` in a format string evidences use rather than
-/// implementation, so the hint sits beside a control flow match as a
+/// Confidence of a string body match. The function's own decompiled
+/// text contains the marker, so the algorithm's name appears right
+/// where the function's behavior is spelled out. But a substring hit
+/// is approximate: a `CRC` in a format string shows use, not
+/// implementation. So this hint sits beside a control flow match — a
 /// hypothesis for the translation prompt, not a fact applied to the
 /// program.
 pub const BODY_CONFIDENCE: u8 = 60;
 
-/// Confidence of a string listing-only match: the marker appears
+/// Confidence of a string listing-only match. The marker appears
 /// somewhere in the binary's string listing but not in this function's
-/// body, so the evidence ties the program to the algorithm rather than
-/// the function to its implementation — a weak lead worth carrying,
-/// not one to weigh beside a body match or a control flow shape.
+/// body, so the evidence links the program to the algorithm rather
+/// than this function to its implementation. It is a weak lead worth
+/// keeping, not one to rank beside a body match or a control flow
+/// shape.
 pub const LISTING_CONFIDENCE: u8 = 30;
 
-/// Confidence of a callback detection: two independent signals agree —
-/// the call graph shows one of the contract's hosts reaching the
+/// Confidence of a callback detection. Two independent signals agree:
+/// the call graph shows one of the contract's hosts calling the
 /// function, and the function's own signature fits the contract's
-/// arity and body shapes. A call-graph edge from a host like `qsort`
-/// is close to proof that the function is the callback that host was
-/// handed, but the reading still rests on regexes over decompiled
-/// pseudo-C rather than a resolved indirect-call target, so it stands
-/// above a lone control flow or string match and below a direct vtable
-/// dispatch.
+/// parameter count and body shapes. A call-graph edge from a host like
+/// `qsort` is close to proof that the function is the callback that
+/// host was handed. But the reading still rests on regexes over
+/// decompiled pseudo-C rather than a resolved indirect-call target, so
+/// this score sits above a lone control flow or string match and below
+/// a direct vtable dispatch.
 pub const CALLBACK_CONFIDENCE: u8 = 75;
 
-/// Confidence of a cross-function correlation: two functions' bodies
-/// agree on a call relationship — a self-call beside a halving split, a
-/// `qsort` call beside a comparator-shaped callee — and a relationship
-/// two functions spell out is stronger evidence than one body fitting
-/// one signature, but the reading still rests on names appearing in
-/// decompiled pseudo-C rather than a resolved call graph, so it stands
-/// above a lone control flow or string match and below a callback
-/// contract the call graph confirms.
+/// Confidence of a cross-function correlation. Two functions' bodies
+/// agree on a call relationship: a self-call beside a halving split,
+/// or a `qsort` call beside a comparator-shaped callee. A relationship
+/// spelled out by two functions is stronger evidence than one body
+/// fitting one signature. But the reading still rests on names
+/// appearing in decompiled pseudo-C rather than a resolved call graph,
+/// so this score sits above a lone control flow or string match and
+/// below a callback contract the call graph confirms.
 pub const CROSS_FUNCTION_CONFIDENCE: u8 = 70;
 
 // ============================================================
@@ -90,13 +91,13 @@ pub const CROSS_FUNCTION_CONFIDENCE: u8 = 70;
 ///
 /// Where several detectors claim the same algorithm for one function,
 /// the highest-confidence claim wins and the rest drop; a tie keeps
-/// the claim the scan surfaced first. The survivor stands where that
-/// algorithm first appeared in the list, so the resolved list keeps
-/// scan order — function by function, algorithms in the order the scan
-/// showed them — exactly as the raw scan did. Claims naming different
-/// algorithms for one function, or the same algorithm in different
-/// functions, never conflict: resolution drops duplicates of a claim,
-/// never a distinct reading of the function.
+/// the claim the scan surfaced first. The winning claim stays where
+/// that algorithm first appeared in the list, so the resolved list
+/// keeps scan order — function by function, algorithms in the order
+/// the scan showed them — exactly as the raw scan left them. Claims
+/// about different algorithms for one function, or the same algorithm
+/// in different functions, never conflict: resolution drops
+/// duplicates of a claim, never a distinct reading of the function.
 pub fn resolve_conflicts(hints: Vec<AlgorithmHint>) -> Vec<AlgorithmHint> {
     let mut winners: Vec<AlgorithmHint> = Vec::new();
     let mut positions: HashMap<(String, String), usize> = HashMap::new();

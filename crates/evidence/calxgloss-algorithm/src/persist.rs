@@ -9,10 +9,10 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is the
-//! check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and every
-//! hint — for the translation pipeline to query.
+//! A persisted result also acts as a cache. [`exists`](Self::exists) is
+//! the check a caller runs before deciding whether a scan is needed,
+//! and [`load`](Self::load) reads the whole document back — metadata
+//! and every hint — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -84,9 +84,9 @@ impl AlgorithmPersistor {
     /// Whether a persisted result exists for `binary`.
     ///
     /// This is the cache check: a caller that wants recognized algorithms
-    /// without re-running the scan asks here first and only drives
-    /// [`AlgorithmEngine`](crate::engine::AlgorithmEngine) when the answer
-    /// is `false`.
+    /// without re-running the scan asks here first, and runs
+    /// [`AlgorithmEngine`](crate::engine::AlgorithmEngine) only when the
+    /// answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
@@ -144,8 +144,9 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    /// A result carrying hints from different detectors, so a round trip
-    /// proves every hint shape survives the file, not just the envelope.
+    /// A result with hints from different detectors, so a round trip
+    /// proves that every kind of hint survives the file, not just the
+    /// metadata envelope.
     fn result(binary: &str) -> AlgorithmRecognitionResult {
         AlgorithmRecognitionResult {
             metadata: ScanMetadata {
@@ -327,10 +328,10 @@ mod tests {
 
     #[test]
     fn the_stamped_document_round_trips_coverage_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #351).
+        // The coverage the scan recorded passes through the persistor
+        // untouched: statuses, ids, order, limitation lines — exactly
+        // what a later reader (the projection seam, the report, a
+        // `--show` months later) sees (issue #351).
         let dir = TempDir::new().unwrap();
         let persistor = AlgorithmPersistor::new(dir.path());
         let mut saved = result("eqmain.dll");

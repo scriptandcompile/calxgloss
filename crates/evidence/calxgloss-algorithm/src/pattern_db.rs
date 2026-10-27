@@ -1,34 +1,34 @@
-//! Dynamic pattern database: one JSON document carrying the signature
-//! sets a scan reads against.
+//! Dynamic pattern database: one JSON document holding the pattern sets
+//! a scan reads against.
 //!
 //! The recognizable algorithm shapes normally live in the built-in
 //! standard sets — `cfg_patterns::default_patterns` and its two
-//! siblings — but an operator who wants to teach the scanner a new
-//! sort variant or callback contract should not have to edit Rust and
-//! recompile. A [`PatternDatabase`] is one JSON document with a section
-//! per detector; a scan configured from it reads the file's sets
-//! instead of the standard ones, whole.
+//! siblings. An operator who wants to teach the scan a new sort variant
+//! or callback contract should not have to edit Rust and recompile. A
+//! [`PatternDatabase`] is one JSON document with a section per
+//! detector; a scan configured from it reads the file's sets instead of
+//! the standard ones, whole.
 //!
 //! The entry format is exactly the existing serde shape of the pattern
 //! types — [`AlgorithmPattern`], [`StringSignature`],
 //! [`CallbackPattern`], and [`CorrelationRelationship`] — with one
 //! addition each: an optional [`confidence`](AlgorithmPattern::confidence)
-//! per entry that overrides the detector's standard score in resolution,
-//! so a hand-tuned signature can outweigh a standard-score claim for the
-//! same algorithm.
+//! per entry that overrides the detector's standard score in
+//! resolution, so a hand-tuned signature can outweigh a standard-score
+//! claim for the same algorithm.
 //! A section the document omits is an empty set: the database replaces
 //! the standard sets whole rather than merging into them, so a file
-//! that names only control flow signatures leaves the string, callback,
+//! that lists only control flow signatures leaves the string, callback,
 //! and correlation detectors with nothing to read.
 //!
 //! [`load`](PatternDatabase::load) goes through the shared JSON
-//! persistence plumbing; a missing, unreadable, or malformed file is a
-//! hard error naming the path, so a typo never silently degrades
+//! persistence layer. A missing, unreadable, or malformed file is a
+//! hard error that names the path, so a typo never quietly reduces
 //! recognition to a partial set — unknown section and entry field names
 //! are rejected rather than ignored. Inside a well-formed entry the
-//! lenient per-entry semantics stay: a regex that will not compile can
-//! fabricate or veto nothing, and the `{name}` placeholder keeps
-//! working exactly as in the built-ins.
+//! lenient per-entry rules still apply: a regex that does not compile
+//! matches nothing and excludes nothing, and the `{name}` placeholder
+//! works exactly as in the built-ins.
 
 use std::path::Path;
 
@@ -41,42 +41,43 @@ use crate::error::{AlgorithmError, Result};
 use crate::string_hints::StringSignature;
 use crate::types::AlgorithmPattern;
 
-/// One JSON document carrying all four detector sets a scan reads
+/// One JSON document holding all four detector sets a scan reads
 /// against, in place of the built-in standard sets.
 ///
 /// Each section holds its detector's entries in the order the file
-/// spells them, and that order is load-bearing the way detector
-/// configuration order always has been: hint order follows
-/// configuration order, and a resolution tie keeps the entry listed
-/// first. A section the document omits reads as an empty set — the
-/// database replaces the standard sets whole, never merges. An
-/// unknown section name is a hard error: a typo in a section key
-/// would otherwise silently degrade the scan to a partial set.
+/// lists them, and that order matters, as detector configuration order
+/// always has: hint order follows configuration order, and a
+/// resolution tie keeps the entry listed first. A section the document
+/// omits reads as an empty set — the database replaces the standard
+/// sets whole, never merges. An unknown section name is a hard error:
+/// a typo in a section key would otherwise quietly reduce the scan to
+/// a partial set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatternDatabase {
     /// Control flow signatures the cfg matcher scans bodies against —
-    /// the same [`AlgorithmPattern`] entries [`with_matcher`](crate::engine::AlgorithmEngine::with_matcher)
-    /// would carry.
+    /// the same [`AlgorithmPattern`] entries
+    /// [`with_matcher`](crate::engine::AlgorithmEngine::with_matcher)
+    /// would set.
     #[serde(default)]
     pub control_flow: Vec<AlgorithmPattern>,
     /// String signatures the string engine reads bodies and the string
     /// listing against — the same [`StringSignature`] entries
     /// [`with_string_engine`](crate::engine::AlgorithmEngine::with_string_engine)
-    /// would carry.
+    /// would set.
     #[serde(default)]
     pub string_signatures: Vec<StringSignature>,
     /// Callback contracts the callback database matches signatures and
     /// usage against — the same [`CallbackPattern`] entries
     /// [`with_callback_db`](crate::engine::AlgorithmEngine::with_callback_db)
-    /// would carry.
+    /// would set.
     #[serde(default)]
     pub callback_contracts: Vec<CallbackPattern>,
     /// Correlation relationships the cross-function detector matches
     /// the body-derived call map against — the same
     /// [`CorrelationRelationship`] entries
     /// [`with_cross_detector`](crate::engine::AlgorithmEngine::with_cross_detector)
-    /// would carry.
+    /// would set.
     #[serde(default)]
     pub correlation_patterns: Vec<CorrelationRelationship>,
 }
@@ -84,14 +85,13 @@ pub struct PatternDatabase {
 impl PatternDatabase {
     /// Read the database document at `path`.
     ///
-    /// The file is parsed through the shared JSON persistence plumbing,
-    /// so a missing, unreadable, or malformed document — including one
-    /// whose section or entry field names the types do not carry — is a
-    /// hard [`AlgorithmError::PatternDatabase`] naming the path: the run
-    /// fails loudly rather than scanning with a silently partial set.
-    /// Entries keep the detectors' lenient semantics: an uncompilable
-    /// regex inside a well-formed entry matches nothing and vetoes
-    /// nothing.
+    /// The file is parsed through the shared JSON persistence layer. A
+    /// missing, unreadable, or malformed document — including one with
+    /// section or entry field names the types do not define — is a hard
+    /// [`AlgorithmError::PatternDatabase`] that names the path: the run
+    /// fails loudly instead of scanning with a quietly partial set.
+    /// Entries keep the detectors' lenient rules: an uncompilable regex
+    /// inside a well-formed entry matches nothing and excludes nothing.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         load_json(path).map_err(|source| AlgorithmError::PatternDatabase {
@@ -112,9 +112,9 @@ mod tests {
     use crate::types::AlgorithmCategory;
     use tempfile::TempDir;
 
-    /// A database carrying one entry per section, one of them with a
-    /// per-entry confidence, so a round trip pins every section key and
-    /// the confidence addition.
+    /// A database with one entry per section, one of them with a
+    /// per-entry confidence, so a round trip checks every section key
+    /// and the added confidence field.
     fn database() -> PatternDatabase {
         PatternDatabase {
             control_flow: vec![AlgorithmPattern {
@@ -165,8 +165,8 @@ mod tests {
 
     #[test]
     fn the_document_keys_name_the_four_detector_sections() {
-        // The file format is pinned: one section per detector, and the
-        // entries carry exactly the pattern types' serde shapes.
+        // The file format is fixed here: one section per detector, and
+        // each entry has exactly the serde shape of its pattern type.
         let json = serde_json::to_string(&database()).expect("the database serializes");
         let value: serde_json::Value =
             serde_json::from_str(&json).expect("the serialized database reads back");
@@ -253,9 +253,9 @@ mod tests {
 
     #[test]
     fn a_typo_in_a_section_name_fails_the_load_naming_the_path() {
-        // The loud failure is what keeps a typo from silently degrading
-        // recognition: a misspelled section is not an omitted section,
-        // it is a malformed database.
+        // This loud failure is what keeps a typo from quietly reducing
+        // recognition to a partial set: a misspelled section is not an
+        // omitted section, it is a malformed database.
         let dir = TempDir::new().expect("the temp dir is created");
         let path = dir.path().join("patterns.json");
         std::fs::write(
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn a_typo_in_an_entry_field_name_fails_the_load_naming_the_path() {
         // Entries are as strict as sections: a field the entry type
-        // does not name is a malformed file, not a field to ignore.
+        // does not define is a malformed file, not a field to ignore.
         let dir = TempDir::new().expect("the temp dir is created");
         let path = dir.path().join("patterns.json");
         std::fs::write(
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn a_typo_in_a_correlation_entry_field_name_fails_the_load_naming_the_path() {
         // The fourth section is as strict as the other three: a field
-        // the relationship type does not name is a malformed file.
+        // the relationship type does not define is a malformed file.
         let dir = TempDir::new().expect("the temp dir is created");
         let path = dir.path().join("patterns.json");
         std::fs::write(

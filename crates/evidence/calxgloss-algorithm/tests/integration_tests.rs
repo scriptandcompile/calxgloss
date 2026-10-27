@@ -4,15 +4,15 @@
 //! cover on their own:
 //!
 //! - **Scan to disk** — [`AlgorithmEngine`] scans a canned program, the
-//!   [`AlgorithmPersistor`] files the result in the workspace layout, and
-//!   loading it back yields the same result the scan returned — with
-//!   competing claims resolved and the confidence floor applied before
-//!   anything is persisted.
-//! - **Consumption** — the loaded result answers the lookups a translation
-//!   pipeline makes (the hints made for one function) and its records
-//!   render into [`AlgorithmInfo`] for the prompts.
-//! - **Cache behavior** — the `exists` check decides whether a scan runs,
-//!   and a rescan replaces the cached document.
+//!   [`AlgorithmPersistor`] writes the result into the workspace layout,
+//!   and loading it back yields the same result the scan returned.
+//!   Competing claims are resolved and the confidence floor is applied
+//!   before anything is persisted.
+//! - **Consumption** — the loaded result answers the lookups a
+//!   translation pipeline makes (the hints recorded for one function),
+//!   and its records render into [`AlgorithmInfo`] for the prompts.
+//! - **Cache behavior** — the `exists` check decides whether a scan
+//!   runs, and a rescan replaces the cached document.
 //!
 //! The fake program implements [`ScanSource`], so the whole flow runs
 //! without an external server.
@@ -54,11 +54,12 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
-/// A canned program implementing [`ScanSource`]: a sort the control
-/// flow set recognizes, a CRC loop the string set reads from its own
-/// body, and a compare callback `qsort` reaches through the call graph
-/// — one reading per detector — plus a program-wide listing string
-/// carrying a `CRC32` marker no body spells.
+/// A canned program implementing [`ScanSource`], one reading per
+/// detector: a sort the control flow set recognizes, a CRC loop whose
+/// marker the string set finds in the function's own body, and a
+/// compare callback whose caller in the call graph is `qsort`. The
+/// program also has a program-wide listing string with a `CRC32`
+/// marker that no function body contains.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -214,10 +215,10 @@ fn program() -> FakeProgram {
 // The correlated canned program
 // ------------------------------------------------------------
 
-/// A canned program whose bodies call each other: a recursive split
-/// that halves its range, and a library sort that hands the host the
-/// comparator beside it in the listing — the pairs the correlation
-/// detector reads across function boundaries.
+/// A canned program whose bodies call each other: a recursive function
+/// that halves its own range, and a library sort that passes its
+/// comparator, which sits beside it in the listing. These are the
+/// pairs the correlation detector reads across function boundaries.
 fn correlated_program() -> FakeProgram {
     let mut bodies = HashMap::new();
     bodies.insert(
@@ -294,9 +295,10 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_every_hint_in_scan_order() {
-    // Function by function along the listing, and within one function
-    // the control flow match, then the string hint, then the callback
-    // match — so two scans of the same program diff cleanly.
+    // Hints are stored function by function along the listing. Within
+    // one function: the control flow match first, then the string
+    // hint, then the callback match. Two scans of the same program
+    // therefore diff cleanly.
     let workspace = TempDir::new().unwrap();
     let result = AlgorithmEngine::with_source(program())
         .scan("eqmain.dll")
@@ -325,11 +327,11 @@ async fn the_persisted_document_keeps_every_hint_in_scan_order() {
 
 #[tokio::test]
 async fn resolved_and_floored_hints_are_what_reaches_the_disk() {
-    // A callback contract naming `crc` competes with the listing-only
-    // crc claim on the sort function, and a floor of 40 drops the
-    // weaker claims: the persisted document carries exactly the
-    // resolved survivors — the stronger crc beside the sort shape, the
-    // body match on the CRC loop, and nothing on the compare callback
+    // A callback contract named `crc` competes with the listing-only
+    // crc claim on the sort function, and a floor of 40 then drops the
+    // weaker claims. The persisted document holds exactly the resolved
+    // survivors: the stronger crc claim beside the sort shape, the
+    // body match on the CRC loop, and nothing for the compare callback,
     // whose only claim sat below the floor.
     let workspace = TempDir::new().unwrap();
     let result = AlgorithmEngine::with_source(program())
@@ -369,11 +371,11 @@ async fn resolved_and_floored_hints_are_what_reaches_the_disk() {
 
 #[tokio::test]
 async fn correlated_hints_reach_the_persisted_document_naming_their_partners() {
-    // The fourth detector's reading survives the whole flow: the scan
-    // correlates a recursive split and a qsort/comparator pair, the
-    // JSON on disk spells the method as `cross_function`, and each
-    // correlated hint's evidence quotes the body line naming its
-    // partner function.
+    // The correlation detector's reading survives the whole flow: the
+    // scan correlates a recursive split and a qsort/comparator pair,
+    // the JSON on disk records the method as `cross_function`, and
+    // each correlated hint's evidence quotes the body line that
+    // contains its partner function's name.
     let workspace = TempDir::new().unwrap();
     let result = AlgorithmEngine::with_source(correlated_program())
         .scan("eqmain.dll")
@@ -413,12 +415,12 @@ async fn correlated_hints_reach_the_persisted_document_naming_their_partners() {
 
 #[tokio::test]
 async fn a_pattern_file_configures_the_scan_and_reaches_the_persisted_document() {
-    // The whole teaching path in one flow: a JSON file on disk names a
-    // control flow shape and a callback contract no built-in set
-    // carries, each with its own confidence; the scan configured from
-    // the file recognizes them, and the persisted document carries
-    // exactly those claims — the built-in sets, replaced whole, are
-    // absent.
+    // The whole teaching path in one flow. A JSON file on disk lists a
+    // control flow shape and a callback contract that no built-in set
+    // includes, each with its own confidence. The scan is configured
+    // from the file, recognizes both, and the persisted document holds
+    // exactly those claims — the built-in sets are replaced whole, so
+    // their findings are absent.
     let workspace = TempDir::new().unwrap();
     let patterns = workspace.path().join("patterns.json");
     std::fs::write(
@@ -476,12 +478,12 @@ async fn a_pattern_file_configures_the_scan_and_reaches_the_persisted_document()
 
 #[tokio::test]
 async fn a_pattern_file_correlation_section_reaches_the_persisted_document() {
-    // The fourth section rides the whole teaching path: a JSON file
-    // names a qsort/comparator relationship under its own name and its
-    // own confidence, the scan configured from the file correlates the
-    // pair through it, and the persisted document carries exactly that
-    // claim — the built-in relationships the section replaced,
-    // `divide_and_conquer` and `comparison_sort`, are absent.
+    // The fourth section follows the same teaching path: a JSON file
+    // lists a qsort/comparator relationship under its own name and at
+    // its own confidence. The scan configured from the file correlates
+    // the pair through that entry, and the persisted document holds
+    // exactly that claim — the built-in relationships this section
+    // replaced, `divide_and_conquer` and `comparison_sort`, are absent.
     let workspace = TempDir::new().unwrap();
     let patterns = workspace.path().join("patterns.json");
     std::fs::write(
@@ -551,12 +553,12 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was recognized in the function it is about
-    // to translate; an unknown function carries nothing.
+    // to translate; an unknown function has nothing.
     let sort_hints: Vec<&_> = loaded.for_function("FUN_18003ab00").collect();
     assert_eq!(sort_hints.len(), 2);
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
-    // Each record renders into prompt data naming the algorithm and
+    // Each record renders into prompt data with the algorithm and
     // family, the detector and confidence behind the claim, and the
     // evidence line.
     let rendered: Vec<AlgorithmInfo> = sort_hints
@@ -578,8 +580,8 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
 
 #[tokio::test]
 async fn a_loaded_callback_contract_reading_carries_its_host_as_evidence() {
-    // The callback half of the scan reads the call graph; the host
-    // caller name that matched the contract stands as the hint's
+    // The callback half of the scan reads the call graph. The host
+    // caller name that matched the contract stays as the hint's
     // evidence through the persisted round trip.
     let workspace = TempDir::new().unwrap();
     let result = AlgorithmEngine::with_source(program())
@@ -615,9 +617,9 @@ async fn a_rescan_replaces_the_cached_document() {
         .expect("first scan");
     persistor.save(&first).expect("save");
 
-    // A second scan of a program whose only function recognizes nothing
-    // replaces the document: the cache check still passes, but the
-    // hints are gone.
+    // A second scan replaces the document: its program's only function
+    // recognizes nothing, so the cache check still passes but the hints
+    // are gone.
     let quiet = FakeProgram {
         listing: vec![summary("FUN_18003e750", E750)],
         bodies: HashMap::from([(

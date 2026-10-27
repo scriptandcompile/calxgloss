@@ -13,8 +13,9 @@
 //! All types derive `Serialize`/`Deserialize`.
 
 // `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb and typeinfer convention.
+// the shared 0–100 evidence score; both are re-exported so consumers refer
+// to them through this crate, matching the typesdb and typeinfer
+// convention.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -26,9 +27,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// The category tells a translation prompt what kind of behavior the
 /// function implements — a sort is rewritten differently than a hash
-/// lookup or a state machine — and lets detectors reading different
-/// evidence classes converge on the same family: a qsort-style compare
-/// callback and a nested-loop swap both say `Sorting`.
+/// lookup or a state machine. It also lets detectors reading different
+/// kinds of evidence converge on the same family: a qsort-style
+/// compare callback and a nested-loop swap are both `Sorting`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlgorithmCategory {
@@ -82,11 +83,11 @@ calxgloss_types::display_serde_label!(AlgorithmCategory {
 
 /// The detector that produced a hint.
 ///
-/// Each detector reads a different evidence class — control flow shapes,
-/// string signatures, callback contracts, call relationships between
-/// functions — and the method says how a hint was made, so confidence
-/// resolution and the prompt rendering can weigh and explain hints by
-/// their evidence.
+/// Each detector reads a different kind of evidence: control flow
+/// shapes, string signatures, callback contracts, or call
+/// relationships between functions. The method records how a hint was
+/// produced, so confidence resolution and prompt rendering can rank
+/// and explain hints by their evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetectionMethod {
@@ -98,9 +99,10 @@ pub enum DetectionMethod {
     /// The function's signature and usage match a known callback contract,
     /// e.g. a qsort compare function.
     CallbackPattern,
-    /// The algorithm spans a call relationship between functions the scan
-    /// decompiles — a recursive split, a sort driving a comparator — read
-    /// from the call map the fetched bodies already carry.
+    /// The algorithm spans a call relationship between functions the
+    /// scan decompiles — a recursive split, a sort driving a
+    /// comparator. The relationship is read from the call map built
+    /// from the bodies the scan already decompiled.
     CrossFunction,
 }
 
@@ -116,16 +118,16 @@ calxgloss_types::display_serde_label!(DetectionMethod {
 // ============================================================
 
 /// One control flow signature the cfg matcher scans decompiled bodies
-/// against — a named bundle of regexes with the line-count floor that
-/// keeps it honest.
+/// against: a named group of regexes plus the minimum line count that
+/// stops false matches on small bodies.
 ///
 /// A pattern recognizes exactly one algorithm: its [`name`](Self::name)
 /// and [`category`](Self::category) are what a hint records when the
-/// pattern matches. The body must carry every regex in
+/// pattern matches. The body must contain every regex in
 /// [`match_patterns`](Self::match_patterns) and none in
-/// [`exclude_patterns`](Self::exclude_patterns), and must span at least
-/// [`min_lines`](Self::min_lines) lines — tiny functions accidentally fit
-/// broad shapes, so the floor refuses them.
+/// [`exclude_patterns`](Self::exclude_patterns), and must have at
+/// least [`min_lines`](Self::min_lines) lines. Tiny functions fit
+/// broad shapes by accident, so this minimum count rejects them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlgorithmPattern {
@@ -134,35 +136,38 @@ pub struct AlgorithmPattern {
     /// The family the recognized algorithm belongs to.
     pub category: AlgorithmCategory,
     /// Regex sources, all of which must match the decompiled body. A
-    /// source may carry the `{name}` placeholder, which the matcher
-    /// replaces with the scanned function's name, letting a signature
-    /// speak of the function itself.
+    /// source may contain the `{name}` placeholder; the matcher
+    /// replaces it with the scanned function's name, so a signature
+    /// can refer to the function itself.
     pub match_patterns: Vec<String>,
-    /// Regex sources, any of which rejects the match when it appears in
-    /// the body — shapes that make the matched signature read differently.
-    /// A source may carry the same `{name}` placeholder.
+    /// Regex sources; any one of them rejects the match when it
+    /// appears in the body. These are shapes that mean the matched
+    /// signature describes something else. A source may contain the
+    /// same `{name}` placeholder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_patterns: Vec<String>,
     /// Minimum number of body lines for the pattern to be considered.
     #[serde(default)]
     pub min_lines: usize,
-    /// Optional per-entry confidence (0–100) overriding the detector's
-    /// standard score ([`CFG_CONFIDENCE`](crate::confidence::CFG_CONFIDENCE))
-    /// for the hints this pattern makes — a hand-tuned signature from a
-    /// [pattern database](crate::pattern_db) can claim more (or less)
-    /// trust than the standard set pays. Absent means the standard score.
+    /// Optional per-entry confidence (0–100). It overrides the
+    /// detector's standard score
+    /// ([`CFG_CONFIDENCE`](crate::confidence::CFG_CONFIDENCE)) for the
+    /// hints this pattern produces: a hand-tuned signature from a
+    /// [pattern database](crate::pattern_db) can earn more (or less)
+    /// trust than the standard score gives. If absent, the standard
+    /// score applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
 }
 
 impl AlgorithmPattern {
-    /// The default line-count floor: a body shorter than this is too small
-    /// to carry a real control flow signature.
+    /// The default minimum line count: a body shorter than this is too
+    /// small to contain a real control flow signature.
     pub const DEFAULT_MIN_LINES: usize = 10;
 
     /// A pattern named `name` in `category` requiring every one of
-    /// `match_patterns`, with no exclusions, the default line-count
-    /// floor, and the detector's standard score.
+    /// `match_patterns`, with no exclusions, the default minimum line
+    /// count, and the detector's standard score.
     pub fn new(
         name: impl Into<String>,
         category: AlgorithmCategory,
@@ -185,11 +190,11 @@ impl AlgorithmPattern {
 
 /// One recognized algorithm in one function, with the evidence behind it.
 ///
-/// A hint is a hypothesis, not a fact applied to the program: it says the
-/// decompiled body *reads like* a known algorithm, and the method,
-/// confidence, and evidence together say how strongly. Detectors emit
-/// these records; confidence resolution keeps the strongest hints per
-/// function, and the survivors are persisted and rendered into
+/// A hint is a hypothesis, not a fact applied to the program: it means
+/// the decompiled body *reads like* a known algorithm, and the method,
+/// confidence, and evidence together show how strongly. Detectors
+/// produce these records. Confidence resolution keeps the strongest
+/// hints per function; the survivors are persisted and rendered into
 /// translation prompts as the high-level specification to target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlgorithmHint {
@@ -216,8 +221,8 @@ pub struct AlgorithmHint {
 
 /// Render a hint as prompt data: the recognized algorithm with its
 /// family, the detector and confidence behind the claim, and the
-/// evidence line, so the prompt shows the hypothesis and how strongly
-/// it was made.
+/// evidence line. The prompt therefore sees the hypothesis and how
+/// strongly it was made.
 impl From<&AlgorithmHint> for calxgloss_prompts::AlgorithmInfo {
     fn from(hint: &AlgorithmHint) -> Self {
         Self {
@@ -238,17 +243,18 @@ impl From<&AlgorithmHint> for calxgloss_prompts::AlgorithmInfo {
 /// `re/analysis/algorithm/{dll}.json`.
 ///
 /// The hints are the four detectors' outputs, resolved and in scan
-/// order: function by function, the control flow matches, then the
-/// string-guided hints, then the callback matches; the correlation
-/// hints, which need the whole listing in hand, follow in listing
-/// order. Each detector already reports one algorithm once per
-/// function, and where several detectors claim the same algorithm for
-/// one function the scan reports it once with its strongest reading —
-/// the survivor standing where that algorithm first appeared. Detectors
-/// naming different algorithms for one function all stand — a sort
-/// shape beside a qsort compare contract is two readings of one
-/// function that a translation prompt weighs together. The stable order
-/// means two scans of the same program diff cleanly.
+/// order: function by function along the listing. Within one function
+/// come the control flow matches, then the string-guided hints, then
+/// the callback matches. The correlation hints need the whole listing
+/// in hand, so they follow in listing order. Each detector already
+/// reports one algorithm once per function, and where several
+/// detectors claim the same algorithm for one function, the scan
+/// reports it once with its strongest reading — that claim stays where
+/// the algorithm first appeared. Detectors reporting different
+/// algorithms for one function all stand: a sort shape beside a qsort
+/// compare contract is two readings of one function, and a translation
+/// prompt weighs them together. This stable order means two scans of
+/// the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlgorithmRecognitionResult {
     /// Provenance of the scan that produced these hints.
@@ -422,8 +428,8 @@ mod tests {
 
     #[test]
     fn a_result_without_hints_omits_them_and_reads_back_empty() {
-        // Documents persisted before a hint landed still load, and an
-        // empty scan stays small on disk.
+        // Documents written before hints were recorded still load, and
+        // an empty scan stays small on disk.
         let result = AlgorithmRecognitionResult::new(ScanMetadata::new("eqmain.dll"));
         let json = serde_json::to_string(&result).unwrap();
         assert!(!json.contains("\"hints\""));
