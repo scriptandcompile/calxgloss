@@ -13,7 +13,7 @@
 //! 2. The LLM generates [`ShimApiMapping`] entries mapping each exported
 //!    function to a target crate API with parameter transformations.
 //! 3. [`ShimLayer`] holds the complete mapping set; downstream tools
-//!    (code generator, test generator, verifier) consume it to produce
+//!    (code generator, test generator, verifier) use it to produce
 //!    shim source code, shim tests, and verification harnesses.
 
 use serde::{Deserialize, Serialize};
@@ -85,7 +85,7 @@ pub struct ShimApiMapping {
     pub return_mapping: ReturnMapping,
 
     /// Estimated implementation complexity, used for prioritizing shim work
-    /// and for surfacing complexity scores in the review dashboard.
+    /// and for showing complexity scores in the review dashboard.
     #[serde(default)]
     pub complexity: ComplexityScore,
 
@@ -174,10 +174,10 @@ impl ComplexityScore {
 
 /// A complete shim layer for a single crate-replacement DLL.
 ///
-/// The shim layer bridges the gap between the original DLL's exported
-/// API surface and the target Rust crate's API. It is the artifact that
-/// the translation pipeline produces from classifications and LLM-generated
-/// API mappings.
+/// The shim layer is the translation bridge between the original DLL's
+/// exported API surface and the target Rust crate's API. The translation
+/// pipeline produces it from classifications and LLM-generated API
+/// mappings.
 ///
 /// # Example
 ///
@@ -267,11 +267,12 @@ impl ShimLayer {
 }
 
 impl ShimApiMapping {
-    /// Converts this mapping into a [`crate::ApiMappingItem`] suitable
-    /// for inclusion in translation prompts.
+    /// Convert this mapping into a [`crate::ApiMappingItem`] that
+    /// translation prompts can include.
     ///
-    /// The resulting item maps the original API name to the crate API,
-    /// with the parameter transforms and notes folded into the notes field.
+    /// The resulting item maps the original API name to the crate API.
+    /// The parameter transforms and the notes are combined into the
+    /// notes field.
     pub fn to_api_mapping_item(&self) -> crate::ApiMappingItem {
         let rust_equivalent = self.crate_api.clone();
         let mut notes = String::new();

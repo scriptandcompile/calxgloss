@@ -1,6 +1,6 @@
 //! Fault detection types for the Calxgloss reverse engineering harness.
 //!
-//! These types are used to detect, categorize, and log common LLM failure modes
+//! These types detect, categorize, and log the common LLM failure modes
 //! documented in the Calxgloss architecture:
 //! - Context window exceeded
 //! - Hallucination (non-existent API references)
@@ -54,8 +54,8 @@ pub enum FaultCategory {
     /// the engine's actual symbols and disassembly as ground truth.
     Hallucination,
 
-    /// The same bad output was produced three or more times in a row during
-    /// the retry loop.
+    /// The retry loop produced the same bad output three or more times in
+    /// a row.
     ///
     /// Recovery: escalate to a different prompt strategy or manual
     /// intervention.
@@ -104,7 +104,7 @@ impl std::fmt::Display for FaultCategory {
 
 /// The severity level of a detected fault.
 ///
-/// Severity influences whether the harness auto-recover or requires human
+/// Severity decides whether the harness recovers on its own or needs human
 /// intervention.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,8 +133,8 @@ impl std::fmt::Display for FaultSeverity {
 
 /// Metadata for a context-window-exceeded fault.
 ///
-/// This fault fires when an LLM response size is at or above the configured
-/// maximum token limit, indicating the model hit its output ceiling. The
+/// This fault is detected when an LLM response size is at or above the
+/// configured maximum token limit: the model hit its output ceiling. The
 /// translation pipeline should then split the function into smaller chunks
 /// and retry with focused context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,7 +209,7 @@ impl ContextWindowFault {
     /// Estimate how many chunks the function should be split into.
     ///
     /// The heuristic divides total lines by a safe per-chunk size (30 lines)
-    /// and rounds up.  At least 2 chunks are always suggested.
+    /// and rounds up.  It always suggests at least 2 chunks.
     pub fn suggested_chunk_count(&self) -> usize {
         let chunks = if let Some(lines) = self.disassembly_lines {
             let per_chunk = 30usize;
@@ -335,7 +335,7 @@ pub struct FaultEvent {
     /// When the fault was detected (Unix timestamp in seconds).
     pub timestamp: u64,
 
-    /// Type-specific metadata.  Context-window faults carry a
+    /// Type-specific metadata.  A context-window fault includes a
     /// [`serde_json::Value`] with the same keys as [`ContextWindowFault`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
@@ -620,12 +620,12 @@ impl std::fmt::Display for FaultEvent {
 // Fault log
 // ============================================================
 
-/// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`]
+/// The saved totals of the entries dropped by the [`MAX_LOG_ENTRIES`]
 /// cap (issue #82).
 ///
-/// [`FaultLog::add_entry`] folds each dropped event into this accumulator so
-/// [`FaultLog::compute_stats`] keeps covering the whole run's history even
-/// though the events themselves are gone from the file.
+/// [`FaultLog::add_entry`] adds each dropped event into these totals. So
+/// [`FaultLog::compute_stats`] still covers the whole run's history, even
+/// though the file no longer holds those events.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FaultTrim {
     /// How many events were trimmed away.
@@ -654,13 +654,13 @@ pub struct FaultTrim {
 }
 
 impl FaultTrim {
-    /// True when nothing has ever been trimmed — the state every fresh log
-    /// starts in, and the reason the accumulator can be skipped in JSON.
+    /// True when nothing has ever been trimmed. Every fresh log starts in
+    /// this state, which is why the JSON can leave this field out.
     fn is_empty(&self) -> bool {
         self.entries == 0
     }
 
-    /// Fold one dropped event into the running totals.
+    /// Add one dropped event into the running totals.
     fn absorb(&mut self, entry: &FaultEvent) {
         self.entries += 1;
         *self.by_category.entry(entry.category.clone()).or_default() += 1;
@@ -675,13 +675,14 @@ impl FaultTrim {
 
 /// A persistent log of all detected faults.
 ///
-/// Stored at `<workspace>/re/analysis/fault_log.json`.  Supports appending
-/// new events and computing aggregate statistics (total faults per category,
-/// per-binary, etc.).
+/// It is stored at `<workspace>/re/analysis/fault_log.json`.  Events can be
+/// appended to it, and it computes aggregate statistics (fault counts per
+/// category, per DLL, and more).
 ///
-/// The log is bounded: [`add_entry`](Self::add_entry) keeps at most
-/// [`MAX_LOG_ENTRIES`] newest events and folds the trimmed-away ones into
-/// [`trimmed`](Self::trimmed), so aggregates still cover the whole run.
+/// The log is bounded. [`add_entry`](Self::add_entry) keeps at most
+/// [`MAX_LOG_ENTRIES`] of the newest events and moves the totals of the
+/// dropped ones into [`trimmed`](Self::trimmed), so the aggregates still
+/// cover the whole run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FaultLog {
     /// The retained events — the newest window of at most
@@ -701,10 +702,11 @@ impl FaultLog {
 
     /// Append a single fault event.
     ///
-    /// The log retains at most [`MAX_LOG_ENTRIES`] events: once full, each
-    /// new event drops the oldest one, keeping the file's size and the
-    /// per-entry rewrite cost bounded (issue #82). The dropped event is
-    /// folded into [`trimmed`](Self::trimmed) so aggregates stay honest.
+    /// The log keeps at most [`MAX_LOG_ENTRIES`] events. Once full, each
+    /// new event drops the oldest one, which bounds the file's size and
+    /// the cost of rewriting it (issue #82). The dropped event's totals
+    /// move into [`trimmed`](Self::trimmed), so the aggregates stay
+    /// accurate.
     pub fn add_entry(&mut self, entry: FaultEvent) {
         self.entries.push(entry);
         if self.entries.len() > crate::MAX_LOG_ENTRIES {
@@ -1050,7 +1052,7 @@ mod tests {
 
     #[test]
     fn test_log_without_trimmed_field_stays_compatible() {
-        // Fault logs written before the cap (issue #82) carry no `trimmed` field.
+        // Fault logs written before the cap (issue #82) have no `trimmed` field.
         let json = r#"{"entries":[{"binary":"test.dll","function":"entry","attempt":1,"strategy":"initial","category":"context_window_exceeded","severity":"error","description":"d","recovery":"r","timestamp":1700000000,"metadata":null}]}"#;
         let log: FaultLog = serde_json::from_str(json).expect("old fault logs must still load");
         assert_eq!(log.entries.len(), 1);

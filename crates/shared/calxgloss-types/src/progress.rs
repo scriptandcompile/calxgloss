@@ -1,8 +1,8 @@
 //! Translation progress events emitted during a translation run.
 //!
-//! These events flow through a `broadcast` channel and can be consumed by
-//! any subscriber — most commonly the WebSocket server that streams progress
-//! to the web UI during live translation.
+//! These events go through a `broadcast` channel, and any subscriber can
+//! read them — most commonly the WebSocket server, which streams progress to
+//! the web UI during live translation.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -52,7 +52,8 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
     },
-    /// The engine returned function metadata (disassembly, decompiler output).
+    /// The analysis engine returned function metadata (disassembly,
+    /// decompiler output).
     ScanFetchComplete {
         binary: BinaryIdentity,
         function: String,
@@ -223,9 +224,10 @@ pub enum ProgressEvent {
     /// before the first pass starts so the pipeline table can show the
     /// queue, not just the current binary.
     QueuePlanned { binaries: Vec<String> },
-    /// A batch-level analysis pass is walking its work list — the heartbeat
-    /// of the pre-translation passes (call-graph extraction, the evidence
-    /// scans) that grind function-by-function before any unit event exists.
+    /// A batch-level analysis pass is working through its work list — the
+    /// heartbeat of the pre-translation passes (call-graph extraction, the
+    /// evidence scans) that process functions one by one before any unit
+    /// event exists.
     ///
     /// `pass` names the work ("evidence scans", "call graph", …) — a free
     /// string, so a new evidence pass needs no new event variant; the
@@ -741,7 +743,7 @@ impl std::fmt::Display for ProgressEvent {
 #[serde(rename_all = "snake_case")]
 pub enum TranslationPhase {
     /// Fetching function metadata (disassembly, decompiler output) from the
-    /// engine.
+    /// analysis engine.
     ScanFetch,
     /// Tagging Windows API calls referenced by the function.
     ApiTagging,
@@ -897,7 +899,7 @@ impl StopSignal {
 pub enum PipelineState {
     /// No translation run has started yet.
     Idle,
-    /// A run is translating (or between units of it).
+    /// A run is translating (or between its units).
     Running,
     /// A pause was requested; the run halts at the next unit boundary and
     /// waits there until resumed or stopped.
@@ -913,7 +915,7 @@ pub enum PipelineState {
 impl PipelineState {
     /// Whether the run must not start another unit at its next boundary —
     /// a stop was requested (`Stopping`) or the run has ended (`Complete`).
-    /// `Paused` is deliberately *not* halted: the run parks at the
+    /// `Paused` is deliberately *not* halted: the run stays at the
     /// boundary, waiting to resume.
     pub fn is_halted(self) -> bool {
         matches!(self, PipelineState::Stopping | PipelineState::Complete)
@@ -1077,8 +1079,8 @@ impl PipelineControl {
     }
 
     /// Complete | Error → Running: begin a fresh run inside the same live
-    /// process (issue #92, W2.3). The restart endpoint drives this after
-    /// the previous run halted; what the fresh run covers travels on a
+    /// process (issue #92, W2.3). The restart endpoint calls this after the
+    /// previous run halted; what the fresh run covers is set by a
     /// [`RunRequestSignal`]. A run that is still live (Running, Paused,
     /// Stopping) or never started (Idle) refuses the restart — the
     /// operator stops it first, or uses `start` for a session that has
@@ -1281,15 +1283,15 @@ struct InFlightUnit {
 /// cheaply cloneable, so the live pipeline and the web server hold separate
 /// clones of one handle. The pipeline registers each unit it starts
 /// ([`Self::begin_unit`]) and clears it at the boundary
-/// ([`Self::end_unit_was_cancelled`]); the web server's cancel-current endpoint fires
-/// [`Self::cancel_current`] at whatever unit is in flight. The pipeline
+/// ([`Self::end_unit_was_cancelled`]); the web server's cancel-current endpoint calls
+/// [`Self::cancel_current`] on whatever unit is in flight. The pipeline
 /// observes the cancellation with [`Self::is_cancelled_for`] and aborts the
 /// unit at the earliest safe point — the run then continues with the next
 /// unit, and the cancelled attempt stays recorded as a failure.
 ///
 /// Cancelling with no unit in flight is rejected with [`NoUnitInFlight`]
 /// rather than silently doing nothing, so a stale dashboard button can
-/// never drive the run inconsistent. When built `with_events`, the first
+/// never leave the run in an inconsistent state. When built `with_events`, the first
 /// cancellation of a unit emits [`ProgressEvent::UnitCancelled`] on the
 /// shared channel the moment it lands, so the WebSocket broadcast and
 /// progress state reflect it like every other lifecycle operation.
@@ -1933,7 +1935,8 @@ mod tests {
             "pause emits running -> paused, got: {second}"
         );
 
-        // A rejected transition emits nothing — the stream only carries truth.
+        // A rejected transition emits nothing — the stream only contains true
+        // transitions.
         assert!(control.pause().is_err());
         assert!(
             rx.try_recv().is_err(),

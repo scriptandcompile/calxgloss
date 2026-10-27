@@ -1,25 +1,25 @@
-//! Per-attempt token usage tracking.
+//! Token usage recorded for each translation attempt.
 //!
-//! This module provides types and utility functions for logging and
-//! persisting LLM token usage data across translation runs.
+//! This module holds the types that record and save LLM token usage across
+//! translation runs.
 //!
 //! # Overview
 //!
 //! Every translation attempt is recorded as a [`TokenUsageEntry`] containing:
-//! - The DLL name and function it belongs to
+//! - The DLL name and function the attempt belongs to
 //! - The attempt number (1-based)
 //! - The retry strategy used (initial, compile_fix, test_fix, etc.)
-//! - Number of tokens consumed by that attempt
+//! - The number of tokens the attempt used
 //! - Whether the attempt ultimately succeeded
-//! - A timestamp for when the entry was recorded
-//! - The wall-clock duration of the attempt, in whole seconds (issue #64;
-//!   absent on entries written by older versions)
+//! - The time the entry was recorded
+//! - How long the attempt took, in whole seconds (issue #64; entries
+//!   written by older versions have no duration field)
 //!
-//! These entries are collected into a [`TokenUsageLog`] which can compute
-//! aggregate statistics (total tokens, per-DLL breakdown, etc.).
+//! The entries accumulate in a [`TokenUsageLog`], which computes aggregate
+//! statistics (total tokens, a per-DLL breakdown, and more).
 //!
 //! The [`crate::analysis::TokenUsageLogger`](crate::analysis::TokenUsageLogger)
-//! handles persistence to `re/analysis/token_usage.json`.
+//! saves the log to `re/analysis/token_usage.json`.
 //!
 //! # Example
 //!
@@ -40,11 +40,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::BinaryIdentity;
 
-/// A single token usage entry recording the token count for one translation attempt.
+/// One record of the token count for a single translation attempt.
 ///
-/// Each entry captures which function and DLL it belongs to, the attempt number,
-/// which retry strategy was used, how many tokens the LLM consumed, and whether
-/// the attempt succeeded.
+/// Each entry records which function and DLL the attempt belongs to, the
+/// attempt number, the retry strategy used, how many tokens the LLM used,
+/// and whether the attempt succeeded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenUsageEntry {
     /// The DLL filename (e.g., `"game_logic.dll"`).
@@ -69,14 +69,15 @@ pub struct TokenUsageEntry {
     pub timestamp: u64,
 
     /// The context tier label for this attempt (e.g., `"stub"`, `"disassembly"`,
-    /// `"with_tests"`, `"module_context"`, `"full_module"`).  Empty when tier
-    /// tracking is not enabled.
+    /// `"with_tests"`, `"module_context"`, `"full_module"`).  It is empty when
+    /// context tier tracking is not turned on.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub context_tier: String,
 
-    /// Wall-clock duration of the attempt in whole seconds, recorded by the
-    /// retry loop (issue #64).  `None` on entries written before durations
-    /// were tracked, so time estimates only ever average real measurements.
+    /// How long the attempt took, in whole seconds. The translator's retry
+    /// loop records it (issue #64).  It is `None` on entries written before
+    /// durations were tracked, so time estimates average only real
+    /// measurements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<u64>,
 }
@@ -127,10 +128,10 @@ impl TokenUsageEntry {
         }
     }
 
-    /// Attach a wall-clock attempt duration (whole seconds) to this entry.
+    /// Record how long the attempt took, in whole seconds.
     ///
-    /// Recorded by the translator's retry loop around each attempt; entries
-    /// without it are treated as unmeasured by [`TokenUsageLog::
+    /// The translator's retry loop calls this around each attempt. Entries
+    /// without a duration count as unmeasured to [`TokenUsageLog::
     /// average_attempt_duration_secs`].
     pub fn with_duration_secs(mut self, duration_secs: u64) -> Self {
         self.duration_secs = Some(duration_secs);
@@ -138,10 +139,10 @@ impl TokenUsageEntry {
     }
 }
 
-/// An aggregated view of token usage data across entries.
+/// Aggregated token usage across entries.
 ///
-/// This struct is produced by [`TokenUsageLog::compute_stats`] and
-/// contains per-DLL and overall token consumption summaries.
+/// [`TokenUsageLog::compute_stats`] produces this struct. It summarizes
+/// token use overall and per DLL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageStats {
     /// Total entries in the log.
@@ -171,13 +172,13 @@ pub struct BinaryTokenStats {
     pub total_tokens: usize,
 }
 
-/// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`]
+/// The saved totals of the entries dropped by the [`MAX_LOG_ENTRIES`]
 /// cap (issue #82).
 ///
-/// [`TokenUsageLog::add_entry`] folds each dropped entry into this
-/// accumulator so [`TokenUsageLog::compute_stats`] and
-/// [`TokenUsageLog::average_attempt_duration_secs`] keep covering the whole
-/// run's history even though the entries themselves are gone from the file.
+/// [`TokenUsageLog::add_entry`] adds each dropped entry into these totals.
+/// So [`TokenUsageLog::compute_stats`] and
+/// [`TokenUsageLog::average_attempt_duration_secs`] still cover the whole
+/// run's history, even though the file no longer holds those entries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsageTrim {
     /// How many entries were trimmed away.
@@ -206,13 +207,13 @@ pub struct TokenUsageTrim {
 }
 
 impl TokenUsageTrim {
-    /// True when nothing has ever been trimmed — the state every fresh log
-    /// starts in, and the reason the accumulator can be skipped in JSON.
+    /// True when nothing has ever been trimmed. Every fresh log starts in
+    /// this state, which is why the JSON can leave this field out.
     fn is_empty(&self) -> bool {
         self.entries == 0
     }
 
-    /// Fold one dropped entry into the running totals.
+    /// Add one dropped entry into the running totals.
     fn absorb(&mut self, entry: &TokenUsageEntry) {
         self.entries += 1;
         self.total_tokens += entry.tokens_used;
@@ -241,15 +242,17 @@ impl TokenUsageTrim {
     }
 }
 
-/// A complete token usage log collecting entries across all translation runs.
+/// The complete token usage log: every entry recorded across all
+/// translation runs.
 ///
-/// This struct is the in-memory representation that the logger serializes
-/// to `re/analysis/token_usage.json`. It can also compute aggregate
+/// This struct is the in-memory form the logger saves to
+/// `re/analysis/token_usage.json`. It can also compute aggregate
 /// statistics via [`compute_stats`](Self::compute_stats).
 ///
-/// The log is bounded: [`add_entry`](Self::add_entry) keeps at most
-/// [`MAX_LOG_ENTRIES`] newest entries and folds the trimmed-away ones into
-/// [`trimmed`](Self::trimmed), so aggregates still cover the whole run.
+/// The log is bounded. [`add_entry`](Self::add_entry) keeps at most
+/// [`MAX_LOG_ENTRIES`] of the newest entries and moves the totals of the
+/// dropped ones into [`trimmed`](Self::trimmed), so the aggregates still
+/// cover the whole run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsageLog {
     /// The retained entries — the newest window of at most
@@ -269,10 +272,11 @@ impl TokenUsageLog {
 
     /// Append an entry to the log.
     ///
-    /// The log retains at most [`MAX_LOG_ENTRIES`] entries: once full, each
-    /// new entry drops the oldest one, keeping the file's size and the
-    /// per-entry rewrite cost bounded (issue #82). The dropped entry is
-    /// folded into [`trimmed`](Self::trimmed) so aggregates stay honest.
+    /// The log keeps at most [`MAX_LOG_ENTRIES`] entries. Once full, each
+    /// new entry drops the oldest one, which bounds the file's size and
+    /// the cost of rewriting it (issue #82). The dropped entry's totals
+    /// move into [`trimmed`](Self::trimmed), so the aggregates stay
+    /// accurate.
     pub fn add_entry(&mut self, entry: TokenUsageEntry) {
         self.entries.push(entry);
         if self.entries.len() > crate::MAX_LOG_ENTRIES {
@@ -298,7 +302,7 @@ impl TokenUsageLog {
         let successful_tokens = retained_successful + self.trimmed.successful_tokens;
         let failed_tokens = total_tokens.saturating_sub(successful_tokens);
 
-        // Group by DLL, merging the retained entries with the trimmed totals.
+        // Group by DLL, combining the retained entries with the trimmed totals.
         let mut binary_map: std::collections::HashMap<BinaryIdentity, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
@@ -331,15 +335,15 @@ impl TokenUsageLog {
         }
     }
 
-    /// Mean wall-clock attempt duration, in seconds, across entries that
+    /// The mean attempt duration, in seconds, over the entries that
     /// recorded one (issue #64).
     ///
-    /// Returns `None` when no entry carries a duration — the honest answer
-    /// when nothing has been measured yet — so callers hide time estimates
-    /// rather than fabricating them. Entries written by older versions
-    /// (no `duration_secs`) are skipped, never counted as zero. Trimmed-away
-    /// entries (issue #82) keep contributing through their recorded totals
-    /// in [`trimmed`](Self::trimmed).
+    /// Returns `None` when no entry has a duration. That is the honest
+    /// answer when nothing has been measured yet, so callers hide time
+    /// estimates instead of making them up. Entries written by older
+    /// versions have no `duration_secs` field; they are skipped, never
+    /// counted as zero. Entries dropped by the cap (issue #82) still count,
+    /// through their totals in [`trimmed`](Self::trimmed).
     pub fn average_attempt_duration_secs(&self) -> Option<f64> {
         let mut total_secs = self.trimmed.duration_secs_sum;
         let mut measured = self.trimmed.duration_count;
@@ -738,7 +742,7 @@ mod tests {
 
     #[test]
     fn test_log_without_trimmed_field_stays_compatible() {
-        // Logs written before the cap (issue #82) carry no `trimmed` field.
+        // Logs written before the cap (issue #82) have no `trimmed` field.
         let json = r#"{"entries":[{"binary":"test.dll","function":"entry","attempt":1,"strategy":"initial","tokens_used":2048,"success":true,"timestamp":1700000000}]}"#;
         let log: TokenUsageLog = serde_json::from_str(json).expect("old logs must still load");
         assert_eq!(log.entries.len(), 1);

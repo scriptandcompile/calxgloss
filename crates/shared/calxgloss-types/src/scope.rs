@@ -18,8 +18,9 @@
 //! * [`ScopeControl`] is the shared handle — `Arc`-backed and cheaply
 //!   cloneable, the same pattern as [`StopSignal`](crate::StopSignal) and
 //!   [`PipelineControl`](crate::PipelineControl). The web router's scope
-//!   endpoints drive it; the translator pipeline observes it at queue
-//!   selection, so a skip lands before a unit ever enters the queue plan.
+//!   endpoints change it; the translator pipeline reads it at queue
+//!   selection, so a skip takes effect before a unit ever enters the queue
+//!   plan.
 //!
 //! When the handle is opened over a workspace ([`ScopeControl::open`]) every
 //! mutation persists the records to `re/analysis/translation_scope.json` and
@@ -159,8 +160,8 @@ impl TranslationScope {
 ///
 /// Every field is `None` for "no cap" — the default an un-steered run runs
 /// under. The caps are read at queue selection and at each retry escalation,
-/// so a change lands on the next unit boundary or the next escalation, never
-/// mid-attempt.
+/// so a change takes effect at the next unit boundary or the next
+/// escalation, never mid-attempt.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranslationConstraints {
     /// Maximum LLM attempts per unit (including the first). Caps the retry
@@ -202,8 +203,8 @@ pub fn constraints_record_path(workspace: impl AsRef<Path>) -> PathBuf {
 /// [`PipelineControl::with_events`](crate::PipelineControl::with_events) —
 /// so WebSocket clients re-render the binary's row without a reload. The
 /// focus slot (issue #284) emits nothing itself: the run loop consumes it
-/// at a binary boundary, and the reorder rides the run's own queue-plan
-/// re-publish.
+/// at a binary boundary, and the reordered queue reaches clients through
+/// the run's own queue-plan re-publish.
 #[derive(Debug, Clone)]
 pub struct ScopeControl {
     inner: Arc<Mutex<ScopeState>>,
@@ -429,7 +430,7 @@ impl ScopeControl {
     /// replaces any previous one rather than queueing a list. A focus naming
     /// a binary the queue does not hold reorders nothing and survives until
     /// a boundary names it. Like the paused set, the focus persists with the
-    /// scope record so a restart hands it to the next run.
+    /// scope record so a restart passes it to the next run.
     pub fn set_focus(&self, binary: &str) -> Result<(), PersistError> {
         let mut state = self.lock();
         state.scope.focus = Some(binary.into());
@@ -616,7 +617,7 @@ mod tests {
     }
 
     /// The one match rule (issue #107): adding, checking, and removing the
-    /// same (binary, function) pair always land on one entry, however the
+    /// same (binary, function) pair always refers to one entry, however the
     /// operator cased the binary name.
     #[test]
     fn differently_cased_mutations_dedupe_and_remove_the_same_entry() {
@@ -837,10 +838,10 @@ mod tests {
         );
     }
 
-    /// The focus rides the same persisted record as the paused set, so a
-    /// restarted run picks it up (issue #284) — and a consumed or cleared
-    /// focus stays gone through re-opens, so a stale focus never reorders
-    /// later runs forever.
+    /// The focus is saved in the same persisted record as the paused set,
+    /// so a restarted run picks it up (issue #284) — and a consumed or
+    /// cleared focus stays gone through re-opens, so a stale focus never
+    /// reorders later runs forever.
     #[test]
     fn focus_persists_with_the_scope_record() {
         let ws = temp_workspace();
@@ -950,7 +951,7 @@ mod tests {
                 .exists()
         );
 
-        // The paused field lands in the persisted scope record itself.
+        // The paused field appears in the persisted scope record itself.
         let raw = std::fs::read_to_string(ws.path().join("re/analysis/translation_scope.json"))
             .expect("scope record is readable");
         assert!(

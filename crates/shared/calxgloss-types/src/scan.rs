@@ -1,27 +1,28 @@
 //! Provenance and coverage shared by every per-binary scan artifact.
 //!
-//! The recovery and inference engines each persist a per-binary JSON document
-//! that doubles as a cache. The part a consumer reads when deciding whether
-//! that cache is still good — which binary it describes, when it was built,
-//! and which engine produced it — is the same shape everywhere, so it lives
-//! here rather than being restated in each engine crate. The other half of
-//! that shape says what the scan examined and what it could not: a coverage
-//! record beside the provenance, so an engine that looked and found nothing
-//! never reads like one that saw nothing (track P19, issue #344).
+//! The recovery and inference engines each save a per-binary JSON document
+//! that also serves as a cache. When a consumer decides whether that cache
+//! is still usable, it reads three facts: which binary the document
+//! describes, when it was built, and which engine produced it. Every engine
+//! uses the same shape here, so the shape lives in this module instead of
+//! being restated in each engine crate. The other half of the shape is the
+//! coverage record, stored beside the provenance: it says what the scan
+//! examined and what it could not. An engine that looked and found nothing
+//! then never looks like an engine that saw nothing (track P19, issue #344).
 
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::display_serde_label;
 
-/// The decompiler engine that produced a scan, named by the source the
-/// scan read through.
+/// The decompiler engine that produced a scan, named by the scan source
+/// the scan read through.
 ///
-/// Kuna is the only engine (issue #214), and a scan names it, its pinned
+/// Kuna is the only engine (issue #214). A scan records its name, its pinned
 /// release, and the source fingerprint of that pin, so a reviewer can tell
-/// what produced any decompilation in the record and re-create or blame it
-/// (issue #208). Artifacts written before the field existed carry no
-/// provenance, so the field stays optional on read.
+/// what produced any decompilation in the record — and reproduce it or trace
+/// a problem back to it (issue #208). Artifacts written before the field
+/// existed have no provenance, so the field stays optional on read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineProvenance {
     /// The engine's name, e.g. `kuna`.
@@ -37,16 +38,16 @@ pub struct EngineProvenance {
 
 impl EngineProvenance {
     /// This stamp's engine-build identity — the one string the scan read
-    /// cache records beside its documents so a directory filed by one
-    /// engine build is never replayed by another (issue #358).
+    /// cache records beside its documents, so a directory saved by one
+    /// engine build is never reused by another (issue #358).
     ///
-    /// The identity carries exactly the three stamp fields — engine name,
-    /// pinned release, pinned source rev — joined by `@`, so bumping the
-    /// pinned engine crate moves the identity without anyone touching a
-    /// version integer. A field the source does not name rides the literal
-    /// `unknown` segment, keeping the identity three segments wide; a stamp
-    /// with less to name is a different build than one that names more, so
-    /// its identity differs too.
+    /// The identity is exactly the three stamp fields — engine name,
+    /// pinned release, pinned source rev — joined by `@`. So bumping the
+    /// pinned engine crate changes the identity by itself, with no version
+    /// integer for anyone to touch. When the source does not name a field,
+    /// the identity uses a literal `unknown` segment there and stays three
+    /// segments wide. A stamp that names less is a different build than one
+    /// that names more, so its identity differs too.
     pub fn identity(&self) -> String {
         format!(
             "{}@{}@{}",
@@ -58,29 +59,29 @@ impl EngineProvenance {
 }
 
 /// How far a scan got on one facet of its picture — the closed set an
-/// engine stamps about its own work.
+/// evidence engine stamps about its own work.
 ///
-/// Facets are engine-declared (each scan crate owns the roster of its own
-/// facet ids), and every coverage entry names its facet's state with one of
-/// these four labels. The serde labels are the persisted wire format under
+/// Facets are declared by the evidence engine (each scan crate owns the
+/// roster of its own facet ids), and every coverage entry states its facet's
+/// state with one of these four labels. The serde labels are the persisted wire format under
 /// the coverage record, so they are a compatibility contract. There is
-/// deliberately no `unknown` here: an engine admits `partial`, `unavailable`
-/// or `unexamined` about its own scan, and the `unknown` a pre-coverage
-/// document reads as is derived at read time
+/// deliberately no `unknown` here: an evidence engine admits `partial`,
+/// `unavailable` or `unexamined` about its own scan, and the `unknown` a
+/// pre-coverage document reads as is derived at read time
 /// ([`EffectiveCoverage::Unknown`]), never written (issue #345).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageStatus {
     /// The facet was examined end to end: silence about it means absent.
     Complete,
-    /// The facet was examined only partway; what the scan could not reach
-    /// rides the entry's own limitation line.
+    /// The facet was examined only partway. The entry's own limitation line
+    /// describes what the scan could not reach.
     Partial,
     /// The facet could not be examined on this target at all — the evidence
     /// for it was not there to read.
     Unavailable,
-    /// The scan never attempts this facet; it sits outside what the engine
-    /// was built to examine.
+    /// The scan never attempts this facet; the evidence engine was not
+    /// built to examine it.
     Unexamined,
 }
 
@@ -94,12 +95,13 @@ display_serde_label!(CoverageStatus {
 /// A read-side coverage status: the four writable statuses plus `unknown`.
 ///
 /// This is what every consumer of a scan document branches on. `Unknown` is
-/// the derived default of a document written before the coverage record
-/// shipped — the field's own absence admitting it, the same graceful
-/// degradation the engine-provenance field on this module already
+/// the derived default for a document written before the coverage record
+/// shipped; the field's own absence admits it. That is the same graceful
+/// degradation the engine-provenance field in this module already
 /// practices. Because `Unknown` lives only on this read-side enum and never
-/// on [`CoverageStatus`], no engine can stamp it about its own scan, and an
-/// absent record can never be mistaken for a `complete` one (issue #345).
+/// on [`CoverageStatus`], no evidence engine can stamp it about its own
+/// scan, and an absent record can never be mistaken for a `complete` one
+/// (issue #345).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EffectiveCoverage {
     /// The document's coverage record claims the picture was examined end to
@@ -114,9 +116,9 @@ pub enum EffectiveCoverage {
     /// The document's coverage record says the engine never attempts the
     /// facet.
     Unexamined,
-    /// The document carries no coverage record — written before the field
-    /// shipped — so what the scan examined is unknown, and its silence
-    /// establishes nothing either way.
+    /// The document has no coverage record — it was written before the
+    /// field shipped — so what the scan examined is unknown, and its
+    /// silence establishes nothing either way.
     Unknown,
 }
 
@@ -131,12 +133,13 @@ impl From<CoverageStatus> for EffectiveCoverage {
     }
 }
 
-/// One engine-declared facet's coverage entry: which facet, how far the
-/// scan got, and — when it fell short — a plain sentence saying so.
+/// One coverage entry for one facet the evidence engine declared: which
+/// facet it is, how far the scan got, and — when it fell short — a plain
+/// sentence saying so.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FacetCoverage {
-    /// The engine's own facet id, a stable machine-comparable string (e.g.
-    /// `delay-imports`) drawn from the engine's declared roster.
+    /// The evidence engine's own facet id, a stable machine-comparable string
+    /// (e.g. `delay-imports`) drawn from the engine's declared roster.
     pub id: String,
     /// How far this scan got on the facet.
     pub status: CoverageStatus,
@@ -151,21 +154,22 @@ pub struct FacetCoverage {
 /// what the scan examined and what it could not, in one shared shape every
 /// consumer reads.
 ///
-/// One record per scan document, holding the scan's overall verdict and its
-/// per-facet entries. The entries keep the engine's own declared order and
-/// survive write and read exactly — statuses, ids, order, and limitation
-/// lines — so a report and a prompt render the same admission every time.
-/// Provenance says who produced the document; this says what it examined:
-/// the two halves of one envelope (issue #345).
+/// There is one record per scan document, holding the scan's overall verdict
+/// and its per-facet entries. The entries keep the evidence engine's own
+/// declared order and survive write and read exactly — statuses, ids, order,
+/// and limitation lines — so a report and a prompt render the same admission
+/// every time. Provenance says who produced the document; this says what it
+/// examined: the two halves of one envelope (issue #345).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanCoverage {
-    /// What the scan says about its whole picture. An engine that examined
-    /// everything says [`CoverageStatus::Complete`]; anything it skipped,
-    /// could not reach, or never attempts lands lower.
+    /// What the scan says about its whole picture. An evidence engine that
+    /// examined everything says [`CoverageStatus::Complete`]; if it skipped
+    /// anything, could not reach something, or never attempts something, the
+    /// status is lower.
     pub status: CoverageStatus,
-    /// The engine's declared facets, in the engine's own order, with one
-    /// entry per facet. A facet that needs no admission may carry an entry
-    /// with no limitation line; a facet absent from the record was not
+    /// The evidence engine's declared facets, in its own order, with one
+    /// entry per facet. A facet that needs no admission may still have an
+    /// entry with no limitation line; a facet absent from the record was not
     /// declared at all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub facets: Vec<FacetCoverage>,
@@ -177,13 +181,13 @@ impl ScanCoverage {
     /// exactly those facets, in the record's own facet order — e.g.
     /// `partial — call graph unavailable; delay imports unexamined`.
     ///
-    /// This is the one home of the qualification wording (issue #346):
-    /// the shared prompt section includes and the report printers both
-    /// render this line rather than restating the format, so the same
-    /// admission reads the same at every surface. It returns `None` when
-    /// the record claims complete coverage — there is nothing to admit —
-    /// and carries no `Coverage:` label: each surface puts the line in
-    /// its own frame.
+    /// This is the one home of the qualification wording (issue #346). The
+    /// shared prompt section include and the report printers all render this
+    /// line instead of restating the format, so the same admission reads the
+    /// same at every surface. It returns `None` when the record claims
+    /// complete coverage — there is nothing to admit — and it does not
+    /// include a `Coverage:` label: each surface puts the line in its own
+    /// frame.
     pub fn admission(&self) -> Option<String> {
         if self.status == CoverageStatus::Complete {
             return None;
@@ -203,16 +207,16 @@ impl ScanCoverage {
 
     /// The data-level verdict of the roster pin: does this record name the
     /// facets `declared` — every one of them, exactly once, and nothing the
-    /// engine never declared?
+    /// evidence engine never declared?
     ///
     /// This is the one home of the engine-stamps/roster-pins doctrine
-    /// (issue #352): each engine's own pin calls it against its crate's
-    /// declared roster, and the P19 track sweep calls it across every
-    /// registered row's filed document. An empty verdict means the record
-    /// pairs one-for-one with the roster; each fault spells one drift — a
-    /// declared facet the scan stopped stamping, a facet stamped twice, or
-    /// an id the scan invented outside the roster — so a drift can only ever
-    /// fail loudly, naming itself in words.
+    /// (issue #352). Each evidence engine's own pin calls it against its
+    /// crate's declared roster, and the P19 track sweep calls it across
+    /// every registered row's filed document. An empty verdict means the
+    /// record pairs one-for-one with the roster; each fault spells one
+    /// drift — a declared facet the scan stopped stamping, a facet stamped
+    /// twice, or an id the scan invented outside the roster — so a drift can
+    /// only ever fail loudly, naming itself in words.
     pub fn roster_faults(&self, declared: &[&str]) -> Vec<String> {
         let mut faults = Vec::new();
         for facet_id in declared {
@@ -245,11 +249,11 @@ impl ScanCoverage {
 
 /// Provenance and coverage of the scan that produced a per-binary artifact.
 ///
-/// A persisted artifact doubles as a cache, and this is the part a consumer
-/// reads when deciding whether the cache is still good: which binary it
-/// describes, when it was built, and — for a scan whose source names its
-/// engine — which engine and pin produced it, beside what that scan
-/// examined and could not. The persistor names the JSON file after
+/// A persisted artifact also serves as a cache. This is the part a consumer
+/// reads when deciding whether the cache is still usable: which binary it
+/// describes, when it was built, and — when the scan source names one —
+/// which engine and pin produced it, beside what that scan examined and
+/// could not. The persistor names the JSON file after
 /// [`binary`](Self::binary).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanMetadata {
@@ -263,30 +267,30 @@ pub struct ScanMetadata {
     /// The engine that produced the scan, when its source names one.
     ///
     /// The engine stamps this from the scan source's `engine_provenance`
-    /// read on the `ScanSource` seam — a Kuna scan names its engine,
+    /// read on the `ScanSource` seam — a Kuna scan records its engine,
     /// pinned release, and source fingerprint beside the timing (issue
-    /// #208). Documents written before the field shipped carry no key and
-    /// load with the engine absent.
+    /// #208). Documents written before the field shipped have no `engine`
+    /// key and load with the engine absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<EngineProvenance>,
-    /// What the scan examined and what it could not, when the engine states
-    /// it.
+    /// What the scan examined and what it could not, when the evidence
+    /// engine states it.
     ///
-    /// The engine stamps this at scan time, where the truth lives, beside
-    /// the timing and the provenance. Documents written before the field
-    /// shipped carry no key and load with coverage absent, which reads as
-    /// [`EffectiveCoverage::Unknown`] — never as complete (see
-    /// [`ScanMetadata::coverage_status`], issue #345).
+    /// The evidence engine stamps this at scan time, where the truth lives,
+    /// beside the timing and the provenance. Documents written before the
+    /// field shipped have no `coverage` key and load with coverage absent,
+    /// which reads as [`EffectiveCoverage::Unknown`] — never as complete
+    /// (see [`ScanMetadata::coverage_status`], issue #345).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<ScanCoverage>,
 }
 
 impl ScanMetadata {
-    /// Metadata for a scan of `binary` finishing now, naming no engine and
-    /// admitting no coverage yet. The engine fills in
+    /// Metadata for a scan of `binary` finishing now. It names no engine and
+    /// admits no coverage yet. The engine fills in
     /// [`duration_secs`](Self::duration_secs) once the scan is done,
     /// [`engine`](Self::engine) from what its source names, and
-    /// [`coverage`](Self::coverage) from what its scan examined — a fresh
+    /// [`coverage`](Self::coverage) from what its scan examined. A fresh
     /// stamp defaults honestly, not to `complete`.
     pub fn new(binary: impl Into<String>) -> Self {
         Self {
@@ -361,9 +365,9 @@ mod tests {
 
     #[test]
     fn a_kuna_record_names_its_engine_release_and_pin() {
-        // The issue's acceptance line: a scan record under `kuna` carries
-        // engine name, Kuna version, and pinned source fingerprint, and
-        // the whole provenance reads back off disk.
+        // The issue's acceptance line: a scan record under `kuna` has the
+        // engine name, the Kuna version, and the pinned source fingerprint,
+        // and the whole provenance reads back off disk.
         let meta = ScanMetadata {
             binary: "eqmain.dll".into(),
             scanned_at: 1_759_488_000,
@@ -404,8 +408,9 @@ mod tests {
 
     #[test]
     fn an_engine_identity_carries_only_the_stamp_fields() {
-        // The identity #358 keys the scan cache on is the stamp spelled
-        // out, joined by `@`: name, release, pin rev — nothing else.
+        // The identity the scan read cache uses as its key (#358) is the
+        // stamp spelled out, joined by `@`: name, release, pin rev —
+        // nothing else.
         let stamp = EngineProvenance {
             name: "kuna".into(),
             version: Some("v1.878".into()),
@@ -413,9 +418,9 @@ mod tests {
         };
         assert_eq!(stamp.identity(), "kuna@v1.878@cb68db1");
 
-        // Each field is load-bearing: any one of them moving is a different
-        // engine build, and the identity moves with it — this is what makes
-        // a pinned-crate bump force cold reads mechanically.
+        // Each field matters: if any one of them changes, it is a different
+        // engine build, and the identity changes with it. This is what makes
+        // a pinned-crate bump always force cold reads.
         let released = EngineProvenance {
             version: Some("v1.879".into()),
             ..stamp.clone()
@@ -556,9 +561,9 @@ mod tests {
 
     #[test]
     fn admission_stands_on_the_status_word_when_no_facet_spells_a_reason() {
-        // A facet entry with no limitation line adds no fragment; a record
-        // whose falling-short facets spell no reasons still admits its
-        // status word alone.
+        // A facet entry with no limitation line adds nothing. A record
+        // whose falling-short facets give no reason still admits only its
+        // status word.
         let coverage = ScanCoverage {
             status: CoverageStatus::Unexamined,
             facets: vec![FacetCoverage {
@@ -699,7 +704,7 @@ mod tests {
     fn unknown_is_not_a_writable_status() {
         // The write-side set stays the four-valued closed set: `unknown`
         // has no variant in `CoverageStatus`, so a document — a facet entry
-        // or a whole record — can never carry it. `unknown` exists only as
+        // or a whole record — can never store it. `unknown` exists only as
         // the derived read-side default.
         assert!(
             serde_json::from_str::<CoverageStatus>(r#""unknown""#).is_err(),
