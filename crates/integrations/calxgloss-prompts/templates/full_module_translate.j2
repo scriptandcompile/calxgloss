@@ -28,8 +28,10 @@ You are a reverse engineering specialist. Translate the following function from 
 {% endfor %}
 
 {% endif %}
-{% if !evidence.call_graph_neighbors.is_empty() %}
+{% if !evidence.call_graph_neighbors.is_empty() || !evidence.caller_edges_cap_line.is_empty() %}
 ## CALL GRAPH NEIGHBORS
+
+{% if !evidence.call_graph_neighbors.is_empty() %}
 
 Functions directly called by or calling this function.
 
@@ -39,8 +41,15 @@ Functions directly called by or calling this function.
 {% endfor %}
 
 {% endif %}
-{% if !evidence.call_graph_context.is_empty() %}
+{% if !evidence.caller_edges_cap_line.is_empty() %}
+Analysis engine: {{ evidence.caller_edges_cap_line }}
+
+{% endif %}
+{% endif %}
+{% if !evidence.call_graph_context.is_empty() || !evidence.caller_edges_cap_line.is_empty() %}
 ## CALL GRAPH CONTEXT
+
+{% if !evidence.call_graph_context.is_empty() %}
 
 {% for ctx in evidence.call_graph_context %}
 ### {{ ctx.name }} ({{ ctx.address }})
@@ -69,6 +78,11 @@ Functions directly called by or calling this function.
 {% endfor %}
 
 {% endif %}
+{% if !evidence.caller_edges_cap_line.is_empty() %}
+Analysis engine: {{ evidence.caller_edges_cap_line }}
+
+{% endif %}
+{% endif %}
 {% if !test_results.is_empty() %}
 ## BASELINE TESTS (translated Rust code must produce identical outputs)
 
@@ -84,8 +98,10 @@ Test #{{ test.index }}{% if test.passed %} — PASSED{% else %} — FAILED{% end
 {% endfor %}
 
 {% endif %}
-{% if !evidence.neighboring_functions.is_empty() %}
+{% if !evidence.neighboring_functions.is_empty() || !evidence.caller_edges_cap_line.is_empty() %}
 ## NEIGHBORING FUNCTION CONTEXT
+
+{% if !evidence.neighboring_functions.is_empty() %}
 
 The following functions share code patterns, data structures, or call conventions
 with this function. Review them for context when translating:
@@ -107,8 +123,13 @@ Pseudo-C:
 {% endfor %}
 
 {% endif %}
-{% call data_structures::data_structures_section(evidence.data_structures, "SHARED DATA STRUCTURES", evidence.type_database_coverage) %}{% endcall %}
-{% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS", evidence.control_flow_coverage) %}{% endcall %}
+{% if !evidence.caller_edges_cap_line.is_empty() %}
+Analysis engine: {{ evidence.caller_edges_cap_line }}
+
+{% endif %}
+{% endif %}
+{% call data_structures::data_structures_section(evidence.data_structures, "SHARED DATA STRUCTURES", evidence.type_database_coverage, evidence.decompilation_cap_line, evidence.type_database_cap_line, evidence.data_items_cap_line) %}{% endcall %}
+{% call control_flow::control_flow_section(evidence.control_flow_findings, "CONTROL FLOW PATTERNS", evidence.control_flow_coverage, evidence.decompilation_cap_line) %}{% endcall %}
 {% if !shim_layers.is_empty() %}
 ## SHIM LAYER CODE (crate-replacement DLLs)
 

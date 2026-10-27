@@ -325,6 +325,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
@@ -354,6 +357,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -390,6 +396,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let categories = data.api_categories();
@@ -426,6 +435,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let categories = data.api_categories();
@@ -450,6 +462,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let categories = data.api_categories();
@@ -477,6 +492,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -508,6 +526,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
@@ -549,6 +570,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data).unwrap();
@@ -579,6 +603,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -1618,6 +1645,9 @@ mod tests {
     fn test_rich_template_renders_control_flow_section() {
         let data = ComplexityPromptData {
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
             function_name: "FUN_18003ab00".to_string(),
             dll_name: "eqmain.dll".to_string(),
             address: 0x3000,
@@ -1659,6 +1689,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
@@ -1671,6 +1704,9 @@ mod tests {
     fn test_detailed_template_renders_control_flow_section() {
         let data = ComplexityPromptData {
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
             function_name: "FUN_18003ab00".to_string(),
             dll_name: "eqmain.dll".to_string(),
             address: 0x4000,
@@ -1712,6 +1748,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
@@ -1724,6 +1763,9 @@ mod tests {
     fn test_minimal_and_standard_templates_stay_clean_of_control_flow() {
         let data = ComplexityPromptData {
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
             function_name: "SimpleFunc".to_string(),
             dll_name: "test.dll".to_string(),
             address: 0x1000,
@@ -1806,6 +1848,9 @@ mod tests {
             type_info: type_info_pair(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
@@ -1837,6 +1882,9 @@ mod tests {
             type_info: type_info_pair(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
@@ -1868,6 +1916,9 @@ mod tests {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         for tier in [FunctionComplexity::Rich, FunctionComplexity::Detailed] {
@@ -1896,6 +1947,9 @@ mod tests {
             type_info: type_info_pair(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         };
 
         for tier in [FunctionComplexity::Minimal, FunctionComplexity::Standard] {
@@ -2444,6 +2498,9 @@ mod tests {
         data.type_info = bundle.type_info.clone();
         data.control_flow_findings = bundle.control_flow_findings.clone();
         data.type_inference_coverage = bundle.type_inference_coverage.clone();
+        data.decompilation_cap_line = bundle.decompilation_cap_line.clone();
+        data.disassembly_cap_line = bundle.disassembly_cap_line.clone();
+        data.caller_edges_cap_line = bundle.caller_edges_cap_line.clone();
         build_complexity_prompt(&FunctionComplexity::Rich, &data)
             .expect("the rich prompt should render")
     }
@@ -2456,6 +2513,9 @@ mod tests {
         data.type_info = bundle.type_info.clone();
         data.control_flow_findings = bundle.control_flow_findings.clone();
         data.type_inference_coverage = bundle.type_inference_coverage.clone();
+        data.decompilation_cap_line = bundle.decompilation_cap_line.clone();
+        data.disassembly_cap_line = bundle.disassembly_cap_line.clone();
+        data.caller_edges_cap_line = bundle.caller_edges_cap_line.clone();
         build_complexity_prompt(&FunctionComplexity::Detailed, &data)
             .expect("the detailed prompt should render")
     }
@@ -3370,6 +3430,482 @@ mod tests {
             1,
             "two admits, still one section"
         );
+    }
+
+    // ---- #357: the capability fan-out to every prompt-fed family ---------
+
+    /// One unreached reason name per fed family, all botanical and all
+    /// distinct — including from the names the other tracks coined
+    /// (`Zanthoxylum` for imports here, `Quincunx` and `Ginkgo` in the
+    /// translator). A reason's name reaching a section its family does
+    /// not feed trips one of the absence assertions below.
+    fn set_decompilation_cap(b: &mut EvidenceBundle, line: &str) {
+        b.decompilation_cap_line = line.to_string();
+    }
+    fn set_disassembly_cap(b: &mut EvidenceBundle, line: &str) {
+        b.disassembly_cap_line = line.to_string();
+    }
+    fn set_strings_cap(b: &mut EvidenceBundle, line: &str) {
+        b.strings_cap_line = line.to_string();
+    }
+    fn set_caller_edges_cap(b: &mut EvidenceBundle, line: &str) {
+        b.caller_edges_cap_line = line.to_string();
+    }
+    fn set_xrefs_cap(b: &mut EvidenceBundle, line: &str) {
+        b.xrefs_cap_line = line.to_string();
+    }
+    fn set_type_database_cap(b: &mut EvidenceBundle, line: &str) {
+        b.type_database_cap_line = line.to_string();
+    }
+    fn set_data_items_cap(b: &mut EvidenceBundle, line: &str) {
+        b.data_items_cap_line = line.to_string();
+    }
+
+    /// One fed family's whole fan-out: its roster id, its unreached
+    /// reason, the bundle field the fold writes, and the headings of
+    /// every section its facets feed, per host template — in host order
+    /// escalate, module-context, full-module, rich, detailed. This table
+    /// IS the facet-lineage record on the prompt side: it is where the
+    /// family→section matching is reviewable as data.
+    struct FanoutRow {
+        family: &'static str,
+        reason: &'static str,
+        set: fn(&mut EvidenceBundle, &str),
+        fed: [&'static [&'static str]; 5],
+    }
+
+    const ESCALATE: usize = 0;
+    const MODULE: usize = 1;
+    const FULL: usize = 2;
+    const HOST_LABELS: [&str; 5] = [
+        "escalate",
+        "module-context",
+        "full-module",
+        "rich",
+        "detailed",
+    ];
+
+    const FANOUT_ROWS: &[FanoutRow] = &[
+        FanoutRow {
+            family: "decompilation",
+            reason: "Cascara sessions never produce a body",
+            set: set_decompilation_cap,
+            fed: [
+                &[
+                    "ADDITIONAL CONTEXT — DATA STRUCTURES",
+                    "ADDITIONAL CONTEXT — TYPE INFORMATION",
+                    "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS",
+                    "ADDITIONAL CONTEXT — MEMORY LIFECYCLE",
+                    "ADDITIONAL CONTEXT — CONCURRENCY",
+                    "ADDITIONAL CONTEXT — SERIALIZATION",
+                    "ADDITIONAL CONTEXT — CONSTANTS",
+                    "ADDITIONAL CONTEXT — CALLBACKS",
+                    "ADDITIONAL CONTEXT — CONTROL FLOW",
+                    "ADDITIONAL CONTEXT — CALLING CONVENTION",
+                    "ADDITIONAL CONTEXT — GLOBAL STATE",
+                    "ADDITIONAL CONTEXT — FLOAT/SIMD",
+                    "ADDITIONAL CONTEXT — STRINGS",
+                    "ADDITIONAL CONTEXT — ERROR HANDLING",
+                ],
+                &[
+                    "SHARED DATA STRUCTURES",
+                    "CONTROL FLOW PATTERNS",
+                    "CALLING CONVENTION",
+                    "GLOBAL STATE",
+                    "FLOAT/SIMD",
+                    "KNOWN LIBRARY FUNCTIONS",
+                    "PARAMETER DIRECTIONS",
+                    "DATA TABLES",
+                    "ERROR HANDLING",
+                ],
+                &["SHARED DATA STRUCTURES", "CONTROL FLOW PATTERNS"],
+                &["TYPE INFORMATION", "CONTROL FLOW PATTERNS"],
+                &["TYPE INFORMATION", "CONTROL FLOW PATTERNS"],
+            ],
+        },
+        FanoutRow {
+            family: "disassembly",
+            reason: "Yarrow listings never surface an opcode",
+            set: set_disassembly_cap,
+            fed: [
+                &[
+                    "ADDITIONAL CONTEXT — TYPE INFORMATION",
+                    "ADDITIONAL CONTEXT — CALLING CONVENTION",
+                ],
+                &["CALLING CONVENTION", "PARAMETER DIRECTIONS"],
+                &[],
+                &["TYPE INFORMATION"],
+                &["TYPE INFORMATION"],
+            ],
+        },
+        FanoutRow {
+            family: "strings",
+            reason: "Juniper builds carry no string data",
+            set: set_strings_cap,
+            fed: [&["ADDITIONAL CONTEXT — STRINGS"], &[], &[], &[], &[]],
+        },
+        FanoutRow {
+            family: "caller-edges",
+            reason: "Kelp walks never follow a call edge",
+            set: set_caller_edges_cap,
+            fed: [
+                &[
+                    "ADDITIONAL CONTEXT — CALL GRAPH NEIGHBORS",
+                    "ADDITIONAL CONTEXT — CALL GRAPH ANALYSIS",
+                    "ADDITIONAL CONTEXT — NEIGHBORING FUNCTIONS",
+                    "ADDITIONAL CONTEXT — TYPE INFORMATION",
+                    "ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS",
+                    "ADDITIONAL CONTEXT — CALLING CONVENTION",
+                ],
+                &[
+                    "CALL GRAPH NEIGHBORS",
+                    "CALL GRAPH CONTEXT",
+                    "NEIGHBORING FUNCTION CONTEXT",
+                    "CALLING CONVENTION",
+                    "PARAMETER DIRECTIONS",
+                ],
+                &[
+                    "CALL GRAPH NEIGHBORS",
+                    "CALL GRAPH CONTEXT",
+                    "NEIGHBORING FUNCTION CONTEXT",
+                ],
+                &["TYPE INFORMATION"],
+                &["TYPE INFORMATION"],
+            ],
+        },
+        FanoutRow {
+            family: "xrefs",
+            reason: "Lovage sessions leave xrefs dark",
+            set: set_xrefs_cap,
+            fed: [&["ADDITIONAL CONTEXT — STRINGS"], &[], &[], &[], &[]],
+        },
+        FanoutRow {
+            family: "type-database",
+            reason: "Mallow sessions open no type database",
+            set: set_type_database_cap,
+            fed: [
+                &["ADDITIONAL CONTEXT — DATA STRUCTURES"],
+                &["SHARED DATA STRUCTURES"],
+                &["SHARED DATA STRUCTURES"],
+                &[],
+                &[],
+            ],
+        },
+        FanoutRow {
+            family: "data-items",
+            reason: "Nettle bins hold no data objects",
+            set: set_data_items_cap,
+            fed: [
+                &[
+                    "ADDITIONAL CONTEXT — DATA STRUCTURES",
+                    "ADDITIONAL CONTEXT — CONSTANTS",
+                ],
+                &["SHARED DATA STRUCTURES", "DATA TABLES"],
+                &["SHARED DATA STRUCTURES"],
+                &[],
+                &[],
+            ],
+        },
+    ];
+
+    /// The fan-out at the prompt surface: every fed family's admission
+    /// rides exactly the sections its facets feed, as exactly one
+    /// `Analysis engine:` line per fed section — heading-plus-line where
+    /// the surface filed nothing — on all five host templates; no other
+    /// family's name ever appears in a section the family feeds nothing
+    /// of, and a family that feeds a host nothing leaves that host's
+    /// bytes untouched (issue #357's counting, crossing, and doctrine
+    /// criteria at once).
+    #[test]
+    fn every_fed_familys_admission_rides_exactly_its_own_sections() {
+        let renderers: [fn(&EvidenceBundle) -> String; 5] = [
+            render_escalate_full,
+            render_module_context_full,
+            render_full_module_full,
+            render_rich_full,
+            render_detailed_full,
+        ];
+        for row in FANOUT_ROWS {
+            let admission = format!("unavailable — {}", row.reason);
+            let line = format!("Analysis engine: {admission}");
+            for (host, render) in renderers.iter().enumerate() {
+                let mut bundle = EvidenceBundle::default();
+                (row.set)(&mut bundle, &admission);
+                let admitted = render(&bundle);
+                assert_eq!(
+                    admitted.matches(&line).count(),
+                    row.fed[host].len(),
+                    "{} must render exactly one admission line per section it feeds on \
+                     the {} host",
+                    row.family,
+                    HOST_LABELS[host],
+                );
+                for heading in row.fed[host] {
+                    assert!(
+                        admitted.contains(&format!("## {heading}\n\n{line}\n\n")),
+                        "{family}'s admission must ride heading-plus-line when {host}'s \
+                         {heading} section filed nothing",
+                        family = row.family,
+                        host = HOST_LABELS[host],
+                        heading = heading,
+                    );
+                }
+                for other in FANOUT_ROWS {
+                    if other.family != row.family {
+                        assert!(
+                            !admitted.contains(other.reason),
+                            "the {}-only fixture must never quote {}'s name — a value \
+                             crossing into another family's fan-out fails here",
+                            row.family,
+                            other.family,
+                        );
+                    }
+                }
+                let clean = render(&EvidenceBundle::default());
+                if row.fed[host].is_empty() {
+                    assert_eq!(
+                        clean, admitted,
+                        "{} feeds the {} host nothing, so its field alone must not \
+                         move a byte there",
+                        row.family, HOST_LABELS[host],
+                    );
+                } else {
+                    assert_ne!(
+                        clean, admitted,
+                        "the {} host's empty sections under an answerable seam and under \
+                         {}'s unavailable one must never share bytes",
+                        HOST_LABELS[host], row.family,
+                    );
+                }
+            }
+        }
+    }
+
+    /// One prompt, every fed family unavailable at once: each family
+    /// still owns exactly its own line count, a section fed by several
+    /// families carries every one of their lines under the one heading
+    /// it opens — in roster order, beside the entries when entries
+    /// exist — and each family's wording stays in its own lines
+    /// (issue #357).
+    #[test]
+    fn all_families_unavailable_at_once_still_speak_one_line_per_section() {
+        let line_of = |reason: &str| format!("Analysis engine: unavailable — {reason}");
+        let mut bundle = EvidenceBundle::default();
+        for row in FANOUT_ROWS {
+            (row.set)(&mut bundle, &format!("unavailable — {}", row.reason));
+        }
+
+        let escalate = render_escalate_full(&bundle);
+        for row in FANOUT_ROWS {
+            let line = line_of(row.reason);
+            assert_eq!(
+                escalate.matches(&line).count(),
+                row.fed[ESCALATE].len(),
+                "{}'s line count in the all-unavailable escalate render",
+                row.family,
+            );
+        }
+        assert_eq!(
+            escalate
+                .matches("## ADDITIONAL CONTEXT — DATA STRUCTURES")
+                .count(),
+            1,
+            "three unavailable families, still one heading for the section they share",
+        );
+        assert!(
+            escalate.contains(&format!(
+                "## ADDITIONAL CONTEXT — DATA STRUCTURES\n\n{}\n\n{}\n\n{}\n\n",
+                line_of("Cascara sessions never produce a body"),
+                line_of("Mallow sessions open no type database"),
+                line_of("Nettle bins hold no data objects"),
+            )),
+            "the shared section's lines ride in roster order, no other family's words between",
+        );
+        assert!(
+            escalate.contains(&format!(
+                "## ADDITIONAL CONTEXT — STRINGS\n\n{}\n\n{}\n\n{}\n\n",
+                line_of("Cascara sessions never produce a body"),
+                line_of("Juniper builds carry no string data"),
+                line_of("Lovage sessions leave xrefs dark"),
+            )),
+            "the string section's three families admit in order under the one heading",
+        );
+
+        let module = render_module_context_full(&bundle);
+        for row in FANOUT_ROWS {
+            let line = line_of(row.reason);
+            assert_eq!(
+                module.matches(&line).count(),
+                row.fed[MODULE].len(),
+                "{}'s line count in the all-unavailable module-context render",
+                row.family,
+            );
+        }
+        assert!(
+            module.contains(&format!(
+                "## PARAMETER DIRECTIONS\n\n{}\n\n{}\n\n{}\n\n",
+                line_of("Cascara sessions never produce a body"),
+                line_of("Yarrow listings never surface an opcode"),
+                line_of("Kelp walks never follow a call edge"),
+            )),
+            "the parameter-direction section admits its three families in order",
+        );
+
+        let full = render_full_module_full(&bundle);
+        let rich = render_rich_full(&bundle);
+        let detailed = render_detailed_full(&bundle);
+        for (host, rendered) in [(FULL, &full), (3, &rich), (4, &detailed)] {
+            for row in FANOUT_ROWS {
+                let line = line_of(row.reason);
+                assert_eq!(
+                    rendered.matches(&line).count(),
+                    row.fed[host].len(),
+                    "{}'s line count in the all-unavailable {} render",
+                    row.family,
+                    HOST_LABELS[host],
+                );
+            }
+        }
+        assert!(
+            rich.contains(&format!(
+                "## TYPE INFORMATION\n\n{}\n\n{}\n\n{}\n\n",
+                line_of("Cascara sessions never produce a body"),
+                line_of("Yarrow listings never surface an opcode"),
+                line_of("Kelp walks never follow a call edge"),
+            )),
+            "the tier templates' shared type-information section admits all three in order",
+        );
+    }
+
+    /// Beside populated entries the lines still ride — one per fed
+    /// family, after the entries, and the very next section's heading
+    /// opens cleanly beneath them (issue #357, the beside-the-entries
+    /// half of the #355 shape fanned out).
+    #[test]
+    fn fanout_admissions_ride_beside_entries_and_leave_the_next_heading_clean() {
+        let mut bundle = EvidenceBundle::default();
+        bundle.data_structures.extend(data_structures_fixtures());
+        for row in FANOUT_ROWS {
+            (row.set)(&mut bundle, &format!("unavailable — {}", row.reason));
+        }
+        let escalate = render_escalate_full(&bundle);
+        assert!(escalate.contains(&format!(
+            "Analysis engine: unavailable — {}\n\n\
+             Analysis engine: unavailable — {}\n\n\
+             Analysis engine: unavailable — {}\n\n\
+             ## ADDITIONAL CONTEXT — TYPE INFORMATION\n\n\
+             Analysis engine: unavailable — {}",
+            "Cascara sessions never produce a body",
+            "Mallow sessions open no type database",
+            "Nettle bins hold no data objects",
+            "Cascara sessions never produce a body",
+        )));
+        assert!(
+            !escalate.contains("\n\n\n"),
+            "entries, three admits, next section — still no stray blank line at the seam",
+        );
+    }
+
+    /// Both silence-shapes across the whole fan-out: every family
+    /// answerable and every family undeclared fold to empty fields, and
+    /// every host then renders byte-for-byte what it rendered before
+    /// the seam ever spoke — the all-answerable fixture identity the
+    /// criteria demand at every consumer (issue #357).
+    #[test]
+    fn answerable_and_undeclared_families_render_byte_identically_to_silence() {
+        let answerable = calxgloss_types::CapabilityReport {
+            families: FANOUT_ROWS
+                .iter()
+                .map(|row| calxgloss_types::FamilyCapability {
+                    id: row.family.to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Answerable,
+                    reason: None,
+                })
+                .collect(),
+        };
+        let undeclared = calxgloss_types::CapabilityReport::default();
+        let renderers: [fn(&EvidenceBundle) -> String; 5] = [
+            render_escalate_full,
+            render_module_context_full,
+            render_full_module_full,
+            render_rich_full,
+            render_detailed_full,
+        ];
+        for (label, report) in [("answerable", &answerable), ("undeclared", &undeclared)] {
+            let mut bundle = EvidenceBundle::default();
+            for row in FANOUT_ROWS {
+                (row.set)(&mut bundle, &capability_for(report, row.family).admission);
+            }
+            for (host, render) in renderers.iter().enumerate() {
+                assert_eq!(
+                    render(&bundle),
+                    render(&EvidenceBundle::default()),
+                    "the {} host must render byte-identically under an all-{} report",
+                    HOST_LABELS[host],
+                    label,
+                );
+            }
+        }
+    }
+
+    /// The families that feed no prompt surface stop at the seam
+    /// declaration: `function-inventory`, `exports`, `image-base`, and
+    /// `memory-reads` grow no bundle field, no include parameter, and
+    /// no template reference anywhere in this crate — the pins scan the
+    /// very sources the renderer compiles from (issue #357).
+    #[test]
+    fn families_that_feed_no_prompt_surface_grow_no_field_and_no_parameter() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let mut sources: Vec<String> = vec![
+            std::fs::read_to_string(format!("{manifest}/src/templates.rs")).expect("templates.rs"),
+            std::fs::read_to_string(format!("{manifest}/src/context.rs")).expect("context.rs"),
+            std::fs::read_to_string(format!("{manifest}/src/build.rs")).expect("build.rs"),
+        ];
+        let mut pending = vec![format!("{manifest}/templates")];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("template dir") {
+                let path = entry.expect("template entry").path();
+                if path.is_dir() {
+                    pending.push(path.display().to_string());
+                } else if path.extension().is_some_and(|e| e == "j2") {
+                    sources.push(
+                        std::fs::read_to_string(&path)
+                            .unwrap_or_else(|e| panic!("{} readable: {e}", path.display())),
+                    );
+                }
+            }
+        }
+        for ghost in [
+            "function_inventory_cap",
+            "exports_cap",
+            "image_base_cap",
+            "memory_reads_cap",
+        ] {
+            for source in &sources {
+                assert!(
+                    !source.contains(ghost),
+                    "a declaration-only family grew a parameter named {ghost} — \
+                     the roster line must stay drawn at the seam",
+                );
+            }
+        }
+        // The fed families, by contrast, each own exactly one field name
+        // on this side: seven on the bundle, and the tier trio.
+        let bundle_src = &sources[0];
+        for field in [
+            "decompilation_cap_line",
+            "disassembly_cap_line",
+            "strings_cap_line",
+            "caller_edges_cap_line",
+            "xrefs_cap_line",
+            "type_database_cap_line",
+            "data_items_cap_line",
+        ] {
+            assert!(
+                bundle_src.contains(&format!("pub {field}: String,")),
+                "the fed family field {field} must exist on the bundle",
+            );
+        }
     }
 
     /// A scan coverage record in the shape a libmatch scan files (issue

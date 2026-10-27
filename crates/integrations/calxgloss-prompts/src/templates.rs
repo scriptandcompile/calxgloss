@@ -1002,6 +1002,39 @@ pub struct EvidenceBundle {
     /// to before the seam spoke, and only an unavailable entry earns its
     /// one admission line.
     pub api_capability: CapabilityInfo,
+    /// What the analysis seam itself states about the decompilation query
+    /// family (`decompilation`) — the held capability report's admission
+    /// wording, folded beside (never inside) every section this family's
+    /// facets feed (issue #357). Default-empty when the seam declared the
+    /// family answerable, declared nothing about it, or the pipeline holds
+    /// no report at all; only an unavailable entry earns the one
+    /// `Analysis engine:` line per fed section.
+    pub decompilation_cap_line: String,
+    /// The seam's admission for the `disassembly` family, riding the
+    /// type-inference-surface sections its machine-listing facet feeds
+    /// (issue #357). Default-empty exactly like `decompilation_cap_line`.
+    pub disassembly_cap_line: String,
+    /// The seam's admission for the `strings` family, riding the
+    /// string-context section its program-strings facet feeds (issue #357).
+    /// Default-empty exactly like `decompilation_cap_line`.
+    pub strings_cap_line: String,
+    /// The seam's admission for the `caller-edges` family, riding the
+    /// inline call-graph trio and the sections its caller-edge facet feeds
+    /// (issue #357). Default-empty exactly like `decompilation_cap_line`.
+    pub caller_edges_cap_line: String,
+    /// The seam's admission for the `xrefs` family, riding the
+    /// string-context section its string-cross-reference facet feeds
+    /// (issue #357). Default-empty exactly like `decompilation_cap_line`.
+    pub xrefs_cap_line: String,
+    /// The seam's admission for the `type-database` family, riding the
+    /// data-structures section its vtable facet feeds (issue #357).
+    /// Default-empty exactly like `decompilation_cap_line`.
+    pub type_database_cap_line: String,
+    /// The seam's admission for the `data-items` family, riding the
+    /// constants, data-tables, and data-structures sections its
+    /// data-object facet feeds (issue #357). Default-empty exactly like
+    /// `decompilation_cap_line`.
+    pub data_items_cap_line: String,
     /// Constant and enum findings about this function made by the
     /// analysis pipeline.
     pub const_findings: Vec<ConstInfo>,
@@ -1278,6 +1311,20 @@ pub struct RichTemplate {
     /// control-flow field above, since no tier path files a scan document
     /// (issue #351).
     pub type_inference_coverage: CoverageInfo,
+    /// The seam's admission for the `decompilation` family (#357) — the
+    /// rich template includes the type-information and control-flow
+    /// surfaces its facets feed. Default-empty like the coverage fields
+    /// above: the tier path builds from a bare request, which carries no
+    /// capability report.
+    pub decompilation_cap_line: String,
+    /// The seam's admission for the `disassembly` family (#357), riding
+    /// the type-information surface its machine-listing facet feeds.
+    /// Default-empty exactly like `decompilation_cap_line`.
+    pub disassembly_cap_line: String,
+    /// The seam's admission for the `caller-edges` family (#357), riding
+    /// the type-information surface its caller-edge facet feeds.
+    /// Default-empty exactly like `decompilation_cap_line`.
+    pub caller_edges_cap_line: String,
 }
 
 impl RichTemplate {
@@ -1310,6 +1357,9 @@ impl RichTemplate {
             control_flow_findings: Vec::new(),
             control_flow_coverage: CoverageInfo::default(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         }
     }
 }
@@ -1365,6 +1415,20 @@ pub struct DetailedTemplate {
     /// control-flow field above, since no tier path files a scan document
     /// (issue #351).
     pub type_inference_coverage: CoverageInfo,
+    /// The seam's admission for the `decompilation` family (#357) — the
+    /// detailed template includes the type-information and control-flow
+    /// surfaces its facets feed. Default-empty like the coverage fields
+    /// above: the tier path builds from a bare request, which carries no
+    /// capability report.
+    pub decompilation_cap_line: String,
+    /// The seam's admission for the `disassembly` family (#357), riding
+    /// the type-information surface its machine-listing facet feeds.
+    /// Default-empty exactly like `decompilation_cap_line`.
+    pub disassembly_cap_line: String,
+    /// The seam's admission for the `caller-edges` family (#357), riding
+    /// the type-information surface its caller-edge facet feeds.
+    /// Default-empty exactly like `decompilation_cap_line`.
+    pub caller_edges_cap_line: String,
 }
 
 impl DetailedTemplate {
@@ -1400,6 +1464,9 @@ impl DetailedTemplate {
             control_flow_findings: Vec::new(),
             control_flow_coverage: CoverageInfo::default(),
             type_inference_coverage: CoverageInfo::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         }
     }
 }

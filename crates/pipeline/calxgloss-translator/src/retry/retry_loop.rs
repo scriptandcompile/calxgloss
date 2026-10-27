@@ -211,6 +211,7 @@ pub async fn try_translate_with_retry(
                 current_tier,
                 ctx.source,
                 ctx.workspace,
+                ctx.seam_report,
             )
             .await
             {
@@ -2062,8 +2063,10 @@ mod tests {
     }
 
     /// Pruning is only ever about the family a rung re-asks: a report naming
-    /// a different family unavailable leaves the walk byte-identically today's,
-    /// and the re-ask still reaches the seam.
+    /// a different family unavailable leaves the walk itself today's — the
+    /// re-ask still reaches the seam — while that family's admission now
+    /// rides the escalate prompt once, where its facets feed a section
+    /// (issue #357 moved this pin from never-quoted to quoted-exactly-once).
     #[tokio::test]
     async fn a_report_unavailable_about_another_family_leaves_the_ladder_today() {
         let run = run_ladder_with_report(
@@ -2091,11 +2094,60 @@ mod tests {
                 .contains(&"UpdateScene".to_string()),
             "an unblocked escalate rung must still re-ask the seam"
         );
-        // and the unrelated family's reason never quotes itself into a prompt
+        // the escalate rung re-asked the seam, so the seam's word now rides
+        // its prompt (issue #357): strings feeds the escalate string-context
+        // section, and its reason quotes itself there exactly once —
+        // beside the section the re-ask left empty, never as a second voice
+        let prompt4 = run
+            .prompts
+            .get(&4)
+            .expect("the escalate rung re-asks the LLM");
+        assert_eq!(
+            prompt4.matches("Ginkgo").count(),
+            1,
+            "the unavailable family's admission rides the escalate prompt exactly once"
+        );
+        // and no other rung's prompt quotes it — only the escalate rung
+        // held the seam's word at the prompt surface
+        for (attempt, prompt) in &run.prompts {
+            if *attempt != 4 {
+                assert!(
+                    !prompt.contains("Ginkgo"),
+                    "attempt {attempt}'s prompt quotes a family the escalate rung alone fed"
+                );
+            }
+        }
+    }
+
+    /// A family that feeds no prompt surface stops at the seam report: its
+    /// admission never quotes itself into any prompt — no bundle field, no
+    /// include parameter carries it — and the ladder walks exactly as
+    /// today's (issue #357's declaration-only roster, named here by the
+    /// `image-base` family the ladder also never re-asks).
+    #[tokio::test]
+    async fn a_report_unavailable_about_a_family_that_feeds_no_prompt_never_quotes() {
+        let run = run_ladder_with_report(
+            unavailable_report("image-base", "Sassafras sessions expose no image base"),
+            6,
+            Some(calxgloss_types::ContextTier::Signature),
+        )
+        .await;
+
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "test_fix",
+                "escalate",
+                "edge_case_fix",
+                "compile_fix"
+            ]
+        );
         for (attempt, prompt) in &run.prompts {
             assert!(
-                !prompt.contains("Ginkgo"),
-                "attempt {attempt}'s prompt quotes an unrelated family's reason"
+                !prompt.contains("Sassafras"),
+                "attempt {attempt}'s prompt quotes a family that feeds no prompt surface"
             );
         }
     }

@@ -15,18 +15,52 @@ use tracing::debug;
 /// spelled once here because this is where the escalate fold names it.
 pub(crate) const IMPORTS_FAMILY: &str = "imports";
 
+/// The prompt-fed query families of the #357 fan-out: every seam family
+/// whose facets feed a bundle-fed or tier prompt section besides
+/// `imports` (which has ridden its own `api_capability` field since
+/// #355), in the order the bundle keeps its capability fields. A family
+/// that feeds no prompt surface (`function-inventory`, `exports`,
+/// `image-base`, `memory-reads`) stops at the seam report — no bundle
+/// field, no include parameter — and the roster here is where that line
+/// is drawn.
+pub(crate) const FED_CAP_FAMILIES: &[&str] = &[
+    "decompilation",
+    "disassembly",
+    "strings",
+    "caller-edges",
+    "xrefs",
+    "type-database",
+    "data-items",
+];
+
 /// Fold the held seam capability report into one function's evidence
-/// bundle (issue #355): the `imports` family's entry from the report the
-/// pipeline pulled once at source-open time, beside (never inside) the
-/// document's own `api_coverage` coverage half. An answerable entry and an
-/// undeclared family both fold to the empty view the include renders
+/// bundle (issue #355, fanned out by issue #357): the `imports` family's
+/// entry rides beside (never inside) the document's own `api_coverage`
+/// coverage half, and every other prompt-fed family's admission wording
+/// rides its own `*_cap_line` field beside the coverage lines of every
+/// section that family's facets feed. An answerable entry and an
+/// undeclared family both fold to the empty view the includes render
 /// silently — the seam's word only ever lands as the engine's own
-/// admission line, never a template-side invention.
+/// admission line, never a template-side invention, and one family's
+/// wording never reaches another family's field.
 pub(crate) fn fold_seam_capability(
     report: &calxgloss_types::CapabilityReport,
     evidence: &mut EvidenceBundle,
 ) {
     evidence.api_capability = calxgloss_prompts::capability_for(report, IMPORTS_FAMILY);
+    for family in FED_CAP_FAMILIES {
+        let admission = calxgloss_prompts::capability_for(report, family).admission;
+        match *family {
+            "decompilation" => evidence.decompilation_cap_line = admission,
+            "disassembly" => evidence.disassembly_cap_line = admission,
+            "strings" => evidence.strings_cap_line = admission,
+            "caller-edges" => evidence.caller_edges_cap_line = admission,
+            "xrefs" => evidence.xrefs_cap_line = admission,
+            "type-database" => evidence.type_database_cap_line = admission,
+            "data-items" => evidence.data_items_cap_line = admission,
+            _ => {}
+        }
+    }
 }
 
 /// The query families an escalate-shaped retry re-asks of the seam
@@ -700,6 +734,13 @@ pub fn extract_pal_traits(windows_apis: &[WindowsApiCall]) -> Vec<PalTraitDef> {
 ///   or the batch's read cache).
 /// * `workspace` — Optional workspace path for shim layer and type
 ///   database extraction.
+/// * `seam_report` — The capability report the pipeline holds for the
+///   run (issue #357): the ModuleContext and FullModule arms fold it
+///   into the gathered bundle exactly like the escalate strategy does,
+///   so a family the seam admits as unavailable renders its one
+///   admission line beside the empty context it could not produce. A
+///   run without a seam declares nothing, and an empty report folds
+///   silence — nothing renders.
 ///
 /// # Returns
 ///
@@ -710,6 +751,7 @@ pub async fn build_escalated_prompt<S: ScanSource>(
     tier: ContextTier,
     source: &S,
     workspace: Option<&std::path::Path>,
+    seam_report: &calxgloss_types::CapabilityReport,
 ) -> Result<String, String> {
     let binary = &translation.binary;
     let function = &translation.function;
@@ -817,6 +859,10 @@ pub async fn build_escalated_prompt<S: ScanSource>(
             evidence.neighboring_functions =
                 extract_neighboring_context(source, &translation.call_graph).await;
             evidence.call_graph_context = translation.call_graph_context.clone();
+            // Capability fan-out (issue #357): the held report folds into
+            // this gather exactly like the escalate strategy's does, so
+            // the prompt says which seam queries produced the emptiness.
+            fold_seam_capability(seam_report, &mut evidence);
 
             calxgloss_prompts::build_module_context_prompt(&request, evidence)
                 .map_err(|e| e.to_string())
@@ -855,6 +901,9 @@ pub async fn build_escalated_prompt<S: ScanSource>(
             evidence.neighboring_functions =
                 extract_neighboring_context(source, &translation.call_graph).await;
             evidence.call_graph_context = translation.call_graph_context.clone();
+            // Capability fan-out (issue #357): same fold as the
+            // ModuleContext arm — the held report beside the gather.
+            fold_seam_capability(seam_report, &mut evidence);
 
             let shim_layers = extract_shim_layers(workspace, binary);
             let pal_traits = Vec::<PalTraitDef>::new();
@@ -4084,5 +4133,248 @@ mod tests {
             calxgloss_prompts::CapabilityInfo::default(),
             "an undeclared family folds to silence, never to absence"
         );
+    }
+
+    // ---- #357: the capability fan-out to every prompt-fed family --------
+
+    /// The fold's half of the #357 both-ends wording pin: a hand-declared
+    /// report unavailable across the roster — including the two families
+    /// that feed no prompt surface — puts each family's own admission
+    /// into exactly its own bundle field, with the same reason wording
+    /// the prompts crate pins at the rendered end, and never a
+    /// neighbor's.
+    #[test]
+    fn the_fanout_fold_carries_each_fed_familys_own_line_to_its_own_field() {
+        let reasons = [
+            ("decompilation", "Cascara sessions never produce a body"),
+            ("disassembly", "Yarrow listings never surface an opcode"),
+            ("strings", "Juniper builds carry no string data"),
+            ("caller-edges", "Kelp walks never follow a call edge"),
+            ("xrefs", "Lovage sessions leave xrefs dark"),
+            ("type-database", "Mallow sessions open no type database"),
+            ("data-items", "Nettle bins hold no data objects"),
+            ("function-inventory", "Olive rosters stay sealed"),
+            ("image-base", "Pimento sessions expose no base"),
+        ];
+        let report = calxgloss_types::CapabilityReport {
+            families: reasons
+                .iter()
+                .map(|(id, reason)| calxgloss_types::FamilyCapability {
+                    id: (*id).to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Unavailable,
+                    reason: Some((*reason).to_string()),
+                })
+                .collect(),
+        };
+        let mut bundle = gather_function_evidence(None, "game_logic.dll", "DrawSprite", &[]);
+        super::fold_seam_capability(&report, &mut bundle);
+        let fields = [
+            (
+                &bundle.decompilation_cap_line,
+                "Cascara sessions never produce a body",
+            ),
+            (
+                &bundle.disassembly_cap_line,
+                "Yarrow listings never surface an opcode",
+            ),
+            (
+                &bundle.strings_cap_line,
+                "Juniper builds carry no string data",
+            ),
+            (
+                &bundle.caller_edges_cap_line,
+                "Kelp walks never follow a call edge",
+            ),
+            (&bundle.xrefs_cap_line, "Lovage sessions leave xrefs dark"),
+            (
+                &bundle.type_database_cap_line,
+                "Mallow sessions open no type database",
+            ),
+            (
+                &bundle.data_items_cap_line,
+                "Nettle bins hold no data objects",
+            ),
+        ];
+        for (field, reason) in fields {
+            assert_eq!(
+                field.as_str(),
+                format!("unavailable — {reason}"),
+                "the fold carries this family's own wording, word for word",
+            );
+        }
+        // The declaration-only families stop at the seam report: no field
+        // carried them, and their names appear nowhere the fold wrote.
+        let written: Vec<&str> = vec![
+            bundle.decompilation_cap_line.as_str(),
+            bundle.disassembly_cap_line.as_str(),
+            bundle.strings_cap_line.as_str(),
+            bundle.caller_edges_cap_line.as_str(),
+            bundle.xrefs_cap_line.as_str(),
+            bundle.type_database_cap_line.as_str(),
+            bundle.data_items_cap_line.as_str(),
+            bundle.api_capability.admission.as_str(),
+        ];
+        assert!(
+            written
+                .iter()
+                .all(|text| !text.contains("Olive") && !text.contains("Pimento")),
+            "a family that feeds no prompt surface never leaks its reason into a field"
+        );
+    }
+
+    /// The fold's silence half across the fan-out: answerable and
+    /// undeclared families fill no field — the bundle stays exactly as
+    /// gather left it, and the hosts' identity pins on the prompts side
+    /// start from these empty fields (issue #357).
+    #[test]
+    fn the_fanout_fold_stays_silent_for_answerable_and_undeclared_families() {
+        let answerable = calxgloss_types::CapabilityReport {
+            families: super::FED_CAP_FAMILIES
+                .iter()
+                .map(|id| calxgloss_types::FamilyCapability {
+                    id: (*id).to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Answerable,
+                    reason: None,
+                })
+                .collect(),
+        };
+        let mut bundle = gather_function_evidence(None, "game_logic.dll", "DrawSprite", &[]);
+        super::fold_seam_capability(&answerable, &mut bundle);
+        assert!(
+            bundle.decompilation_cap_line.is_empty()
+                && bundle.disassembly_cap_line.is_empty()
+                && bundle.strings_cap_line.is_empty()
+                && bundle.caller_edges_cap_line.is_empty()
+                && bundle.xrefs_cap_line.is_empty()
+                && bundle.type_database_cap_line.is_empty()
+                && bundle.data_items_cap_line.is_empty(),
+            "answerable families admit nothing into any field"
+        );
+
+        let undeclared = calxgloss_types::CapabilityReport::default();
+        super::fold_seam_capability(&undeclared, &mut bundle);
+        assert!(
+            bundle.decompilation_cap_line.is_empty()
+                && bundle.data_items_cap_line.is_empty()
+                && bundle.caller_edges_cap_line.is_empty(),
+            "an undeclared roster folds to silence, never to absence"
+        );
+    }
+
+    /// The tier-escalated ModuleContext and FullModule prompts grow the
+    /// fold with the held report riding the gather (issue #357): a
+    /// hand-declared unavailable report renders its one line per fed
+    /// section — heading-plus-line over the empty context the re-ask
+    /// could not fill — and an all-answerable report renders no
+    /// `Analysis engine:` line anywhere.
+    #[tokio::test]
+    async fn the_tier_escalation_folds_the_held_report_into_module_and_full_prompts() {
+        let translation = Translation {
+            binary: "game_logic.dll".to_string().into(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
+
+        let report = calxgloss_types::CapabilityReport {
+            families: vec![
+                calxgloss_types::FamilyCapability {
+                    id: "data-items".to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Unavailable,
+                    reason: Some("Nettle bins hold no data objects".to_string()),
+                },
+                calxgloss_types::FamilyCapability {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Unavailable,
+                    reason: Some("Kelp walks never follow a call edge".to_string()),
+                },
+            ],
+        };
+
+        let module_prompt = build_escalated_prompt(
+            &translation,
+            calxgloss_types::ContextTier::ModuleContext,
+            &source,
+            None,
+            &report,
+        )
+        .await
+        .expect("the module-context escalation should build");
+        assert!(
+            module_prompt
+                .contains("## DATA TABLES\n\nAnalysis engine: unavailable — Nettle bins hold no data objects\n\n"),
+            "the data-tables surface filed nothing, so the seam's line rides its heading"
+        );
+        assert!(
+            module_prompt
+                .contains("## CALL GRAPH NEIGHBORS\n\nAnalysis engine: unavailable — Kelp walks never follow a call edge\n\n"),
+            "the call-graph trio produced no entries, and the seam says why"
+        );
+        assert_eq!(
+            module_prompt
+                .matches("Analysis engine: unavailable — Nettle bins hold no data objects")
+                .count(),
+            2,
+            "data-items feeds the module host's data-structures and data-tables surfaces"
+        );
+
+        let full_prompt = build_escalated_prompt(
+            &translation,
+            calxgloss_types::ContextTier::FullModule,
+            &source,
+            None,
+            &report,
+        )
+        .await
+        .expect("the full-module escalation should build");
+        assert_eq!(
+            full_prompt
+                .matches("Analysis engine: unavailable — Nettle bins hold no data objects")
+                .count(),
+            1,
+            "the full-module host grows only its own fed surfaces"
+        );
+        assert_eq!(
+            full_prompt
+                .matches("Analysis engine: unavailable — Kelp walks never follow a call edge")
+                .count(),
+            3,
+            "the full-module host's three call-graph surfaces admit the caller-edges family"
+        );
+
+        let answerable = calxgloss_types::CapabilityReport {
+            families: calxgloss_decomp::QUERY_FAMILIES
+                .iter()
+                .map(|(id, _)| calxgloss_types::FamilyCapability {
+                    id: (*id).to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Answerable,
+                    reason: None,
+                })
+                .collect(),
+        };
+        for tier in [
+            calxgloss_types::ContextTier::ModuleContext,
+            calxgloss_types::ContextTier::FullModule,
+        ] {
+            let prompt = build_escalated_prompt(&translation, tier, &source, None, &answerable)
+                .await
+                .expect("the answerable escalation should build");
+            assert!(
+                !prompt.contains("Analysis engine:"),
+                "an all-answerable report adds no admission line to the {tier}-tier prompt"
+            );
+        }
     }
 }

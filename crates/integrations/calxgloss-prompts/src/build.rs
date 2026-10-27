@@ -362,6 +362,12 @@ pub fn build_complexity_prompt(
             // Coverage fan-out (issue #351): the type-inference engine's one
             // record qualifies this tier's type-information section too.
             template.type_inference_coverage = data.type_inference_coverage.clone();
+            // Capability fan-out (issue #357): the seam's admissions for
+            // the families feeding this tier's two includes ride beside
+            // the coverage lines, exactly as on the bundle-fed surfaces.
+            template.decompilation_cap_line = data.decompilation_cap_line.clone();
+            template.disassembly_cap_line = data.disassembly_cap_line.clone();
+            template.caller_edges_cap_line = data.caller_edges_cap_line.clone();
             render_prompt(&template)?
         }
         FunctionComplexity::Detailed => {
@@ -380,6 +386,12 @@ pub fn build_complexity_prompt(
             // record also qualifies this tier's type-information section and
             // its parameter-direction section.
             template.type_inference_coverage = data.type_inference_coverage.clone();
+            // Capability fan-out (issue #357): the seam's admissions for
+            // the families feeding this tier's two includes ride beside
+            // the coverage lines, exactly as on the bundle-fed surfaces.
+            template.decompilation_cap_line = data.decompilation_cap_line.clone();
+            template.disassembly_cap_line = data.disassembly_cap_line.clone();
+            template.caller_edges_cap_line = data.caller_edges_cap_line.clone();
             render_prompt(&template)?
         }
     };

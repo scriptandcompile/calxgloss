@@ -3,7 +3,14 @@
 {# text) so each template passes its own heading text. The body is #}
 {# verbatim-pinned by the section suite in src/lib.rs — wording or formatting #}
 {# drift fails CI. #}
-{% macro calling_convention_section(findings, heading, coverage) %}
+{# The seam capability records (#357 fan-out): one admission line per #}
+{# family this section feeds — the engine facets behind it, as the capability #}
+{# probe answers them — quoted from the held seam report. Each rides exactly #}
+{# one "Analysis engine:" line, after the coverage line, beside the entries; #}
+{# when the section filed nothing at all the line rides under the heading, #}
+{# the heading opening for the first line that needs it. An answerable or #}
+{# undeclared family renders exactly what it rendered before. #}
+{% macro calling_convention_section(findings, heading, coverage, decompilation_cap, disassembly_cap, caller_edges_cap) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -26,6 +33,42 @@ that leaves none:
 
 {% endif %}
 Coverage: {{ coverage.admission }}
+
+{% endif %}
+{% if !decompilation_cap.is_empty() %}
+{% if findings.is_empty() %}
+{% if coverage.admission.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+{% endif %}
+Analysis engine: {{ decompilation_cap }}
+
+{% endif %}
+{% if !disassembly_cap.is_empty() %}
+{% if findings.is_empty() %}
+{% if coverage.admission.is_empty() %}
+{% if decompilation_cap.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+{% endif %}
+{% endif %}
+Analysis engine: {{ disassembly_cap }}
+
+{% endif %}
+{% if !caller_edges_cap.is_empty() %}
+{% if findings.is_empty() %}
+{% if coverage.admission.is_empty() %}
+{% if decompilation_cap.is_empty() %}
+{% if disassembly_cap.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
+Analysis engine: {{ caller_edges_cap }}
 
 {% endif %}
 {% endmacro %}

@@ -11,7 +11,14 @@
 {# missing record renders exactly what it rendered before, and the line #}
 {# names only bodies the scan never reached, never an examined-and-clean #}
 {# body the finding list left unmentioned. #}
-{% macro concurrency_section(findings, heading, coverage) %}
+{# The seam capability records (#357 fan-out): one admission line per #}
+{# family this section feeds — the engine facets behind it, as the capability #}
+{# probe answers them — quoted from the held seam report. Each rides exactly #}
+{# one "Analysis engine:" line, after the coverage line, beside the entries; #}
+{# when the section filed nothing at all the line rides under the heading, #}
+{# the heading opening for the first line that needs it. An answerable or #}
+{# undeclared family renders exactly what it rendered before. #}
+{% macro concurrency_section(findings, heading, coverage, decompilation_cap) %}
 {% if !findings.is_empty() %}
 ## {{ heading }}
 
@@ -32,6 +39,16 @@ spawn/join calls:
 
 {% endif %}
 Coverage: {{ coverage.admission }}
+
+{% endif %}
+{% if !decompilation_cap.is_empty() %}
+{% if findings.is_empty() %}
+{% if coverage.admission.is_empty() %}
+## {{ heading }}
+
+{% endif %}
+{% endif %}
+Analysis engine: {{ decompilation_cap }}
 
 {% endif %}
 {% endmacro %}

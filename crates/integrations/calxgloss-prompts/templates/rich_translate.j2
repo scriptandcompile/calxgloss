@@ -52,8 +52,8 @@ Test #{{ test.index }}:
 {% endfor %}
 
 {% endif %}
-{% call type_information::type_information_section(type_info, "TYPE INFORMATION", type_inference_coverage) %}{% endcall %}
-{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS", control_flow_coverage) %}{% endcall %}
+{% call type_information::type_information_section(type_info, "TYPE INFORMATION", type_inference_coverage, decompilation_cap_line, disassembly_cap_line, caller_edges_cap_line) %}{% endcall %}
+{% call control_flow::control_flow_section(control_flow_findings, "CONTROL FLOW PATTERNS", control_flow_coverage, decompilation_cap_line) %}{% endcall %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.

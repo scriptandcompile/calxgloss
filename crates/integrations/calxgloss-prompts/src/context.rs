@@ -177,6 +177,22 @@ pub struct ComplexityPromptData {
     /// Default-empty: no tier path files a scan document.
     #[serde(default)]
     pub type_inference_coverage: super::templates::CoverageInfo,
+    /// The seam's admission for the `decompilation` family (#357),
+    /// carried to the rich and detailed tier templates exactly like the
+    /// coverage field above. Default-empty: the tier path builds from a
+    /// bare request, which carries no capability report.
+    #[serde(default)]
+    pub decompilation_cap_line: String,
+    /// The seam's admission for the `disassembly` family (#357), riding
+    /// the tier templates' type-information surface. Default-empty like
+    /// `decompilation_cap_line`.
+    #[serde(default)]
+    pub disassembly_cap_line: String,
+    /// The seam's admission for the `caller-edges` family (#357), riding
+    /// the tier templates' type-information surface. Default-empty like
+    /// `decompilation_cap_line`.
+    #[serde(default)]
+    pub caller_edges_cap_line: String,
 }
 
 impl ComplexityPromptData {
@@ -209,6 +225,9 @@ impl ComplexityPromptData {
             type_info: Vec::new(),
             control_flow_findings: Vec::new(),
             type_inference_coverage: Default::default(),
+            decompilation_cap_line: String::new(),
+            disassembly_cap_line: String::new(),
+            caller_edges_cap_line: String::new(),
         }
     }
 
