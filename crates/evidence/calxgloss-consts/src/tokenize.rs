@@ -4,8 +4,9 @@
 //! them needs the same thing: integer literals as numbers rather than
 //! text, the operators around them as single tokens, and everything
 //! that is *not* a literal — the digits inside `local_20`, the text
-//! inside a string constant, the address in `FUN_18003ab00` — kept out
-//! of the literal stream so a name never masquerades as a constant.
+//! inside a string constant, the address in `FUN_18003ab00` — kept
+//! out of the literal stream, so a name is never mistaken for a
+//! constant.
 //!
 //! The tokenizer is deliberately minimal: identifiers, integer
 //! literals (decimal and `0x` hex, with C suffixes), and the operator

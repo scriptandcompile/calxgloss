@@ -8,10 +8,11 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is
-//! the check a caller runs before deciding whether a scan is needed,
-//! and [`load`](Self::load) reads the whole document back — metadata
-//! and every finding — for the translation pipeline to query.
+//! A persisted result doubles as a cache: [`exists`](ConstPersistor::exists)
+//! is the check a caller runs before deciding whether a scan is
+//! needed, and [`load`](ConstPersistor::load) reads the whole
+//! document back — metadata and every finding — for the translation
+//! pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -208,10 +209,11 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the engine stamped inside its scan is what every later
-        // reader — the projection seam, the report, a `--show` months
-        // later — sees: both facets, their statuses, and their bounded
-        // limitation lines ride the persistor untouched (issue #348).
+        // Every later reader — the projection seam, the report, a
+        // `--show` months later — sees exactly what the scan wrote at
+        // scan time: both facets, their statuses, and their bounded
+        // limitation lines come back through the persistor unchanged
+        // (issue #348).
         let dir = tempfile::tempdir().unwrap();
         let persistor = ConstPersistor::new(dir.path());
         let mut result = sample_result("eqmain.dll");

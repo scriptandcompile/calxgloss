@@ -5,9 +5,9 @@
 //! 0x400`, `x | 0x100`, `x &= ~0x20`, `1 << 3` — and collects the
 //! distinct bits a function combines into one flag-group finding.
 //! A function that tests and sets two or more separate bits is
-//! reading a flags field through bare literals; the finding names the
-//! bits and suggests the `bitflags!`-style struct that would name
-//! them.
+//! reading a flags field through bare literals. The finding records
+//! the bits and suggests a `bitflags!`-style struct that would give
+//! them names.
 //!
 //! A composite mask — a non-power-of-two literal in a bitwise
 //! context, like `x &= 0x500` — completes the group rather than
@@ -42,8 +42,8 @@ fn set_bits(value: u64) -> impl Iterator<Item = u32> {
 }
 
 /// The integer width a flags field spanning `bit_width` bits fits.
-/// Shared with the codegen renderer so a family's block and its
-/// suggestion always spell the same width.
+/// The codegen renderer calls the same function, so a flag family's
+/// rendered block and its suggestion always use the same width.
 pub(crate) fn flags_type(bit_width: u32) -> &'static str {
     match bit_width {
         0..=8 => "u8",
@@ -55,8 +55,9 @@ pub(crate) fn flags_type(bit_width: u32) -> &'static str {
 
 /// The `bitflags!`-style struct shape a set of flag bits suggests at
 /// the width spanning `bit_width` bits, each bit named by its own
-/// mask. Shared by the per-function group and the program-level
-/// family so both name the same shape.
+/// mask. The per-function group and the program-level family build
+/// their suggestions with this one function, so both always produce
+/// the same shape.
 pub(crate) fn flags_suggestion(bit_width: u32, bits: &[u32]) -> String {
     let names: Vec<String> = bits
         .iter()
@@ -72,11 +73,11 @@ pub(crate) fn flags_suggestion(bit_width: u32, bits: &[u32]) -> String {
 /// Collects the distinct flag bits one function combines through
 /// bitwise operations.
 ///
-/// The detector is stateless; [`with_default_threshold`] configures
-/// the standard "at least two distinct bits" bar over the standard
-/// operator spellings, [`with_min_bits`](Self::with_min_bits) swaps
-/// the bar, and [`with_bitwise_ops`](Self::with_bitwise_ops) swaps the
-/// bar and the operator spellings whole.
+/// The detector is stateless; [`with_default_threshold`](Self::with_default_threshold)
+/// sets the standard "at least two distinct bits" bar over the standard
+/// operator spellings, [`with_min_bits`](Self::with_min_bits) replaces
+/// the bar, and [`with_bitwise_ops`](Self::with_bitwise_ops) replaces
+/// the bar and the operator spellings together.
 #[derive(Debug, Clone)]
 pub struct BitmaskDetector {
     min_bits: usize,
@@ -123,13 +124,13 @@ impl BitmaskDetector {
     /// A composite mask — a non-power-of-two literal in a bitwise
     /// context, like `x &= 0x500` — contributes its set bits when
     /// every one of them was independently observed as a single-bit
-    /// literal somewhere in the same body (a shift amount, like the
+    /// literal somewhere in the same body. (A shift amount, like the
     /// 8 in `1 << 8`, shows the shifted bit rather than its own, and
-    /// never counts as an independent sighting). The composite
-    /// occurrence joins the evidence and the mask and bit width widen
-    /// to cover the decomposed bits; a composite with any never-
-    /// independently-seen bit claims nothing — a range mask is not a
-    /// flag claim.
+    /// never counts as an independent sighting.) When a composite
+    /// contributes, its line joins the evidence and the group's mask
+    /// and bit width widen to cover the decomposed bits. A composite
+    /// with any never-independently-seen bit claims nothing — a range
+    /// mask is not a flag claim.
     pub fn detect(&self, function: &str, body: &str) -> Option<BitflagGroup> {
         let tokens = tokenize(body);
         let mut bits: BTreeSet<u32> = BTreeSet::new();

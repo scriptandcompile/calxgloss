@@ -4,9 +4,9 @@
 //! `switch` statements and collects their case values. A run of
 //! three or more contiguous ascending values — `case 0: case 1:
 //! case 2:` — is the shape an enumerated state takes when the
-//! compiler lowers it to a jump table; the finding names the run and
-//! suggests the Rust `enum` whose variants would stand in for the
-//! bare integers.
+//! compiler lowers it to a jump table. The finding records the run
+//! and suggests a Rust `enum` whose variants would replace the bare
+//! integers.
 
 use std::collections::BTreeSet;
 
@@ -23,9 +23,10 @@ struct SwitchBlock {
 
 /// Finds contiguous runs of switch case values in decompiled bodies.
 ///
-/// The detector is stateless; [`with_default_threshold`] configures
-/// the standard "runs of three or more" bar, and
-/// [`with_min_run`](Self::with_min_run) swaps it whole.
+/// The detector is stateless; [`with_default_threshold`](Self::with_default_threshold)
+/// sets the standard "runs of three or more" bar, and
+/// [`with_min_run`](Self::with_min_run) replaces that bar with a
+/// different run length.
 #[derive(Debug, Clone)]
 pub struct SequentialDetector {
     min_run: usize,
@@ -49,8 +50,8 @@ impl SequentialDetector {
     ///
     /// Each `switch` in the body is read separately: its case values
     /// are sorted and the contiguous ascending runs extracted. A run
-    /// of [`min_run`](Self::min_run) or more becomes a candidate;
-    /// scattered values that never run together do not.
+    /// of `min_run` values or more becomes a candidate; scattered
+    /// values that never run together do not.
     pub fn detect(&self, function: &str, body: &str) -> Vec<EnumCandidate> {
         let tokens = tokenize(body);
         let mut blocks = Vec::new();
