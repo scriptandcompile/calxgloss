@@ -10,9 +10,9 @@ use thiserror::Error;
 /// the pairing document.
 #[derive(Debug, Error)]
 pub enum BdiffError {
-    /// The two snapshots do not describe one binary identity — the pass
-    /// pairs *versions of one binary*, and mixing identities is a caller
-    /// error it refuses rather than a pairing it guesses at.
+    /// The two snapshots do not describe one binary identity. The pass
+    /// pairs *versions of one binary*; mixing identities is a caller
+    /// error. It refuses the call instead of guessing at a pairing.
     #[error("not one binary identity: {old} vs {new}")]
     IdentityMismatch { old: String, new: String },
 
@@ -30,9 +30,9 @@ pub enum BdiffError {
     NotFound { path: std::path::PathBuf },
 }
 
-/// Maps the shared JSON store's errors onto this crate's error type: the
-/// store's not-found becomes [`BdiffError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// Maps the shared JSON store's errors onto this crate's error type.
+/// The store's not-found error becomes [`BdiffError::NotFound`]; its
+/// I/O and JSON errors become the existing pass-through variants.
 impl From<calxgloss_types::persist::PersistError> for BdiffError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

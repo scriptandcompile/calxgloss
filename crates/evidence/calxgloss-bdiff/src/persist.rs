@@ -10,14 +10,14 @@
 //! ```
 //!
 //! The file key is the hash pair, and the document itself names both
-//! hashes, so a stale document — one left behind by a since-replaced
-//! version — is detectable twice over: it is not filed under the live
-//! hash pair, and it says which pair it was computed for. A persisted
-//! document doubles as a cache: [`exists`](Self::exists) is the check a
-//! caller runs before deciding whether the pairing pass is needed at
-//! all (the auto run's trigger, #298), and this being a new directory
-//! under `re/analysis/`, every previously persisted artifact loads
-//! unchanged.
+//! hashes. A stale document — one left behind by a since-replaced
+//! version — is therefore detectable twice over: it is not filed under
+//! the live hash pair, and it says which pair it was computed for. A
+//! persisted document doubles as a cache: [`exists`](Self::exists) is
+//! the check a caller runs before deciding whether the pairing pass is
+//! needed at all (the auto run's trigger, #298). This adds a new
+//! directory under `re/analysis/`, so every previously persisted
+//! artifact loads unchanged.
 
 use std::path::{Path, PathBuf};
 
@@ -87,9 +87,9 @@ impl BdiffPersistor {
     /// The document key for one (binary identity, old bytes, new bytes)
     /// triple — the key [`save`](Self::save) derives from a document
     /// and the key a caller composes to ask for a specific version
-    /// pair. The hashes are full SHA-256 hex, so a key names its pair
-    /// unambiguously and a stale document never stands in for a live
-    /// one at the lookup.
+    /// pair. The hashes are full SHA-256 hex, so each key identifies
+    /// exactly one version pair and a stale document can never be
+    /// mistaken for a live one at the lookup.
     pub fn key_for(binary: &str, old_bytes_sha256: &str, new_bytes_sha256: &str) -> String {
         format!("{binary}-{old_bytes_sha256}-{new_bytes_sha256}")
     }
@@ -101,9 +101,9 @@ impl BdiffPersistor {
 
     /// Whether a pairing document is persisted for `key`.
     ///
-    /// This is the cache check: the auto run's trigger (#298) asks
-    /// here before spending anything on the pairing pass, and reuses
-    /// the persisted document when the answer is `true`.
+    /// This is the cache check: the auto run's trigger (#298) checks
+    /// here before running the pairing pass at all, and reuses the
+    /// persisted document when the answer is `true`.
     pub fn exists(&self, key: &str) -> bool {
         self.store.exists(key)
     }
@@ -188,8 +188,9 @@ mod tests {
         }
     }
 
-    /// A real pairing document, produced by the pass itself so the
-    /// round-trip pins the shipped shape rather than a hand copy.
+    /// A real pairing document, produced by the pass itself, so the
+    /// round-trip test pins the shipped shape rather than a
+    /// hand-written copy.
     fn sample_pairing_document(binary: &str) -> PairingDocument {
         let old = snapshot(
             binary,
@@ -214,10 +215,11 @@ mod tests {
 
     #[test]
     fn save_then_load_round_trips_the_document_and_names_both_hashes() {
-        // The pairing document rides the shared JSON plumbing whole —
-        // records, families, confidences, evidence, listings — and the
-        // loaded copy still names the exact (old, new) byte pair it was
-        // computed for, so staleness stays detectable after a reload.
+        // The pairing document goes through the shared JSON store
+        // whole — records, families, confidences, evidence, listings.
+        // The loaded copy still records the exact (old, new) byte pair
+        // it was computed for, so staleness stays detectable after a
+        // reload.
         let workspace = tempfile::tempdir().expect("temp workspace");
         let persistor = BdiffPersistor::new(workspace.path());
         let document = sample_pairing_document("game.dll");
@@ -235,9 +237,10 @@ mod tests {
 
     #[test]
     fn documents_are_filed_under_re_analysis_bdiff_in_the_workspace() {
-        // The analysis-directory convention (ADR-0043's record of
-        // effort): a new domain directory beside the existing ones, so
-        // every pre-existing artifact loads unchanged.
+        // The analysis-directory convention (ADR-0043's record
+        // directories): this adds a new domain directory beside the
+        // existing ones, so every previously persisted artifact loads
+        // unchanged.
         let workspace = tempfile::tempdir().expect("temp workspace");
         let persistor = BdiffPersistor::new(workspace.path());
         persistor
@@ -253,8 +256,8 @@ mod tests {
     #[test]
     fn one_document_per_version_pair_stands_alone() {
         // Successive versions of one binary each keep their own
-        // pairwise document: chains ride successive pairwise files,
-        // and no pair overwrites another.
+        // pairwise document: each step of a version chain is its own
+        // file, and no pair overwrites another.
         let workspace = tempfile::tempdir().expect("temp workspace");
         let persistor = BdiffPersistor::new(workspace.path());
         persistor
@@ -316,8 +319,8 @@ mod tests {
 
     #[test]
     fn a_recompute_replaces_the_previous_document_for_one_pair() {
-        // A recomputed pairing pass stands where the old document for
-        // the same pair stood; the file count stays at one.
+        // A recomputed pairing pass replaces the old document for the
+        // same pair; the file count stays at one.
         let workspace = tempfile::tempdir().expect("temp workspace");
         let persistor = BdiffPersistor::new(workspace.path());
         persistor
@@ -375,9 +378,9 @@ mod tests {
 
     #[test]
     fn a_stale_document_is_detectable_from_its_named_hashes() {
-        // The staleness contract of the track (#298): a document loaded
-        // for what turns out to be a replaced version says which hash
-        // pair it was computed for, and the consumer can refuse it.
+        // The track's staleness contract (#298): a document loaded for
+        // a version that has since been replaced still says which hash
+        // pair it was computed for, so the consumer can refuse it.
         let document = sample_pairing_document("game.dll");
         let current_new_hash = "replaced-by-a-new-build";
         assert_ne!(

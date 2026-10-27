@@ -1,35 +1,41 @@
 //! The pairing pass: pure text and structure over two in-memory scan
 //! snapshots — documents in, one pairing document out.
 //!
-//! [`pair_versions`] is the crate's whole engine: it adds no `ScanSource`
-//! methods (ADR-0026 untouched), reads no engine, writes nothing back
-//! to any program (ADR-0020), and runs no LLM — a version diff costs
-//! milliseconds, not dollars. The pass runs the match ladder (track
-//! #233). First, name identity: an exported name or a
-//! demangled name present in both versions pairs the old function to
-//! the new at [`crate::types::NAME_IDENTITY_CONFIDENCE`]. Second, the
-//! normalized-body family: kept bodies put through the shared libmatch
-//! normalizer (#294's public cross-crate rule — one shared rule, one
-//! owner, never a second normalizer), where byte-equal shapes pair at
-//! [`crate::types::BODY_EQUAL_CONFIDENCE`]. Third, call-graph topology
-//! propagation (#297): over a call map derived purely from the bodies
-//! the two snapshots carry (ADR-0024's rails — no new reads), a
-//! function the first two rungs left unpaired pairs when its callers
-//! and callees agree through already-paired neighbors, iterated to a
-//! fixed point so chains of renamed functions pair through neighbors
-//! that converged themselves. A claim requires at least
+//! [`pair_versions`] is the crate's whole pass: it adds no `ScanSource`
+//! methods (ADR-0026 stays untouched), reads nothing from the analysis
+//! engine, writes nothing back to any program (ADR-0020), and runs no
+//! LLM — a version diff costs milliseconds, not dollars. The pass runs
+//! the match ladder (track #233).
+//!
+//! First, name identity: an exported name or a demangled name present
+//! in both versions pairs the old function to the new at
+//! [`crate::types::NAME_IDENTITY_CONFIDENCE`].
+//!
+//! Second, the normalized-body family: kept bodies go through the
+//! shared libmatch normalizer (#294's public cross-crate rule — one
+//! shared rule, one owner, never a second normalizer). Byte-equal
+//! shapes pair at [`crate::types::BODY_EQUAL_CONFIDENCE`].
+//!
+//! Third, call-graph topology propagation (#297). The call map is
+//! derived purely from the bodies the two snapshots carry (ADR-0024's
+//! rails — no new reads). A function the first two families left
+//! unpaired pairs when its callers and callees agree through already-
+//! paired neighbors. The pass repeats this to a fixed point, so chains
+//! of renamed functions pair through neighbors that converged
+//! themselves. A claim requires at least
 //! [`crate::types::TOPOLOGY_MIN_PAIRED_NEIGHBORS`] paired neighbors — a
 //! lone paired neighbor claims nothing — scores
 //! [`crate::types::TOPOLOGY_CONFIDENCE`], below the carry-over floor on
-//! its own, and names its paired-neighbor evidence lines. Topology
-//! corroborating a body-family pair instead rides the flag-family
-//! agreement precedent (P12.6 — agreement beats any single reading):
-//! the body record gains [`crate::types::TOPOLOGY_AGREEMENT_BUMP`]. A
-//! lone signal claims
-//! nothing (ADR-0038): address equality pairs nothing on its own, and
-//! neither does a matching address-derived `FUN_…` spelling — that
-//! spelling *is* an address, so pairing on it would smuggle the
-//! relocation signal the rail exists to refuse.
+//! its own, and names its paired-neighbor evidence lines. When
+//! topology instead corroborates a body-family pair, the flag-family
+//! agreement precedent applies (P12.6 — agreement beats any single
+//! reading): the body record gains
+//! [`crate::types::TOPOLOGY_AGREEMENT_BUMP`].
+//!
+//! A lone signal claims nothing (ADR-0038): address equality pairs
+//! nothing on its own, and neither does a matching address-derived
+//! `FUN_…` spelling — that spelling *is* an address, so pairing on it
+//! would pair on the lone relocation signal the rail exists to refuse.
 //!
 //! Pairings resolve one-to-one: each function pairs at most once per
 //! side, the best score wins (ADR-0022's strongest-claim-wins rule),
@@ -53,8 +59,8 @@ use crate::types::{
 ///
 /// The two snapshots must name the same [`calxgloss_types::BinaryIdentity`]
 /// — the pass pairs *versions of one binary*, and mixing identities is a
-/// caller error it refuses rather than a pairing it guesses at. The
-/// emitted document names both snapshots' byte hashes and both full
+/// caller error. It refuses the call instead of guessing at a pairing.
+/// The emitted document names both snapshots' byte hashes and both full
 /// function listings; its pairings stand in old scan order.
 ///
 /// # Errors
@@ -82,9 +88,9 @@ pub fn pair_versions(old: &ScanSnapshot, new: &ScanSnapshot) -> Result<PairingDo
     candidates.extend(body_candidates(old, new));
     let mut winners = resolve_one_to_one(candidates, &old.functions, &new.functions);
 
-    // Ladder rung three (#297): the call map is derived only from the
-    // bodies the two snapshots carry — no engine read anywhere in the
-    // pass (ADR-0024's rails, ADR-0026 intact).
+    // The ladder's third band (#297): the call map is derived only from
+    // the bodies the two snapshots carry — no analysis-engine read
+    // anywhere in the pass (ADR-0024's rails, ADR-0026 intact).
     let old_map = call_map(old);
     let new_map = call_map(new);
     propagate_topology(&mut winners, old, new, &old_map, &new_map);
@@ -102,8 +108,8 @@ pub fn pair_versions(old: &ScanSnapshot, new: &ScanSnapshot) -> Result<PairingDo
 }
 
 /// A proposed pairing before one-to-one resolution: indices into the
-/// snapshots' function listings (scan order is what ties resolve on),
-/// beside the score and evidence the winning family would carry.
+/// snapshots' function listings (the pass resolves ties by scan order),
+/// beside the score and evidence the winning family would record.
 struct Candidate {
     old: usize,
     new: usize,
@@ -142,10 +148,10 @@ fn name_identity_candidates(old: &ScanSnapshot, new: &ScanSnapshot) -> Vec<Candi
         let Some(new_indexes) = new_by_name.get(name) else {
             continue;
         };
-        // The exported family claims first, so an exported name that
+        // The exported candidate comes first, so an exported name that
         // also reads as demangled keeps the export's evidence — the
-        // same pair claimed twice still resolves to one record, the
-        // stronger reading standing.
+        // same pair claimed twice still resolves to one record, and the
+        // first-seen claim stands (both readings score the same band).
         if shared_exports.contains(name) {
             for &new_index in new_indexes {
                 candidates.push(Candidate {
@@ -175,12 +181,12 @@ fn name_identity_candidates(old: &ScanSnapshot, new: &ScanSnapshot) -> Vec<Candi
 /// Whether a listing name carries the demangler's spelling — the
 /// `::`-qualified chains and spelled parameter lists the decompiler
 /// writes for C++ and Rust symbols, the demangled `operator.` dot form,
-/// and `~`-prefixed destructors. Name-shape reading rides the same
-/// precedent as ADR-0012's flagging-by-name-shape pass.
+/// and `~`-prefixed destructors. This name-shape reading follows the
+/// same precedent as ADR-0012's flagging-by-name-shape pass.
 ///
 /// An address-derived `FUN_…` spelling is refused outright: it is an
-/// address in name clothing, and pairing on it would claim from the
-/// lone relocation signal the rail refuses (ADR-0038).
+/// address written as a name, and pairing on it would rely on the lone
+/// relocation signal the rail refuses (ADR-0038).
 fn carries_demangled_spelling(name: &str) -> bool {
     if name.starts_with("FUN_") {
         return false;
@@ -191,15 +197,15 @@ fn carries_demangled_spelling(name: &str) -> bool {
         || (name.ends_with(')') && name.contains('('))
 }
 
-/// How many of a near-equal pair's line edits the evidence quotes:
-/// enough for an audit glance at the diff's character, never a wall
-/// of text in the pairing document. The summary line always names the
-/// full edit count.
+/// How many of a near-equal pair's line edits the evidence quotes.
+/// That is enough for a quick audit of what the diff looks like, and it
+/// keeps the pairing document from filling with quoted text. The
+/// summary line always names the full edit count.
 const MAX_QUOTED_EDITS: usize = 3;
 
 /// The shared normalizer's shape of one kept body: the normalized line
-/// sequence, whitespace-collapsed, that "same body shape" means corpus-
-/// wide. The pairing tests consume this rule without re-testing it —
+/// sequence, whitespace-collapsed. This is what "same body shape" means
+/// corpus-wide. The pairing tests use this rule without re-testing it —
 /// the normalizer's contract stays pinned where it lives, in libmatch
 /// (#294).
 fn normalized_shape(body: &str) -> Vec<String> {
@@ -209,9 +215,10 @@ fn normalized_shape(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether a normalized shape holds nothing: a kept body that is blank
-/// normalizes to blank lines, and blank-on-blank equality is vacuous —
-/// claiming it would pair on a lone structural coincidence (ADR-0038).
+/// Whether a normalized shape holds nothing. A kept body that is blank
+/// normalizes to blank lines, and equality between two blank shapes
+/// says nothing: claiming it would pair on a lone structural
+/// coincidence (ADR-0038).
 fn is_blank(shape: &[String]) -> bool {
     shape.iter().all(|line| line.is_empty())
 }
@@ -219,13 +226,13 @@ fn is_blank(shape: &[String]) -> bool {
 /// Collect every normalized-body candidate pair, in scan order.
 ///
 /// A pair is a candidate when the two kept bodies, put through the
-/// shared normalizer, come out one shape: byte-equal shapes pair at
-/// [`BODY_EQUAL_CONFIDENCE`], and a pair whose shapes differ only in
-/// line edits scores on its structural-diff ratio beside that band —
-/// every edit is a line that changed, was added, or was removed, and
-/// the evidence line summarizes the diff and quotes it. A pair below
-/// [`BODY_SIMILARITY_FLOOR`] similarity is a clearly different body,
-/// a coincidence of listing rather than a moved function, and claims
+/// shared normalizer, come out one shape. Byte-equal shapes pair at
+/// [`BODY_EQUAL_CONFIDENCE`]. A pair whose shapes differ only in line
+/// edits scores on its structural-diff ratio beside that band — every
+/// edit is a line that changed, was added, or was removed, and the
+/// evidence line summarizes the diff and quotes it. A pair below
+/// [`BODY_SIMILARITY_FLOOR`] similarity is a clearly different body: a
+/// coincidence of listing rather than a moved function, and it claims
 /// nothing (ADR-0038 again).
 fn body_candidates(old: &ScanSnapshot, new: &ScanSnapshot) -> Vec<Candidate> {
     let old_shapes: Vec<Vec<String>> = old
@@ -285,9 +292,10 @@ fn body_candidates(old: &ScanSnapshot, new: &ScanSnapshot) -> Vec<Candidate> {
                 continue; // byte-equal pairs already claimed above
             }
             let max_lines = old_shape.len().max(new_shape.len());
-            // Cost model (the pass owes milliseconds, not dollars): an
-            // edit is at least a line-count gap, so a pair whose gap
-            // alone outruns the floor never reaches the diff matrix.
+            // Cost model (this pass owes milliseconds, not dollars):
+            // one edit costs at least the line-count gap, so a pair
+            // whose line-count gap alone puts it below the floor never
+            // reaches the diff matrix.
             let gap = old_shape.len().abs_diff(new_shape.len());
             if 100 - (100 * gap) / max_lines < BODY_SIMILARITY_FLOOR as usize {
                 continue;
@@ -327,8 +335,9 @@ fn body_candidates(old: &ScanSnapshot, new: &ScanSnapshot) -> Vec<Candidate> {
     candidates
 }
 
-/// One line edit between two normalized bodies: the diff an engineer
-/// reads to audit why a near-equal pair was called one function.
+/// One line edit between two normalized bodies. This is what an
+/// engineer reads to audit why a near-equal pair was judged one
+/// function.
 enum BodyEdit {
     /// One old line became one new line.
     Replace { old: String, new: String },
@@ -338,11 +347,12 @@ enum BodyEdit {
     Insert { new: String },
 }
 
-/// Levenshtein edits between two normalized line sequences: the edit
-/// count beside the edits themselves, in body order — each changed,
-/// added, or removed line once. The full distance matrix, backtraced:
-/// bodies are decompiled functions, tens of lines, and the evidence
-/// quotes the edits, so the script rides with the count.
+/// Levenshtein edits between two normalized line sequences. The result
+/// is the edit count beside the edits themselves, in body order — each
+/// changed, added, or removed line once. This uses the full distance
+/// matrix, backtraced. The bodies are decompiled functions of tens of
+/// lines, and the evidence quotes the edits, so the count and the
+/// edits are computed together.
 fn line_edits(old: &[String], new: &[String]) -> (usize, Vec<BodyEdit>) {
     let mut distance: Vec<Vec<usize>> = vec![vec![0; new.len() + 1]; old.len() + 1];
     for (row, cell) in distance.iter_mut().enumerate() {
@@ -411,13 +421,13 @@ fn line_edits(old: &[String], new: &[String]) -> (usize, Vec<BodyEdit>) {
 /// Resolve candidate pairs down to one pairing per function per side.
 ///
 /// Highest score wins, and a tie keeps the first-seen pairing in scan
-/// order — candidate generation stands in old-then-new scan order, and
+/// order. Candidate generation stands in old-then-new scan order, and
 /// the sort is stable, so a candidate earlier in the scan beats a later
-/// one at the same score, and a candidate's second-best pairing is
-/// dropped once its side is taken (ADR-0022's strongest-claim-wins,
+/// one at the same score. A candidate's second-best pairing is dropped
+/// once its side is taken (ADR-0022's strongest-claim-wins,
 /// ADR-0028's positional tie rule). Surviving `(old, new, record)`
 /// triples come back in old scan order so two documents of one version
-/// pair diff cleanly, and the topology rung can build on the resolved
+/// pair diff cleanly, and the topology band can build on the resolved
 /// pairs by index.
 fn resolve_one_to_one(
     candidates: Vec<Candidate>,
@@ -453,23 +463,24 @@ fn resolve_one_to_one(
 }
 
 // ------------------------------------------------------------
-// Call-graph topology propagation (#297, ladder rung three)
+// Call-graph topology propagation (#297, the ladder's third band)
 // ------------------------------------------------------------
 
-/// How many paired neighbors a topology record's evidence quotes: the
-/// body family's `MAX_QUOTED_EDITS` precedent again — the first few
-/// neighbors read as an audit glance, and the remainder are named.
+/// How many paired neighbors a topology record's evidence quotes. The
+/// body family's `MAX_QUOTED_EDITS` precedent applies again: quote the
+/// first few neighbors for a quick audit, and name the remainder by
+/// count.
 const MAX_QUOTED_NEIGHBORS: usize = 3;
 
 /// One snapshot's call map, derived from the bodies the snapshot itself
-/// carries — ADR-0024's rails: each body is read for whole identifier
+/// carries — ADR-0024's rails. Each body is read for whole identifier
 /// tokens that are one of the snapshot's own listed function names, so
 /// both call shapes that matter are covered (a direct call `FUN_x(…);`
 /// and a callback handed to a host, `qsort(a, n, 4, FUN_y)`), and the
-/// map costs the pass no engine read. A mention of a function's own
-/// name — the signature line's spelling, self-recursion — records no
-/// edge: a self-loop can never be a *paired* neighbor of its own claim,
-/// and a pair can therefore never corroborate or propagate itself.
+/// map costs the pass no analysis-engine read. A mention of a
+/// function's own name — the signature line's spelling, self-recursion
+/// — records no edge: a self-loop can never be a *paired* neighbor of
+/// its own claim, so a pair can never corroborate or propagate itself.
 struct CallMap {
     /// For each listed function, the listed functions whose names its
     /// body names as call targets, ascending by old/new scan index.
@@ -481,11 +492,12 @@ struct CallMap {
 }
 
 /// Derive one snapshot's call map purely from the bodies it carries:
-/// the zero-extra-reads rule of ADR-0024, applied to pairing. A demangled
-/// listing name (`::`-qualified chains, spelled parameter lists) spells
-/// no identifier token, so bodies never edge toward it — the same rail
-/// the scan's own correlation detector accepted. A name listed twice
-/// (duplicates the scan can list) takes an edge from every mention.
+/// the zero-extra-reads rule of ADR-0024, applied to pairing. A
+/// demangled listing name (`::`-qualified chains, spelled parameter
+/// lists) is not a single identifier token, so no body's tokens ever
+/// name it — the same rail the scan's own correlation detector
+/// accepted. A name listed twice (duplicates the scan can list) takes
+/// an edge from every mention.
 fn call_map(snapshot: &ScanSnapshot) -> CallMap {
     let mut listed: HashMap<&str, Vec<usize>> = HashMap::new();
     for (index, entry) in snapshot.functions.iter().enumerate() {
@@ -537,7 +549,7 @@ fn identifier_tokens(body: &str) -> Vec<&str> {
     tokens
 }
 
-/// One already-paired function whose call edge corroborates a pair: an
+/// One already-paired function whose call edge corroborates a pair. An
 /// edge between `old` and the old-side function has a matching edge in
 /// the same direction between its partner `new` and the new-side
 /// function. A neighbor counts once however many directions it agrees
@@ -560,10 +572,10 @@ struct Neighbor {
 }
 
 /// Every paired neighbor agreeing on the pair `x` ↔ `y` through `pairs`
-/// (old index to new index): the old-side neighbors of `x` walked in
-/// scan order, keeping each one whose partner reaches `y` along an edge
-/// in the same direction. Since the call map records no self-loop, the
-/// pair under discussion can never agree with itself.
+/// (old index to new index). The old-side neighbors of `x` are walked
+/// in scan order, keeping each one whose partner reaches `y` along an
+/// edge in the same direction. The call map records no self-loop, so
+/// the pair under discussion can never agree with itself.
 fn agreeing_neighbors(
     x: usize,
     y: usize,
@@ -590,11 +602,11 @@ fn agreeing_neighbors(
     neighbors
 }
 
-/// The evidence lines a topology reading contributes: the summary line
-/// first, then the paired-neighbor evidence lines the records name —
-/// one line per paired neighbor spelling both sides of the neighbor and
-/// the direction of agreement, capped at [`MAX_QUOTED_NEIGHBORS`]
-/// quotes with the remainder named.
+/// The evidence lines a topology reading contributes. The summary line
+/// comes first, then the paired-neighbor evidence lines the records
+/// name: one line per paired neighbor naming both sides of the
+/// neighbor and the direction of agreement, capped at
+/// [`MAX_QUOTED_NEIGHBORS`] quotes with the remainder named.
 fn topology_evidence(
     summary: &str,
     candidate: &str,
@@ -623,20 +635,20 @@ fn topology_evidence(
     lines
 }
 
-/// Ladder rung three: pair the functions the first two rungs left
-/// unpaired because their caller and callee sets agree *through already-
-/// paired neighbors*, propagated to a fixed point over the [`CallMap`]:
-/// every claim enters the pair set immediately, so a chain of renamed
-/// functions pairs through neighbors that converged themselves (ticket
-/// #297). A claim requires at least [`TOPOLOGY_MIN_PAIRED_NEIGHBORS`]
-/// distinct paired neighbors — a lone paired neighbor is a lone signal
-/// and claims nothing (ADR-0038). The score is [`TOPOLOGY_CONFIDENCE`],
-/// below the carry-over floor on its own: the document persists the
-/// record and only the carry-over consumer applies the floor. Claims
-/// walk old scan order and take the first agreeing partner in new scan
-/// order, so the fixed point is deterministic and diff-clean
-/// (ADR-0028's positional rule again), and one-to-one holds because a
-/// claimed side never comes up again.
+/// The ladder's third band: pair the functions the first two families
+/// left unpaired, because their caller and callee sets agree *through
+/// already-paired neighbors*. Propagation runs over the [`CallMap`] to
+/// a fixed point: every claim enters the pair set immediately, so a
+/// chain of renamed functions pairs through neighbors that converged
+/// themselves (ticket #297). A claim requires at least
+/// [`TOPOLOGY_MIN_PAIRED_NEIGHBORS`] distinct paired neighbors — a lone
+/// paired neighbor is a lone signal and claims nothing (ADR-0038). The
+/// score is [`TOPOLOGY_CONFIDENCE`], below the carry-over floor on its
+/// own: the document persists the record and only the carry-over
+/// consumer applies the floor. Claims walk old scan order and take the
+/// first agreeing partner in new scan order, so the fixed point is
+/// deterministic and diff-clean (ADR-0028's positional rule again).
+/// One-to-one holds because a claimed side never comes up again.
 fn propagate_topology(
     winners: &mut Vec<(usize, usize, PairingRecord)>,
     old: &ScanSnapshot,
@@ -706,8 +718,8 @@ fn propagate_topology(
 
 /// The agreement bump (ticket #297, the P12.6 flag-family precedent):
 /// when the call map agrees on a pair the body family already claimed,
-/// two independent families read one pair, and agreement beats any
-/// single reading — the record rides [`TOPOLOGY_AGREEMENT_BUMP`] above
+/// two independent families read the same pair, and agreement beats any
+/// single reading — the record gains [`TOPOLOGY_AGREEMENT_BUMP`] above
 /// its body score. A byte-equal pair corroborated by topology reaches
 /// name identity's 95, never past it. The family stays
 /// `normalized_body`: a corroborating topology is not a competing
@@ -779,11 +791,11 @@ mod tests {
 
     #[test]
     fn a_fun_renamed_function_with_byte_equal_normalized_bodies_pairs_at_90() {
-        // The function merely moved: the new address minted a new FUN_
-        // spelling and the rebuild re-lettered Ghidra's invented
+        // The function merely moved: the new address brought a new
+        // FUN_ spelling and the rebuild re-lettered Ghidra's invented
         // variables, but through the shared normalizer the two bodies
         // are byte-equal shapes — the body family pairs them at 90
-        // (track #233's ladder, rung two).
+        // (track #233's ladder, second band).
         let old_body = "\
 {
    uint uVar1;
@@ -969,7 +981,8 @@ mod tests {
         // The lone-signal gate, spelled out: two functions sit at the
         // same address with different names and unrelated bodies — and
         // both are even exported, under different names. Nothing pairs:
-        // relocations lie, and equal addresses claim nothing alone.
+        // relocations lie, and equal addresses claim nothing on their
+        // own.
         let old = snapshot(
             "game.dll",
             "old-hash",
@@ -1292,8 +1305,8 @@ mod tests {
         // A stripped private symbol that kept its name across versions
         // is not an export and not demangled: no family pairs on that
         // spelling alone. The bodies here are unrelated, so the body
-        // family that landed with #296 has nothing to corroborate —
-        // equal bodies under one internal name would pair through the
+        // family that landed with #296 has nothing to corroborate.
+        // Equal bodies under one internal name would pair through the
         // body family, on the body evidence, never the name.
         let old = snapshot(
             "game.dll",
@@ -1322,12 +1335,12 @@ mod tests {
 
     #[test]
     fn a_second_best_pairing_is_dropped() {
-        // One-to-one resolution over a mixed-strength candidate set —
-        // the shape the whole ladder will hand resolution once #296 and
-        // #297 land their families (scores here are synthetic stand-ins
-        // for the body and topology families, the resolution rule is
-        // the shipped one): A's best claim is X at 95, so A's 90 claim
-        // on Y drops, and Y then pairs with B.
+        // One-to-one resolution over a mixed-strength candidate set,
+        // the shape the whole ladder hands resolution now that #296 and
+        // #297 have landed their families (the scores here are
+        // synthetic stand-ins for the body and topology families; the
+        // resolution rule is the shipped one): A's best claim is X at
+        // 95, so A's 90 claim on Y drops, and Y then pairs with B.
         let old = snapshot(
             "game.dll",
             "old-hash",
@@ -1440,11 +1453,11 @@ mod tests {
 
     #[test]
     fn a_renamed_callee_pairs_at_70_through_two_paired_callers() {
-        // Ladder rung three's headline (ticket #297): a FUN_-renamed
-        // internal whose body changed too much to pair, but both its
-        // callers are exported names that paired on their own — the
-        // call map, built purely from the snapshots' bodies, agrees on
-        // the callee through those two paired neighbors.
+        // The headline claim of the ladder's third band (ticket #297):
+        // a FUN_-renamed internal whose body changed too much to pair,
+        // but both its callers are exported names that paired on their
+        // own — the call map, built purely from the snapshots' bodies,
+        // agrees on the callee through those two paired neighbors.
         let old = snapshot(
             "game.dll",
             "old-hash",
@@ -1545,12 +1558,12 @@ mod tests {
 
     #[test]
     fn a_renamed_chain_pairs_through_neighbors_that_converged_themselves() {
-        // Propagation iterates to a fixed point (ticket #297's AC):
-        // the snapshot lists the chain's leaf first, so the leaf's
-        // neighbors are still unpaired when the first pass walks it —
-        // it pairs only after the chain's roots have converged through
-        // the exported callers. Three renamed links, three claim
-        // rounds, one deterministic fixed point.
+        // Propagation iterates to a fixed point (ticket #297's AC). The
+        // snapshot lists the chain's leaf first, so the leaf's
+        // neighbors are still unpaired when the first pass walks the
+        // listing — the leaf pairs only after the chain's roots have
+        // converged through the exported callers. Three renamed links,
+        // three claim rounds, one deterministic fixed point.
         let old = snapshot(
             "game.dll",
             "old-hash",
@@ -1631,11 +1644,11 @@ mod tests {
     #[test]
     fn a_body_pair_the_topology_agrees_on_rides_above_both_readings() {
         // The agreement bump (the P12.6 flag-family precedent): a
-        // byte-equal body pair at 90 that the call graph also agrees
-        // on through two paired callers is two independent families
-        // reading one pair — the record rides above either single
-        // reading, landing on name identity's band without leaving
-        // the body family, and gains the neighbor evidence lines.
+        // byte-equal body pair at 90 that the call graph also agrees on
+        // through two paired callers is two independent families
+        // reading one pair. The record scores above either single
+        // reading, landing on name identity's band without leaving the
+        // body family, and gains the neighbor evidence lines.
         let old_body = "\
 {
    uint uVar1;

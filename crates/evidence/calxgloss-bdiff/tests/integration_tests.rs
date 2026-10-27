@@ -1,9 +1,9 @@
 //! Cross-module flow for the binary-version pairing crate (issues #295,
 //! #296, and #297, part of track #233): two in-memory scan snapshots go
-//! through the pairing pass and the pairing document comes back
-//! through the shared JSON persistor plumbing — documents in, pairing
-//! document out, with no engine reads (ADR-0026), no program mutation
-//! (ADR-0020), and no LLM anywhere in the crate.
+//! through the pairing pass, and the pairing document comes back
+//! through the shared JSON store — documents in, pairing document out.
+//! The crate makes no analysis-engine reads (ADR-0026), mutates no
+//! program (ADR-0020), and runs no LLM anywhere.
 
 use calxgloss_bdiff::{
     BdiffPersistor, CARRY_OVER_CONFIDENCE_FLOOR, FunctionEntry, MatchFamily, ScanSnapshot,
@@ -22,7 +22,7 @@ fn function(name: &str, address: u64) -> FunctionEntry {
 }
 
 /// One version's snapshot: the old build of the fixture DLL, exports
-/// intact, internals renumbered by the rebuild.
+/// intact, internals renumbered by the rebuild in the new snapshot.
 fn old_snapshot() -> ScanSnapshot {
     ScanSnapshot {
         binary: BinaryIdentity::new("fixture.dll"),
@@ -102,11 +102,11 @@ fn name_identity_pairs_the_named_functions_and_silences_the_rest() {
 
 #[test]
 fn a_moved_internal_function_pairs_through_the_body_family() {
-    // #296 end to end: the export and the demangled member still pair
-    // through name identity, and the moved internal — renamed FUN_
+    // #296 end to end. The export and the demangled member still pair
+    // through name identity. The moved internal — renamed FUN_
     // spelling, re-lettered variables, byte-equal normalized body —
-    // pairs through the body family at 90 beside them, surviving the
-    // persistor round trip.
+    // pairs through the body family at 90 beside them, and the pairing
+    // survives the persistor round trip.
     let mut old = old_snapshot();
     let mut new = new_snapshot();
     for entry in &mut old.functions {
@@ -169,13 +169,14 @@ fn a_moved_internal_function_pairs_through_the_body_family() {
 
 #[test]
 fn a_renamed_internal_pairs_through_the_call_graph_and_survives_the_round_trip() {
-    // #297 end to end: the export and the demangled member still pair
+    // #297 end to end. The export and the demangled member still pair
     // by name, and this time the renamed internal pairs through the
-    // call graph — both its callers are the name-paired functions, and
+    // call graph: both its callers are the name-paired functions, and
     // the call map built only from the snapshots' own bodies agrees on
     // the callee through them. The record sits below the carry-over
-    // floor the consumer applies, and the whole document round-trips
-    // through the persistor with the new family spelled `call_topology`.
+    // floor the consumer applies. The whole document round-trips
+    // through the persistor, with the new family spelled
+    // `call_topology`.
     let mut old = old_snapshot();
     let mut new = new_snapshot();
     for entry in &mut old.functions {
