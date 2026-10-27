@@ -1,8 +1,9 @@
 //! Call graph analysis for calxgloss.
 //!
-//! Extracts call graphs from the decompiler, detects root and leaf functions,
-//! produces translation ordering, and persists results to JSON for
-//! consumption by the translation pipeline.
+//! The call graph evidence engine reads the program through the seam's scan
+//! source and records who calls whom. It detects root and leaf functions,
+//! produces the translation ordering, and persists the results as JSON files
+//! that the translation pipeline reads.
 //!
 //! # Architecture
 //!
@@ -10,16 +11,17 @@
 //!
 //! - [`models`] - Core data types: [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
 //!   [`NodeCategory`], and [`CallType`].
-//! - [`builder`] - [`CallGraphBuilder`] fetches function metadata from the engine and
-//!   constructs the call graph.
-//! - [`root_detector`] - [`RootDetector`] and [`ConfigurableRootDetector`] identify
-//!   entry-point and runtime functions that should be skipped or stubbed during
-//!   translation. Supports VB6, .NET, MinGW, and MSVC runtime patterns.
-//! - [`leaf_detector`] - [`LeafDetector`] identifies functions that call known
-//!   third-party APIs, with fuzzy matching for name variations (A/W suffixes,
-//!   stdcall decoration), DLL-qualified names, and transitive leaf analysis.
-//! - [`context`] - [`ContextEnricher`] produces structured context data for
-//!   LLM prompt injection (caller/callee lists, API categorization, crate suggestions).
+//! - [`builder`] - [`CallGraphBuilder`] reads function data through the seam's
+//!   scan source and constructs the call graph.
+//! - [`root_detector`] - [`RootDetector`] and [`ConfigurableRootDetector`] find
+//!   the entry-point and runtime functions that translation should skip or
+//!   stub. Their patterns cover VB6, .NET, MinGW, and MSVC runtimes.
+//! - [`leaf_detector`] - [`LeafDetector`] finds the functions that call known
+//!   third-party APIs. It fuzzy-matches name variations (A/W suffixes, stdcall
+//!   decoration, DLL-qualified names) and analyses leaves transitively.
+//! - [`context`] - [`ContextEnricher`] builds structured context data that is
+//!   placed into LLM prompts: caller and callee lists, API categorization, and
+//!   crate suggestions.
 //! - [`persist`] - [`CallGraphPersistor`] saves and loads call graphs to/from JSON.
 //! - [`ordering`] - [`TranslationOrderer`] produces a priority-ordered translation plan.
 //!

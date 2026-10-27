@@ -1,8 +1,8 @@
 //! Core data types for call graph analysis.
 //!
-//! This module defines the [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
-//! [`CallType`], and the [`NodeCategory`] type that forms the backbone of the
-//! call graph analysis system.
+//! This module defines [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
+//! and [`CallType`]. Together they hold all call graph data for one binary.
+//! The [`NodeCategory`] type completes the set.
 //!
 //! # NodeCategory
 //!
@@ -21,7 +21,7 @@ pub enum CallType {
     Indirect,
     /// `vtable->method()` — virtual call found via decompiler.
     Virtual,
-    /// Scraper hit, uncertain.
+    /// Text scraping found this edge; the call kind is uncertain.
     #[deprecated(note = "Falls back to text scraping; low confidence")]
     Unknown,
 }
@@ -38,16 +38,16 @@ pub struct CallGraphEdge {
     /// How this edge was discovered.
     pub call_type: CallType,
     /// Original callee name as parsed from decompiled output.
-    /// Empty when the edge was created without a name context.
+    /// Empty when the edge was built without a known callee name.
     pub callee_name: String,
 }
 
 /// All call graph data for one binary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallGraph {
-    /// Name of the DLL / binary this graph belongs to.
+    /// Name of the target binary this graph belongs to.
     pub binary: String,
-    /// Call graph data for each function in the binary.
+    /// Call graph data for each function in the target binary.
     pub functions: Vec<FunctionCallGraph>,
 }
 

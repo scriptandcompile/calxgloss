@@ -1,29 +1,30 @@
-//! Call graph construction from engine data.
+//! Building the call graph from scan-source reads.
 //!
-//! The [`CallGraphBuilder`] fetches function summaries, callers, and callee
+//! The [`CallGraphBuilder`] reads function summaries, callers, and callee
 //! information through the shared [`ScanSource`](calxgloss_decomp::ScanSource)
-//! seam — a live client or the batch's read cache — then assembles them into a
-//! [`CallGraph`] with all functions initially categorized as
-//! `NodeCategory::Middle`.
+//! seam — either the loaded analysis engine or the scan read cache — and
+//! assembles the answers into a [`CallGraph`]. Every function starts out
+//! categorized as `NodeCategory::Middle`.
 //!
 //! # Algorithm
 //!
-//! 1. Call `source.functions()` to get every function and build a
+//! 1. Call `source.functions()` to get every function, and build a
 //!    name→address lookup map.
-//! 2. For each function, call `source.callers(address)` for incoming
-//!    cross-references, mapping the returned names back to addresses via
+//! 2. For each function, call `source.callers(address)` for the incoming
+//!    cross-references, and turn the returned names back into addresses with
 //!    the lookup map.
 //! 3. For callees, call `source.decompile(name)` and parse
 //!    call targets from the decompiled pseudo-C via
 //!    `calxgloss_decomp::parse::callees_from_decompiled`.
 //! 4. Map callee names back to addresses using the lookup map.
-//! 5. All functions start as `NodeCategory::Middle` — root/leaf classification
-//!    happens in Tasks 4–5.
+//! 5. Every function starts as `NodeCategory::Middle` — the later root and
+//!    leaf detector work does that classification (Tasks 4–5 in the original
+//!    build plan).
 //!
 //! # Graceful degradation
 //!
-//! If decompilation fails for a single function the graph still completes
-//! with an empty callee list for that function.  A total `functions()`
+//! If decompilation fails for a single function the graph still completes,
+//! and that function gets an empty callee list.  A total `functions()`
 //! failure aborts the build.
 
 use anyhow::Result;
@@ -33,13 +34,13 @@ use tracing::{info, warn};
 
 use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
 
-/// Fetches function metadata from the engine and constructs a call graph.
+/// Fetches function data through the scan source and builds a call graph.
 ///
 /// The builder reads through the shared [`ScanSource`] seam, so the same
-/// graph build runs against a loaded [`calxgloss_kuna::KunaSource`] or
-/// through the batch's [`calxgloss_decomp::CachedScanSource`] without any
-/// change of behaviour — a warm cache makes the whole build cost no live
-/// reads.
+/// graph build runs against a loaded `calxgloss_kuna::KunaSource` or
+/// through the batch's [`calxgloss_decomp::CachedScanSource`] with no
+/// change of behaviour — when the scan read cache is warm, the whole build
+/// costs no live reads.
 ///
 /// # Example
 ///
@@ -61,15 +62,17 @@ pub struct CallGraphBuilder<S = calxgloss_decomp::PipelineSource> {
 }
 
 impl CallGraphBuilder<calxgloss_decomp::PipelineSource> {
-    /// Creates a new builder for the given DLL over the pipeline's scan
-    /// source (the Kuna engine, usually behind the read cache).
+    /// Creates a new builder for the given target binary, reading through
+    /// the pipeline's scan source (the loaded Kuna analysis engine, usually
+    /// served through the scan read cache).
     pub fn new(source: calxgloss_decomp::PipelineSource, dll_name: impl Into<String>) -> Self {
         Self::with_source(source, dll_name)
     }
 }
 
 impl<S> CallGraphBuilder<S> {
-    /// Creates a new builder for the given DLL over any shared scan source.
+    /// Creates a new builder for the given target binary, reading through
+    /// any scan source.
     pub fn with_source(source: S, dll_name: impl Into<String>) -> Self {
         Self {
             source,
@@ -79,11 +82,11 @@ impl<S> CallGraphBuilder<S> {
 }
 
 impl<S: ScanSource + Sync> CallGraphBuilder<S> {
-    /// Builds the complete call graph by querying the engine for all functions
-    /// and their caller/callee relationships.
+    /// Builds the complete call graph by querying the scan source for all
+    /// functions and their caller/callee relationships.
     ///
-    /// Functions with decompilation failures are still included; the graph
-    /// degrades gracefully with empty callee lists.
+    /// Functions with decompilation failures are still included; they get
+    /// empty callee lists, so the graph degrades gracefully.
     ///
     /// # TODOs
     ///
@@ -112,13 +115,15 @@ impl<S: ScanSource + Sync> CallGraphBuilder<S> {
             "Fetched function listing"
         );
 
-        // 2. Process each function sequentially for now; see TODO about
-        //    batching with tokio::join_all.
+        // 2. Process each function one at a time for now; see the TODO
+        //    above about batching with `tokio::join_all`.
         //
-        // The per-function future is boxed to a `dyn Future + Send` so a
-        // caller's `Send` check stops at this boundary instead of descending
-        // through the source's whole read chain (the same #159228 recursion
-        // guard the pipeline applies to its own futures).
+        // The per-function future is boxed to a `dyn Future + Send`. That
+        // makes the caller's `Send` check stop at this boundary, instead of
+        // the compiler inferring the whole read chain behind the scan
+        // source. This is the same guard against the rust-lang/rust#159228
+        // trait-evaluation recursion limit that the pipeline applies to its
+        // own futures.
         let mut call_graph_functions = Vec::with_capacity(functions.len());
         let mut failures = 0usize;
 
@@ -136,8 +141,9 @@ impl<S: ScanSource + Sync> CallGraphBuilder<S> {
                         "Failed to process function; including with empty callees"
                     );
                     failures += 1;
-                    // Still include the function with empty callers/callees
-                    // so the graph is complete and address-indexable.
+                    // Include the function anyway, with empty callers and
+                    // callees, so the graph covers every function and stays
+                    // indexable by address.
                     call_graph_functions.push(FunctionCallGraph {
                         name: summary.name.clone(),
                         address: summary.address,
@@ -194,10 +200,10 @@ impl<S: ScanSource + Sync> CallGraphBuilder<S> {
             .into_iter()
             .filter_map(|caller_name| {
                 name_to_addr.get(&caller_name).copied().or({
-                    // The caller name isn't in the listing — it might be
-                    // an unnamed or anonymous caller reference.  Treat it
-                    // as an xref whose target function has no listing
-                    // entry and skip it.
+                    // The caller name is not in the function listing, so the
+                    // lookup map has no address for it — it might be an
+                    // unnamed or anonymous caller reference. Skip it: a
+                    // cross-reference without a listing entry adds no caller.
                     None
                 })
             })
@@ -347,8 +353,9 @@ mod tests {
 
     #[test]
     fn test_callees_parsing_integration() {
-        // Verify that Ghidra's decompiled callee output is correctly parsed
-        // and fed into resolve_callees.
+        // Verify that callee names written in Ghidra's decompile dialect
+        // (placeholder `FUN_…` spellings) are parsed correctly and then
+        // resolved by `resolve_callees`.
         let decompiled_text = "\
 void FUN_18000a0d0(void)\n{\n  ppiVar4 = (int **)FUN_1800861f0(local_58);\n  uVar2 = FUN_180069f80(DAT_180381878,1);\n  FUN_180085460();\n}\n";
 

@@ -1,16 +1,17 @@
-//! The call-graph builder over the Kuna engine (issue #207, part of epic #203).
+//! The call-graph builder over the Kuna analysis engine (issue #207, part
+//! of epic #203).
 //!
-//! The builder is generic over `ScanSource` and carries no engine special
-//! case: the function listing, callers, and decompile shapes the Kuna
-//! source answers through the seam are the shapes it consumes, and the
-//! fixture builds a graph from them.
+//! The builder is generic over `ScanSource` and contains no Kuna-specific
+//! code. It asks the seam for the function listing, the callers, and the
+//! decompiled bodies; the Kuna scan source answers exactly those calls;
+//! and the fixture's graph is built from those answers.
 
 use calxgloss_callgraph::CallGraphBuilder;
 use calxgloss_decomp::ScanSource;
 use calxgloss_kuna::KunaSource;
 use calxgloss_testfixtures::{EXPORT_NAMES, TARGET_FILE_NAME};
 
-/// The loader's spelling of a fixture name: MinGW COFF symbols carry a
+/// How the loader spells a fixture name: MinGW COFF symbols start with a
 /// leading underscore, so the listing may report `_fixture_init` where the
 /// export table says `fixture_init`.
 fn loader_name(raw: &str) -> String {
@@ -41,9 +42,10 @@ async fn the_call_graph_builds_over_the_kuna_source_with_no_special_case() {
         );
     }
 
-    // Shape parity: the graph's nodes are exactly the seam's listing, each
-    // with its entry address — the same shape the scan source produces,
-    // which is why the builder needs no engine special case.
+    // Shape check: the graph's nodes are exactly the seam's function
+    // listing, each with its entry address. The listing has the same shape
+    // for every scan source, which is why the builder needs no
+    // Kuna-specific code.
     let listed = source
         .functions()
         .await
@@ -71,10 +73,10 @@ async fn the_call_graph_builds_over_the_kuna_source_with_no_special_case() {
     // The callee list comes from the shared decompiled-text parser, which
     // recognizes Ghidra's placeholder names (`FUN_…`) — the names Ghidra
     // gives functions it has no real name for. Kuna names every function
-    // from the symbol table, so the parser honestly answers none, exactly
-    // as it answers none for a program whose calls all carry real
+    // from the symbol table, so the parser honestly answers none here —
+    // exactly the answer it gives for a program whose calls all have real
     // names. The caller edges, by contrast, come from the seam's xrefs and
-    // are richly populated: the statically linked MinGW CRT calls itself
+    // are richly populated. The statically linked MinGW CRT calls itself
     // throughout the image, and every caller resolves to a listed entry.
     let helper = graph
         .functions

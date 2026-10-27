@@ -1,6 +1,6 @@
 //! JSON persistence for call graph data.
 //!
-//! The [`CallGraphPersistor`] saves and loads [`CallGraph`] instances to and from
+//! The [`CallGraphPersistor`] saves and loads [`CallGraph`] values as
 //! JSON files.
 
 use std::path::{Path, PathBuf};
@@ -22,9 +22,9 @@ use crate::CallGraph;
 ///     └── {dll_name}_call_graph.json
 /// ```
 ///
-/// The default cache directory is `{workspace}/re/analysis/`, but can be
-/// customized via the [`CallGraphPersistor::new`] constructor or by using
-/// [`CallGraphPersistor::with_cache_dir`] for an explicit path.
+/// The default cache directory is `{workspace}/re/analysis/`. Pass a
+/// workspace root to [`CallGraphPersistor::new`], or an explicit cache
+/// path to [`CallGraphPersistor::with_cache_dir`].
 ///
 /// # Example
 ///
@@ -55,7 +55,7 @@ pub struct CallGraphPersistor {
 }
 
 impl CallGraphPersistor {
-    /// Creates a new persistor rooted at the given workspace directory.
+    /// Creates a new persistor for the given workspace directory.
     ///
     /// Call graphs are stored in `<workspace>/re/analysis/`.
     pub fn new(workspace: impl AsRef<Path>) -> Self {
@@ -80,8 +80,8 @@ impl CallGraphPersistor {
 
     /// Saves a call graph to JSON.
     ///
-    /// Creates the cache directory hierarchy if it does not exist,
-    /// serializes the graph, and writes it to disk.
+    /// Creates the cache directory hierarchy if it does not exist, then
+    /// writes the serialized graph to disk.
     ///
     /// # Errors
     ///
@@ -111,7 +111,7 @@ impl CallGraphPersistor {
     }
 }
 
-/// Files each graph as `{binary}_call_graph.json`.
+/// Names each graph's file `{binary}_call_graph.json`.
 fn call_graph_name(dll_name: &str) -> String {
     format!("{dll_name}_call_graph.json")
 }
