@@ -6,14 +6,16 @@
 //!    summary of call graph data (function count, root/middle/leaf distribution,
 //!    call-type breakdown, external API count).
 //!
-//! 2. **Enrichment** — builds a call graph from engine data, classifies each
-//!    function as [`Root`](calxgloss_types::NodeCategory::Root),
+//! 2. **Enrichment** — builds a call graph from analysis engine data,
+//!    classifies each function as
+//!    [`Root`](calxgloss_types::NodeCategory::Root),
 //!    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
 //!    [`Middle`](calxgloss_types::NodeCategory::Middle), and persists it to
 //!    JSON. A known-library match from the persisted `libmatch` document at
-//!    or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`] becomes
-//!    [`Skip`](calxgloss_types::NodeCategory::Skip) ahead of that cascade; a
-//!    missing or corrupt document degrades to the cascade alone.
+//!    or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`] produces
+//!    [`Skip`](calxgloss_types::NodeCategory::Skip) ahead of the structural
+//!    Root/Leaf/Middle cascade. If the document is missing or corrupt, that
+//!    cascade decides alone.
 //!
 //! 3. **Dependency graph construction** — converts the persisted call graph
 //!    into a [`DependencyGraph`](calxgloss_types::DependencyGraph) for the
@@ -63,8 +65,8 @@ fn bold(s: &str) -> String {
 /// Print a human-readable summary of call graph statistics.
 ///
 /// Reports function count, root/middle/leaf/skip distribution, call-type
-/// breakdown (direct / indirect / virtual), the number of unique external
-/// callee names (i.e. external API references), and the average number of
+/// breakdown (direct / indirect / virtual), the count of unique external
+/// callee names (references to external APIs), and the average number of
 /// callees per function.
 ///
 /// Output is sent to `println!` so it appears in the terminal regardless of
@@ -187,24 +189,24 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 // Call graph enrichment
 // ============================================================
 
-/// The confidence floor at which a known-library match becomes a `Skip`.
+/// The confidence floor at which a libmatch match becomes a `Skip`.
 ///
-/// A libmatch finding is an observation; `Skip` is an instruction to the
-/// translator, and this floor is the point where one becomes the other: a
-/// function whose best finding on the 0–100 evidence-confidence scale
-/// reaches it is stubbed rather than translated. Below the floor the
-/// structural Root/Leaf/Middle cascade decides alone. The finding itself
-/// persists with its own confidence regardless of the floor — the
-/// observation and the instruction stay separate, per the binary-analysis
-/// record model (issue #265).
+/// A libmatch finding is an observation. `Skip` is an instruction to the
+/// translator. This floor is the point where one turns into the other:
+/// when a function's best finding on the 0–100 evidence-confidence scale
+/// reaches it, the translator stubs the function instead of translating
+/// it. Below the floor, the structural Root/Leaf/Middle cascade decides
+/// alone. The finding itself is persisted with its own confidence no
+/// matter what the floor does — the observation and the instruction stay
+/// separate, per the binary-analysis record model (issue #265).
 pub const LIBMATCH_SKIP_CONFIDENCE_FLOOR: u8 = 80;
 
 /// Loads the persisted libmatch document for a binary.
 ///
 /// Returns `None` when the document is missing or corrupt — exactly as
-/// the translator tolerates a missing control-flow cache — so a stale or
-/// absent known-library artifact never fails a call-graph build; it just
-/// degrades classification to today's structural behavior.
+/// the translator tolerates a missing control-flow cache. A stale or
+/// absent known-library artifact therefore never fails a call-graph
+/// build: classification simply falls back to the structural cascade.
 fn load_libmatch_result(workspace: &std::path::Path, dll_name: &str) -> Option<LibmatchResult> {
     let persistor = LibmatchPersistor::new(workspace);
     match persistor.load(dll_name) {
@@ -220,12 +222,13 @@ fn load_libmatch_result(workspace: &std::path::Path, dll_name: &str) -> Option<L
     }
 }
 
-/// Whether any of the function's libmatch findings meets the Skip
+/// True if any of the function's libmatch findings meets the Skip
 /// confidence floor.
 ///
-/// Findings for one function are read as a set: the best of them decides,
-/// and one finding at or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`] is
-/// enough — a weak propagated claim never cancels a strong direct match.
+/// All of a function's findings are considered together: the best one
+/// decides, so one finding at or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`]
+/// is enough. A weak propagated claim never cancels a strong direct
+/// match.
 fn meets_libmatch_floor(libmatch: Option<&LibmatchResult>, function: &str) -> bool {
     libmatch.is_some_and(|result| {
         result.for_function(function).any(|finding| {
@@ -238,13 +241,14 @@ fn meets_libmatch_floor(libmatch: Option<&LibmatchResult>, function: &str) -> bo
 
 /// Classifies every function in the graph.
 ///
-/// A function whose best libmatch finding meets
-/// [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`] becomes
-/// [`Skip`](NodeCategory::Skip) ahead of the structural cascade — a known
-/// library body is never a root, leaf, or middle no matter how it sits in
-/// the call graph. Every other function takes the existing
-/// [`RootDetector`]/[`LeafDetector`] decision unchanged, and with no
-/// document (`None`) the cascade alone decides — today's behavior exactly.
+/// If a function's best libmatch finding meets
+/// [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`], it becomes
+/// [`Skip`](NodeCategory::Skip) before the structural cascade runs — a
+/// known library body is never a root, leaf, or middle, no matter how it
+/// sits in the call graph. Every other function goes through the
+/// existing [`RootDetector`]/[`LeafDetector`] decision unchanged. With
+/// no document (`None`), the cascade alone decides — plain structural
+/// classification.
 fn classify_call_graph(
     graph: &mut calxgloss_callgraph::CallGraph,
     libmatch: Option<&LibmatchResult>,
@@ -270,7 +274,8 @@ fn classify_call_graph(
 /// This is the primary integration point between the call graph analysis
 /// pipeline and the rest of the system. It:
 ///
-/// 1. Fetches all function metadata from the scan source via [`CallGraphBuilder`].
+/// 1. Fetches all function metadata through the scan source, via
+///    [`CallGraphBuilder`].
 /// 2. Loads the persisted libmatch document for the binary, if any, and
 ///    classifies each function through [`classify_call_graph`]: a
 ///    known-library match at or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`]
@@ -299,8 +304,8 @@ fn classify_call_graph(
 /// callee list. If all decompilations fail, the graph still completes with
 /// empty callee lists for every function. A missing or corrupt libmatch
 /// document degrades to classification without known-library `Skip` — the
-/// behavior before the pass existed — just as the translator tolerates a
-/// missing control-flow cache.
+/// behavior from before this marking step existed — just as the translator
+/// tolerates a missing control-flow cache.
 ///
 /// # TODOs
 ///
@@ -529,8 +534,9 @@ pub fn build_dependency_graph_from_call_graph(
         }
     }
 
-    // Depend on call graph neighbors (callees only — caller edges would create
-    // cycles since they go in the opposite direction of the callee edges)
+    // Depend on call graph neighbors — callees only. Caller edges would
+    // create cycles, because they point the opposite way from the callee
+    // edges.
     for func in &call_graph.functions {
         let func_id = &function_node_ids[&func.name];
 
@@ -1122,9 +1128,10 @@ mod tests {
 
     #[test]
     fn skip_marking_precedes_the_structural_cascade() {
-        // WinMain is a name-pattern root; a known-library match at the
-        // floor still marks it Skip — a matched library body is never a
-        // root, leaf, or middle however it sits in the call graph.
+        // WinMain matches a root name pattern. A known-library match at
+        // the floor still marks it Skip: a matched library body is never
+        // a root, leaf, or middle, whatever its position in the call
+        // graph.
         let doc = libmatch_doc(
             "eqmain.dll",
             vec![libmatch_finding("WinMain", LIBMATCH_SKIP_CONFIDENCE_FLOOR)],
@@ -1140,9 +1147,10 @@ mod tests {
 
     #[test]
     fn the_best_finding_for_a_function_decides_the_floor() {
-        // A penalized thunk claim below the floor beside a strong direct
-        // match above it: the strong claim marks the node. A function with
-        // only the weak claim stands unmarked.
+        // FUN_18003ab00 has a penalized thunk claim below the floor and a
+        // strong direct match above it: the strong claim marks the node.
+        // load_config has only a weak claim below the floor, so it stays
+        // unmarked.
         let doc = libmatch_doc(
             "eqmain.dll",
             vec![

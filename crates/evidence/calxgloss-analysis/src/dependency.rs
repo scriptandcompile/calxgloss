@@ -7,7 +7,7 @@
 //!    [`CrateReplacement`](calxgloss_analysis::Strategy::CrateReplacement). Each
 //!    shim layer becomes a node that depends on its DLL classification.
 //!
-//! 2. **Engine call graphs** — for every function whose call graph includes
+//! 2. **Call graph data** — for every function whose call graph includes
 //!    other functions, a dependency edge is added from the function to those
 //!    callers and callees. When a function depends on a crate-replacement shim,
 //!    it gets an edge to that shim as well.
@@ -78,12 +78,12 @@ use crate::DllClassification;
 // Dependency graph persistence
 // ============================================================
 
-/// Persists a [`DependencyGraph`] to `re/analysis/dependency_graph.json`.
+/// Saves and loads a persisted [`DependencyGraph`] at
+/// `re/analysis/dependency_graph.json`.
 ///
-/// This module provides [`DependencyGraphPersistor`] for saving and loading
-/// the dependency graph on disk so that downstream consumers (web UI,
-/// terminal dashboard, restitch engine) can read the full DAG without
-/// rebuilding it from raw classifications.
+/// With the graph on disk, downstream consumers (web UI, terminal
+/// dashboard, restitch engine) can read the full DAG without rebuilding
+/// it from raw classifications.
 ///
 /// # File Format
 ///
@@ -206,8 +206,8 @@ impl DependencyGraphPersistor {
     /// Loads the dependency graph from the JSON file.
     ///
     /// Returns [`None`] if the file does not exist or contains invalid JSON.
-    /// Does not error on missing files — this allows callers to decide
-    /// whether a missing graph is acceptable (e.g., fresh workspace).
+    /// A missing file is not an error: callers decide whether a missing
+    /// graph is acceptable (e.g., a fresh workspace).
     ///
     /// # Example
     ///
@@ -299,7 +299,7 @@ impl ShimLayerDeclaration {
 // Dependency tracker
 // ============================================================
 
-/// Builds a [`DependencyGraph`] from DLL classifications and engine call graph data.
+/// Builds a [`DependencyGraph`] from DLL classifications and call graph data.
 ///
 /// The tracker produces a DAG where nodes represent pieces of work (DLL classifications,
 /// shim layers, function translations) and edges represent dependency relationships.
@@ -309,7 +309,8 @@ impl ShimLayerDeclaration {
 /// - **DLL Classification** — root nodes with no dependencies
 /// - **Shim Layer** — depends on its DLL classification
 /// - **Function Translation** — depends on the shim layer (if the DLL is a
-///   crate replacement) plus all functions in its call graph
+///   crate replacement) plus its call graph neighbors that appear in the
+///   graph being built
 ///
 /// # Example
 ///
@@ -431,7 +432,7 @@ impl DependencyTracker {
 
         // ── Phase 3: Register all DLLs referenced by functions ──
 
-        // The classified binaries are the workspace's binary inventory: the
+        // The classified binaries are the workspace's binary inventory. The
         // detector resolves function-name hints against these real filenames
         // (any extension) instead of inventing identities (issue #70).
         let binary_inventory: Vec<String> =
@@ -652,24 +653,24 @@ impl DependencyTracker {
             .to_string()
     }
 
-    /// Detects the binary a function belongs to by examining the function name
+    /// Detects the binary a function belongs to by matching the function name
     /// and its call graph neighbors against the workspace's binary inventory.
     ///
-    /// Candidates are the `/`- and `_`-separated parts of the function name
-    /// (the common `dll_name/FunctionName` and `dll_Name_FunctionName`
-    /// patterns) plus the neighbors themselves. A candidate resolves when it
-    /// matches a binary in `binaries` — the workspace's classified binaries —
-    /// case-insensitively, either verbatim or against the filename stem, so
-    /// `eqgame_RunLoop` resolves to an `eqgame.exe` inventory entry. The
-    /// inventory's spelling of the name is returned verbatim (glossary:
-    /// *binary identity*).
+    /// The candidates are the `/`- and `_`-separated parts of the function
+    /// name (the common `dll_name/FunctionName` and `dll_Name_FunctionName`
+    /// patterns), plus the neighbors themselves. A candidate resolves when it
+    /// matches a binary in `binaries` — the workspace's classified binaries.
+    /// Matching is case-insensitive, against the full filename or the
+    /// filename stem: `eqgame_RunLoop` resolves to an `eqgame.exe` inventory
+    /// entry. The inventory's spelling of the name is returned verbatim
+    /// (glossary: *binary identity*).
     ///
     /// A candidate that already carries a binary extension (`.dll` or `.exe`)
     /// resolves to itself even when the workspace has not classified it —
     /// the extension is already there, nothing is invented. An
     /// extension-less candidate that matches no inventory binary resolves to
     /// `None`: the detector never fabricates an identity by appending an
-    /// extension (issue #70); the caller falls back to its default binary.
+    /// extension (issue #70). The caller falls back to its default binary.
     fn detect_binary_from_function(
         function: &str,
         neighbors: &[String],
@@ -713,9 +714,9 @@ impl DependencyTracker {
         Self::has_binary_extension(&candidate_lower).then(|| candidate.to_string())
     }
 
-    /// Whether a lowercased name already carries a binary extension (`.dll`
-    /// or `.exe`) — the set of extensions that make a name a complete binary
-    /// identity on its own.
+    /// True if a lowercased name already carries a binary extension (`.dll`
+    /// or `.exe`). These extensions make a name a complete binary identity
+    /// on its own.
     fn has_binary_extension(name_lower: &str) -> bool {
         name_lower.ends_with(".dll") || name_lower.ends_with(".exe")
     }
@@ -903,11 +904,12 @@ mod tests {
             test_classification("game_logic.dll", DllCategory::ProjectSpecific, None),
         ];
 
-        // Functions across both DLLs
+        // Functions meant to span both DLLs. None of the names carries a
+        // binary hint, so the detector cannot tell them apart.
         let call_graph = vec![
-            // DirectX render function — depends on wgpu shim
+            // DirectX render function
             ("Present", vec!["Present".to_string()]),
-            // Game logic function — depends on game_logic.dll classification
+            // Game logic function
             ("UpdatePlayer", vec!["UpdatePlayer".to_string()]),
             // Function that calls both
             (
@@ -927,14 +929,12 @@ mod tests {
         // 6. func_RenderFrame
         assert_eq!(graph.nodes.len(), 6);
 
-        // Edges:
-        // 1. shim_d3d9_wgpu → dll_classify_d3d9
-        // 2. func_Present → shim_d3d9_wgpu
-        // 3. func_UpdatePlayer → dll_classify_game_logic
-        // 4. func_RenderFrame → shim_d3d9_wgpu (for Present dep)
-        // 5. func_RenderFrame → dll_classify_game_logic (for UpdatePlayer dep)
-        // 6. func_RenderFrame → func_Present (call graph neighbor)
-        // 7. func_RenderFrame → func_UpdatePlayer (call graph neighbor)
+        // Edges: none of the three function names carries a binary hint, so
+        // each function falls back to the first classified binary (d3d9.dll)
+        // and gets an edge to that shim. Neighbor edges are added for every
+        // listed neighbor, including the self-references (build does not
+        // skip them here). That makes more than six edges; the assertion
+        // only checks the lower bound.
         assert!(graph.edges.len() >= 6);
     }
 
@@ -1103,8 +1103,8 @@ mod tests {
 
     #[test]
     fn detect_binary_from_function_with_dll_prefix() {
-        // When function name has a prefix matching a classified DLL, the
-        // inventory's verbatim identity comes back.
+        // When the function name has a prefix matching a classified DLL,
+        // the inventory's identity comes back verbatim.
         let binary = DependencyTracker::detect_binary_from_function(
             "d3d9_DrawPrimitive",
             &[],
@@ -1121,8 +1121,9 @@ mod tests {
 
     #[test]
     fn detect_binary_from_function_resolves_exe_stem_to_verbatim_identity() {
-        // A function-name hint originating from an .exe binary resolves to
-        // the verbatim .exe identity — never a fabricated .dll (issue #70).
+        // A function-name hint that matches an .exe inventory entry
+        // resolves to that .exe identity verbatim — never a fabricated
+        // .dll (issue #70).
         let binary = DependencyTracker::detect_binary_from_function(
             "eqgame_RunLoop",
             &[],
