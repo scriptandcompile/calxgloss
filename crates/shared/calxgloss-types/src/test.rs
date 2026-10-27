@@ -1,15 +1,14 @@
 //! Types for test case generation and baseline execution.
 //!
-//! This module defines the data structures used to represent test inputs,
-//! expected outputs, observed side effects, and test results captured from
-//! running the original binary.
+//! This module holds the records for test inputs, expected outputs, observed
+//! side effects, and the results captured from running the original binary.
 
 use serde::{Deserialize, Serialize};
 
 /// The kind of side effect a function may produce.
 ///
-/// Side effects are observed during baseline test execution and recorded
-/// so the Rust translation can be verified for behavioral equivalence.
+/// The baseline test run observes side effects and records them, so
+/// verification can check that the Rust translation behaves the same way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SideEffectKind {
     /// A file was written or created.
@@ -53,21 +52,21 @@ pub enum SideEffectKind {
 
     /// A program global's value was read.
     ///
-    /// The global's name, spelled exactly as the decompiler names it,
-    /// rides in the [`SideEffect`] detail string — the kind names the
-    /// effect, the detail names which global. The expectation comes
-    /// from the global-state reference sets, not from observing the
+    /// The global's name — spelled exactly as the decompiler writes it —
+    /// is stored in the [`SideEffect`] detail string. The kind identifies
+    /// the effect, and the detail identifies which global. The expectation
+    /// comes from the global-state reference sets, not from observing the
     /// original binary: the baseline harness does not capture global
     /// reads.
     GlobalRead,
 
     /// A program global was stored through.
     ///
-    /// The global's name rides in the [`SideEffect`] detail string,
-    /// same as [`SideEffectKind::GlobalRead`]. A typed global write
-    /// is what stops a global side effect from being a free-form
-    /// [`SideEffectKind::Other`] string: consumers can key on the
-    /// kind instead of parsing prose.
+    /// The global's name is stored in the [`SideEffect`] detail string,
+    /// same as for [`SideEffectKind::GlobalRead`]. Having a typed kind for
+    /// global writes means a global side effect never has to be a
+    /// free-form [`SideEffectKind::Other`] string: consumers can match on
+    /// the kind instead of parsing prose.
     GlobalWrite,
 
     /// A side effect not covered by the predefined kinds.

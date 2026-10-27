@@ -43,8 +43,8 @@ use crate::identity::BinaryIdentity;
 
 /// A single experiment entry recording the outcome of one translation attempt.
 ///
-/// Each entry captures which retry strategy was used, whether it succeeded, and
-/// which DLL category it operated on. The logger fills in the timestamp.
+/// Each entry records which retry strategy was used, whether it succeeded, and
+/// which DLL category the attempt applied to. The logger fills in the timestamp.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptStrategyEntry {
     /// The DLL filename (e.g., `"game_logic.dll"`).
@@ -54,9 +54,9 @@ pub struct PromptStrategyEntry {
     pub dll_category: DllCategory,
 
     /// The attempt's retry-strategy label (`"compile_fix"`, `"test_fix"`,
-    /// `"escalate"`, …). The field stays a plain `String`, not the closed
-    /// [`crate::RetryStrategy`] set: the retry loop also labels its very
-    /// first attempt `"initial"` — not a re-attempt, so deliberately
+    /// `"escalate"`, …). This field stays a plain `String` instead of the
+    /// closed [`crate::RetryStrategy`] set because the retry loop also labels
+    /// its very first attempt `"initial"` — not a re-attempt, so deliberately
     /// outside that set (issue #363 reconciled the name; the set stays closed).
     pub retry_strategy: String,
 
@@ -145,8 +145,8 @@ pub struct StrategyStats {
 /// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`]
 /// cap (issue #82).
 ///
-/// [`PromptStrategyLog::add_entry`] folds each dropped entry into this
-/// accumulator so [`PromptStrategyLog::compute_stats`] keeps covering the
+/// [`PromptStrategyLog::add_entry`] adds each dropped entry to this
+/// accumulator so [`PromptStrategyLog::compute_stats`] still covers the
 /// whole run's history even though the entries themselves are gone.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PromptStrategyTrim {
@@ -174,7 +174,7 @@ impl PromptStrategyTrim {
         self.entries == 0
     }
 
-    /// Fold one dropped entry into the running totals.
+    /// Add one dropped entry to the running totals.
     fn absorb(&mut self, entry: &PromptStrategyEntry) {
         self.entries += 1;
         if entry.success {
@@ -203,8 +203,8 @@ impl PromptStrategyTrim {
 /// to `re/analysis/prompt_strategy_log.json`. It can also compute aggregate
 /// statistics via [`compute_stats`](Self::compute_stats).
 ///
-/// The log is bounded: [`add_entry`](Self::add_entry) keeps at most
-/// [`MAX_LOG_ENTRIES`] newest entries and folds the trimmed-away ones into
+/// The log is bounded: [`add_entry`](Self::add_entry) keeps the newest
+/// [`MAX_LOG_ENTRIES`] entries and counts the trimmed-away ones into
 /// [`trimmed`](Self::trimmed), so aggregates still cover the whole run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PromptStrategyLog {
@@ -228,7 +228,7 @@ impl PromptStrategyLog {
     /// The log retains at most [`MAX_LOG_ENTRIES`] entries: once full, each
     /// new entry drops the oldest one, keeping the file's size and the
     /// per-entry rewrite cost bounded (issue #82). The dropped entry is
-    /// folded into [`trimmed`](Self::trimmed) so aggregates stay honest.
+    /// counted into [`trimmed`](Self::trimmed) so aggregates stay honest.
     pub fn add_entry(&mut self, entry: PromptStrategyEntry) {
         self.entries.push(entry);
         if self.entries.len() > crate::MAX_LOG_ENTRIES {
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_log_without_trimmed_field_stays_compatible() {
-        // Experiment logs written before the cap (issue #82) carry no `trimmed` field.
+        // Experiment logs written before the cap (issue #82) have no `trimmed` field.
         let json = r#"{"entries":[{"binary":"test.dll","dll_category":"ProjectSpecific","retry_strategy":"initial","success":true,"attempt":1,"timestamp":1700000000}]}"#;
         let log: PromptStrategyLog =
             serde_json::from_str(json).expect("old experiment logs must still load");

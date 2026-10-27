@@ -1,21 +1,21 @@
 //! Git automation types for branch and commit tracking.
 //!
-//! This module defines types representing the Git branches and commits
-//! created by the harness during translation, along with a constructor
-//! for generating canonical branch names.
+//! This module holds the records of the Git branches and commits the harness
+//! creates during translation, and builds canonical branch names.
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::TypesError;
 use crate::identity::BinaryIdentity;
 
-/// Represents a Git branch created for a single translation attempt.
+/// A Git branch created for a single translation attempt.
 ///
-/// Branch names follow the convention `re/{file}/{function}v{N}`, where
-/// `{file}` is the target binary's filename verbatim, extension included —
-/// binary identity is never normalized (issue #68). E.g.,
-/// `re/game_logic.dll/DrawSpritev1`. Each attempt to translate a function
-/// gets its own branch, and failed branches are retained as historical record.
+/// Branch names follow the convention `re/{file}/{function}v{N}`. In that
+/// pattern, `{file}` is the target binary's filename written verbatim,
+/// extension included — binary identity is never normalized (issue #68).
+/// E.g., `re/game_logic.dll/DrawSpritev1`. Each attempt to translate a
+/// function gets its own branch. Branches from failed attempts are kept as
+/// a historical record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitBranch {
     /// The full branch name (e.g., `re/game_logic.dll/DrawSpritev1`).
@@ -53,8 +53,8 @@ pub struct GitCommit {
 impl GitBranch {
     /// Creates a new `GitBranch` with a canonical branch name.
     ///
-    /// The branch name is constructed as `re/{binary}/{function}v{attempt}`,
-    /// with the binary identity used verbatim — the filename including its
+    /// The branch name is built as `re/{binary}/{function}v{attempt}`, with
+    /// the binary identity used verbatim: the filename including its
     /// extension is the binary's identity (issue #68). Returns an error if
     /// the binary identity or function name is empty.
     ///
@@ -88,10 +88,10 @@ impl GitBranch {
         })
     }
 
-    /// Returns the branch name for display or use as a key.
+    /// Returns the branch name, for display or for use as a key.
     ///
-    /// This is equivalent to accessing `.name` directly but provides
-    /// a semantic name for cases where `.name` might be confusing.
+    /// This reads the same value as `.name`. The method just states the
+    /// intent more clearly where `.name` alone would be ambiguous.
     pub fn branch_display(&self) -> &str {
         &self.name
     }

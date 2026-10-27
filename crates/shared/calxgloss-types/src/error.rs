@@ -1,17 +1,17 @@
 //! Domain errors for the calxgloss-types crate.
 //!
 //! This module defines `TypesError`, the unified error type used throughout
-//! the shared types crate. It wraps serialization failures and domain-specific
-//! validation errors encountered when constructing or manipulating types
-//! such as [`GitBranch`](crate::GitBranch).
+//! the shared types crate. It covers serialization failures and validation
+//! errors that come up when constructing or changing types such as
+//! [`GitBranch`](crate::GitBranch).
 
 use thiserror::Error;
 
 /// Unified error type for calxgloss-types operations.
 ///
-/// Covers serialization failures, validation errors (e.g., empty DLL or
-/// function names), and domain-specific conditions like missing exports or
-/// imports in a DLL.
+/// Covers serialization failures, validation errors (for example, empty
+/// DLL or function names), and domain conditions such as a DLL having no
+/// exports or no imports.
 #[derive(Debug, Error)]
 pub enum TypesError {
     /// JSON serialization or deserialization failed.

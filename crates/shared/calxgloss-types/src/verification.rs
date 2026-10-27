@@ -1,16 +1,16 @@
 //! Types for verifying translated Rust code against baseline behavior.
 //!
-//! This module defines the data structures used to report compilation
-//! status, test pass/fail counts, and detailed failure information for
-//! each test case that diverges from the original binary's behavior.
+//! This module holds the records that report compilation status, test
+//! pass/fail counts, and the detail of each test case that diverges from
+//! the original binary's behavior.
 
 use crate::test::SideEffect;
 use serde::{Deserialize, Serialize};
 
 /// Detailed information about a single test failure.
 ///
-/// Produced when the Rust translation produces different output than
-/// the baseline tests captured from the original binary.
+/// Written when the Rust translation gives different output than the
+/// baseline tests captured from the original binary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FailedTest {
     /// Zero-based index of the test case in the baseline suite.
@@ -28,15 +28,14 @@ pub struct FailedTest {
     /// Description of the mismatch (e.g., `"expected 42, got 43"` or `"panicked with: index out of bounds"`).
     pub error: String,
 
-    /// The side effects the test case expected, carried as typed
-    /// kinds rather than folded into the prose.
+    /// The side effects the test case expected, recorded as typed kinds
+    /// instead of mixed into the prose.
     ///
-    /// A divergence on global handling is reported by naming the
-    /// kind — `GlobalRead`/`GlobalWrite` with the global in the
-    /// detail — so consumers (reports, dashboards, attempt records)
-    /// compare divergences structurally instead of parsing the
-    /// `error` string. `#[serde(default)]` keeps verification
-    /// results persisted before the field existed readable.
+    /// A divergence on global handling is reported by naming the kind:
+    /// `GlobalRead`/`GlobalWrite` with the global in the detail. Consumers
+    /// (reports, dashboards, attempt records) can then compare divergences
+    /// structurally instead of parsing the `error` string. `#[serde(default)]`
+    /// keeps verification results saved before the field existed readable.
     #[serde(default)]
     pub expected_side_effects: Vec<SideEffect>,
 }

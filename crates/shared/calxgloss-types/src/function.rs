@@ -1,8 +1,8 @@
 //! Function-level analysis types extracted from the decompiler's disassembly.
 //!
-//! This module defines types for representing individual functions found
-//! within a DLL, including their disassembly, decompiler output, Windows API
-//! call sites, and call graph neighbors.
+//! This module holds the records for individual functions found in a DLL:
+//! their disassembly, decompiler output, Windows API call sites, and call
+//! graph neighbors.
 
 use serde::{Deserialize, Serialize};
 
@@ -107,15 +107,13 @@ pub struct WindowsApiCall {
     pub pal_mapping: String,
 }
 
-/// Complete analysis information for a single function.
-///
 /// Category of a function in the call graph.
 ///
-/// This classification determines how the translation pipeline treats a function:
-/// - [`Root`]: Entry points or runtime init functions — skip or stub
-/// - [`Leaf`]: Functions calling known 3rd-party APIs — need enriched context
+/// This category decides how the translation pipeline treats the function:
+/// - [`Root`]: Entry points or runtime init functions — skipped or stubbed
+/// - [`Leaf`]: Functions calling known 3rd-party APIs — need richer context
 /// - [`Middle`]: Application logic — normal translation
-/// - [`Skip`]: Known runtime library functions — don't translate
+/// - [`Skip`]: Known runtime library functions — not translated
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeCategory {
     /// Entry point or runtime init — skip or stub.
@@ -128,9 +126,11 @@ pub enum NodeCategory {
     Skip,
 }
 
-/// Aggregates disassembly, decompiler output, identified Windows API calls,
-/// and the function's call graph neighbors. This is the primary input to
-/// the translation pipeline.
+/// Complete analysis information for a single function.
+///
+/// Collects the function's disassembly, decompiler output, the Windows API
+/// calls found in it, and its call graph neighbors. This record is the main
+/// input to the translation pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionInfo {
     /// The function's exported or internal name.

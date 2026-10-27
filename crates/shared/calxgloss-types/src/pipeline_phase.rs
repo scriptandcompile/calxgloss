@@ -2,15 +2,16 @@
 //!
 //! The master plan runs the decompilation effort through 7 phases, with
 //! Phase 2.5 (PAL Design) as its own segment. These records are the shared
-//! vocabulary for reporting progress through them: the web UI's phase bar
-//! renders one [`PhaseProgress`] per [`PipelinePhase`], and later tracks
-//! (W2's `PipelineState`, W3's analytics) consume the same records without
-//! depending on the web crate.
+//! vocabulary for reporting progress through them. The web UI's phase bar
+//! renders one [`PhaseProgress`] per [`PipelinePhase`]. Later tracks (W2's
+//! `PipelineState`, W3's analytics) read the same records without depending
+//! on the web crate.
 //!
-//! Honesty is the load-bearing rule: every phase carries an explicit
-//! [`PhaseState`], and phases with no backing data source (6 — Restitching,
-//! 7 — Documentation) report [`PhaseState::NoDataSource`] rather than a
-//! fabricated zero-progress state.
+//! Honesty is the rule everything else rests on: every phase records an
+//! explicit [`PhaseState`]. Phases with no backing data source
+//! (6 — Restitching, 7 — Documentation) report
+//! [`PhaseState::NoDataSource`] rather than a fabricated zero-progress
+//! state.
 
 use serde::{Deserialize, Serialize};
 
@@ -66,10 +67,10 @@ impl PipelinePhase {
 
 /// How far a pipeline phase has progressed — the honest four-state vocabulary.
 ///
-/// `NoDataSource` is deliberately distinct from `NotStarted`: it means the
-/// phase exists in the plan but nothing in the current system can report its
-/// progress. Rendering it as "not started" would imply the phase is queued
-/// up behind the current work, which is a fabrication.
+/// `NoDataSource` is deliberately different from `NotStarted`. It means the
+/// phase exists in the plan, but nothing in the current system can report
+/// its progress. Rendering it as "not started" would say the phase is
+/// waiting behind the current work, which is a fabrication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PhaseState {
@@ -85,9 +86,10 @@ pub enum PhaseState {
 
 /// Progress through one pipeline phase, derived from live progress data.
 ///
-/// `completed`/`total` count units (function translations) or binaries,
-/// depending on the phase, and are `None` when the phase has no countable
-/// data source — a missing count is honest, a fabricated zero is not.
+/// Depending on the phase, `completed`/`total` count units (function
+/// translations) or binaries. Both are `None` when the phase has no
+/// countable data source. A missing count is honest; a fabricated zero
+/// is not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhaseProgress {
     /// Which phase this record reports on.
@@ -103,7 +105,7 @@ pub struct PhaseProgress {
 }
 
 impl PhaseProgress {
-    /// A phase with no backing data source — carries no counts, ever.
+    /// A phase with no backing data source. It never holds counts.
     pub fn no_data_source(phase: PipelinePhase) -> Self {
         Self {
             phase,
@@ -124,8 +126,8 @@ impl PhaseProgress {
     }
 }
 
-/// What the pass working on a binary is busy with right now — the latest
-/// `BatchProgress` heartbeat. Fields the pass doesn't know are `None`,
+/// What the pass working on a binary is doing right now — the latest
+/// `BatchProgress` heartbeat. Fields the pass doesn't know stay `None`,
 /// never fabricated zeros.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinaryActivity {
@@ -144,10 +146,10 @@ pub struct BinaryActivity {
 
 /// Progress for a single target binary (DLL/EXE) through the pipeline.
 ///
-/// Every field degrades honestly: classification fields are `None` until a
-/// `ClassificationComplete` event lands, `functions_total` is `None` until
-/// the batch summary lands, and `tokens_used` stays `None` until the batch
-/// summary reports it — an unknown total is never rendered as zero.
+/// Every field degrades honestly. Classification fields stay `None` until
+/// a `ClassificationComplete` event arrives. `functions_total` stays `None`
+/// until the batch summary arrives. `tokens_used` stays `None` until the
+/// batch summary reports it. An unknown total is never rendered as zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinaryProgress {
     /// DLL/EXE file name.
@@ -156,14 +158,14 @@ pub struct BinaryProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     /// Classification strategy (e.g. "PalMapping", "CrateReplacement",
-    /// "ReverseEngineer"). Qualified word (issue #363): this leg carries
+    /// "ReverseEngineer"). Qualified word (issue #363): this field records
     /// the classification strategy, never a retry strategy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification_strategy: Option<String>,
-    /// Crate recommended for replacement, when the strategy names one.
+    /// Crate recommended for replacement, when the strategy specifies one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crate_replacement: Option<String>,
-    /// Total functions in the binary — known once the batch summary lands.
+    /// Total functions in the binary — known once the batch summary arrives.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub functions_total: Option<usize>,
     /// Functions translated successfully so far.
@@ -182,37 +184,37 @@ pub struct BinaryProgress {
     /// generation) where no unit-level progress exists yet.
     #[serde(default)]
     pub processing: bool,
-    /// The working pass's latest heartbeat — `None` unless a pass is
-    /// beating for this binary. Covers the analysis passes that run
-    /// function-by-function before any unit event exists.
+    /// The working pass's latest heartbeat — `None` unless a working pass
+    /// has sent a heartbeat for this binary. Covers the analysis passes
+    /// that run function-by-function before any unit event exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<BinaryActivity>,
-    /// True while the operator has paused this target binary (issue #221) —
-    /// held out of the run's queue while the run itself keeps going. Filled
-    /// from the scope handle, so a plain pipeline-status GET is honest
-    /// without waiting for a `BinaryPauseChanged` event.
+    /// True while the operator has paused this target binary (issue #221):
+    /// the binary is held out of the run's queue while the run itself keeps
+    /// going. The scope handle fills this field, so a plain pipeline-status
+    /// GET stays honest without waiting for a `BinaryPauseChanged` event.
     #[serde(default)]
     pub paused: bool,
-    /// PAL trait-readiness summary (issue #243) — present only on
-    /// PalMapping rows: the traits the binary's recorded API-call
-    /// categories demand, each marked defined or missing against the
-    /// workspace's generated PAL/shim sources. Omitted — never an empty
-    /// structure — on every other row and on a PAL row whose artifacts
-    /// record no API-call categories.
+    /// PAL trait-readiness summary (issue #243). Present only on PalMapping
+    /// rows: it lists the traits the binary's recorded API-call categories
+    /// demand, each marked defined or missing against the workspace's
+    /// generated PAL/shim sources. Every other row omits it, and so does a
+    /// PAL row whose artifacts record no API-call categories — never an
+    /// empty structure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pal: Option<PalReadiness>,
 }
 
-/// The PAL trait-readiness summary a PalMapping binary row carries
-/// (issue #243) — how far trait design has covered what the binary
-/// needs. Derived per poll from the binary's persisted artifacts, so
-/// trait progress and classification overrides show up on the next
-/// refresh with no special handling.
+/// The PAL trait-readiness summary on a PalMapping binary row (issue #243).
+/// It shows how far trait design has covered what the binary needs. Each
+/// poll derives it from the binary's persisted artifacts, so trait progress
+/// and classification overrides show up on the next refresh with no special
+/// handling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PalReadiness {
-    /// The traits the binary needs, sorted by trait name — the same
-    /// category→trait derivation the binaries view's PAL tracker
-    /// performs, reused rather than reimplemented.
+    /// The traits the binary needs, sorted by trait name. This list uses
+    /// the same category→trait derivation as the binaries view's PAL
+    /// tracker, reused rather than reimplemented.
     pub traits: Vec<PalTraitReadiness>,
 }
 
@@ -370,10 +372,10 @@ mod tests {
         let back: BinaryProgress = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, full);
 
-        // A binary only discovered (no classification, no batch summary yet)
-        // serializes with just the honest zeros. `processing` and `paused`
-        // are always present — a false flag is a real observation, not a
-        // fabrication.
+        // A binary that was just discovered (no classification, no batch
+        // summary yet) serializes with just the honest zeros. `processing`
+        // and `paused` are always present: a false flag is a real
+        // observation, not a fabrication.
         let bare = BinaryProgress {
             binary: "unknown.dll".into(),
             category: None,

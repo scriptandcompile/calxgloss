@@ -1,7 +1,7 @@
 //! Types for the translation request/response cycle.
 //!
-//! This module defines the data structures used to request a function
-//! translation from the LLM pipeline and to capture the result.
+//! This module holds the records used to ask the LLM pipeline for a function
+//! translation and to capture the result.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ use crate::{TestCase, WindowsApiCall};
 
 /// A request to translate a single function from disassembly to Rust.
 ///
-/// The request bundles all context the LLM needs: the function's
+/// The request includes all the context the LLM needs: the function's
 /// disassembly, decompiler output, identified Windows API calls with
 /// their PAL mappings, and baseline tests the output must pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,9 +53,9 @@ pub struct TranslationResult {
     pub tokens_used: Option<usize>,
 }
 
-/// A Windows API mapping grouped by category, used in rich/detailed
-/// translation prompts to give the LLM extra reference context for
-/// the specific API categories a function touches.
+/// Windows API mappings grouped by category. Rich and detailed translation
+/// prompts include this record so the LLM gets reference material for the
+/// API categories the function uses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiCategoryMapping {
     /// The API category name (e.g. `"Win32Core"`, `"DirectX"`).

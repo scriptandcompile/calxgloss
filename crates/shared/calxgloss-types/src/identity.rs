@@ -1,13 +1,13 @@
-//! Binary identity, unit key, and the branch-name grammar that carries both.
+//! Binary identity, unit key, and the branch-name grammar that uses both.
 //!
 //! A *binary identity* is a target binary's filename verbatim, extension
-//! included (`game_logic.dll`, `eqgame.exe`) — the same string names
-//! translation branches (`re/{file}/{function}v{N}`), unit keys
-//! (`{file}/{function}`), artifact directories, and UI display (issue #68).
-//! A *unit key* is `{file}/{function}`. This module owns those concepts as
-//! small types, plus the one parser of the branch-name grammar: every crate
-//! that reads a branch name or a unit reference goes through
-//! [`parse_branch_name`] rather than restating the format.
+//! included (`game_logic.dll`, `eqgame.exe`). The same string appears in
+//! translation branch names (`re/{file}/{function}v{N}`), unit keys
+//! (`{file}/{function}`), artifact directory paths, and UI display
+//! (issue #68). A *unit key* is `{file}/{function}`. This module keeps both
+//! concepts as small types, and holds the one parser of the branch-name
+//! grammar. Every crate that reads a branch name or a unit reference uses
+//! [`parse_branch_name`] instead of restating the format.
 
 use std::fmt::{self, Display};
 use std::ops::Deref;
@@ -20,12 +20,13 @@ use crate::dashboard::WorkKind;
 /// identity (issue #68).
 ///
 /// The identity is never normalized: no case folding, no extension
-/// stripping. `foo.dll` and `foo.exe` are different binaries. Deriving Rust
-/// identifiers (crate and shim file names) from a binary name takes the
-/// stem — that is naming, not identity, and stays a plain string.
+/// stripping. `foo.dll` and `foo.exe` are different binaries. Building a
+/// Rust identifier (crate and shim file names) from a binary name takes the
+/// filename stem. That derived name is naming, not identity, and it stays
+/// a plain string.
 ///
 /// Serializes as the bare filename (`#[serde(transparent)]`), so JSON
-/// payloads carry the identity exactly as they did before the type existed.
+/// payloads store the identity exactly as they did before the type existed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BinaryIdentity(String);
@@ -112,9 +113,9 @@ impl PartialEq<String> for BinaryIdentity {
 
 /// A unit's identity string: `{binary}/{function}` (glossary: *unit key*).
 ///
-/// Carried verbatim through API payloads, review records, and artifact
-/// paths. Function names never contain `/`, so the two parts always split
-/// back apart on the first slash.
+/// API payloads, review records, and artifact paths all pass this string
+/// through unchanged. Function names never contain `/`, so the two parts
+/// always split back apart on the first slash.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitKey {
     binary: BinaryIdentity,
@@ -153,8 +154,8 @@ impl Display for UnitKey {
 /// `re/{file}/{function}v{N}` grammar (issue #69).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchName {
-    /// What kind of work the branch carries — function translation or one
-    /// of the supporting kinds named by its first path segment.
+    /// The kind of work this branch records — function translation, or one
+    /// of the supporting kinds identified by its first path segment.
     pub kind: WorkKind,
     /// The branch's first path segment. For function-translation branches
     /// this is the binary identity; for supporting-work branches it is the
@@ -165,7 +166,7 @@ pub struct BranchName {
     /// The function (or supporting-work subject) after the first segment,
     /// `None` when the name has only one segment.
     pub function: Option<String>,
-    /// The attempt number, `None` when the name carries no `v{N}` suffix.
+    /// The attempt number, `None` when the name has no `v{N}` suffix.
     /// Callers that treat a missing attempt as the first one use
     /// `attempt.unwrap_or(1)`.
     pub attempt: Option<u32>,
@@ -173,12 +174,13 @@ pub struct BranchName {
 
 /// Parses a translation branch name or unit reference into its components.
 ///
-/// The grammar is `re/{file}/{function}v{N}`: an optional `re/` prefix, the
-/// first path segment (a binary identity, or a supporting-work prefix from
-/// [`work_kind_for_prefix`]), an optional second segment, and an optional
-/// attempt suffix — glued to the function (`DrawSpritev1`) or as its own
-/// segment (`/v3`, the unit-reference form used by `dashboard view`).
-/// Returns `None` only when there is no first segment to name.
+/// The grammar is `re/{file}/{function}v{N}`. The `re/` prefix is optional.
+/// The first path segment is a binary identity, or a supporting-work prefix
+/// from [`work_kind_for_prefix`]. The second segment is optional. The
+/// attempt suffix is optional, and it appears either glued to the function
+/// (`DrawSpritev1`) or as its own segment (`/v3`, the unit-reference form
+/// used by `dashboard view`). Returns `None` only when there is no first
+/// segment at all.
 ///
 /// # Examples
 ///
@@ -225,7 +227,7 @@ pub fn parse_branch_name(name: &str) -> Option<BranchName> {
 }
 
 /// Maps a branch name's first path segment to its supporting work kind
-/// (`shim`, `pal`, …); any other segment is a binary name, making the
+/// (`shim`, `pal`, …). Any other segment is a binary name, which makes the
 /// branch a function translation.
 pub fn work_kind_for_prefix(prefix: &str) -> Option<WorkKind> {
     match prefix {

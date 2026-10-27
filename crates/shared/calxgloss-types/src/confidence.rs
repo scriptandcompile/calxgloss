@@ -1,10 +1,11 @@
 //! A shared confidence score for recovered and inferred evidence.
 //!
-//! The recovery and inference engines all rate how strongly their evidence
-//! supports a finding — a string-inferred struct, a propagated parameter type —
-//! on the same 0–100 scale, and they all resolve competing findings by keeping
-//! the highest score. That score is the same concept in every crate, so it is a
-//! named type here rather than a bare `u8` restated at each site.
+//! The recovery and inference engines all rate, on one 0–100 scale, how
+//! strongly their evidence supports a finding — for example, a struct
+//! inferred from a string, or a propagated parameter type. When findings
+//! compete, the engines keep the one with the highest score. That score
+//! means the same thing in every crate, so it is a named type here rather
+//! than a bare `u8` restated at each site.
 //!
 //! Note this is the *evidence* confidence (0–100). The fault and progress
 //! diagnosis scores are a separate 0–10 scale and deliberately stay `u8`.

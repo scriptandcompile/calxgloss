@@ -1,24 +1,25 @@
 //! The retry-strategy closed set — the shared identity of a fix attempt.
 //!
 //! [`RetryStrategy`] names the ways the retry loop repairs a failed
-//! translation attempt. The enum lives here (not in the translator) because
-//! the same closed set travels three surfaces: the translator's retry loop
-//! picks one per attempt, the per-unit reviewer override stores a forced one
-//! ([`FunctionOverride::retry_strategy_override`](crate::FunctionOverride)),
+//! translation attempt. The enum lives here, not in the translator, because
+//! three surfaces use the same closed set: the translator's retry loop
+//! picks one per attempt, the per-unit reviewer override stores a forced
+//! one ([`FunctionOverride::retry_strategy_override`](crate::FunctionOverride)),
 //! and the dashboard's Overrides tab offers the labels (issue #120).
 //!
-//! The serde labels are the persisted wire format — `re/analysis/
-//! unit_overrides.json` stores exactly these snake_case strings, so workspaces
-//! written before this type existed load unchanged. Because the record field
-//! is typed, an unknown label is refused at deserialization: the web override
-//! endpoint answers 422 on the failed JSON extraction (the same pattern the
-//! classification override's category uses) and a typo'd force can never be
-//! stored at all.
+//! The serde labels are the persisted wire format.
+//! `re/analysis/unit_overrides.json` stores exactly these snake_case
+//! strings, so workspaces written before this type existed load unchanged.
+//! Because the record field has this type, an unknown label is refused at
+//! deserialization. The web override endpoint answers 422 on the failed
+//! JSON extraction (the same pattern the classification override's category
+//! uses), so a typo'd force can never be stored at all.
 //!
-//! The experiment log ([`crate::experiment_log`]) deliberately keeps a plain
-//! `String` for its `retry_strategy` field: it also records the first attempt
-//! under `"initial"`, which is not a retry strategy and so is not in this set
-//! (issue #363 kept the set closed and named the field for it).
+//! The experiment log ([`crate::experiment_log`]) deliberately keeps its
+//! `retry_strategy` field a plain `String`: it also records the first
+//! attempt under `"initial"`, which is not a retry strategy and so is not
+//! in this set (issue #363 kept the set closed and named the field for
+//! that reason).
 
 use serde::{Deserialize, Serialize};
 
@@ -53,9 +54,9 @@ display_serde_label!(RetryStrategy {
 mod tests {
     use super::*;
 
-    /// The persisted labels are a compatibility contract: workspaces wrote
+    /// The persisted labels are a compatibility contract. Workspaces wrote
     /// these exact strings into `re/analysis/unit_overrides.json` while the
-    /// override was a plain `String`, and they must keep loading.
+    /// override was a plain `String`, and those files must keep loading.
     #[test]
     fn serde_round_trips_the_persisted_labels() {
         let cases = [
@@ -73,8 +74,9 @@ mod tests {
         }
     }
 
-    /// The whole point of typing the field: a typo'd label is refused at
-    /// deserialization, so it can never be stored and silently ignored.
+    /// This is the point of giving the field a type: a typo'd label is
+    /// refused at deserialization, so it can never be stored and then
+    /// silently ignored.
     #[test]
     fn unknown_labels_are_refused_at_deserialization() {
         for label in [

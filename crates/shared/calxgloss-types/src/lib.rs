@@ -47,10 +47,11 @@
 /// Maximum number of entries a run-telemetry log retains (issue #82).
 ///
 /// The token-usage, fault, and prompt-strategy logs each keep at most this
-/// many newest entries; as new entries arrive past the cap, the oldest are
-/// dropped so the log file's size and the per-entry rewrite cost stay
-/// bounded. Dropped entries are folded into the log's trimmed-aggregate
-/// accumulator, so `compute_stats` still covers the whole run's history.
+/// many newest entries. When a new entry arrives and the log is already at
+/// the cap, the oldest entries are dropped. This keeps the log file's size
+/// bounded, and keeps the cost of rewriting the log for each new entry
+/// bounded too. The values of dropped entries are merged into the log's
+/// trim aggregate, so `compute_stats` still reports the whole run's history.
 pub const MAX_LOG_ENTRIES: usize = 10_000;
 
 pub mod capability;
@@ -245,8 +246,9 @@ mod tests {
 
     #[test]
     fn test_side_effect_global_kinds_serialization() {
-        // The typed global kinds serialize as plain unit-variant names;
-        // the global itself rides the side effect's detail string.
+        // The typed global kinds serialize as plain names with no attached
+        // data. Which global is meant is recorded in the side effect's
+        // detail string.
         for kind in [SideEffectKind::GlobalRead, SideEffectKind::GlobalWrite] {
             let json = serde_json::to_string(&kind).unwrap();
             let expected = match kind {
@@ -270,10 +272,9 @@ mod tests {
 
     #[test]
     fn test_old_side_effect_documents_still_deserialize() {
-        // Test documents persisted before the global kinds existed —
-        // unit-variant kinds and the Other escape hatch — must keep
-        // loading, so the vocabulary extension never strands an
-        // existing baseline.
+        // Test documents saved before the global kinds existed used the
+        // simple named kinds and the Other fallback. They must keep
+        // loading: adding new kinds must never break an existing baseline.
         let json = r#"[
             {"kind": "FileWrite", "detail": "wrote config.dat"},
             {"kind": {"Other": "touched DAT_180064e80"}, "detail": "touched DAT_180064e80"}
@@ -288,10 +289,10 @@ mod tests {
 
     #[test]
     fn test_failed_test_carries_typed_side_effects() {
-        // A verification failure names the expected side effects as
-        // typed kinds, and a failure record persisted before the
-        // field existed still loads — the serde default keeps old
-        // verification results readable.
+        // A verification failure names the expected side effects with the
+        // typed kinds. A failure record saved before this field existed
+        // must still load: the serde default gives it an empty list, which
+        // keeps old verification results readable.
         let failed = FailedTest {
             test_index: 0,
             inputs: serde_json::json!({"x": 1}),

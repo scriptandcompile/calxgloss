@@ -2,20 +2,20 @@
 //!
 //! Every evidence crate that reads decompiler output needs the same
 //! primitives: find direct calls, split their arguments, and walk the
-//! body without mistaking a string or char literal for code. Those
-//! primitives were restated (byte-identically, then subtly diverging)
-//! in a dozen engine files; they live here instead, with one
-//! configuration point — [`ScanOptions`] — for the ways the scans
+//! body without mistaking a string or char literal for code. A dozen
+//! evidence engine files used to restate these primitives — the same code
+//! at first, then drifting apart. They live here instead. One
+//! configuration point, [`ScanOptions`], covers the ways the scans
 //! legitimately differ: how a callee name continues past identifier
 //! bytes, which preceding bytes disqualify a name start, and which
 //! callee names are keywords rather than calls.
 //!
-//! The scanner is lexical, not a parser: it never claims the body is
+//! The scanner works on words, not grammar: it never claims the body is
 //! valid C, only that a `name(` ... `)` pair balances outside literals.
 //! A truncated decompile (an unclosed `(`) simply yields nothing.
 
-/// Callee names the decompiler emits like calls but that name no call —
-/// `if (x)` reads as a call to `if` unless filtered.
+/// Callee names the decompiler emits in call position that are not calls.
+/// Without this filter, `if (x)` reads as a call to `if`.
 pub const NON_CALL_KEYWORDS: [&str; 7] =
     ["if", "while", "for", "switch", "case", "return", "sizeof"];
 
@@ -27,8 +27,8 @@ pub enum NameContinuation {
     /// `::` continues a demangled qualified name: `std::thread::spawn`.
     ColonColon,
     /// A `.` followed by an identifier byte continues a demangled
-    /// spelling — Ghidra writes `operator new` as `operator.new` — and
-    /// a trailing `[]` belongs to the name: `operator.new[]`.
+    /// spelling (Ghidra writes `operator new` as `operator.new`), and a
+    /// trailing `[]` belongs to the name: `operator.new[]`.
     DemangledDot,
 }
 
@@ -48,23 +48,23 @@ pub struct CallSite<'a> {
 pub struct ScanOptions {
     /// How callee names continue past identifier bytes.
     pub continuation: NameContinuation,
-    /// Bytes that additionally disqualify a name start, on top of
-    /// identifier bytes (which always do). A name preceded by `.` is a
-    /// member access; by `>`, an access through a pointer; by `:`, the
-    /// tail of a qualified name. Common sets: `b"."`, `b".>"`, `b".>:"`.
+    /// Bytes that additionally disqualify a name start, beyond identifier
+    /// bytes, which always disqualify one. A name preceded by `.` is a
+    /// member access. A name preceded by `>` is an access through a
+    /// pointer. A name preceded by `:` is the tail of a qualified name.
+    /// Common sets: `b"."`, `b".>"`, `b".>:"`.
     pub reject_preceding: &'static [u8],
     /// Callee names to skip — usually [`NON_CALL_KEYWORDS`], or empty
     /// to record every balanced `name(`.
     pub skip_keywords: &'static [&'static str],
 }
 
-/// Every direct call `name(args)` in the body, scanned outside string
-/// and char literals so a stray `(` in a literal cannot read as a
+/// Finds every direct call `name(args)` in the body. The scan skips
+/// string and char literals, so a stray `(` in a literal cannot read as a
 /// call. A name preceded by an identifier byte or one of
 /// [`ScanOptions::reject_preceding`] is the tail of a longer name or a
 /// member access, not a plain call. A call whose `(` never closes — a
-/// truncated decompile — yields nothing, and nested calls are each
-/// visited.
+/// truncated decompile — yields nothing. Nested calls are each visited.
 pub fn call_sites<'a>(body: &'a str, opts: &ScanOptions) -> Vec<CallSite<'a>> {
     let bytes = body.as_bytes();
     let mut calls = Vec::new();
@@ -133,7 +133,7 @@ fn name_end(bytes: &[u8], start: usize, continuation: NameContinuation) -> usize
         }
     }
     if continuation == NameContinuation::DemangledDot {
-        // The array spelling carries its brackets: `operator.new[]`.
+        // The array spelling includes its brackets: `operator.new[]`.
         let bracket = skip_ws(bytes, j);
         if bytes.get(bracket) == Some(&b'[')
             && bytes.get(skip_ws(bytes, bracket + 1)) == Some(&b']')
@@ -144,11 +144,11 @@ fn name_end(bytes: &[u8], start: usize, continuation: NameContinuation) -> usize
     j
 }
 
-/// The text of each top-level argument of the call whose `(` sits at
-/// `open` and whose `)` sits at `close`, in order. A call with no
-/// arguments yields none, and commas nested inside a parenthesised,
-/// bracketed, or quoted argument — a nested call, an array index, a
-/// char literal — belong to that argument rather than splitting it.
+/// Returns the text of each top-level argument, in order, of the call
+/// whose `(` sits at `open` and whose `)` sits at `close`. A call with no
+/// arguments yields none. A comma nested inside a parenthesised,
+/// bracketed, or quoted argument — a nested call, an array index, a char
+/// literal — belongs to that argument and does not split it.
 pub fn split_arguments(body: &str, open: usize, close: usize) -> Vec<&str> {
     let bytes = body.as_bytes();
     let mut args = Vec::new();
@@ -164,9 +164,9 @@ pub fn split_arguments(body: &str, open: usize, close: usize) -> Vec<&str> {
                 i += 1;
             }
             b')' | b']' => {
-                // A closer at depth 0 is unbalanced input (a stray `]`
-                // in a malformed body); it belongs to the current
-                // argument rather than underflowing the counter.
+                // A closer at depth 0 is unbalanced input, like a stray
+                // `]` in a malformed body. It belongs to the current
+                // argument, so the counter never underflows.
                 depth = depth.saturating_sub(1);
                 i += 1;
             }
@@ -185,8 +185,9 @@ pub fn split_arguments(body: &str, open: usize, close: usize) -> Vec<&str> {
     args
 }
 
-/// The index of `)` matching the `(` at `open`, skipping string and
-/// char literals so a `)` inside one cannot close the call early.
+/// Returns the index of the `)` that matches the `(` at `open`. The scan
+/// skips string and char literals, so a `)` inside a literal cannot close
+/// the call early.
 pub fn closing_paren(body: &str, open: usize) -> Option<usize> {
     let bytes = body.as_bytes();
     let mut depth = 0usize;
@@ -225,8 +226,9 @@ pub fn skip_string(bytes: &[u8], mut i: usize) -> usize {
     bytes.len()
 }
 
-/// The index just past the string or char literal whose opening quote
-/// sits at `i` — for scans that treat any literal as opaque text.
+/// Returns the index just past the string or char literal whose opening
+/// quote sits at `i`. Use this in scans that treat any literal as opaque
+/// text.
 pub fn skip_literal(bytes: &[u8], i: usize) -> usize {
     match bytes[i] {
         b'\'' => skip_char(bytes, i + 1),
@@ -234,10 +236,10 @@ pub fn skip_literal(bytes: &[u8], i: usize) -> usize {
     }
 }
 
-/// The index just past the char literal whose opening `'` sits at
+/// Returns the index just past the char literal whose opening `'` sits at
 /// `open`. An unterminated literal runs to the end of the body.
-/// Decompiler output carries char literals like `']'` and `')'` in
-/// parsing code; without this skip their closers read as unbalanced
+/// Decompiler output contains char literals like `']'` and `')'` in
+/// parsing code. Without this skip, their closers read as unbalanced
 /// brackets.
 pub fn skip_char(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() {
@@ -263,19 +265,19 @@ pub fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// The full text of the line containing byte `offset` of `body`,
-/// trimmed — what an evidence record quotes as the call's context.
+/// Returns the full text of the line containing byte `offset` of `body`,
+/// trimmed. Evidence records quote this line as the call's context.
 pub fn line_at(body: &str, offset: usize) -> String {
     let line = body[..offset.min(body.len())].matches('\n').count();
     body.lines().nth(line).unwrap_or("").trim().to_string()
 }
 
-/// The argument text with leading C casts stripped: `(DWORD)x` reduces
-/// to `x` and `*(DWORD *)ptr` to `*ptr` — the cast group goes, a
-/// dereference stays — so a caller can match an argument against a
-/// plain variable name. `is_type_word` decides which words inside a
-/// leading group name a type — the word list is domain data each
-/// evidence crate owns.
+/// Strips leading C casts from the argument text. `(DWORD)x` reduces to
+/// `x` and `*(DWORD *)ptr` to `*ptr`: the cast group goes and the
+/// dereference stays. A caller can then match an argument against a plain
+/// variable name. `is_type_word` decides which words inside a leading
+/// group are type names. The word list is domain data each evidence crate
+/// owns.
 pub fn strip_casts(arg: &str, is_type_word: impl Fn(&str) -> bool) -> String {
     let bytes = arg.as_bytes();
     let mut out = Vec::new();
@@ -296,9 +298,10 @@ pub fn strip_casts(arg: &str, is_type_word: impl Fn(&str) -> bool) -> String {
     String::from_utf8_lossy(&out).trim().to_string()
 }
 
-/// The index of the `)` closing a leading type-cast group at `open` —
-/// `*`s and identifier words that [`is_type_word`](is_type_word)
-/// accepts, and nothing else. `None` when the group is not a cast.
+/// Returns the index of the `)` that closes a leading type-cast group at
+/// `open`. Such a group holds only `*`s and identifier words that
+/// [`is_type_word`](is_type_word) accepts, and nothing else. Returns
+/// `None` when the group is not a cast.
 pub fn cast_group(bytes: &[u8], open: usize, is_type_word: impl Fn(&str) -> bool) -> Option<usize> {
     let mut i = open + 1;
     let mut saw_word = false;
@@ -430,7 +433,7 @@ mod tests {
 
     #[test]
     fn char_literal_closers_do_not_break_the_scan() {
-        // The regression: `']'` at depth 0 underflowed the argument
+        // Regression: `']'` at depth 0 once underflowed the argument
         // depth counter and panicked debug builds.
         let body = "if (*pc == ']') { break; }";
         let calls = call_sites(body, &PLAIN);

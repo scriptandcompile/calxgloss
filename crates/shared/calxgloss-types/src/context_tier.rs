@@ -1,9 +1,10 @@
 //! Context tier selection for LLM prompt construction.
 //!
-//! This module defines [`ContextTier`] — the five context tiers that determine
-//! how much information the translation pipeline sends to the LLM for a given
-//! function. The goal is to minimize token usage by starting with the smallest
-//! context that can do the job, and escalating only when lower tiers fail.
+//! This module defines [`ContextTier`] — the five context tiers that set how
+//! much information the translation pipeline sends to the LLM for one
+//! function. The goal is to spend as few tokens as possible: start with the
+//! smallest context that can do the job, and escalate only when lower tiers
+//! fail.
 //!
 //! # Tiers
 //!
@@ -23,9 +24,9 @@
 //! 2. **API call count** — number of distinct Windows API calls
 //! 3. **Previous success rate** — historical pass rate for similar functions
 //!
-//! The default starting tier is computed at the beginning of a translation
-//! run (no prior data). On failure, the tier is escalated automatically
-//! by the translation pipeline's retry loop.
+//! The pipeline computes the default starting tier at the beginning of a
+//! translation run, when there is no prior data. On failure, the
+//! translation pipeline's retry loop escalates the tier automatically.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,9 +39,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// - **Signature** — Only the function name, signature, and call graph
 ///   neighbors. Suitable for trivial functions where the LLM can reason from
-///   the decompiler's pseudo-C alone. Named for what it sends, not for a
-///   stub: in this codebase a stub is a mock that returns default values
-///   without the real action (see the pipeline glossary).
+///   the decompiler's pseudo-C alone. The name says what this tier sends,
+///   not that it sends a stub: in this codebase a stub is a mock that
+///   returns default values without the real action (see the pipeline
+///   glossary).
 /// - **Disassembly** — Full disassembly, decompiler output, and type
 ///   information. The LLM gets the raw instructions plus the decompiler's
 ///   type-inferred signature.
@@ -48,10 +50,10 @@ use serde::{Deserialize, Serialize};
 ///   (and failing test details if retrying). This gives the LLM concrete
 ///   behavior to match.
 /// - **ModuleContext** — Tier 2 plus neighboring function disassembly and
-///   shared data structures. Needed when the function has complex inter-
-///   function dependencies or operates on shared state.
+///   shared data structures. Needed when the function depends heavily on
+///   other functions or works on shared state.
 /// - **FullModule** — Tier 3 plus shim-layer code and PAL trait definitions.
-///   Used when translating functions that call through shim layers (e.g.,
+///   Use it when translating functions that call through shim layers (e.g.,
 ///   DirectX → wgpu) and need the full translation-layer context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextTier {
@@ -68,10 +70,10 @@ pub enum ContextTier {
 }
 
 impl ContextTier {
-    /// Every tier, lowest to highest — the single enumeration of the set.
-    /// The dashboard's tier controls populate from this through the scope
-    /// status response, so the frontend never hardcodes the variant names
-    /// and a variant rename touches the enum and this list alone
+    /// Every tier, lowest to highest — the one complete list of the set.
+    /// The dashboard's tier controls read this list, through the scope
+    /// status response, so the frontend never hardcodes the variant names.
+    /// A variant rename therefore touches the enum and this list alone
     /// (issue #109).
     pub const ALL: [ContextTier; 5] = [
         Self::Signature,
@@ -160,8 +162,8 @@ impl std::fmt::Display for ContextTier {
 
 /// Success rate for a function or API category.
 ///
-/// Tracks how many attempts succeeded out of the total, used to inform
-/// tier selection for future translations.
+/// Counts how many attempts succeeded out of the total. Tier selection uses
+/// it for future translations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuccessRate {
     /// Number of successful attempts.
@@ -481,9 +483,9 @@ mod tests {
 
     #[test]
     fn test_context_tier_all_enumerates_every_variant_low_to_high() {
-        // The dashboard's tier controls populate from this list (issue #109)
-        // — it must cover every variant in escalation order, and each must
-        // serialize to the exact variant name the constraints endpoint
+        // The dashboard's tier controls read this list (issue #109). It
+        // must cover every variant in escalation order, and each variant
+        // must serialize to exactly the name the constraints endpoint
         // deserializes, so the frontend never hardcodes the names itself.
         let names: Vec<String> = ContextTier::ALL
             .iter()
@@ -499,8 +501,8 @@ mod tests {
                 "\"FullModule\""
             ]
         );
-        // The escalation walk visits exactly this order — no variant is
-        // missing from ALL and none sits out of order.
+        // The escalation walk visits exactly this order: ALL has no missing
+        // variant and no out-of-order one.
         let mut walked = vec![ContextTier::Signature];
         let mut tier = ContextTier::Signature;
         while let Some(next) = tier.escalate() {

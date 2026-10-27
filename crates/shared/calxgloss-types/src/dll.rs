@@ -1,8 +1,7 @@
 //! Information about a target DLL and its classification.
 //!
-//! This module provides types for representing DLL metadata extracted during
-//! the binary analysis phase, including exported/imported symbols and
-//! classification into strategy categories.
+//! This module holds the DLL metadata collected during binary analysis:
+//! exported and imported symbols, and the DLL's strategy category.
 
 use serde::{Deserialize, Serialize};
 
@@ -39,21 +38,21 @@ pub enum DllCategory {
     /// skipped during translation.
     RuntimeLibrary,
 
-    /// .NET (managed) assemblies — PE files carrying a COM descriptor
+    /// .NET (managed) assemblies — PE files with a COM descriptor
     /// (data directory 14). They are not native machine code, so the
     /// disassembly pipeline has nothing to translate; we do not yet
     /// decompile managed code. Strategy: `DoNotTranslate` (issue #235).
     /// Distinct from [`Self::RuntimeLibrary`]: the `known_runtime` flag
-    /// stays false for managed assemblies — it names runtime libraries,
-    /// not every binary that is out of translation scope.
+    /// stays false for managed assemblies. That flag marks runtime
+    /// libraries, not every binary that is out of translation scope.
     DotNetManaged,
 }
 
 /// An exported symbol from a DLL.
 ///
-/// Represents a function or data item that a DLL exposes to its consumers.
-/// During decompiler analysis, the address and signature are extracted from
-/// the import/export table and disassembly.
+/// A function or data item that a DLL makes available to the binaries that
+/// use it. The decompiler records the address and signature from the
+/// import/export tables and the disassembly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Export {
     /// The exported symbol's name (e.g., `DrawPrimitive`).
@@ -68,8 +67,8 @@ pub struct Export {
 
 /// An import dependency — a DLL and function this binary calls.
 ///
-/// Represents a cross-DLL call captured from the PE import table or
-/// The decompiler's analysis of imported symbols.
+/// Each import comes from either the PE import table or the decompiler's
+/// analysis of imported symbols.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Import {
     /// The name of the DLL being imported (e.g., `gdi32.dll`).

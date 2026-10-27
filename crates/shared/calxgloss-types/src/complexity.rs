@@ -1,13 +1,13 @@
 //! Function complexity classification for prompt selection.
 //!
-//! This module defines the [`FunctionComplexity`] enum and provides
-//! a [`detect_complexity`] function that classifies functions based
-//! on disassembly characteristics (instruction count, call depth,
-//! branch density, and API call diversity).
+//! This module defines the [`FunctionComplexity`] enum and a
+//! [`detect_complexity`] function. [`detect_complexity`] classifies
+//! functions from disassembly features: instruction count, call depth,
+//! branch density, and API call diversity.
 //!
-//! The classification drives prompt selection in the translation
-//! pipeline — simple functions get minimal prompts, complex
-//! functions get rich context from the decompiler.
+//! The classification decides prompt selection in the translation
+//! pipeline: simple functions get minimal prompts, complex functions get
+//! rich context from the decompiler.
 //!
 //! # Complexity Tiers
 //!
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 /// Complexity classification for a function based on its disassembly.
 ///
-/// The complexity level determines which prompt template and context
+/// The complexity level decides which prompt template and which context
 /// the translation pipeline sends to the LLM.
 ///
 /// # Tiers
@@ -46,7 +46,7 @@ pub enum FunctionComplexity {
     Standard,
     /// Rich context — complex control flow or many APIs.
     Rich,
-    /// Detailed context — very complex, needs extra engine data.
+    /// Detailed context — very complex, needs extra analysis engine data.
     Detailed,
 }
 
@@ -100,9 +100,9 @@ impl std::fmt::Display for FunctionComplexity {
 /// 4. **API diversity** — Number of distinct API categories used.
 ///    More categories = more context needed.
 ///
-/// The signals are combined with weights: instruction count is primary,
-/// branch density and call depth are secondary modifiers, and API diversity
-/// is a tertiary modifier.
+/// The signals are combined with weights. Instruction count is primary.
+/// Branch density and call depth are secondary modifiers, and API
+/// diversity is a tertiary modifier.
 ///
 /// # Arguments
 ///
@@ -267,11 +267,11 @@ fn classify_by_instructions(count: u64) -> usize {
     }
 }
 
-/// The prompt variant to use for a translation, determined by complexity,
-/// API awareness, and failure history.
+/// The prompt variant to use for a translation, set by complexity, API
+/// awareness, and failure history.
 ///
-/// This is the output of the strategy selection logic that decides
-/// what context the LLM should receive.
+/// The strategy selection logic produces this record as its output; it
+/// decides what context the LLM should receive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptVariant {
     /// The complexity level of the function.
@@ -334,8 +334,8 @@ impl PromptVariant {
 
 /// A hint about a failure in a previous attempt.
 ///
-/// Used to inform the LLM about specific mistakes so it can avoid
-/// repeating them. Populated by the failure-informed prompting system.
+/// It names specific mistakes to the LLM so the LLM can avoid repeating
+/// them. The failure-informed prompting system fills in these hints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureHint {
     /// The attempt number (1-based).
