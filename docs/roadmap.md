@@ -14,7 +14,8 @@
 > recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
 > ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008,
 > P1.5 → ADR-0009–0013, X5 → ADR-0041, P35 → ADR-0048, P36 → ADR-0049,
-> P37 → ADR-0050, P38 → ADR-0051, P39 → ADR-0052, P19 → ADR-0053).
+> P37 → ADR-0050, P38 → ADR-0051, P39 → ADR-0052, P19 → ADR-0053,
+> P20 → ADR-0054–0055).
 
 ## How a track gets built
 
@@ -39,11 +40,21 @@ landed — the admitted-coverage envelope, the absent-reads-as-unknown rule, and
 the engine-stamps/roster-pins doctrine — lives on as
 [ADR-0053](adr/0053-scan-coverage-is-the-scans-own-record-stamped-at-scan-time-beside-provenance-read-as-unknown-when-absent-and-pinned-to-the-engines-declared-facets.md),
 and P21 and P26 are unblocked on their data side.
+**P20 (seam capability report + engine-identity cache key) shipped through
+tickets #354–#358 with the track close-out #359 and was pruned from this
+matrix when spec #353 closed (2026-10-27);** the honesty it landed — the
+seam declaring which questions it can answer right now, and the engine
+build naming itself in every cached answer so an engine swap can never
+replay stale ones — lives on as
+[ADR-0054](adr/0054-the-seam-admission-line-is-a-run-path-only-exemption-to-the-run-equals-show-report-identity-because-capability-is-live-session-state-not-a-filed-document.md)
+and
+[ADR-0055](adr/0055-the-seam-answers-for-its-own-surface-and-the-cache-names-the-build-that-answered-capability-pinned-one-for-one-to-the-seams-own-read-and-engine-identity-keys-the-scan-read-cache.md),
+and P21 is unblocked.
 **Table order is dependency order** — no track appears before one that blocks
 it (each summary names its blockers/blocked-by edges) — and among independent
 tracks, ordered by how strongly each pulls calxgloss toward **complete
 end-to-end restitching from binaries**: honest evidence about what the engines
-could not determine (P20–P21), a verification gate wide enough to cover what
+could not determine (P21), a verification gate wide enough to cover what
 restitching can actually get wrong (P22–P24), and the durable receipts plus
 fail-closed ledger that finally make "this binary is done" a checkable claim
 instead of "the pipeline stopped with nobody complaining" (P25–P26). P27–P33
@@ -80,7 +91,6 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P20 | Seam capability report + engine-identity cache key — the seam advertises which questions Kuna can currently answer, and the scan cache keys on the engine build digest instead of a hand-bumped format version | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-reports`) | — | ⬜ not started | specced ([#353](https://github.com/scriptandcompile/calxgloss/issues/353)) | [#353](https://github.com/scriptandcompile/calxgloss/issues/353) |
 | P21 | First-class unknown records — per function, record what the evidence could not determine, with what evidence would close it; review UI resolves them, `escalate` retries consume them, the run leaves an audit ledger | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
 | P22 | Differential API-call trace in the gate — record the ordered Win32/PAL API-call sequence on both the original-DLL baseline and the restitched Rust, and compare order, catching right-result-wrong-path PAL-mapping errors value tests miss | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + integrations (`calxgloss-pal`) + evidence (`calxgloss-apidetect`) | — | ⬜ not started | not specced | — |
 | P23 | Real inputs for the baseline — mined argument vectors from hooked export entries plus Windows-minidump crash records replayed as concrete reproduction tests, killing the invented-inputs blind spot | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-cli`) | — | ⬜ not started | not specced | — |
@@ -97,21 +107,6 @@ render one (shipped — P36, ADR-0049), one place to assemble the pipeline
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
-## P20 — Seam capability report + engine-identity cache key (integrations + pipeline + interface)
-
-**The pipeline asks Kuna everything and learns the answer was unavailable only
-as an empty result.** The seam keeps its single engine (ADR-0041) but gains a
-session-style capability report — which query families the engine can answer
-right now, with reasons — so prompts, fault monitors, and P21's ledger treat
-unanswerable as *unknown*, and wrong-tier retries get pruned instead of
-burning attempts (REA's `binary_session.tool_availability` posture). The same
-track keys the scan cache on the Kuna crate version/build digest rather than
-the hand-bumped `CACHE_FORMAT_VERSION` (ADR-0042/0043's key, REA's
-engine-SHA-256 key), so an engine bump forces cold reads mechanically instead
-of by maintainer memory. Source: [31](rea/31-deep-native-analysis.md) steals
-2–3, README #6–7. Blocks: P21 (unanswerable facets must be reportable before
-they can be honestly recorded).
-
 ## P21 — First-class unknown records (shared + pipeline + interface)
 
 **Silent gaps today, audit ledger tomorrow.** When the evidence engines cannot
@@ -126,8 +121,9 @@ quiet. Built directly on P19's coverage fields (the gap must be visible in the
 data before it can be recorded) and P20's capability report (unobserved ≠
 observed-absent); the capstone P26 ledger consumes it — an open unknown must
 block "DLL complete". Source: [33](rea/33-reconstruction-evidence-workflow.md)
-steal 1, README #1. Blocked by: P20 (P19's data side shipped with the
-admitted-semantics track, ADR-0053). Blocks: P26, P27.
+steal 1, README #1. Blocked by: P20 (shipped with the seam-capability track,
+ADR-0054–ADR-0055) and P19 (data side shipped with the admitted-semantics
+track, ADR-0053) — unblocked. Blocks: P26, P27.
 
 ## P22 — Differential API-call trace in the gate (pipeline + integrations + evidence)
 

@@ -1363,4 +1363,143 @@ mod tests {
             "a manifest without a scan listing is not a scan"
         );
     }
+
+    #[test]
+    fn a_simulated_engine_bump_forces_every_scan_directory_cold_and_refuses_pairing() {
+        // AC (issue #359): the pinned-Kuna bump, simulated without a bump.
+        // Every scan directory is filed under the previous build's identity —
+        // the open seam's own provenance stamp with only its release and
+        // fingerprint strings replaced — at today's CACHE_FORMAT_VERSION,
+        // which is never touched here. This compiled build then plays the
+        // post-bump engine: identity alone is the differing fact, and every
+        // directory goes cold by mechanism, not by anyone remembering a
+        // constant.
+        let previous = {
+            let mut stamp = crate::scan_source::kuna_provenance();
+            stamp.version = Some("v-before-the-bump".into());
+            stamp.fingerprint = Some("0000000".into());
+            stamp
+        };
+        let bumped_identity = current_engine_identity();
+        assert_ne!(
+            previous.identity(),
+            bumped_identity,
+            "the simulated previous build must not spell this build's identity"
+        );
+
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let file_scan = |module: &str, hash: &str, identity: String| {
+            let scan = root.path().join(module).join(hash);
+            std::fs::create_dir_all(&scan).expect("scan dir");
+            let manifest = CacheManifest {
+                binary_sha256: hash.into(),
+                format_version: CACHE_FORMAT_VERSION,
+                program: module.into(),
+                engine_identity: Some(identity),
+            };
+            save_json(&scan.join("manifest.json"), &manifest).expect("manifest filed");
+            save_json(
+                &doc_path(&scan, &CacheKey::Functions),
+                &Vec::<FunctionSummary>::new(),
+            )
+            .expect("listing filed");
+            save_json(
+                &doc_path(&scan, &CacheKey::Decompile("FUN_18003e750".into())),
+                &DecompiledFunction {
+                    name: "FUN_18003e750".into(),
+                    signature: "longlong FUN_18003e750(longlong param_1)".into(),
+                    body: "// answered before the bump".into(),
+                },
+            )
+            .expect("body filed");
+            (scan, manifest)
+        };
+
+        // Two modules' directories as the pre-bump build left them, plus a
+        // sibling pairing manifest filed under the same stale identity —
+        // the very state the pairing pass used to replay before this track.
+        let (eqmain, eqmain_stale) =
+            file_scan("eqmain.dll", "abc", previous.identity());
+        let (launchpad, launchpad_stale) =
+            file_scan("LaunchPad.exe", "d1", previous.identity());
+        let (sibling, sibling_stale) =
+            file_scan("eqmain.dll", "abc-sibling", previous.identity());
+
+        // A control directory filed by this very build, standing beside them:
+        // identical records, identical format version, and the only fact that
+        // differs in the refused trio is which engine build answers their
+        // bytes. The refusal is the bump, not the harness.
+        let (control, _) = file_scan("eqmain.dll", "c1", bumped_identity.clone());
+
+        // Every refused directory passes the other surviving-scan checks —
+        // its name, its record-shape version, its listing all stand — and is
+        // refused on the identity check alone.
+        for (scan, stale) in [
+            (&eqmain, &eqmain_stale),
+            (&launchpad, &launchpad_stale),
+            (&sibling, &sibling_stale),
+        ] {
+            let filed =
+                load_json::<CacheManifest>(&scan.join("manifest.json")).expect("manifest reads back");
+            assert_eq!(filed, *stale, "the directory stands exactly as the old build filed it");
+            assert_eq!(
+                filed.binary_sha256,
+                scan.file_name().and_then(|n| n.to_str()).expect("hash-named dir"),
+                "the manifest names the hash the directory stands under"
+            );
+            assert_eq!(
+                filed.format_version, CACHE_FORMAT_VERSION,
+                "the record-shape gate is untouched across the simulated bump — nothing was hand-bumped"
+            );
+            assert!(
+                doc_path(scan, &CacheKey::Functions).is_file(),
+                "the scan's listing still stands on disk"
+            );
+            assert_ne!(
+                filed.engine_identity.as_deref(),
+                Some(bumped_identity.as_str()),
+                "identity is the one fact that no longer matches"
+            );
+            assert!(
+                !is_surviving_scan(scan),
+                "a scan filed under the previous engine build's identity is no surviving scan — \
+                 the pairing pass refuses it mechanically"
+            );
+        }
+        assert!(
+            is_surviving_scan(&control),
+            "the same build's own directory survives untouched — the bump alone did the refusing"
+        );
+
+        // The warm open refuses them too: this run's manifest, identical to
+        // the filed one in every field but the identity, wipes the stale
+        // documents and refiles under this build — never a hot replay of
+        // answers an unnamed engine produced.
+        for (scan, stale) in [
+            (&eqmain, &eqmain_stale),
+            (&launchpad, &launchpad_stale),
+            (&sibling, &sibling_stale),
+        ] {
+            let this_run = CacheManifest {
+                engine_identity: Some(bumped_identity.clone()),
+                ..stale.clone()
+            };
+            open_manifest(scan, &this_run, false).expect("the stale-identity directory is refiled");
+            assert!(
+                !doc_path(scan, &CacheKey::Functions).is_file(),
+                "the bump wipes the previous build's listing, not just hides it"
+            );
+            assert!(
+                !doc_path(scan, &CacheKey::Decompile("FUN_18003e750".into())).is_file(),
+                "and its decompiled bodies with it"
+            );
+            let rewritten =
+                load_json::<CacheManifest>(&scan.join("manifest.json")).expect("refilled manifest");
+            assert_eq!(
+                rewritten.engine_identity.as_deref(),
+                Some(bumped_identity.as_str()),
+                "the cold directory refiles naming the engine build that will answer it now"
+            );
+        }
+    }
 }

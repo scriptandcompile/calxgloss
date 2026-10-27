@@ -7482,4 +7482,198 @@ void SetCursor(void)
             "the fallback fetch read nothing from the engine"
         );
     }
+
+    // ---- #359: the track sweep over the real pipeline's seam read -------
+
+    /// The track sweep's data-level verdict (issue #359): does the capability
+    /// report the real pipeline reads from its opened seam pair one-for-one
+    /// against the seam's own query methods — every method the seam exposes
+    /// on the engine side claimed by exactly one declared family, every
+    /// declared family carried by the read exactly once, and no declared
+    /// family naming nothing the seam can answer?
+    ///
+    /// Every fault spells its drift in its own words and they all arrive in
+    /// one pass, so a single failure of the sweep below names every offender
+    /// at once — the one-report doctrine the registry pairing (#342) and the
+    /// P19 track sweep (#352) established, now guarding the seam itself. The
+    /// family-id pairing wording is the shared `CapabilityReport::roster_faults`
+    /// #354 established; the method pairing and the family-side orphan check
+    /// are this sweep's own legs.
+    fn seam_sweep_faults(
+        report: &calxgloss_types::CapabilityReport,
+        roster: &[(&str, &[&str])],
+    ) -> Vec<String> {
+        let ids: Vec<&str> = roster.iter().map(|(family, _methods)| *family).collect();
+        // A family the read omits, a family it names twice, and a family it
+        // names that no seam roster carries — the orphan direction on the
+        // read's own side.
+        let mut faults = report.roster_faults(&ids);
+        // Every query method the seam exposes on the engine side pairs with
+        // exactly one declared family.
+        let mut methods: Vec<&str> = Vec::new();
+        for (_family, family_methods) in roster {
+            for method in *family_methods {
+                if !methods.contains(&method) {
+                    methods.push(method);
+                    let claims = roster
+                        .iter()
+                        .filter(|(_, claimed)| claimed.contains(&method))
+                        .count();
+                    if claims > 1 {
+                        faults.push(format!(
+                            "seam method `{method}` is claimed by {claims} declared families — \
+                             a query method pairs with exactly one family"
+                        ));
+                    }
+                }
+            }
+        }
+        // The orphan check on the family side: a declared family that names
+        // no seam query method stands for nothing the seam can answer.
+        for (family, family_methods) in roster {
+            if family_methods.is_empty() {
+                faults.push(format!(
+                    "declared family `{family}` names no seam query method — \
+                     the sweep rejects a family that stands for nothing"
+                ));
+            }
+        }
+        faults
+    }
+
+    /// A report pairing the named families with one `answerable` entry each —
+    /// the shape a full declaration answers with, for the hand-built arms.
+    fn sweep_report(families: &[&str]) -> calxgloss_types::CapabilityReport {
+        calxgloss_types::CapabilityReport {
+            families: families
+                .iter()
+                .map(|id| calxgloss_types::FamilyCapability {
+                    id: (*id).to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Answerable,
+                    reason: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// The all-twelve sweep over the real pipeline's seam read (issue #359):
+    /// the report `begin_cached_source` holds is the one the cached source
+    /// opened over the fixture hands up, forwarded unchanged through the
+    /// cache wrapper — a cache never changes capabilities, it only caches
+    /// answers — and it pairs one-for-one against the seam's own query
+    /// methods. This is the seam crate's trait-to-roster pairing (#354)
+    /// walked from the consumer's end: a P28 or P29 that grows the trait,
+    /// the roster, or the declaration without growing the other two fails
+    /// here, naming itself.
+    #[tokio::test]
+    async fn the_seam_sweep_pairs_the_real_pipelines_read_one_for_one() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        let read = pipeline.seam_report();
+        let roster = calxgloss_decomp::QUERY_FAMILIES;
+        let faults = seam_sweep_faults(&read, roster);
+        assert!(
+            faults.is_empty(),
+            "the real pipeline's seam read must pair one-for-one against \
+             the seam's query methods, and these drifted:\n{}",
+            faults.join("\n")
+        );
+        // The shape the sweep stands on, pinned so a roster that grows
+        // without the read growing — or the reverse — names itself in a
+        // count before it can hide inside a pairing.
+        let methods: usize = roster.iter().map(|(_, m)| m.len()).sum();
+        assert_eq!(roster.len(), 12, "twelve declared families pair the seam today");
+        assert_eq!(methods, 14, "fourteen program-query methods ride those families today");
+        assert_eq!(
+            read.families.len(),
+            roster.len(),
+            "the live read declares exactly the families the roster carries"
+        );
+    }
+
+    /// Missing, doubled, and orphaned in one read: the sweep's verdict
+    /// carries all three offenders in a single pass, naming each (issue
+    /// #359) — a contributor fixing the seam sees the whole damage at once,
+    /// never whack-a-mole across runs.
+    #[test]
+    fn one_sweep_report_names_every_offender_at_once() {
+        let families: Vec<&str> = calxgloss_decomp::QUERY_FAMILIES
+            .iter()
+            .map(|(family, _methods)| *family)
+            .filter(|family| *family != "decompilation")
+            .chain(std::iter::once("strings"))
+            .chain(std::iter::once("sardine"))
+            .collect();
+        let read = sweep_report(&families);
+        let faults = seam_sweep_faults(&read, calxgloss_decomp::QUERY_FAMILIES);
+        assert_eq!(
+            faults.len(),
+            3,
+            "missing, doubled, and orphaned offenders name themselves at once:\n{}",
+            faults.join("\n")
+        );
+        assert!(
+            faults.iter().any(|fault| fault.contains("decompilation")),
+            "the family the read stopped declaring is named:\n{}",
+            faults.join("\n")
+        );
+        assert!(
+            faults.iter().any(|fault| fault.contains("strings") && fault.contains("times")),
+            "the family declared twice is named:\n{}",
+            faults.join("\n")
+        );
+        assert!(
+            faults.iter().any(|fault| fault.contains("sardine")),
+            "the entry naming a family no seam roster carries is named:\n{}",
+            faults.join("\n")
+        );
+    }
+
+    /// The orphan check, family side (issue #359): a family the engine
+    /// declares and the read faithfully carries, but which names no seam
+    /// query method at all, stands for nothing the seam can answer — the
+    /// sweep rejects it, and it names itself.
+    #[test]
+    fn the_sweep_orphan_check_rejects_a_declared_family_that_names_no_query_method() {
+        let roster: Vec<(&str, &[&str])> = calxgloss_decomp::QUERY_FAMILIES
+            .iter()
+            .copied()
+            .chain(std::iter::once(("smokewood", [].as_slice())))
+            .collect();
+        let ids: Vec<&str> = roster.iter().map(|(family, _methods)| *family).collect();
+        let read = sweep_report(&ids);
+        assert_eq!(
+            seam_sweep_faults(&read, &roster),
+            ["declared family `smokewood` names no seam query method — \
+             the sweep rejects a family that stands for nothing"],
+            "a declared family naming nothing fails the orphan check, naming itself"
+        );
+    }
+
+    /// The method side of the pairing (issue #359): one seam query feeding
+    /// two declared families means one family answers a question it does not
+    /// own — the pairing is exactly one-to-one in both directions, and the
+    /// sweep says so in words.
+    #[test]
+    fn the_sweep_fails_a_query_method_claimed_by_two_families() {
+        let roster: Vec<(&str, &[&str])> = calxgloss_decomp::QUERY_FAMILIES
+            .iter()
+            .map(|(family, methods)| {
+                if *family == "image-base" {
+                    (*family, &["image_base", "read_memory"][..])
+                } else {
+                    (*family, *methods)
+                }
+            })
+            .collect();
+        let ids: Vec<&str> = roster.iter().map(|(family, _methods)| *family).collect();
+        let read = sweep_report(&ids);
+        assert_eq!(
+            seam_sweep_faults(&read, &roster),
+            ["seam method `read_memory` is claimed by 2 declared families — \
+             a query method pairs with exactly one family"],
+            "a query method claimed twice fails the pairing, naming itself"
+        );
+    }
 }

@@ -1747,4 +1747,82 @@ mod tests {
             "the real seam admits nothing — the run report stays silent"
         );
     }
+
+    #[test]
+    fn the_coverage_admission_and_the_seam_admission_never_share_bytes_at_the_report_end() {
+        // The doctrine pair, byte-level (issue #359): the scan coverage
+        // doctrine (P19 — what a filed scan examined) and the seam
+        // capability doctrine (P20 — what the open session can answer)
+        // share their admission machinery, and that shared wording is
+        // deliberately collidable: a coverage admission and a capability
+        // admission CAN spell byte-identical raw strings. At the report end
+        // each rides its own frame — the `Coverage:` label column over the
+        // coverage admission, the family-id prefix and `Seam:` label column
+        // over the seam line — and the pinned frames prove the two lines
+        // never merge and never borrow each other's frame. `Tanglewood` is
+        // coined for this pin and belongs to neither doctrine's fixtures.
+        const SENTINEL: &str = "Tanglewood bridge offline";
+
+        // The collision, built on purpose: same status word, same sentence,
+        // byte-identical raw admissions from two different doctrines.
+        let coverage = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Unavailable,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "delay-imports".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some(SENTINEL.to_string()),
+            }],
+        };
+        let report = calxgloss_types::CapabilityReport {
+            families: vec![calxgloss_types::FamilyCapability {
+                id: "imports".to_string(),
+                status: calxgloss_types::AvailabilityStatus::Unavailable,
+                reason: Some(SENTINEL.to_string()),
+            }],
+        };
+        assert_eq!(
+            coverage.admission().as_deref(),
+            report.families[0].admission().as_deref(),
+            "raw, the two admissions DO collide — the pin proves the \
+             frames separate them, not that the words differ"
+        );
+
+        // Report end: the seam line wears the family id, the coverage
+        // admission never does; neither line ever wears the other's frame,
+        // and the two lines stay two — never one merged admission.
+        let seam_lines = seam_admission_lines(&report);
+        let coverage_admission = coverage.admission().expect("an unavailable scan admits");
+        assert_eq!(
+            seam_lines,
+            ["imports — unavailable — Tanglewood bridge offline"],
+            "the seam line names its family before the shared admission wording"
+        );
+        assert_eq!(
+            coverage_admission,
+            "unavailable — Tanglewood bridge offline",
+            "the coverage admission carries no family id ahead of it"
+        );
+        assert_ne!(
+            coverage_admission,
+            seam_lines[0],
+            "framed, the two byte-colliding admissions are different lines — never one shared line"
+        );
+        for line in &seam_lines {
+            assert!(
+                !line.contains("Coverage") && !line.contains("coverage"),
+                "the seam line never wears the coverage doctrine's frame: {line}"
+            );
+        }
+        assert!(
+            !coverage_admission.contains("imports") && !coverage_admission.contains("Seam"),
+            "the coverage admission never wears the seam doctrine's family id or label frame"
+        );
+        // The shared sentence alone identifies neither doctrine — a reader
+        // telling the two admits apart reads the frames, and both frames
+        // stand beside their own line at the report end.
+        assert!(
+            seam_lines[0].contains(SENTINEL) && coverage_admission.contains(SENTINEL),
+            "both lines carry the shared sentence once each, in their own frames"
+        );
+    }
 }

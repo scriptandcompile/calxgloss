@@ -3432,6 +3432,83 @@ mod tests {
         );
     }
 
+    /// The doctrine pair, byte-level (issue #359): the scan coverage
+    /// doctrine (P19, what a filed scan examined) and the seam capability
+    /// doctrine (P20, what the open session can answer) are two different
+    /// admits, and their shared wording is deliberately collidable — a
+    /// coverage admission and a capability admission CAN be byte-identical
+    /// raw, so the proof sits at both ends of their journeys: each keeps
+    /// its own frame and the two lines never merge. The `Tanglewood`
+    /// sentinel is coined here and belongs to neither doctrine's fixtures.
+    #[test]
+    fn a_coverage_admission_and_a_capability_admission_worded_alike_never_share_bytes_at_either_end() {
+        const SENTINEL: &str = "Tanglewood bridge offline";
+
+        // The collision, built on purpose: the same status word and the
+        // same sentence make the two doctrines' raw admission strings
+        // byte-identical at the data level — this is exactly why the
+        // frames are load-bearing.
+        let coverage = calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Unavailable,
+            facets: vec![calxgloss_types::FacetCoverage {
+                id: "import-table".to_string(),
+                status: calxgloss_types::CoverageStatus::Unavailable,
+                limitation: Some(SENTINEL.to_string()),
+            }],
+        };
+        let capability = calxgloss_types::FamilyCapability {
+            id: "imports".to_string(),
+            status: calxgloss_types::AvailabilityStatus::Unavailable,
+            reason: Some(SENTINEL.to_string()),
+        };
+        assert_eq!(
+            coverage.admission().as_deref(),
+            capability.admission().as_deref(),
+            "raw, the two admissions DO collide — the pin proves the \
+             frames separate them, not that the words differ"
+        );
+
+        // The prompt end: each colliding admission rides its own frame —
+        // `Coverage:` for the scan record, `Analysis engine:` for the
+        // seam — each framed line exactly once, and the shared sentence
+        // exactly twice, once per line. A merge or a swallowed line would
+        // drop a frame or count the sentence only once.
+        let mut bundle = EvidenceBundle::default();
+        bundle.api_findings.push(api_fixture());
+        bundle.api_coverage = CoverageInfo::from(&coverage);
+        bundle.api_capability = CapabilityInfo::from(&capability);
+        let admitted = render_escalate_full(&bundle);
+        assert_eq!(
+            admitted
+                .matches(&format!("Coverage: {SENTINEL}"))
+                .count(),
+            0,
+            "the coverage line carries the shared status word ahead of the sentence, as always"
+        );
+        assert!(
+            admitted.contains(&format!(
+                "Coverage: unavailable — {SENTINEL}\n\nAnalysis engine: unavailable — {SENTINEL}"
+            )),
+            "the two admissions render as two framed lines, scan first, \
+             each byte-identical to its own doctrine's wording"
+        );
+        assert_eq!(
+            admitted.matches("Coverage: unavailable — ").count(),
+            1,
+            "the coverage frame opens exactly one line"
+        );
+        assert_eq!(
+            admitted.matches("Analysis engine: unavailable — ").count(),
+            1,
+            "the seam frame opens exactly one line"
+        );
+        assert_eq!(
+            admitted.matches(SENTINEL).count(),
+            2,
+            "the shared sentence stands exactly twice — once per frame, never merged"
+        );
+    }
+
     // ---- #357: the capability fan-out to every prompt-fed family ---------
 
     /// One unreached reason name per fed family, all botanical and all
