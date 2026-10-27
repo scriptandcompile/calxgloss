@@ -2,55 +2,60 @@
 //!
 //! A read-only data table — game stats, an opcode table, a damage
 //! curve — survives decompilation as scattered `DAT_x[idx]` reads and
-//! an untyped blob in the engine's data listing. This module reads
-//! that shape back: for each object the listing defines (`data_items`),
-//! the bytes the engine exposes (`read_memory`) decode coherently at a
-//! stride, the kept bodies' indexed reads corroborate a read and its
-//! width (`DAT_x[idx]` under a bounds guard `if (idx < N)`, the same
-//! shape callback's jump-table reading sizes its tables from), and the
-//! engine's cross-references (`xrefs_to`) name the referencing
-//! functions. All three reads are existing `ScanSource` seam methods,
-//! cached under ADR-0043; nothing is written back to the program
-//! (ADR-0020).
+//! an untyped blob in the analysis engine's data listing. This module
+//! reads that shape back. The objects come from the listing's data
+//! items (`data_items`); the bytes the analysis engine exposes
+//! (`read_memory`) decode coherently at a stride; the kept bodies'
+//! indexed reads corroborate a read and its width (`DAT_x[idx]` under
+//! a bounds guard `if (idx < N)` — the same shape the callback crate's
+//! jump-table reading sizes its tables from); and the referencing
+//! functions come from the analysis engine's cross-references
+//! (`xrefs_to`). All three reads are existing `ScanSource` seam
+//! methods, cached under ADR-0043; nothing is written back to the
+//! program (ADR-0020).
 //!
 //! A stride claims only when the object's whole byte run decodes into
-//! one coherent family for that type: at least two entries, none zero
-//! or equal to all the rest, magnitudes within one bounded spread
-//! (finite, ordinary-magnitude values for the float strides at 4 and
-//! 8, bounded spread for the integer strides) — an object whose bytes
-//! decode incoherently at every stride, unstructured `.rdata` padding,
-//! claims nothing. Strides 4 and 8 spell two families each and both
-//! readings can be coherent at once; the integer family claims the
-//! stride and the float family claims it only where the integer
-//! reading fails or where the listing's applied type names a float, so
-//! a claim never reports floats the bytes do not say are floats. When
-//! several strides decode coherently the engine's applied listing type
+//! one coherent family for that type: at least two entries — none
+//! zero, not all equal — with magnitudes in one bounded spread. For
+//! the float strides at 4 and 8 the entries must be finite,
+//! ordinary-magnitude values; for the integer strides, the bounded
+//! spread decides. An object whose bytes decode incoherently at every
+//! stride — unstructured `.rdata` padding — claims nothing. Strides 4
+//! and 8 spell two families each, and both readings can be coherent
+//! at once. The integer family claims the stride; the float family
+//! claims it only where the integer reading fails or the listing's
+//! applied type names a float, so a claim never reports floats the
+//! bytes do not say are floats. When several strides decode
+//! coherently, the analysis engine's applied listing type
 //! (`type_name`, e.g. `uint` or `float [3]`) resolves the claim when
-//! its stride is a viable one; failing that, the widths implied by
-//! indexing bodies' bounds guards narrow the strides to one, and it
-//! claims nothing unless they do — as does a guard that contradicts
-//! the bytes or the applied type, or bytes that contradict the applied
-//! type. The Evidence scale scores each claim by what stands behind
-//! it: the engine-applied type is the highest tier (90); a clean
-//! decode corroborated by an indexed read in a kept body high-mid
-//! (70); a clean decode that cross-references name readers for but no
-//! kept body visibly indexes mid (50); and raw bytes only,
-//! unreferenced, low (30) — an honest low score, not silence.
+//! its stride is a viable one. Where no applied type names a stride,
+//! the widths implied by indexing bodies' bounds guards narrow the
+//! strides to one, and nothing claims unless they do. A claim also
+//! fails when a guard contradicts the bytes or the applied type, or
+//! when the bytes contradict the applied type. The Evidence
+//! confidence scale scores each claim by what stands behind it, in
+//! four table bands: the analysis engine's applied listing type is
+//! the top band (90); a clean decode corroborated by an indexed read
+//! in a kept body is high-mid (70); a clean decode that
+//! cross-references name readers for but no kept body visibly
+//! indexes is mid (50); and raw bytes only, unreferenced, is low
+//! (30) — an honest low score, not silence.
 //!
-//! Two shapes still claim nothing outright: a kept body that stores
-//! through the symbol makes the object mutable global state, the
-//! global-state track's territory, and never a constant table; and any
-//! entry resolving to a function start the function listing names is
-//! either a dispatch table — the callback crate's jump-table reading
-//! owns that outright — or a half-decoded mix that never lands as a
-//! false const array. The claim stays inside what bytes, reads, and
-//! the function listing agree on.
+//! Two shapes still claim nothing outright. A kept body that stores
+//! through the symbol makes the object mutable global state — the
+//! global-state track's territory — and never a constant table. And
+//! any entry resolving to a function start the function listing
+//! names disqualifies the object: every entry resolving is a dispatch
+//! table, which the callback crate's jump-table reading owns
+//! outright, and some entries resolving is a half-decoded mix that
+//! never lands as a false const array. The claim stays inside what
+//! bytes, reads, and the function listing agree on.
 //!
-//! The engine calls [`data_tables`] once per scan with the data
-//! listing and, parallel to it, what the bodies the walk kept do with
-//! each object — its indexed reads and whether anything stores
+//! The constants scan calls [`data_tables`] once per scan with the
+//! data listing and, parallel to it, what the bodies the walk kept do
+//! with each object — its indexed reads and whether anything stores
 //! through its symbol — plus the addresses the function listing
-//! names; the reading lands one record per qualifying object, in
+//! names. The reading lands one record per qualifying object, in
 //! listing order.
 
 use std::collections::BTreeSet;
@@ -61,10 +66,10 @@ use tracing::{debug, warn};
 
 use crate::types::{Confidence, DataTable, MAX_INLINE_TABLE_VALUES};
 
-/// Confidence of a table the engine's own listing typed: the applied
-/// array or element type is the decompiler's own declaration about the
-/// object, the spec's highest table tier, above every decode-only
-/// family below it.
+/// Confidence of a table the analysis engine's listing typed: the
+/// applied array or element type is the decompiler's own declaration
+/// about the object — the spec's top table band, above every
+/// decode-only family below it.
 const APPLIED_TYPE_CONFIDENCE: u8 = 90;
 
 /// Confidence of a table the bytes decode coherently at and an indexed
@@ -73,12 +78,12 @@ const APPLIED_TYPE_CONFIDENCE: u8 = 90;
 const CORROBORATED_CONFIDENCE: u8 = 70;
 
 /// Confidence of a clean decode the cross-references name readers for
-/// but no kept body visibly indexes — the spec's mid tier: real use,
+/// but no kept body visibly indexes — the spec's mid band: real use,
 /// but no body read to corroborate the shape against.
 const REFERENCED_CONFIDENCE: u8 = 50;
 
 /// Confidence of a raw-bytes-only claim: bytes that decode coherently
-/// with nothing referencing the object at all — the spec's low tier,
+/// with nothing referencing the object at all — the spec's low band,
 /// kept on the record at an honestly low score rather than hidden.
 const UNREFERENCED_CONFIDENCE: u8 = 30;
 
@@ -93,11 +98,12 @@ const MAGNITUDE_SPREAD: u64 = 1_000_000;
 /// `f64` through an exact `From` rather than a lossy cast.
 const MAGNITUDE_SPREAD_F: f32 = 1_000_000.0;
 
-/// The float magnitudes an entry has to stay inside for a float decode
-/// to be sane: below [`MAGNITUDE_SPREAD`]-spaced, but also ordinary —
-/// subnormal-scale and astronomically large bit patterns are what
-/// integer-looking bytes misread as floats look like, and they claim
-/// nothing.
+/// The low end of the ordinary float magnitude band an entry has to
+/// stay inside for a float decode to be sane: above this, below
+/// [`FLOAT_MAGNITUDE_MAX`], and within [`MAGNITUDE_SPREAD`] of the
+/// other entries. Subnormal-scale and astronomically large bit
+/// patterns are what integer-looking bytes misread as floats look
+/// like, and they claim nothing.
 const FLOAT_MAGNITUDE_MIN: f64 = 1e-30;
 
 /// The upper bound of the ordinary float magnitude band; see
@@ -179,9 +185,10 @@ pub(crate) struct IndexedRead {
 /// (`i * 4`, `i + 1`) proves the reference but names no bound, so it
 /// carries no width; only a simple identifier index is read for a
 /// guard. The read is found textually, so it reads the shape, not the
-/// direction — a write (`label[i] = v`) is the same text — and the
-/// engine asks [`stores_through`] first, calling this only for a line
-/// that stores nothing, so a claim's evidence is always a read.
+/// direction — a write (`label[i] = v`) is the same text. The
+/// constants scan asks [`stores_through`] first and calls this only
+/// for a line that stores nothing, so a claim's evidence is always a
+/// read.
 pub(crate) fn indexed_read(
     body: &DecompiledFunction,
     label: &str,
@@ -206,8 +213,8 @@ pub(crate) fn indexed_read(
     })
 }
 
-/// What the bodies the walk kept do with one data object, collected as
-/// the engine reads them: the indexed reads a table claim rests on,
+/// What the bodies the walk kept do with one data object, collected
+/// as the scan reads them: the indexed reads a table claim rests on,
 /// and the mutation gate's signal.
 #[derive(Debug, Default)]
 pub(crate) struct ObjectUsage {
@@ -227,14 +234,15 @@ pub(crate) struct ObjectUsage {
 ///
 /// The rule reads forward from the name, the way the global-state
 /// crate's access kind does, so a dereference, cast, or address-of
-/// wrapped around the symbol needs no case of its own: the reference's
-/// tail — subscript groups, a `)` closing the wrapper the body opened
-/// before the name, a `+ 4` offset, a `.field` selection — has to open
-/// with an assignment (`=`, never `==`, and the compound `+=`-style
-/// stores) or a `++`/`--` bump for the name to be a store target. A
-/// test, a plain copy, and the name spelled inside a string or char
-/// literal store nothing, and a longer label that merely starts with
-/// this one (`DAT_1400a1b600`) is never this object.
+/// wrapped around the symbol needs no case of its own. The
+/// reference's tail — subscript groups, a `)` closing the wrapper the
+/// body opened before the name, a `+ 4` offset, a `.field` selection
+/// — has to open with an assignment (`=`, never `==`, and the
+/// compound `+=`-style stores) or a `++`/`--` bump for the name to be
+/// a store target. A test, a plain copy, and the name spelled inside
+/// a string or char literal store nothing. A longer label that
+/// merely starts with this one (`DAT_1400a1b600`) is never this
+/// object.
 pub(crate) fn stores_through(line: &str, label: &str) -> bool {
     let bytes = line.as_bytes();
     let mut at = 0;
@@ -268,8 +276,8 @@ fn name_end(bytes: &[u8], start: usize) -> usize {
 /// Whether what follows the symbol reference ending at `at` is a
 /// store, past the reference's tail. `if (DAT_x[i] == 3) uVar1 = 4;`
 /// reads as a read because the reference's tail stops at the `==`,
-/// which is a comparison: the assignment further along the line never
-/// becomes this object's store target.
+/// which is a comparison. The assignment further along the line
+/// never becomes this object's store target.
 fn stores_after(line: &str, mut at: usize) -> bool {
     let bytes = line.as_bytes();
     loop {
@@ -308,10 +316,10 @@ fn stores_after(line: &str, mut at: usize) -> bool {
     }
 }
 
-/// The assignment and bump operators, longest spelling first so
-/// `<<=` never reads as a comparison. `==` is excluded: a test stores
-/// nothing. The index just past the operator, when `line` opens with
-/// one at `at`.
+/// The assignment and bump operators, longest spelling first so a
+/// compound store like `<<=` matches as one operator. `==` is
+/// excluded: a test stores nothing. The index just past the operator,
+/// when `line` opens with one at `at`.
 fn store_operator(line: &str, at: usize) -> Option<usize> {
     const OPERATORS: [&str; 13] = [
         "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "++", "--", "=",
@@ -324,8 +332,8 @@ fn store_operator(line: &str, at: usize) -> Option<usize> {
 }
 
 /// The member name a `.` or `->` selects at `at`, as the end of that
-/// name — `None` when nothing name-like follows, which ends the
-/// reference's tail rather than letting the scan stall.
+/// name. `None` when nothing name-like follows — the reference's tail
+/// ends there, with nothing to carry the check past.
 fn member_at(bytes: &[u8], at: usize) -> Option<usize> {
     let start = skip_ws(bytes, at);
     if !bytes
@@ -337,9 +345,10 @@ fn member_at(bytes: &[u8], at: usize) -> Option<usize> {
     Some(name_end(bytes, start))
 }
 
-/// The index of the `]` matching the `[` at `open`, skipping string
-/// and char literals so a `]` inside one cannot close the subscript
-/// early — [`calxgloss_types::closing_paren`]'s rule for brackets.
+/// The index of the `]` matching the `[` at `open`. String and char
+/// literals are skipped, so a `]` inside one cannot close the
+/// subscript early — [`calxgloss_types::closing_paren`]'s rule for
+/// brackets.
 fn closing_bracket(body: &str, open: usize) -> Option<usize> {
     let bytes = body.as_bytes();
     let mut depth = 0usize;
@@ -366,8 +375,8 @@ fn closing_bracket(body: &str, open: usize) -> Option<usize> {
 }
 
 /// The end of the integer literal starting at or after `at`, as the
-/// index just past its digits — the `4` of `DAT_x + 4`, hex spelled
-/// too — `None` when no digits are there at all.
+/// index just past its digits — the `4` of `DAT_x + 4`. Hex spellings
+/// are read too. `None` when no digits are there at all.
 fn number_end(bytes: &[u8], at: usize) -> Option<usize> {
     let start = skip_ws(bytes, at);
     let hex = bytes.get(start) == Some(&b'0')
@@ -384,8 +393,10 @@ fn number_end(bytes: &[u8], at: usize) -> Option<usize> {
 }
 
 /// The text between an opening bracket already consumed and its
-/// closing `]` — empty when the bracket never closes or the index is
-/// compound.
+/// closing `]`. Empty when the bracket never closes, or when the
+/// index nests another bracket pair (`DAT_x[a[b]]`); a second
+/// subscript group after the first one closed (`DAT_x[i][j]`) instead
+/// leaves the first group's index.
 fn bracketed_index(after: &str) -> &str {
     let Some(close) = after.find(']') else {
         return "";
@@ -419,8 +430,8 @@ fn bound_width(length: u64, bound: usize) -> Option<u64> {
 }
 
 /// A bounds check on `index` in one body line, as the exclusive upper
-/// bound it states: `idx < N` and `N > idx` name `N`, `idx <= N` and
-/// `N >= idx` name `N + 1`. Hex bounds (`0xc`) read as hex; anything
+/// bound it states. `idx < N` and `N > idx` name `N`; `idx <= N` and
+/// `N >= idx` name `N + 1`. Hex bounds (`0xc`) read as hex. Anything
 /// else — other variables, unparseable counts — names nothing.
 fn bounds_check(line: &str, index: &str) -> Option<usize> {
     // `idx <op> N`: the index on the left.
@@ -445,9 +456,9 @@ fn bounds_check(line: &str, index: &str) -> Option<usize> {
     None
 }
 
-/// One integer literal, decimal or `0x`-hex, at the start of `s` —
-/// leading punctuation (an `if (` paren) and trailing punctuation (a
-/// closing paren or semicolon) trimmed off.
+/// One integer literal, decimal or `0x`-hex, at the start of `s`.
+/// Leading punctuation (an `if (` paren) and trailing punctuation (a
+/// closing paren or semicolon) are trimmed off.
 fn parse_count(s: &str) -> Option<usize> {
     let token = s.split_whitespace().next()?;
     let token = token.trim_start_matches(|c: char| !(c.is_ascii_hexdigit() || c == 'x'));
@@ -459,14 +470,14 @@ fn parse_count(s: &str) -> Option<usize> {
     }
 }
 
-/// The element families the object's bytes decode coherently at. Each
-/// family survives only when the width divides the length into at
+/// The element families the object's bytes decode coherently at. A
+/// family survives only when its width divides the length into at
 /// least two entries and every entry decodes into a coherent family
-/// for that type: no zero entries (a gap or terminator is not a
-/// uniform array), not all equal (a fill is a fill, not a table), and
-/// magnitudes within [`MAGNITUDE_SPREAD`] of each other — the float
+/// for that type: none zero (a gap or terminator is not a uniform
+/// array), not all equal (a fill is a fill, not a table), and
+/// magnitudes within [`MAGNITUDE_SPREAD`] of each other. The float
 /// families additionally require every bit pattern to be a finite,
-/// nonzero, ordinary-magnitude number, the shape integer-looking bytes
+/// nonzero, ordinary-magnitude number — a shape integer-looking bytes
 /// never accidentally spell. An object that fails every family is
 /// unstructured padding and claims nothing.
 fn viable_families(bytes: &[u8]) -> Vec<Family> {
@@ -478,10 +489,12 @@ fn viable_families(bytes: &[u8]) -> Vec<Family> {
 }
 
 /// The family to claim one stride with, out of the coherent families
-/// the guards left standing. Families are the tie-break order, so the
-/// integer reading of a stride claims it wherever both readings hold;
-/// no family surviving the guards contradicts them, and several
-/// surviving strides is a decode nothing sized — both claim nothing.
+/// the guards left standing. The families stand in tie-break order,
+/// so the integer reading of a stride claims it wherever both
+/// readings hold. Surviving families never contradict the guards.
+/// Several surviving strides is a decode nothing sized; none
+/// surviving is a contradiction between guards and bytes. Both claim
+/// nothing.
 fn one_stride(families: &[Family]) -> Option<Family> {
     let widths: BTreeSet<u64> = families.iter().map(|family| family.width).collect();
     match widths.len() {
@@ -530,13 +543,14 @@ fn coherent_family(bytes: &[u8], family: &Family) -> bool {
     }
 }
 
-/// The element family the engine's applied listing type names, when it
-/// names one. The type is the listing's own declaration about the
-/// object — `uint`, `float [3]`, `undefined4` — and names a stride only
-/// for the uniform element types: `undefined`, pointers, struct and
-/// typedef names name nothing. An applied array type states a count
-/// too, and an array whose count disagrees with the object's length is
-/// a mislabeled object — it resolves no stride either.
+/// The element family the analysis engine's applied listing type
+/// names, when it names one. The type is the listing's own
+/// declaration about the object — `uint`, `float [3]`, `undefined4`.
+/// It names a stride only for the uniform element types;
+/// `undefined`, pointers, struct and typedef names name nothing. An
+/// applied array type states a count too, and an array whose count
+/// disagrees with the object's length is a mislabeled object — it
+/// resolves no stride either.
 fn applied_family(type_name: &str, length: u64) -> Option<Family> {
     let (base, count) = match type_name.split_once('[') {
         Some((base, rest)) => (
@@ -574,11 +588,12 @@ fn le_u64(bytes: &[u8]) -> u64 {
 
 /// What reading one data object's window produced (issue #348).
 ///
-/// The three outcomes part company in the coverage record. `Table` is a
-/// claim; `Disqualified` is a window read end to end whose shape claims
-/// nothing — examined, and silent about coverage; `Unreadable` is a
-/// window that never arrived, so nothing examined the object at all and
-/// the scan's admission names it.
+/// The coverage record tells the three outcomes apart. `Table` is a
+/// claim. `Disqualified` is a window read end to end whose shape
+/// claims nothing: the object was examined, and the coverage record
+/// stays silent about it. `Unreadable` is a window that never
+/// arrived: nothing examined the object at all, and the scan's
+/// admission names it.
 enum ReadOutcome {
     /// A table claim for this object.
     Table(DataTable),
@@ -588,18 +603,19 @@ enum ReadOutcome {
     Unreadable,
 }
 
-/// The table reading for one data object: no kept body may store
-/// through its symbol, its bytes must be readable in full and decode
-/// coherently, one family must survive the resolution — the engine's
-/// applied listing type when it names a viable family, otherwise the
-/// families the bounds guards of indexing bodies narrow to exactly one,
-/// otherwise a single coherent family standing alone — and none of its
-/// entries may resolve to one of the `function_starts` the listing
-/// names. `Disqualified` silently for a disqualifying or unresolved
-/// shape, `Unreadable` with a warning for a read that failed. A kept
-/// body's indexed read is no longer required to claim: it decides which
-/// Evidence tier the claim lands at, from applied type at the top to raw
-/// bytes only at the bottom.
+/// The table reading for one data object. No kept body may store
+/// through its symbol. Its bytes must be readable in full and decode
+/// coherently. Exactly one family must survive the resolution — the
+/// analysis engine's applied listing type when it names a viable
+/// family, otherwise the families the bounds guards of indexing
+/// bodies narrow to exactly one, otherwise a single coherent family
+/// standing alone. And none of its entries may resolve to one of the
+/// `function_starts` the listing names. A disqualifying or unresolved
+/// shape returns `Disqualified` silently; a failed read returns
+/// `Unreadable` with a warning. A kept body's indexed read is no
+/// longer required to claim: it decides which table band the claim
+/// lands at, from applied type at the top to raw bytes only at the
+/// bottom.
 async fn read_object<S: ScanSource>(
     source: &S,
     item: &DataItem,
@@ -656,11 +672,11 @@ async fn read_object<S: ScanSource>(
     // The widths the indexing bodies' guards imply; guards naming no
     // width do not narrow.
     let implied: BTreeSet<u64> = reads.iter().filter_map(|read| read.width).collect();
-    // Resolution in the spec's order, over strides: the listing's
-    // applied type claims its stride, and claims nothing when the
-    // bytes or a guard contradict it; failing the applied type, the
-    // guards narrow the viable strides to one; and several strides
-    // nothing resolves claim nothing.
+    // Resolution runs over the strides, in the spec's order. The
+    // listing's applied type claims its stride, and claims nothing
+    // when the bytes or a guard contradict it. Failing the applied
+    // type, the guards narrow the viable strides to one. Several
+    // strides nothing resolves claim nothing.
     let applied = applied_family(&item.type_name, item.length);
     let mut confidence = None;
     let family = if let Some(applied) = applied {
@@ -709,20 +725,20 @@ async fn read_object<S: ScanSource>(
         family
     };
 
-    // The entries the claim reports and vetoes against: the raw
-    // little-endian chunk at the chosen width — for the float
-    // families, the entries' IEEE-754 bit patterns, kept whole for
-    // codegen to re-spell.
+    // The entries the claim reports, and that the pointer gates
+    // below then check: the raw little-endian chunk at the chosen
+    // width — for the float families, the entries' IEEE-754 bit
+    // patterns, kept whole for codegen to re-spell.
     let entries: Vec<u64> = bytes.chunks(family.width as usize).map(le_u64).collect();
     let count = entries.len();
     // The pointer gates: an entry equal to one of the addresses the
     // function listing names is a pointer to a function start. Every
     // entry resolving is a dispatch table — the callback crate's
-    // jump-table reading is that owner outright — and some entries
-    // resolving is a half-decoded mix that never lands as a false
-    // const array, so one resolving entry claims nothing. A value the
-    // listing does not name is an ordinary scalar: the veto is
-    // resolution, not magnitude.
+    // jump-table reading owns that outright. Some entries resolving
+    // is a half-decoded mix that never lands as a false const array.
+    // So one resolving entry claims nothing. A value the listing does
+    // not name is an ordinary scalar: the veto is resolution, not
+    // magnitude.
     let pointers = entries
         .iter()
         .filter(|entry| function_starts.contains(entry))
@@ -740,11 +756,11 @@ async fn read_object<S: ScanSource>(
     let mut values = entries;
     values.truncate(MAX_INLINE_TABLE_VALUES);
 
-    // The referencing functions come from the engine's
+    // The referencing functions come from the analysis engine's
     // cross-references — ascending, deduped. A failed xref read is
     // logged and left empty: the claim rests on the bytes and the
     // body read; the functions only widen the per-function view and
-    // settle the tier.
+    // settle the band.
     let functions: Vec<String> = match source.xrefs_to(item.address).await {
         Ok(xrefs) => xrefs
             .iter()
@@ -763,10 +779,10 @@ async fn read_object<S: ScanSource>(
         }
     };
 
-    // The tier, last settled against what actually stands behind the
-    // claim: applied type and guard-corroborated claims scored during
-    // resolution; an open claim at indexed read (high-mid), named
-    // cross-references (mid), or nothing at all (low).
+    // The band, settled last against what actually stands behind the
+    // claim. Applied type and guard-corroborated claims scored during
+    // resolution; an open claim lands at an indexed read (high-mid),
+    // named cross-references (mid), or nothing at all (low).
     let confidence = confidence.unwrap_or(if !reads.is_empty() {
         CORROBORATED_CONFIDENCE
     } else if !functions.is_empty() {
@@ -777,8 +793,8 @@ async fn read_object<S: ScanSource>(
 
     // The evidence a reviewer checks: the resolution's strongest
     // backing first — the applied listing type when it decided the
-    // claim — then the indexed-read lines, and for a decode-only
-    // claim the decode itself with what referencing it amounts to.
+    // claim — then the indexed-read lines. For a decode-only claim,
+    // the decode itself, with what referencing it amounts to.
     let mut evidence: Vec<String> = Vec::new();
     if confidence == APPLIED_TYPE_CONFIDENCE {
         evidence.push(format!(
@@ -829,23 +845,24 @@ async fn read_object<S: ScanSource>(
     })
 }
 
-/// The program's data tables: every object the engine's data listing
-/// defines whose bytes decode coherently at exactly one resolved
-/// stride, that no kept body stores through, and whose entries none of
-/// which resolves to a listed function start, in listing order.
-/// `table_usage` is parallel to `items` — what the walk collected from
-/// the bodies it kept, per object — and `function_starts` is the
-/// address set the function listing names, which the pointer gates
-/// resolve entries against. A failed listing fails the run like the
-/// function listing's failure (the engine reads it before calling
-/// this); a disqualified or unresolved shape skips that object silently.
+/// The program's data tables, in listing order: every object the
+/// analysis engine's data listing defines whose bytes decode
+/// coherently at exactly one resolved stride, that no kept body
+/// stores through, and none of whose entries resolves to a listed
+/// function start. `table_usage` is parallel to `items` — what the
+/// walk collected per object from the bodies it kept — and
+/// `function_starts` is the address set the function listing names,
+/// which the pointer gates resolve entries against. A failed listing
+/// fails the run like the function listing's failure does (the scan
+/// reads it before calling this); a disqualified or unresolved shape
+/// skips that object silently.
 ///
 /// Beside the tables, the second half of the pair names every object
-/// whose memory window never arrived — a failed read or a short one — in
-/// listing order (issue #348). Those objects went unexamined, and the
-/// engine's coverage record says so; an object it read and refused to
-/// claim a table for is not named, because that gap is the object's
-/// shape, not the scan's border.
+/// whose memory window never arrived — a failed read or a short one
+/// — in listing order (issue #348). Those objects went unexamined,
+/// and the scan's coverage record says so. An object the scan read
+/// and declined to claim a table for is not named: that gap is the
+/// object's shape, not the scan's border.
 pub(crate) async fn data_tables<S: ScanSource>(
     source: &S,
     items: &[DataItem],
@@ -1051,10 +1068,11 @@ mod tests {
 
     #[test]
     fn a_wide_magnitude_spread_reads_as_padding_not_a_table() {
-        // Nonzero and distinct, but the entry magnitudes run a billion
-        // fold apart — scattered flags and masks, not one coherent run
-        // of values. The float misreads join the verdict: a NaN entry
-        // and subnormal-scale bit patterns are never a sane decode.
+        // Nonzero and distinct, but the entry magnitudes span a
+        // billion-fold range — scattered flags and masks, not one
+        // coherent run of values. The float misreads join the
+        // verdict: a NaN entry and subnormal-scale bit patterns are
+        // never a sane decode.
         let bytes: Vec<u8> = [1u32, 2, 0xFFFF_FFF0]
             .into_iter()
             .flat_map(u32::to_le_bytes)
@@ -1094,7 +1112,7 @@ mod tests {
         // The array count has to square with the object's length.
         assert!(applied_family("float [4]", 12).is_none());
         // A bare object with no listing type, and everything the
-        // engine spells as opaque, names no stride.
+        // analysis engine spells as opaque, names no stride.
         assert!(applied_family("undefined", 24).is_none());
         assert!(applied_family("IMAGE_DOS_HEADER", 24).is_none());
         assert!(applied_family("undefined8 *", 24).is_none());

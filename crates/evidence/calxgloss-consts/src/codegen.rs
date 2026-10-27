@@ -8,10 +8,11 @@
 //! the named, protocol, and color constants using each record's name,
 //! and a `pub const` array per data table with its element type and
 //! decoded entries.
-//! The renderer is pure — data in, string out, no engine and no clock —
-//! and deterministic: it stamps no timestamp and sorts every section,
-//! so two renders of the same document are byte-identical and a rescan
-//! produces a reviewable diff, not churn.
+//! The renderer is pure: data in, string out, no analysis engine
+//! call and no clock reading. It is deterministic: it stamps no
+//! timestamp and sorts every section, so two renders of the same
+//! document are byte-identical and a rescan produces a reviewable
+//! diff, not churn.
 //!
 //! The rendering rules (ADR-0013's derived-rendered-artifact pattern,
 //! applied to constant findings):
@@ -36,9 +37,9 @@
 //! - **Everything sorted.** Families by mask, enums by function then
 //!   run start, constants by value, tables by address — so the same
 //!   document always renders the same blocks in the same order.
-//! - **The header always stands, the body only when supported.** An
-//!   empty result renders a header-only file: the header names the
-//!   binary and nothing else, never the scan time.
+//! - **The header always stands; declarations only where findings
+//!   back them.** An empty result renders a header-only file: the
+//!   header names the binary and nothing else, never the scan time.
 //!
 //! The output is a *derived artifact*: regenerated from the loaded
 //! document beside the JSON it came from, and never read back — the
@@ -63,12 +64,12 @@ const RUST_KEYWORDS: &[&str] = &[
 
 /// Render the result's findings as one Rust source string.
 ///
-/// Declarations appear sorted by record — families by mask, enums by
-/// function then run start, constants by value, tables by address —
-/// and nothing volatile
-/// (timestamps, counts) is written, so the same document always renders
-/// to the same bytes. An empty result renders a header-only file: the
-/// header names the binary and stands on its own.
+/// Declarations appear sorted by record: families by mask, enums by
+/// function then run start, constants by value, tables by address.
+/// Nothing volatile (timestamps, counts) is written, so the same
+/// document always renders to the same bytes. An empty result
+/// renders a header-only file: the header names the binary and
+/// stands on its own.
 pub fn render_codegen(result: &ConstResult) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -235,9 +236,9 @@ fn render_constants(result: &ConstResult, taken: &mut HashSet<String>, out: &mut
 /// sorted by address, named by the label's Rust form (the mechanical
 /// uppercase spelling for a bare `DAT_*`/`switchD_*` label, the
 /// meaningful label verbatim). The declared length is the number of
-/// entries actually spelled, so the file always compiles; a truncated
+/// entries actually spelled, so the file always compiles. A truncated
 /// record gets a comment above the declaration stating the full entry
-/// count rather than pretending the prefix is the whole table. Float
+/// count, rather than pretending the prefix is the whole table. Float
 /// entries are the raw bit patterns the record carries, re-spelled as
 /// the float literals their element type names.
 fn render_tables(result: &ConstResult, taken: &mut HashSet<String>, out: &mut String) {
@@ -285,12 +286,12 @@ fn render_tables(result: &ConstResult, taken: &mut HashSet<String>, out: &mut St
 /// enough to read as a row, narrow enough to keep the file diffable.
 const VALUES_PER_LINE: usize = 12;
 
-/// The literal one decoded entry spells: integers in hex as the rest
-/// of the file spells values; a float entry is the record's raw
-/// IEEE-754 bit pattern, formatted back through its element type to
-/// the shortest decimal that reads as the same float. A non-finite
-/// bit pattern — one the engine's decode gate refuses, but a
-/// hand-edited document can carry — spells the type's `NAN`,
+/// The literal one decoded entry spells. Integers spell in hex, as
+/// the rest of the file spells values. A float entry is the record's
+/// raw IEEE-754 bit pattern, formatted back through its element type
+/// to the shortest decimal that reads as the same float. A non-finite
+/// bit pattern — one the data-table reading's decode gate refuses,
+/// but a hand-edited document can carry — spells the type's `NAN`,
 /// `INFINITY`, or `NEG_INFINITY` path so the emitted array stays
 /// valid Rust whatever the record holds.
 fn table_value(element_type: &str, value: u64) -> String {
@@ -677,8 +678,9 @@ mod tests {
     #[test]
     fn a_non_finite_bit_pattern_still_renders_a_compiling_literal() {
         // The record is data a hand-edited document can carry anything
-        // in: the engine's decode gate refuses non-finite floats, but
-        // a stray bit pattern still has to spell valid Rust.
+        // in: the data-table reading's decode gate refuses non-finite
+        // floats, but a stray bit pattern still has to spell valid
+        // Rust.
         let rendered = render_codegen(&result_with(
             "eqmain.dll",
             vec![table(
@@ -764,8 +766,8 @@ mod tests {
             vec![
                 enum_candidate("weird/name!", &[0, 1, 2]),
                 enum_candidate("weird/name!", &[3, 4, 5]),
-                // A context name that spells exactly what a palette
-                // color would be named: the collision gains a suffix.
+                // A context name spelled exactly like the name a
+                // palette color would get: the collision gains a suffix.
                 named(0x280, Some("COLOR_0x280")),
                 palette(&[0x280]),
             ],
