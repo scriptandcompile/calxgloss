@@ -1,9 +1,9 @@
 //! Batch translation — translate multiple functions in sequence.
 //!
 //! This module provides types for batch translation results. The actual
-//! [`batch_translate`](TranslationPipeline::batch_translate) method lives
-//! directly on [`TranslationPipeline`] in the parent module to avoid trait
-//! self-reference issues.
+//! [`batch_translate`](crate::TranslationPipeline::batch_translate) method
+//! lives directly on [`TranslationPipeline`](crate::TranslationPipeline),
+//! re-exported at the crate root, to avoid trait self-reference issues.
 //!
 //! # Example
 //!
@@ -72,9 +72,9 @@ pub struct FunctionResult {
 
     /// Carry-over provenance (issue #299): when attempt 1 was seeded from
     /// an accepted translation of a paired previous-version function, the
-    /// record names that function and the attempt branch the code rode in
-    /// on. `None` for a fresh translation — and for a seeded unit whose
-    /// fresh chain ultimately won, since then the winning code is the LLM's.
+    /// record holds that function's name and the attempt branch the code
+    /// arrived in. `None` for a fresh translation — and for a seeded unit
+    /// whose fresh chain ultimately won, since then the winning code is the LLM's.
     pub carry_over: Option<crate::carry_over::CarryOverRecord>,
 }
 

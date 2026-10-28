@@ -1,9 +1,9 @@
 //! Direct translation — the [`Translator`] struct and [`Translation`] result type.
 //!
-//! This module provides the simplest translation path: you provide the LLM with
-//! disassembly and decompiler output, and it returns Rust code. It skips
-//! engine fetching, API tagging, and test generation — useful for manual
-//! or cached data.
+//! This module provides the simplest translation path: you give the LLM the
+//! disassembly and decompiler output, and it returns Rust code. It skips the
+//! analysis-engine fetch, the API tagging, and the test generation — useful
+//! for manual or cached data.
 
 use calxgloss_llm::{LlmClient, LlmMessage};
 use calxgloss_types::{BinaryIdentity, ContextTier, TestCase, TranslationRequest};
@@ -57,7 +57,7 @@ pub struct Translation {
 
     /// The context tier that was used for this translation.
     /// Indicates how much context the LLM received; used for
-    /// token usage tracking and future tier selection.
+    /// token usage tracking and future context tier selection.
     pub context_tier: ContextTier,
 
     /// Enriched call graph context with caller/callee details and
@@ -77,8 +77,8 @@ pub struct Translation {
 /// Direct translation using pre-collected function data.
 ///
 /// Use this when you already have the function's disassembly and decompiler
-/// output from another source (e.g., cached engine data, manual extraction).
-/// It skips the analysis step and sends the data directly to the LLM.
+/// output from another source (e.g., cached analysis-engine data, manual
+/// extraction). It skips the analysis step and sends the data directly to the LLM.
 ///
 /// # Example
 ///
@@ -154,8 +154,8 @@ impl Translator {
 
     /// Translate using a structured translation request with full context.
     ///
-    /// This builds a rich prompt including Windows API mappings and baseline
-    /// tests, providing the LLM with maximum context for accurate translation.
+    /// This builds a full prompt with Windows API mappings and baseline tests,
+    /// so the LLM has maximum context for an accurate translation.
     ///
     /// # Arguments
     ///

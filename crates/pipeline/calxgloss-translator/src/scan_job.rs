@@ -4,25 +4,25 @@
 //! the batch, so every scan owns what it reads: [`ScanJob`] holds clones
 //! of the two reads a scan makes — the workspace and the batch's shared
 //! read source — and nothing else. The scan's shape — the cached-document
-//! short-circuit, the engine call, the document persist, the
+//! short-circuit, the analysis-engine call, the document persist, the
 //! warn-and-continue degradation, and the completion log — lives in one
 //! place now: the scan registry's generic pass
 //! ([`ScanDescriptor::new`](crate::scan_registry::ScanDescriptor::new),
 //! issue #302), which runs every scan from its row over this handle's
 //! [`ScanContext`](crate::scan_registry::ScanContext).
 //!
-//! The handle once carried fourteen hand-written scan methods, and the
-//! pipeline's fourteen `ensure_*` entry points and per-engine wrappers
-//! reached them one at a time; issue #308 deleted that whole legacy
-//! surface, so nothing reaches this handle except through a row. The
-//! pass heartbeat is the scan phase's — armed once around the whole
+//! The handle once had fourteen hand-written scan methods, and the
+//! pipeline's fourteen `ensure_*` entry points and per-analysis-engine
+//! wrappers reached them one at a time; issue #308 deleted that whole
+//! legacy surface, so nothing reaches this handle except through a row.
+//! The pass heartbeat is the scan phase's — armed once around the whole
 //! group by
 //! [`run_prebatch_scans`](crate::TranslationPipeline::run_prebatch_scans),
-//! not per scan (issue #239) — and the one ordering edge between scans
-//! rides the registry's declared row dependency and its generic
-//! [`CompletionLatch`](crate::scan_registry::CompletionLatch), armed per
-//! phase and carried on the row's context; this handle names no latch
-//! at all (issue #305).
+//! not per scan (issue #239). The one ordering rule between scans comes
+//! from the registry's declared row dependency and its generic
+//! [`CompletionLatch`](crate::scan_registry::CompletionLatch): armed per
+//! phase and passed on the row's context; this handle itself contains no
+//! latch (issue #305).
 
 use std::path::{Path, PathBuf};
 
@@ -47,7 +47,7 @@ pub(crate) struct ScanJob {
 
     /// The batch's shared read source at the moment the job was built: the
     /// armed [`CachedScanSource`](calxgloss_decomp::CachedScanSource) or the
-    /// loaded engine. Every engine read goes through this clone.
+    /// loaded analysis engine. Every analysis-engine read goes through this clone.
     source: PipelineSource,
 }
 
@@ -63,9 +63,9 @@ impl ScanJob {
     }
 
     /// The registry's view of this job: the same owned reads, with empty
-    /// completion latches (issues #302, #305) — the phase wires the row's
-    /// declared dependency's latches onto the context before the row runs,
-    /// so the handle itself never names or arms one.
+    /// completion latches (issues #302, #305) — the phase attaches the
+    /// latches for the row's declared dependency to the context before the
+    /// row runs, so the handle itself never contains or arms one.
     pub(crate) fn scan_context(&self) -> crate::scan_registry::ScanContext {
         crate::scan_registry::ScanContext {
             binary: self.binary.clone(),

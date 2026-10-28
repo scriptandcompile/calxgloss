@@ -1,16 +1,16 @@
-//! Translation pipeline — engine scan + LLM + prompt orchestration.
+//! Translation pipeline — analysis-engine scan + LLM + prompt orchestration.
 //!
-//! This crate provides the [`TranslationPipeline`] struct, which wires together
-//! all the pieces needed to translate a disassembled function to Rust. A pass
-//! is never hand-built: it is described with a
-//! [`PipelineSpec`](assembly::PipelineSpec) and wired once by the
-//! [`assembly`](assembly) module — the constructor and `with_*` setters are
+//! This crate provides the [`TranslationPipeline`] struct: it brings together
+//! everything needed to translate a disassembled function to Rust. A pass is
+//! never hand-built: it is described with a
+//! [`PipelineSpec`](assembly::PipelineSpec) and assembled once by the
+//! [`assembly`] module — the constructor and `with_*` setters are
 //! assembly-internal (issue #328). The steps an assembled pass runs:
 //!
-//! 1. Pull function data from the engine (disassembly, decompiler output)
+//! 1. Fetch function data from the analysis engine (disassembly, decompiler output)
 //! 2. Tag Windows API calls with their PAL mappings
 //! 3. Generate baseline test inputs from function signature and disassembly
-//! 4. Build a structured prompt bundling all context
+//! 4. Build a structured prompt that includes all context
 //! 5. Send the prompt to the LLM for Rust code generation
 //! 6. Return the translated code along with metadata
 
@@ -56,9 +56,9 @@ mod tests {
     use calxgloss_types::ContextTier;
     use calxgloss_types::FunctionInfo;
 
-    /// The fixture target loaded under the Kuna engine — the only engine
-    /// (issue #214). These tests never read through the source; it only
-    /// arms the pipeline.
+    /// The fixture target loaded through the Kuna analysis engine — the
+    /// only one (issue #214). These tests never read through the source;
+    /// it only sets the pipeline up.
     fn fixture_kuna() -> calxgloss_kuna::KunaSource {
         let target = calxgloss_testfixtures::load_target()
             .expect("fixture target should build and validate");
@@ -147,8 +147,8 @@ mod tests {
 
         // This is the verbatim decompilation of `FUN_18008ed50` in `eqmain.dll`.
         // Reading the parameter list as everything between the first `(` and the
-        // last `)` would swallow the whole body and report the parameters of the
-        // expression, not of the function.
+        // last `)` would take the whole body as the parameter list and report the
+        // expression's parameters, not the function's.
         let func_info = FunctionInfo {
             name: "FUN_18008ed50".to_string(),
             address: 0x18008ed50,
@@ -192,7 +192,7 @@ mod tests {
         };
 
         // With nothing to read, the fallback declares no parameters. It
-        // previously invented three, which generated test cases feeding
+        // previously invented three, which generated test cases passing
         // arguments to a function that takes none.
         assert_eq!(
             pipeline.signature_for(&func_info),
@@ -281,8 +281,8 @@ mod tests {
         );
 
         // The line names no convention, so the detected cdecl is spelled
-        // into the slot the signature parser reads — the blanket __stdcall
-        // default no longer stands for a function the scan read as cdecl.
+        // into the slot the signature parser reads — the default __stdcall
+        // no longer stands in for a function the scan read as cdecl.
         let signature = pipeline.signature_for(&func_info);
         assert_eq!(
             signature,
@@ -357,7 +357,7 @@ mod tests {
         let func_info = synthesis_function("SomeFunc", "test.dll", "");
 
         // With no decompiler line at all, the placeholder spells the detected
-        // fastcall instead of the blanket __stdcall.
+        // fastcall instead of using the `__stdcall` default.
         assert_eq!(
             pipeline.signature_for(&func_info),
             "int __fastcall SomeFunc()"
@@ -391,11 +391,11 @@ mod tests {
         );
         let signature = pipeline.signature_for(&func_info);
 
-        // The binding built from the refined signature carries the detected
-        // thiscall rather than a default — the parser and the binding
-        // builder already carry the field, so the spelling flows through
-        // them unchanged, and shim signatures rendered from the same
-        // refined string carry it the same way.
+        // The binding built from the refined signature includes the detected
+        // thiscall instead of a default. The parser and the binding builder
+        // already store the convention field, so the spelling passes through
+        // them unchanged, and shim signatures rendered from the same refined
+        // string include it the same way.
         let binding =
             calxgloss_testgen::generate_ffi_binding("game_logic.dll", "DrawSprite", &signature)
                 .expect("the refined signature should still parse into a binding");
@@ -752,11 +752,11 @@ mod tests {
 
     #[test]
     fn test_plan_from_callgraph_orders_shared_globals_behind_the_persisted_index() {
-        // The plan consumes the persisted shared-globals index: the
-        // document was hand-written into the workspace through the
-        // persistor — no global-state scan runs, plan_from_callgraph
-        // never touches the engine — and its index entry puts the
-        // definer ahead of the reuser within the tier (issue #256).
+        // The plan reads the persisted shared-globals index: the document
+        // was hand-written into the workspace through the persistor — no
+        // global-state scan runs, and plan_from_callgraph never reads the
+        // analysis engine — and its index entry puts the definer ahead of
+        // the reuser within the tier (issue #256).
         use calxgloss_callgraph::FunctionCallGraph;
         use calxgloss_globalstate::persist::GlobalStatePersistor;
         use calxgloss_globalstate::types::{

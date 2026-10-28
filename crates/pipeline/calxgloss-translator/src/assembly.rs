@@ -1,53 +1,53 @@
-//! Pipeline assembly — the seam that turns a pass description into a wired pipeline.
+//! Pipeline assembly — the seam that turns a pass description into a ready-to-run pipeline.
 //!
 //! This is the expand step of epic #322 (issue #323): the vocabulary
 //! ([`PipelineSpec`]), the single assembly function ([`assemble`]), and the
 //! assembled-pass outcome ([`AssembledPass`]). `auto` runs through the seam
 //! (issue #325), and so do `translate` and `batch-translate` (issue #326):
-//! the CLI folds its resolved settings into the vocabulary, layers each
-//! command's run options on, and calls assembly once per pass. The web
+//! the CLI puts its resolved settings into the vocabulary, adds each
+//! command's run options on top, and calls assembly once per pass. The web
 //! server's patch retry joins through [`assemble_patch`] (issue #327), the
-//! entry point for a pass that loads its own engine — with every production
-//! call site moved through, this module is the only one that calls
-//! [`TranslationPipeline::new`].
+//! entry point for a pass that loads its own analysis engine — with every
+//! production call site moved through the seam, this module is the only
+//! caller of `TranslationPipeline::new`.
 //!
 //! Reachability follows the epic's rule: the module is public on the crate
 //! path (`calxgloss_translator::assembly`) but the seam types are *not*
 //! re-exported at the crate root, so the root surface stays unchanged while
-//! facades wire through the module path — and no new hand-rolled construction
-//! appears by reaching through the root.
+//! facades build passes through the module path — and no new hand-rolled
+//! construction appears by reaching through the root.
 //!
 //! # Scope of the vocabulary (real knobs only)
 //!
 //! Every field here corresponds to a knob that exists in the codebase today —
-//! the reference is the hand-built dance `interface/calxgloss-cli/src/
-//! commands/auto.rs` carried until issue #325 moved it through `assemble`,
-//! with the same dance its `commands/translate.rs` and
-//! `commands/batch_translate.rs` twins carried until issue #326 moved them
-//! through too. The epic's prose names spec fields with no implementation
-//! counterpart anywhere (a target dialect, an LLM-call budget, context-
-//! trimming limits beyond the LLM context window, toolchain paths, a testgen
-//! timeout, a `no_tests` toggle, git policy and author); those are
-//! intentionally absent. A spec field that only round-trips through assembly
-//! would be a hidden test of a behavior that does not exist, so each belongs
-//! to the ticket that builds the behavior, not to this seam.
+//! the reference is the hand-built sequence `interface/calxgloss-cli/src/
+//! commands/auto.rs` ran until issue #325 moved it through `assemble`, and
+//! the same sequence its `commands/translate.rs` and
+//! `commands/batch_translate.rs` twins ran until issue #326 moved them
+//! through too. The epic's prose names spec fields that have no
+//! implementation counterpart anywhere (a target dialect, an LLM-call
+//! budget, context-trimming limits beyond the LLM context window, toolchain
+//! paths, a testgen timeout, a `no_tests` toggle, git policy and author); those
+//! are intentionally absent. A spec field that only round-trips through
+//! assembly would be a hidden test of a behavior that does not exist, so each
+//! belongs to the ticket that builds the behavior, not to this seam.
 //!
 //! # What `assemble` guarantees
 //!
-//! - The LLM is **mandatory**: a spec carrying neither a prebuilt client nor a
+//! - The LLM is **mandatory**: a spec with neither a prebuilt client nor a
 //!   description that can build one fails assembly with
 //!   [`TranslatorError::MissingLlm`] — no pass runs quietly without an LLM. A
-//!   description whose endpoint cannot produce a client folds the
+//!   description whose endpoint cannot produce a client turns the
 //!   [`calxgloss_llm::LlmError`] into the crate's existing
 //!   [`TranslatorError::Llm`] — no new error enum.
-//! - Patch mode honors the configured Kuna budget *for the engine load it
-//!   makes*: the CLI loads every pass's engine through
+//! - Patch mode keeps the configured Kuna budget *for the analysis-engine
+//!   load it makes*: the CLI loads every pass's analysis engine through
 //!   `KunaSource::load_with_budget(…, settings.kuna_budget())`, and a
 //!   patch-retry pass assembles that load itself from the spec's binary path
-//!   under the spec's budget. Normal passes receive the engine their facade
-//!   loaded (per-binary budget selection stays a facade concern until the
-//!   epic folds the call sites).
-//! - The retry config the pass carries matches what the hand-built ladder
+//!   under the spec's budget. Normal passes receive the analysis engine their
+//!   facade loaded (per-binary budget selection stays a facade concern until
+//!   the epic moves the call sites through the seam).
+//! - The retry config the pass gets matches what the hand-built path
 //!   produces today: the spec's policy with escalation always on and no
 //!   context-tier cap (the pipeline's scope constraints cap it downstream —
 //!   assembly never raises it).
@@ -70,11 +70,11 @@ use crate::error::{Result, TranslatorError};
 use crate::pipeline::{TranslationPipeline, build_hallucination_detector};
 use crate::retry::RetryConfig;
 
-/// What an agent wants an LLM pass to talk to: the endpoint and model, plus
-/// the optional settings the client supports.
+/// What an LLM pass should talk to: the endpoint and model, plus the
+/// optional settings the client supports.
 ///
 /// Mirrors the settings vocabulary (`Settings::llm_client`'s callers build a
-/// client from exactly these fields); a spec carrying a description has its
+/// client from exactly these fields); a spec with a description gets its
 /// client built during assembly, and a client that cannot be built is an
 /// assembly error, not a pass that quietly has no LLM.
 #[derive(Debug, Clone)]
@@ -102,15 +102,15 @@ pub enum LlmSelection {
     Client(LlmClient),
     /// Endpoint and model to build a client from — assembly builds it, and a
     /// description with an invalid endpoint fails the assembly (the
-    /// [`calxgloss_llm::LlmError`] folds into [`TranslatorError::Llm`]).
+    /// [`calxgloss_llm::LlmError`] is turned into [`TranslatorError::Llm`]).
     Description(LlmDescription),
 }
 
 /// The name and location of the binary a pass targets: the seam's one binary
-/// notion, so a caller never carries a display name and a path separately.
+/// notion, so a caller never passes a display name and a path separately.
 ///
 /// `name` is the bare file name (`fixture_target.dll`) shown in reports and
-/// carried as the pipeline's binary identity; `path` locates the bytes on
+/// used as the pipeline's binary identity; `path` locates the bytes on
 /// disk for patch loads and the batch's read cache key.
 #[derive(Debug, Clone)]
 pub struct BinaryTarget {
@@ -123,7 +123,7 @@ pub struct BinaryTarget {
 /// A complete description of one translation pass: everything that separates
 /// one pass from another, as plain data a facade builds from its options.
 ///
-/// Plain struct fields carry the vocabulary; every field defaults to unset.
+/// The vocabulary sits in plain struct fields; every field defaults to unset.
 /// Options with no pipeline behavior behind them are absent from the spec
 /// rather than present-and-ignored (see the module docs). Fields the spec
 /// leaves unset keep pipeline defaults.
@@ -136,17 +136,17 @@ pub struct PipelineSpec {
     /// The workspace the pass operates in (reports, caches, and the verifier's
     /// build root live under it).
     pub workspace: PathBuf,
-    /// This pass is a patch-retry pass: `assemble` loads the engine for the
-    /// pass itself, under the spec's Kuna budget, from the spec's binary path.
+    /// This pass is a patch-retry pass: `assemble` loads the analysis engine
+    /// for the pass itself from the spec's binary path, under its Kuna budget.
     pub patch_mode: bool,
-    /// The binary this pass targets, when the pass names one (the CLI
+    /// The binary this pass targets, when the pass gives one (the CLI
     /// commands and patch retries do; a bare spec may not).
     pub target_binary: Option<BinaryTarget>,
-    /// Kuna budget for the engine loads this assembly performs (patch mode).
-    /// The facade chooses per-binary budgets and passes the one this pass
-    /// wants.
+    /// Kuna budget for the analysis-engine loads this assembly performs
+    /// (patch mode). The facade chooses per-binary budgets and passes the
+    /// one this pass wants.
     pub kuna_budget: KunaBudget,
-    /// The PAL mapping table this pass answers to (a caller's custom table);
+    /// The PAL mapping table this pass uses (a caller's custom table);
     /// `None` uses the built-in default table.
     pub api_mappings: Option<ApiMappings>,
     /// Retry: attempts per unit before escalating to full-patch context.
@@ -166,11 +166,11 @@ pub struct PipelineSpec {
     pub refresh_cache: bool,
 
     // ---- Injected collaborators (object args, never option strings) ----
-    // The same handles the `with_*` setters carry today; a facade that owns
-    // long-lived handles (a web server's events, a CLI run's control) hands
-    // them through the spec and `assemble` wires them.
+    // The same handles the `with_*` setters take today; a facade that owns
+    // long-lived handles (a web server's events, a CLI run's control) passes
+    // them through the spec and `assemble` sets them on the pipeline.
     /// The accepted-attempt port that makes carry-over seeding live
-    /// (the CLI wires the git journal here when git is enabled).
+    /// (the CLI passes the git journal here when git is enabled).
     pub accepted_attempt_source: Option<Arc<dyn AcceptedAttemptSource>>,
     /// Translation progress events.
     pub events: Option<TranslationEvents>,
@@ -180,9 +180,9 @@ pub struct PipelineSpec {
     pub pipeline_control: Option<PipelineControl>,
     /// Per-unit cancellation control.
     pub unit_cancellation: Option<UnitCancellation>,
-    /// The translation scope for a pass that carries one.
+    /// The translation scope for a pass that has one.
     pub scope: Option<ScopeControl>,
-    /// Per-function reviewer overrides for a pass that carries them.
+    /// Per-function reviewer overrides for a pass that has them.
     pub overrides: Option<OverrideControl>,
 }
 
@@ -224,12 +224,12 @@ impl std::fmt::Debug for PipelineSpec {
     }
 }
 
-/// A pass ready to run: the wired pipeline, its verifier, and its retry
-/// configuration — what a facade's command body reaches for once assembly is
-/// done, and what the retry loop consumes.
+/// A pass ready to run: the assembled pipeline, its verifier, and its retry
+/// configuration — what a facade's command body uses once assembly is done,
+/// and what the retry loop consumes.
 pub struct AssembledPass {
-    /// The pipeline, wired from the spec: LLM, engine, mappings, workspace,
-    /// detector, and the injected handles all set.
+    /// The pipeline, assembled from the spec: LLM, analysis engine,
+    /// mappings, workspace, detector, and the injected handles all set.
     pub pipeline: TranslationPipeline,
     /// The verifier that compiles generated tests (the spec's workspace is
     /// its working directory).
@@ -238,9 +238,9 @@ pub struct AssembledPass {
     pub retry: RetryConfig,
 }
 
-/// Field names only: the pipeline and the verifier own state (engine threads,
-/// caches) with no meaningful `Debug` view, and a test that fails to print a
-/// pass only needs to know which fields it cared about.
+/// Field names only: the pipeline and the verifier hold state (analysis-
+/// engine threads, caches) with no meaningful `Debug` view, and a test that
+/// fails to print a pass only needs to know which fields it cared about.
 impl std::fmt::Debug for AssembledPass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AssembledPass")
@@ -253,25 +253,25 @@ impl std::fmt::Debug for AssembledPass {
 
 /// Assembles `spec` into a ready-to-run pass over `engine`.
 ///
-/// The engine is passed in because normal passes load it in their facade
-/// (the CLI loads with `settings.kuna_budget()`); each owns its own budget
-/// policy. The exception is patch mode with a named binary: there `assemble`
-/// performs the load itself, under the spec's Kuna budget, so an assembled
-/// patch pass provably honors the configured budget for its engine; the
-/// passed engine is used only when no binary path is on the spec. A caller
-/// that has no engine to hand — the web server's patch retry (issue #327) —
-/// uses [`assemble_patch`] instead of fabricating one for this parameter.
+/// The analysis engine is passed in because normal passes load it in their
+/// facade (the CLI loads with `settings.kuna_budget()`); each owns its own
+/// budget policy. The exception is patch mode with a named binary: there
+/// `assemble` performs the load itself, under the spec's Kuna budget, so an
+/// assembled patch pass provably keeps the configured budget for its
+/// analysis engine; the passed engine is used only when no binary path is on
+/// the spec. A caller with no analysis engine — the web server's patch retry
+/// (issue #327) — uses [`assemble_patch`] instead of fabricating one for the parameter.
 ///
-/// The wiring mirrors the reference dance `commands/auto.rs` carried until
-/// issue #325: detector built from the engine and the mapping table before
-/// the pipeline consumes them, testgen and detector wired first, then the
-/// call-graph flags, the injected handles, workspace, and the binary
-/// identity/path.
+/// The build order follows the reference sequence `commands/auto.rs` ran
+/// until issue #325: the detector is built from the analysis engine and the
+/// mapping table before the pipeline takes them, testgen and detector are
+/// set first, then the call-graph flags, the injected handles, workspace,
+/// and the binary identity/path.
 pub async fn assemble(spec: &PipelineSpec, engine: &KunaSource) -> Result<AssembledPass> {
     let llm = llm_from_spec(spec)?;
 
-    // Patch passes assemble their own load so the configured budget binds
-    // the engine this pass reads through (issue #211's budgets arm at load).
+    // Patch passes assemble their own load so the configured budget applies
+    // to the analysis engine this pass reads through (issue #211: budgets take effect at load).
     let engine = if spec.patch_mode {
         match spec.target_binary.as_ref() {
             Some(target) => KunaSource::load_with_budget(&target.path, None, spec.kuna_budget)?,
@@ -284,16 +284,16 @@ pub async fn assemble(spec: &PipelineSpec, engine: &KunaSource) -> Result<Assemb
     wire_pass(spec, engine, llm).await
 }
 
-/// Assembles a patch-retry pass from `spec` alone — no engine handed in.
+/// Assembles a patch-retry pass from `spec` alone — no analysis engine handed in.
 ///
 /// A patch pass names its binary (the unit under patch), so the description
-/// carries everything the pass needs: the engine load comes from the spec's
-/// binary path under the spec's Kuna budget, exactly as patch mode does in
-/// [`assemble`]. The web server's patch retry drives this entry (issue
-/// #327): it holds only its folded description, and a description whose LLM
-/// selection cannot produce a client is refused here — before any engine
-/// load, so a run started without LLM settings meets a clear assembly error
-/// at patch-request time, not a half-configured retry.
+/// has everything the pass needs: the analysis-engine load comes from the
+/// spec's binary path under the spec's Kuna budget, exactly as patch mode
+/// does in [`assemble`]. The web server's patch retry drives this entry
+/// (issue #327): it holds only its built description, and a description
+/// whose LLM selection cannot produce a client is refused here — before any
+/// analysis-engine load, so a run started without LLM settings meets a
+/// clear assembly error at patch-request time, not a half-configured retry.
 pub async fn assemble_patch(spec: &PipelineSpec) -> Result<AssembledPass> {
     let llm = llm_from_spec(spec)?;
 
@@ -336,17 +336,17 @@ fn llm_from_spec(spec: &PipelineSpec) -> Result<LlmClient> {
     }
 }
 
-/// The wiring both entries share: detector from the engine and the mapping
-/// table before the pipeline consumes them, testgen and detector wired
-/// first, then the call-graph flags, the injected handles, workspace, and
-/// the binary identity/path, and the retry ladder with the spec's policy.
+/// The build steps both entries share: the detector from the analysis
+/// engine and the mapping table before the pipeline takes them, testgen and
+/// detector set first, then the call-graph flags, the injected handles,
+/// workspace, the binary identity/path, and the retry config from the spec.
 async fn wire_pass(
     spec: &PipelineSpec,
     engine: KunaSource,
     llm: LlmClient,
 ) -> Result<AssembledPass> {
-    // The detector reads the engine and the mapping table; the pipeline then
-    // consumes both, so build it first — exactly as the hand-built paths do.
+    // The detector reads the analysis engine and the mapping table; the
+    // pipeline takes both next, so build it first — as the hand-built paths did.
     let api_mappings = spec.api_mappings.clone().unwrap_or_default();
     let detector = build_hallucination_detector(&engine, &api_mappings).await;
 
@@ -388,7 +388,7 @@ async fn wire_pass(
     if let Some(target) = &spec.target_binary {
         pipeline = pipeline.with_target_binary(target.name.clone());
         // The batch's shared read cache keys on the target's file bytes
-        // (issue #105) — the path rides with the name.
+        // (issue #105) — the path is stored alongside the name.
         pipeline = pipeline.with_binary_path(target.path.clone());
     }
     if spec.refresh_cache {
