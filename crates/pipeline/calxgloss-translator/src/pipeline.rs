@@ -3563,8 +3563,8 @@ mod tests {
         );
     }
 
-    /// A prioritized function sorts ahead of the rest of the queue, keeping
-    /// the remaining functions in their original order.
+    /// A prioritized function runs ahead of the rest of the queue; the
+    /// remaining functions keep their original order.
     #[tokio::test]
     async fn batch_translate_runs_priority_functions_first() {
         let dir = TempDir::new().expect("temp workspace");
@@ -4008,7 +4008,7 @@ void SetCursor(void)
     }
 
     /// `max_attempts` only ever lowers the attempt ceiling and the context
-    /// tier cap rides into the retry config (issue #93).
+    /// tier cap moves into the retry config (issue #93).
     #[test]
     fn constraints_cap_retry_config_without_raising_it() {
         let scope = ScopeControl::new();
@@ -4045,9 +4045,9 @@ void SetCursor(void)
         );
     }
 
-    /// A paused `PipelineControl` parks `batch_translate` at the next unit
-    /// boundary — the unit in flight is never interrupted — and the resume
-    /// continues exactly where it stopped (issue #90, W2.1).
+    /// A paused `PipelineControl` holds `batch_translate` open at the next
+    /// unit boundary — the unit in flight is never interrupted — and the
+    /// resume continues exactly where it stopped (issue #90, W2.1).
     #[tokio::test]
     async fn batch_translate_pauses_at_unit_boundary_and_resumes_where_it_stopped() {
         let dir = TempDir::new().expect("temp workspace");
@@ -4157,8 +4157,8 @@ void SetCursor(void)
         );
     }
 
-    /// A stop signal arriving while the loop is parked at a pause boundary
-    /// releases the park and ends the batch — server shutdown must never
+    /// A stop signal arriving while the loop is waiting at a pause boundary
+    /// releases the wait and ends the batch — server shutdown must never
     /// hang on a paused run (issue #90, W2.1).
     #[tokio::test]
     async fn batch_translate_stop_during_pause_releases_the_park() {
@@ -4169,7 +4169,7 @@ void SetCursor(void)
         control.start().expect("idle -> running");
         let stop = StopSignal::new();
 
-        // The "operator" side: once the run is parked in Paused, fire the
+        // The "operator" side: once the run is waiting in Paused, fire the
         // stop signal (what the shutdown endpoint does).
         let watched = control.clone();
         let stop_signal = stop.clone();
@@ -4211,7 +4211,7 @@ void SetCursor(void)
     /// A paused target binary ends `batch_translate` at the next unit
     /// boundary, mirroring the run-level stop test: the unit in flight
     /// completes and is counted, the remaining units never start — and,
-    /// unlike a run-level pause, the batch **returns** rather than parking
+    /// unlike a run-level pause, the batch **returns** rather than waiting
     /// for a resume (issue #219, part of #217). The scope handle is the
     /// in-memory one with no server, the same handle the web endpoints drive.
     #[tokio::test]
@@ -4224,10 +4224,10 @@ void SetCursor(void)
         let pipeline = pipeline_over(Some(dir.path())).with_scope(scope);
 
         let mut completed = 0;
-        // The timeout is the "never parks" assertion: a run-level pause
-        // would hold here until a resume that never arrives, while a binary
-        // pause ends the batch on its own. The bound is generous because the
-        // fifteen pre-analysis scans over the fixture run inside it.
+        // The timeout is the "never waits forever" assertion: a run-level
+        // pause would hold here until a resume that never arrives, while a
+        // binary pause ends the batch on its own. The bound is generous
+        // because the fifteen pre-analysis scans over the fixture run inside it.
         let batch = tokio::time::timeout(
             std::time::Duration::from_secs(300),
             pipeline.batch_translate(
@@ -4316,17 +4316,17 @@ void SetCursor(void)
         format!("http://{addr}/v1")
     }
 
-    /// Cancel-current on the unit in flight (issue #91, W2.2): the unit is
-    /// aborted at the earliest safe point — mid-LLM-call, against an LLM
-    /// that never answers, so without the abort the batch would sit until
-    /// the client timeout — the cancelled attempt is recorded as a failure,
-    /// its callback still runs so the caller can archive its branch, and
-    /// Cancel-current on the unit in flight (issue #91, W2.2): the unit is
-    /// aborted at the earliest safe point — mid-LLM-call, against an LLM
-    /// that never answers, so without the abort the batch would sit until
-    /// the client timeout — the cancelled attempt is recorded as a failure,
-    /// its callback still runs so the caller can archive its branch, and
-    /// the run continues with the next unit.
+    /// Cancel-current on the unit in flight (issue #91, W2.2): the test
+    /// aborts mid-LLM-call, at the earliest safe point, against an LLM
+    /// server that never answers — without the abort the batch would hang
+    /// until the client timeout. The abort is what keeps this test fast,
+    /// and what proves the pipeline can stop an attempt that is already
+    /// under way rather than only one that has not started. The
+    /// cancelled attempt is recorded as a failure, and its callback
+    /// still runs so the caller can archive that unit's branch even
+    /// though the attempt failed. Once the cancellation is recorded the
+    /// run moves on: the remaining queued units translate normally,
+    /// and the returned results show the cancelled unit as failed.
     #[tokio::test]
     async fn batch_translate_cancel_current_aborts_in_flight_unit_and_continues() {
         let dir = TempDir::new().expect("temp workspace");
@@ -4593,7 +4593,7 @@ void SetCursor(void)
         )
     }
 
-    /// The marquee for issue #261: the control-flow document the
+    /// The headline test for issue #261: the control-flow document the
     /// translator already loads for prompt context is the one source
     /// that feeds baseline test generation. Over the fixture harness,
     /// a persisted document carrying branch_site records for the unit
@@ -4711,7 +4711,7 @@ void SetCursor(void)
         let waiting = tokio::spawn(async move {
             tokio::time::timeout(std::time::Duration::from_secs(10), early.wait()).await
         });
-        // Park the spawned waiter on the unset latch before publishing.
+        // Keep the spawned waiter waiting on the unset latch before publishing.
         tokio::task::yield_now().await;
         assert!(
             !waiting.is_finished(),
@@ -4748,8 +4748,8 @@ void SetCursor(void)
             .scan_job("eqmain.dll")
             .expect("the workspace is configured, so the job exists");
 
-        // The latch the phase arms for the declared edge, wired onto the
-        // two rows exactly the way `registered_scan_tasks` wires it: the
+        // The latch the phase arms for the declared edge, attached to the
+        // two rows exactly the way `registered_scan_tasks` attaches it: the
         // inference row's run publishes it on every exit, the callback
         // row's pre-scan hook waits on it.
         let edge = CompletionLatch::new();
@@ -4797,7 +4797,7 @@ void SetCursor(void)
     }
 
     /// The wait is real, not incidental: a callback row holding an
-    /// unpublished latch is still parked well past the time the same
+    /// unpublished latch is still waiting well past the time the same
     /// scan takes over the fixture when it does not wait — and the
     /// publish releases it to a normal successful scan (issues #238,
     /// #305).
@@ -4909,7 +4909,7 @@ void SetCursor(void)
         );
     }
 
-    // The control-flow seam quads (cached hit, cache miss, failed save,
+    // The four control-flow seam tests (cached hit, cache miss, failed save,
     // no workspace) left with the `ensure_*` entry points they drove:
     // the registry's generic four-shape pass now runs every registered
     // row — control-flow included — through the same shapes at the
@@ -4982,7 +4982,7 @@ void SetCursor(void)
         }]
     }
 
-    /// The marquee: a first batch reads live and writes the scan cache
+    /// The headline test: a first batch reads live and writes the scan cache
     /// through, and a second batch over the same workspace with unchanged
     /// binary bytes replays from the cache. With no server to count calls
     /// at, the instrumentation is the documents themselves — the pattern
@@ -5163,7 +5163,7 @@ void SetCursor(void)
         }
     }
 
-    /// The scan phase arms one heartbeat once around the whole group
+    /// The scan phase arms one progress beat once around the whole group
     /// under the phase name (issue #239): a cold batch's beats name
     /// "evidence scans" and count unique functions consumed — later
     /// scans replaying a body warm from the read cache never push the
@@ -5179,7 +5179,7 @@ void SetCursor(void)
         let pipeline = pipeline.with_events(events);
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
-        // Cold batch: the first scan pays the engine and the rest replay
+        // Cold batch: the first scan reads the engine live and the rest replay
         // warm through the cached source — one phase row either way.
         pipeline
             .batch_translate(
@@ -5289,7 +5289,7 @@ void SetCursor(void)
     /// The fan-out keeps the engine the serial resource it has always
     /// been: across a cold phase's fifteen concurrent scans the engine
     /// call log shows every function of the listing exactly once — the
-    /// read cache's per-key cell collapses concurrent misses of one
+    /// read cache's per-key cell merges concurrent misses of one
     /// body into a single round trip (issue #240).
     #[tokio::test]
     async fn the_fanned_scan_phase_decompiles_each_function_exactly_once() {
@@ -5398,8 +5398,8 @@ void SetCursor(void)
     // ─── Carry-over seeding (issue #299) ───────────────────────────────
 
     /// The pipeline's carry-over track: a hand-filed pairing document for
-    /// the live bytes, plus a port answering which twins have accepted
-    /// (merged) translations. Mirrors the CLI's real wiring without git.
+    /// the live bytes, plus a source answering which paired binaries have
+    /// been accepted (merged). Mirrors the CLI's real setup without git.
     fn seeded_pipeline(
         dir: &std::path::Path,
         accepted: Vec<(String, u32, String)>,
@@ -5467,13 +5467,13 @@ void SetCursor(void)
         }
     }
 
-    /// The marquee for issue #299: with a confident pairing document naming
-    /// the live bytes and a paired twin whose translation was accepted, the
-    /// unit's attempt 1 carries the accepted code verbatim — the LLM port
-    /// stays untouched — and the unit still runs through the retry loop's
-    /// full verification. A below-floor pairing queues fresh exactly as
-    /// today: it reaches the (closed) LLM port and fails like any unit the
-    /// engine cannot answer for.
+    /// The headline test for issue #299: with a confident pairing document naming
+    /// the live bytes and a paired binary whose translation was accepted, the
+    /// unit's attempt 1 carries the accepted code verbatim — the LLM
+    /// endpoint stays untouched — and the unit still runs through the retry
+    /// loop's full verification. A below-floor pairing queues fresh exactly
+    /// as today: it reaches the (closed) LLM endpoint and fails like any
+    /// unit the engine cannot answer for.
     #[tokio::test]
     async fn a_batch_seeds_attempt_1_from_the_accepted_translation_of_a_paired_twin() {
         let dir = TempDir::new().expect("temp workspace");
@@ -5504,7 +5504,7 @@ void SetCursor(void)
             dir.path(),
             &binary_file,
             vec![
-                // A rename-aware pairing: the twin goes by another name.
+                // A rename-aware pairing: the paired binary goes by another name.
                 pairing("legacy_status", &status, 95),
                 // One point under the floor — today's fresh queue, exactly.
                 pairing(
@@ -5599,7 +5599,7 @@ void SetCursor(void)
     }
 
     /// The seeded attempt's own record names its source — the old function
-    /// and the attempt branch the code rode in on — and spends no tokens.
+    /// and the attempt branch the code arrived on — and spends no tokens.
     /// A known-library root's Skip classification also stands
     /// independently of pairing: a seed for a delay-load thunk never gets
     /// to translate it, refusal first.
@@ -5638,7 +5638,7 @@ void SetCursor(void)
                     rust_code: "fn carried_over() {}".to_string(),
                 },
             );
-        // A seed cannot smuggle a Skip-classified root past the refusal —
+        // A seed cannot slip a Skip-classified root past the refusal —
         // the known-library guard runs before any carry-over lookup.
         pipeline
             .carry_over_seeds
@@ -5679,7 +5679,7 @@ void SetCursor(void)
         );
     }
 
-    /// The commit-message provenance rule: a carry-over record rides only
+    /// The commit-message provenance rule: a carry-over record counts only
     /// when the winning code **is** the seeded code — when the fresh chain
     /// took over, the code is the LLM's and claiming a carry-over would be
     /// false provenance.
@@ -5749,7 +5749,7 @@ void SetCursor(void)
 
     /// Every registered row's filed document, read from the location
     /// its descriptor names, as parsed JSON keyed by the row's name —
-    /// the registry-driven form the equivalence legs compare, so a row
+    /// the registry-driven form the equivalence checks compare, so a row
     /// added to the table later is compared with no test edit
     /// (issue #307).
     fn registered_documents(workspace: &std::path::Path) -> Vec<(&'static str, serde_json::Value)> {
@@ -5772,7 +5772,7 @@ void SetCursor(void)
             .collect()
     }
 
-    /// The fan-out's marquee: given the same cached reads, the
+    /// The headline fan-out test: given the same cached reads, the
     /// concurrent phase and the same registry run one scan at a time
     /// persist the same documents — findings, order, and callback
     /// enrichment alike — for every registered row, the comparison
@@ -5780,7 +5780,7 @@ void SetCursor(void)
     /// (issue #240, retargeted onto the registry by issue #307).
     ///
     /// Both compared runs replay one read cache, warmed by a cold
-    /// phase first: the Kuna engine folds each decompile's recovered
+    /// phase first: the Kuna engine merges each decompile's recovered
     /// types into its program listing, so two cold runs over the same
     /// bytes legitimately see different listings depending on what
     /// decompiled when. With every read pinned by the cache, the only
@@ -5803,18 +5803,18 @@ void SetCursor(void)
         pipeline.run_prebatch_scans(PROGRAM).await;
         let fanned = registered_documents(dir.path());
 
-        // The sequential leg: the same registry run one scan at a time,
+        // The sequential part: the same registry run one scan at a time,
         // in table order, over the read cache the cold phase warmed —
         // the guarantee the old sequential preamble pinned, now driven
         // by the table instead of a hand-written list of entry points,
         // so every registered row is compared and a row added later is
         // compared with no test edit. The completion latches are armed
-        // and wired onto each row's context exactly as
-        // `registered_scan_tasks` wires the phase's, so the declared
+        // and attached to each row's context exactly as
+        // `registered_scan_tasks` attaches the phase's, so the declared
         // edge holds here too: the inference row sits directly before
         // the callback row in the table, publishes its latch on the way
         // out, and the callback row composes its closure contracts from
-        // the inference document the sequential leg just filed
+        // the inference document the sequential part just filed
         // (issue #307).
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
             .expect("fanned documents cleared");
@@ -5857,7 +5857,7 @@ void SetCursor(void)
         // was enriched on both sides: the fixture's inference records
         // compose real contracts (the #238 precedent), so the callback
         // documents match as enriched documents, not as two degraded
-        // ones — and in the sequential leg it is the declared edge, not
+        // ones — and in the sequential part it is the declared edge, not
         // a call-order accident, that put the enrichment there.
         assert!(
             !callback_signature_map(dir.path(), PROGRAM).is_empty(),
@@ -5995,7 +5995,7 @@ void SetCursor(void)
     /// is what keeps the `libmatch` drift — an engine the phase silently
     /// never ran — from returning (spec #301).
     ///
-    /// The pair's twin sits at the CLI: the pairing test
+    /// The pair's counterpart sits at the CLI: the pairing test
     /// `the_cli_contribution_table_pairs_one_for_one_with_the_registry_roster`
     /// and its two fault-direction siblings in
     /// `crates/interface/calxgloss-cli/src/commands/scan_command.rs` read
@@ -6557,7 +6557,7 @@ void SetCursor(void)
     }
 
     // The third shape over the whole registry: every row `scan_rows()`
-    // holds rides the sabotage walk, so the fifteen rows here are the
+    // holds goes through the sabotage walk, so the fifteen rows here are the
     // whole table. One test per row rather than one loop over the table:
     // each walk runs the entire scan phase, so the loop serialized
     // fifteen scan phases — most of this binary's wall clock — where the
@@ -6743,7 +6743,7 @@ void SetCursor(void)
     /// A malformed set-override file fails the row's own scan loudly,
     /// naming the file's path in the warning, and the row files nothing
     /// — for both override-capable rows. The row degrades exactly as its
-    /// descriptor spells a failed scan; the shared shape never parsed
+    /// descriptor defines it for a failed scan; the shared shape never parsed
     /// the file itself.
     #[tokio::test]
     #[tracing_test::traced_test]
@@ -6850,7 +6850,7 @@ void SetCursor(void)
 
     /// The overwrite policy, pinned at the registry level: the defaults
     /// never re-run a scan whose document is filed — even an override
-    /// option riding the same run short-circuits ahead of any engine
+    /// option attached to the same run short-circuits ahead of any engine
     /// read — while the overwrite policy bypasses the short-circuit and
     /// replaces the document with the fresh scan's result. Failure
     /// semantics survive the bypass: a forced re-scan that fails (here
@@ -7020,8 +7020,8 @@ void SetCursor(void)
     /// finds a document — the scan's real record, not the absence of one
     /// (issue #306). What the record carries is now identifications: the
     /// starter set learned to speak Kuna's dialect (#309 closed the gap
-    /// #306 recorded), so the canary this test used to be has strengthened
-    /// to pinning a real finding for one of the scan order's callees, and
+    /// #306 recorded), so what this test watched for at first has hardened
+    /// into pinning a real finding for one of the scan order's callees, and
     /// must never loosen back to an empty document.
     #[tokio::test]
     async fn the_escalation_prompt_reads_the_known_library_document_the_batch_filed() {
@@ -7126,16 +7126,16 @@ void SetCursor(void)
 
     /// Issue #241's measurement rig: time the scan phase over a real target
     /// binary and print the numbers the spec thread records — wall time, the
-    /// engine round trips the phase paid (the source's ledger), the window's
+    /// engine round trips the phase paid (the engine call log), the window's
     /// high-water mark, the documents filed, and the process's peak resident
     /// set across the phase. The engine is the real one and the binary is a
     /// real one; only the workspace is a scratch directory.
     ///
     /// Cold run: point the workspace at an empty directory — every body
-    /// crosses the engine exactly once, which the printed ledger proves.
+    /// crosses the engine exactly once, which the printed call log proves.
     /// Parse-only run: keep the workspace's `re/cache` and delete
     /// `re/analysis` — every scan re-runs, every read replays off disk, and
-    /// the ledger prints zero engine round trips, so the wall time is the
+    /// the call log prints zero engine round trips, so the wall time is the
     /// scans' parse time alone. The sequential baseline (the pre-#240 build)
     /// runs the same rig with the same environment, so the only difference
     /// between the two numbers is the schedule.
@@ -7222,7 +7222,7 @@ void SetCursor(void)
         assert_handle::<ScanJob>();
     }
 
-    /// The prefactor the fan-out needs: a registered row's scan handed
+    /// The prerequisite the fan-out needs: a registered row's scan handed
     /// to a spawned task answers exactly like the inline run — same
     /// verdict, and the same persisted document once the wall-clock
     /// scan stamp is set aside (issue #237, held at the registry seam
@@ -7343,7 +7343,7 @@ void SetCursor(void)
     #[test]
     fn record_order_never_matters_and_a_void_return_rides_the_map() {
         // Records arrive in whatever order the scan persisted them;
-        // the positions sort out. A `void` return rides as read —
+        // the positions sort out. A `void` return is kept as read —
         // dropping the clause is the contract renderer's call, not
         // the composition's.
         let map = compose_signature_map(&typeinfer_document(vec![
@@ -7409,7 +7409,7 @@ void SetCursor(void)
 
     #[tokio::test]
     async fn the_batch_holds_the_seam_declaration_pulled_beside_the_source_open() {
-        // The fetch rides begin_cached_source and nothing else: the held
+        // The fetch goes through begin_cached_source and nothing else: the held
         // report pairs one-for-one with the seam's own roster, equals the
         // engine's live declaration byte-for-byte, and took no engine
         // read — the call log is exactly what the source's opening left.
@@ -7463,7 +7463,7 @@ void SetCursor(void)
 
     #[tokio::test]
     async fn a_batch_with_no_cache_to_open_holds_the_live_engines_declaration() {
-        // The fallback arm beside the same fetch point: with no workspace
+        // The fallback branch beside the same fetch point: with no workspace
         // there is no cache to open and the batch's reads go through the
         // live engine — so the live engine's own declaration is the one
         // held, pulled at the same one point, still with no engine read.
@@ -7492,13 +7492,13 @@ void SetCursor(void)
     /// declared family carried by the read exactly once, and no declared
     /// family naming nothing the seam can answer?
     ///
-    /// Every fault spells its drift in its own words and they all arrive in
+    /// Every fault states its drift in its own words and they all arrive in
     /// one pass, so a single failure of the sweep below names every offender
     /// at once — the one-report doctrine the registry pairing (#342) and the
     /// P19 track sweep (#352) established, now guarding the seam itself. The
     /// family-id pairing wording is the shared `CapabilityReport::roster_faults`
     /// #354 established; the method pairing and the family-side orphan check
-    /// are this sweep's own legs.
+    /// are this sweep's own additions.
     fn seam_sweep_faults(
         report: &calxgloss_types::CapabilityReport,
         roster: &[(&str, &[&str])],
@@ -7542,7 +7542,7 @@ void SetCursor(void)
     }
 
     /// A report pairing the named families with one `answerable` entry each —
-    /// the shape a full declaration answers with, for the hand-built arms.
+    /// the shape a full declaration answers with, for the hand-built fixtures.
     fn sweep_report(families: &[&str]) -> calxgloss_types::CapabilityReport {
         calxgloss_types::CapabilityReport {
             families: families
@@ -7595,7 +7595,7 @@ void SetCursor(void)
     /// Missing, doubled, and orphaned in one read: the sweep's verdict
     /// carries all three offenders in a single pass, naming each (issue
     /// #359) — a contributor fixing the seam sees the whole damage at once,
-    /// never whack-a-mole across runs.
+    /// instead of discovering one offender per run.
     #[test]
     fn one_sweep_report_names_every_offender_at_once() {
         let families: Vec<&str> = calxgloss_decomp::QUERY_FAMILIES

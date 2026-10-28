@@ -1,7 +1,7 @@
 //! Behavior tests for the pipeline assembly seam (issue #323).
 //!
 //! These tests reach the seam through the module path
-//! (`calxgloss_translator::assembly`) — the facade's route — and pin knobs by
+//! (`calxgloss_translator::assembly`) — the facade's route — and check each setting by
 //! running an assembled pass over the shared fixture target: what the prompt
 //! carries, what the engine honors, what the pass refuses to build. They
 //! never assert the sequence of `with_*` setter calls; the proof is always
@@ -148,8 +148,8 @@ async fn an_llm_description_that_cannot_build_a_client_fails_assembly() {
         .await
         .expect_err("an unbuildable endpoint must fail the assembly");
 
-    // Folds into the crate's existing error type — the LLM failure variant,
-    // not a new enum and not a pass quietly missing an LLM.
+    // Falls into the crate's existing error type — the LLM failure variant,
+    // not a new enum and not a pass that silently lacks an LLM.
     assert!(matches!(error, TranslatorError::Llm(_)), "got: {error}");
 }
 
@@ -223,7 +223,7 @@ async fn custom_api_mappings_reach_the_prompt_through_an_assembled_pass() {
     // The automatic tier for this unit is Signature, whose prompt carries no
     // API rows at all, so the reviewer-override knob forces WithTests — a
     // tier whose template renders the tagged-call section — and doubles as
-    // the proof that the spec's overrides wire through.
+    // the proof that the spec's overrides carry through.
     let overrides = OverrideControl::new();
     overrides
         .set(
@@ -436,7 +436,7 @@ async fn assemble_patch_loads_its_engine_under_the_configured_budget() {
 }
 
 // ============================================================
-// Retry: the spec's policy lands on the hand-built ladder's shape
+// Retry: the spec's policy lands on the hand-built retry config's shape
 // ============================================================
 
 #[tokio::test]
@@ -453,7 +453,7 @@ async fn retry_config_from_a_spec_with_no_policy_matches_the_hand_built_default(
         .await
         .expect("the spec assembles");
 
-    // Today's hand-built ladder with settings defaults: 3 attempts,
+    // Today's hand-built retry config with settings defaults: 3 attempts,
     // compile-fix, escalation always on, no context-tier cap.
     assert_eq!(pass.retry.max_attempts, 3);
     assert_eq!(pass.retry.retry_strategy, RetryStrategy::CompileFix);

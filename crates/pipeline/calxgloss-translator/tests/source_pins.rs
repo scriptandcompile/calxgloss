@@ -8,9 +8,9 @@
 //! pass or drive an attempt around the loop. What the compiler cannot pin
 //! is the fact *inside* the crate: across every crate's `src/` tree the
 //! constructor is called in exactly one production module, the seam's own
-//! `assembly.rs`, and every retry attempt rides exactly one production
+//! `assembly.rs`, and every retry attempt goes through exactly one production
 //! door — the loop in `retry/retry_loop.rs`. This suite pins those source
-//! facts, so a fourth builder dance cannot reappear silently and the
+//! facts, so a fourth way to build a pass cannot reappear silently and the
 //! deepened loop's bodies cannot silently re-inflate into the two ~450-line
 //! inline attempt bodies the epic #330 deleted.
 //!
@@ -30,12 +30,12 @@ const CONSTRUCTOR: &str = concat!("TranslationPipeline", "::new");
 /// The one production module allowed to call it, relative to `crates/`.
 const ASSEMBLY_MODULE: &str = "pipeline/calxgloss-translator/src/assembly.rs";
 
-/// The loop — the one production module allowed to ride the attempt seam —
+/// The loop — the one production module allowed to drive the attempt seam —
 /// relative to `crates/`.
 const RETRY_LOOP_MODULE: &str = "pipeline/calxgloss-translator/src/retry/retry_loop.rs";
 
-/// The attempt seam — the one production module allowed to spell the
-/// per-attempt recording tails, relative to `crates/`.
+/// The attempt seam — the one production module allowed to write the
+/// per-attempt recording calls, relative to `crates/`.
 const ATTEMPT_SEAM_MODULE: &str = "pipeline/calxgloss-translator/src/retry/attempt.rs";
 
 /// The workspace's `crates/` directory, as seen from this crate's manifest.
@@ -157,7 +157,7 @@ fn pipeline_constructor_is_called_in_exactly_one_production_module() {
 // one body, and no attempt record or prompt builder lives outside them.
 // ==========================================================================
 
-/// Every attempt of a unit rides the seam in `retry/attempt.rs`, and only
+/// Every attempt of a unit goes through the seam in `retry/attempt.rs`, and only
 /// the loop in `retry/retry_loop.rs` may put it through: `run_attempt(` and
 /// `verify_and_record(` are `pub(crate)`, so outside the crate nothing can
 /// call them at all; inside, a second caller would be a second loop — or a
@@ -185,13 +185,13 @@ fn only_the_retry_loop_rides_the_attempt_seam() {
     }
 }
 
-/// The per-attempt recording sinks — the token-usage log and the
-/// prompt-variant experiment log — are spelled once, inside the seam, and
+/// The per-attempt recording calls — the token-usage log and the
+/// prompt-variant experiment log — appear once, inside the seam, and
 /// called from nowhere else: an attempt that skipped the seam would also
 /// skip the experiment and token records the operator reads.
 ///
-/// Pre-deepening this pin fails: both sinks were called from the retry
-/// loop's own tails, not from `retry/attempt.rs`, so the equality names
+/// Pre-deepening this pin fails: both calls were made in the retry
+/// loop's own body, not in `retry/attempt.rs`, so the equality names
 /// the wrong module.
 #[test]
 fn the_attempt_seam_is_the_only_caller_of_the_per_attempt_log_sinks() {
@@ -319,7 +319,7 @@ fn no_production_module_outside_the_retry_tree_drives_the_prompt_builders() {
 /// spanned roughly 900 production lines on their own and the file's
 /// production region ran well past 1,200; the budget leaves room for
 /// ordinary policy growth and fails hard if a ~450-line attempt body is
-/// ever folded back into the loop (issue #330; measured 493 at write-time).
+/// ever moved back into the loop (issue #330; measured 493 at write-time).
 #[test]
 fn the_retry_loop_body_stays_policy_only_within_budget() {
     let crates = crates_dir();
