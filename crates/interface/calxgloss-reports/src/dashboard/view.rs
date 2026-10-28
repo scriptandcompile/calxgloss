@@ -28,7 +28,7 @@ pub struct UnitViewData {
     pub target: ViewTarget,
     /// Unit of work info from the dashboard.
     pub unit: Option<UnitOfWork>,
-    /// Git branch name that this unit lives on.
+    /// The name of the Git branch that holds this unit's work.
     pub branch_name: Option<String>,
     /// Whether the branch is merged into main.
     pub merged: bool,
@@ -146,7 +146,8 @@ impl UnitViewData {
         let attempt_history =
             Self::load_attempt_history(&patch_dir, &target.function, &branch_name);
 
-        // 6. Get baseline test data (baseline dirs carry the filename verbatim)
+        // 6. Get baseline test data (the baseline directory name is the
+        // binary's filename verbatim)
         let baseline_path = repo_path
             .join("re")
             .join("baseline")

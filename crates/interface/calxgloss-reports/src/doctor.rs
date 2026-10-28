@@ -1,19 +1,19 @@
 //! Formatting for `calxgloss doctor`'s read-only Kuna engine report.
 //!
-//! The engine is compiled into calxgloss, so there is no install, extension,
-//! or port to check: the report names the loaded target and the program
-//! identity the engine reads from it. The data comes from the Kuna load;
-//! this module only decides how it reads.
+//! The Kuna engine is compiled into calxgloss, so there is no install,
+//! extension, or port to check: the report names the loaded target and the
+//! program identity the Kuna engine reads from it. The data comes from the
+//! Kuna load; this module only formats it.
 
 use std::path::Path;
 
 use crate::{cyan_bold, dim, green_bold, white_bold};
 
-/// Print the kuna engine's doctor report (issue #205): the target loaded
-/// in-process and the program identity the engine reports. There is no
-/// install, extension, or server to check — the engine is compiled into
-/// calxgloss — so the report names that instead of dressing up as a stack
-/// report.
+/// Print the Kuna engine's doctor report (issue #205): the target loaded
+/// in-process and the program identity the Kuna engine reports. There is
+/// no install, extension, or server to check — the Kuna engine is
+/// compiled into calxgloss — so the report names what was loaded instead
+/// of pretending to check an installed stack.
 pub fn print_kuna_report(
     path: &Path,
     release: &str,

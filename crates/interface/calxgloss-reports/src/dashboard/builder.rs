@@ -1,19 +1,22 @@
 //! Dashboard builder — assembles [`ReviewDashboard`] from git + file artifacts.
 //!
-//! This module contains the [`DashboardBuilder`] which walks a Git repository's
-//! branches, patch records, send-back records, and baseline files to construct
-//! a complete review dashboard. Branch state is authoritative for acceptance
-//! (a branch merged into `main` is `Accepted`); the failing verdicts are
-//! durable through their records — a send-back record makes a unit `SendBack`
-//! and a patch-request record makes it `PatchRequested`, both surviving a
-//! rebuild so `auto_block_units` has failing roots to cascade `Blocked` from.
+//! The [`DashboardBuilder`] reads a Git repository's branches, patch
+//! records, send-back records, and baseline files, and assembles them
+//! into a complete review dashboard.
 //!
-//! The builder also wires the dependency edges that cascade follows: a
-//! function unit depends on its DLL's classification unit and on the
-//! shim-layer unit its classification requires — the same dependency the
-//! branch-creation policy (`DependencyChecker`) gates `create_branch` on —
-//! so a sent-back shim or classification blocks whatever translates on top
-//! of it.
+//! Branch state is authoritative for acceptance: a branch merged into
+//! `main` is `Accepted`. The failing verdicts instead come from their
+//! records — a send-back record makes a unit `SendBack`, and a
+//! patch-request record makes it `PatchRequested`. Both records survive a
+//! rebuild, so `auto_block_units` has failing units to start its
+//! `Blocked` cascade from.
+//!
+//! The builder also records the dependency edges that the cascade
+//! follows. A function unit depends on its DLL's classification unit and
+//! on the shim-layer unit that its classification requires — the same
+//! dependency that the branch-creation policy (`DependencyChecker`)
+//! gates `create_branch` on. So when a shim or classification is sent
+//! back, everything translating on top of it shows as blocked.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,8 +35,8 @@ use chrono::Utc;
 /// Parses a git branch name like `re/game_logic.dll/DrawSpritev1` or
 /// `re/classify/game_logic.dllv1` into its components. Delegates to
 /// [`calxgloss_types::parse_branch_name`], the one owner of the branch-name
-/// grammar (issue #69); only branches carrying the `re/` prefix parse, and a
-/// missing attempt suffix reads as the first attempt.
+/// grammar (issue #69). Only branches whose names start with `re/` parse;
+/// a branch without an attempt suffix reads as the first attempt.
 pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
     let parts = calxgloss_types::parse_branch_name(name.strip_prefix("re/")?)?;
     Some(BranchParts {
@@ -46,7 +49,8 @@ pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
 
 /// Returns true if a git branch name matches the given DLL, function,
 /// and optional attempt number. The DLL is compared verbatim — branch
-/// names carry the filename exactly as identity (issue #68).
+/// names spell the filename out exactly, as the binary's identity
+/// (issue #68).
 pub fn branch_matches(branch: &str, binary: &str, function: &str, attempt: Option<u32>) -> bool {
     let Some(parts) = parse_branch_name(branch) else {
         return false;
@@ -135,13 +139,13 @@ impl<'a> DashboardBuilder<'a> {
         let skipped_keys = self.read_skips();
 
         // 2d. Read the classification records and the operator's
-        // classification overrides, and fold them into the set of *parked*
-        // binaries — those whose in-force category is `DotNetManaged`
-        // (issue #235). The override layer wins over the record, matching
-        // the precedence every other consumer applies. A parked binary's
-        // units of work take the derived `DoNotTranslate` status; the
-        // record's reason rides along in `known_gaps` so the queue view
-        // can explain the parking.
+        // classification overrides, and use them to build the set of
+        // *parked* binaries — those whose in-force category is
+        // `DotNetManaged` (issue #235). The override wins over the
+        // record, the same precedence every other consumer applies. A
+        // parked binary's units of work take the derived
+        // `DoNotTranslate` status; the record's reason is kept in
+        // `known_gaps` so the queue view can explain the parking.
         let classified = self.read_classification_records();
         let overrides = self.read_classification_overrides();
         let parked: HashMap<String, Option<String>> = classified
@@ -169,8 +173,8 @@ impl<'a> DashboardBuilder<'a> {
         for (key, latest_attempt) in &seen_keys {
             let mut unit = self.build_unit(&branches, key, *latest_attempt, &patch_records);
 
-            // The baseline map is keyed `{file}/{func}` verbatim; the unit
-            // key carries the attempt on top, so only that dimension is
+            // The baseline map keys `{file}/{func}` verbatim. The unit
+            // key also ends with the attempt, so only that part is
             // stripped — the binary part is already the verbatim filename
             // (issue #68, issue #67).
             let baseline_key = strip_attempt_suffix(key);
@@ -189,20 +193,22 @@ impl<'a> DashboardBuilder<'a> {
 
             let merged = self.is_branch_merged(key);
 
-            // Branch state is authoritative for acceptance; failing verdicts
-            // come from the durable records — a send-back at this attempt
-            // outranks a patch request (send-back then re-patched lands the
-            // request on the *next* attempt's key, never this one). An
-            // explicit reviewer skip (issue #75) outranks the artifact-
-            // derived failing/pending states — unskipping restores them.
+            // Branch state is authoritative for acceptance. Failing
+            // verdicts come from the durable records. A send-back at this
+            // attempt outranks a patch request: re-patching after a
+            // send-back puts the request on the *next* attempt's key,
+            // never this one. A reviewer's explicit skip (issue #75)
+            // outranks the artifact-derived failing and pending states —
+            // unskipping restores them.
             unit.status = if merged {
                 ReviewStatus::Accepted
             } else if let Some(reason) = parked.get(unit.binary.as_str()) {
-                // Parked (issue #235): the binary's in-force classification
-                // is DotNetManaged — a system fact that outranks reviewer
-                // skips and artifact-derived verdicts, and changes only
-                // when the record or an override changes. The documented
-                // reason rides in known_gaps for the queue view.
+                // Do Not Translate (issue #235): the binary's in-force
+                // classification is DotNetManaged. That is a fact about
+                // the binary itself: it outranks reviewer skips and
+                // artifact-derived verdicts, and changes only when the
+                // record or an override changes. The documented reason
+                // is recorded in known_gaps for the queue view.
                 if let Some(reason) = reason {
                     unit.known_gaps.push(reason.clone());
                 }
@@ -224,8 +230,9 @@ impl<'a> DashboardBuilder<'a> {
 
         // 5. Also check for classified DLLs not covered by translation
         // branches. A parked (.NET managed) binary's synthetic classify
-        // unit is *not* auto-accepted — it carries the derived
-        // do-not-translate status so the parking is visible (issue #235).
+        // unit is *not* auto-accepted — it takes the derived
+        // do-not-translate status so the parking stays visible
+        // (issue #235).
         for cls in &classified {
             let key = format!("classify/{}", cls.binary);
             if !seen_keys.contains_key(&key) {
@@ -274,14 +281,15 @@ impl<'a> DashboardBuilder<'a> {
             })
             .collect();
 
-        // 6. Wire dependency edges from the branch model so the failing
-        //    verdicts above cascade `Blocked` down the graph. A function
-        //    unit depends on:
+        // 6. Record the dependency edges from the branch model so the
+        //    failing verdicts above cascade `Blocked` down the graph. A
+        //    function unit depends on:
         //    - its DLL's classification unit (`classify/{binary}`), and
-        //    - the shim-layer unit its classification requires — the same
-        //      `DependencyChecker` result `GitManager::create_branch` gates
-        //      branch creation on, so the dashboard graph reflects which
-        //      work the branch model says must merge first.
+        //    - the shim-layer unit its classification requires. These are
+        //      exactly the `DependencyChecker` results that gate branch
+        //      creation in `GitManager::create_branch`, so the dashboard
+        //      graph shows the same work that the branch model says must
+        //      merge first.
         let classify_ids: HashMap<String, String> = units
             .iter()
             .filter(|u| u.kind == WorkKind::DllClassification)
@@ -319,8 +327,9 @@ impl<'a> DashboardBuilder<'a> {
                 let required =
                     checker.check(&cls.binary, category, cls.crate_replacement.as_deref());
                 for branch in &required.required {
-                    // Required deps are branch names (`re/shim/{crate}`); the
-                    // dashboard unit lives under the same parts as a shim unit.
+                    // The required dependencies are branch names
+                    // (`re/shim/{crate}`); the matching dashboard unit has
+                    // the same name parts as a shim unit.
                     if let Some(shim_parts) = parse_branch_name(branch)
                         && let Some(krate) = &shim_parts.function
                         && let Some(shim_id) = shim_ids.get(krate)
@@ -383,9 +392,10 @@ impl<'a> DashboardBuilder<'a> {
     /// `GitManager::reject_branch`), returning the unit keys
     /// (`{binary}/{function}/v{attempt}`) whose attempt a reviewer sent back.
     ///
-    /// Without this read the `SendBack` verdict is invisible after a rebuild
-    /// — branch state alone cannot tell a sent-back branch from a queued one,
-    /// and `auto_block_units` would have no failing roots to cascade from.
+    /// Without this read the `SendBack` verdict is invisible after a
+    /// rebuild: branch state alone cannot tell a sent-back branch from a
+    /// queued one, and `auto_block_units` would have no failing unit to
+    /// start blocking from.
     fn read_all_send_back_records(
         &self,
     ) -> Result<std::collections::HashSet<String>, anyhow::Error> {
@@ -404,9 +414,9 @@ impl<'a> DashboardBuilder<'a> {
     /// Reads every baseline artifact under
     /// `re/baseline/{file}/{func}/baseline.json` (the layout written by
     /// `calxgloss-testgen`), keying the map `{file}/{func}` with both
-    /// directory names verbatim — the binary dir carries the filename
-    /// extension included (issue #68), so `foo.dll` and `foo.exe` stay
-    /// distinct entries.
+    /// directory names verbatim — the binary directory's name is the
+    /// filename with extension (issue #68), so `foo.dll` and `foo.exe`
+    /// stay distinct entries.
     fn read_all_baselines(&self) -> Result<HashMap<String, BaselineData>, anyhow::Error> {
         let mut baselines = HashMap::new();
         let baseline_dir = self.repo_path.join("re").join("baseline");
@@ -514,7 +524,7 @@ impl<'a> DashboardBuilder<'a> {
     /// Reads the operator's classification overrides from
     /// `re/analysis/classification_overrides.json` (written by the web
     /// classification endpoints). A missing or corrupt file degrades to an
-    /// empty map — no overrides, the records answer verbatim.
+    /// empty map — no overrides, so the records apply exactly as written.
     fn read_classification_overrides(&self) -> ClassificationOverrides {
         let path = classification_override_records_path(&self.repo_path);
         match std::fs::read_to_string(&path) {
@@ -700,7 +710,7 @@ fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
 /// Strips a trailing `/v{N}` attempt suffix from a classification unit's
 /// binary segment so branch-derived ids (`classify/{file}/vN`) and
 /// record-derived ids (`classify/{file}`) key to the same verbatim binary
-/// filename — identity is never extension-normalized (issue #68).
+/// filename. The binary's identity keeps its extension (issue #68).
 fn strip_attempt_suffix(name: &str) -> &str {
     match name.rsplit_once("/v") {
         Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
@@ -751,7 +761,8 @@ fn read_record_tree<T: serde::de::DeserializeOwned>(
 
     for dll_dir in std::fs::read_dir(root)? {
         let dll_dir = dll_dir?;
-        // Record dirs carry the binary filename verbatim (issue #68).
+        // Record directories are named with the verbatim binary filename
+        // (issue #68).
         let binary = dll_dir.file_name().to_string_lossy().to_string();
 
         if !dll_dir.path().is_dir() {
@@ -816,7 +827,7 @@ struct ClassificationFile {
 
 /// A DLL with a classification record on disk. `binary` is the record file name
 /// minus `.json` (the `classify` command keeps the `.dll` extension in it);
-/// the category and crate replacement drive the shim dependency edge, and
+/// the category and crate replacement decide the shim dependency edge, and
 /// the reason explains a parked (`DotNetManaged`) classification.
 #[derive(Debug)]
 struct ClassifiedDll {
@@ -844,7 +855,7 @@ mod tests {
     #[test]
     fn parse_branch_name_for_key_keeps_supporting_work_kind() {
         // A shim unit rebuilt from its key must stay at the shim level in
-        // the dependency graph, not collapse to a function translation.
+        // the dependency graph, not become a function translation.
         let parts = parse_branch_name_for_key("shim/wgpu/v2", 2);
         assert_eq!(parts.kind, WorkKind::ShimLayer);
         assert_eq!(parts.binary, "shim");
@@ -883,7 +894,7 @@ mod tests {
 
     #[test]
     fn strip_attempt_suffix_keys_record_and_branch_id_shapes() {
-        // Record-derived ids carry no attempt, branch-derived ids do;
+        // Record-derived ids have no attempt, branch-derived ids do;
         // both must key to the same verbatim binary filename.
         assert_eq!(strip_attempt_suffix("d3d9.dll"), "d3d9.dll");
         assert_eq!(strip_attempt_suffix("game_logic.dll/v1"), "game_logic.dll");
@@ -1216,9 +1227,9 @@ mod tests {
 
     #[test]
     fn override_away_from_managed_releases_the_units() {
-        // The escape hatch works at the dashboard layer too: an operator
-        // override away from DotNetManaged un-parks the units, and the
-        // parked reason no longer shows in known_gaps (stories 21, 22).
+        // Operator overrides work at the dashboard layer too: an override
+        // away from DotNetManaged releases the parked units, and the
+        // parking reason no longer shows in known_gaps (stories 21, 22).
         let dir = tempfile::tempdir().expect("temp dir");
         let git = init_test_repo(dir.path());
 

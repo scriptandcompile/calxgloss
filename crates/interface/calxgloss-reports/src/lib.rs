@@ -14,8 +14,8 @@
 //! - [`prompt_acceptance`] — Interactive y/n prompt for human acceptance
 //! - [`print_classification_report`] — Display DLL classification results
 //! - [`print_batch_summary`] — Display batch translation results (pass/fail per function)
-//! - [`render_dashboard`] — Display the review dashboard as a text-based table
-//! - [`print_kuna_report`] — Display the `calxgloss doctor` Kuna engine report
+//! - [`dashboard::render_dashboard`] — Display the review dashboard as a text-based table
+//! - [`doctor::print_kuna_report`] — Display the `calxgloss doctor` Kuna engine report
 
 pub mod dashboard;
 pub mod doctor;
@@ -208,9 +208,9 @@ fn print_failed_test_detail(failed: &FailedTest) {
         actual_str
     );
 
-    // A failure whose test case expected global side effects names
-    // them by their typed kinds — the divergence on global handling
-    // reads as `GlobalWrite DAT_...`, not as prose to be parsed.
+    // A failed test whose case expected global side effects lists them
+    // by their typed kinds, so the difference in global handling shows
+    // up as `GlobalWrite DAT_...` instead of prose to be parsed.
     if !failed.expected_side_effects.is_empty() {
         let named: Vec<String> = failed
             .expected_side_effects
@@ -267,7 +267,9 @@ pub fn print_git_status(branch: &GitBranch, merged: bool) {
 
 /// Print a success summary with the full translation + verification output.
 ///
-/// Returns `true` if the user accepted the translation, `false` otherwise.
+/// Returns `true` when the translation is accepted: either there are no
+/// failed tests (then it returns without prompting) or the user answers
+/// yes to the acceptance prompt.
 ///
 /// The output includes:
 /// - Translation summary (function, model, tokens, code size)
@@ -333,8 +335,9 @@ pub fn print_success(branch: &GitBranch, verification: &VerificationResult) -> b
 
 /// Print a failure summary with diagnostic details.
 ///
-/// Displays the branch name, compilation errors, and test failures.
-/// Always prompts for acceptance (though acceptance is typically not relevant for failures).
+/// Displays the branch name, compilation errors, and test failures, then a
+/// tip that a retry gets a new branch. There is no acceptance prompt here:
+/// the run has already failed, so nothing is being accepted.
 pub fn print_failure(branch: &GitBranch, verification: &VerificationResult) {
     println!();
     println!("{}", cyan_bold(&"╔".repeat(60)));
