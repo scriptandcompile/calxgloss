@@ -7,8 +7,8 @@
 //!   recognized swap call the function makes, the width it swaps, and
 //!   the `byteorder` reader the call reads like.
 //! - `BitPackRecord`, `BitPackPattern`: the bit-packing record — the
-//!   pack or unpack chain the function carries, the field widths its
-//!   shifts and masks carve, and the typed-field suggestion they read
+//!   pack or unpack chain in the function, the field widths its
+//!   shifts and masks carve, and the typed-field suggestion it reads
 //!   like.
 //! - `MagicFormat`: the format-sniffing record — the file-format
 //!   signature the function compares buffer content against, the
@@ -17,10 +17,10 @@
 //!   record — the stored field the function compares against a value
 //!   computed from other fields (a checksum check) or the read length
 //!   it compares against a buffer size or remaining count (framing),
-//!   and which of the two shapes the check was read from.
+//!   and which shape the check was read from.
 //! - `SerializationFormat`, `FormatField`, `WireEndianness`,
 //!   `FormatDirection`: the composed-layout record — the byte-swap and
-//!   bit-pack readings one function carries, combined in body order
+//!   bit-pack readings in one function, combined in body order
 //!   into an ordered field layout naming each field's width, the wire
 //!   byte order for swapped fields, the bitfield widths for packed
 //!   chains, and a reader-or-writer direction only when the swap name
@@ -32,7 +32,7 @@
 //!   validations) that promote the sniff to a handler.
 //! - `EndiannessMap`, `EndiannessEntry`: the binary-level endianness
 //!   profile — made by the endianness profiler, not a body detector —
-//!   the scan's byte-swap findings coalesced by operation width: each
+//!   the scan's byte-swap findings grouped by operation width: each
 //!   entry names the width, the wire byte order the swap names
 //!   support (BE for the network-order family, reversal-only for
 //!   direction-neutral builtins), and the contributing functions in
@@ -44,10 +44,10 @@
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
-// `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb, typeinfer, algorithm, and
-// memory convention.
+// `ScanMetadata` is the shared per-binary scan provenance and
+// `Confidence` the shared 0–100 evidence confidence. Both are re-exported so
+// consumers name them through this crate, matching the typesdb,
+// typeinfer, algorithm, and memory convention.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -64,9 +64,9 @@ use serde::{Deserialize, Serialize};
 /// [`width`](Self::width) bits wide. The call reads like
 /// [`suggestion`](Self::suggestion): the `byteorder` reader or writer
 /// for that width, which makes the host-order-to-network-order hop an
-/// explicit type instead of a transliterated call. The call line is
-/// kept as [`evidence`](Self::evidence) so a reviewer (or a translation
-/// prompt) can check the reasoning.
+/// explicit type instead of a transliterated call. The record keeps
+/// the call line as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByteSwapOperation {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -78,11 +78,11 @@ pub struct ByteSwapOperation {
     /// The Rust pattern the call suggests, e.g.
     /// `byteorder::BE::read_u32`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
-    /// The decompiled line that supports the record — the swap call —
-    /// kept so a reviewer (or a translation prompt) can check the
-    /// reasoning.
+    /// The decompiled line that supports the record — the swap call.
+    /// The record keeps it so a reviewer (or a translation prompt)
+    /// can check the reasoning.
     pub evidence: String,
 }
 
@@ -92,12 +92,13 @@ pub struct ByteSwapOperation {
 
 /// The bit-packing shape a finding was read from.
 ///
-/// The shape says which direction the code moves bits: a
+/// The shape says which direction the code moves bits. A
 /// `shift_or_pack` builds a word out of fields — `(a << 0x18) |
-/// (b << 0x10) | ...` — and a `shift_mask_unpack` takes a word apart —
-/// `(w >> 0x18) & 0xff` — the two halves of a hand-rolled format's
-/// read and write. Both read like the same Rust suggestion: `bitvec`,
-/// or named-field masking and shifting on a plain integer.
+/// (b << 0x10) | ...`. A `shift_mask_unpack` takes a word apart —
+/// `(w >> 0x18) & 0xff`. Together they are the two halves of a
+/// hand-rolled format's read and write. Both read like the same Rust
+/// suggestion: `bitvec`, or named-field masking and shifting on a
+/// plain integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BitPackPattern {
@@ -115,16 +116,16 @@ calxgloss_types::display_serde_label!(BitPackPattern {
 /// One bit-packing observation about one function, with the evidence
 /// behind it.
 ///
-/// A record says the function packs or unpacks a word through the
+/// A record says the function packs or unpacks a word in the
 /// [`pattern`](Self::pattern) shape — a shift-and-or chain or a run of
-/// shift-then-mask extractions — carving out fields of the
-/// [`widths`](Self::widths) its shifts and masks imply, in bit order
-/// from the top of the word down. The shape reads like
-/// [`suggestion`](Self::suggestion): a typed field view — `bitvec`, or
-/// named-field masking and shifting — instead of the hand-rolled
-/// shifts. The matched expression (or, for an unpack chain, the
-/// extractions joined) is kept as [`evidence`](Self::evidence) so a
-/// reviewer (or a translation prompt) can check the reasoning.
+/// shift-then-mask extractions. Its shifts and masks imply fields of
+/// the [`widths`](Self::widths), listed from the top of the word down.
+/// The shape reads like [`suggestion`](Self::suggestion): a typed
+/// field view — `bitvec`, or named-field masking and shifting —
+/// instead of the hand-rolled shifts. The record keeps the matched
+/// expression (or, for an unpack chain, the extractions joined) as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BitPackRecord {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -137,11 +138,12 @@ pub struct BitPackRecord {
     /// The Rust pattern the chain suggests, e.g. `bitvec or
     /// named-field masking/shifting`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled line or lines that support the record — the
-    /// pack expression, or the unpack extractions joined — kept so a
-    /// reviewer (or a translation prompt) can check the reasoning.
+    /// pack expression, or the unpack extractions joined. The record
+    /// keeps them so a reviewer (or a translation prompt) can check
+    /// the reasoning.
     pub evidence: String,
 }
 
@@ -153,15 +155,15 @@ pub struct BitPackRecord {
 /// evidence behind it.
 ///
 /// A record says the function compares loaded buffer content against
-/// the [`magic`](Self::magic) bytes of a known file format —
-/// [`format`](Self::format), e.g. `PNG` — sniffing for a format it
-/// then parses by hand. The sniff reads like
-/// [`suggestion`](Self::suggestion): the decoder type from the crate
-/// that format has — `png::Decoder`, `flate2::read::GzDecoder`,
-/// `zip::ZipArchive` — which replaces the sniff *and* the hand-rolled
-/// parse that follows it. The comparison line is kept as
-/// [`evidence`](Self::evidence) so a reviewer (or a translation
-/// prompt) can check the reasoning.
+/// the [`magic`](Self::magic) bytes of a known file format. The
+/// [`format`](Self::format) names the format, e.g. `PNG`. The
+/// function sniffs for a format it then parses by hand. The sniff
+/// reads like [`suggestion`](Self::suggestion): the decoder type from
+/// the crate that format has — `png::Decoder`,
+/// `flate2::read::GzDecoder`, `zip::ZipArchive` — which replaces the
+/// sniff *and* the hand-rolled parse that follows it. The record
+/// keeps the comparison line as [`evidence`](Self::evidence) so a
+/// reviewer (or a translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MagicFormat {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -173,11 +175,11 @@ pub struct MagicFormat {
     pub format: String,
     /// The Rust type the sniff suggests, e.g. `png::Decoder`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled line that supports the record — the signature
-    /// comparison — kept so a reviewer (or a translation prompt) can
-    /// check the reasoning.
+    /// comparison. The record keeps it so a reviewer (or a translation
+    /// prompt) can check the reasoning.
     pub evidence: String,
 }
 
@@ -214,16 +216,16 @@ calxgloss_types::display_serde_label!(ValidationShape {
 /// One message-integrity observation about one function, with the
 /// evidence behind it.
 ///
-/// A record says the function validates its input through the
-/// [`shape`](Self::shape) check — comparing the stored
+/// A record says the function validates its input with the
+/// [`shape`](Self::shape) check. The check compares a stored
 /// [`field`](Self::field) against the [`computed`](Self::computed)
-/// expression the check verifies it against — the checksum or framing
-/// logic that defines a wire format's integrity story. The check reads
-/// like [`suggestion`](Self::suggestion): modelled on the Rust type as
+/// expression that verifies it — the checksum or framing logic that
+/// defines a wire format's integrity story. The check reads like
+/// [`suggestion`](Self::suggestion): modelled on the Rust type as
 /// a checked parse or validate step, so translated code keeps the
-/// integrity logic instead of dropping the comparison. The comparison
-/// line is kept as [`evidence`](Self::evidence) so a reviewer (or a
-/// translation prompt) can check the reasoning.
+/// integrity logic instead of dropping the comparison. The record
+/// keeps the comparison line as [`evidence`](Self::evidence) so a
+/// reviewer (or a translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CrossFieldValidation {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -232,20 +234,19 @@ pub struct CrossFieldValidation {
     /// comparison spells it, e.g. `uVar7`.
     pub field: String,
     /// The computed side the field is verified against — the
-    /// expression over the other fields (or the size or remaining
-    /// count) the comparison puts on the far side, e.g.
-    /// `uVar5 + uVar6`.
+    /// expression the comparison puts on the far side, over the other
+    /// fields (or a size or remaining count), e.g. `uVar5 + uVar6`.
     pub computed: String,
     /// The validation shape the record was read from.
     pub shape: ValidationShape,
     /// The Rust pattern the check suggests, e.g. `checked parse or
     /// validate step on the Rust type`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
-    /// The decompiled line that supports the record — the comparison
-    /// — kept so a reviewer (or a translation prompt) can check the
-    /// reasoning.
+    /// The decompiled line that supports the record — the comparison.
+    /// The record keeps it so a reviewer (or a translation prompt)
+    /// can check the reasoning.
     pub evidence: String,
 }
 
@@ -253,14 +254,14 @@ pub struct CrossFieldValidation {
 // Serialization format records
 // ============================================================
 
-/// The wire byte order a swapped layout field carries.
+/// The wire byte order held by a swapped layout field.
 ///
-/// The claim comes from the swap name family alone: a network-order
+/// The claim comes from the swap name family alone. A network-order
 /// spelling (`ntohl`, `htons`, and their kin) says the field arrives
-/// big-endian, while a direction-neutral builtin (`__builtin_bswap32`
-/// and friends) only says the bytes are reversed — which wire order
-/// that reversal corresponds to depends on the host, so the record
-/// claims no endianness for such a field.
+/// big-endian. A direction-neutral builtin (`__builtin_bswap32` and
+/// friends) only says the bytes are reversed. Which wire order that
+/// reversal corresponds to depends on the host, so the record claims
+/// no endianness for such a field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WireEndianness {
     /// A network-order swap name: the field's wire order is big-endian.
@@ -284,7 +285,7 @@ calxgloss_types::display_serde_label!(WireEndianness {
 /// function pulls messages in; a `writer` layout from host-to-network
 /// names only — it puts messages out. Direction-neutral names
 /// (builtins, a program's own swap spelling) neither corroborate nor
-/// contradict a direction; when the directional families disagree, or
+/// contradict a direction. When the directional families disagree, or
 /// when no directional name was seen at all, the layout names no
 /// direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -303,8 +304,8 @@ calxgloss_types::display_serde_label!(FormatDirection {
 
 /// One field of a composed layout: its width and, for a field the
 /// function moves through a byte-swap call, the wire byte order that
-/// call's name family implies. A packed bitfield carved out of a
-/// shift-and-mask chain carries no endianness — the chain moves bits
+/// call's name family implies. A packed bitfield inside a
+/// shift-and-mask chain has no endianness: the chain moves bits
 /// inside one word, not bytes over a wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatField {
@@ -320,19 +321,19 @@ pub struct FormatField {
 /// The composed serialization layout one function's readings add up
 /// to — made by the format combiner, not by a body detector.
 ///
-/// A record says the function carries at least two serialization
-/// readings — byte-swap calls and/or bit-pack chains — and combines
-/// them, in body order, into an ordered [`fields`](Self::fields)
-/// sequence: each swapped field names its width and its
-/// [`endianness`](Self::endianness), each packed chain contributes
-/// its bitfield widths, and [`direction`](Self::direction) names a
-/// reader or a writer only when the swap name families agree. The
-/// sequence reads like [`suggestion`](Self::suggestion): a typed
-/// field-sequence reader sketch in `byteorder` style, so a translation
-/// prompt sees one real reader instead of scattered per-call hints.
-/// The body lines behind the sequence are kept as
-/// [`evidence`](Self::evidence) so a reviewer (or a translation
-/// prompt) can check the composition.
+/// A record says the function holds at least two serialization
+/// readings — byte-swap calls and/or bit-pack chains. The combiner
+/// joins them, in body order, into an ordered
+/// [`fields`](Self::fields) sequence: each swapped field names its
+/// width and its [`endianness`](FormatField::endianness), each
+/// packed chain contributes its bitfield widths, and
+/// [`direction`](Self::direction) names a reader or a writer only
+/// when the swap name families agree. The sequence reads like
+/// [`suggestion`](Self::suggestion): a typed field-sequence reader
+/// sketch in `byteorder` style, so a translation prompt sees one
+/// real reader instead of scattered per-call hints. The record keeps
+/// the body lines behind the sequence as [`evidence`](Self::evidence)
+/// so a reviewer (or a translation prompt) can check the composition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerializationFormat {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -347,11 +348,12 @@ pub struct SerializationFormat {
     /// The Rust pattern the sequence suggests, e.g. `byteorder
     /// reader: read_u32 then 8+8 bitfields`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines behind the sequence — the contributing
-    /// readings' own evidence lines, in body order — kept so a
-    /// reviewer (or a translation prompt) can check the composition.
+    /// readings' own evidence lines, in body order. The record keeps
+    /// them so a reviewer (or a translation prompt) can check the
+    /// composition.
     pub evidence: String,
 }
 
@@ -363,16 +365,17 @@ pub struct SerializationFormat {
 /// made by the protocol combiner, not by a body detector.
 ///
 /// A record says the function compares loaded buffer content against
-/// the [`magic`](Self::magic) of a protocol-table entry — naming the
-/// [`protocol`](Self::protocol), e.g. `IPv6` — and corroborates the
-/// sniff with at least one independent reading, a network-order swap
-/// or a cross-field validation, each listed in
+/// the [`magic`](Self::magic) of a protocol-table entry, which names
+/// the [`protocol`](Self::protocol), e.g. `IPv6`. The combiner makes
+/// the record only when at least one independent reading — a
+/// network-order swap or a cross-field validation — corroborates the
+/// sniff. Those readings are listed in
 /// [`corroborations`](Self::corroborations) so the identification is
 /// auditable. The handler reads like [`suggestion`](Self::suggestion):
 /// protocol-aware decoding of the named protocol's messages, so the
 /// translation parses the message with the protocol's own structure
-/// instead of transliterating a bare sniff. The magic comparison and
-/// the corroborating readings' own lines are kept as
+/// instead of transliterating a bare sniff. The record keeps the
+/// magic comparison and the corroborating readings' own lines as
 /// [`evidence`](Self::evidence) so a reviewer (or a translation
 /// prompt) can check the promotion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,11 +394,12 @@ pub struct ProtocolMessage {
     /// The Rust pattern the handler suggests, e.g. `protocol-aware
     /// IPv6 message decode (byteorder BE reads)`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines behind the identification — the magic
-    /// comparison and the corroborating readings' own lines — kept so
-    /// a reviewer (or a translation prompt) can audit the promotion.
+    /// comparison and the corroborating readings' own lines. The
+    /// record keeps them so a reviewer (or a translation prompt) can
+    /// audit the promotion.
     pub evidence: String,
 }
 
@@ -404,42 +408,43 @@ pub struct ProtocolMessage {
 // ============================================================
 
 /// One width's entry in the binary-level endianness profile: the
-/// width the swap calls carry, the wire byte order their names
+/// width the swap calls move, the wire byte order their names
 /// support, and the functions that made the observations.
 ///
 /// The endianness comes from the swap name family alone, exactly as
-/// the composed layout's per-field order does: a network-order
+/// the composed layout's per-field order does. A network-order
 /// spelling (`ntohl`, `htons`, and their kin) says the width travels
-/// big-endian, while a width seen only through direction-neutral
-/// builtins carries [`WireEndianness::ReversalOnly`] — the bytes
-/// reverse and no wire order is claimed.
+/// big-endian. A width seen only through direction-neutral builtins
+/// records [`WireEndianness::ReversalOnly`]: the bytes reverse and no
+/// wire order is claimed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndiannessEntry {
-    /// The width the swaps carry, in bits: 16, 32, or 64.
+    /// The width the swaps move, in bits: 16, 32, or 64.
     pub width: u32,
     /// The wire byte order the swap names support for this width.
     pub endianness: WireEndianness,
-    /// The functions that made the observations, in listing order,
-    /// each named once however many swaps it made at this width.
+    /// The functions that made the observations, in listing order. A
+    /// function is named once, however many swaps it made at this
+    /// width.
     pub functions: Vec<String>,
 }
 
-/// The binary-level endianness profile one scan coalesces from its
+/// The binary-level endianness profile one scan builds from its
 /// byte-swap findings — made by the endianness profiler, not by a
 /// body detector.
 ///
-/// A record says the binary moves [`entries`](Self::entries) — one
-/// per width its swap calls were seen at, ascending — each naming
-/// the wire byte order the names support and the contributing
-/// functions; widths with no observed swaps are absent, so the record
-/// claims only what was seen. Like the apidetect divergence claim the
+/// A record says the binary moves [`entries`](Self::entries), one per
+/// width its swap calls were seen at, ascending. Each entry names the
+/// wire byte order the names support and the contributing functions.
+/// Widths with no observed swaps are absent, so the record claims
+/// only what was seen. Like the apidetect divergence claim the
 /// profile belongs to the binary rather than any one function, so
 /// [`function`](Self::function) reads as the empty string. The
 /// profile reads like [`suggestion`](Self::suggestion): the
 /// `byteorder` types the widths' wire orders imply, so a
 /// function-level translation prompt still gets the program-level
-/// profile. The first swap line seen at each width is kept as
-/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// profile. The record keeps the first swap line seen at each width
+/// as [`evidence`](Self::evidence) so a reviewer (or a translation
 /// prompt) can check the profile against the decompilations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndiannessMap {
@@ -452,11 +457,11 @@ pub struct EndiannessMap {
     /// The Rust pattern the profile suggests, e.g. `program-wide BE
     /// wire order at u32 (byteorder BE types)`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The first swap line seen at each entry's width, in entry
-    /// order — kept so a reviewer (or a translation prompt) can
-    /// check the profile.
+    /// order. The record keeps it so a reviewer (or a translation
+    /// prompt) can check the profile.
     pub evidence: String,
 }
 
@@ -466,18 +471,19 @@ pub struct EndiannessMap {
 
 /// One serialization finding, whichever detector made it.
 ///
-/// The detectors emit the concrete records; the union is what the
-/// persisted result carries, so one list can hold every finding for a
-/// binary and a consumer reads the shared shape — function, suggestion,
-/// confidence, evidence — without naming which detector produced it.
-/// The detectors read disjoint body shapes — a swap call, a shift-and-or
-/// chain, a signature comparison, an integrity comparison — so nothing
-/// is resolved between variants (the validation detector's gate against
-/// magic hits runs where the engine hands it the magic findings, not in
-/// the union, and the format and protocol-message records are composed
-/// by the engine's post-read over the findings the pass already made,
-/// not by a detector). The serde `kind` tag names the record shape in
-/// the persisted JSON.
+/// The detectors emit the concrete records; the persisted result
+/// stores them through this union. So one list can hold every finding
+/// for a binary, and a consumer reads the shared shape — function,
+/// suggestion, evidence confidence, evidence — without naming which
+/// detector produced it. The detectors read disjoint body shapes — a
+/// swap call, a shift-and-or chain, a signature comparison, an
+/// integrity comparison — so nothing is resolved between variants.
+/// The validation detector's gate against magic hits runs in the
+/// serialization scan, which hands the detector those magic findings,
+/// not in the union. And the format and protocol-message records are
+/// composed by the serialization scan's post-read over the findings
+/// the pass already made, not by a detector. The serde `kind` tag
+/// names the record shape in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SerializeFinding {
@@ -504,7 +510,7 @@ pub enum SerializeFinding {
     /// protocol message handler.
     #[serde(rename = "protocol_message")]
     ProtocolMessage(ProtocolMessage),
-    /// The scan's byte-swap findings coalesced by operation width
+    /// The scan's byte-swap findings grouped by operation width
     /// into one binary-level wire-order profile.
     #[serde(rename = "endianness_map")]
     EndiannessMap(EndiannessMap),
@@ -537,7 +543,7 @@ impl SerializeFinding {
         }
     }
 
-    /// Confidence that the finding is right.
+    /// The finding's evidence confidence.
     pub fn confidence(&self) -> Confidence {
         match self {
             SerializeFinding::ByteSwap(record) => record.confidence,
@@ -658,9 +664,9 @@ fn flush_packed_run(parts: &mut Vec<String>, run: &mut Vec<u32>) {
 
 /// Render a finding as prompt data: the function it is about, the kind
 /// of serialization pattern the detector read, the Rust pattern the
-/// finding suggests, and the confidence and evidence behind the claim —
-/// so the escalate prompt shows the hypothesis and how strongly it was
-/// made, whichever detector produced it.
+/// finding suggests, and the evidence confidence and evidence behind
+/// the claim — so the escalate prompt shows the hypothesis and its
+/// evidence confidence, whichever detector produced it.
 impl From<&SerializeFinding> for calxgloss_prompts::SerializationInfo {
     fn from(finding: &SerializeFinding) -> Self {
         Self {
@@ -684,11 +690,11 @@ impl From<&SerializeFinding> for calxgloss_prompts::SerializationInfo {
 /// function, and within one function the byte swaps, then the bit
 /// packs, then the magic-byte comparisons, then the cross-field
 /// validation checks, then the composed format layout, then the
-/// protocol-message identification; the binary-level endianness map
-/// appends after every per-function finding. The detectors
-/// read disjoint body shapes, so a function can carry findings of
-/// every kind at once and none competes with another; the stable
-/// order means two scans of the same program diff cleanly.
+/// protocol-message identification. The scan appends the
+/// binary-level endianness map after every per-function finding. The
+/// detectors read disjoint body shapes, so a function can hold
+/// findings of every kind at once and none competes with another. The
+/// stable order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerializeResult {
     /// Provenance of the scan that produced these findings.
@@ -709,10 +715,10 @@ impl SerializeResult {
 
     /// The findings recorded for one function, e.g. `FUN_18003ab00`.
     ///
-    /// The binary-level endianness map is yielded for each of its
-    /// contributing functions — the program-level profile is part of
-    /// what a function-level prompt reads — and stays absent for the
-    /// functions it never names.
+    /// This lookup also yields the binary-level endianness map for
+    /// each of its contributing functions, because a function-level
+    /// prompt reads the program-level profile too. The map stays
+    /// absent for the functions it never names.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &SerializeFinding> {
         self.findings
             .iter()
@@ -754,8 +760,8 @@ mod tests {
     fn a_byte_swap_operation_serde_round_trips() {
         let record = byte_swap();
         let json = serde_json::to_string(&record).unwrap();
-        // The width serializes as a plain number and the confidence as
-        // one too, matching the workspace's serde convention.
+        // The width serializes as a plain number and the `confidence`
+        // field as one too, matching the workspace's serde convention.
         assert!(json.contains("\"operation\":\"ntohl\""));
         assert!(json.contains("\"width\":32"));
         assert!(json.contains("\"confidence\":70"));
@@ -942,7 +948,7 @@ mod tests {
         let record = cross_field_validation();
         let json = serde_json::to_string(&record).expect("record should serialize");
         // The shape serializes snake_case, matching the workspace's
-        // serde convention, and reads back whole.
+        // serde convention, and reads back unchanged.
         assert!(json.contains("\"shape\":\"checksum\""));
         assert!(json.contains("\"field\":\"uVar7\""));
         assert!(json.contains("\"computed\":\"uVar5 + uVar6\""));
@@ -1010,9 +1016,10 @@ mod tests {
     fn a_serialization_format_record_serde_round_trips() {
         let record = serialization_format();
         let json = serde_json::to_string(&record).expect("record should serialize");
-        // The endianness and direction serialize as their serde labels,
-        // a packed field omits its absent endianness, and the direction
-        // rides as a plain string — matching the workspace convention.
+        // The endianness and direction serialize as their serde
+        // labels. A packed field omits its absent endianness. The
+        // direction serializes as a plain string. All of this matches
+        // the workspace's serde convention.
         assert!(json.contains("\"endianness\":\"be\""));
         assert!(!json.contains("\"endianness\":null"));
         assert!(json.contains("\"direction\":\"reader\""));
@@ -1024,7 +1031,7 @@ mod tests {
 
     #[test]
     fn a_directionless_format_record_reads_back_from_json() {
-        // A layout whose swap families disagree carries no direction at
+        // A layout whose swap families disagree has no direction at
         // all: the field is absent on disk and reads back as `None`.
         let json = r#"{
             "function": "FUN_18003e750",
@@ -1228,8 +1235,9 @@ mod tests {
         assert_eq!(findings[4].confidence(), Confidence::new(75));
         assert_eq!(findings[5].confidence(), Confidence::new(85));
 
-        // The endianness map belongs to the binary, not a function, so it
-        // reads through the same accessors with its own function spelling.
+        // The endianness map belongs to the binary, not to one
+        // function, so the same accessors work on it and its function
+        // spelling is the empty string.
         let map = SerializeFinding::EndiannessMap(endianness_map());
         assert_eq!(map.function(), "");
         assert!(!map.suggestion().is_empty());
@@ -1309,7 +1317,7 @@ mod tests {
 
     #[test]
     fn a_result_without_findings_omits_them_and_reads_back_empty() {
-        // Documents persisted before a finding landed still load, and an
+        // Documents that carry no `findings` field still load, and an
         // empty scan stays small on disk.
         let result = SerializeResult::new(ScanMetadata::new("eqmain.dll"));
         let json = serde_json::to_string(&result).expect("empty serialize result should serialize");
@@ -1342,9 +1350,9 @@ mod tests {
 
     #[test]
     fn a_finding_renders_into_prompt_data_whichever_kind_it_is() {
-        // The prompt conversion reaches through the union, so every kind
-        // carries its label, suggestion, confidence, and evidence whole
-        // into `SerializationInfo`.
+        // The prompt conversion works on every union variant, so each
+        // kind brings its label, suggestion, evidence confidence, and
+        // evidence whole into `SerializationInfo`.
         let swap = SerializeFinding::ByteSwap(byte_swap());
         let info = calxgloss_prompts::SerializationInfo::from(&swap);
         assert_eq!(info.function, "FUN_18003ab00");
