@@ -1,35 +1,35 @@
 //! Magic-byte (format signature) detection.
 //!
-//! This module provides [`MagicByteDetector`], which carries the
-//! signatures a scan reads decompiled bodies against — the
-//! PNG, gzip, and ZIP file-format magics and the well-known
-//! network-protocol magics (IPv4, ARP, IPv6, VLAN) — and reads each
-//! comparison of loaded buffer content against one as format sniffing
+//! This module provides [`MagicByteDetector`]. It holds the signature
+//! table the scan checks decompiled bodies against: the PNG, gzip, and
+//! ZIP file-format magics, and the well-known network-protocol magics
+//! (IPv4, ARP, IPv6, VLAN). When a body compares loaded buffer content
+//! against one of these values, the scan records format sniffing that
 //! a Rust translation should express through the matching format
 //! crate: `png::Decoder`, `flate2::read::GzDecoder`, `zip::ZipArchive`.
 //!
-//! Each entry is a [`MagicSignature`]: the [`magic`](MagicSignature::magic)
-//! bytes as the decompiler writes them in a comparison, the
-//! [`format`](MagicSignature::format) they name, and the
-//! [`suggestion`](MagicSignature::suggestion) crate type they read
-//! like. [`default_signatures`] carries the standard table, and
+//! Each entry is a [`MagicSignature`]. It keeps the
+//! [`magic`](MagicSignature::magic) bytes as the decompiler writes them
+//! in a comparison, the [`format`](MagicSignature::format) they name,
+//! and the [`suggestion`](MagicSignature::suggestion) crate type that
+//! reads them. [`default_signatures`] is the standard table, and
 //! [`MagicByteDetector::with_default_signatures`] builds a detector
-//! that scans against it — the whole table is swappable for a scan that
-//! knows a proprietary header.
+//! that scans against it. A scan that knows a proprietary header can
+//! replace the whole table.
 //!
-//! The standard table carries a protocol section: network-protocol
-//! magics [`flagged`](MagicSignature::protocol) as protocol entries so
-//! the protocol combiner can tell them apart from file-format entries
-//! when it decides whether a function is a protocol message handler.
-//! The reading itself does not care about the flag: a protocol magic
-//! comparison lands exactly like a file-format one, as a plain
-//! [`MagicFormat`] finding.
+//! The standard table also has a protocol section. Its entries are
+//! network-protocol magics, [`flagged`](MagicSignature::protocol) as
+//! protocol entries, so the protocol combiner can tell them from the
+//! file-format entries when it decides whether a function is a protocol
+//! message handler. This reading does not use the flag: a protocol
+//! magic comparison produces exactly what a file-format one does, a
+//! plain [`MagicFormat`] finding.
 //!
-//! [`MagicByteDetector::detect`] runs the reading: it walks a
-//! decompiled body line by line and emits one [`MagicFormat`] per line
-//! that compares against a configured signature — a bare constant
-//! wearing the same face outside a comparison is not sniffing, so the
-//! comparison context is what makes the match a finding.
+//! [`MagicByteDetector::detect`] runs the reading. It walks a
+//! decompiled body line by line and writes one [`MagicFormat`] for
+//! each line that compares a value against a configured signature. The
+//! same constant outside a comparison is not sniffing, so the
+//! comparison context is what turns a match into a finding.
 
 use crate::types::MagicFormat;
 use calxgloss_decomp::DecompiledFunction;
@@ -40,25 +40,26 @@ use serde::{Deserialize, Serialize};
 // ============================================================
 
 /// One signature the detector recognizes: the magic bytes, the format
-/// or protocol they name, and the Rust type or pattern that reads it.
+/// or protocol they name, and the Rust type or pattern that reads them.
 ///
-/// A signature is a constant, not a shape: it says that the value
-/// [`magic`](Self::magic), compared against loaded buffer content,
-/// identifies [`format`](Self::format) — and that the code doing the
-/// comparison wants [`suggestion`](Self::suggestion), the decoder type
-/// from the crate that parses that format. The bytes are stored as the
-/// decompiler writes them in a comparison: the signature read as the
-/// program loads it, little-endian on x86, so the gzip magic `1F 8B`
-/// is written `0x8B1F` and the ZIP magic `PK\x03\x04` `0x04034B50`.
+/// A signature is a constant, not a shape. It says that comparing the
+/// value [`magic`](Self::magic) against loaded buffer content
+/// identifies [`format`](Self::format), and that the code doing the
+/// comparison wants [`suggestion`](Self::suggestion): the decoder type
+/// from the crate that parses that format. The bytes are stored the way
+/// the decompiler writes them in a comparison, which is the signature
+/// as the program loads it — little-endian on x86. So the gzip magic
+/// `1F 8B` is written `0x8B1F`, and the ZIP magic `PK\x03\x04` is
+/// written `0x04034B50`.
 ///
 /// A [`protocol`](Self::protocol) entry names a network protocol
 /// instead of a file format. Protocol fields are numbered big-endian
-/// on the wire, so a protocol magic is stored in wire order — the
-/// value a handler spells after swapping the field into host order,
-/// the IPv6 ethertype `86 DD` written `0x86DD`. The flag changes
-/// nothing about the reading — a protocol magic comparison lands as a
-/// plain [`MagicFormat`] like any other entry — it only marks the
-/// entry as one the protocol combiner may promote to a protocol
+/// on the wire, so a protocol magic is stored in wire order: it is the
+/// value a handler compares against after swapping the field into host
+/// order. The IPv6 ethertype `86 DD` is written `0x86DD`. The flag
+/// changes nothing about this reading — a protocol magic comparison
+/// gives a plain [`MagicFormat`] like any other entry. It only marks
+/// the entry as one the protocol combiner may promote to a protocol
 /// message finding when the function corroborates the sniff.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MagicSignature {
@@ -71,15 +72,16 @@ pub struct MagicSignature {
     /// `png::Decoder`.
     pub suggestion: String,
     /// Whether the entry names a network protocol rather than a file
-    /// format — the flag the protocol combiner reads to tell the two
+    /// format. The protocol combiner reads this flag to tell the two
     /// sections of the table apart.
     #[serde(default)]
     pub protocol: bool,
 }
 
 impl MagicSignature {
-    /// A file-format signature recognizing the constant `magic` as
-    /// the start of `format`, read in Rust through `suggestion`.
+    /// Builds a file-format signature that recognizes the constant
+    /// `magic` as the start of `format`, read in Rust through
+    /// `suggestion`.
     pub fn new(format: impl Into<String>, magic: u64, suggestion: impl Into<String>) -> Self {
         Self {
             format: format.into(),
@@ -89,10 +91,11 @@ impl MagicSignature {
         }
     }
 
-    /// A network-protocol signature recognizing the wire-order
-    /// constant `magic` as naming `protocol`, decoded in Rust through
-    /// `suggestion`. The entry is flagged [`protocol`](Self::protocol)
-    /// so the protocol combiner can tell it from a file-format entry.
+    /// Builds a network-protocol signature. It recognizes the
+    /// wire-order constant `magic` as naming `protocol`, decoded in
+    /// Rust through `suggestion`. The entry is flagged
+    /// [`protocol`](Self::protocol), so the protocol combiner can tell
+    /// it from a file-format entry.
     pub fn protocol(
         protocol: impl Into<String>,
         magic: u64,
@@ -107,10 +110,10 @@ impl MagicSignature {
     }
 }
 
-/// The standard signature table: the three formats whose magics show up
-/// most in a binary that handles files — PNG, gzip, and ZIP — each
-/// paired with the crate type that decodes it, followed by the
-/// protocol section: the well-known network-protocol magics — the
+/// The standard signature table. First come the three formats whose
+/// magics show up most in a binary that handles files — PNG, gzip, and
+/// ZIP — each paired with the crate type that decodes it. Then comes
+/// the protocol section: the well-known network-protocol magics — the
 /// Ethernet types IPv4, ARP, IPv6, and VLAN — each flagged as a
 /// protocol entry and paired with the decoding pattern that reads it.
 pub fn default_signatures() -> Vec<MagicSignature> {
@@ -118,13 +121,14 @@ pub fn default_signatures() -> Vec<MagicSignature> {
         // The PNG magic is the first four bytes of the file, `89 50 4E 47`,
         // compared as a loaded word.
         MagicSignature::new("PNG", 0x8950_4E47, "png::Decoder"),
-        // gzip starts `1F 8B`; loaded little-endian the comparison reads 0x8B1F.
+        // gzip starts with `1F 8B`. Loaded little-endian, the comparison
+        // reads 0x8B1F.
         MagicSignature::new("gzip", 0x8B1F, "flate2::read::GzDecoder"),
         // ZIP local file headers start `PK\x03\x04`; loaded little-endian, 0x04034B50.
         MagicSignature::new("ZIP", 0x0403_4B50, "zip::ZipArchive"),
         // The protocol section: Ethernet type values, spelled in wire
-        // order — the value a packet handler compares against after
-        // swapping the 16-bit field into host order.
+        // order. This is the value a packet handler compares against
+        // after swapping the 16-bit field into host order.
         MagicSignature::protocol("IPv4", 0x0800, "ipv4 header decode via byteorder BE reads"),
         MagicSignature::protocol("ARP", 0x0806, "arp packet decode via byteorder BE reads"),
         MagicSignature::protocol("IPv6", 0x86DD, "ipv6 header decode via byteorder BE reads"),
@@ -138,40 +142,42 @@ pub fn default_signatures() -> Vec<MagicSignature> {
 
 /// Magic-byte comparison detection over decompiled functions.
 ///
-/// The detector owns the signature table a scan reads bodies against:
-/// [`MagicSignature`] records, each a constant, a format name, and the
-/// crate type it suggests. The table is configurable — supply it whole
-/// through [`with_signatures`](Self::with_signatures) for a scan that
-/// knows a proprietary header, or grow it one entry at a time with
-/// [`add_signature`](Self::add_signature) — and
-/// [`signatures`](Self::signatures) reports it in configuration order,
-/// so two detectors built the same way scan identically and results
-/// diff cleanly. The detector holds no scan source of its own and
-/// never writes back to the program; one detector serves an entire
-/// scan and can be shared by reference across concurrent per-function
-/// passes.
+/// The detector owns the signature table the scan checks bodies
+/// against: [`MagicSignature`] records, each one a constant, a format
+/// name, and the crate type it suggests. The table is configurable.
+/// Supply the whole table through
+/// [`with_signatures`](Self::with_signatures) for a scan that knows a
+/// proprietary header, or add entries one at a time with
+/// [`add_signature`](Self::add_signature).
+/// [`signatures`](Self::signatures) reports the table in configuration
+/// order, so two detectors built the same way scan identically and
+/// their results diff cleanly. The detector holds no scan source of
+/// its own and never writes back to the program. One detector serves
+/// an entire scan and can be shared by reference across concurrent
+/// per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MagicByteDetector {
     signatures: Vec<MagicSignature>,
 }
 
 impl MagicByteDetector {
-    /// A detector with no signatures configured: every body it is
-    /// handed reads nothing until the standard table arrives through
+    /// Builds a detector with no signatures configured. Every body it
+    /// receives reads nothing, until the standard table arrives through
     /// [`with_default_signatures`](Self::with_default_signatures) or
-    /// entries join one at a time through [`add_signature`](Self::add_signature).
+    /// entries are added one at a time through
+    /// [`add_signature`](Self::add_signature).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A detector that scans against the standard signature table —
-    /// [`default_signatures`] — in its configuration order.
+    /// Builds a detector that scans against the standard signature
+    /// table, [`default_signatures`], in its configuration order.
     pub fn with_default_signatures() -> Self {
         Self::with_signatures(default_signatures())
     }
 
-    /// A detector that scans against exactly `signatures`, each kept in
-    /// the order it is given.
+    /// Builds a detector that scans against exactly `signatures`,
+    /// keeping each entry in the order it is given.
     pub fn with_signatures(signatures: impl IntoIterator<Item = MagicSignature>) -> Self {
         Self {
             signatures: signatures.into_iter().collect(),
@@ -188,24 +194,24 @@ impl MagicByteDetector {
         &self.signatures
     }
 
-    /// The format-sniffing comparisons one function's body carries.
+    /// Finds the format-sniffing comparisons in one function's body.
     ///
-    /// The reading walks the body line by line and reports every line
-    /// that compares a value against a configured signature as one
-    /// [`MagicFormat`]: the format and suggestion come from the
-    /// signature, the matched bytes are its constant, and the evidence
-    /// is the comparison's own line. A bare constant outside a
-    /// comparison — an arithmetic operand, an initializer — is not
-    /// sniffing, so only `==` and `!=` lines count. Findings come back
-    /// in body order, signatures in table order within one line, so
-    /// two scans of one body diff cleanly.
+    /// The reading walks the body line by line. Every line that
+    /// compares a value against a configured signature becomes one
+    /// [`MagicFormat`]. The format and suggestion come from the
+    /// signature, the matched magic is the signature's own constant,
+    /// and the evidence is the comparison's line. A bare constant
+    /// outside a comparison — an arithmetic operand, an initializer —
+    /// is not sniffing, so only lines with `==` or `!=` count.
+    /// Findings come back in body order, and within one line in table
+    /// order, so two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<MagicFormat> {
         let mut records = Vec::new();
 
         for line in func.body.lines() {
             let line = line.trim();
-            // Format sniffing is a comparison against the signature;
-            // the same constant anywhere else is just a number.
+            // Format sniffing is a comparison against the signature.
+            // The same constant anywhere else is just a number.
             if line.is_empty() || !(line.contains("==") || line.contains("!=")) {
                 continue;
             }
@@ -233,11 +239,11 @@ impl MagicByteDetector {
 // The reading
 // ============================================================
 
-/// Confidence of a format reading from an exact signature comparison:
-/// the constant is the format's registered magic number, so the
-/// comparison is the strongest evidence a text scan can get — above
-/// the shape-read bit packs, and above the swap calls, whose names a
-/// binary could carry without any format being parsed at all.
+/// The evidence confidence of a format reading from an exact signature
+/// comparison. The constant is the format's registered magic number,
+/// so this comparison is the strongest evidence a text scan can get.
+/// It sits above the shape-read bit packs, and above the swap calls: a
+/// binary can carry those names without parsing any format at all.
 const MAGIC_CONFIDENCE: u8 = 80;
 
 // ============================================================
@@ -273,8 +279,8 @@ mod tests {
 
     #[test]
     fn a_gzip_signature_comparison_names_gzip_and_the_gz_decoder() {
-        // The decompiler writes the two-byte magic as the loaded word:
-        // `1F 8B` little-endian is 0x8b1f.
+        // The decompiler writes the two-byte magic the way the program
+        // loads it: `1F 8B` little-endian reads as 0x8b1f.
         let records = detect("  if (*(ushort *)pvVar2 == 0x8b1f) {");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].format, "gzip");
@@ -297,9 +303,9 @@ mod tests {
 
     #[test]
     fn the_same_constant_outside_a_comparison_is_not_sniffing() {
-        // A signature-shaped constant as an arithmetic operand or an
-        // initializer carries no comparison, so nothing is being
-        // sniffed and nothing is reported.
+        // A signature-shaped constant used as an arithmetic operand, or
+        // as an initializer, has no comparison in front of it. Nothing is
+        // being sniffed, so nothing is reported.
         let records = detect(
             "\
   uVar1 = 0x89504e47;
@@ -321,8 +327,9 @@ mod tests {
 
     #[test]
     fn a_custom_signature_table_replaces_the_default_wholesale() {
-        // A scan that knows a proprietary header swaps the whole table:
-        // the custom magic reads, and the standard magics read nothing.
+        // A scan that knows a proprietary header replaces the whole
+        // table. The custom magic reads, and the standard magics read
+        // nothing.
         let detector = MagicByteDetector::with_signatures([MagicSignature::new(
             "CALX",
             0x4341_4C58,
@@ -408,8 +415,8 @@ mod tests {
     #[test]
     fn a_protocol_magic_comparison_lands_a_plain_magic_finding() {
         // A protocol magic on its own reads exactly like a file-format
-        // one: a plain magic finding naming the protocol and its
-        // decoding pattern, nothing more.
+        // one: a plain magic finding that names the protocol and its
+        // decoding pattern, and nothing more.
         let records = detect("  if (uVar1 == 0x86dd) {");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].format, "IPv6");
@@ -424,9 +431,9 @@ mod tests {
 
     #[test]
     fn a_custom_signature_is_not_a_protocol_entry() {
-        // The one-at-a-time and wholesale table paths build file-format
-        // entries exactly as they always did; only the protocol
-        // constructor flags.
+        // The one-at-a-time path and the whole-table path both build
+        // file-format entries with `protocol` false. Only the protocol
+        // constructor sets the flag.
         assert!(!MagicSignature::new("CALX", 0x4341_4C58, "calx::Header").protocol);
         assert!(MagicSignature::protocol("MYPROTO", 0x1234, "proto decode").protocol);
     }

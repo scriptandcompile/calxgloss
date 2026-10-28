@@ -1,22 +1,23 @@
 //! Byte-swap call detection.
 //!
-//! This module provides [`ByteSwapDetector`], which carries the
-//! byte-swap call names a scan reads decompiled bodies against — the
-//! POSIX `ntohs`/`ntohl`/`htons`/`htonl` network-order family, the
-//! bare `bswap32`, and the GCC `__builtin_bswap16/32/64` builtins —
-//! and reads each recognized call site as a byte-order conversion a
-//! Rust translation should express through typed big-endian reads.
+//! This module provides [`ByteSwapDetector`]. It holds the byte-swap
+//! call names the scan checks decompiled bodies against: the POSIX
+//! `ntohs`/`ntohl`/`htons`/`htonl` network-order family, the bare
+//! `bswap32`, and the GCC `__builtin_bswap16/32/64` builtins. Each
+//! call to one of these names is a byte-order conversion that a Rust
+//! translation should express through typed big-endian reads.
 //!
 //! Each name is a [`ByteSwapSignature`]: the callee spelling as the
-//! decompiler writes it and the [`width`](ByteSwapSignature::width) of
-//! the value it reorders. [`default_byteswaps`] carries the standard
-//! name set, and [`ByteSwapDetector::with_default_names`] builds a
-//! detector that scans against it.
+//! decompiler writes it, and the [`width`](ByteSwapSignature::width)
+//! of the value it reorders. [`default_byteswaps`] is the standard name
+//! set, and [`ByteSwapDetector::with_default_names`] builds a detector
+//! that scans against it.
 //!
-//! [`ByteSwapDetector::detect`] runs the reading: it walks a decompiled
-//! body's direct calls in source order and emits one
-//! [`ByteSwapOperation`] per recognized call site — one call is a whole
-//! finding, the swap needs no second half to complete the picture.
+//! [`ByteSwapDetector::detect`] runs the reading. It walks a decompiled
+//! body's direct calls in source order and writes one
+//! [`ByteSwapOperation`] for each recognized call site. One call makes
+//! a whole finding: a swap needs no second half to complete the
+//! picture.
 
 use crate::types::ByteSwapOperation;
 use calxgloss_decomp::DecompiledFunction;
@@ -26,17 +27,18 @@ use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at,
 };
 
-/// The scan: plain-identifier callees, member accesses skipped, and C
-/// keywords — `if (x)` — not calls.
+/// How the call scan is set up: it matches callees written as plain
+/// identifiers, skips member accesses, and does not treat C keywords as
+/// calls, as in `if (x)`.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>",
     skip_keywords: &NON_CALL_KEYWORDS,
 };
 
-/// Every direct call in the body — the shared pseudo-C scan configured
-/// by [`CALL_SCAN`]. The byte-order read only names and lines, so the
-/// scan's arguments go unused.
+/// Finds every direct call in the body, using the shared pseudo-C scan
+/// configured by [`CALL_SCAN`]. This byte-order reading only needs
+/// names and lines, so it ignores the arguments the scan reports.
 fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
@@ -48,12 +50,12 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 /// One byte-swap call name the detector recognizes: the callee
 /// spelling and the width of the value it reorders.
 ///
-/// A signature is a name, not a shape: it only says that a call to
+/// A signature is a name, not a shape. It only says that a call to
 /// [`name`](Self::name) reverses the byte order of a value
 /// [`width`](Self::width) bits wide — `ntohl` a 32-bit word, `ntohs` a
-/// 16-bit one — while where the call sits in the function is the
-/// detector's reading. The width decides which sized `byteorder`
-/// reader the call site reads as.
+/// 16-bit one. Where the call sits in the function is what the reading
+/// works out. The width decides which sized `byteorder` reader the
+/// call site reads as.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByteSwapSignature {
     /// The callee spelling as the decompiler writes it, e.g. `ntohl`,
@@ -66,8 +68,8 @@ pub struct ByteSwapSignature {
 }
 
 impl ByteSwapSignature {
-    /// A signature recognizing the callee spelling `name` as a
-    /// byte-swap of a `width`-bit value.
+    /// Builds a signature that recognizes the callee spelling `name`
+    /// as a byte-swap of a `width`-bit value.
     pub fn new(name: impl Into<String>, width: u8) -> Self {
         Self {
             name: name.into(),
@@ -82,42 +84,43 @@ impl ByteSwapSignature {
 
 /// Byte-swap call detection over decompiled functions.
 ///
-/// The detector owns the name set a scan reads bodies against:
-/// [`ByteSwapSignature`] records, each a callee spelling and the width
-/// it swaps at. The set is configurable — supply it whole through
-/// [`with_names`](Self::with_names) or grow it one name at a time with
-/// [`add_name`](Self::add_name) — and [`names`](Self::names) reports
-/// it in configuration order, so two detectors built the same way scan
-/// identically and results diff cleanly. The widths follow the
-/// spellings' C prototypes: `ntohs`/`htons` take and return a 16-bit
-/// `short`, `ntohl`/`htonl` a 32-bit `unsigned long` on the 32-bit
-/// convention the decompiler writes, and the `__builtin_bswapN`
-/// spellings name their width in the name itself. The detector holds
-/// no scan source of its own and never writes back to the program;
-/// one detector serves an entire scan and can be shared by reference
-/// across concurrent per-function passes.
+/// The detector owns the name set the scan checks bodies against:
+/// [`ByteSwapSignature`] records, each one a callee spelling and the
+/// width it swaps at. The set is configurable. Supply the whole set
+/// through [`with_names`](Self::with_names), or add names one at a time
+/// with [`add_name`](Self::add_name). [`names`](Self::names) reports
+/// the set in configuration order, so two detectors built the same way
+/// scan identically and their results diff cleanly.
+///
+/// The widths follow the spellings' C prototypes. `ntohs`/`htons` take
+/// and return a 16-bit `short`. `ntohl`/`htonl` take and return a
+/// 32-bit `unsigned long`, under the 32-bit convention the decompiler
+/// writes. The `__builtin_bswapN` spellings state their width in the
+/// name itself. The detector holds no scan source of its own and never
+/// writes back to the program. One detector serves an entire scan and
+/// can be shared by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ByteSwapDetector {
     names: Vec<ByteSwapSignature>,
 }
 
 impl ByteSwapDetector {
-    /// A detector with no names configured: every body it is handed
-    /// reads nothing until the standard set arrives through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_name`](Self::add_name).
+    /// Builds a detector with no names configured. Every body it
+    /// receives reads nothing, until the standard set arrives through
+    /// [`with_default_names`](Self::with_default_names) or names are
+    /// added one at a time through [`add_name`](Self::add_name).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A detector that scans against the standard name set —
-    /// [`default_byteswaps`] — in its configuration order.
+    /// Builds a detector that scans against the standard name set,
+    /// [`default_byteswaps`], in its configuration order.
     pub fn with_default_names() -> Self {
         Self::with_names(default_byteswaps())
     }
 
-    /// A detector that scans against exactly `names`, each kept in the
-    /// order it is given.
+    /// Builds a detector that scans against exactly `names`, keeping
+    /// each name in the order it is given.
     pub fn with_names(names: impl IntoIterator<Item = ByteSwapSignature>) -> Self {
         Self {
             names: names.into_iter().collect(),
@@ -134,15 +137,15 @@ impl ByteSwapDetector {
         &self.names
     }
 
-    /// The byte-swap call sites one function's body carries.
+    /// Finds the byte-swap call sites in one function's body.
     ///
-    /// The reading walks the body's direct calls in source order —
-    /// outside string literals, whole names only — and reports every
-    /// call to a configured name as one [`ByteSwapOperation`]: the
-    /// operation is the callee spelling, the width the signature's,
-    /// the suggestion the `byteorder` reader for that width, and the
-    /// evidence the call's own line. Findings come back in call order,
-    /// so two scans of one body diff cleanly.
+    /// The reading walks the body's direct calls in source order. It
+    /// ignores string literals and only matches whole names. Every call
+    /// to a configured name becomes one [`ByteSwapOperation`]: the
+    /// operation is the callee spelling, the width comes from the
+    /// signature, the suggestion is the `byteorder` reader for that
+    /// width, and the evidence is the call's own line. Findings come
+    /// back in call order, so two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<ByteSwapOperation> {
         let mut operations = Vec::new();
         for call in direct_calls(&func.body) {
@@ -165,16 +168,16 @@ impl ByteSwapDetector {
 // The reading
 // ============================================================
 
-/// Confidence of a byte-swap reading from a single call to a
-/// recognized name: the call is explicit and its name is the whole
-/// evidence — an `ntohl` is a network-order read wherever it appears —
-/// but which endianness the surrounding buffer actually carries is a
-/// convention the name implies, not a fact read from the body.
+/// The evidence confidence of a byte-swap reading from a single call
+/// to a recognized name. The call is explicit, and its name is the
+/// whole evidence: an `ntohl` is a network-order read wherever it
+/// appears. But the name only implies a convention. It does not show
+/// what byte order the surrounding buffer actually uses.
 const BYTESWAP_CONFIDENCE: u8 = 70;
 
-/// The Rust pattern a swap at one width reads as: the `byteorder`
-/// big-endian reader for that width, the typed stand-in for the
-/// host-order-to-network-order hop.
+/// Builds the Rust pattern that a swap at one width reads as: the
+/// `byteorder` big-endian reader for that width. That reader is the
+/// typed stand-in for the hop between host order and network order.
 fn suggestion_for(width: u8) -> String {
     format!("byteorder::BE::read_u{width}")
 }
@@ -182,12 +185,12 @@ fn suggestion_for(width: u8) -> String {
 // The standard name set
 // ============================================================
 
-/// The standard byte-swap names: the spellings a scan recognizes as
-/// byte-order conversions out of the box — the POSIX network-order
-/// family, whose `s` spellings carry a 16-bit `short` and whose `l`
-/// spellings a 32-bit word, the bare `bswap32` a program's own
-/// hand-rolled swap, and the GCC `__builtin_bswapN` family, which
-/// names its width in the spelling.
+/// The standard byte-swap names: the spellings the scan recognizes as
+/// byte-order conversions without any configuration. First comes the
+/// POSIX network-order family, whose `s` spellings mean a 16-bit
+/// `short` and whose `l` spellings a 32-bit word. Then the bare
+/// `bswap32`, a program's own hand-rolled swap. Last comes the GCC
+/// `__builtin_bswapN` family, which states its width in the spelling.
 pub fn default_byteswaps() -> Vec<ByteSwapSignature> {
     vec![
         ByteSwapSignature::new("ntohs", 16),
@@ -211,8 +214,8 @@ mod tests {
 
     #[test]
     fn a_new_detector_starts_with_no_names() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Building a detector costs nothing. It starts empty, any two
+        // ways of building it are equal, and a clone can take its place.
         let detector = ByteSwapDetector::new();
         assert!(detector.names().is_empty());
         assert_eq!(detector, ByteSwapDetector::default());
@@ -225,8 +228,8 @@ mod tests {
             ByteSwapSignature::new("ntohl", 32),
             ByteSwapSignature::new("__builtin_bswap64", 64),
         ]);
-        // Configuration order is scan order: two detectors built the
-        // same way see the same names in the same order.
+        // The configuration order is the scan order: two detectors built
+        // the same way see the same names in the same order.
         assert_eq!(detector.names().len(), 2);
         assert_eq!(detector.names()[0].name, "ntohl");
         assert_eq!(detector.names()[1].width, 64);
@@ -243,9 +246,8 @@ mod tests {
 
     #[test]
     fn a_detector_can_be_shared_across_scans() {
-        // One detector is driven concurrently over a program's
-        // functions, so sharing one by reference across tasks must
-        // stay sound.
+        // One detector runs over a program's functions at the same time,
+        // so sharing it by reference across tasks has to stay sound.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ByteSwapDetector>();
     }
@@ -321,8 +323,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn each_default_spelling_yields_a_finding_naming_its_width() {
-        // One body, every standard spelling: each reads as a swap at
-        // the width its signature carries.
+        // One body with every standard spelling. Each one reads as a
+        // swap at the width its signature gives it.
         let operations = detect(
             "\
   sVar1 = ntohs(uVar2);
@@ -393,8 +395,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_longer_or_qualified_name_matches_no_configured_name() {
-        // Whole names only: a longer spelling is a different callee,
-        // and a member access through an object is no plain call.
+        // Only whole names match. A longer spelling is a different callee,
+        // and a member access through an object is not a plain call.
         assert!(
             detect(
                 "\
@@ -425,15 +427,16 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_custom_name_set_reaches_the_detector() {
-        // A program with its own hand-rolled swap spelling says so:
-        // the custom name reads like a standard one at its width.
+        // A program can have its own hand-rolled swap spelling. The
+        // custom name reads like a standard one, at the width it is given.
         let mut detector = ByteSwapDetector::new();
         detector.add_name(ByteSwapSignature::new("SwapBytes", 32));
         let operations = detector.detect(&function("  uVar1 = SwapBytes(local_18);"));
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].operation, "SwapBytes");
         assert_eq!(operations[0].suggestion, "byteorder::BE::read_u32");
-        // The standard spellings the swap replaced read nothing now.
+        // The standard spellings read nothing now, because this detector
+        // was never given them.
         assert!(
             detector
                 .detect(&function("  uVar1 = ntohl(local_18);"))

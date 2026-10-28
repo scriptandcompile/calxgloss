@@ -8,10 +8,12 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is the
-//! check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and every
-//! finding — for the translation pipeline to query.
+//! The saved document also works as a cache.
+//! [`exists`](SerializePersistor::exists) answers whether a binary
+//! already has one: a caller runs that check before deciding whether it
+//! needs the scan. [`load`](SerializePersistor::load) reads the whole
+//! document back — the metadata and every finding — for the
+//! translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -25,17 +27,18 @@ use crate::types::SerializeResult;
 ///
 /// # File Layout
 ///
-/// Results are filed under a cache directory, named after the binary the
-/// scan read:
+/// The persistor files each result under its cache directory, named
+/// after the binary the scan read:
 ///
 /// ```text
 /// cache_dir/
 ///     └── {binary}.json
 /// ```
 ///
-/// The default cache directory is `{workspace}/re/analysis/serialize/`,
-/// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir) points
-/// the persistor at an explicit directory instead.
+/// [`new`](Self::new) sets the default cache directory to
+/// `{workspace}/re/analysis/serialize/`.
+/// [`with_cache_dir`](Self::with_cache_dir) uses an explicit directory
+/// instead.
 ///
 /// # Example
 ///
@@ -57,7 +60,7 @@ pub struct SerializePersistor {
 }
 
 impl SerializePersistor {
-    /// Creates a new persistor rooted at the given workspace directory.
+    /// Creates a persistor for the given workspace directory.
     ///
     /// Results are stored in `<workspace>/re/analysis/serialize/`.
     pub fn new(workspace: impl AsRef<Path>) -> Self {
@@ -66,7 +69,7 @@ impl SerializePersistor {
         }
     }
 
-    /// Creates a new persistor with an explicit cache directory.
+    /// Creates a persistor that uses an explicit cache directory.
     ///
     /// Results are stored directly under the provided `cache_dir` path.
     pub fn with_cache_dir(cache_dir: impl AsRef<Path>) -> Self {
@@ -80,21 +83,21 @@ impl SerializePersistor {
         self.store.path_for(binary)
     }
 
-    /// Whether a persisted result exists for `binary`.
+    /// Whether a saved result exists for `binary`.
     ///
-    /// This is the cache check: a caller that wants serialization findings
-    /// without re-running the scan asks here first and only drives the
-    /// scan when the answer is `false`.
+    /// This is the cache check. A caller that wants serialization
+    /// findings without running the scan again asks here first, and
+    /// only runs the scan when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
 
-    /// Saves a serialization result to JSON, keyed on its metadata's
-    /// binary name.
+    /// Saves a serialization result to JSON, keyed on the binary name
+    /// in its metadata.
     ///
-    /// Creates the cache directory hierarchy if it does not exist, serializes
-    /// the result, and writes it to disk — a rescan replaces the previous
-    /// document for the same binary.
+    /// Creates the cache directory hierarchy if it does not exist, then
+    /// serializes the result and writes it to disk. Saving again for the
+    /// same binary replaces the previous document.
     ///
     /// # Errors
     ///
@@ -111,11 +114,11 @@ impl SerializePersistor {
         Ok(())
     }
 
-    /// Loads the serialization result persisted for `binary`.
+    /// Loads the serialization result saved for `binary`.
     ///
     /// # Errors
     ///
-    /// Returns [`SerializeError::NotFound`] if no result is persisted for
+    /// Returns [`SerializeError::NotFound`] if no saved result exists for
     /// `binary`, or [`SerializeError::Json`] if the document is corrupt.
     pub fn load(&self, binary: &str) -> Result<SerializeResult> {
         let path = self.path_for(binary);
@@ -267,10 +270,10 @@ mod tests {
 
     #[test]
     fn a_mixed_kind_document_survives_the_round_trip() {
-        // Byteswap, bitpack, magic, cross-field-validation,
-        // serialization-format, protocol-message, and endianness-map
-        // findings in scan order: the union carries every kind through
-        // save and load without losing the record shape behind each
+        // One finding of every kind, in scan order: byteswap, bitpack,
+        // magic, cross-field-validation, serialization-format,
+        // protocol-message, and endianness-map. The union saves and
+        // loads every kind, and keeps the record that sits behind each
         // tag.
         let dir = tempfile::tempdir().unwrap();
         let persistor = SerializePersistor::new(dir.path());
@@ -428,10 +431,10 @@ mod tests {
 
     #[test]
     fn the_stamped_document_round_trips_coverage_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #351).
+        // The coverage the scan stamped passes through the persistor
+        // untouched: statuses, ids, order, and limitation lines. A later
+        // reader — the projection seam, the report, a `--show` months
+        // later — sees exactly what was written (issue #351).
         let dir = tempfile::tempdir().unwrap();
         let persistor = SerializePersistor::new(dir.path());
         let mut saved = sample_result("eqmain.dll");
