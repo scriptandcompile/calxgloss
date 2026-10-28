@@ -1,39 +1,41 @@
 //! Core data model for error-handling evidence findings.
 //!
-//! The scan's reading is a per-function list of findings: one record
-//! per function whose kept body shows a shape the idiom catalog names,
-//! naming the function, the body line that carries the claim, the
-//! confidence band it scored on the Evidence scale, and the Rust
-//! pattern it steers translation toward. [`ErrhandlingFinding`] is the
-//! tagged union over the finding kinds — the serde `kind` tag spells
-//! the distinction in the persisted JSON, and it is what a consumer
-//! switches on — and [`ErrhandlingResult`] is the whole per-binary
-//! document, metadata-stamped like every other evidence artifact so
-//! consumers can tell when the reading was taken and against which
-//! decompiler engine.
+//! The scan's reading is a per-function list of findings. One record
+//! stands for each function whose kept body shows a shape the idiom
+//! catalog names. It names the function, quotes the body line that
+//! carries the claim, scores the reading in a confidence band on the
+//! shared Evidence scale, and names the Rust pattern it steers
+//! translation toward.
+//!
+//! [`ErrhandlingFinding`] is the tagged union over the finding kinds.
+//! The serde `kind` tag spells the distinction in the persisted JSON,
+//! and it is what a consumer switches on. [`ErrhandlingResult`] is the
+//! whole per-binary document. Like every other evidence artifact it is
+//! metadata-stamped, so consumers can tell when the reading was taken
+//! and against which analysis engine.
 
 use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
 /// A function body that spells a whole SEH `try`/`catch` frame — a
-/// `try {` line and a later `catch` clause — the body text that
-/// carries the frame claim (ADR-0046).
+/// `try {` line and a later `catch` clause. The body text carries the
+/// frame claim (ADR-0046).
 ///
-/// The record quotes the `catch` line: the `catch (...)` clause is
-/// what marks the block as a frame *handler* rather than some other
-/// block structure, and it sits at the end of the frame the
-/// decompiler spelled, so one quoted line witnesses the whole shape.
-/// It also carries the Rust pattern the finding steers a translation
-/// toward, naming the suggested shape up front. The frame shape
-/// itself lives in the [`ErrhandlingFinding::SehFrame`] tag wrapping
-/// the record, not in a field, so a persisted record can never
-/// disagree with its own kind.
+/// The record quotes the `catch` line. The `catch (...)` clause is what
+/// marks the block as a frame *handler* rather than some other block
+/// structure, and it sits at the end of the frame the decompiler
+/// spelled, so one quoted line witnesses the whole shape. The record
+/// also carries the Rust pattern the finding steers a translation
+/// toward, naming the suggested shape up front. The frame shape itself
+/// lives in the [`ErrhandlingFinding::SehFrame`] tag wrapping the
+/// record, not in a field, so a persisted record can never disagree
+/// with its own kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SehFrame {
     /// The function whose body spells the frame.
     pub function: String,
-    /// Confidence that the body really holds an SEH `try`/`catch`
-    /// frame, on the shared 0–100 Evidence scale.
+    /// Evidence confidence that the body really holds an SEH
+    /// `try`/`catch` frame, on the shared 0–100 scale.
     pub confidence: Confidence,
     /// The `catch` line quoted from the body — the claim's evidence.
     pub evidence: String,
@@ -42,21 +44,21 @@ pub struct SehFrame {
 }
 
 /// A function body whose text names a personality-handler thunk —
-/// `__except_handler3`, `_except_handler4`, or `_CxxFrameHandler3` —
-/// an SEH frame the decompiler did not draw into a spelled block
-/// (issue #288, ADR-0046's named-handler rung).
+/// `__except_handler3`, `_except_handler4`, or `_CxxFrameHandler3`.
+/// The name records an SEH frame the decompiler did not draw into a
+/// spelled block (issue #288, ADR-0046's named-handler band).
 ///
-/// The record quotes the line carrying the registration: the thunk's
+/// The record quotes the line carrying the registration. The thunk's
 /// spelled name in body text is the registration itself, so one
 /// quoted line witnesses the frame. The Rust mapping is the spelled
 /// frame's — the finding is the same frame read through weaker
-/// evidence — and the confidence carries the difference.
+/// evidence — and the evidence confidence carries the difference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamedHandler {
     /// The function whose body names the thunk.
     pub function: String,
-    /// Confidence that the body really sits inside an SEH frame, on
-    /// the shared 0–100 Evidence scale.
+    /// Evidence confidence that the body really sits inside an SEH
+    /// frame, on the shared 0–100 scale.
     pub confidence: Confidence,
     /// The body line naming the registration — the claim's evidence.
     pub evidence: String,
@@ -66,20 +68,20 @@ pub struct NamedHandler {
 
 /// A function body that calls an exception-handling API —
 /// `GetExceptionCode`/`__exception_code`, `SetUnhandledExceptionFilter`,
-/// or `AddVectoredExceptionHandler` — SEH participation witnessed by
-/// the API alone, with no spelled block and no named registration
-/// (issue #288, ADR-0046's exception-API rung).
+/// or `AddVectoredExceptionHandler`. This is SEH participation
+/// witnessed by the API call alone: no spelled block, no named
+/// registration (issue #288, ADR-0046's exception-API band).
 ///
 /// The record quotes the line carrying the call. This is the weakest
-/// SEH rung: the call names an exception facility the function talks
-/// to, and only that — a function querying the code its own filter
-/// was handed is not proven to guard its work.
+/// SEH band: the call names an exception facility the function talks
+/// to, and only that. A function querying the code its own filter was
+/// handed is not proven to guard its work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExceptionApiCall {
     /// The function whose body calls the API.
     pub function: String,
-    /// Confidence that the body really participates in SEH, on the
-    /// shared 0–100 Evidence scale.
+    /// Evidence confidence that the body really participates in SEH,
+    /// on the shared 0–100 scale.
     pub confidence: Confidence,
     /// The body line carrying the call — the claim's evidence.
     pub evidence: String,
@@ -92,16 +94,16 @@ pub struct ExceptionApiCall {
 /// the handler contract its callers must survive (issue #288).
 ///
 /// `code` carries the raised exception code when the call's first
-/// argument is a numeric literal, and stays absent (`None`, omitted
+/// argument is a numeric literal. It stays absent (`None`, omitted
 /// from the persisted document) when the argument is an identifier,
-/// a cast, or otherwise unreadable — the raise is a fact, the code is
-/// only as certain as the body spells it.
+/// a cast, or otherwise unreadable: the raise is a fact, and the code
+/// is only as certain as the body spells it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RaiseException {
     /// The function whose body makes the call.
     pub function: String,
-    /// Confidence that the body really raises an exception, on the
-    /// shared 0–100 Evidence scale.
+    /// Evidence confidence that the body really raises an exception,
+    /// on the shared 0–100 scale.
     pub confidence: Confidence,
     /// The body line carrying the call — the claim's evidence.
     pub evidence: String,
@@ -113,25 +115,24 @@ pub struct RaiseException {
     pub suggestion: String,
 }
 
-/// A function body whose guarded forward gotos converge on one
-/// shared cleanup block — the C cleanup-on-failure ladder, kept as
-/// pure control flow where the decompiler never drew a frame
-/// (issue #289).
+/// A function body whose guarded forward gotos converge on one shared
+/// cleanup block — the C cleanup-on-failure ladder, kept as pure
+/// control flow where the decompiler never drew a frame (issue #289).
 ///
-/// The record names the join label — the label whose block the
-/// rungs converge on *is* the ladder's shared cleanup — and quotes
-/// the line inside that block that decides the claim: the release
-/// call witnessing the cleanup, or the shared constant return the
-/// ladder fails to. The suggestion steers the translation to early
-/// returns plus RAII or scope guards, the shape the ladder already
-/// is, instead of the nested conditionals a re-implementation
+/// The record names the join label: the label whose block the rungs
+/// converge on is the ladder's shared cleanup. It quotes the line
+/// inside that block that decides the claim — the release call
+/// witnessing the cleanup, or, when the block releases nothing, the
+/// shared constant return. The suggestion steers the translation to
+/// early returns plus RAII or scope guards, the shape the ladder
+/// already is, instead of the nested conditionals a re-implementation
 /// tends to produce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GotoCleanup {
     /// The function whose body converges on the shared block.
     pub function: String,
-    /// Confidence that the body really runs a cleanup ladder, on
-    /// the shared 0–100 Evidence scale.
+    /// Evidence confidence that the body really runs a cleanup
+    /// ladder, on the shared 0–100 scale.
     pub confidence: Confidence,
     /// The join block line carrying the claim — the claim's evidence.
     pub evidence: String,
@@ -142,11 +143,11 @@ pub struct GotoCleanup {
     pub suggestion: String,
 }
 
-/// The site shape a failure-code literal was read from — the closed
+/// The site shape a failure-code literal was read from: the closed
 /// set of statement kinds the failure-code reading treats as the
 /// function stating its failure contract (issue #290). The persisted
 /// record names which one it was, so a consumer can tell a code the
-/// function hands its caller from one it merely tests for; the
+/// function hands its caller from a code it merely tests for. The
 /// baseline-test follow-up pins only the returned and raised ones as
 /// expected outcomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,8 +158,8 @@ pub enum ErrorCodeSite {
     /// the failure contract the reading takes.
     Return,
     /// The literal stands as the first argument of a
-    /// `RaiseException` call — the code rides the exception
-    /// mechanism the function invokes, not its return value.
+    /// `RaiseException` call — the code leaves through the exception
+    /// mechanism the function invokes, not through its return value.
     Raise,
     /// The literal stands in a guard comparison — the function
     /// tests for the code; whether it also emits it is inference,
@@ -174,20 +175,20 @@ pub enum ErrorCodeSite {
 ///
 /// The record carries the code value as the literal spells it, the
 /// site kind it was read from, and the line that carries the claim
-/// as its evidence; the confidence band rides the site kind (the
+/// as its evidence; the confidence band follows the site kind (the
 /// bands live in [`error_code`](crate::error_code)). A function
 /// carrying codes and no idiom shape still carries its code records
-/// — the failure contract and the idiom are different facts — and
-/// the same code sighted at several sites in one function stands as
-/// one record at its strongest site, so per-function lookup stays
-/// direct and two scans of one program keep diffing cleanly.
+/// — the failure contract and the idiom are different facts. The
+/// same code sighted at several sites in one function stands as one
+/// record at its strongest site, so per-function lookup stays direct
+/// and two scans of one program keep diffing cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorCode {
     /// The function whose body spells the code.
     pub function: String,
-    /// Confidence that the code really rides this function's failure
-    /// contract, on the shared 0–100 Evidence scale, banded by the
-    /// site kind.
+    /// Evidence confidence that the code really belongs to this
+    /// function's failure contract, on the shared 0–100 scale,
+    /// banded by the site kind.
     pub confidence: Confidence,
     /// The body line carrying the literal — the claim's evidence.
     pub evidence: String,
@@ -200,33 +201,34 @@ pub struct ErrorCode {
     pub suggestion: String,
 }
 
-/// A failure code one function inherits along the call map — the
-/// callee whose recorded code reaches the caller because the caller
+/// A failure code one function inherits along the call map. The
+/// callee's recorded code reaches the caller because the caller
 /// compares the callee's return against that literal, or hands the
 /// callee's return straight back to its own caller (issue #291,
 /// ADR-0047: propagation carries codes, never idioms).
 ///
 /// The record names the *caller* as its function — the finding is
 /// about the caller's contract, which now includes a code the caller
-/// never spelled itself — and the callee as its `partner`, beside the
-/// same code value the callee's own record carries. Its evidence is
-/// the caller's own line: the call site where the comparison guards
-/// the callee's value, or where the callee's value is handed back.
-/// The band is propagation's own penalty, off the guard reading's
-/// ( [`INHERITED_ERROR_CODE_CONFIDENCE`](crate::cross_function)), so
-/// a second-hand contract never outranks a first-hand one. One
+/// never spelled itself. It names the callee as its `partner`, beside
+/// the same code value the callee's own record carries. Its evidence
+/// is the caller's own line: the call site where the comparison
+/// guards the callee's value, or where the callee's value is handed
+/// back. The band is propagation's own penalty, taken off the guard
+/// reading's band ( [`INHERITED_ERROR_CODE_CONFIDENCE`](crate::cross_function)),
+/// so a second-hand contract never outranks a first-hand one. One
 /// (function, code) pair stands once — the first claim in scan order
-/// wins, per ADR-0028's precedent — and the caller's own [`ErrorCode`]
-/// records ride beside it, different readings of different facts.
+/// wins, per ADR-0028's precedent. The caller's own [`ErrorCode`]
+/// records sit beside the inherited one, different readings of
+/// different facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InheritedErrorCode {
     /// The caller inheriting the code — the function the finding is about.
     pub function: String,
     /// The callee the code travels from, named as the call map spells it.
     pub partner: String,
-    /// Confidence that the code really rides this caller's failure
-    /// contract — propagation's own band, below every site reading
-    /// that saw the literal in the body itself.
+    /// Evidence confidence that the code really belongs to this
+    /// caller's failure contract — propagation's own band, below
+    /// every site reading that saw the literal in the body itself.
     pub confidence: Confidence,
     /// The caller's call-site line carrying the comparison or the
     /// hand-back — the claim's evidence.
@@ -243,15 +245,17 @@ pub struct InheritedErrorCode {
 /// The union is what the persisted document carries, so the follow-up
 /// families (the cross-function propagation readings) land as new
 /// variants without reshaping the artifact. The serde `kind` tag names
-/// the finding kind in the persisted JSON; the tag *is* the idiom kind,
+/// the finding kind in the persisted JSON. The tag *is* the idiom kind,
 /// so a record can never disagree with its own kind by carrying a
-/// redundant label. The three SEH kinds — spelled frame, named handler,
-/// exception-API call — stand one per function at most, the strongest
-/// family winning the one claim (the engine takes the first family
-/// that fires, in ADR-0046's rung order); a `RaiseException` finding
-/// and a `GotoCleanup` finding each ride beside them, different facts
-/// about the same function, and so do as many `ErrorCode` records as
-/// the function spells distinct codes (issue #290).
+/// redundant label.
+///
+/// The three SEH kinds — spelled frame, named handler, exception-API
+/// call — stand one per function at most: the strongest family wins
+/// the one claim, because the scan takes the first family that fires,
+/// in ADR-0046's band order. A `RaiseException` finding and a
+/// `GotoCleanup` finding each sit beside the SEH claim — different
+/// facts about the same function. So do as many `ErrorCode` records
+/// as the function spells distinct codes (issue #290).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ErrhandlingFinding {
@@ -304,7 +308,7 @@ impl ErrhandlingFinding {
         }
     }
 
-    /// Confidence in the finding, on the Evidence scale.
+    /// Evidence confidence in the finding, on the shared 0–100 scale.
     pub fn confidence(&self) -> Confidence {
         match self {
             ErrhandlingFinding::SehFrame(record) => record.confidence,
@@ -360,9 +364,9 @@ impl ErrhandlingFinding {
         }
     }
 
-    /// Stamp the function the finding is about, the field every
-    /// record carries and the detectors — which never see a name —
-    /// leave empty for the engine to fill.
+    /// Stamp the function the finding is about. Every record carries
+    /// this field; the detectors never see a name, so they leave it
+    /// empty for the scan to fill.
     pub(crate) fn set_function(&mut self, function: &str) {
         match self {
             ErrhandlingFinding::SehFrame(record) => record.function = function.to_string(),
@@ -380,15 +384,17 @@ impl ErrhandlingFinding {
 
 /// Render a finding as prompt data: the function it is about, the kind
 /// tag, the reading spelled for a reader, the Rust pattern the finding
-/// steers a translation toward, and the confidence and evidence behind
-/// the claim — so the module-context and escalate prompts show the
-/// error-handling contract the body carries and how strongly each
-/// reading was made, and the translator stops guessing at error shapes
-/// (issue #293). Code-bearing records carry the code in its spelled
-/// `0x…` form: a failure-code record names the site kind the literal
-/// was read from, an inherited record names the callee the code
-/// carried from, and a `RaiseException` idiom names the code it raises
-/// beside its suggestion without becoming a failure-code record itself.
+/// steers a translation toward, and the evidence confidence and body
+/// line behind the claim (issue #293). The module-context and escalate
+/// prompts then show the error-handling contract the body carries and
+/// how strongly each reading was made, and the translator stops
+/// guessing at error shapes.
+///
+/// Code-bearing records carry the code in its spelled `0x…` form. A
+/// failure-code record names the site kind the literal was read from;
+/// an inherited record names the callee the code came from; and a
+/// `RaiseException` idiom names the code it raises beside its
+/// suggestion without becoming a failure-code record itself.
 impl From<&ErrhandlingFinding> for calxgloss_prompts::ErrhandlingInfo {
     fn from(finding: &ErrhandlingFinding) -> Self {
         let code = match finding {
@@ -430,11 +436,11 @@ impl From<&ErrhandlingFinding> for calxgloss_prompts::ErrhandlingInfo {
 /// The whole scan of one binary: the findings plus the metadata stamp
 /// every evidence artifact carries.
 ///
-/// The findings ride in listing order, one function's findings
-/// grouped together, so two scans of the same program diff cleanly.
+/// The findings stay in listing order, one function's findings grouped
+/// together, so two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrhandlingResult {
-    /// When and against which engine the reading was taken.
+    /// When the reading was taken and against which analysis engine.
     pub metadata: ScanMetadata,
     /// Every finding the scan made, in listing order. Omitted from
     /// the persisted document when the scan claimed nothing — an
@@ -445,9 +451,9 @@ pub struct ErrhandlingResult {
 }
 
 impl ErrhandlingResult {
-    /// An empty result for `binary`: the shape a scan starts from,
-    /// and the shape a caller persists when it scanned a program with
-    /// nothing to report.
+    /// An empty result for the program `binary` names: the shape a
+    /// scan starts from, and the shape a caller persists when it
+    /// scanned a program with nothing to report.
     pub fn new(metadata: ScanMetadata) -> Self {
         Self {
             metadata,
@@ -456,11 +462,12 @@ impl ErrhandlingResult {
     }
 
     /// Every finding the scan made about one function, e.g.
-    /// `FUN_18003ab00`, in listing order — the idiom readings first,
-    /// then the function's failure-code records, then any inherited
-    /// codes appended after the per-function records. A by-function
-    /// lookup is what the prompt seam reads, so the same lookup answers
-    /// idiom and codes at once.
+    /// `FUN_18003ab00`, in listing order. Within one function's
+    /// per-function block the idiom readings come first, then that
+    /// function's failure-code records; the scan appends inherited
+    /// codes at the end of the document, after every function's
+    /// per-function block. A by-function lookup is what the prompt seam
+    /// reads, so the same lookup answers idiom and codes at once.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ErrhandlingFinding> {
         self.findings
             .iter()
@@ -561,8 +568,8 @@ mod tests {
     fn a_seh_frame_record_serde_round_trips() {
         let record = framed();
         let json = serde_json::to_string(&record).unwrap();
-        // Confidence serializes as its bare score, matching the
-        // workspace's serde convention.
+        // Evidence confidence serializes as its bare score, matching
+        // the workspace's serde convention.
         assert!(json.contains(&format!("\"confidence\":{}", SPELLED_FRAME_CONFIDENCE)));
         let back: SehFrame = serde_json::from_str(&json).unwrap();
         assert_eq!(back, record);
@@ -579,9 +586,9 @@ mod tests {
 
     #[test]
     fn each_new_record_serde_round_trips_under_its_kind_tag() {
-        // Documents written before a kind existed keep loading
-        // because each kind is its own tag — the union's standing
-        // guarantee, asserted for every kind the track has grown.
+        // Each kind is its own tag, so documents written before a kind
+        // existed keep loading. That is the union's standing guarantee,
+        // asserted here for every kind the track has grown.
         let cases = [
             (
                 ErrhandlingFinding::NamedHandler(named()),
@@ -723,10 +730,10 @@ mod tests {
 
     #[test]
     fn a_code_record_round_trips_with_its_value_and_site_kind() {
-        // The code value rides the document as a number and the site
-        // kind as its spelled tag: a consumer reading the document can
-        // pin the expected outcome and tell a returned code from a
-        // compared one without opening the body.
+        // The code value is stored in the document as a number, and
+        // the site kind as its spelled tag. A consumer reading the
+        // document can pin the expected outcome and tell a returned
+        // code from a compared one without opening the body.
         for (site, tag) in [
             (ErrorCodeSite::Return, "\"site\":\"return\""),
             (ErrorCodeSite::Raise, "\"site\":\"raise\""),
@@ -753,9 +760,9 @@ mod tests {
 
     #[test]
     fn an_inherited_record_names_its_partner_and_round_trips() {
-        // The callee is part of the claim on disk: a consumer reading
-        // the document can see which function's contract the code
-        // travelled from without re-deriving the call map.
+        // The callee is part of the claim on disk. A consumer reading
+        // the document can see which function's contract the code came
+        // from, without re-deriving the call map.
         let finding = ErrhandlingFinding::InheritedErrorCode(inherited());
         let json = serde_json::to_string(&finding).unwrap();
         assert!(json.contains("\"partner\":\"FUN_1800412a0\""));
@@ -779,9 +786,10 @@ mod tests {
     #[test]
     fn the_seh_bands_and_the_raise_persist_ranked() {
         // The three SEH bands and the raise band, observable through
-        // the persisted confidence: spelled block above named handler
-        // above API call, the raise in high between, and every round
-        // trip preserving the score the scan wrote.
+        // the evidence confidence in the persisted document: spelled
+        // frame above raise, raise above named handler, named handler
+        // above API call. Every round trip preserves the score the
+        // scan wrote.
         // ADR-0046's ladder: each follow-up anchors its own band as
         // it lands, strictly below the family above it — issue #289
         // adds the ladder's two rungs at the bottom, so neither can
@@ -830,8 +838,8 @@ mod tests {
     #[test]
     fn a_result_without_findings_omits_them_and_reads_back_empty() {
         // The findings-free document every no-idiom binary persists,
-        // and a document written before a family landed: the field is
-        // absent on disk and reads back as an empty scan.
+        // and documents written before a family landed: the field is
+        // absent on disk, and it reads back as an empty scan.
         let result = ErrhandlingResult::new(ScanMetadata::new("eqmain.dll"));
         let json = serde_json::to_string(&result).unwrap();
         assert!(!json.contains("\"findings\""));

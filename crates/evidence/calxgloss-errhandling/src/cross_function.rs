@@ -1,27 +1,29 @@
 //! Cross-function propagation of the failure-code records.
 //!
-//! The per-function code reading stops at a body's closing brace, and
-//! a caller that never spells a literal itself reads clean even when
+//! The per-function code reading stops at a body's closing brace. A
+//! caller that never spells a literal itself reads clean, even when
 //! the value it branches on or hands back is its callee's failure
 //! code. This module closes that gap over the bodies one scan already
-//! holds: it derives the call map from the fetched bodies — no extra
-//! engine reads, and the callee's code set comes from the same
-//! configured [`ErrorCodeDetector`] re-run on text the scan already
-//! has — and carries the callee's recorded codes onto the caller
-//! (issue #291, ADR-0047).
+//! holds. It derives the call map from those bodies — no extra reads
+//! from the analysis engine. Each callee's code set comes from the
+//! same configured [`ErrorCodeDetector`] re-run on text the scan
+//! already has. The pass then copies the callee's recorded codes onto
+//! the caller (issue #291, ADR-0047).
 //!
-//! Two caller shapes inherit. A guard comparing a callee's return
-//! against a code literal — the call straight inside the comparison
-//! (`if (FUN_140006b40(param_1) == 0xc0000001)`) or a local the call
-//! just assigned guarding it (`iVar1 = FUN_140006b40(param_1);` and
-//! a later `if`, `else`, or `while` head comparing it) — inherits
-//! each compared code the callee's own records name. A whole
+//! Two caller shapes inherit. The first is a guard comparing a
+//! callee's return against a code literal. The call sits straight
+//! inside the comparison (`if (FUN_140006b40(param_1) == 0xc0000001)`),
+//! or a local the call just assigned is the one
+//! guarded — `iVar1 = FUN_140006b40(param_1);` and a later `if`,
+//! `else`, or `while` head comparing it. That guard inherits each
+//! compared code the callee's own records name. The second is a whole
 //! hand-back of a callee's return to the caller's own caller —
 //! `return FUN_140006b40(param_1);`, spelled casts and all, or
-//! `return iVar1;` where the assignment names the call — carries the
-//! callee's *whole* recorded set, raise-site and guard-site codes
-//! included: re-returning makes the callee's contract the caller's
-//! return value too. A returned comparison (`return iVar1 ==
+//! `return iVar1;` where the assignment names the call. A hand-back
+//! carries the callee's *whole* recorded set, raise-site and
+//! guard-site codes included: re-returning makes the callee's
+//! contract the caller's return value too. A returned comparison
+//! (`return iVar1 ==
 //! 0xc0000022;`) hands back a 0/1, not a code, and inherits nothing.
 //!
 //! Only codes travel. A callee's spelled frame, `RaiseException`
@@ -29,16 +31,16 @@
 //! propagation copies the records a contract is made of, not the
 //! reading that found them. One (function, code) pair claims once —
 //! the first claim in scan order wins and a second path stays quiet,
-//! per ADR-0028's precedent — and a callee outside the scanned set,
-//! one the scan could not decompile, or one that records no codes
-//! contributes nothing, the per-function picture exactly as it was.
-//! Each pair inherits at most one hop per scan: the callee's
+//! per ADR-0028's precedent. A callee outside the scanned set, one
+//! the scan could not decompile, or one that records no codes
+//! contributes nothing: the per-function picture stays exactly as it
+//! was. Each pair inherits at most one hop per scan — the callee's
 //! per-function records travel, not records that were themselves
-//! inherited — a chain resolves scan by scan, not in one pass.
-//! An inherited record rides below every band that saw the literal
-//! in the body it claims: a second-hand contract is a weaker claim
-//! than a first-hand one, and [`INHERITED_ERROR_CODE_CONFIDENCE`]
-//! pays the penalty off the guard reading's band.
+//! inherited. A chain resolves scan by scan, not in one pass. An
+//! inherited record sits below every band that saw the literal in the
+//! body it claims: a second-hand contract is a weaker claim than a
+//! first-hand one, and [`INHERITED_ERROR_CODE_CONFIDENCE`] pays the
+//! penalty off the guard reading's band.
 
 use crate::error_code::{ERROR_CODE_SUGGESTION, ErrorCodeDetector, shaped_code};
 use crate::goto_cleanup::blank_literals;
@@ -52,19 +54,21 @@ use calxgloss_types::{
 };
 use std::collections::HashMap;
 
-/// Confidence of a code inherited along one call edge: the callee's
-/// record is explicit and the caller's use of the value is a spelled
-/// comparison or hand-back, but the caller never spelled the literal
-/// itself — the tie from its value to the callee's contract is read,
-/// not seen (issue #291). The band is the guard reading's 64 with the
-/// propagation penalty paid: under the exception-API rung's 60 and
-/// the cleanup ladder's 55 as well, so an inherited code never
-/// outranks any reading that saw the literal in the body it claims.
+/// Evidence confidence of a code inherited along one call edge. The
+/// callee's record is explicit and the caller's use of the value is a
+/// spelled comparison or hand-back, but the caller never spelled the
+/// literal itself — the link from the caller's value to the callee's
+/// contract is read, not seen (issue #291). The band is the guard
+/// reading's 64 with the propagation penalty paid: it sits under the
+/// exception-API band's 60 and under the cleanup ladder's 55 as well,
+/// so an inherited code never outranks any reading that saw the
+/// literal in the body it claims.
 pub const INHERITED_ERROR_CODE_CONFIDENCE: u8 = 54;
 
-/// The scan: plain identifier callee names, member and pointer access
-/// skipped, C statement keywords not calls — the call map the
-/// propagation walks comes off exactly this configuration.
+/// The call-name lookup settings: plain identifier callee names,
+/// member and pointer access skipped, C statement keywords are not
+/// calls. The call map the propagation walks comes off exactly this
+/// configuration.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>",
@@ -76,10 +80,11 @@ const CALL_SCAN: ScanOptions = ScanOptions {
 ///
 /// The analyzer is stateless: every reading comes from the bodies it
 /// is handed and the configured [`ErrorCodeDetector`] it is given, so
-/// one analyzer serves an entire scan. It fetches nothing itself —
-/// the engine hands it the same [`DecompiledFunction`] values the
+/// one analyzer serves an entire scan. It fetches nothing itself. The
+/// scan hands it the same [`DecompiledFunction`] values the
 /// per-function pass already decompiled, keeping the scan at one
-/// decompile per function (ADR-0024's rails: no new engine reads).
+/// decompile per function (ADR-0024's rails: no new analysis-engine
+/// reads).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CrossFunctionAnalyzer;
 
@@ -90,11 +95,11 @@ impl CrossFunctionAnalyzer {
         Self
     }
 
-    /// The inherited-code findings the program carries: callers in
-    /// the order the scan kept their bodies, within one caller in
-    /// line order (a guard comparison ahead of a hand-back on the
-    /// same line), and a whole hand-back carrying the callee's codes
-    /// in the callee's own body-record order.
+    /// The inherited-code findings the program carries. Callers come
+    /// in the order the scan kept their bodies; within one caller,
+    /// findings come in line order (a guard comparison ahead of a
+    /// hand-back on the same line); a whole hand-back carries the
+    /// callee's codes in the callee's own body-record order.
     ///
     /// For every body, each line is read with strings and comments
     /// blanked — the same blanking the failure-code reading does, so
@@ -103,10 +108,10 @@ impl CrossFunctionAnalyzer {
     /// A guard head (`if`, `else`, or `while`, past any peeled
     /// closing brace) whose comparison stands a known callee's call
     /// or a just-assigned local against a shaped literal inherits
-    /// every compared code that callee records; a `return` handing a
+    /// every compared code that callee records. A `return` handing a
     /// call's value — or a just-assigned local's — back whole
     /// inherits the callee's whole set. One (function, code) pair
-    /// claims once, first in this scan order wins; a callee whose
+    /// claims once, first in this scan order wins. A callee whose
     /// name is the caller's own (recursion) claims nothing.
     pub fn analyze(
         &self,
@@ -164,9 +169,9 @@ impl CrossFunctionAnalyzer {
                     ));
                 }
 
-                // The guard-compare path: a comparison standing a
-                // callee's call or a just-assigned local against a
-                // shaped literal, the line a statement guard.
+                // The guard-compare path: the line is a statement
+                // guard, and the comparison stands a callee's call or
+                // a just-assigned local against a shaped literal.
                 let head = code.trim().trim_start_matches('}').trim_start();
                 let guard_head = starts_word(head, "if")
                     || starts_word(head, "else")
@@ -214,9 +219,9 @@ impl CrossFunctionAnalyzer {
                     }
                 }
 
-                // The whole hand-back path: a return whose value is
-                // a call or a just-assigned local, the callee's
-                // entire recorded set riding back to the caller.
+                // The whole hand-back path: a return whose value is a
+                // call or a just-assigned local, with the callee's
+                // entire recorded set carried back to the caller.
                 if let Some((callee, evidence)) =
                     returned_whole(&code, &sites, &handed_off, &func.name, evidence_line)
                     && let Some(set) = code_sets.get(callee.as_str())
@@ -253,13 +258,12 @@ fn inherited(function: &str, partner: &str, code: u32, evidence: &str) -> Errhan
     })
 }
 
-/// The comparison operators standing in `code` as `(start, end)`
-/// byte spans: `==`, `!=`, `<`, `<=`, `>`, `>=`. The member-access
-/// arrow is skipped — `->` reads no test — and the shift spellings
-/// `<<` and `>>` are consumed as a unit, claiming nothing: shifting
-/// a callee's value names no comparison against a code. A plain
-/// assignment `=` names nothing either; only comparison operators
-/// make an operand pair.
+/// The comparison operators standing in `code` as `(start, end)` byte
+/// spans: `==`, `!=`, `<`, `<=`, `>`, `>=`. The member-access arrow is
+/// skipped — `->` reads no test. The shift spellings `<<` and `>>` are
+/// consumed as a unit and claim nothing: shifting a callee's value
+/// names no comparison against a code. A plain assignment `=` names
+/// nothing either; only comparison operators make an operand pair.
 fn comparison_operators(code: &str) -> Vec<(usize, usize)> {
     let bytes = code.as_bytes();
     let mut ops: Vec<(usize, usize)> = Vec::new();
@@ -301,12 +305,12 @@ fn comparison_operators(code: &str) -> Vec<(usize, usize)> {
 }
 
 /// The callee standing as the operand before the operator opening at
-/// `op_start`, with the line its inheritance evidences at: a call's
-/// closing paren at the operand's end resolves to that call's callee
-/// (evidenced at this line); a plain local the body assigned
-/// straight from a call resolves to that callee (evidenced at the
-/// hand-off's own line). A recursion — the callee spelled as the
-/// caller's own name — resolves to nothing.
+/// `op_start`, with the line its inheritance evidences at. A call's
+/// closing paren at the operand's end resolves to that call's callee,
+/// evidenced at this line. A plain local the body assigned straight
+/// from a call resolves to that callee, evidenced at the hand-off's
+/// own line. A recursion — the callee spelled as the caller's own
+/// name — resolves to nothing.
 fn callee_before<'a>(
     code: &'a str,
     op_start: usize,
@@ -432,10 +436,11 @@ fn literal_after(code: &str, op_end: usize) -> Option<u32> {
 /// The local and callee of a whole assignment of a call's value to a
 /// plain local — `iVar1 = FUN_140006b40(param_1);`, seen through any
 /// spelled cast on the right side. A store through a dereference,
-/// field, or index, a compound assignment, a right side that is more
-/// than the call (`iVar1 = K(x) + 1;`), and a right side that is not
-/// a call assign no hand-off: only the bare value the callee returns
-/// stands as the callee's value under the decompiler's own naming.
+/// field, or index assigns no hand-off, and neither does a compound
+/// assignment. A right side that is more than the call
+/// (`iVar1 = K(x) + 1;`), or a right side that is not a call at all,
+/// assigns none either: only the bare value the callee returns stands
+/// as the callee's value under the decompiler's own naming.
 fn assigned_from_call<'a>(code: &'a str, sites: &[CallSite<'a>]) -> Option<(&'a str, &'a str)> {
     let bytes = code.as_bytes();
     let name_start = skip_ws(bytes, 0);
@@ -465,13 +470,13 @@ fn assigned_from_call<'a>(code: &'a str, sites: &[CallSite<'a>]) -> Option<(&'a 
 }
 
 /// The callee whose value a `return` hands whole back to the caller,
-/// with the line the hand-back evidences at: `return K(x);` (seen
+/// with the line the hand-back evidences at. `return K(x);` (seen
 /// through any spelled cast) resolves to `K` at this line, and
 /// `return iVar1;` resolves to the callee `iVar1` was assigned from
 /// at that hand-off's line. A bare `return;`, a returned literal, a
 /// returned expression that is more than the call or local
 /// (`return K(x) == 0x80070057;`, `return *K(x);`), and a recursion
-/// hand nothing back.
+/// all hand nothing back.
 fn returned_whole<'a>(
     code: &'a str,
     sites: &[CallSite<'a>],
@@ -533,9 +538,9 @@ fn returned_whole<'a>(
     })
 }
 
-/// The type words a decompiler cast may spell — the same vocabulary
-/// the shared [`cast_group`] scan strips everywhere else in the
-/// workspace, restated for this crate so the propagation reads a
+/// The type words a decompiler cast may spell. This is the same
+/// vocabulary the shared [`cast_group`] scan strips everywhere else in
+/// the workspace, restated for this crate so the propagation reads a
 /// caller's spelled cast without reaching into a sibling crate's
 /// internals for one word list.
 fn is_type_word(word: &str) -> bool {
@@ -592,7 +597,7 @@ mod tests {
         }
     }
 
-    /// The pass over canned bodies, as the engine keeps them.
+    /// The pass over canned bodies, as the scan keeps them.
     fn analyze(bodies: &[(&str, &str)]) -> Vec<ErrhandlingFinding> {
         let functions: Vec<DecompiledFunction> = bodies
             .iter()
@@ -618,7 +623,7 @@ mod tests {
             .collect()
     }
 
-    /// A callee trading two codes: an access-denied guard and an
+    /// A callee recording two codes: an access-denied guard and an
     /// invalid-argument return.
     const CODED_CALLEE: &str =
         "  hr = NtQuery(handle);\n  if (hr == 0xc0000022) return hr;\n  return 0x80070057;\n";
@@ -654,7 +659,7 @@ mod tests {
     fn a_guard_on_a_local_the_call_assigned_inherits_at_the_call_line() {
         // The decompiler's own spelling — assign, then test. The
         // guard claims only the code it compares; the callee's other
-        // recorded codes ride on without being handed to this caller.
+        // recorded codes are not handed to this caller.
         let findings = analyze(&[
             ("callee", CODED_CALLEE),
             (
@@ -690,7 +695,7 @@ mod tests {
     fn a_callee_recording_no_codes_inherits_nothing() {
         // The caller spelled a shaped comparison — the per-function
         // reading records it there — but the callee hands back no
-        // recorded code, so the propagation claim is silence.
+        // recorded code, so propagation claims nothing.
         let findings = analyze(&[
             ("callee", "  work();\n  return 0;\n"),
             (
@@ -703,9 +708,9 @@ mod tests {
 
     #[test]
     fn a_compared_literal_outside_the_callees_set_claims_nothing() {
-        // The callee trades the invalid-argument code; the caller
-        // compares for the access-denied one — the sets never meet,
-        // and no contract connects these two functions.
+        // The callee records the invalid-argument code, and the
+        // caller compares for the access-denied one. The sets never
+        // meet, and no contract connects these two functions.
         let findings = analyze(&[
             ("callee", "  if (bad) return 0x80070057;\n  return 0;\n"),
             (
@@ -901,8 +906,9 @@ mod tests {
     #[test]
     fn a_comparison_spelled_inside_a_comment_inherits_nothing() {
         // The blanking is the point: a commented-out guard names no
-        // comparison, exactly as it names no failure code per
-        // function (issue #290's rule carried onto the pair).
+        // comparison, exactly as the same blanking names no failure
+        // code in the per-function reading (issue #290's rule carried
+        // onto the pair).
         let findings = analyze(&[
             ("callee", CODED_CALLEE),
             (
@@ -966,7 +972,7 @@ mod tests {
     #[test]
     fn the_inherited_band_sits_below_every_first_hand_reading() {
         // ADR-0047's ranking, pinned by construction: the guard's
-        // 64, the exception-API rung's 60, and the cleanup ladder's
+        // 64, the exception-API band's 60, and the cleanup ladder's
         // 55 all outrank a code read across one call edge.
         const {
             assert!(
