@@ -1,34 +1,33 @@
 //! The failure-code records detector.
 //!
 //! The failure contract a function keeps is spelled in the kept body
-//! itself: the literal it returns on its error path, the literal it
+//! itself. The literal it returns on its error path, the literal it
 //! compares a callee's return against, and the literal it hands
 //! `RaiseException` are the codes its callers branch on and its
-//! baseline tests must pin, and one record per distinct code per
-//! function keeps that set readable without re-deriving it from the
-//! body (issue #290 — the artifact the baseline-test follow-up
-//! consumes as the expected outcomes).
+//! baseline tests must pin. One record per distinct code per function
+//! keeps that set readable without re-deriving it from the body.
+//! This artifact is what the baseline-test follow-up consumes as its
+//! expected outcomes (issue #290).
 //!
-//! The literal's shape is the false-positive floor: only values that
-//! spell as an HRESULT (`0x8xxx_xxxx`) or an NTSTATUS
-//! (`0xCxxx_xxxx`) claim, which is what keeps a BOOL-shaped `0`/`1`
-//! return, an ordinary small-integer comparison, and a wide address
-//! literal outside those bands silent. A hex or decimal spelling of
-//! an in-band value claims alike — the same parse the `RaiseException`
-//! reading takes — and a literal too wide for the 32-bit code width
-//! claims nothing, as does the C++ eh code (`0xE06D7363`), which is
-//! neither shape.
+//! The literal's shape is the false-positive floor. Only values that
+//! spell as an HRESULT (`0x8xxx_xxxx`) or an NTSTATUS (`0xCxxx_xxxx`)
+//! claim. That is what keeps a BOOL-shaped `0`/`1` return, an
+//! ordinary small-integer comparison, and a wide address literal
+//! silent. A hex or decimal spelling of an in-band value claims
+//! alike, through the same parse the `RaiseException` reading takes.
+//! A literal too wide for the 32-bit code width claims nothing, and
+//! so does the C++ eh code (`0xE06D7363`) — it is neither shape.
 //!
-//! The reading is line-local like its siblings: string literals and
+//! The reading is line-local like its siblings. String literals and
 //! comments are blanked first, and a paren opened by a call, an
 //! index-close, or a dereference `*(` cuts its contents — an argument
 //! is not an operand the function returns or compares. A code that
 //! only stands in an assignment or a call argument claims nothing.
 //! The same code at several sites in one function is one record,
-//! carried at its strongest site — a return outranks a raise, a raise
-//! outranks a guard comparison — and the record names that site kind
-//! with its evidence line, so the artifact can tell "returns this"
-//! from "raises this" from "compares for this" and the band rides the
+//! kept at its strongest site: a return outranks a raise, a raise
+//! outranks a guard comparison. The record names that site kind and
+//! quotes its evidence line, so the artifact can tell "returns this"
+//! from "raises this" from "compares for this". The band follows the
 //! kind. A function carrying codes and no idiom shape still carries
 //! its code records: the contract and the idiom are different facts.
 
@@ -38,45 +37,47 @@ use crate::raise_exception::{RAISE_EXCEPTION_API, first_argument};
 use crate::types::{ErrhandlingFinding, ErrorCode, ErrorCodeSite};
 use calxgloss_types::Confidence;
 
-/// Confidence for a code literal standing in a `return` statement —
-/// the value goes straight to the caller (issue #290's top band).
+/// Evidence confidence for a code literal standing in a `return`
+/// statement — the value goes straight to the caller (issue #290's
+/// top band).
 ///
-/// The high band, a notch under the raise call's 75: the literal is
+/// The high band, a notch under the raise call's 75. The literal is
 /// spelled outright, which is the most literal body evidence there
-/// is, and it is the most direct statement of the failure contract
-/// the reading can take — but it names one value the function hands
-/// over, not a mechanism the function participates in, so it rides
-/// below the raise call's claim of the mechanism itself. This is the
-/// band the baseline-test follow-up pins its expected return values
-/// from.
+/// is, and it states the failure contract as directly as this reading
+/// can. But it names one value the function hands over, not a
+/// mechanism the function participates in, so it sits below the raise
+/// call's claim of the mechanism itself. The baseline-test follow-up
+/// pins its expected return values from this band.
 pub const ERROR_CODE_RETURN_CONFIDENCE: u8 = 74;
 
-/// Confidence for a code literal standing as a `RaiseException` call's
-/// first argument — the code rides the exception path, not the return
-/// value (issue #290's raise band).
+/// Evidence confidence for a code literal standing as a
+/// `RaiseException` call's first argument — the code leaves through
+/// the exception path, not through the return value (issue #290's
+/// raise band).
 ///
-/// A notch under the raise *finding*'s 75, deliberately: the finding
-/// claims the function raises at all, spelled by the call's own name;
-/// this record claims the one value handed to that mechanism, so it
-/// sits below the claim whose argument it is.
+/// Deliberately under the raise *finding*'s 75, and under the return
+/// band's 74: the finding claims the function raises at all, spelled
+/// by the call's own name; this record claims the one value handed to
+/// that mechanism, so it sits below the claim whose argument it is.
 pub const ERROR_CODE_RAISE_CONFIDENCE: u8 = 72;
 
-/// Confidence for a code literal compared in a guard — the function
-/// tests for the code; whether it also emits it is inference
-/// (issue #290's guard band).
+/// Evidence confidence for a code literal compared in a guard — the
+/// function tests for the code; whether it also emits it is
+/// inference (issue #290's guard band).
 ///
 /// The mid band, between the named handler's 70 and the exception-API
-/// call's 60: unlike the API rung, which names only a facility the
-/// function talks to, the comparison names the exact contract value —
-/// but a guard witnesses a code the function *recognises*, and the
-/// #291 propagation reading is what turns a caller's comparison into
-/// an inherited contract, at that reading's own penalty off this band.
+/// call's 60. Unlike the exception-API band, which names only a
+/// facility the function talks to, the comparison names the exact
+/// contract value. But a guard witnesses a code the function
+/// *recognises*; the issue #291 propagation reading is what turns a
+/// caller's comparison into an inherited contract, at that reading's
+/// own penalty off this band.
 pub const ERROR_CODE_GUARD_CONFIDENCE: u8 = 64;
 
 /// The Rust pattern a failure-code record steers a translation toward.
 ///
-/// The translation failure mode the spec names is the code dissolving
-/// into an ad-hoc Rust error value callers cannot branch on; the
+/// The spec names the translation failure mode: the code dissolving
+/// into an ad-hoc Rust error value callers cannot branch on. The
 /// honest shape keeps the numeric contract. (ADR-0029's exact mapping
 /// belongs to the translator, and this suggestion only names the
 /// shape the evidence points at.)
@@ -85,11 +86,11 @@ pub const ERROR_CODE_SUGGESTION: &str = "keep this failure code as the numeric c
 /// Detect the failure-code literals one function body spells, one
 /// record per distinct code.
 ///
-/// The detector answers with every distinct code the body carries —
-/// this family is per-code, not per-function, unlike its idiom
-/// siblings — and fills no function name; the engine stamps it.
-/// Records emerge in body order (the first sighted code first), and a
-/// code sighted at several sites stands once, at the strongest
+/// The detector answers with every distinct code the body carries.
+/// This family is per-code, not per-function, unlike its idiom
+/// siblings. The detector fills no function name — the scan stamps
+/// it. Records come out in body order: the first code sighted leads.
+/// A code sighted at several sites stands once, at the strongest
 /// sighted kind: a return outranks a raise, a raise outranks a guard
 /// comparison.
 #[derive(Debug, Clone, Copy, Default)]
@@ -106,17 +107,18 @@ struct Sighting {
 impl ErrorCodeDetector {
     /// Detect the failure-code records in one decompiled body.
     ///
-    /// For each line, strings and comments blanked first: a
-    /// `RaiseException` call's first argument claims the raise site;
-    /// a literal outside call, index, and dereference parens claims
-    /// the return site when it stands after the line's `return`
-    /// keyword with no comparison in the returned expression, and the
-    /// guard site when the line is an `if`/`else`/`while` guard
-    /// carrying a comparison. A returned expression that is itself a
-    /// comparison (`return (hr == 0xc0000022);`) hands back a 0/1,
-    /// not the code, so its literal is carried honestly as a guard
-    /// sighting. Everything else — assignments, arguments,
-    /// out-of-shape values, BOOL-shaped returns — stays silence.
+    /// The body is read line by line, with strings and comments
+    /// blanked first. A `RaiseException` call's first argument claims
+    /// the raise site. A literal standing outside call, index, and
+    /// dereference parens claims the return site when it stands after
+    /// the line's `return` keyword and the returned expression carries
+    /// no comparison. The same literal claims the guard site when the
+    /// line is an `if`/`else`/`while` guard carrying a comparison. A
+    /// returned expression that is itself a comparison (`return (hr == 0xc0000022);`)
+    /// hands back a 0/1, not the code, so its literal is carried
+    /// honestly as a guard sighting. Everything else — assignments,
+    /// arguments, out-of-shape values, BOOL-shaped returns — stays
+    /// silent.
     pub fn detect(&self, body: &str) -> Vec<ErrhandlingFinding> {
         let mut seen: Vec<Sighting> = Vec::new();
         let mut in_block_comment = false;
@@ -128,8 +130,8 @@ impl ErrorCodeDetector {
 
             // The raise site: only the call's first argument names a
             // code — the flags and parameter-array arguments behind
-            // it never do — read through the same cut the raise
-            // finding takes.
+            // it never do. The reading takes the same first argument
+            // the raise finding takes.
             if let Some(after) = named_token(&code, RAISE_EXCEPTION_API)
                 && let Some(args) = after
                     .trim_start_matches([' ', '\t', '\r'])
@@ -186,10 +188,11 @@ impl ErrorCodeDetector {
     }
 }
 
-/// Suggest a sighting of `code` at `site` into the body-order record
-/// list: the first sighting of a code fixes its position, and a later
-/// sighting at a stronger site kind replaces the kind and evidence —
-/// the one-record-per-code guarantee, kept by construction.
+/// Record a sighting of `code` at `site` in the body-order record
+/// list. The first sighting of a code fixes its position. A later
+/// sighting at a stronger site kind replaces the kind and the
+/// evidence, so the one-record-per-code guarantee holds by
+/// construction.
 fn record(seen: &mut Vec<Sighting>, code: u32, site: ErrorCodeSite, evidence: &str) {
     match seen.iter_mut().find(|sighting| sighting.code == code) {
         Some(existing) => {
@@ -229,8 +232,8 @@ fn is_shaped(value: u32) -> bool {
 }
 
 /// A bare `0x`-hex or decimal literal standing in `argument`, when it
-/// spells an in-band failure code — the parse the raise site reads
-/// its first argument through, the code shape gate on top of the
+/// spells an in-band failure code. The raise site reads its first
+/// argument through this parse — the code-shape gate on top of the
 /// raise finding's own literal reading. The propagation reading
 /// ([`cross_function`](crate::cross_function)) parses the compared
 /// operand of a caller's guard through the same gate.
@@ -252,14 +255,14 @@ pub(crate) fn shaped_code(argument: &str) -> Option<u32> {
 }
 
 /// The byte offsets and values of every clean `0x`-hex or decimal
-/// literal in `s` standing outside cut parens — a paren is cut when
-/// an identifier, an index-close, or a dereference `*(` opens it, so
-/// a call argument, an indexed address, and a dereferenced load are
-/// never operands the function returns or compares; a statement
-/// keyword's paren (`if (`, `return (`) and a cast or grouping paren
-/// are not. A digit continuing an identifier (`stack0x1234`) or
-/// running on into one (`0x80h`) names no clean literal token and
-/// claims nothing.
+/// literal in `s` standing outside cut parens. A paren is cut when
+/// an identifier, an index-close, or a dereference `*(` opens it:
+/// that way a call argument, an indexed address, and a dereferenced
+/// load never count as operands the function returns or compares. A
+/// statement keyword's paren (`if (`, `return (`) and a cast or
+/// grouping paren are not cut. A digit continuing an identifier
+/// (`stack0x1234`) or running on into one (`0x80h`) names no clean
+/// literal token and claims nothing.
 fn shaped_literals_outside_cuts(s: &str) -> Vec<(usize, u32)> {
     let bytes = s.as_bytes();
     let mut out: Vec<(usize, u32)> = Vec::new();
@@ -269,11 +272,11 @@ fn shaped_literals_outside_cuts(s: &str) -> Vec<(usize, u32)> {
     while i < bytes.len() {
         match bytes[i] {
             b'(' => {
-                // Whitespace before the paren is the decompiler's
-                // own spacing (`RaiseException (`); an identifier
-                // before it is a call — unless the identifier is a
-                // statement keyword, whose paren the reading must
-                // see through.
+                // Whitespace before the paren is the decompiler's own
+                // spacing (`RaiseException (`). An identifier right
+                // before the paren means it opens a call — unless the
+                // identifier is a statement keyword, whose paren the
+                // reading must see through.
                 let mut word_end = i;
                 while word_end > 0 && matches!(bytes[word_end - 1], b' ' | b'\t') {
                     word_end -= 1;
@@ -331,11 +334,11 @@ fn shaped_literals_outside_cuts(s: &str) -> Vec<(usize, u32)> {
 
 /// The end offset of the numeric literal token at `at` — `0x`-hex or
 /// decimal, digits continuing to the first character that is not part
-/// of the token — and its value, `None` when the spelling is
-/// malformed, the token runs on into a longer name (`0x80h`), or the
-/// value does not fit the 32-bit code width. Consuming the token is
-/// the point even when no value comes back: the digits behind a
-/// refusal claim nothing either.
+/// of the token — and its value. The value is `None` when the
+/// spelling is malformed, when the token runs on into a longer name
+/// (`0x80h`), or when the value does not fit the 32-bit code width.
+/// Consuming the token is the point even when no value comes back:
+/// the digits behind a refusal claim nothing either.
 fn literal_token(bytes: &[u8], at: usize) -> (usize, Option<u32>) {
     let hex = bytes[at] == b'0'
         && at + 2 < bytes.len()
@@ -369,10 +372,10 @@ fn literal_token(bytes: &[u8], at: usize) -> (usize, Option<u32>) {
 }
 
 /// Whether the line carries a comparison operator — `==`, `!=`, `<`,
-/// `<=`, `>`, `>=` — the gate that keeps a guard reading honest:
-/// without an operator the line is a condition of another shape, and
-/// a code literal in it witnesses no comparison. The member-access
-/// arrow is skipped: `->` is a field read, not a `>` test.
+/// `<=`, `>`, `>=`. This gate keeps a guard reading honest: without
+/// an operator the line is a condition of another shape, and a code
+/// literal in it witnesses no comparison. The member-access arrow is
+/// skipped: `->` is a field read, not a `>` test.
 fn has_comparison(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0usize;
@@ -480,9 +483,9 @@ mod tests {
 
     #[test]
     fn a_raise_argument_code_lands_the_code_at_its_band_and_the_eh_code_does_not() {
-        // The raise site reads the first argument only; and the C++
-        // eh code the raise finding loves (0xE…) is neither shape —
-        // the raise finding stands, the code record stays quiet.
+        // The raise site reads the first argument only. And the C++
+        // eh code (0xE…) is neither shape: the raise finding would
+        // still stand, but the code record stays quiet.
         let body = body_of(&["  RaiseException(0x80070057, 0, 0, NULL);"]);
         let found = codes(&body);
         assert_eq!(found.len(), 1);
@@ -498,7 +501,7 @@ mod tests {
 
     #[test]
     fn bool_shaped_returns_and_small_integer_comparisons_claim_nothing() {
-        // The issue's false-positive floor, spelled out whole.
+        // The false-positive floor from issue #290, spelled out whole.
         let body = body_of(&[
             "  return 0;",
             "  return 1;",
@@ -648,9 +651,10 @@ mod tests {
 
     #[test]
     fn a_block_comment_across_lines_names_no_code() {
-        // Ghidra sprinkles label decoration; a commented-out return
-        // inside a block comment names no contract, exactly as the
-        // ladder reading's blanking keeps it from being a statement.
+        // Ghidra sprinkles label-decoration comments through decompiled
+        // text. A commented-out return inside a block comment names no
+        // contract — exactly as the goto-cleanup reading's blanking
+        // keeps the same text from counting as a statement.
         let body = body_of(&["  /*", "  return 0x80070057;", "  */"]);
         assert!(codes(&body).is_empty());
         let body = body_of(&["  return 0x80070057; /* was 0xc0000022 */"]);
@@ -668,11 +672,11 @@ mod tests {
 
     #[test]
     fn the_code_bands_interleave_the_ladder_and_stay_below_the_spelled_frame() {
-        // ADR-0046: each family anchors its own bands, and every
-        // code band scores the literal's directness — the returned
-        // value near the raise call's own claim, the raised value a
-        // notch under it, the compared value mid — with the spelled
-        // frame still on top of the whole ladder.
+        // ADR-0046: each family anchors its own bands, and the code
+        // bands score the literal's directness — the returned code
+        // sits just under the raise call's own claim, the raised code
+        // below that, the compared code in the mid band — with the
+        // spelled frame still on top of the whole ladder.
         const {
             assert!(
                 SPELLED_FRAME_CONFIDENCE > RAISE_EXCEPTION_CONFIDENCE

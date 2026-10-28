@@ -1,26 +1,28 @@
 //! The goto-cleanup ladder detector.
 //!
 //! The C cleanup-on-failure idiom never reaches the decompiler's
-//! spelled syntax — it survives as pure control flow: a ladder of
+//! spelled syntax. It survives as pure control flow: a ladder of
 //! guarded early exits, each a `goto LAB_*` or `goto joined_r0x*`
-//! standing in its guard's block, all converging on one shared tail
-//! label whose block releases the function's resources and returns a
-//! failure value. Where kept body text shows two or more such guarded
-//! *forward* gotos landing on one label block that names a release
-//! call, the function carries the ladder and this detector claims
-//! exactly that — naming the join label and quoting the release line
-//! as the evidence (issue #289, ADR-0046: the ladder joins the union
-//! as its own kind, a different idiom from the SEH families). Where
-//! the join block spells no release but ends in a shared constant
-//! return, the same convergence lands a weaker claim.
+//! standing in its guard's block. All the exits converge on one
+//! shared tail label, and that label's block releases the
+//! function's resources and returns a failure value. Where kept
+//! body text shows two or more such guarded *forward* gotos landing
+//! on one label block that names a release call, the function
+//! carries the ladder and this detector claims exactly that: it
+//! names the join label and quotes the release line as the evidence
+//! (issue #289, ADR-0046: the ladder joins the union as its own
+//! kind, a different idiom from the SEH families). Where the join
+//! block spells no release but ends in a shared constant return,
+//! the same convergence lands a weaker claim.
 //!
-//! The silence is the load-bearing half: a lone goto — a loop's
-//! back-edge, a single forward skip, a compiler join with no guard
-//! behind it — claims nothing, and a convergence whose shared tail
-//! releases nothing and returns no constant is ordinary control flow.
-//! The reading is line-local like its siblings — string literals and
-//! comments (which Ghidra sprinkles over label blocks) are blanked
-//! before any shape is matched, so pseudo-C noise invents no rung.
+//! What the detector refuses to claim matters just as much. A lone
+//! goto — a loop's back-edge, a single forward skip, a compiler join
+//! with no guard behind it — claims nothing, and a convergence whose
+//! shared tail releases nothing and returns no constant is ordinary
+//! control flow. The reading is line-local like its siblings. String
+//! literals and comments — Ghidra sprinkles them over label blocks —
+//! are blanked before any shape is matched, so pseudo-C noise invents
+//! no rung.
 
 use crate::identifier::{find_word, named_token, starts_call, starts_word};
 use crate::types::{ErrhandlingFinding, GotoCleanup};
@@ -28,27 +30,27 @@ use calxgloss_types::Confidence;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-/// Confidence for a ladder whose join block performs release calls
-/// (issue #289's mid band).
+/// Evidence confidence for a ladder whose join block performs release
+/// calls (issue #289's mid band).
 ///
-/// The mid band, a rung below the exception-API call's 60 and every
-/// SEH rung: the convergence is a real shape read off the gotos the
+/// The mid band, under the exception-API call's 60 and every SEH
+/// band. The convergence is a real shape read off the gotos the
 /// decompiler emitted, but unlike the SEH families nothing in the
-/// body *names* the idiom — the claim is inferred from shape plus
-/// release vocabulary, so it anchors at the bottom of ADR-0046's
+/// body *names* the idiom: the claim is inferred from the shape plus
+/// the release vocabulary. So it anchors at the bottom of ADR-0046's
 /// family ladder and never outranks a spelled SEH block.
 pub const GOTO_CLEANUP_RELEASE_CONFIDENCE: u8 = 55;
 
-/// Confidence for a ladder whose join block only ends in a shared
-/// constant return (issue #289's low band).
+/// Evidence confidence for a ladder whose join block only ends in a
+/// shared constant return (issue #289's low band).
 ///
 /// The low band: the convergence and the shared failure value are
 /// there, but with no release call the block could be an ordinary
 /// shared exit. The claim is honestly weak, and its score says so.
 pub const GOTO_CLEANUP_RETURN_CONFIDENCE: u8 = 45;
 
-/// The release-call vocabulary whose sighting in a join block
-/// witnesses the cleanup: the deallocator and closer names the
+/// The release-call vocabulary that witnesses the cleanup when it
+/// stands in a join block: the deallocator and closer names the
 /// memory crate pairs on (`free`, `VirtualFree`, `CloseHandle`,
 /// `LocalFree`, `CoTaskMemFree`, `RegCloseKey`, `fclose`). The list
 /// is hand-authored — a binary whose project owns its own allocator
@@ -66,21 +68,21 @@ pub const RELEASE_API_NAMES: [&str; 7] = [
 
 /// The Rust pattern a cleanup ladder steers a translation toward.
 ///
-/// The ladder's translation failure mode is the nested-conditional
-/// re-implementation that hides the shared cleanup; the honest shape
-/// is the early return the guards already are, with the cleanup riding
-/// RAII or a scope guard (ADR-0029's exact mapping belongs to the
-/// translator, and this suggestion only names the shape the evidence
-/// points at).
+/// The ladder's translation failure mode is re-implementing it as
+/// nested conditionals, which hides the shared cleanup. The honest
+/// shape is the early return the guards already are, with RAII or a
+/// scope guard running the cleanup. (ADR-0029's exact mapping belongs
+/// to the translator, and this suggestion only names the shape the
+/// evidence points at.)
 pub const GOTO_CLEANUP_SUGGESTION: &str = "return early from each guard and let RAII or a scope guard run the cleanup, rather than re-implementing the ladder as nested conditionals";
 
 /// Detect a goto-cleanup ladder in one function body.
 ///
-/// The detector answers with at most one finding per function — the
+/// The detector answers with at most one finding per function. The
 /// ladder is a function-level shape, and a body with two ladders is
 /// still the one claim, taken at the join label whose line appears
-/// first in body order — and fills no function name; the engine
-/// stamps it. The detector owns the release-call vocabulary: the
+/// first in body order. The detector fills no function name — the
+/// scan stamps it. The detector owns the release-call vocabulary: the
 /// standard [`RELEASE_API_NAMES`] set, grown by
 /// [`with_releases`](Self::with_releases).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,17 +119,17 @@ impl GotoCleanupDetector {
 
     /// Detect the cleanup ladder in one decompiled body.
     ///
-    /// The reading: label lines (the control-flow crate's `ident:`
-    /// spelling) open jump-target blocks; a `goto` line is a rung
-    /// when it stands in an enclosing guard block — an `if`/`else`
-    /// arm, or the one-line `if (cond) goto LAB_x;` spelling — and
-    /// its target label sits *later* in the body (a back-edge is a
-    /// loop, not an exit). Two or more rungs landing on one label
-    /// make that block the join: its first release-call line claims
-    /// the [`GOTO_CLEANUP_RELEASE_CONFIDENCE`] band, failing that its
-    /// last line being a constant return claims
-    /// [`GOTO_CLEANUP_RETURN_CONFIDENCE`], and neither keeps the
-    /// silence.
+    /// Label lines (the control-flow crate's `ident:` spelling) open
+    /// the jump-target blocks. A `goto` line is a rung when it stands
+    /// in an enclosing guard block — an `if`/`else` arm, or the
+    /// one-line `if (cond) goto LAB_x;` spelling — and its target
+    /// label sits *later* in the body: a back-edge is a loop, not an
+    /// exit. Two or more rungs landing on one label make that block
+    /// the join. The join block's first release-call line claims the
+    /// [`GOTO_CLEANUP_RELEASE_CONFIDENCE`] band; failing that, a
+    /// block whose last meaningful line is a constant return claims
+    /// the [`GOTO_CLEANUP_RETURN_CONFIDENCE`] band; if neither holds,
+    /// the block claims nothing.
     pub fn detect(&self, body: &str) -> Option<ErrhandlingFinding> {
         // Pass one, one cursor: every label line, every goto line,
         // and whether the guard stack says the goto is guarded when
@@ -162,8 +164,9 @@ impl GotoCleanupDetector {
             // word is read past any peeled closing braces, so the
             // decompiler's `} else {` tail opens its guard arm. The
             // first-brace rule matches the one-head-per-line
-            // spelling; a line opening two heads at once marks only
-            // the first by its head word, which reads conservative.
+            // spelling; a line opening two blocks at once marks only
+            // the first as a guard, never the second, which keeps the
+            // reading conservative.
             let head = trimmed.trim_start_matches('}').trim_start();
             let guard_opener = starts_word(head, "if") || starts_word(head, "else");
             let mut first_brace = true;
@@ -214,7 +217,7 @@ impl GotoCleanupDetector {
     /// release-call line in body order lands the release band with
     /// that line as evidence; failing that, a block whose last
     /// meaningful line is a constant return lands the return band.
-    /// Neither claim, and the block witnesses nothing.
+    /// If neither claim holds, the block witnesses nothing.
     fn read_join_block(
         &self,
         label: &str,
@@ -252,7 +255,7 @@ impl GotoCleanupDetector {
 }
 
 /// A ladder finding at `band` with `evidence` and `label` as its
-/// join label; the function name is the engine's to stamp.
+/// join label; the function name is the scan's to stamp.
 fn ladder_finding(band: u8, evidence: &str, label: &str) -> ErrhandlingFinding {
     ErrhandlingFinding::GotoCleanup(GotoCleanup {
         function: String::new(),
@@ -286,9 +289,10 @@ fn label_ident(s: &str) -> bool {
 }
 
 /// The jump target and whether it stands behind a guard, when `t` is
-/// a goto line: `goto ident;` inside the enclosing block the guard
-/// stack reports, or the one-line `if (cond) goto ident;` spelling
-/// whose guard is its own head word. A computed `goto *ptr;` or a
+/// a goto line. A `goto ident;` line is guarded when the guard stack
+/// reports its enclosing block as a guard arm. The one-line spelling
+/// `if (cond) goto ident;` and the `else`-headed form guard
+/// themselves with their own head word. A computed `goto *ptr;` or a
 /// bare `goto` names no label and claims nothing.
 fn goto_target(t: &str, enclosing_guard: Option<bool>) -> Option<(&str, bool)> {
     if starts_word(t, "goto") {
@@ -333,13 +337,12 @@ fn constant_return(t: &str) -> bool {
 }
 
 /// `line` with its string and character literals and its comments
-/// blanked — `in_block_comment` carries an open `/* */` across
-/// lines, exactly as the decompiler's own label decoration spells
-/// it. The blanking, not the copy, is the point: a `puts("goto
-/// LAB_100;")` invents no rung and a `/* free(pv) */` decoration
-/// names no release call. The failure-code reading blanks the same
-/// way, so a code spelled inside a string or a comment names no
-/// contract.
+/// blanked. `in_block_comment` carries an open `/* */` across lines,
+/// exactly as the decompiler's own label decoration spells it. The
+/// blanking is the point: a `puts("goto LAB_100;")` invents no rung
+/// and a `/* free(pv) */` decoration names no release call. The
+/// failure-code reading blanks the same way, so a code spelled inside
+/// a string or a comment names no contract.
 pub(crate) fn blank_literals(line: &str, in_block_comment: &mut bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.char_indices().peekable();
@@ -445,7 +448,7 @@ mod tests {
 
     #[test]
     fn the_joined_r0x_spelling_is_a_join_label_too() {
-        // The engine's own join spelling is as valid a convergence
+        // The decompiler's own join spelling is as valid a convergence
         // point as a LAB_ label — the ladder shape is the same text
         // the control-flow crate reads.
         let body = ladder_body("joined_r0x140001f0", &["  free(pvVar);", "  return 0;"]);
@@ -566,9 +569,10 @@ mod tests {
 
     #[test]
     fn a_compiler_join_without_guards_claims_nothing() {
-        // The engine's own fall-together `joined_r0x*` noise: guarded
-        // once and unguarded once is one guard and a fall-through —
-        // ordinary control flow, exactly the GS-canary body's shape.
+        // The decompiler's own fall-together `joined_r0x*` noise: one
+        // guarded goto and one unguarded goto is one guard and a
+        // fall-through — ordinary control flow, exactly the shape of
+        // the GS stack-canary body.
         let body = body_of(&[
             "  if (uStack_8 == __security_cookie) {",
             "    goto joined_r0x140001337;",
@@ -585,8 +589,8 @@ mod tests {
     #[test]
     fn a_shared_tail_that_claims_neither_release_nor_constant_return_is_ordinary_flow() {
         // Two guarded forward gotos do converge — but the shared
-        // block merges the arms, it does not release or fail: the
-        // ordinary goto-only body the silence exists for.
+        // block merges the arms, it does not release or fail: this is
+        // the ordinary goto-only body the detector stays silent about.
         let body = ladder_body("LAB_merge", &["  process(x);", "  return result;"]);
         assert!(GotoCleanupDetector::new().detect(&body).is_none());
     }
@@ -769,7 +773,7 @@ mod tests {
     #[test]
     fn the_ladder_bands_sit_at_the_bottom_of_the_family_ladder() {
         // ADR-0046's ladder, continued: the ladder's release band
-        // lands below the exception-API rung, its return band below
+        // lands below the exception-API band, its return band below
         // that — and neither can ever outrank a spelled SEH block
         // (issue #289's ranking gate).
         const {
