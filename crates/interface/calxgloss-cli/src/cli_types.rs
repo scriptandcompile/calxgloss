@@ -165,13 +165,13 @@ pub(super) struct BatchTranslateArgs {
     #[arg(long)]
     pub(super) callgraph_verbose: bool,
 
-    /// Force fresh engine reads, ignoring and rewriting the batch's scan
-    /// read cache (`re/cache/`)
+    /// Re-read from the evidence engine, ignoring and rewriting the batch's
+    /// scan read cache (`re/cache/`)
     ///
-    /// The cache's manifest keys on the binary's bytes, so a hand-edited
-    /// cache is not detected — use this after tampering with one.
-    /// Deleting the binary's cache directory by hand does the same without
-    /// a run.
+    /// The cache's manifest identifies each entry by the binary's bytes, so
+    /// it cannot detect a hand-edited cache — use this after editing a cache
+    /// by hand. Deleting the binary's cache directory by hand has the same
+    /// effect, without a run.
     #[arg(long)]
     pub(super) refresh_cache: bool,
 }
@@ -205,9 +205,9 @@ pub(super) enum Command {
     ///
     /// Kuna is the only analysis engine (issue #214): it is compiled in,
     /// so there is no install, extension, JVM, or server port to check.
-    /// The `--binary` target is loaded in-process and its program identity
-    /// is reported; any failure carries a remediation hint and exits
-    /// non-zero so CI can gate on this command.
+    /// The `--binary` target is loaded in-process and its program
+    /// identity is reported. Any failure comes with a remediation hint,
+    /// and the command exits non-zero so CI can gate on it.
     ///
     /// # Examples
     ///
@@ -218,8 +218,9 @@ pub(super) enum Command {
 
     /// Classify DLLs, choosing how to treat each one
     Classify {
-        /// The DLLs to classify are named here because the engine serves a
-        /// single open program and cannot list what a target links against.
+        /// The DLLs to classify are named here. The analysis engine opens
+        /// one program at a time and cannot list what a target links
+        /// against.
         #[arg(long, required = true)]
         binary: Vec<String>,
     },
@@ -232,15 +233,16 @@ pub(super) enum Command {
 
     /// Recover the type database for a binary.
     ///
-    /// Runs the three recovery scans — named types from the engine's type
-    /// system, vtable detection, and string-guided struct inference —
-    /// against the loaded program and saves the result to
+    /// Runs three recovery scans: named types from the analysis engine's
+    /// type system, vtable detection, and string-guided struct inference.
+    /// The scans run against the loaded program. The result is saved to
     /// `re/analysis/typesdb/<binary>.json` in the workspace, alongside a
     /// generated `re/analysis/typesdb/<binary>.rs` file of `#[repr(C)]`
-    /// Rust declarations recovered from the database. Batch
-    /// translation recovers this automatically before its first batch
-    /// when no database is cached; this command is the manual entry
-    /// point: it rebuilds the database on demand and can print what a
+    /// Rust declarations recovered from the database.
+    ///
+    /// Batch translation recovers this automatically before its first
+    /// batch when no database is cached. This command is the manual entry
+    /// point: it rebuilds the database on demand, and it can print what a
     /// cached one holds.
     ///
     /// # Arguments
@@ -275,13 +277,14 @@ pub(super) enum Command {
 
     /// Infer parameter types for a binary.
     ///
-    /// Runs the three inference detectors — C++ this-pointer detection,
-    /// parameter-size detection, and known-type propagation — against the
-    /// currently open program and saves the result to
-    /// `re/analysis/typeinfer/<binary>.json` in the workspace. Batch
-    /// translation runs the same scan automatically before its first
-    /// batch when no result is cached; this command is the manual entry
-    /// point: it rebuilds the result on demand and can print what a
+    /// Runs the three inference detectors: C++ this-pointer detection,
+    /// parameter-size detection, and known-type propagation. The detectors
+    /// run against the currently open program. The result is saved to
+    /// `re/analysis/typeinfer/<binary>.json` in the workspace.
+    ///
+    /// Batch translation runs the same scan automatically before its first
+    /// batch when no result is cached. This command is the manual entry
+    /// point: it rebuilds the result on demand, and it can print what a
     /// cached one holds.
     ///
     /// # Arguments
@@ -291,7 +294,7 @@ pub(super) enum Command {
     /// * `--show` — Print a summary of the cached result without running
     ///   the scan.
     /// * `--write-back` — After the scan, apply the surviving inferences
-    ///   back through the engine type-write API:
+    ///   back through the analysis engine's type-write API:
     ///   missing named types are created, undefined-typed parameters,
     ///   returns, and locals are narrowed, and a concrete slot is never
     ///   overwritten. Works with `--show` too, applying the cached result.
@@ -327,13 +330,14 @@ pub(super) enum Command {
 
     /// Recognize algorithms in a binary.
     ///
-    /// Runs the three recognition detectors — control flow signature
-    /// matching, string-guided hints, and callback pattern detection —
-    /// against the currently open program and saves the result to
-    /// `re/analysis/algorithm/<binary>.json` in the workspace. Batch
-    /// translation runs the same scan automatically before its first
-    /// batch when no result is cached; this command is the manual entry
-    /// point: it rebuilds the result on demand and can print what a
+    /// Runs the three recognition detectors: control flow signature
+    /// matching, string-guided hints, and callback pattern detection. The
+    /// detectors run against the currently open program. The result is
+    /// saved to `re/analysis/algorithm/<binary>.json` in the workspace.
+    ///
+    /// Batch translation runs the same scan automatically before its first
+    /// batch when no result is cached. This command is the manual entry
+    /// point: it rebuilds the result on demand, and it can print what a
     /// cached one holds.
     ///
     /// # Arguments
@@ -342,11 +346,11 @@ pub(super) enum Command {
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result without running
     ///   the scan.
-    /// * `--patterns` — JSON pattern database file: run the scan with
+    /// * `--patterns` — JSON pattern database file. The scan runs with
     ///   the file's control flow signatures, string signatures, and
     ///   callback contracts instead of the built-in standard sets. A
-    ///   malformed file fails the run naming its path. Ignored on the
-    ///   `--show` path, which reads a cached result.
+    ///   malformed file fails the run and names the file's path. Ignored
+    ///   on the `--show` path, which reads a cached result.
     ///
     /// # Examples
     ///
@@ -411,10 +415,10 @@ pub(super) enum Command {
     /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
-    /// * `--signatures` — JSON signature database file: run the scan
-    ///   with the file's signatures instead of the built-in starter
-    ///   set, whole. A malformed file fails the run naming its path.
-    ///   Ignored on the `--show` path, which reads a cached result.
+    /// * `--signatures` — JSON signature database file. The scan runs with
+    ///   the file's signatures, replacing the built-in starter set whole.
+    ///   A malformed file fails the run and names the file's path. Ignored
+    ///   on the `--show` path, which reads a cached result.
     ///
     /// # Examples
     ///
@@ -438,15 +442,15 @@ pub(super) enum Command {
 
     /// Review a binary version change's function pairings before the run.
     ///
-    /// Loads the pairing documents the auto run's version-pairing scan
-    /// step leaves in `re/analysis/bdiff/` for a binary identity and
-    /// lists each old↔new pair with its confidence and match family,
-    /// plus the functions paired on neither side — old-only and
-    /// new-only. The live document is the one naming the target
-    /// directory's current bytes as its new side; a document naming a
-    /// since-replaced version is stale and reported as such, never
-    /// printed as an empty success. Pure report: no scan runs, no
-    /// engine read.
+    /// Loads the pairing documents that the auto run's version-pairing
+    /// scan step leaves in `re/analysis/bdiff/` for a binary identity. It
+    /// lists each old↔new pair with its confidence and match family, plus
+    /// the functions paired on neither side — old-only and new-only. The
+    /// live document is the one whose new side is the target directory's
+    /// current bytes. A document whose new side is a since-replaced
+    /// version is stale and is reported as stale, never as an empty
+    /// success. This is a pure report: it runs no scan and reads nothing
+    /// from the analysis engine.
     ///
     /// # Arguments
     ///
@@ -561,10 +565,12 @@ pub(super) enum Command {
     /// The callback findings are persisted per binary to
     /// `re/analysis/callback/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
-    /// prints a cached result without running the scan. When the
-    /// workspace also caches a type-inference result, its records fill
-    /// real closure contracts into the registration and chain
-    /// suggestions; without one the scan is exactly what it was.
+    /// prints a cached result without running the scan.
+    ///
+    /// When the workspace also caches a type-inference result, its records
+    /// fill real closure contracts into the registration and chain
+    /// suggestions. Without that cache the scan produces exactly what it
+    /// produced before.
     ///
     /// # Arguments
     ///
@@ -590,9 +596,9 @@ pub(super) enum Command {
     /// Detect control-flow patterns in the open binary
     ///
     /// Finds the structural patterns ChatGPT most often flattens:
-    /// switch-shaped if/else-if chains, self-recursive functions,
+    /// switch-shaped if/else-if chains, self-recursive functions, and
     /// state-machine patterns (named-constant chains with transition
-    /// assignments), and a per-function inventory of the branch sites —
+    /// assignments). It also lists, per function, the branch sites —
     /// guards, loop exits, and switch arms — that Rust `if`/`match` arms
     /// should keep explicit.
     ///
@@ -625,10 +631,10 @@ pub(super) enum Command {
 
     /// Map program strings to the functions that use them
     ///
-    /// Classifies the binary's strings into their roles — error
-    /// messages, file paths, resource names, debug logs, format strings
-    /// — and ties each to the functions that reference it, inferring the
-    /// Rust argument types format-string calls carry.
+    /// Classifies the binary's strings into their roles: error messages,
+    /// file paths, resource names, debug logs, format strings. It records
+    /// the functions that reference each string, and for format-string
+    /// calls it infers the Rust argument types.
     ///
     /// The string-context findings are persisted per binary to
     /// `re/analysis/stringctx/<binary>.json` in the workspace — the same
@@ -660,10 +666,10 @@ pub(super) enum Command {
     /// Identify the libraries and APIs of a binary
     ///
     /// Reads the binary's import table and identifies the libraries it
-    /// imports — DirectX 9, SDL2, Win32, POSIX, PNG, zlib, stdio, the
-    /// C++ STL — mapping each identified API to the Rust crate that
-    /// stands in for it, and records the APIs each function reaches
-    /// through the call graph.
+    /// imports: DirectX 9, SDL2, Win32, POSIX, PNG, zlib, stdio, and the
+    /// C++ STL. It maps each identified API to the Rust crate that
+    /// replaces it, and it records, via the call graph, the APIs each
+    /// function reaches.
     ///
     /// The API findings are persisted per binary to
     /// `re/analysis/apidetect/<binary>.json` in the workspace — the same
@@ -721,8 +727,9 @@ pub(super) enum Command {
         show: bool,
     },
 
-    /// Detect error-handling idioms (spelled SEH frames) for a binary
-    /// by reading each decompiled body for the shapes that spell them.
+    /// Detect error-handling idioms (spelled SEH frames) for a binary.
+    /// The scan finds them by reading each decompiled body for the code
+    /// shapes that spell those frames out.
     ///
     /// The detection findings are persisted per binary to
     /// `re/analysis/errhandling/<binary>.json` in the workspace. `--show`
@@ -750,13 +757,13 @@ pub(super) enum Command {
     },
 
     /// Flag float/SIMD usage (which functions do float math, and what
-    /// shape it takes) for a binary by reading each decompiled body for
-    /// the evidence that spells it.
+    /// shape it takes) for a binary. The scan reads each decompiled body
+    /// for the evidence that shows such usage.
     ///
-    /// One flag per flagged function — scalar float math, vector/matrix
-    /// idioms, or both — is persisted per binary to
-    /// `re/analysis/floatsimd/<binary>.json` in the workspace — the same
-    /// file batch translation will read as prompt context. `--show`
+    /// Each flagged function gets one flag: scalar float math,
+    /// vector/matrix idioms, or both. The flags are persisted per binary
+    /// to `re/analysis/floatsimd/<binary>.json` in the workspace — the
+    /// same file batch translation will read as prompt context. `--show`
     /// prints a cached result without running the scan.
     ///
     /// # Arguments
@@ -874,13 +881,13 @@ pub(super) enum Command {
         #[arg(long)]
         callgraph_verbose: bool,
 
-        /// Force fresh engine reads, ignoring and rewriting the batch's
-        /// scan read cache (`re/cache/`)
+        /// Re-read from the evidence engine, ignoring and rewriting the
+        /// batch's scan read cache (`re/cache/`)
         ///
-        /// The cache's manifest keys on the binary's bytes, so a hand-edited
-        /// cache is not detected — use this after tampering with one.
-        /// Deleting the binary's cache directory by hand does the same
-        /// without a run.
+        /// The cache's manifest identifies each entry by the binary's bytes,
+        /// so it cannot detect a hand-edited cache — use this after editing a
+        /// cache by hand. Deleting the binary's cache directory by hand has
+        /// the same effect, without a run.
         #[arg(long)]
         refresh_cache: bool,
     },
@@ -980,13 +987,13 @@ pub(super) enum Command {
         #[arg(long)]
         callgraph_verbose: bool,
 
-        /// Force fresh engine reads, ignoring and rewriting the batch's
-        /// scan read cache (`re/cache/`)
+        /// Re-read from the evidence engine, ignoring and rewriting the
+        /// batch's scan read cache (`re/cache/`)
         ///
-        /// The cache's manifest keys on the binary's bytes, so a hand-edited
-        /// cache is not detected — use this after tampering with one.
-        /// Deleting the binary's cache directory by hand does the same
-        /// without a run.
+        /// The cache's manifest identifies each entry by the binary's bytes,
+        /// so it cannot detect a hand-edited cache — use this after editing a
+        /// cache by hand. Deleting the binary's cache directory by hand has
+        /// the same effect, without a run.
         #[arg(long)]
         refresh_cache: bool,
     },

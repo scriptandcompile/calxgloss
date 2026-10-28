@@ -1,8 +1,8 @@
 //! Calxgloss CLI — Reverse Engineering Harness
 //!
 //! A command-line interface for the Calxgloss reverse engineering system.
-//! Wires together in-process Kuna analysis, LLM-assisted translation, test
-//! generation, verification, and Git automation into a unified workflow.
+//! One program runs it all: Kuna analysis inside the process, LLM-assisted
+//! translation, test generation, verification, and Git automation.
 //!
 //! # Commands
 //!
@@ -11,6 +11,7 @@
 //! - `auto-shim` — Generate shim layers for crate-replacement DLLs
 //! - `translate` — Translate a single function from disassembly to Rust
 //! - `batch-translate` — Translate multiple functions from a single DLL
+//! - `bdiff` — Review a binary version change's function pairings before the run
 //! - `typesdb` — Recover the type database (named types, vtables, inferred structs) for a binary
 //! - `typeinfer` — Infer parameter types (this pointers, sizes, known signatures) for a binary
 //! - `algorithm` — Recognize algorithms (control flow shapes, string markers, callback contracts) in a binary
@@ -20,6 +21,12 @@
 //! - `floatsimd` — Flag float/SIMD usage (which functions do float math, and whether it reads as scalar or vector/matrix shapes) for the open binary and cache the result
 //! - `stringctx` — Map program strings to functions (classification, format-string types) for the open binary and cache the result
 //! - `apidetect` — Identify the libraries and APIs of the open binary (import table, per-function API summaries) and cache the result
+//! - `consts` — Detect constant structures (bitflag groups, enum candidates, repeated magic numbers) for a binary
+//! - `callback` — Detect callback and function-pointer tables in the open binary
+//! - `controlflow` — Detect control-flow patterns in the open binary
+//! - `errhandling` — Detect error-handling idioms (spelled SEH frames) for a binary
+//! - `libmatch` — Identify known-library functions (statically linked CRT/STL code) for a binary
+//! - `serialize` — Detect endianness and serialization patterns (byte-swap calls, bit-packing chains, magic-byte comparisons) for a binary
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `doctor` — Report the analysis engine by loading a target in-process
@@ -80,8 +87,9 @@ use commands::verify::handle_verify;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging — the returned handle controls the reloadable
-    // EnvFilter, shared into server state for `PATCH /api/server/log-level`.
+    // Initialize logging. The returned handle controls the reloadable
+    // EnvFilter; serve and live pass it into the server state, which uses
+    // it for `PATCH /api/server/log-level`.
     let log_filter = LogLevelControl::new(init_logging(cli.verbose, &cli.log_format));
 
     // Effective tracing level, shared with serve/live so the server status
@@ -135,13 +143,14 @@ fn main() -> Result<()> {
     };
     let settings = Settings::resolve(&layers, flags, &loaded);
 
-    // target_dir is required for all commands that do real work: the Kuna
-    // engine loads `target_dir/<binary>` in-process, so even the analysis
-    // scans (`typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
-    // `globalstate`, `consts`, `callback`, `controlflow`, `stringctx`,
-    // `apidetect`, `serialize`) need it. `config`, `doctor`, and `gc`
-    // don't — doctor takes its target as `--binary` directly — so we
-    // check here and fail fast with a helpful message.
+    // Every command that does real work requires target_dir. The Kuna
+    // analysis engine loads `target_dir/<binary>` in-process, so even the
+    // analysis scans (`typesdb`, `typeinfer`, `algorithm`, `memory`,
+    // `sync`, `globalstate`, `consts`, `callback`, `controlflow`,
+    // `stringctx`, `apidetect`, `serialize`, `errhandling`, `floatsimd`,
+    // `libmatch`) need it. `config`, `doctor`, and `gc` don't; doctor
+    // takes its target as `--binary` directly. So we check here and fail
+    // fast with a helpful message.
     if let Some(ref target) = cli.command {
         match target {
             Command::Config | Command::Doctor { .. } | Command::Gc { .. } => {}
@@ -168,12 +177,14 @@ fn main() -> Result<()> {
         refresh_cache: false,
     });
     let result = match command {
-        // All fifteen table-named scan commands ride the generic handler
-        // (issues #339–#341): the clap variants are mapped onto scan
-        // flags in the ride table, and this one arm drives the shared
-        // pipeline — the three that carry per-engine flags
+        // All fifteen scan commands listed in the scan registry use this
+        // one generic handler (issues #339–#341). The ride table in
+        // `commands::scan_command` maps each clap variant onto its scan
+        // flags, and this single match arm runs the shared handler for
+        // them all. The three commands with per-engine flags
         // (`algorithm --patterns`, `libmatch --signatures`, `typeinfer
-        // --write-back`) included, each interpreted by its own entry.
+        // --write-back`) route through here too; each command's own entry
+        // interprets its flag.
         Command::Typesdb { .. }
         | Command::ControlFlow { .. }
         | Command::Memory { .. }
@@ -264,8 +275,9 @@ fn main() -> Result<()> {
                     callgraph_verbose,
                 ))
         }
-        // The cross-binary diff has no registry row to ride: it stays a
-        // dedicated pure-report arm beside the fifteen.
+        // The cross-binary diff (`bdiff`) has no scan registry row, so it
+        // does not go through the generic scan handler. It keeps its own
+        // report-only match arm beside the fifteen scan commands.
         Command::Bdiff { binary } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
@@ -405,9 +417,11 @@ fn main() -> Result<()> {
         }
         Command::Gc { days, dry_run } => handle_gc(days, dry_run),
         Command::Serve { port } => {
-            // serve always uses CWD as the workspace — config / env overrides
-            // are ignored because the workspace (where .git, src/, scratch/
-            // live) is always where the user runs the command from.
+            // serve always uses CWD as the workspace. The config file and
+            // env-var workspace settings are ignored: the workspace —
+            // where .git, src/, scratch/ live — is always the directory
+            // the user runs the command from. Only an explicit
+            // `--workspace` flag can change it.
             let workspace = resolve_live_workspace(cli.workspace.as_ref());
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -429,9 +443,11 @@ fn main() -> Result<()> {
             callgraph_verbose,
             refresh_cache,
         } => {
-            // live always uses CWD as the workspace — config / env overrides
-            // are ignored because the workspace (where .git, src/, scratch/
-            // live) is always where the user runs the command from.
+            // live always uses CWD as the workspace. The config file and
+            // env-var workspace settings are ignored: the workspace —
+            // where .git, src/, scratch/ live — is always the directory
+            // the user runs the command from. Only an explicit
+            // `--workspace` flag can change it.
             let workspace = resolve_live_workspace(cli.workspace.as_ref());
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()

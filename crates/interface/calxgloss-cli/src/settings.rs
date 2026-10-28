@@ -2,8 +2,8 @@
 //!
 //! The command line has to answer one question that no single layer can: *if the
 //! user did not pass a flag, where did this value come from?* Every setting
-//! resolved here keeps its [`Source`], so `calxgloss config` can show that
-//! rather than leaving it to guesswork.
+//! resolved here keeps its [`Source`](calxgloss_config::Source), so `calxgloss
+//! config` can show that rather than leaving it to guesswork.
 
 use std::path::PathBuf;
 
@@ -17,12 +17,13 @@ use crate::utils::parse_retry_strategy;
 
 /// Every setting the commands need, after layering.
 ///
-/// Kuna is the only analysis engine (issue #214): it is compiled in and
-/// loaded from the target file, so there is no engine choice and no server
-/// to configure. The LLM URL and model are genuinely optional here, because
-/// a local inference server has no conventional address — they are demanded
-/// by [`require`] at the point of use and reported with instructions when
-/// absent.
+/// Kuna is the only analysis engine (issue #214). It is compiled into this
+/// program, and its target binary is loaded from a file, so there is no
+/// engine choice and no server to configure.
+///
+/// The LLM URL and model are genuinely optional here, because a local
+/// inference server has no conventional address. [`require`] demands them at
+/// the point of use and, when absent, reports how to supply them.
 #[derive(Debug, Clone)]
 pub struct Settings {
     /// Where to reach the LLM server, if configured.
@@ -31,9 +32,9 @@ pub struct Settings {
     pub llm_model: Option<Resolved<String>>,
     /// Bearer token for the LLM server.
     ///
-    /// Kept as a [`Resolved`] even though the value is never printed: whether a
-    /// key came from a flag or from a file is worth knowing when a request is
-    /// rejected, and only the value has to stay secret.
+    /// Kept as a [`Resolved`] even though the value is never printed. When a
+    /// request is rejected, it is worth knowing whether the key came from a
+    /// flag or from a file. Only the value itself must stay secret.
     pub llm_api_key: Option<Resolved<String>>,
     /// Token budget for a single LLM request (prompt + output).
     pub context_window: Resolved<usize>,
@@ -62,7 +63,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Collapse the flag, environment, and file layers into the values in force.
+    /// Combine the flag, environment, and file layers into the values in force.
     pub fn resolve(layers: &Layers, flags: FileConfig, loaded: &LoadedConfig) -> Self {
         let LlmSection {
             url: flag_url,
@@ -206,10 +207,12 @@ impl Settings {
         Ok(found)
     }
 
-    /// Fold the configured budget knobs into the shape the Kuna engine takes.
+    /// Build the budget record the Kuna analysis engine takes, from the
+    /// configured budget settings.
     ///
-    /// Unset knobs stay `None`, which leaves Kuna's own defaults in force;
-    /// the values pass through verbatim, including `0`'s "no limit" meaning.
+    /// Settings left unset stay `None`, which leaves Kuna's own defaults in
+    /// force. Values pass through verbatim, and `0` keeps its "no limit"
+    /// meaning.
     pub fn kuna_budget(&self) -> calxgloss_kuna::KunaBudget {
         calxgloss_kuna::KunaBudget {
             max_instructions: self.max_fn_instructions.as_ref().map(|r| r.value),
@@ -219,35 +222,38 @@ impl Settings {
     }
 }
 
-/// Fold the resolved record into the pipeline description: the single place
-/// settings are read for pipeline purposes (issue #324).
+/// Fold the resolved record into the pipeline description (issue #324).
+/// This is the single place settings are read for pipeline purposes.
 ///
-/// The fold is pure data in, description out — no engine loading, no LLM
-/// client construction (the spec's endpoint description defers the client to
-/// assembly, per the seam's `MissingLlm` contract), no I/O. It is a named
-/// function rather than a `From`/`Into` impl because the conversion is
-/// fallible — an unknown retry-strategy name is refused, and `From`/`Into`
-/// must be infallible — and it lives in the CLI, never in the settings
-/// crate, which as a leaf cannot name pipeline types at all (issue #322's
-/// dependency-direction rule).
+/// The fold is pure: data in, description out. It loads no engine, reads
+/// and writes nothing, and builds no LLM client. The spec's endpoint
+/// description defers the client to assembly, per the seam's `MissingLlm`
+/// contract.
 ///
-/// The record carries exactly the knobs it resolves: the LLM selection, the
+/// This is a named function rather than a `From`/`Into` impl, for two
+/// reasons. The conversion is fallible — an unknown retry-strategy name is
+/// refused — and `From`/`Into` must be infallible. And it lives in the CLI,
+/// never in the settings crate: that crate is a leaf, and a leaf cannot name
+/// pipeline types at all (issue #322's dependency-direction rule).
+///
+/// The record holds exactly the knobs it resolves: the LLM selection, the
 /// Kuna budgets, the retry policy, and the workspace. Two more spec knobs —
 /// patch mode and the target binary — name the *run*, not the settings, and
-/// belong to whichever facade drives the pass. And the epic's remaining
-/// names (testgen toggle and timeout, dialect, max LLM calls, trimming
-/// limits, toolchain paths, API mappings, git policy and author) have no
-/// settings counterpart — the config schema never grew them — so there is
-/// nothing to carry; they join the fold alongside the settings keys that
+/// belong to whichever facade drives the pass. The epic's remaining names
+/// (testgen toggle and timeout, dialect, max LLM calls, trimming limits,
+/// toolchain paths, API mappings, git policy and author) have no settings
+/// counterpart — the config schema never grew them — so there is nothing to
+/// pass along. They will join the fold alongside the settings keys that
 /// introduce them, for the same reason `PipelineSpec` left them out (see
 /// that module's docs).
 ///
 /// `auto` reads through the fold and hands the description to assembly
 /// (issue #325), and `translate` and `batch-translate` follow through
-/// `command_pass_spec` (issue #326). The last hand-built dance — web's patch
-/// retry — joined the fold in the epic's closing slice (issue #327): `serve`
-/// and `live` fold their resolved settings through here and hand the record
-/// to the actions backend, which assembles each retry's pass from it.
+/// `command_pass_spec` (issue #326). The last hand-built construction —
+/// web's patch retry — joined the fold in the epic's closing slice (issue
+/// #327): `serve` and `live` fold their resolved settings through here and
+/// hand the record to the actions backend, which assembles each retry's
+/// pass from it.
 pub fn pipeline_spec(s: &Settings) -> Result<PipelineSpec> {
     let llm = match (s.llm_url.as_ref(), s.llm_model.as_ref()) {
         (Some(url), Some(model)) => Some(LlmSelection::Description(LlmDescription {
@@ -611,7 +617,7 @@ mod tests {
     fn test_the_fold_carries_a_configured_llm_as_an_endpoint_description() {
         // Issue #324: the fold hands over what the record *resolved*, as data —
         // never a built client. Even the defaulted knobs (window, temperature,
-        // timeout) ride along verbatim: the user's resolved record is what
+        // timeout) pass through verbatim: the user's resolved record is what
         // runs, not the llm crate's own defaults.
         let file = FileConfig {
             llm: LlmSection {
@@ -638,9 +644,9 @@ mod tests {
     #[test]
     fn test_an_llm_missing_its_model_folds_to_no_selection() {
         // A url without a model (or the reverse) cannot describe an endpoint
-        // pair. The fold stays silent rather than inventing half a selection:
-        // assembly then fails with `MissingLlm`, loudly, instead of a pass
-        // quietly talking to a half-configured endpoint.
+        // pair. The fold leaves the selection empty rather than inventing half
+        // of one: assembly then fails with `MissingLlm`, loudly, instead of a
+        // pass quietly using a half-configured endpoint.
         let s = settings_from(
             FileConfig::default(),
             FileConfig {
@@ -657,9 +663,9 @@ mod tests {
 
     #[test]
     fn test_the_fold_carries_configured_kuna_budgets_into_the_description() {
-        // Issue #211's budgets must bind the patch pass's engine load: the
-        // spec carries them verbatim, unset knobs included, so `assemble`
-        // honors exactly what the record resolved.
+        // Issue #211's budgets must limit the patch pass's engine load: the
+        // spec passes them through verbatim, unset knobs included, so
+        // `assemble` honors exactly what the record resolved.
         let file = FileConfig {
             analysis: AnalysisSection {
                 max_fn_instructions: Some(5000),
@@ -677,10 +683,10 @@ mod tests {
 
     #[test]
     fn test_the_fold_carries_the_retry_policy_into_the_description() {
-        // The hand-built `RetryConfig` ladder read these two fields at three
-        // call sites; the fold now carries them once. The strategy string is
-        // folded into the domain type so the parse ladder — including its
-        // rejection of unknown names — appears once too.
+        // The hand-built `RetryConfig` code used to read these two fields at
+        // three call sites; now the fold passes them once. The strategy
+        // string is converted here into the domain type, so the parsing step —
+        // including its refusal of unknown names — appears once too.
         let file = FileConfig {
             llm: LlmSection {
                 max_retries: Some(9),
@@ -700,9 +706,10 @@ mod tests {
 
     #[test]
     fn test_an_unset_strategy_stays_unset_for_the_ladder_default() {
-        // Today's ladder defaults an absent strategy to compile-fix; the
-        // fold leaves the knob unset rather than pre-applying that default,
-        // so assembly (whose default is the same) owns the fallback once.
+        // Today the parse step defaults an absent strategy to compile-fix; the
+        // fold leaves the knob unset rather than applying that default in
+        // advance, so assembly (whose default is the same) owns the fallback
+        // once.
         let s = settings_from(FileConfig::default(), FileConfig::default());
         let spec = pipeline_spec(&s).expect("the fold is total for a resolved record");
         assert_eq!(spec.retry_strategy, None);
@@ -710,8 +717,8 @@ mod tests {
 
     #[test]
     fn test_an_unknown_strategy_is_a_fold_error_not_a_dropped_setting() {
-        // The commands reject unknown strategy names today (three copies of
-        // the same bail); the fold keeps that refusal rather than quietly
+        // The commands reject unknown strategy names today, via three copies
+        // of the same error. The fold keeps that refusal rather than quietly
         // falling back to the default and dropping what the user wrote.
         let s = settings_from(
             FileConfig::default(),
@@ -732,10 +739,11 @@ mod tests {
 
     #[test]
     fn test_the_fold_carries_a_configured_workspace_into_the_description() {
-        // The workspace roots the pipeline's testgen, verifier, and caches;
-        // when the record resolved one, the description carries it. An
-        // unconfigured record leaves the field default — `resolve_workspace`
-        // still supplies the fallback at the call sites until they move.
+        // The workspace is the base the pipeline's testgen, verifier, and
+        // caches live under; when the record resolved one, the description
+        // includes it. An unconfigured record leaves the field default —
+        // `resolve_workspace` still supplies the fallback at the call sites
+        // until those call sites move.
         let s = settings_from(
             FileConfig::default(),
             FileConfig {
