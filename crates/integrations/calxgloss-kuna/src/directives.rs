@@ -1,34 +1,37 @@
 //! The calxgloss-owned directive plane for one target binary (issue #209).
 //!
 //! Kuna has no persistent program — it "never writes back into the image" —
-//! so under `engine = kuna` a type write-back does not mutate a saved
-//! project: it appends a fact to a directive file calxgloss owns, in Kuna's
-//! own `--assert` line syntax, and every load replays that file through the
-//! engine's assertion plane (ADR-0039's state model). The file is the
-//! durable form; the in-memory [`DirectivePlane`] is its ordered mirror.
+//! so under `engine = kuna` a type write-back does not change a saved
+//! project. It appends one fact to a directive file that calxgloss owns,
+//! written in Kuna's own `--assert` line syntax. Every load replays that
+//! file through Kuna's assertion plane (ADR-0039's state model). The file
+//! is the durable form; the in-memory [`DirectivePlane`] is its ordered
+//! mirror.
 //!
-//! Each [`TypeWriteSource`](calxgloss_decomp::TypeWriteSource) call compiles
-//! to exactly one directive through the pure `*_directive` compilers here —
-//! golden-testable without a loaded program:
+//! Each `TypeWriteSource` call compiles to exactly one directive through
+//! the pure `*_directive` compilers here. `TypeWriteSource` is the
+//! write-back source trait, defined in the calxgloss-decomp crate and
+//! implemented for KunaSource. Because these compilers are pure, their
+//! exact output can be checked without a loaded program:
 //!
 //! * `set_function_prototype` → `prototype 0x<addr> <C declaration>` — the
-//!   address form, because a PE import thunk and its IAT slot share a name
-//!   and only the address picks the executable one.
+//!   address form, because a PE import thunk and its IAT slot share one
+//!   name, and only the address selects the executable function.
 //! * `set_local_variable_type` → `type <func>::<var> <C type>` — qualified
 //!   with the function's canonical name, because an unqualified symbol
 //!   means "the function under decompile" and is rejected on a whole-binary
 //!   run.
 //! * `create_struct` / `create_enum` / `create_typedef` → `typedef <C
-//!   declaration>` — the C declaration the engine's own parser interns.
+//!   declaration>` — the C declaration Kuna's own parser interns.
 //! * `add_struct_field` → regenerate the owning `typedef struct` record:
-//!   Kuna refuses to re-body an existing record, and calxgloss owns the
-//!   directive set, so replacing the record in place is the honest form.
-//!   The regenerated record takes effect on the next load.
+//!   Kuna refuses to change the body of an existing record, and calxgloss
+//!   owns the directive set, so replacing the record in place is the
+//!   honest form. The regenerated record takes effect on the next load.
 //!
-//! The plane keeps records in write order (a declaration's dependencies
-//! precede it), replaces a struct's record in place on regeneration so that
-//! order survives, and saves atomically so a torn file can never poison the
-//! next load.
+//! The plane keeps records in write order: every declaration sits after
+//! the declarations it references. Regeneration replaces a struct's
+//! record in place, so that order survives. The plane saves atomically,
+//! so a half-written file can never break the next load.
 
 use std::path::{Path, PathBuf};
 
@@ -37,19 +40,21 @@ use kuna_console::assertsyntax::parse_directive;
 
 use crate::error::{KunaError, Result};
 
-/// One field of a structure to be created, as the Kuna write seam takes it.
+/// One field of a structure to be created, as the Kuna write-back source
+/// takes it.
 ///
-/// The directive plane lays fields out in the order given — the C
-/// declaration it compiles to carries no explicit offsets — so `offset` is
-/// carried for shape parity with the seam and never rendered.
+/// The directive plane lays fields out in the order they are given: the C
+/// declaration it compiles to has no explicit offsets. So `offset` exists
+/// only to match the seam's field shape, and is never rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KunaNewField<'a> {
     /// The field's name in the type.
     pub name: &'a str,
-    /// The field's type — any C type the engine's parser can resolve,
+    /// The field's type — any C type Kuna's parser can resolve,
     /// including a named type declared by an earlier directive.
     pub type_name: &'a str,
-    /// Not rendered: the directive plane lays out naturally.
+    /// Never rendered: the directive plane lays fields out in the given
+    /// order, so an offset is not needed.
     pub offset: Option<u32>,
 }
 
@@ -89,11 +94,11 @@ const FILE_HEADER: &str = "\
 
 /// `set_function_prototype` → `prototype 0x<addr> <C declaration>`.
 ///
-/// The address form is deliberate: Kuna canonicalizes a name to its entry
-/// address anyway, and the address reaches the executable function where a
-/// PE import thunk and its IAT slot share one name. A trailing `;` on the
-/// prototype text is trimmed — the directive grammar wants the bare
-/// declaration.
+/// The address form is deliberate. Kuna canonicalizes a name to its entry
+/// address anyway, and when a PE import thunk and its IAT slot share one
+/// name, only the address selects the executable function. A trailing `;`
+/// on the prototype text is trimmed, because the directive grammar wants
+/// the bare declaration.
 pub fn prototype_directive(address: u64, prototype: &str) -> Directive {
     let func = format!("0x{address:x}");
     let decl = prototype
@@ -109,9 +114,9 @@ pub fn prototype_directive(address: u64, prototype: &str) -> Directive {
 
 /// `set_local_variable_type` → `type <func>::<var> <C type>`.
 ///
-/// `function` must be the loaded program's canonical name for the target —
-/// the directive binds by exact name, and an unqualified directive is
-/// rejected on anything but a one-function decompile.
+/// `function` must be the loaded program's canonical name for the target.
+/// The directive binds by exact name, and a run rejects an unqualified
+/// directive unless its decompile covers exactly one function.
 pub fn local_type_directive(function: &str, variable: &str, type_name: &str) -> Directive {
     Directive {
         raw: format!("type {function}::{variable} {type_name}"),
@@ -136,8 +141,8 @@ pub fn struct_directive(name: &str, fields: &[KunaNewField<'_>]) -> Directive {
 }
 
 /// The regenerated form of a struct record: the same `typedef struct`
-/// declaration compiled from `(type, name)` pairs, which is what
-/// `add_struct_field` re-bodies the owning record with.
+/// declaration, compiled from `(type, name)` pairs. This is how
+/// `add_struct_field` rebuilds the fields of the record that owns it.
 pub fn struct_record_directive(name: &str, fields: &[(&str, &str)]) -> Directive {
     let body = fields
         .iter()
@@ -210,10 +215,10 @@ fn declared_struct_name(decl: &str) -> Option<&str> {
 }
 
 /// The `(type, name)` pairs a calxgloss struct record declares, read back
-/// from the record's own text — calxgloss composed the shape, so parsing it
-/// is parsing its own output, not general C. `None` when the record is not
-/// that shape: a bitfield (`unsigned int a : 3`) or any spelling the
-/// regeneration cannot re-render honestly.
+/// from the record's own text. calxgloss wrote this shape, so this parses
+/// calxgloss's own output, not general C. Returns `None` when the record
+/// is not in that shape: a bitfield (`unsigned int a : 3`), or any
+/// spelling that regeneration cannot honestly rewrite.
 fn struct_record_fields(decl: &str) -> Option<Vec<(&str, &str)>> {
     let open = decl.find('{')?;
     let close = decl.rfind('}')?;
@@ -239,18 +244,18 @@ fn struct_record_fields(decl: &str) -> Option<Vec<(&str, &str)>> {
 // The plane: the ordered directive set and its file
 // ============================================================
 
-/// What became of one directive the source carries — the engine's own
-/// per-directive [`Outcome`](kuna_console::assertions::Outcome) lifted to a
-/// plain record: `status` is `applied` or `rejected`, and a directive not
-/// yet reached by an apply or a decompile reports as rejected with the
-/// detail `not reached by this run` — a local-type directive waits on the
-/// decompile of its function, and a regenerated struct record waits for
-/// the next load.
+/// What became of one directive that the source carries. This is Kuna's
+/// own per-directive [`Outcome`](kuna_console::assertions::Outcome)
+/// turned into a plain record. `status` is `applied` or `rejected`. A
+/// directive that no apply or decompile has reached yet reports as
+/// rejected, with the detail `not reached by this run`: a local-type
+/// directive waits for the decompile of its function, and a regenerated
+/// struct record waits for the next load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectiveOutcome {
     /// The directive's text, as it stands in the file.
     pub directive: String,
-    /// What became of it: `applied` or `rejected`; a directive not yet
+    /// What became of it: `applied` or `rejected`. A directive not yet
     /// reached reports as rejected with the detail `not reached by this
     /// run`.
     pub status: String,
@@ -258,14 +263,13 @@ pub struct DirectiveOutcome {
     pub detail: Option<String>,
 }
 
-/// The ordered directive set for one target binary, mirrored on a file in
-/// the record of effort.
+/// The ordered directive set for one target binary, mirrored in a file
+/// under the record of effort.
 ///
-/// The set is append-ordered — a declaration always sits after the
-/// declarations it references — and [`replace_struct_record`](Self::replace_struct_record)
-/// swaps a record in place so that order survives a regeneration. A plane
-/// opened without a file still answers every write; it just persists
-/// nowhere.
+/// The set is append-ordered: a declaration always sits after the
+/// declarations it references. Regeneration swaps a struct's record in
+/// place through `replace`, so that order survives. A plane opened
+/// without a file still answers every write; it just persists nowhere.
 #[derive(Debug)]
 pub struct DirectivePlane {
     file: Option<PathBuf>,
@@ -284,10 +288,10 @@ impl DirectivePlane {
     /// Open `file` as the plane, replaying its directives into the set.
     ///
     /// A missing file is an empty plane at that path — the first write
-    /// creates it. A line the directive grammar refuses is a named
-    /// [`KunaError::DirectiveFileInvalid`] naming the path and line: a
-    /// half-understood directive file must never load as a quiet partial
-    /// replay.
+    /// creates it. A line the directive grammar refuses fails the open
+    /// with a named [`KunaError::DirectiveFileInvalid`] giving the path
+    /// and line number: a directive file calxgloss only half understands
+    /// must never load as a silent partial replay.
     pub fn open(file: &Path) -> Result<Self> {
         let mut directives = Vec::new();
         if file.is_file() {
@@ -325,24 +329,25 @@ impl DirectivePlane {
         self.file.as_deref()
     }
 
-    /// Append one directive, returning its index in the set — the slot
-    /// whose outcome an apply reports.
+    /// Append one directive and return its index in the set. An apply
+    /// reports the outcome for that slot.
     pub fn push(&mut self, directive: Directive) -> usize {
         self.directives.push(directive);
         self.directives.len() - 1
     }
 
-    /// Remove the last directive — the rollback of a push whose apply the
-    /// engine refused.
+    /// Remove the last directive. This rolls back a push whose apply Kuna
+    /// refused.
     pub fn pop(&mut self) -> Option<Directive> {
         self.directives.pop()
     }
 
-    /// The index and `(type, name)` fields of the last struct record
-    /// declaring `name`, when the plane holds one it can honestly
-    /// regenerate. A record the field reader refuses (a bitfield spelling)
-    /// answers `None` with the index in hand, so the caller can name the
-    /// conflict rather than corrupt the record.
+    /// The index, and the `(type, name)` fields, of the last struct
+    /// record declaring `name` — returned only when the plane holds one
+    /// it can honestly regenerate. If the field reader refuses the
+    /// record (a bitfield spelling), this returns `None` while
+    /// `struct_record_index` still gives the index, so the caller can
+    /// name the conflict rather than corrupt the record.
     pub fn struct_record(&self, name: &str) -> Option<(usize, Vec<(&str, &str)>)> {
         let index = self.directives.iter().rposition(|directive| {
             matches!(&directive.body, Body::Typedef { decl } if declared_struct_name(decl) == Some(name))
@@ -354,9 +359,9 @@ impl DirectivePlane {
         struct_record_fields(decl).map(|fields| (index, fields))
     }
 
-    /// The index of the last struct record declaring `name`, even one whose
-    /// fields cannot be read back — so a bitfield-bearing record reports a
-    /// named conflict instead of being skipped.
+    /// The index of the last struct record declaring `name`, even one
+    /// whose fields cannot be read back. A bitfield-bearing record is
+    /// found, not skipped, so the caller can report a named conflict.
     pub fn struct_record_index(&self, name: &str) -> Option<usize> {
         self.directives.iter().rposition(|directive| {
             matches!(&directive.body, Body::Typedef { decl } if declared_struct_name(decl) == Some(name))
