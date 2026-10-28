@@ -23,16 +23,17 @@
 //! - `MutualRecursion`: a call cycle of two or more functions —
 //!   `A ↔ B`, `A → B → C → A` — read across the bodies one scan keeps.
 //! - `ControlFlowFinding`: the union over the record kinds — one
-//!   finding whichever detector made it — serde-tagged by `kind`.
+//!   finding, whichever detector made it — tagged by `kind` in the
+//!   persisted JSON.
 //! - `ControlFlowResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
 // `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb, typeinfer, algorithm,
-// memory, sync, and callback convention.
+// the shared 0–100 evidence score. Both are re-exported so consumers can
+// name them through this crate — the same convention the typesdb,
+// typeinfer, algorithm, memory, sync, and callback crates use.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -43,12 +44,12 @@ use serde::{Deserialize, Serialize};
 /// One switch-shaped if/else-if chain observation about one function,
 /// with the evidence behind it.
 ///
-/// A record says the function compares the variable named by
+/// The record says the function compares the variable named by
 /// [`variable`](Self::variable) against a run of constants in an
-/// if/else-if chain — the shape Ghidra renders a C `switch` into — with
-/// the constants collected in [`cases`](Self::cases) and a trailing
-/// `else` recorded as [`has_default`](Self::has_default). The chain
-/// reads like [`suggestion`](Self::suggestion): a Rust `match`, or a
+/// if/else-if chain — the shape Ghidra renders a C `switch` into. The
+/// constants are collected in [`cases`](Self::cases), and a trailing
+/// `else` is recorded as [`has_default`](Self::has_default). The chain
+/// suggests [`suggestion`](Self::suggestion): a Rust `match`, or a
 /// dispatch table when the chain is very wide. The chain head and last
 /// arm are kept as [`evidence`](Self::evidence) so a reviewer (or a
 /// translation prompt) can check the reasoning.
@@ -64,7 +65,7 @@ pub struct SwitchChain {
     pub has_default: bool,
     /// The Rust pattern the chain suggests, e.g. `match local_4 { ... }`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The chain head and last arm that support the record, kept so a
     /// reviewer (or a translation prompt) can check the reasoning.
@@ -78,12 +79,12 @@ pub struct SwitchChain {
 /// One self-recursion observation about one function, with the evidence
 /// behind it.
 ///
-/// A record says the function calls itself — [`self_calls`](Self::self_calls)
-/// times — and whether any of those calls sits in tail position
-/// ([`is_tail_call`](Self::is_tail_call)): the call block's only exit is
-/// the function's return and that return hands back exactly the call's
-/// result. A tail call reads like [`suggestion`](Self::suggestion): a
-/// plain `loop`, which Rust needs no tail-call optimization for; a
+/// The record says the function calls itself [`self_calls`](Self::self_calls)
+/// times. [`is_tail_call`](Self::is_tail_call) says whether any of those
+/// calls sits in tail position: the call block's only exit is the
+/// function's return, and that return hands back exactly the call's
+/// result. A tail call suggests [`suggestion`](Self::suggestion): a
+/// plain `loop`, which needs no tail-call optimization in Rust. A
 /// non-tail recursion suggests keeping the recursive `fn` or converting
 /// to an explicit stack. When the control flow graph shows a self-call
 /// nested inside a loop body, [`in_loop`](Self::in_loop) says so —
@@ -110,7 +111,7 @@ pub struct SelfRecursion {
     pub in_loop: bool,
     /// The Rust pattern the recursion suggests, e.g. `loop { ... }`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The self-call count and the tail-call and loop-nesting readings
     /// that support the record, kept so a reviewer (or a translation
@@ -118,9 +119,9 @@ pub struct SelfRecursion {
     pub evidence: String,
 }
 
-/// serde skip predicate: the depth flag leaves the JSON of a self-call
-/// outside any loop, keeping such records exactly what they were before
-/// the deepening.
+/// serde skip predicate: keeps the depth flag out of the JSON of a
+/// self-call outside any loop, so those records stay exactly what they
+/// were before the deepening.
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -132,14 +133,15 @@ fn is_false(value: &bool) -> bool {
 /// One state-machine observation about one function, with the evidence
 /// behind it.
 ///
-/// A record says the function dispatches on the state variable named by
-/// [`state_var`](Self::state_var) through an if/else-if chain whose
-/// cases are [`states`](Self::states) and whose bodies assign new values
-/// to that variable — the [`transitions`](Self::transitions). A state
-/// that is compared but never entered by a transition assignment (or one
-/// with an idle-like name) is the [`idle_state`](Self::idle_state). The
-/// pattern reads like [`suggestion`](Self::suggestion): a Rust `enum
-/// State` plus a `match`. The state variable and state count are kept as
+/// The record says the function dispatches on the state variable named
+/// by [`state_var`](Self::state_var) through an if/else-if chain: the
+/// cases are [`states`](Self::states), and the case bodies assign new
+/// values to that variable — the [`transitions`](Self::transitions).
+/// The [`idle_state`](Self::idle_state) is a state the chain compares
+/// but that no transition assignment ever enters, or, failing that, a
+/// state with an idle-like name. The machine suggests
+/// [`suggestion`](Self::suggestion): a Rust `enum State` plus a `match`.
+/// The state variable and state count are kept as
 /// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
 /// can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,7 +165,7 @@ pub struct StateMachine {
     /// The Rust pattern the machine suggests, e.g.
     /// `enum State + match local_4 { ... }`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The state variable and state count that support the record,
     /// kept so a reviewer (or a translation prompt) can check the
@@ -178,10 +180,10 @@ pub struct StateMachine {
 /// The loop shapes Ghidra's pseudo-C spells out, plus the goto-driven
 /// one.
 ///
-/// The control flow graph reads a shape off the body and the persisted
-/// record names it in `kinds_seen`, so one enum carries the vocabulary
-/// on both sides — the graph's loop kinds and the finding's kind list
-/// cannot drift apart.
+/// The control flow graph reads a shape off the body, and the persisted
+/// record names it in `kinds_seen`. One enum names the shapes on both
+/// sides, so the graph's loop kinds and the finding's kind list cannot
+/// drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoopKind {
@@ -209,7 +211,7 @@ impl LoopKind {
 
     /// Whether the shape is a spelled-out loop header — the strong
     /// evidence a structured loop leaves — rather than a `goto` back to
-    /// a label, whose loop reading is an inference over the jump.
+    /// a label, where the loop reading is an inference from the jump.
     pub fn is_structured(&self) -> bool {
         !matches!(self, LoopKind::Goto)
     }
@@ -239,18 +241,19 @@ impl LoopKind {
 /// One loop-structure observation about one function, with the evidence
 /// behind it.
 ///
-/// A record says the body carries [`loop_count`](Self::loop_count)
+/// The record says the body carries [`loop_count`](Self::loop_count)
 /// loops of the [`kinds_seen`](Self::kinds_seen) shapes, nested to
 /// [`max_depth`](Self::max_depth): 1 for a top-level loop, 2 for a loop
-/// inside a loop or inside a switch/state-machine case body, and so on
-/// — the depth the graph's brace discipline shows, so a chain reading
-/// and a loop reading never contradict each other. The body reads like
-/// [`suggestion`](Self::suggestion): the Rust loop structure at that
-/// nesting depth. Confidence is 70 when a spelled-out loop header
-/// stands in the body and 60 when the only loops visible are
-/// goto-driven — a goto shape is a weaker inference than a loop header.
-/// The count, kinds, and depth are kept as [`evidence`](Self::evidence)
-/// so a reviewer (or a translation prompt) can check the reasoning.
+/// inside a loop or inside a switch/state-machine case body, and so on.
+/// That is the depth the graph's brace discipline shows, so a chain
+/// reading and a loop reading never contradict each other. The body
+/// suggests [`suggestion`](Self::suggestion): the Rust loop structure
+/// at that nesting depth. Evidence confidence is 70 when a spelled-out
+/// loop header stands in the body and 60 when the only loops visible
+/// are goto-driven — a goto shape is a weaker inference than a loop
+/// header. The count, kinds, and depth are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopNesting {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -266,7 +269,7 @@ pub struct LoopNesting {
     /// The Rust pattern the loops suggest, e.g.
     /// `express as Rust for/while/loop at nesting depth 2`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The loop count, kinds, and depth that support the record, kept
     /// so a reviewer (or a translation prompt) can check the reasoning.
@@ -277,10 +280,11 @@ pub struct LoopNesting {
 // Branch density
 // ============================================================
 
-/// How branch-heavy a body reads, decided from its control flow graph.
+/// How branch-heavy a body is, decided from its control flow graph.
 ///
-/// The branch-density detector makes the call and the persisted record
-/// names it, so one enum carries the verdict vocabulary on both sides.
+/// The branch-density detector makes the call, and the persisted record
+/// names the verdict with this same enum, so the verdict vocabulary
+/// cannot drift between the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchClassification {
@@ -290,8 +294,8 @@ pub enum BranchClassification {
     /// ladder it was decompiled into.
     DispatchTable,
     /// Few enough conditional edges that the body reads as a
-    /// straight-line scan with the odd test; keeping it sequential (or
-    /// reaching for an iterator) beats inventing dispatch for it.
+    /// straight-line scan with the odd test. Keeping it sequential, or
+    /// using an iterator, beats inventing dispatch for it.
     SequentialScan,
 }
 
@@ -309,17 +313,18 @@ impl BranchClassification {
 /// One branch-density observation about one function, with the evidence
 /// behind it.
 ///
-/// A record says the body's [`branch_count`](Self::branch_count)
+/// The record says the body's [`branch_count`](Self::branch_count)
 /// conditional edges spread over [`block_count`](Self::block_count)
-/// basic blocks classify it as [`classification`](Self::classification):
-/// at or above the detector's heavy threshold the body reads as a
-/// dispatch-table candidate, below it as a sequential scan. Loop
-/// conditions are iteration, not branching, so a loop scan stays a scan
-/// — the loop finding already tells the loop story. Confidence is 60 —
-/// the classification is a structural inference over the graph, visibly
-/// weaker than a named shape like a switch chain. The two counts are
-/// kept as [`evidence`](Self::evidence) so a reviewer (or a translation
-/// prompt) can check the reasoning against the body.
+/// basic blocks, and that ratio classifies it as
+/// [`classification`](Self::classification): at or above the detector's
+/// heavy threshold the body reads as a dispatch-table candidate, below
+/// it as a sequential scan. Loop conditions are iteration, not
+/// branching, so a loop scan stays a scan — the loop finding already
+/// tells the loop story. Evidence confidence is 60 — the classification
+/// is a structural inference over the graph, visibly weaker than a
+/// named shape like a switch chain. The two counts are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning against the body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchDensity {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -334,7 +339,7 @@ pub struct BranchDensity {
     /// The Rust pattern the classification suggests, e.g.
     /// `express as a match or dispatch table`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The branch and block counts behind the classification, kept so a
     /// reviewer (or a translation prompt) can check the reasoning.
@@ -345,11 +350,11 @@ pub struct BranchDensity {
 // Branch inventory
 // ============================================================
 
-/// What a branch site guards — the vocabulary of guarded targets the
+/// What a branch site guards — the guarded-target vocabulary the
 /// branch-inventory detector reads off the control flow graph.
 ///
-/// The detector names the shape it read on both the record and the
-/// graph side, so the two cannot drift apart.
+/// The detector names the shape it read with this enum, on the record
+/// side and the graph side alike, so the two cannot drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuardedTarget {
@@ -386,7 +391,7 @@ impl GuardedTarget {
 /// One branch-site observation about one function — what the branch
 /// tests and what it guards — with the evidence behind it.
 ///
-/// A record says the body carries one branch site: the condition as
+/// The record says the body carries one branch site: the condition as
 /// written ([`condition`](Self::condition)), the parameter and local
 /// names the condition reads ([`params`](Self::params)), and, where the
 /// comparison is readable, the [`operator`](Self::operator) and the
@@ -395,11 +400,11 @@ impl GuardedTarget {
 /// an error path, a loop exit, an else arm, or a switch arm. A plain
 /// guarded body that guards nothing in that vocabulary is not a branch
 /// site worth a record — the branch-density and switch findings already
-/// tell that story. Confidence is 80 when the operator and immediate
-/// were both read — the exact boundary — 70 when the operator was read
-/// but the other side is a name rather than a constant, and 50 for a
-/// shape-only reading, which names no operator or immediate. The site's
-/// decompiled line is kept as [`evidence`](Self::evidence) so a
+/// tell that story. Evidence confidence is 80 when the operator and
+/// immediate were both read — the exact boundary — 70 when the operator
+/// was read but the other side is a name rather than a constant, and 50
+/// for a shape-only reading, which names no operator or immediate. The
+/// site's decompiled line is kept as [`evidence`](Self::evidence) so a
 /// reviewer (or a translation prompt) can check the reasoning against
 /// the body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -424,7 +429,7 @@ pub struct BranchSite {
     /// The Rust pattern the site suggests, e.g.
     /// `keep the early return behind param_1 == 0`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The site's decompiled line, kept so a reviewer (or a translation
     /// prompt) can check the reasoning.
@@ -438,19 +443,20 @@ pub struct BranchSite {
 /// One mutual-recursion observation spanning two or more functions,
 /// with the evidence behind it.
 ///
-/// A record says the functions named in [`cycle`](Self::cycle) call
-/// each other in a ring — `A ↔ B`, `A → B → C → A` — the recursion
-/// shape no single body can see because every call sits in somebody
-/// else's closing brace. The record attaches to the cycle's earliest
-/// member in listing order ([`function`](Self::function)) and names
-/// every member in cycle order, the ring closing back onto the first.
-/// The cycle reads like [`suggestion`](Self::suggestion): translate it
-/// together — an explicit stack, a trampoline, or an enum-driven loop.
-/// Every edge of the cycle is an explicit call in a kept body, so the
-/// claim sits level with an in-body self-call, at confidence **70**.
-/// The cycle's call edges, spelled in cycle order and closing back on
-/// the first member, are kept as [`evidence`](Self::evidence) so a
-/// reviewer (or a translation prompt) can check the reasoning.
+/// The record says the functions named in [`cycle`](Self::cycle) call
+/// each other in a ring — `A ↔ B`, `A → B → C → A`. No single body can
+/// show this recursion shape: every call of the ring sits inside a
+/// different function's closing brace. The record attaches to the
+/// cycle's earliest member in listing order ([`function`](Self::function))
+/// and names every member in cycle order, the ring closing back onto
+/// the first. The cycle suggests [`suggestion`](Self::suggestion):
+/// translate it together — an explicit stack, a trampoline, or an
+/// enum-driven loop. Every edge of the cycle is an explicit call in a
+/// kept body, so the claim sits at the same confidence as an in-body
+/// self-call: 70. The cycle's call edges, spelled in cycle order and
+/// closing back on the first member, are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MutualRecursion {
     /// The function the record is attached to — the cycle's earliest
@@ -463,7 +469,7 @@ pub struct MutualRecursion {
     /// together via an explicit stack, a trampoline, or an enum-driven
     /// loop.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The cycle's call edges in cycle order, closing back on the first
     /// member, kept so a reviewer (or a translation prompt) can check
@@ -477,14 +483,15 @@ pub struct MutualRecursion {
 
 /// One control-flow finding, whichever detector made it.
 ///
-/// The detectors emit the concrete records; the union is what the
-/// persisted result carries, so one list can hold every finding for a
-/// binary and a consumer reads the shared shape — function, suggestion,
-/// confidence, evidence — without naming which detector produced it.
-/// The switch and state-machine detectors read the same chain shape from
-/// opposite sides (a named-constant chain with transitions is both), so
-/// one function can carry findings of several kinds at once; nothing is
-/// resolved between them. The serde `kind` tag names the record shape
+/// The detectors emit the concrete records, and the persisted result
+/// holds them as this union. One list can therefore carry every finding
+/// for a binary, and a consumer reads the shared shape — function,
+/// suggestion, confidence, evidence — without naming which detector
+/// produced it. The switch and state-machine detectors read the same
+/// chain shape from two sides: a chain of named-constant cases whose
+/// bodies assign transition values is both shapes at once. So one
+/// function can carry findings of several kinds, and nothing resolves
+/// one against the other. The serde `kind` tag names the record shape
 /// in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -536,7 +543,7 @@ impl ControlFlowFinding {
         }
     }
 
-    /// Confidence that the finding is right.
+    /// Evidence confidence that the finding is right.
     pub fn confidence(&self) -> Confidence {
         match self {
             ControlFlowFinding::Switch(record) => record.confidence,
@@ -597,9 +604,9 @@ impl ControlFlowFinding {
 
 /// Render a finding as prompt data: the function it is about, the kind
 /// of pattern the detector read, the Rust control-flow pattern the
-/// finding suggests, and the confidence and evidence behind the claim —
-/// so the escalate prompt shows the hypothesis and how strongly it was
-/// made, whichever detector produced it.
+/// finding suggests, and the confidence and evidence behind the claim.
+/// The escalate prompt can then show the hypothesis and how strongly it
+/// was held, whichever detector produced it.
 impl From<&ControlFlowFinding> for calxgloss_prompts::ControlFlowInfo {
     fn from(finding: &ControlFlowFinding) -> Self {
         Self {
@@ -622,13 +629,12 @@ impl From<&ControlFlowFinding> for calxgloss_prompts::ControlFlowInfo {
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the switch chains, then the
 /// recursion, then the state machines, then the loop structure, then
-/// the branch density, then the branch inventory — and after every
-/// function, the cross-function
-/// mutual-recursion cycles in listing order. A
-/// function can carry findings of several kinds at once — the switch
-/// and state-machine detectors read the same chain shape from opposite
-/// sides — and the stable order means two scans of the same program
-/// diff cleanly.
+/// the branch density, then the branch inventory. After every function
+/// comes the cross-function mutual-recursion pass, landing its cycles
+/// in listing order. A function can carry findings of several kinds at
+/// once: a named-constant chain with transition assignments is read by
+/// the switch and state-machine detectors alike. The stable order means
+/// two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlFlowResult {
     /// Provenance of the scan that produced these findings.
@@ -783,7 +789,7 @@ mod tests {
 
     #[test]
     fn a_deepened_self_recursion_round_trips_and_a_plain_one_stays_small() {
-        // The depth multiplier reading rides the record...
+        // The depth multiplier reading is part of the record...
         let record = SelfRecursion {
             in_loop: true,
             ..recursion()
@@ -795,8 +801,8 @@ mod tests {
         assert_eq!(back, record);
 
         // ...and a self-call outside any loop keeps the pre-deepening
-        // shape on disk, mirroring the state-machine record's optional
-        // fields.
+        // shape on disk, the way the state-machine record's optional
+        // fields do.
         let json = serde_json::to_string(&recursion()).expect("plain record should serialize");
         assert!(!json.contains("\"in_loop\""));
     }
@@ -823,8 +829,8 @@ mod tests {
 
     #[test]
     fn a_state_machine_without_transitions_or_idle_omits_them_and_reads_back_empty() {
-        // Documents persisted before a transition landed still load, and
-        // a bare chain stays small on disk.
+        // Documents persisted before the transitions field existed still
+        // load, and a bare chain stays small on disk.
         let record = StateMachine {
             transitions: Vec::new(),
             idle_state: None,

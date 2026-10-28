@@ -6,8 +6,8 @@
 //! claims cannot disagree with each other. Only their readings join the
 //! finding union; the graph itself is never written out.
 //!
-//! Blocks are cut where the pseudo-C says control can part company with
-//! the straight line: `if`/`else` heads, `for`/`while`/`do` heads, labels
+//! Blocks are cut wherever the pseudo-C gives control a choice:
+//! `if`/`else` heads, `for`/`while`/`do` heads, labels
 //! (including `case`/`default` arms, though the switch's own dispatch and
 //! `break` edges are not modelled — the chain detector reads switches
 //! textually), `goto` statements, and `return`s. Edges are fall-through,
@@ -30,7 +30,7 @@ use crate::types::LoopKind;
 /// Identity of a basic block within one [`Cfg`].
 pub(crate) type BlockId = usize;
 
-/// How a block hands control on, decided by its last line.
+/// How a block passes control on, decided by its last line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Terminator {
     /// Falls through to the next block in document order.
@@ -90,14 +90,15 @@ pub(crate) struct Block {
 }
 
 /// One loop in the body, identified by its header block. The kind
-/// vocabulary is the finding's own — the enum lives in `types` so the
+/// vocabulary is the finding's own: the enum lives in `types`, so the
 /// graph's loop kinds and the finding's `kinds_seen` cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Loop {
     /// The block the back edge returns to.
     pub header: BlockId,
     pub kind: LoopKind,
-    /// Brace depth of the loop head, so nesting composes with blocks.
+    /// Brace depth of the loop head, so loop nesting lines up with the
+    /// blocks' brace depths.
     pub depth: i32,
 }
 
@@ -110,7 +111,8 @@ pub(crate) struct Cfg {
     line_block: Vec<Option<BlockId>>,
 }
 
-/// What a line is, decided on the string-blanked trim of it.
+/// What kind a line is, decided on its trimmed form with the string
+/// contents blanked out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineKind<'a> {
     Other,
@@ -161,9 +163,9 @@ fn label_name(t: &str) -> Option<&str> {
     (rest.is_empty() || rest == "{").then_some(name)
 }
 
-/// Classify one string-blanked trimmed line. A leading `}` is peeled so
-/// `} else {` and `} while (x);` read as the heads they are; a bare `}`
-/// line reads as [`LineKind::Close`].
+/// Classify one string-blanked trimmed line. A leading `}` is peeled off
+/// so `} else {` and `} while (x);` are read as the heads they are; a
+/// bare `}` line reads as [`LineKind::Close`].
 fn classify(t: &str) -> LineKind<'_> {
     if t.is_empty() {
         return LineKind::Other;
@@ -218,16 +220,18 @@ impl Cfg {
     /// Build the graph of one decompiled body.
     ///
     /// Blocks are cut at branch heads, loop heads, labels, `goto`s, and
-    /// `return`s; edges join them in document order and by the shapes those
-    /// lines spell. A body truncated mid-brace still yields a graph — the
-    /// edges that would need the missing closing brace are simply absent.
+    /// `return`s. Edges join the blocks in document order and along the
+    /// control-flow shapes those lines spell. A body truncated mid-brace
+    /// still yields a graph — the edges that would need the missing
+    /// closing brace are simply absent.
     pub(crate) fn build(body: &str) -> Cfg {
         let code: Vec<String> = body.lines().map(outside_strings).collect();
         let trimmed: Vec<&str> = code.iter().map(String::as_str).map(str::trim).collect();
         let n = trimmed.len();
         let kinds: Vec<LineKind> = trimmed.iter().map(|t| classify(t)).collect();
 
-        // Brace depth around every line, on the chain walker's discipline.
+        // Brace depth before and after every line, using the chain
+        // walker's brace discipline.
         let mut depth_before = Vec::with_capacity(n);
         let mut depth_after = Vec::with_capacity(n);
         let mut depth = 0i32;
@@ -321,11 +325,11 @@ impl Cfg {
                 depth_before[j] == inner && (depth_after[j] < inner || trimmed[j].starts_with('}'))
             })
         };
-        // The line closing the body a head opens: the first line back at the
-        // head's own depth that carries a closing brace. A head with no
-        // brace on its line has a single-statement body instead — Ghidra
-        // always braces its bodies, so the braceless form is an
-        // approximation kept only so a hand-written or truncated body
+        // The line closing the body a head opens: the first line back at
+        // the head's own depth that carries a closing brace. A head with
+        // no brace on its line gets a single-statement body instead.
+        // Ghidra always braces its bodies; the braceless form is an
+        // approximation, kept only so a hand-written or truncated body
         // still reads as a graph.
         let body_close = |head: usize| close_from(head + 1, depth_before[head] + 1);
         let body_end = |head: usize| -> Option<usize> {
@@ -334,8 +338,8 @@ impl Cfg {
         };
 
         // Walk the whole `else`/`else if` chain that starts at or right
-        // after `close` and answer the block just past its final arm —
-        // where a branch body that skips the chain lands.
+        // after `close`, and find the block just past its final arm —
+        // that is where a branch body that skips the chain lands.
         let chain_join = |close: usize| -> Option<BlockId> {
             let mut cur = close;
             loop {
@@ -569,11 +573,12 @@ impl Cfg {
 
     /// The line span `[start, end)` each loop's body covers, in loop
     /// order. A structured loop runs from the line after its head
-    /// through the line that closes it — the back edge's source block's
-    /// last line; a `goto` loop runs from its label block's first line
-    /// through the jumping block. A loop whose closing brace never
-    /// arrives (a truncated body) runs to the end of the body: the
-    /// brace discipline that built the graph keeps the reading honest.
+    /// through the line that closes it — the last line of the block the
+    /// back edge comes from. A `goto` loop runs from its label block's
+    /// first line through the jumping block. A loop whose closing brace
+    /// never arrives (a truncated body) runs to the end of the body:
+    /// the brace discipline that built the graph keeps that reading
+    /// honest.
     pub(crate) fn loop_body_spans(&self) -> Vec<(usize, usize)> {
         let body_end = self.line_block.len() - 1;
         self.loops
@@ -1085,8 +1090,9 @@ return;");
     fn a_truncated_loop_body_span_runs_to_the_end_of_the_body() {
         let graph = cfg("while (x) {\n    f();\n");
         // No closing brace means no back edge, but the visible body
-        // lines still read as the loop's — a call inside them is
-        // nested however truncated the decompile was.
+        // lines still read as the loop's — a call inside them still
+        // reads as nested in the loop, however truncated the decompile
+        // was.
         assert_eq!(
             graph.loop_body_spans(),
             vec![(1, 2)],
