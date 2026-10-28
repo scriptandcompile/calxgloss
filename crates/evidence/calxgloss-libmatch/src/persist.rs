@@ -8,10 +8,12 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is
-//! the check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and
-//! every finding — for the call graph and translation pipeline to query.
+//! The persisted document also acts as a cache.
+//! [`exists`](LibmatchPersistor::exists) answers whether a binary
+//! already has one: a caller runs that check before deciding whether
+//! it needs the scan. [`load`](LibmatchPersistor::load) reads the
+//! whole document back — metadata and every finding — for the call
+//! graph and the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -85,7 +87,7 @@ impl LibmatchPersistor {
     ///
     /// This is the cache check: a caller that wants known-library
     /// findings without re-running the scan asks here first and only
-    /// drives the scan when the answer is `false`.
+    /// runs the scan when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
@@ -144,7 +146,7 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    /// A result carrying one finding, so a round trip proves the record
+    /// A result with one finding, so a round trip proves the record
     /// shape survives the file, not just the envelope.
     fn result(binary: &str) -> LibmatchResult {
         LibmatchResult {
@@ -189,8 +191,9 @@ mod tests {
 
     #[test]
     fn propagated_findings_persist_in_the_same_document_with_their_own_confidence() {
-        // The cross-function findings ride the per-binary document
-        // beside the direct match, each keeping its own confidence.
+        // The cross-function findings are stored in the same
+        // per-binary document as the direct match, each keeping its
+        // own evidence confidence.
         let dir = TempDir::new().expect("temp dir should be created");
         let persistor = LibmatchPersistor::with_cache_dir(dir.path());
         let mut saved = result("eqmain.dll");
@@ -356,11 +359,11 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_admission_and_coverage_exactly() {
-        // What the scan stamped rides the persistor untouched: the
-        // per-finding admission note and the coverage record — statuses,
-        // ids, order, limitation lines — are exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #347).
+        // Everything the scan stamped passes through the persistor
+        // untouched: the per-finding admission note and the coverage
+        // record — statuses, ids, order, limitation lines — are
+        // exactly what a later reader (the projection seam, the report,
+        // a `--show` months later) sees (issue #347).
         let dir = TempDir::new().expect("temp dir should be created");
         let persistor = LibmatchPersistor::with_cache_dir(dir.path());
         let mut saved = result("eqmain.dll");

@@ -1,28 +1,39 @@
-//! Cross-function known-library propagation over the bodies the scan keeps.
+//! Cross-function known-library propagation over the kept bodies.
 //!
 //! The per-function matcher reads one body at a time: it can only name
-//! a body that carries a signature's shape itself. This module closes
-//! that gap over the bodies one scan already holds, mirroring the
-//! memory crate's cross-function pass (ADR-0027), the sync crate's
-//! (ADR-0033), and the callback crate's (ADR-0035): the readings are
-//! derived from the fetched bodies with the normalization the matcher
-//! already performs, so no new [`ScanSource`](crate::engine::ScanSource)
-//! reads are made and the exactly-once-decompile guarantee and the
-//! skip-rate breaker survive untouched.
+//! a function whose own body carries a signature's shape. This module
+//! fills that gap using the kept bodies one scan already holds, like
+//! the memory crate's cross-function pass (ADR-0027), the sync crate's
+//! (ADR-0033), and the callback crate's (ADR-0035). Its readings come
+//! from the fetched bodies, using the same normalization the matcher
+//! already performs, so it makes no new
+//! [`ScanSource`](crate::engine::ScanSource) reads. The
+//! exactly-once-decompile guarantee still holds, and the skip-rate
+//! breaker still works: a scan whose decompiles fail for more than
+//! half of the function listing still aborts rather than persisting a
+//! record that looks clean but is not.
 //!
 //! [`propagate`] runs the readings. A kept body whose normalized shape
-//! is identical to a matched body's is the same routine — the linker
-//! folding template instantiations to one body (COMDAT folding / ICF)
-//! leaves every copy but the first reading identical — and inherits the
-//! match whole, at the matched body's confidence. Its evidence is its
-//! own body line standing where the matched body's evidence line
-//! stands, so a reviewer reads the duplicate's decompile, not the
-//! parent's. A kept body whose only statement is a call to a claimed
-//! function is that function's thunk, and inherits its match at a
-//! confidence penalty; the reading iterates to a fixed point so a
-//! whole chain of thunks collapses onto the matched end. Cross-function
-//! findings — identical-body duplicates first, then thunks — append
-//! after every per-function finding, in listing order.
+//! is identical to a matched body's is the same routine: the linker
+//! folds template instantiations into one body (COMDAT folding / ICF),
+//! so every copy but the first reads identical to the first. The
+//! duplicate inherits the claim whole, at the matched body's evidence
+//! confidence. When more than one matched body carries the shape, the
+//! duplicate inherits from the one listed first; each matched body
+//! already carries its function's single strongest claim, decided by
+//! [`resolve_matches`](crate::confidence::resolve_matches). The
+//! duplicate's evidence is a line from its own decompile, taken from
+//! the place where the matched body's evidence line stands, so a
+//! reviewer reads the duplicate's decompile, not the parent's.
+//!
+//! A kept body whose only statement is a call to a claimed function is
+//! that function's thunk, and inherits its match at an evidence-
+//! confidence penalty. The reading repeats until no new claim appears,
+//! so a whole chain of thunks inherits from the matched end, and the
+//! penalty is paid once per chain, not per hop. Cross-function
+//! findings — identical-body duplicates first, then thunks — are
+//! appended after every per-function finding, each group in listing
+//! order.
 //!
 //! The pass's internals — the shape keys and the call readings — are
 //! never tested directly: scan findings are the test surface, as with
@@ -41,11 +52,13 @@ use crate::types::{Confidence, LibmatchFinding, LibmatchMatch};
 /// Propagate matches across the scan's kept bodies.
 ///
 /// `matched` is the resolved per-function findings — at most one claim
-/// per function — and `bodies` the decompiles the scan kept, in listing
-/// order. A body that already carries a claim is never re-claimed:
-/// propagation speaks for the bodies the per-function walk left silent.
-/// The findings returned are in listing order and ride after every
-/// per-function finding in the persisted result.
+/// per function — and `bodies` is the decompiles the scan kept, in
+/// listing order. A body that already carries a claim is never
+/// re-claimed: propagation only names the bodies the per-function
+/// pass left without a finding. The returned findings come in two
+/// groups — identical-body duplicates first, then thunks — each in
+/// listing order, and they are appended after every per-function
+/// finding in the persisted result.
 pub(crate) fn propagate(
     bodies: &[DecompiledFunction],
     matched: &[LibmatchFinding],
@@ -65,10 +78,10 @@ pub(crate) fn propagate(
         .map(|finding| (finding.function().to_string(), finding.clone()))
         .collect();
 
-    // Which claimed body first carries each normalized shape, by listing
-    // index. The map is built whole before any inheritance lands, so a
-    // duplicate standing before its matched twin in the listing still
-    // inherits.
+    // For each normalized shape, the claimed body that has it earliest
+    // in the listing, by listing index. The map is built whole before
+    // any inherited finding is added, so a duplicate standing before
+    // its matched twin in the listing still inherits.
     let mut shape_owner: HashMap<&str, usize> = HashMap::new();
     for (index, body) in bodies.iter().enumerate() {
         if claims.contains_key(body.name.as_str()) {
@@ -102,14 +115,14 @@ pub(crate) fn propagate(
 
     // A body whose only statement is a call to a claimed function is
     // that function's thunk, and inherits its match at the penalty.
-    // The reading iterates to a fixed point so a chain of thunks —
-    // each body only a tail call to the next — all inherits from the
-    // matched end, and the penalty is paid once per chain: a thunk
-    // calling an inherited thunk copies that finding's already-
-    // penalized score, so the whole chain stands at one confidence
-    // and collapses into the same downstream decision. The claims
-    // land as the fixed point converges; the findings are emitted in
-    // one listing-order pass afterwards.
+    // The reading repeats until no new claim appears, so a chain of
+    // thunks — each body only a tail call to the next — all inherits
+    // from the matched end, and the penalty is paid once per chain,
+    // not per hop: a thunk calling an inherited thunk copies that
+    // finding's already-penalized score, so the whole chain stands at
+    // one evidence confidence and collapses into the same downstream
+    // decision. Claims are added while the loop repeats; the findings
+    // are emitted in one listing-order pass afterwards.
     loop {
         let mut inherited = false;
         for (index, body) in bodies.iter().enumerate() {
@@ -153,11 +166,11 @@ pub(crate) fn propagate(
 
 /// The shape two bodies must share to be the same routine: the
 /// normalized lines inside the decompile's braces, with the function's
-/// own name collapsed to a placeholder. The prototype line stands
-/// outside the span because Ghidra renders folded copies' prototypes
+/// own name replaced by a placeholder. The prototype line sits outside
+/// the span because Ghidra renders folded copies' prototypes
 /// differently — a second copy often arrives named `thunk_…` — and the
-/// own name stands inside it because a folded body's self-calls carry
-/// each copy's name.
+/// function's own name sits inside the span, so it gets replaced,
+/// because a folded copy's self-calls mention that copy's own name.
 fn body_key(name: &str, pairing: &[(String, String)]) -> String {
     let (start, end) = brace_span(pairing);
     let own_name = regex::Regex::new(&format!(r"\b{}\b", regex::escape(name)))
@@ -171,7 +184,7 @@ fn body_key(name: &str, pairing: &[(String, String)]) -> String {
 
 /// The span of the decompile's brace-enclosed statements: the lines
 /// between the opening and closing brace lines, or the whole body when
-/// the decompile carries no braces.
+/// the decompile has no braces.
 fn brace_span(pairing: &[(String, String)]) -> (usize, usize) {
     match (
         pairing.iter().position(|(_, line)| line == "{"),
@@ -191,11 +204,12 @@ static SOLE_CALL: LazyLock<Regex> = LazyLock::new(|| {
         .expect("the sole-call pattern is a valid regex")
 });
 
-/// The sole call a thunk body carries: when the body's statements —
-/// empty lines and bare `return;`s dropped — are exactly one line that
-/// is a call, that call's callee name and the body's own line as the
-/// finding's evidence. A body with more to do than call, or with no
-/// call at all, is no thunk and answers `None`.
+/// Find the sole call a thunk body contains. When the body's
+/// statements — with empty lines and bare `return;`s dropped — are
+/// exactly one line, and that line is a call, the answer is that
+/// call's callee name plus the body's own line as the finding's
+/// evidence. A body that does more than call, or that has no call at
+/// all, is not a thunk: the answer is `None`.
 fn sole_tail_call(pairing: &[(String, String)]) -> Option<(String, String)> {
     let (start, end) = brace_span(pairing);
     let statements: Vec<&(String, String)> = pairing[start..end]
@@ -234,13 +248,13 @@ fn inherited_match(
 
 /// The inheriting body's evidence: the line standing where the matched
 /// body's evidence line stands, taken from the duplicate's own
-/// decompile. Identical shapes pair brace line to brace line, so the
-/// matched body's evidence offset within its brace span names the
-/// duplicate's line at the same offset; when that lookup misses — an
-/// evidence line outside the brace span (a signature pattern that
-/// matched the prototype) or a span that runs short — the duplicate's
-/// first brace statement stands in, so the finding still quotes the
-/// duplicate's own decompile.
+/// decompile. Identical shapes line up brace line to brace line, so
+/// the position of the matched body's evidence line within its brace
+/// span is also the position of the duplicate's matching line. When
+/// that lookup misses — an evidence line outside the brace span (a
+/// signature pattern that matched the prototype) or a span that runs
+/// short — the duplicate's first brace statement stands in instead, so
+/// the finding still quotes the duplicate's own decompile.
 fn inherited_evidence(
     parent: &[(String, String)],
     duplicate: &[(String, String)],

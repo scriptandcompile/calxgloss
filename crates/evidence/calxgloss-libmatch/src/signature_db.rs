@@ -1,30 +1,32 @@
-//! Operator-supplied signature database: one JSON document carrying the
-//! signature set a scan reads bodies against.
+//! Operator-supplied signature database: one JSON document holding the
+//! signature set a scan matches bodies against.
 //!
 //! The known-library shapes normally live in the built-in starter set —
-//! [`default_signatures`](crate::signature::default_signatures) — but
-//! an operator who wants to teach the matcher a new compiler or library
-//! version should not have to edit Rust and recompile. A
-//! [`SignatureDatabase`] is one JSON document carrying the set; a scan
-//! configured from it reads the file's signatures instead of the
-//! built-in set, whole.
+//! [`default_signatures`](crate::signature::default_signatures). An
+//! operator who wants the matcher to recognize a new compiler or
+//! library version should not have to edit Rust and recompile. A
+//! [`SignatureDatabase`] is one JSON document holding that set: a scan
+//! configured from it uses the file's signatures instead of the
+//! built-in set, replacing the built-in set whole.
 //!
 //! The entry format is exactly the existing serde shape of
-//! [`LibmatchSignature`] — symbol, family, the required and forbidden
-//! (match and exclude) bundles that gate callee references like "calls
-//! `malloc`", the line-count floor, the optional per-entry confidence,
-//! and the suggestion — and the document rides ADR-0023's
-//! pattern-database contract whole: loading is strict
-//! (`deny_unknown_fields` on the document and on every entry), and a
-//! supplied file replaces the built-in set whole rather than merging
-//! into it, so the file states exactly what the scan knows and a
-//! misfiring built-in signature can be retired.
+//! [`LibmatchSignature`] — symbol, family, the required (match) and
+//! forbidden (exclude) regex bundles that rule out look-alike bodies
+//! on facts like "calls `malloc`", the line-count floor, the optional
+//! per-entry evidence confidence, and the suggestion. The document
+//! follows ADR-0023's pattern-database contract whole: loading is
+//! strict (`deny_unknown_fields` on the document and on every entry),
+//! and a supplied file replaces the built-in set whole rather than
+//! merging into it. The file therefore states exactly what the scan
+//! knows, and an operator can retire a built-in signature that matches
+//! wrongly.
 //!
-//! A missing, unreadable, or malformed file is a hard error naming the
-//! path, so a typo never silently degrades recognition to a partial
-//! set. Inside a well-formed entry the lenient per-entry semantics
-//! stay: a regex that will not compile can claim or veto nothing, and
-//! the `{name}` placeholder keeps working exactly as in the built-ins.
+//! A missing, unreadable, or malformed file is a hard error that names
+//! the path, so a typo fails the run instead of quietly reducing
+//! recognition to a partial set. Inside a well-formed entry, the
+//! lenient per-entry rules still apply: a regex that will not compile
+//! can claim nothing and veto nothing, and the `{name}` placeholder
+//! works exactly as it does in the built-in signatures.
 
 use std::path::Path;
 
@@ -34,24 +36,23 @@ use serde::{Deserialize, Serialize};
 use crate::error::{LibmatchError, Result};
 use crate::signature::LibmatchSignature;
 
-/// One JSON document carrying the signature set a scan reads normalized
-/// bodies against, in place of the built-in starter set.
+/// One JSON document holding the signature set a scan matches
+/// normalized bodies against, in place of the built-in starter set.
 ///
-/// Entries are kept in the order the file spells them, and that order
-/// is load-bearing the way matcher configuration order always has
-/// been: findings follow configuration order, and a resolution tie
-/// keeps the entry listed first. An omitted `signatures` section reads
-/// as an empty set — the database replaces the built-in set whole,
-/// never merges. An unknown section name is a hard error: a typo in a
-/// section key would otherwise silently degrade the scan to a partial
-/// set.
+/// Entries are kept in the order the file lists them, and that order
+/// matters, as matcher configuration order always has: findings follow
+/// configuration order, and a resolution tie keeps the claim from the
+/// entry listed first. An omitted `signatures` section reads as an
+/// empty set — the database replaces the built-in set whole, never
+/// merges. An unknown section name is a hard error: otherwise a typo
+/// in a section key would quietly reduce the scan to a partial set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignatureDatabase {
     /// The signatures the matcher reads normalized bodies against —
     /// the same [`LibmatchSignature`] entries
     /// [`with_signatures`](crate::matcher::LibmatchMatcher::with_signatures)
-    /// would carry.
+    /// would take.
     #[serde(default)]
     pub signatures: Vec<LibmatchSignature>,
 }
@@ -59,13 +60,13 @@ pub struct SignatureDatabase {
 impl SignatureDatabase {
     /// Read the database document at `path`.
     ///
-    /// The file is parsed through the shared JSON persistence plumbing,
-    /// so a missing, unreadable, or malformed document — including one
-    /// whose section or entry field names the types do not carry — is a
-    /// hard [`LibmatchError::SignatureDatabase`] naming the path: the
-    /// run fails loudly rather than scanning with a silently partial
-    /// set. Entries keep the matcher's lenient semantics: an
-    /// uncompilable regex matches nothing and vetoes nothing.
+    /// The file is parsed through the shared JSON persistence
+    /// plumbing, so a missing, unreadable, or malformed document —
+    /// including one whose section or entry field names the types do
+    /// not define — is a hard [`LibmatchError::SignatureDatabase`]
+    /// that names the path: the run fails loudly rather than scanning
+    /// with a silently partial set. Entries keep the matcher's lenient
+    /// rules: an uncompilable regex matches nothing and vetoes nothing.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         load_json(path).map_err(|source| LibmatchError::SignatureDatabase {
@@ -85,9 +86,9 @@ mod tests {
     use crate::error::LibmatchError;
     use tempfile::TempDir;
 
-    /// A database carrying two entries, one with a per-entry
-    /// confidence and exclusions and one without, so a round trip
-    /// pins the section key, the entry shape, and the optionals.
+    /// A database with two entries: one with a per-entry evidence
+    /// confidence and exclusions, and one without either, so a round
+    /// trip pins the section key, the entry shape, and the optionals.
     fn database() -> SignatureDatabase {
         SignatureDatabase {
             signatures: vec![
@@ -136,7 +137,7 @@ mod tests {
     #[test]
     fn the_document_key_names_the_signature_section() {
         // The file format is pinned: one `signatures` section, and the
-        // entries carry exactly the signature type's serde shape.
+        // entries have exactly the signature type's serde shape.
         let json = serde_json::to_string(&database()).expect("the database serializes");
         let value: serde_json::Value =
             serde_json::from_str(&json).expect("the serialized database reads back");
