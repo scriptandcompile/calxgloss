@@ -1,22 +1,22 @@
 //! String & Configuration Context (P8).
 //!
-//! Classifies the strings a function uses — error messages, user-visible text,
-//! file paths, resource names, debug logs, network config, internal
-//! identifiers, format strings — and maps them to the functions that
-//! reference them, so the translator can infer a function's purpose and its
-//! likely argument types.
+//! This crate works out what the strings a function uses are for — error
+//! messages, user-visible text, file paths, resource names, debug logs,
+//! network config, internal identifiers, format strings. It also maps each
+//! string to the functions that reference it. The translator uses both
+//! results to infer a function's purpose and its likely argument types.
 //!
 //! This crate provides:
 //! - [`StringClassifyEngine`] — classifies strings into the nine categories
 //! - [`FormatStringEngine`] — extracts Rust type hints from format specifiers
-//! - [`HybridXrefMapper`] — maps strings to functions via decompiled-body
-//!   parsing with an xref fallback
+//! - [`HybridXrefMapper`] — maps strings to functions by parsing decompiled
+//!   bodies, with an xref fallback
 //! - [`LocalizationDetector`] — reads localization signals (language names,
-//!   locale codes, non-ASCII user-facing text) off a function's mapped strings
-//! - [`CrossFunctionAnalyzer`] — correlates strings handed across call
+//!   locale codes, non-ASCII user-facing text) from a function's mapped strings
+//! - [`CrossFunctionAnalyzer`] — finds strings that pass across call
 //!   boundaries between decompiled bodies
-//! - [`StringContextEngine`] — orchestrates the above over a scan source
-//! - [`StringContextPersistor`] — saves/loads results as per-binary JSON
+//! - [`StringContextEngine`] — runs the parts above against one scan source
+//! - [`StringContextPersistor`] — saves and loads results as per-binary JSON
 //!
 //! # Example
 //!

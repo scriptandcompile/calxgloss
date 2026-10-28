@@ -2,14 +2,14 @@
 //!
 //! A format string is the one place a decompiled call states its own
 //! argument types: `"%s: %d hits"` says the call passed a string and an
-//! integer. This module reads the specifiers out of a format string and
-//! maps each to the Rust type the original argument read as, so the
-//! translator sees `*const i8` and `i32` where the pseudo-C shows only
-//! bare variables.
+//! integer. This module reads the specifiers in a format string and maps
+//! each to the Rust type the original argument read as, so the translator
+//! sees `*const i8` and `i32` where the pseudo-C shows only bare
+//! variables.
 //!
-//! [`extract_format_hints`] does the reading; the mapping table it consults
-//! is documented on [`rust_type_for`] and [`FormatStringEngine`] carries it
-//! as the engine the scan configures.
+//! [`extract_format_hints`] does the reading, and [`rust_type_for`]
+//! documents the mapping table it uses. [`FormatStringEngine`] is the
+//! piece of this that the scan configures.
 
 use crate::types::FormatHint;
 use regex::Regex;
@@ -36,13 +36,14 @@ pub struct SpecifierType {
 /// `%lf` → `f64`. A precision does not change the type, so `%.2f` reads as
 /// `f32` like `%f`.
 ///
-/// The remaining floating conversions (`e`, `E`, `g`, `G`, `a`, `A`) follow
-/// the `%f` rule — plain `f32`, `l`/`L`-modified `f64` — and `n` writes
-/// through a pointer, reading as `*mut i32`. A conversion the table does
-/// not name is **not guessed at**: it takes the documented default,
-/// `*const c_void`, the same way the sync crate defaults an unrecognized
-/// atomic width to one documented type rather than a per-call guess.
-/// `%%` is a literal percent and takes no argument slot at all.
+/// The remaining floating conversions (`e`, `E`, `g`, `G`, `a`, `A`)
+/// follow the `%f` rule: plain `f32`, `l`/`L`-modified `f64`. `n` writes
+/// through a pointer, so its argument reads as `*mut i32`. The table does
+/// **not guess at** a conversion it does not name: it takes the documented
+/// default, `*const c_void`. The sync crate works the same way — it
+/// defaults an unrecognized atomic width to one documented type, not a
+/// per-call guess. `%%` is a literal percent and takes no argument slot
+/// at all.
 pub const SPECIFIER_TYPES: &[SpecifierType] = &[
     SpecifierType {
         conversion: 's',
@@ -217,13 +218,13 @@ pub const UNKNOWN_TYPE: &str = "*const c_void";
 
 /// The Rust type a specifier's argument reads as, per the documented table.
 ///
-/// `specifier` is the full spelling as written — `%s`, `%.2f`, `%ld` — and
-/// the length modifier and conversion character are read off its end. A
-/// conversion outside the table takes [`UNKNOWN_TYPE`]; `%%` has no type
-/// because it takes no argument.
+/// `specifier` is the full spelling as written — `%s`, `%.2f`, `%ld`. The
+/// function reads the length modifier and the conversion character off
+/// its end. A conversion outside the table takes [`UNKNOWN_TYPE`]. `%%`
+/// has no type because it takes no argument.
 pub fn rust_type_for(specifier: &str) -> &'static str {
-    // Peel the conversion character, then the longest matching length
-    // modifier in front of it.
+    // Read the conversion character off the end, then the longest matching
+    // length modifier in front of it.
     let Some(conversion) = specifier.chars().next_back() else {
         return UNKNOWN_TYPE;
     };
@@ -236,9 +237,9 @@ pub fn rust_type_for(specifier: &str) -> &'static str {
             {
                 return entry.rust_type;
             }
-            // A modifier the table does not pair with this conversion
-            // (e.g. `%hu`) still reads through the plain form: the
-            // narrower C type arrives promoted.
+            // The table has no entry pairing this modifier with this
+            // conversion (e.g. `%hu`). Read it through the plain form
+            // instead: the narrower C type arrives promoted.
             return SPECIFIER_TYPES
                 .iter()
                 .find(|e| e.conversion == conversion && e.modifier.is_empty())
@@ -272,10 +273,11 @@ pub fn extract_format_hints(format: &str) -> Vec<FormatHint> {
     let mut hints = Vec::new();
     let mut position = 0usize;
     let mut cursor = 0usize;
-    // Walk percent to percent. A `%%` pair prints a literal percent and
-    // consumes no argument, and its second half must never be re-read as
-    // the start of a specifier — otherwise `"100%% done: %d"` would read
-    // `"% d"` (space flag + `d`) before the real `"%d"`.
+    // Walk from percent sign to percent sign. A `%%` pair prints a literal
+    // percent and consumes no argument. The second half of the pair must
+    // never be read again as the start of a specifier — otherwise
+    // `"100%% done: %d"` would read `"% d"` (space flag + `d`) before the
+    // real `"%d"`.
     while let Some(offset) = format[cursor..].find('%') {
         let start = cursor + offset;
         if format.as_bytes().get(start + 1) == Some(&b'%') {
@@ -300,17 +302,17 @@ pub fn extract_format_hints(format: &str) -> Vec<FormatHint> {
     hints
 }
 
-/// The format-string engine the scan configures: it fills [`FormatHint`]
+/// The format-string piece the scan configures: it fills [`FormatHint`]
 /// records from a format string and renders the summaries the prompt
 /// consumes.
 ///
-/// The engine carries the documented table on [`SPECIFIER_TYPES`] and holds
-/// no per-scan state, so one instance serves a whole scan.
+/// It carries the documented table on [`SPECIFIER_TYPES`] and holds no
+/// per-scan state, so one instance serves a whole scan.
 #[derive(Debug, Clone, Default)]
 pub struct FormatStringEngine;
 
 impl FormatStringEngine {
-    /// An engine scanning with the documented specifier table.
+    /// A new instance that reads specifiers with the documented table.
     pub fn new() -> Self {
         Self
     }
@@ -331,9 +333,9 @@ impl FormatStringEngine {
 /// Render a hint list as the argument-type summary the prompt shows,
 /// e.g. `` `*const i8`, `i32` ``. An empty list reads as no arguments.
 ///
-/// This is the free form of [`FormatStringEngine::summarize`], so the
+/// This is the standalone form of [`FormatStringEngine::summarize`], so a
 /// finding's own [`suggestion`](crate::types::StringFinding::suggestion)
-/// renders the same summary the engine does.
+/// renders the same summary.
 pub fn summarize_hints(hints: &[FormatHint]) -> String {
     if hints.is_empty() {
         return "no format arguments".to_string();
@@ -404,7 +406,7 @@ mod tests {
 
     #[test]
     fn an_unknown_conversion_takes_the_documented_default() {
-        // The table does not name `%q`; it is defaulted, not guessed.
+        // The table does not name `%q`, so it takes the default. No guess is made.
         assert_eq!(rust_type_for("%q"), UNKNOWN_TYPE);
         assert_eq!(hints("%q"), vec![("%q".into(), 0, "*const c_void".into())]);
     }

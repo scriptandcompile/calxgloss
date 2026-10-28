@@ -1,21 +1,22 @@
 //! Nine-category string classification.
 //!
-//! [`StringClassifyEngine`] reads what a program string is *for* — a
+//! [`StringClassifyEngine`] works out what a program string is *for* — a
 //! `sprintf` format string, a config-file path, an error message shown to
-//! the user — by matching it against a pattern set per category in a fixed
-//! priority order, FormatString > FilePath > ResourceName > Error >
-//! Network > DebugLog > UserVisible > InternalIdentifier > Generic. A
-//! string that matches several pattern sets lands in the most informative
-//! bucket deterministically: the order is the engine's, not the pattern
-//! sets', so two scans of the same program classify identically.
+//! the user. It matches the string against one pattern set per category,
+//! in a fixed priority order: FormatString > FilePath > ResourceName >
+//! Error > Network > DebugLog > UserVisible > InternalIdentifier >
+//! Generic. A string that matches several pattern sets always lands in
+//! the same, most informative category: the priority order belongs to the
+//! classifier, not to the pattern sets. Two scans of the same program
+//! therefore classify identically.
 //!
-//! Each category carries a set of regex patterns matched case-insensitively
+//! Each category has a set of regex patterns, matched case-insensitively
 //! against the string's value ([`CategoryPatterns`], with
-//! [`default_patterns`](CategoryPatterns::default_patterns) carrying the
-//! standard sets). The whole set is swappable —
-//! [`with_patterns`](StringClassifyEngine::with_patterns) replaces every
-//! category at once, the way the sync detector setters swap name sets —
-//! so tests and tuned scans drive classification with their own patterns.
+//! [`default_patterns`](CategoryPatterns::default_patterns) supplying the
+//! standard sets). Every set can be swapped:
+//! [`with_patterns`](StringClassifyEngine::with_patterns) replaces all of
+//! them at once, the way the sync detector's setters swap name sets. So
+//! tests and tuned scans can classify with their own patterns.
 //! [`infer_purpose`] turns a category into the one-line intent the prompt
 //! shows beside it.
 
@@ -28,14 +29,14 @@ use serde::{Deserialize, Serialize};
 // Pattern sets
 // ============================================================
 
-/// The pattern set per category the classifier matches strings against.
+/// The pattern set per category that the classifier matches strings against.
 ///
 /// Every pattern is a regex tried case-insensitively against the string's
-/// value; a category claims the string when any of its patterns match.
+/// value. A category claims the string when any of its patterns match.
 /// `Generic` has no set — it is the fallback when no category claims the
-/// string. The sets are plain data so a caller can supply them whole
-/// through [`StringClassifyEngine::with_patterns`]; a pattern that fails to
-/// compile is dropped with a warning rather than failing the build.
+/// string. The sets are plain data, so a caller can supply them whole
+/// through [`StringClassifyEngine::with_patterns`]. A pattern that fails
+/// to compile is dropped with a warning rather than failing the build.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CategoryPatterns {
     /// Patterns for [`FormatString`](StringClassification::FormatString).
@@ -57,13 +58,13 @@ pub struct CategoryPatterns {
 }
 
 impl CategoryPatterns {
-    /// The standard pattern sets every scan runs with unless swapped.
+    /// The standard pattern sets every scan uses unless a caller swaps them.
     ///
-    /// The patterns are heuristics over the spellings decompiler-decompiled
+    /// The patterns are heuristics over the spellings that decompiled
     /// binaries actually carry — Windows paths and extensions, registry
     /// keys, `printf` specifiers, error and log vocabulary, dialog words,
-    /// identifier shapes — ordered by the engine's fixed priority, not by
-    /// the order of these fields.
+    /// identifier shapes. They stand in the classifier's fixed priority
+    /// order, not in the order of these fields.
     pub fn default_patterns() -> Self {
         Self {
             format_string: vec![
@@ -76,8 +77,8 @@ impl CategoryPatterns {
                 r"(?i)\.(dll|exe|ini|txt|cfg|dat|sys|ocx|bin|tmp|log|json|xml|htm|html|lib)$"
                     .to_string(),
                 // A bare filename with an unknown extension: no slashes
-                // and exactly one dot, so domains and URLs fall through
-                // to Network instead of reading as paths.
+                // and exactly one dot. Domains and URLs do not match here,
+                // so they reach Network instead of counting as paths.
                 r"(?i)^[^/\\.]*\.[a-z]{2,4}$".to_string(),
             ],
             resource_name: vec![
@@ -112,7 +113,7 @@ impl CategoryPatterns {
     }
 }
 
-/// The compiled pattern sets, in the engine's fixed priority order.
+/// The compiled pattern sets, in the classifier's fixed priority order.
 #[derive(Debug, Clone)]
 struct CompiledPatterns {
     /// (category, its compiled patterns) in priority order; `Generic` is
@@ -122,7 +123,7 @@ struct CompiledPatterns {
 
 impl CompiledPatterns {
     fn compile(patterns: &CategoryPatterns) -> Self {
-        // The priority order is the engine's, fixed here once; swapping
+        // The classifier fixes the priority order once, here. Swapping
         // pattern sets can never reorder the buckets.
         let sets = [
             (StringClassification::FormatString, &patterns.format_string),
@@ -162,17 +163,17 @@ impl CompiledPatterns {
 }
 
 // ============================================================
-// Engine
+// Classifier
 // ============================================================
 
 /// Nine-category string classification over one program's strings.
 ///
-/// The engine carries the compiled pattern sets and no per-scan state, so
-/// one instance classifies a whole scan. [`new`](Self::new) starts with no
-/// patterns — every string reads as `Generic` until sets arrive — and
-/// [`with_default_patterns`](Self::with_default_patterns) builds the
-/// standard classifier. [`with_patterns`](Self::with_patterns) swaps every
-/// set whole.
+/// The classifier holds the compiled pattern sets and no per-scan state,
+/// so one instance classifies a whole scan. [`new`](Self::new) starts with
+/// no patterns — every string reads as `Generic` until pattern sets
+/// arrive — and [`with_default_patterns`](Self::with_default_patterns)
+/// builds the standard classifier. [`with_patterns`](Self::with_patterns)
+/// swaps every set whole.
 #[derive(Debug, Clone)]
 pub struct StringClassifyEngine {
     patterns: CompiledPatterns,
@@ -186,9 +187,10 @@ impl Default for StringClassifyEngine {
 
 impl StringClassifyEngine {
     /// A classifier with no patterns configured: every string it is
-    /// handed reads as [`Generic`](StringClassification::Generic) until
-    /// pattern sets arrive through [`with_patterns`](Self::with_patterns)
-    /// or [`with_default_patterns`](Self::with_default_patterns).
+    /// handed classifies as [`Generic`](StringClassification::Generic)
+    /// until pattern sets arrive through
+    /// [`with_patterns`](Self::with_patterns) or
+    /// [`with_default_patterns`](Self::with_default_patterns).
     pub fn new() -> Self {
         Self {
             patterns: CompiledPatterns::compile(&CategoryPatterns::default()),
@@ -214,9 +216,9 @@ impl StringClassifyEngine {
     /// The categories are tried in the fixed priority order — format
     /// string, file path, resource name, error, network, debug log,
     /// user-visible text, internal identifier, generic — and the first
-    /// whose pattern set matches claims the string, so a string that
-    /// matches several sets lands in the most informative bucket
-    /// deterministically. A string no set matches is
+    /// category whose pattern set matches claims the string. So a string
+    /// that matches several sets always lands in the most informative
+    /// category. A string no set matches is
     /// [`Generic`](StringClassification::Generic).
     pub fn classify(&self, value: &str) -> StringClassification {
         for (category, regexes) in &self.patterns.ordered {
@@ -228,7 +230,7 @@ impl StringClassifyEngine {
     }
 
     /// The one-line intent a classification implies, shown beside the
-    /// category in the prompt — e.g. an error string reads as
+    /// category in the prompt — e.g. an error string's intent is
     /// `error message shown to the user`.
     pub fn infer_purpose(&self, classification: StringClassification) -> &'static str {
         match classification {
@@ -244,11 +246,11 @@ impl StringClassifyEngine {
         }
     }
 
-    /// Parse the format specifiers out of a format string into
+    /// Parse the format specifiers in a format string into
     /// [`FormatHint`] records, in argument order.
     ///
-    /// Delegates to the format-string engine's documented table
-    /// ([`extract_format_hints`](crate::format_str::extract_format_hints))
+    /// This calls the documented format-string table
+    /// ([`extract_format_hints`](crate::format_str::extract_format_hints)),
     /// so classification and inference read specifiers the same way.
     pub fn extract_format_hints(&self, format: &str) -> Vec<FormatHint> {
         extract_format_hints(format)
@@ -340,8 +342,9 @@ mod tests {
 
     #[test]
     fn classification_is_deterministic_across_engines() {
-        // Two standard classifiers are the same function of the string —
-        // the priority lives in the engine, not in set order.
+        // Two standard classifiers are the same function of the string:
+        // the priority order belongs to the classifier, not to the order
+        // the sets were written in.
         let a = classifier();
         let b = classifier();
         for value in ["%d items", "C:\\a\\b.dll", "error occurred", "LoggingOn"] {
@@ -364,7 +367,7 @@ mod tests {
 
     #[test]
     fn fixture_pattern_sets_drive_classification_whole() {
-        // Swapping every set whole reaches the scan: the fixture words
+        // Replacing every set whole reaches the scan: the fixture words
         // classify, and the standard patterns they replaced classify
         // nothing.
         let engine = StringClassifyEngine::with_patterns(CategoryPatterns {
@@ -388,8 +391,8 @@ mod tests {
 
     #[test]
     fn fixture_priority_lands_a_multi_match_in_the_higher_bucket() {
-        // The fixture string matches both sets; the engine's fixed order
-        // (Error before DebugLog) decides, not the field order.
+        // The fixture string matches both sets. The classifier's fixed
+        // order (Error before DebugLog) decides, not the field order.
         let engine = StringClassifyEngine::with_patterns(CategoryPatterns {
             debug_log: vec!["both".to_string()],
             error: vec!["both".to_string()],
