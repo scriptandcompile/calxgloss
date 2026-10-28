@@ -3,23 +3,23 @@
 //! These tests exercise the multi-module workflows the unit tests cannot
 //! cover on their own:
 //!
-//! - **Scan to disk** — [`SerializeEngine`] scans a canned program, the
-//!   [`SerializePersistor`] files the result in the workspace layout, and
-//!   loading it back yields the same result the scan returned.
+//! - **Scan to disk** — [`SerializeEngine`] scans a canned program, and
+//!   the [`SerializePersistor`] saves the result in the workspace layout.
+//!   Loading it back yields the same result the scan returned.
 //! - **Consumption** — the loaded result answers the lookups a
-//!   translation pipeline makes (the findings recorded for one
-//!   function), and the persisted list keeps every finding in scan
-//!   order: function by function, and within one function the byte
-//!   swaps in call order, with the composed format layout and the
-//!   protocol message identification riding at the end and the
-//!   binary-level endianness map appended after them all.
-//! - **Seven-kind composition** — one canned program carrying every
-//!   serialization shape lands all seven finding kinds in one scan in
-//!   stable order, the document persists byte-identically across two
-//!   scans, every kind renders into the escalate prompt, the
+//!   translation pipeline makes: the findings recorded for one
+//!   function. The persisted list keeps every finding in scan order:
+//!   function by function, and within one function the byte swaps in
+//!   call order. The composed format layout and the protocol message
+//!   identification follow at the end of their function's findings,
+//!   and the binary-level endianness map comes after them all.
+//! - **Seven-kind composition** — one canned program has every
+//!   serialization shape. One scan of it lands all seven finding
+//!   kinds in stable order, and two scans persist byte-identical
+//!   documents. Every kind renders into the escalate prompt, and the
 //!   per-function lookup answers the binary-level map to each of its
-//!   contributors, and the confidence ladder ranks every composed
-//!   claim above the single signals that fed it.
+//!   contributors. The confidence ladder ranks every composed claim
+//!   above the single signals that produced it.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -58,9 +58,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
-/// A canned program implementing [`ScanSource`]: one function whose
-/// body carries an `ntohl` call and an `htons` call — the byte-swap
-/// shape — and one plain function that finds nothing.
+/// A canned program implementing [`ScanSource`]. One function's body
+/// has an `ntohl` call and an `htons` call — the byte-swap shape. The
+/// other function is plain: the scan finds nothing in it.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -164,15 +164,15 @@ fn program() -> FakeProgram {
     program
 }
 
-/// A canned program carrying every serialization shape at once: one
-/// protocol handler function whose body compares a protocol magic,
-/// swaps a 32-bit field through `ntohl`, packs four 8-bit fields,
-/// checks a checksum, and checks a framing length — so the function
-/// carries its component rows (swap, pack, magic, validation) and
-/// both composed claims (the format layout and the protocol message)
-/// at once — and a second function whose only shape is a 16-bit
-/// network-order swap, a second contributor to the binary-level
-/// endianness map.
+/// A canned program with every serialization shape at once. Its
+/// protocol handler function compares a protocol magic, swaps a
+/// 32-bit field through `ntohl`, packs four 8-bit fields, checks a
+/// checksum, and checks a framing length. So this one function has
+/// its component rows (swap, pack, magic, validation) and both
+/// composed claims (the format layout and the protocol message) at
+/// the same time. The second function's only shape is a 16-bit
+/// network-order swap, which makes it a second contributor to the
+/// binary-level endianness map.
 fn seven_kind_program() -> FakeProgram {
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
@@ -229,10 +229,10 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
-    // The detector reads one body in call order, so what reaches disk
-    // is function by function in listing order and, within one
-    // function, the swap calls in body order — the order two scans
-    // diff against.
+    // The byteswap detector visits one body's calls in call order. So
+    // what reaches disk is ordered function by function in listing
+    // order, and within one function the swap calls in body order —
+    // the order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = SerializeEngine::with_source(program())
         .scan("eqmain.dll")
@@ -264,10 +264,11 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
 
 #[tokio::test]
 async fn a_five_kind_document_survives_the_round_trip() {
-    // One canned scan, five kinds: the swap call, the pack chain, the
-    // signature comparison, the format the swap and pack compose, and
-    // the endianness map the swap profiles reach disk in scan order
-    // and read back with their record shapes intact.
+    // One canned scan produces five kinds: the swap call, the pack
+    // chain, the signature comparison, the format composed from the
+    // swap and pack readings, and the endianness map profiled from
+    // the swap. All five reach disk in scan order and read back with
+    // their record shapes intact.
     let workspace = TempDir::new().unwrap();
     let mut mixed = FakeProgram::empty();
     mixed.listing = vec![summary("FUN_18003ab00")];
@@ -334,11 +335,11 @@ async fn a_five_kind_document_survives_the_round_trip() {
 
 #[tokio::test]
 async fn a_validation_document_survives_the_round_trip_and_reaches_the_prompt() {
-    // The cross-field validation reading end to end: a checksum and a
-    // framing comparison in one body land as validation findings after
-    // the swap call, ride the persisted document through the round
-    // trip with their record shapes intact, and render into the
-    // escalate prompt's SERIALIZATION section.
+    // The cross-field validation reading, end to end. A checksum
+    // comparison and a framing comparison in one body land as
+    // validation findings after the swap call. They survive the
+    // persisted round trip with their record shapes intact, and
+    // render into the escalate prompt's SERIALIZATION section.
     let workspace = TempDir::new().expect("tempdir");
     let mut parser = FakeProgram::empty();
     parser.listing = vec![summary("FUN_18003ab00")];
@@ -418,12 +419,13 @@ async fn a_validation_document_survives_the_round_trip_and_reaches_the_prompt() 
 
 #[tokio::test]
 async fn a_protocol_message_survives_the_round_trip_and_reaches_the_prompt() {
-    // The protocol identification end to end: a protocol magic
-    // comparison, an `ntohl`, and a checksum comparison in one body
-    // land the handler claim after its components, ride the persisted
-    // document through the round trip with its record shape intact,
-    // and render into the escalate prompt's SERIALIZATION section so
-    // the translation can aim at protocol-aware decoding.
+    // The protocol identification, end to end. One body holds a
+    // protocol magic comparison, an `ntohl`, and a checksum
+    // comparison. The handler claim lands after its component
+    // findings, survives the persisted round trip with its record
+    // shape intact, and renders into the escalate prompt's
+    // SERIALIZATION section so the translation can aim at
+    // protocol-aware decoding.
     let workspace = TempDir::new().expect("tempdir");
     let mut handler = FakeProgram::empty();
     handler.listing = vec![summary("FUN_18003ab00")];
@@ -504,11 +506,12 @@ async fn a_protocol_message_survives_the_round_trip_and_reaches_the_prompt() {
 
 #[tokio::test]
 async fn a_loaded_result_renders_into_the_escalate_prompt() {
-    // The whole escalate path, no external server needed: the fixture
-    // document on disk answers the per-function lookup, the findings
-    // render into `SerializationInfo` prompt data, and the rendered
-    // escalate prompt carries the SERIALIZATION section with each
-    // finding's suggestion, kind, confidence, and evidence.
+    // The whole escalate path, with no external server needed. The
+    // fixture document on disk answers the per-function lookup, and
+    // the findings render into `SerializationInfo` prompt data. The
+    // rendered escalate prompt includes the SERIALIZATION section
+    // with each finding's suggestion, kind, evidence confidence, and
+    // evidence.
     let workspace = TempDir::new().unwrap();
     let mut mixed = FakeProgram::empty();
     mixed.listing = vec![summary("FUN_18003ab00")];
@@ -592,9 +595,9 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
 
     let loaded = persistor.load("eqmain.dll").expect("load");
 
-    // The pipeline asks what was found for the function it is about to
-    // translate; the plain function carries nothing — and the map never
-    // names it, so the map stays absent from its lookup too.
+    // The pipeline asks what the scan found for the function it is
+    // about to translate. The plain function has no findings, and the
+    // endianness map never names it, so its lookup stays empty too.
     let findings: Vec<&SerializeFinding> = loaded.for_function("FUN_18003ab00").collect();
     assert_eq!(findings.len(), 4);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
@@ -617,8 +620,9 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.width, 16);
     assert_eq!(record.suggestion, "byteorder::BE::read_u16");
 
-    // The two swap readings compose a layout, and the disagreeing name
-    // families (a read and a write) leave its direction unnamed.
+    // The two swap readings compose a layout. The swap names
+    // disagree about direction — one names a read, one names a write
+    // — so the layout keeps no direction.
     let SerializeFinding::SerializationFormat(record) = findings[2] else {
         unreachable!("the two swap readings compose a format finding");
     };
@@ -628,8 +632,9 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.fields[1].width, 16);
     assert_eq!(record.direction, None);
 
-    // The program-wide profile rides along with the function's own
-    // findings: both swapped widths, each naming this function.
+    // The program-wide profile answers this function's lookup too:
+    // it covers both swapped widths, and each entry names this
+    // function.
     let SerializeFinding::EndiannessMap(record) = findings[3] else {
         unreachable!("the swap calls profile an endianness map");
     };
@@ -648,10 +653,10 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
 
 #[tokio::test]
 async fn the_endianness_map_survives_the_round_trip_and_answers_its_contributors() {
-    // The integration story for the profile: swaps in two functions
-    // land one map on disk, and loading it back answers the map to
-    // every contributing function — the program-level context a
-    // function-level prompt reads.
+    // The integration story for the profile. Swaps in two functions
+    // land one map on disk, and loading it back answers that map to
+    // every contributing function — the program-level context that
+    // function-level prompts read.
     let workspace = TempDir::new().expect("tempdir");
     let mut pair = FakeProgram::empty();
     pair.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
@@ -714,14 +719,14 @@ async fn the_endianness_map_survives_the_round_trip_and_answers_its_contributors
 #[tokio::test]
 async fn the_seven_kind_document_survives_scan_persist_and_load_in_scan_order() {
     // The coexistence proof: one scan of one program lands all seven
-    // kinds. The handler function carries its component rows — the
-    // swap, the pack chain, the magic sniff, the checksum and framing
+    // kinds. The handler function has its component rows — the swap,
+    // the pack chain, the magic sniff, the checksum and framing
     // validations — beside both composed claims, the format layout
-    // and the protocol message, none suppressing another; the second
-    // function contributes its own swap; and the binary-level map
-    // rides last. The document round-trips through persist and load
-    // with every record shape intact, in the scan order two scans
-    // diff against.
+    // and the protocol message, and none of them suppresses another.
+    // The second function contributes its own swap, and the
+    // binary-level map lands after them all. The document
+    // round-trips through persist and load with every record shape
+    // intact, in the scan order two scans diff against.
     let workspace = TempDir::new().expect("tempdir");
     let result = SerializeEngine::with_source(seven_kind_program())
         .scan("eqmain.dll")
@@ -800,11 +805,11 @@ async fn the_seven_kind_document_survives_scan_persist_and_load_in_scan_order() 
 
 #[tokio::test]
 async fn two_scans_of_the_same_program_persist_byte_identical_documents() {
-    // Determinism as a contract: the scan reads the same bodies in
+    // Determinism is a contract. The scan reads the same bodies in
     // the same order and composes the same claims, so the only bytes
     // two persisted documents can differ on are the wall-clock scan
-    // stamps — set those aside and the documents are byte-identical,
-    // which is what lets two scans of one program diff cleanly.
+    // stamps. Set those aside and the documents are byte-identical —
+    // that is what lets two scans of one program diff cleanly.
     let first_dir = TempDir::new().expect("tempdir");
     let second_dir = TempDir::new().expect("tempdir");
     let first = SerializeEngine::with_source(seven_kind_program())
@@ -831,7 +836,7 @@ async fn two_scans_of_the_same_program_persist_byte_identical_documents() {
     );
 }
 
-/// The persisted document with the volatile scan-stamp line removed:
+/// The persisted document with the volatile scan-stamp line removed.
 /// `scanned_at` is the only field two scans of one program can differ
 /// on, so setting it aside is what "byte-identical across scans"
 /// means for the whole document.
@@ -846,12 +851,12 @@ fn persisted_document_without_scan_stamp(path: &std::path::Path) -> String {
 
 #[tokio::test]
 async fn the_seven_kind_document_renders_every_kind_into_the_escalate_prompt() {
-    // The consumption end of the composition: the loaded seven-kind
-    // document answers the per-function lookup — the handler gets its
+    // The consumption end of the composition. The loaded seven-kind
+    // document answers the per-function lookup: the handler gets its
     // seven findings plus the binary-level map it contributes to, and
-    // the second contributor gets its swap plus the same map — and
-    // every kind renders into the SERIALIZATION section with its
-    // kind tag, confidence, suggestion, and evidence.
+    // the second contributor gets its swap plus the same map. Every
+    // kind renders into the SERIALIZATION section with its kind tag,
+    // evidence confidence, suggestion, and evidence.
     let workspace = TempDir::new().expect("tempdir");
     let result = SerializeEngine::with_source(seven_kind_program())
         .scan("eqmain.dll")
@@ -910,12 +915,12 @@ async fn the_seven_kind_document_renders_every_kind_into_the_escalate_prompt() {
 
 #[tokio::test]
 async fn the_confidence_ladder_ranks_every_composed_claim_above_its_parts() {
-    // The P11.5 ladder as a contract, read off one scan: bit-pack
+    // The ladder (P11.5) is a contract, read off one scan: bit-pack
     // below validation below byte-swap below format below magic below
-    // protocol message — corroboration always ranks above the single
-    // signals that fed it. The binary-level map rides its own rung,
-    // above the byte-swap floor it aggregates and below the
-    // lone-magic floor.
+    // protocol message. A corroborated claim always ranks above the
+    // single signals that produced it. The binary-level map sits at
+    // its own band, above the band of the byte-swap readings it
+    // aggregates and below the band a lone magic sniff reaches.
     let result = SerializeEngine::with_source(seven_kind_program())
         .scan("eqmain.dll")
         .await
@@ -965,9 +970,9 @@ async fn a_rescan_replaces_the_cached_document() {
         .expect("first scan");
     persistor.save(&first).expect("save");
 
-    // A second scan of a program whose only function carries no shape
-    // replaces the document: the cache check still passes, but the
-    // findings are gone.
+    // A second scan replaces the document. Its program's only
+    // function has no serialization shape, so the findings are gone
+    // even though the cache check still passes.
     let mut quiet = FakeProgram::empty();
     quiet.listing = vec![summary("FUN_18003e750")];
     quiet.bodies.insert(
