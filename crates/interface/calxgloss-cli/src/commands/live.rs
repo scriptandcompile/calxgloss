@@ -16,17 +16,19 @@ use crate::Settings;
 use crate::commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use crate::utils::*;
 
-/// Walk the shared state machine to the run's terminal state once a run
-/// returns (issue #90): success completes the run — walking a pause park
-/// released by the stop signal through Stopping first — and failure fails
-/// it. Refusals are only debug-logged: the machine may already sit in a
-/// terminal state (the operator stopped the run through the control).
+/// When a run returns, walk the shared state machine to the run's
+/// terminal state (issue #90). Success completes the run and failure
+/// fails it. A run that the stop signal released from pause walks
+/// through Stopping first. Refused transitions only get debug-logged:
+/// the machine may already sit in a terminal state, because the operator
+/// stopped the run through the control.
 fn finish_run(control: &PipelineControl, result: &Result<()>) {
     if result.is_ok() {
-        // The shutdown/restart stop signal can release a pause park — the
-        // run then ends while the machine still says Paused. Walk it
-        // through Stopping so it reaches Complete like any other stopped
-        // run, rather than leaving the dashboard stuck on "paused".
+        // The shutdown/restart stop signal can release a run from its
+        // paused state — the run then ends while the machine still says
+        // Paused. Walk it through Stopping so it reaches Complete like
+        // any other stopped run, rather than leaving the dashboard stuck
+        // on "paused".
         if control.state() == PipelineState::Paused
             && let Err(e) = control.stop()
         {
@@ -43,12 +45,13 @@ fn finish_run(control: &PipelineControl, result: &Result<()>) {
 /// Handle the `live` subcommand: start both the auto pipeline and the
 /// web review UI in the same process.
 ///
-/// The pipeline runs inside a loop (issue #92, W2.3): when a run reaches a
-/// terminal state the process keeps serving, and the review UI's Start and
-/// Restart endpoints queue a [`PipelineRunRequest`] that wakes the loop to
-/// re-run the pipeline in-process — no process restart. A `--classify-only`
-/// launch runs classification with the state machine Idle and waits for the
-/// Start endpoint to begin translation.
+/// The pipeline runs inside a loop (issue #92, W2.3): when a run
+/// reaches a terminal state, the process keeps serving. The review UI's
+/// Start and Restart endpoints queue a [`PipelineRunRequest`], which
+/// wakes the loop to run the pipeline again in the same process — no
+/// process restart. A `--classify-only` launch runs classification with
+/// the state machine Idle and waits for the Start endpoint to begin
+/// translation.
 pub async fn handle_live(
     opts: LiveRunOptions,
     workspace: PathBuf,
@@ -115,54 +118,57 @@ pub async fn handle_live(
     // pipeline observes it at unit boundaries.
     let stop_signal = StopSignal::new();
 
-    // Pipeline lifecycle control (issue #90, W2.1) — one state machine
-    // shared between the pipeline (which observes it at unit boundaries)
-    // and the web server (whose pause/resume/stop endpoints drive it).
-    // Every successful transition emits a PipelineStateChanged event on
-    // the shared channel, so WS clients see the run's state change live.
+    // Pipeline lifecycle control (issue #90, W2.1): one state machine
+    // shared between the pipeline and the web server. The pipeline
+    // observes it at unit boundaries; the web server's
+    // pause/resume/stop endpoints drive it. Every successful transition
+    // emits a PipelineStateChanged event on the shared channel, so WS
+    // clients see the run's state change live.
     let control = PipelineControl::new().with_events(events.clone());
 
-    // Unit-cancellation handle (issue #91, W2.2) — the pipeline registers
-    // each unit it starts, and the cancel-current endpoint cancels whatever
-    // unit is in flight. The cancellation emits a UnitCancelled event on
-    // the shared channel the moment it lands, so WS clients and the
-    // progress state see it like any other lifecycle operation.
+    // Unit-cancellation handle (issue #91, W2.2): the pipeline registers
+    // each unit it starts, and the cancel-current endpoint cancels
+    // whatever unit is in flight. The moment a cancellation takes effect,
+    // it emits a UnitCancelled event on the shared channel, so WS clients
+    // and the progress state see it like any other lifecycle operation.
     let cancellation = UnitCancellation::new().with_events(events.clone());
 
-    // Run-request channel (issue #92, W2.3) — the Start/Restart endpoints
-    // store the next run's selectors here, and the run loop below waits on
-    // them to re-run the pipeline inside this same process.
+    // Run-request channel (issue #92, W2.3): the Start/Restart endpoints
+    // store the next run's selectors here. The run loop below waits on
+    // them to run the pipeline again inside this same process.
     let run_requests = RunRequestSignal::new();
 
     // Translation scope handle (issue #93, W2.5) — opened over the
-    // workspace, so persisted scope/constraint records are honored from
-    // the first queue selection and every endpoint mutation re-persists
-    // them for the next run. Built with the shared event channel so a
-    // per-binary pause or resume (issue #221) emits BinaryPauseChanged on
-    // the same broadcast as every other lifecycle operation, and WS
-    // clients re-render the row without a reload.
+    // workspace, so the persisted scope and constraint records are
+    // honored from the first queue selection, and every change through
+    // an endpoint re-persists them for the next run. It is built with
+    // the shared event channel: a per-binary pause or resume (issue
+    // #221) emits BinaryPauseChanged on the same broadcast as every
+    // other lifecycle operation, so WS clients re-render the row
+    // without a reload.
     let scope_control = calxgloss::ScopeControl::open(&workspace).with_events(events.clone());
 
-    // Per-unit reviewer-override handle (issue #96, W2.7) — opened over the
-    // workspace, so persisted override records are honored from the first
-    // context build and every endpoint mutation re-persists them for the
-    // next run.
+    // Per-unit reviewer-override handle (issue #96, W2.7) — opened over
+    // the workspace, so the persisted override records are honored from
+    // the first context build, and every change through an endpoint
+    // re-persists them for the next run.
     let override_control = calxgloss::OverrideControl::open(&workspace);
 
-    // Binary classification-override handle (issue #97, W2.8) — opened over
-    // the workspace, so persisted classification corrections steer the
-    // classify step from the first pass and every endpoint mutation
-    // re-persists them for the next run.
+    // Binary classification-override handle (issue #97, W2.8) — opened
+    // over the workspace, so the persisted classification corrections
+    // apply to the classify step from its first pass, and every change
+    // through an endpoint re-persists them for the next run.
     let classification_override_control =
         calxgloss::ClassificationOverrideControl::open(&workspace);
 
-    // Settings-backed review-actions backend (issue #327): the same
-    // `pipeline_spec` fold (issue #324) the run's passes go through, with
-    // this run's live control handles layered on — the patch retry's
-    // stop/pause/scope/override surface comes from the run that owns the
-    // server — and the run's call-graph/cache flags, exactly as the auto
-    // passes carry them. Each review-UI patch request assembles its retry
-    // pass from this description: the same wiring `serve` runs.
+    // Settings-backed review-actions backend (issue #327): built from
+    // the same `pipeline_spec` fold (issue #324) the run's passes go
+    // through. Then this run's live control handles are added on: the
+    // patch retry gets its stop/pause/scope/override surface from the
+    // run that owns the server. The run's call-graph and cache flags
+    // are set exactly as the auto passes set them. Each review-UI patch
+    // request assembles its retry pass from this description — the same
+    // route `serve` takes.
     let mut patch_spec = crate::settings::pipeline_spec(settings)?;
     RunControls {
         events: Some(&events),
@@ -268,10 +274,10 @@ pub async fn handle_live(
     // for the launch request.
     let mut request_rx = run_requests.subscribe();
 
-    // Initial launch. A non-classify-only launch drives the state machine
-    // Idle → Running and queues the default run request; a classify-only
-    // launch runs classification with the machine Idle and waits for the
-    // Start endpoint to begin translation (issue #92).
+    // Initial launch. A non-classify-only launch drives the state
+    // machine Idle → Running and queues the default run request. A
+    // classify-only launch runs classification with the machine Idle and
+    // waits for the Start endpoint to begin translation (issue #92).
     let mut classify_only_launch = classify_only;
     if classify_only {
         println_content("  Launch is classify-only — Start translation from the review UI.");
@@ -283,10 +289,10 @@ pub async fn handle_live(
         run_requests.request(PipelineRunRequest::default());
     }
 
-    // The run loop (issue #92, W2.3): each iteration runs one pipeline pass
-    // and walks the machine to its terminal state; the loop then waits for
-    // the next Start/Restart request, or exits when the server shuts down
-    // or the stop signal is set.
+    // The run loop (issue #92, W2.3): each iteration runs one pipeline
+    // pass and walks the machine to its terminal state. The loop then
+    // waits for the next Start/Restart request, and exits when the
+    // server shuts down or the stop signal is set.
     let mut auto_result: Result<()> = Ok(());
     loop {
         let run = if classify_only_launch {
@@ -328,9 +334,9 @@ pub async fn handle_live(
                 target: target.clone(),
                 binaries_arg: binaries.clone(),
                 all_functions,
-                // Only the classify-only launch pass classifies; a requested
-                // run translates (its phase selector drives re-classification
-                // through `run` instead).
+                // Only the classify-only launch pass classifies. A
+                // requested run translates instead; its phase selector
+                // drives re-classification through `run`.
                 classify_only: is_launch_pass && classify_only,
                 continue_mode: true, // don't stop after classification, translate all
                 skip_git,
@@ -367,16 +373,16 @@ pub async fn handle_live(
         }
 
         // A process-level stop (the shutdown/restart endpoints) ends the
-        // loop; a pipeline-control stop just ends the run, and the loop
+        // loop. A pipeline-control stop just ends the run, and the loop
         // waits for a Restart.
         if stop_signal.is_stopped() {
             break;
         }
     }
 
-    // The loop is done — shut down the server gracefully.
-    // The server handle is a tokio::JoinHandle; we drop it which sends the
-    // cancel signal to the spawned task.  Then wait for cleanup.
+    // The loop is done — stop the server. The server handle is a
+    // tokio::JoinHandle; abort() cancels the spawned task, and the await
+    // below waits for it to finish.
     serve_handle.abort();
     let _ = serve_handle.await;
 

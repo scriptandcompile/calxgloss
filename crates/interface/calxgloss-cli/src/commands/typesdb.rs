@@ -1,18 +1,19 @@
 //! The `typesdb` command's CLI contribution — recover the per-binary
 //! type database (issue #339, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `type-database` registry row; this module contributes
-//! only what is genuinely per-engine: the cached-document loader, the
-//! report printer, the `--no-tag` derivation through the write-
-//! suppression option, and the post-scan step writing the
-//! `re/analysis/typesdb/<binary>.rs` declarations from the loaded
-//! document — the one side effect the registry row does not file. The
-//! generic handler ([`scan_command`](crate::commands::scan_command))
-//! routes the command end to end: it rebuilds the database on demand
-//! (the CLI's force-rescan contract) and can print what a cached one
-//! holds, and the run's report and a later `--show` report are the same
-//! read of the same document.
+//! The shape of a scan — build the analysis engine, scan, persist,
+//! degrade — lives in the pipeline's `type-database` registry row. This
+//! module contributes only what belongs to this evidence engine: the
+//! cached-document loader, the report printer, the `--no-tag` derivation
+//! through the write-suppression option, and the post-scan step that
+//! writes the `re/analysis/typesdb/<binary>.rs` declarations from the
+//! loaded document — the one side effect the registry row does not file.
+//!
+//! The generic handler ([`scan_command`](crate::commands::scan_command))
+//! runs the command end to end. A scan run always rebuilds the database
+//! — the CLI's refresh-cache contract — and `--show` prints what a
+//! cached document holds. The run's report and a later `--show` report
+//! read the same document the same way.
 
 use std::path::Path;
 
@@ -46,10 +47,11 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed database through the engine's own persistor — the
-/// same loader for the `--show` report and for reading the document a
-/// run just filed. A missing one arrives with the remediation wording
-/// naming the exact producing command.
+/// Read the filed database through the evidence engine's own persistor.
+/// The same loader serves the `--show` report and reads back the
+/// document a run just filed. When the document is missing, the error
+/// carries the remediation wording naming the exact command that
+/// recovers one.
 fn load_filed_database(workspace: &Path, binary: &str) -> Result<TypeDatabase> {
     let persistor = TypeDatabasePersistor::new(workspace);
     persistor.load(binary).with_context(|| {
@@ -60,10 +62,11 @@ fn load_filed_database(workspace: &Path, binary: &str) -> Result<TypeDatabase> {
     })
 }
 
-/// Print the report over the loaded database, naming where the document
-/// is filed and where its Rust declarations are when they exist. Both
-/// paths read the same on-disk state, so the run's report and a later
-/// `--show` report are byte-identical over one document.
+/// The report printer: renders the loaded database and names where the
+/// document is filed, plus where its Rust declarations are when they
+/// exist. The run report and a later `--show` report read the same
+/// on-disk state, so over one document the two reports come out
+/// byte-identical.
 fn print_report(db: &TypeDatabase, workspace: &Path, binary: &str) -> Result<()> {
     let persistor = TypeDatabasePersistor::new(workspace);
     print_type_database_report(
@@ -77,9 +80,10 @@ fn print_report(db: &TypeDatabase, workspace: &Path, binary: &str) -> Result<()>
     Ok(())
 }
 
-/// The `--no-tag` flag reaches the scan as the write-suppression signal,
-/// which the type-database row interprets inside its own engine build
-/// (issue #338); the overwrite policy stays the generic handler's.
+/// The `--no-tag` flag reaches the scan as the write-suppression option
+/// (`suppress_write_back`). The type-database row interprets it while
+/// constructing its own evidence engine (issue #338). The overwrite
+/// policy stays the generic handler's.
 pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
     ScanRunOptions {
         suppress_write_back: flags.no_tag,
@@ -89,10 +93,10 @@ pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
 
 /// The post-scan step: render the loaded database into `#[repr(C)]`
 /// Rust declarations and write them beside the document — the one side
-/// effect the registry row does not file. The retained engine source and
-/// the command line's flags are unused here; the source is what later
-/// entries (the type-inference write-back) hold their follow-on steps
-/// with.
+/// effect the registry row does not file. This step uses neither the
+/// retained Kuna engine source nor the command line's flags; the
+/// source parameter stays because later entries — the type-inference
+/// write-back — run their follow-on steps over it.
 fn write_rust_decls<'a>(
     _source: &'a PipelineSource,
     workspace: &'a Path,
@@ -231,12 +235,12 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path, decls_path: Option
         })
     ));
 
-    // The scan's own admission, beside the counts it qualifies (issue
-    // #348): the shared type's bounded line, framed under `Coverage:` and
-    // printed only when there is something to admit. A target that
-    // yielded no vtable evidence says so beside the zero count — the
-    // reading a reviewer needs is "this binary carries no RTTI", never
-    // "this program has no classes".
+    // Print the scan's own admission next to the counts it qualifies
+    // (issue #348): the shared type's one bounded admission line, shown
+    // under `Coverage:` and printed only when there is something to
+    // admit. A target that yielded no vtable evidence says so next to
+    // the zero count — the reading a reviewer needs is "this binary
+    // carries no RTTI", never "this program has no classes".
     print_coverage(db.metadata.coverage.as_ref());
     println!();
 

@@ -43,18 +43,20 @@ pub async fn handle_translate(
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
 
-    // A .NET managed binary is refused here, before the engine loads or the
-    // LLM is contacted — the engine decompiles native code, and a managed
-    // assembly's IL is not in the disassembly the translator reads (#235).
+    // A .NET managed binary is refused here, before the analysis engine
+    // loads or the LLM is contacted — the analysis engine decompiles
+    // native code, and a managed assembly's IL is not in the disassembly
+    // the translator reads (#235).
     guard_managed_binary(&workspace, binary, target)?;
 
-    // The pass description (issue #326): the resolved settings folded once
-    // and this command's flags, the resolved workspace, and the named binary
-    // layered on — the same fold-and-assembly route an auto run takes, minus
-    // the run's stop/pause controls, which stay command-side. The fold
-    // refuses an unknown retry strategy up front, and a record holding no
-    // endpoint pair meets the settings layer's "not configured" guidance
-    // here — demanded at the command that talks to the LLM, before any
+    // The pass description (issue #326): the resolved settings folded
+    // once, then this command's flags, the resolved workspace, and the
+    // named binary added on. This is the same fold-and-assembly route an
+    // auto run takes, minus the run's stop/pause controls, which stay
+    // out on the command side. The fold refuses an unknown retry
+    // strategy up front. A record holding no endpoint pair meets the
+    // settings layer's "not configured" guidance here — the demand is
+    // placed at the command that talks to the LLM, before any analysis-
     // engine load, since `classify` and `verify` never do.
     let mut spec = command_pass_spec(
         settings,
@@ -99,8 +101,8 @@ pub async fn handle_translate(
     };
 
     // `target` is the path the function is being translated out of: the
-    // Kuna engine loads the file itself, so the same path feeds both the
-    // scan and the output placement below.
+    // Kuna engine loads the file itself, so the same path is used for
+    // both the scan and the output placement below.
 
     // Set up the output crate directory structure.
     let (_, crate_src_dir) =
@@ -125,22 +127,23 @@ pub async fn handle_translate(
         None
     };
 
-    // Carry-over seeding (issue #299), wired exactly as the auto pass wires
-    // it (issue #326): with git in play, the pipeline can ask the branch
-    // history whether a paired previous-version twin has an accepted
-    // (merged) translation to seed attempt 1 from. With `--skip-git` there
-    // is no history to ask, and the unit translates fresh as today.
+    // Carry-over seeding (issue #299), set up exactly as the auto pass
+    // sets it up (issue #326): with git in play, the pipeline can ask the
+    // branch history whether a paired previous-version twin has an
+    // accepted (merged) translation to seed attempt 1 from. With
+    // `--skip-git` there is no history to ask, and the unit translates
+    // from scratch.
     if let Some(git_manager) = git.as_ref() {
         spec.accepted_attempt_source = Some(Arc::new(GitAcceptedAttempts {
             workspace: git_manager.repo_path().to_path_buf(),
         }));
     }
 
-    // Assemble the complete pass once from the description (issue #326): the
-    // LLM client from the folded endpoint description, the detector,
+    // Assemble the complete pass once from the description (issue #326):
+    // the LLM client from the folded endpoint description, the detector,
     // testgen, the verifier, and the retry policy all arrive through the
-    // seam — the `with_*` builder dance and the hand-built retry-config
-    // ladder are no longer the command's.
+    // seam. The command builds none of these itself — no `with_*`
+    // builder chain, no hand-built retry-config ladder.
     let pass = assemble(&spec, &kuna)
         .await
         .with_context(|| format!("Failed to assemble the translation pass for {binary}"))?;
@@ -345,7 +348,8 @@ pub async fn handle_translate(
         _ => {}
     }
 
-    // Release the server if we spawned it; an attached one is left running.
+    // Nothing to release: the Kuna analysis engine was loaded
+    // in-process, and there is no server (issue #214).
 
     Ok(())
 }

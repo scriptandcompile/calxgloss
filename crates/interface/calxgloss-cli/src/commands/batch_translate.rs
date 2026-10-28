@@ -40,19 +40,20 @@ pub async fn handle_batch_translate(
     let no_callgraph = *no_callgraph;
     let refresh_cache = *refresh_cache;
 
-    // A .NET managed binary is refused here, before the engine loads or the
-    // LLM is contacted — the same guard `translate` runs (issue #235).
+    // A .NET managed binary is refused here, before the analysis engine
+    // loads or the LLM is contacted — the same guard `translate` runs
+    // (issue #235).
     guard_managed_binary(&workspace, binary, target)?;
 
-    // The pass description (issue #326): the resolved settings folded once
-    // and this command's flags — call-graph knobs, the read-cache refresh
-    // hatch, the resolved workspace, and the named target — layered on. The
-    // batch's pass assembles from the same description shape an auto run
-    // folds, so batch results are comparable to auto results knob-for-knob:
-    // one construction, not a second builder dance. The fold refuses an
-    // unknown retry strategy up front, and a record holding no endpoint pair
-    // meets the settings layer's "not configured" guidance before any
-    // engine load.
+    // The pass description (issue #326): the resolved settings folded
+    // once, then this command's flags added on — the call-graph options,
+    // the refresh-cache flag, the resolved workspace, and the named
+    // target. The batch's pass assembles from the same kind of
+    // description an auto run folds, so batch results can be compared to
+    // auto results option for option: one construction, not a second
+    // builder. The fold refuses an unknown retry strategy up front, and
+    // a record holding no endpoint pair meets the settings layer's "not
+    // configured" guidance before any analysis-engine load.
     let mut spec = command_pass_spec(
         settings,
         &workspace,
@@ -82,7 +83,7 @@ pub async fn handle_batch_translate(
 
     // Determine which functions to translate
     let function_list = if *all_functions {
-        // List all functions from the engine
+        // List all functions from the analysis engine
         use calxgloss_decomp::ScanSource;
         let summaries = ScanSource::functions(&kuna)
             .await
@@ -111,7 +112,8 @@ pub async fn handle_batch_translate(
         }
         names
     } else {
-        // No --functions and no --all-functions: default to all exports
+        // No --functions and no --all-functions: the command stops and
+        // asks for one of them.
         anyhow::bail!("Specify either --functions \"Func1,Func2\" or --all-functions");
     };
 
@@ -134,23 +136,25 @@ pub async fn handle_batch_translate(
         None
     };
 
-    // Carry-over seeding (issue #299), wired exactly as the auto pass wires
-    // it (issue #326): with git in play, the pipeline can ask the branch
-    // history whether a paired previous-version twin has an accepted
-    // (merged) translation to seed attempt 1 from. With `--skip-git` there
-    // is no history to ask, and the batch translates fresh as today.
+    // Carry-over seeding (issue #299), set up exactly as the auto pass
+    // sets it up (issue #326): with git in play, the pipeline can ask the
+    // branch history whether a paired previous-version twin has an
+    // accepted (merged) translation to seed attempt 1 from. With
+    // `--skip-git` there is no history to ask, and the batch translates
+    // from scratch.
     if let Some(git_manager) = git.as_ref() {
         spec.accepted_attempt_source = Some(Arc::new(GitAcceptedAttempts {
             workspace: git_manager.repo_path().to_path_buf(),
         }));
     }
 
-    // Assemble the complete pass once from the description (issue #326): the
-    // LLM client from the folded endpoint description, the detector,
+    // Assemble the complete pass once from the description (issue #326):
+    // the LLM client from the folded endpoint description, the detector,
     // testgen, the verifier, and the retry policy all arrive through the
-    // seam — including the batch's read-cache key (issue #105) and the
-    // refresh escape hatch (issue #106), which the description carries now.
-    // The `with_*` builder dance is no longer the command's.
+    // seam. The seam also receives the batch's read-cache key
+    // (issue #105) and the refresh-cache option (issue #106), which the
+    // description carries now. The command builds none of these itself —
+    // no `with_*` builder chain here.
     let pass = assemble(&spec, &kuna)
         .await
         .with_context(|| format!("Failed to assemble the translation pass for {binary}"))?;
@@ -202,11 +206,12 @@ pub async fn handle_batch_translate(
                     if let Some(output_path_str) = output_path.to_str()
                         && let Ok(_commit) = git_manager.commit(
                             branch_info,
-                            // Carry-over provenance (issue #299): when attempt
-                            // 1 rode in on an accepted translation of a paired
-                            // previous-version function, the commit says so and
-                            // names the source — the same note the auto pass
-                            // writes (issue #326). A fresh unit's message is
+                            // Carry-over provenance (issue #299): when
+                            // attempt 1 was seeded from an accepted
+                            // translation of a paired previous-version
+                            // function, the commit says so and names the
+                            // source — the same note the auto pass writes
+                            // (issue #326). A fresh unit's message is
                             // unchanged, byte for byte.
                             &match func_result.carry_over.as_ref() {
                                 Some(seed) => format!(
@@ -280,7 +285,8 @@ pub async fn handle_batch_translate(
         );
     }
 
-    // Release the server if we spawned it; an attached one is left running.
+    // Nothing to release: the Kuna analysis engine was loaded
+    // in-process, and there is no server (issue #214).
 
     Ok(())
 }

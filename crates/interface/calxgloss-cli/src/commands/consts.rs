@@ -1,19 +1,21 @@
 //! The `consts` command's CLI contribution — detect constant structures
 //! for a binary (issue #340, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `constants` registry row; this module contributes
-//! only what is genuinely per-engine: the cached-document loader, the
-//! report printer, and the post-scan step holding the one side effect
-//! the row does not file — the rendered Rust codegen spelling the
-//! reconstructed flag families, enums, and constants out beside the
-//! JSON. The generic handler
-//! ([`scan_command`](crate::commands::scan_command)) routes the command
-//! end to end: it rebuilds the result on demand (the CLI's force-rescan
-//! contract) and can print what a cached one holds, filing it where the
-//! row files it — `re/analysis/consts/{binary}.json` — the same file
-//! batch translation reads as prompt context. The run's report and
-//! a later `--show` report are the same read of the same document.
+//! The shape of a scan — build the analysis engine, scan, persist,
+//! degrade — lives in the pipeline's `constants` registry row. This
+//! module contributes only what belongs to this evidence engine: the
+//! cached-document loader, the report printer, and a post-scan step for
+//! the one side effect the row does not file — rendered Rust codegen
+//! that spells out the reconstructed flag families, enums, and
+//! constants beside the JSON.
+//!
+//! The generic handler ([`scan_command`](crate::commands::scan_command))
+//! runs the command end to end. A scan run always rebuilds the result —
+//! the CLI's refresh-cache contract — and `--show` prints what a cached
+//! document holds. The row files the document at
+//! `re/analysis/consts/{binary}.json`, the same file batch translation
+//! reads as prompt context. The run's report and a later `--show`
+//! report read the same document the same way.
 
 use std::path::Path;
 
@@ -33,12 +35,11 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// The `consts` entry in the CLI-side contribution table: it serves the
+/// The `consts` entry in the CLI-side contribution table. It serves the
 /// registry's `constants` row and supplies this command's loader,
-/// printer, and codegen post-scan step. The command carries no flags
-/// beyond `--binary` and `--show`, so its flag derivation hands over the
-/// plain default options — the overwrite policy is the generic handler's
-/// to set.
+/// printer, and codegen post-scan step. The command takes no flags
+/// beyond `--binary` and `--show`, so its flag derivation returns the
+/// plain default options. The generic handler sets the overwrite policy.
 pub(crate) fn contribution() -> ScanContribution {
     ScanContribution::new(ScanContributionSteps {
         row: "constants",
@@ -50,10 +51,11 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed result through the engine's own persistor — the same
-/// loader for the `--show` report and for reading the document a run
-/// just filed. A missing one arrives with the remediation wording
-/// naming the exact producing command.
+/// Read the filed result through the evidence engine's own persistor.
+/// The same loader serves the `--show` report and reads back the
+/// document a run just filed. When the document is missing, the error
+/// carries the remediation wording naming the exact command that
+/// produces one.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<ConstResult> {
     ConstPersistor::new(workspace)
         .load(binary)
@@ -65,9 +67,10 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<ConstResult> {
         })
 }
 
-/// Write the rendered Rust codegen beside the filed document — the one
-/// side effect the `constants` row does not file, run over the document
-/// the row just saved so a re-scan replaces the codegen along with it.
+/// Write the rendered Rust codegen beside the filed document. It is the
+/// one side effect the `constants` row does not file. The codegen
+/// renders from the document the row just saved, so a later scan run
+/// replaces it along with the document.
 fn write_codegen<'a>(
     _source: &'a PipelineSource,
     workspace: &'a Path,
@@ -82,10 +85,10 @@ fn write_codegen<'a>(
     })
 }
 
-/// Print the report over the loaded result, naming where the document is
-/// filed and where the codegen sits when it exists. Both paths read the
-/// same on-disk state, so the run's report and a later `--show` report
-/// are byte-identical over one document.
+/// The report printer: renders the loaded result and names where the
+/// document is filed, plus where the codegen sits when it exists. The
+/// run report and a later `--show` report read the same on-disk state,
+/// so over one document the two reports come out byte-identical.
 fn print_report(result: &ConstResult, workspace: &Path, binary: &str) -> Result<()> {
     let persistor = ConstPersistor::new(workspace);
     print_constant_report(
@@ -132,7 +135,7 @@ fn print_constant_report(result: &ConstResult, path: &Path, codegen_path: Option
     ));
     println!();
 
-    // Findings, broken down by the record kind the union carries.
+    // Findings, broken down by record kind.
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Findings:  "),
@@ -154,12 +157,12 @@ fn print_constant_report(result: &ConstResult, path: &Path, codegen_path: Option
         }
     ));
 
-    // The scan's own admission, beside the counts it qualifies (issue
-    // #348): the shared type's bounded line, framed under `Coverage:` and
-    // printed only when there is something to admit. The line names the
-    // bodies and memory windows the scan never reached — an object it
-    // read and claimed no table for is the object's shape, not the
-    // scan's border.
+    // Print the scan's own admission next to the counts it qualifies
+    // (issue #348): the shared type's one bounded admission line, shown
+    // under `Coverage:` and printed only when there is something to
+    // admit. The line names the function bodies and memory windows the
+    // scan never reached — an object the scan read and found no table
+    // in is a fact about the object, not a limit of the scan.
     print_coverage(result.metadata.coverage.as_ref());
     println!();
 
@@ -169,8 +172,9 @@ fn print_constant_report(result: &ConstResult, path: &Path, codegen_path: Option
         hsep();
         for finding in result.findings.iter().take(DETAIL_LIMIT) {
             // A program-level named constant belongs to every function
-            // that uses its value; the report shows the usage count
-            // where a per-function name would go.
+            // that uses its value, so it has no single home function;
+            // the report shows "(program)" where a per-function name
+            // would go, and the value itself in the target column.
             let subject = match finding.function().is_empty() {
                 true => "(program)".to_string(),
                 false => finding.function().to_string(),
@@ -228,11 +232,11 @@ fn print_hidden_count(noun: &str, total: usize) {
     }
 }
 
-/// The report's kind breakdown: every kind tag the finding union can
-/// carry, in report order, each with the count of findings of that
-/// kind in this result; kinds with no findings drop out. The list is
-/// the union's full kind set — a kind missing from it would print
-/// nothing no matter how many findings the scan made beside it.
+/// The report's kind breakdown: it counts the findings of each kind in
+/// this result and lists every kind with at least one finding, in
+/// report order. Kinds with no findings drop out. This list must hold
+/// the finding type's full kind set — a kind missing from it would
+/// print nothing no matter how many findings of it the scan made.
 fn kind_breakdown(result: &ConstResult) -> Vec<String> {
     [
         "bitflag_group",

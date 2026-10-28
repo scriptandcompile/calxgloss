@@ -1,20 +1,22 @@
 //! The `apidetect` command's CLI contribution — identify the libraries
 //! and APIs of a binary (issue #340, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `library-api` registry row; this module contributes
-//! only what is genuinely per-engine: the cached-document loader, the
-//! report printer, and the post-scan step holding the two side effects
-//! the row does not file — the rendered FFI bindings file declaring the
-//! imports no crate replaces and the Cargo.toml-style dependency
-//! manifest aggregating the crates the identified findings suggest,
-//! both beside the JSON. The generic handler
-//! ([`scan_command`](crate::commands::scan_command)) routes the command
-//! end to end: it rebuilds the result on demand (the CLI's force-rescan
-//! contract) and can print what a cached one holds, filing it where the
-//! row files it — `re/analysis/apidetect/{binary}.json` — the same file
-//! batch translation reads as prompt context. The run's report and
-//! a later `--show` report are the same read of the same document.
+//! The shape of a scan — build the analysis engine, scan, persist,
+//! degrade — lives in the pipeline's `library-api` registry row. This
+//! module contributes only what belongs to this evidence engine: the
+//! cached-document loader, the report printer, and a post-scan step for
+//! the two side effects the row does not file. Those are the rendered
+//! FFI bindings file, which declares the imports no crate replaces, and
+//! the Cargo.toml-style dependency manifest, which collects the crates
+//! the identified findings suggest; both sit beside the JSON.
+//!
+//! The generic handler ([`scan_command`](crate::commands::scan_command))
+//! runs the command end to end. A scan run always rebuilds the result —
+//! the CLI's refresh-cache contract — and `--show` prints what a cached
+//! document holds. The row files the document at
+//! `re/analysis/apidetect/{binary}.json`, the same file batch
+//! translation reads as prompt context. The run's report and a later
+//! `--show` report read the same document the same way.
 
 use std::path::Path;
 
@@ -34,12 +36,12 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// The `apidetect` entry in the CLI-side contribution table: it serves
+/// The `apidetect` entry in the CLI-side contribution table. It serves
 /// the registry's `library-api` row and supplies this command's loader,
-/// printer, and post-scan step writing the bindings and the manifest.
-/// The command carries no flags beyond `--binary` and `--show`, so its
-/// flag derivation hands over the plain default options — the overwrite
-/// policy is the generic handler's to set.
+/// printer, and post-scan step, which writes the bindings and the
+/// manifest. The command takes no flags beyond `--binary` and `--show`,
+/// so its flag derivation returns the plain default options. The
+/// generic handler sets the overwrite policy.
 pub(crate) fn contribution() -> ScanContribution {
     ScanContribution::new(ScanContributionSteps {
         row: "library-api",
@@ -51,10 +53,11 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed result through the engine's own persistor — the same
-/// loader for the `--show` report and for reading the document a run
-/// just filed. A missing one arrives with the remediation wording
-/// naming the exact producing command.
+/// Read the filed result through the evidence engine's own persistor.
+/// The same loader serves the `--show` report and reads back the
+/// document a run just filed. When the document is missing, the error
+/// carries the remediation wording naming the exact command that
+/// produces one.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<ApiDetectionResult> {
     ApiPersistor::new(workspace).load(binary).with_context(|| {
         format!(
@@ -64,10 +67,10 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<ApiDetectionResul
     })
 }
 
-/// Write the rendered FFI bindings and dependency manifest beside the
-/// filed document — the two side effects the `library-api` row does not
-/// file, run over the document the row just saved so a re-scan replaces
-/// them along with it.
+/// Write the rendered FFI bindings and the dependency manifest beside
+/// the filed document. These are the two side effects the `library-api`
+/// row does not file. Both render from the document the row just
+/// saved, so a later scan run replaces them along with it.
 fn write_side_effects<'a>(
     _source: &'a PipelineSource,
     workspace: &'a Path,
@@ -86,10 +89,11 @@ fn write_side_effects<'a>(
     })
 }
 
-/// Print the report over the loaded result, naming where the document is
-/// filed and where the bindings and manifest sit when they exist. Both
-/// paths read the same on-disk state, so the run's report and a later
-/// `--show` report are byte-identical over one document.
+/// The report printer: renders the loaded result and names where the
+/// document is filed, plus where the bindings and the manifest sit when
+/// they exist. The run report and a later `--show` report read the same
+/// on-disk state, so over one document the two reports come out
+/// byte-identical.
 fn print_report(result: &ApiDetectionResult, workspace: &Path, binary: &str) -> Result<()> {
     let persistor = ApiPersistor::new(workspace);
     print_api_report(
@@ -152,7 +156,7 @@ fn print_api_report(
     ));
     println!();
 
-    // Findings, broken down by the record kind the union carries.
+    // Findings, broken down by record kind.
     let kind_breakdown: Vec<String> = [
         "import",
         "platform_divergence",
@@ -191,9 +195,10 @@ fn print_api_report(
         identified
     ));
 
-    // The scan's own admission, beside the counts it qualifies (issue
-    // #346): the shared type's bounded line, framed under `Coverage:` and
-    // printed only when there is something to admit.
+    // Print the scan's own admission next to the counts it qualifies
+    // (issue #346): the shared type's one bounded admission line, shown
+    // under `Coverage:` and printed only when there is something to
+    // admit.
     print_coverage(result.metadata.coverage.as_ref());
     println!();
 

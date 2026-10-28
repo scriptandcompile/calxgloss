@@ -1,16 +1,18 @@
 //! The `floatsimd` command's CLI contribution — flag float/SIMD usage
 //! for a binary (issue #340, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `float-simd` registry row; this module contributes only
-//! what is genuinely per-engine: the cached-document loader and the
-//! report printer. The generic handler
-//! ([`scan_command`](crate::commands::scan_command)) routes the command
-//! end to end: it rebuilds the result on demand (the CLI's force-rescan
-//! contract) and can print what a cached one holds, filing it where the
-//! row files it — `re/analysis/floatsimd/{binary}.json` — the same file
-//! batch translation reads as prompt context. The run's report and a
-//! later `--show` report are the same read of the same document.
+//! The shape of a scan — build the analysis engine, scan, persist,
+//! degrade — lives in the pipeline's `float-simd` registry row. This
+//! module contributes only what belongs to this evidence engine: the
+//! cached-document loader and the report printer.
+//!
+//! The generic handler ([`scan_command`](crate::commands::scan_command))
+//! runs the command end to end. A scan run always rebuilds the result —
+//! the CLI's refresh-cache contract — and `--show` prints what a cached
+//! document holds. The row files the document at
+//! `re/analysis/floatsimd/{binary}.json`, the same file batch
+//! translation reads as prompt context. The run's report and a later
+//! `--show` report read the same document the same way.
 
 use std::path::Path;
 
@@ -26,11 +28,11 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// The `floatsimd` entry in the CLI-side contribution table: it serves
-/// the registry's `float-simd` row and supplies this command's loader and
-/// printer. The command carries no flags beyond `--binary` and `--show`,
-/// so its flag derivation hands over the plain default options — the
-/// overwrite policy is the generic handler's to set.
+/// The `floatsimd` entry in the CLI-side contribution table. It serves
+/// the registry's `float-simd` row and supplies this command's loader
+/// and printer. The command takes no flags beyond `--binary` and
+/// `--show`, so its flag derivation returns the plain default options.
+/// The generic handler sets the overwrite policy.
 pub(crate) fn contribution() -> ScanContribution {
     ScanContribution::new(ScanContributionSteps {
         row: "float-simd",
@@ -42,10 +44,11 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed result through the engine's own persistor — the same
-/// loader for the `--show` report and for reading the document a run
-/// just filed. A missing one arrives with the remediation wording
-/// naming the exact producing command.
+/// Read the filed result through the evidence engine's own persistor.
+/// The same loader serves the `--show` report and reads back the
+/// document a run just filed. When the document is missing, the error
+/// carries the remediation wording naming the exact command that
+/// produces one.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<FloatsimdResult> {
     FloatsimdPersistor::new(workspace)
         .load(binary)
@@ -57,9 +60,10 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<FloatsimdResult> 
         })
 }
 
-/// Print the report over the loaded result, naming where the document is
-/// filed. Both paths read the same on-disk state, so the run's report
-/// and a later `--show` report are byte-identical over one document.
+/// The report printer: renders the loaded result and names where the
+/// document is filed. The run report and a later `--show` report read
+/// the same on-disk state, so over one document the two reports come
+/// out byte-identical.
 fn print_report(result: &FloatsimdResult, workspace: &Path, binary: &str) -> Result<()> {
     print_floatsimd_report(result, &FloatsimdPersistor::new(workspace).path_for(binary));
     Ok(())
@@ -114,11 +118,12 @@ fn print_floatsimd_report(result: &FloatsimdResult, path: &Path) {
         }
     ));
 
-    // The scan's own admission, beside the counts it qualifies (issue
-    // #347): the shared type's bounded line, framed under `Coverage:` and
-    // printed only when there is something to admit. The line names only
-    // bodies the scan never reached — a flagless function under a
-    // complete record is examined and clean.
+    // Print the scan's own admission next to the counts it qualifies
+    // (issue #347): the shared type's one bounded admission line, shown
+    // under `Coverage:` and printed only when there is something to
+    // admit. The line names only function bodies the scan never
+    // reached — under a complete record, a function with no flag was
+    // examined and is clean.
     print_coverage(result.metadata.coverage.as_ref());
     println!();
 
@@ -163,10 +168,11 @@ fn print_floatsimd_report(result: &FloatsimdResult, path: &Path) {
     println!();
 }
 
-/// The shape breakdown the report prints: every shape tag the finding
-/// union can carry — scalar float math, vector/matrix idioms, and the
-/// both-shapes flag — with its count, in report order. The union is
-/// closed, and the breakdown tests pin all three against the list.
+/// The shape breakdown the report prints: each shape tag the finding
+/// type has — scalar float math, vector/matrix idioms, and the
+/// both-shapes flag — with its count, in report order. The finding type
+/// has exactly these three shapes, and this module's breakdown tests
+/// check the list against all three.
 fn kind_breakdown(result: &FloatsimdResult) -> Vec<String> {
     [
         (
