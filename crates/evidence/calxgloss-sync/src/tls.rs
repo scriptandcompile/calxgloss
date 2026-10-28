@@ -1,28 +1,28 @@
 //! Thread-local storage detection.
 //!
-//! This module provides [`TlsDetector`], which carries the key-creation
-//! and access names a scan reads decompiled bodies against — the Win32
-//! TLS family, `TlsAlloc` returning an index read back by
-//! `TlsGetValue`/`TlsSetValue` and released by `TlsFree`, and the POSIX
-//! thread-key family, `pthread_key_create` taking the key's address for
-//! `pthread_getspecific`/`pthread_setspecific` and
-//! `pthread_key_delete` — and reads each key site as the Rust
-//! thread-local storage standing in for it.
+//! This module provides [`TlsDetector`]. The detector holds the
+//! key-creation and access names a scan reads decompiled bodies
+//! against. In the Win32 TLS family, `TlsAlloc` returns an index
+//! read back by `TlsGetValue`/`TlsSetValue` and released by `TlsFree`.
+//! In the POSIX thread-key family, `pthread_key_create` takes the
+//! key's address for `pthread_getspecific`/`pthread_setspecific` and
+//! `pthread_key_delete`. For each key site, the detector records the
+//! Rust thread-local storage that stands in for it.
 //!
 //! Each creation name is a [`TlsKeySignature`]: the callee spelling as
-//! the decompiler writes it and the [`binding`](TlsKeySignature::
-//! binding) that names the key — whether the decompiler stores the
+//! the decompiler writes it and the [`binding`](TlsKeySignature::binding)
+//! that identifies the key — whether the decompiler stores the
 //! creation's result into a variable or the body passes the key's
 //! address as the first argument, the `pthread_key_create` spelling.
-//! [`default_creations`] and [`default_accesses`] carry the standard
-//! name sets, and [`TlsDetector::with_default_names`] builds a detector
-//! that scans against them.
+//! [`default_creations`] and [`default_accesses`] hold the standard
+//! name sets, and [`TlsDetector::with_default_names`] builds a
+//! detector that scans against them.
 //!
-//! [`TlsDetector::detect`] runs the reading: it walks a decompiled
-//! body's direct calls in source order, binds each recognized key
-//! creation to its key variable, and ties each recognized access to
-//! the creation naming the same variable — one [`TlsUsage`] per key
-//! site, paired or a lone-access fragment.
+//! [`TlsDetector::detect`] runs the reading. It walks a decompiled
+//! body's direct calls in source order and binds each recognized key
+//! creation to its key variable. It ties each recognized access to
+//! the creation naming the same variable. The result is one
+//! [`TlsUsage`] per key site, paired or a lone-access fragment.
 
 use crate::types::TlsUsage;
 use calxgloss_decomp::DecompiledFunction;
@@ -54,13 +54,13 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 /// Where a key-creation spelling keeps the thread-local key the
 /// accesses tie on.
 ///
-/// The binding says which side of the call carries the key: a Win32
-/// `TlsAlloc` returns its index, which the decompiler stores into a
-/// variable the later accesses name, while `pthread_key_create` takes
-/// the key through its first argument, the address of a local they
-/// read back. An access only ever ties to a creation through the key,
-/// so the binding decides which spelling of the creation the pairing
-/// can key on.
+/// The binding says which side of the call the key sits on. A Win32
+/// `TlsAlloc` returns its index, and the decompiler stores it into a
+/// variable the later accesses name. `pthread_key_create` takes the
+/// key through its first argument: the address of a local they read
+/// back. An access only ever ties to a creation through the key, so
+/// the binding decides which spelling of the creation the pairing can
+/// key on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyBinding {
@@ -78,13 +78,13 @@ calxgloss_types::display_serde_label!(KeyBinding {
 });
 
 /// One key-creation name the detector recognizes: the callee spelling
-/// and the binding that names its key.
+/// and the binding that identifies its key.
 ///
-/// A signature is a name, not a shape: it only says that a call to
+/// A signature is a name, not a shape. It only says that a call to
 /// [`name`](Self::name) allocated a thread-local key the body keeps
 /// through [`binding`](Self::binding) — `TlsAlloc` returning it,
-/// `pthread_key_create` taking its address — while where the call sits
-/// in the function and whether the body ever reads the key is the
+/// `pthread_key_create` taking its address. Where the call sits in the
+/// function, and whether the body ever reads the key, is the
 /// detector's reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsKeySignature {
@@ -115,16 +115,16 @@ impl TlsKeySignature {
 ///
 /// The detector owns the name sets a scan reads bodies against:
 /// [`TlsKeySignature`] records for the creating side and plain callee
-/// spellings for the accessing side. Both sets are configurable —
-/// supply them whole through [`with_names`](Self::with_names) or grow
+/// spellings for the accessing side. Both sets are configurable:
+/// supply them whole through [`with_names`](Self::with_names), or add
 /// them one name at a time with [`add_creation`](Self::add_creation)
-/// and [`add_access`](Self::add_access) — and [`creations`](Self::
-/// creations) and [`accesses`](Self::accesses) report them in
-/// configuration order, so two detectors built the same way scan
-/// identically and results diff cleanly. The detector holds no engine
-/// client of its own and never writes back to the program; one
-/// detector serves an entire scan and can be shared by reference
-/// across concurrent per-function passes.
+/// and [`add_access`](Self::add_access). [`creations`](Self::creations)
+/// and [`accesses`](Self::accesses) report them in configuration
+/// order, so two detectors built the same way scan identically and
+/// results diff cleanly. The detector holds no scan source of its own
+/// and never writes back to the program; one detector serves an
+/// entire scan and can be shared by reference across concurrent
+/// per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsDetector {
     creations: Vec<TlsKeySignature>,
@@ -133,10 +133,10 @@ pub struct TlsDetector {
 
 impl TlsDetector {
     /// A detector with no names configured: every body it is handed
-    /// reports nothing until the standard sets arrive through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_creation`](Self::add_creation) and
-    /// [`add_access`](Self::add_access).
+    /// reports nothing until the standard sets are configured through
+    /// [`with_default_names`](Self::with_default_names), or names are
+    /// added one at a time through [`add_creation`](Self::add_creation)
+    /// and [`add_access`](Self::add_access).
     pub fn new() -> Self {
         Self::default()
     }
@@ -183,7 +183,7 @@ impl TlsDetector {
         &self.accesses
     }
 
-    /// The thread-local key sites one function's body carries.
+    /// The thread-local key sites found in one function's body.
     ///
     /// The reading walks the body's direct calls in source order —
     /// outside string literals, whole names only — and classifies
@@ -193,19 +193,19 @@ impl TlsDetector {
     /// first argument names, seen through any cast and a leading `&`.
     /// An access names its key through its first argument, and ties
     /// to the most recent still-unaccessed creation of the key it
-    /// names; further accesses to a key the body already accounts for
-    /// fold into that key's finding.
+    /// names. Further accesses to a key the body already accounts for
+    /// add no new finding: that key's finding already covers them.
     ///
-    /// Each key the body accesses becomes one [`TlsUsage`]: a key
-    /// created and accessed in one body suggests [`SUGGESTION`] at
-    /// [`PAIRED_CONFIDENCE`] — the full thread-local shape, key and
-    /// all, is visible — and a lone access with no visible creation
-    /// suggests it at [`FRAGMENT_CONFIDENCE`], the shape half seen
+    /// Each key the body accesses becomes one [`TlsUsage`]. A key
+    /// created and accessed in one body suggests `SUGGESTION` at
+    /// `PAIRED_CONFIDENCE` — the full thread-local shape, key and
+    /// all, is visible. A lone access with no visible creation
+    /// suggests it at `FRAGMENT_CONFIDENCE`: the shape is half seen,
     /// with the key's origin elsewhere. A creation the body never
     /// accesses claims nothing: there is no per-thread data touched
-    /// here to translate. The creation line and the first access line
-    /// are joined as the evidence. Findings come back in first-seen
-    /// order, so two scans of one body diff cleanly.
+    /// here to translate. The evidence is the creation line and the
+    /// first access line. Findings come back in first-seen order, so
+    /// two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<TlsUsage> {
         let mut keys: Vec<OpenKey> = Vec::new();
         for call in direct_calls(&func.body) {
@@ -240,8 +240,8 @@ impl TlsDetector {
                     Some(at) => keys[at].access = Some(record),
                     None if seen => {
                         // The key already stands in a finding of its
-                        // own — further accesses to it fold into that
-                        // reading.
+                        // own — further accesses to it add no new
+                        // finding.
                     }
                     None => keys.push(OpenKey {
                         key,
@@ -279,16 +279,16 @@ impl TlsDetector {
 // The reading
 // ============================================================
 
-/// Confidence of a key created and accessed in one body: both sides
-/// are explicit calls to recognized names, and the key the creation
-/// keeps is the key the access names — but the tie between them is
-/// the decompiler's naming, not resolved data flow.
+/// Evidence confidence of a key created and accessed in one body:
+/// both sides are explicit calls to recognized names, and the key
+/// the creation keeps is the key the access names — but the tie
+/// between them is the decompiler's naming, not resolved data flow.
 const PAIRED_CONFIDENCE: u8 = 70;
 
-/// Confidence of a lone access with no visible key creation: the
-/// access is explicit, but the reading rests on an absence — the key
-/// was created outside this function — and the thread-local shape is
-/// only half seen.
+/// Evidence confidence of a lone access with no visible key creation:
+/// the access is explicit, but the reading rests on an absence — the
+/// key was created outside this function — and the thread-local
+/// shape is only half seen.
 const FRAGMENT_CONFIDENCE: u8 = 60;
 
 /// The Rust storage pattern thread-local data reads as: a
@@ -403,7 +403,7 @@ fn plain_variable(arg: &str) -> Option<&str> {
 
 /// The type words a decompiler cast may spell, matching the decompiler's
 /// vocabulary the other detectors' scans strip, plus the thread-key
-/// type the decompiler writes when the program carries pthread debug
+/// type the decompiler writes when the program has pthread debug
 /// info.
 fn is_type_word(word: &str) -> bool {
     matches!(
@@ -451,9 +451,9 @@ fn is_type_word(word: &str) -> bool {
 /// as thread-local key allocations out of the box — the Win32
 /// `TlsAlloc`, which returns its index, and the POSIX
 /// `pthread_key_create`, which takes the key through its first
-/// argument. Each name carries the binding that names the key, so a
-/// recognized creation knows which spelling the access pairing keys
-/// on.
+/// argument. Each name includes the binding that identifies the key,
+/// so a recognized creation knows which spelling the access pairing
+/// keys on.
 pub fn default_creations() -> Vec<TlsKeySignature> {
     vec![
         TlsKeySignature::new("TlsAlloc", KeyBinding::ReturnValue),
@@ -633,7 +633,7 @@ undefined FUN_18003ab00(void) {
         assert_eq!(usages[0].access, "TlsGetValue");
         assert_eq!(usages[0].suggestion, "thread_local!");
         assert_eq!(usages[0].confidence, PAIRED_CONFIDENCE);
-        // The evidence carries both sides of the pairing.
+        // The evidence includes both sides of the pairing.
         assert_eq!(
             usages[0].evidence,
             "local_4 = TlsAlloc(); pvVar1 = TlsGetValue(local_4);"
@@ -673,7 +673,7 @@ undefined FUN_18003ab00(void) {
     fn an_access_with_no_visible_creation_reads_as_a_fragment() {
         // The key was created outside this function: the
         // thread-local shape is there, but only half of it is
-        // visible — the weaker confidence an absence earns.
+        // visible — the weaker evidence confidence an absence earns.
         let usages = detect("  pvVar1 = TlsGetValue(local_4);");
         assert_eq!(usages.len(), 1);
         assert_eq!(usages[0].creation, None);

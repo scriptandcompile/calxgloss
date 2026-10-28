@@ -1,27 +1,27 @@
 //! Thread spawn and join pattern detection.
 //!
-//! This module provides [`ThreadingDetector`], which carries the
-//! spawn and join names a scan reads decompiled bodies against —
+//! This module provides [`ThreadingDetector`]. The detector holds
+//! the spawn and join names a scan reads decompiled bodies against:
 //! `CreateThread` and `std::thread::spawn` waited on by
 //! `WaitForSingleObject` and the demangled `std::thread::JoinHandle::join`,
-//! `pthread_create` joined by `pthread_join` —
-//! and reads each spawn site as the Rust spawning pattern standing in
-//! for it.
+//! and `pthread_create` joined by `pthread_join`. For each spawn
+//! site, the detector records the Rust spawning pattern that stands
+//! in for it.
 //!
 //! Each spawn name is a [`ThreadSpawnSignature`]: the callee spelling
 //! as the decompiler writes it and the [`binding`](
-//! ThreadSpawnSignature::binding) that names the thread handle —
+//! ThreadSpawnSignature::binding) that identifies the thread handle —
 //! whether the decompiler stores the spawn's result into a variable
 //! or the body passes the handle in as the first argument, the
 //! `pthread_create` spelling. [`default_spawns`] and [`default_joins`]
-//! carry the standard name sets, and [`ThreadingDetector::
+//! hold the standard name sets, and [`ThreadingDetector::
 //! with_default_names`] builds a detector that scans against them.
 //!
-//! [`ThreadingDetector::detect`] runs the reading: it walks a
-//! decompiled body's direct calls in source order, binds each
-//! recognized spawn to its thread handle, and marks the spawn joined
-//! when a recognized join names the same handle — one [`ThreadSpawn`]
-//! per spawn site, joined or not.
+//! [`ThreadingDetector::detect`] runs the reading. It walks a
+//! decompiled body's direct calls in source order and binds each
+//! recognized spawn to its thread handle. It marks a spawn joined
+//! when a recognized join names the same handle. The result is one
+//! [`ThreadSpawn`] per spawn site, joined or not.
 
 use crate::types::ThreadSpawn;
 use calxgloss_decomp::DecompiledFunction;
@@ -52,13 +52,13 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 
 /// Where a spawn spelling keeps the thread handle the join ties on.
 ///
-/// The binding says which side of the call carries the handle: a
-/// Win32 `CreateThread` returns its thread handle, which the
-/// decompiler stores into a variable the later wait names, while
-/// `pthread_create` takes the handle through its first argument, the
-/// address of a local the join reads back. A join only ever ties to a
-/// spawn through the handle, so the binding decides which spelling of
-/// the spawn the pairing can key on.
+/// The binding says which side of the call the handle sits on. A
+/// Win32 `CreateThread` returns its thread handle, and the
+/// decompiler stores it into a variable the later wait names.
+/// `pthread_create` takes the handle through its first argument:
+/// the address of a local the join reads back. A join only ever
+/// ties to a spawn through the handle, so the binding decides
+/// which spelling of the spawn the pairing can key on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpawnBinding {
@@ -76,13 +76,13 @@ calxgloss_types::display_serde_label!(SpawnBinding {
 });
 
 /// One spawn name the detector recognizes: the callee spelling and
-/// the binding that names its thread handle.
+/// the binding that identifies its thread handle.
 ///
-/// A signature is a name, not a shape: it only says that a call to
+/// A signature is a name, not a shape. It only says that a call to
 /// [`name`](Self::name) started a thread whose handle the body keeps
 /// through [`binding`](Self::binding) — `CreateThread` returning it,
-/// `pthread_create` taking its address — while where the call sits in
-/// the function and whether the body waits for the thread is the
+/// `pthread_create` taking its address. Where the call sits in the
+/// function, and whether the body waits for the thread, is the
 /// detector's reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadSpawnSignature {
@@ -112,10 +112,11 @@ impl ThreadSpawnSignature {
 ///
 /// The detector owns the name sets a scan reads bodies against:
 /// [`ThreadSpawnSignature`] records for the spawning side and plain
-/// callee spellings for the joining side. Both sets are configurable —
-/// supply them whole through [`with_names`](Self::with_names) or grow
-/// them one name at a time with [`add_spawn`](Self::add_spawn) and
-/// [`add_join`](Self::add_join) — and [`spawns`](Self::spawns) and
+/// callee spellings for the joining side. Both sets are
+/// configurable: supply them whole through
+/// [`with_names`](Self::with_names), or add them one name at a time
+/// with [`add_spawn`](Self::add_spawn) and
+/// [`add_join`](Self::add_join). [`spawns`](Self::spawns) and
 /// [`joins`](Self::joins) report them in configuration order, so two
 /// detectors built the same way scan identically and results diff
 /// cleanly. The detector holds no scan source of its own and never
@@ -129,9 +130,9 @@ pub struct ThreadingDetector {
 
 impl ThreadingDetector {
     /// A detector with no names configured: every body it is handed
-    /// reports nothing until the standard sets arrive through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_spawn`](Self::add_spawn) and
+    /// reports nothing until the standard sets are configured through
+    /// [`with_default_names`](Self::with_default_names), or names are
+    /// added one at a time through [`add_spawn`](Self::add_spawn) and
     /// [`add_join`](Self::add_join).
     pub fn new() -> Self {
         Self::default()
@@ -178,7 +179,7 @@ impl ThreadingDetector {
         &self.joins
     }
 
-    /// The thread spawn sites one function's body carries.
+    /// The thread spawn sites found in one function's body.
     ///
     /// The reading walks the body's direct calls in source order —
     /// outside string literals, whole names only — and classifies
@@ -189,17 +190,17 @@ impl ThreadingDetector {
     /// `&`. A spawn whose handle the body keeps nowhere the pairing
     /// can key on is still a spawn — just one no join can tie to. A
     /// join counts only where its first argument names one plain
-    /// variable, and it ties to the most recent still-unjoined spawn
-    /// of the handle it names.
+    /// variable. It ties to the most recent still-unjoined spawn of
+    /// the handle it names.
     ///
-    /// Each spawn becomes one [`ThreadSpawn`]: joined spawns suggest
-    /// [`JOINED_SUGGESTION`] at [`JOINED_CONFIDENCE`] — the body
-    /// waits for the thread, which is what a `JoinHandle` stands in
-    /// for — and unjoined ones [`UNJOINED_SUGGESTION`] at
-    /// [`UNJOINED_CONFIDENCE`], the fire-and-forget shape a detached
-    /// thread reads as. The spawn line, and the join line when there
-    /// is one, are joined as the evidence. Findings come back in
-    /// spawn order, so two scans of one body diff cleanly.
+    /// Each spawn becomes one [`ThreadSpawn`]. A joined spawn
+    /// suggests `JOINED_SUGGESTION` at `JOINED_CONFIDENCE` — the
+    /// body waits for the thread, which is what a `JoinHandle` stands
+    /// in for — and an unjoined one suggests `UNJOINED_SUGGESTION` at
+    /// `UNJOINED_CONFIDENCE`, the fire-and-forget shape a detached
+    /// thread reads as. The evidence is the spawn line, plus the join
+    /// line when there is one. Findings come back in spawn order, so
+    /// two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<ThreadSpawn> {
         let mut spawns: Vec<OpenSpawn> = Vec::new();
         for call in direct_calls(&func.body) {
@@ -254,16 +255,16 @@ impl ThreadingDetector {
 // The reading
 // ============================================================
 
-/// Confidence of a spawn read as joined: the spawn and the wait are
-/// both explicit calls to recognized names, and the handle the spawn
-/// keeps is the handle the wait names — but the tie between them is
-/// the decompiler's naming, not resolved data flow.
+/// Evidence confidence of a spawn read as joined: the spawn and the
+/// wait are both explicit calls to recognized names, and the handle
+/// the spawn keeps is the handle the wait names — but the tie
+/// between them is the decompiler's naming, not resolved data flow.
 const JOINED_CONFIDENCE: u8 = 70;
 
-/// Confidence of a spawn read as unjoined: the spawn is explicit, but
-/// the reading rests on an absence — no recognized wait names the
-/// handle in this function — and the thread could be waited on from
-/// elsewhere, or its handle handed off.
+/// Evidence confidence of a spawn read as unjoined: the spawn is
+/// explicit, but the reading rests on an absence — no recognized
+/// wait names the handle in this function — and the thread could be
+/// waited on from elsewhere, or its handle handed off.
 const UNJOINED_CONFIDENCE: u8 = 60;
 
 /// The Rust spawning pattern a joined spawn reads as: the body waits
@@ -295,10 +296,10 @@ struct OpenSpawn {
 /// own line: walking left from the callee to the `=` that assigns,
 /// the plain identifier sitting left of that `=`. A `=` that is part
 /// of a comparison (`==`, `!=`, `<=`, `>=`) or a compound assignment
-/// (`+=` and friends) assigns no result, and a target that is not a
-/// plain variable — a dereference, an indexed element, a field —
-/// stores the handle somewhere the pairing cannot key on, so neither
-/// binds anything.
+/// (`+=` and friends) assigns no result. A target that is not a plain
+/// variable — a dereference, an indexed element, a field — stores the
+/// handle somewhere the pairing cannot key on. Neither case binds
+/// anything.
 fn assigned_variable(body: &str, callee_offset: usize) -> Option<String> {
     let line_start = body[..callee_offset]
         .rfind('\n')
@@ -381,7 +382,7 @@ fn plain_variable(arg: &str) -> Option<&str> {
 }
 /// The type words a decompiler cast may spell, matching the decompiler's
 /// vocabulary the other detectors' scans strip, plus the thread
-/// handle names the decompiler writes when the program carries
+/// handle names the decompiler writes when the program has
 /// pthread debug info.
 fn is_type_word(word: &str) -> bool {
     matches!(
@@ -431,8 +432,8 @@ fn is_type_word(word: &str) -> bool {
 /// returns its thread handle, the POSIX `pthread_create`, which
 /// takes the handle through its first argument, and the demangled
 /// Rust stdlib `std::thread::spawn`, which returns its handle. Each
-/// name carries the binding that names the handle, so a recognized
-/// spawn knows which spelling the join pairing keys on.
+/// name includes the binding that identifies the handle, so a
+/// recognized spawn knows which spelling the join pairing keys on.
 pub fn default_spawns() -> Vec<ThreadSpawnSignature> {
     vec![
         ThreadSpawnSignature::new("CreateThread", SpawnBinding::ReturnValue),
@@ -630,7 +631,7 @@ undefined FUN_18003ab00(void) {
         // thread keeps stands in for the wait.
         assert_eq!(spawns[0].suggestion, "std::thread::spawn");
         assert_eq!(spawns[0].confidence, JOINED_CONFIDENCE);
-        // The evidence carries both sides of the pairing.
+        // The evidence includes both sides of the pairing.
         assert_eq!(
             spawns[0].evidence,
             "hThread = CreateThread((LPSECURITY_ATTRIBUTES)0x0,0,worker,0x0,0,&local_14); WaitForSingleObject(hThread,0xffffffff);"
@@ -656,7 +657,7 @@ undefined FUN_18003ab00(void) {
     fn an_unjoined_spawn_reads_as_a_runtime_task() {
         // No recognized wait names the handle in this function: the
         // fire-and-forget shape a detached task stands in for, at
-        // the weaker confidence an absence earns.
+        // the weaker evidence confidence an absence earns.
         let spawns = detect(
             "\
   hThread = CreateThread((LPSECURITY_ATTRIBUTES)0x0,0,worker,0x0,0,&local_14);
