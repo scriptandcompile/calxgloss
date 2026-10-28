@@ -1,93 +1,98 @@
-//! The two-tier read-through cache for engine reads (issue #103).
+//! The scan read cache: a two-tier read-through cache for reads from the
+//! analysis engine (issue #103).
 //!
 //! [`CachedScanSource`] wraps a [`KunaSource`] and implements the shared
-//! [`ScanSource`] seam, so every evidence engine pulls its program facts
-//! through the cache without knowing it exists. Reads resolve in three
-//! tiers: an in-memory memo first, then JSON documents on disk under the
-//! record of effort, then the engine — and every engine result is written
-//! through to disk immediately, so an interrupted run leaves a valid partial
-//! cache and a second run over the same bytes replays with zero engine calls.
-//! The `decompile` read is the one exception on the way out: the
-//! decompiler-noise pre-filter runs above the cache, so every tier keeps the
-//! engine's raw text and the filter re-applies on each read (issue #271).
+//! [`ScanSource`] seam, so every evidence engine reads its program facts
+//! through the cache without knowing the cache exists. Reads resolve in
+//! three tiers: first the in-memory memo, then JSON documents on disk
+//! under the record of effort, then the analysis engine. Every answer
+//! from the analysis engine is written through to disk at once, so an
+//! interrupted run leaves a valid partial cache, and a second run over
+//! the same bytes replays with no calls to the analysis engine. The
+//! `decompile` read is the one exception on the way out: the decompile
+//! noise filter runs above the cache, so every tier keeps the analysis
+//! engine's raw text and the filter runs again on each read (issue #271).
 //!
 //! **Validity is the key.** The disk tier lives at
 //! `re/cache/{binary identity}/{sha256}/`, where the hash is SHA-256
 //! over the target binary's file bytes. Changed bytes mean a different
-//! directory, so staleness needs no invalidation logic; old hash directories
-//! are kept (for switching back to a previous build) until pruned by hand.
-//! A `manifest.json` in the directory records the binary hash, the cache
-//! format version, the program name as the engine named it, and the
-//! identity of the engine build that produced the documents — derived
-//! from the release-and-pin stamp the seam already carries beside every
-//! scan record (#358). A mismatch on any field (or a corrupt manifest)
-//! treats the directory as cold: it is wiped and rewritten, so a stale
-//! entry is never served. A manifest written before the identity field
-//! shipped carries no identity key at all, which reads as an unknown
-//! engine and likewise forces cold — never a hot replay of unknown-engine
-//! bytes, never an error.
+//! directory, so staleness needs no invalidation logic. Old hash
+//! directories are kept (for switching back to a previous build) until
+//! pruned by hand. A `manifest.json` in the directory records the binary
+//! hash, the cache format version, the program name as the analysis
+//! engine named it, and the identity of the engine build that produced
+//! the documents. That identity comes from the release-and-pin stamp the
+//! seam already carries beside every scan record (#358). A mismatch on
+//! any field, or a corrupt manifest, treats the directory as cold: it is
+//! wiped and rewritten, so a stale entry is never served. A manifest
+//! written before the identity field shipped carries no identity key at
+//! all. That reads as an unknown engine build and likewise forces cold —
+//! never a hot replay of unknown-engine bytes, and never an error.
 //!
-//! **Engine drift rides the identity, not the version integer** (#358).
-//! Kuna is compiled into the harness, so its answers move whenever the
-//! pinned crate moves — and the manifest identity moves with it, taking
-//! every older directory cold mechanically, on no maintainer memory and
-//! with no hand-bumped constant. [`CACHE_FORMAT_VERSION`] is the
-//! record-shape gate: it went to 3 when the function listing dropped the
-//! engine's import pointer slots — a v2 `functions` document still names
-//! every IAT slot, and a consumer that decompiles each listed name then
-//! spends one read per import on an entry the engine refuses — and to 4
+//! **Engine drift is caught by the identity, not by the version
+//! integer** (#358). Kuna is compiled into the harness, so its answers
+//! change whenever the pinned crate changes — and the manifest identity
+//! changes with them. That moves every older directory to cold
+//! automatically: no maintainer has to remember, and no constant has to
+//! be raised by hand. [`CACHE_FORMAT_VERSION`] is the record-shape gate.
+//! It went to 3 when the function listing dropped the analysis engine's
+//! import pointer slots: a v2 `functions` document still names every IAT
+//! slot, and a consumer that decompiles each listed name then spends one
+//! read per import on an entry the analysis engine refuses. It went to 4
 //! when the listing dropped ambiguous names too. Version 2 was recorded
-//! when Kuna became the only engine (issue #214); that engine-drift duty
-//! now belongs to the identity field, not the integer.
+//! when Kuna became the only analysis engine (issue #214); the identity
+//! field, not the integer, now carries that engine-drift duty.
 //!
 //! **The directory has had three names** — `re/ghidra-cache` (ADR-0041's
 //! deferral), `re/decomp-cache` (ADR-0042's uptake), and `re/cache` from
-//! ADR-0043, which drops the engine-era qualifier entirely: the directory
-//! holds the scan read cache and nothing else lives under it. Each rename
-//! is a silent reset — a directory under an old name is never opened again,
-//! so it stays in the workspace as dead weight for its owner to delete.
+//! ADR-0043, which drops the engine-era qualifier entirely. The directory
+//! holds the scan read cache, and nothing else lives under it. Each
+//! rename is a silent reset: a directory under an old name is never
+//! opened again, so it stays in the workspace as dead weight for its
+//! owner to delete.
 //!
 //! **Kept out of the workspace repo:** opening the disk tier ensures
-//! `re/cache/` is listed in the workspace's `.gitignore` — the cache is
+//! `re/cache/` is listed in the workspace's `.gitignore`. The cache is
 //! tens of thousands of regenerable documents, and a workspace repo that
 //! commits them carries that weight through every clone and checkout.
 //!
 //! **Forcing a cold cache:** the `--refresh-cache` CLI flag (on
 //! `batch-translate`, `auto`, and `live`) routes the run through
-//! [`CachedScanSource::new_refresh`] — the directory is wiped and
-//! rewritten, so every read goes to the engine once and the next run
-//! replays warm again. Deleting the cache directory (or the binary's whole
-//! identity directory) does the same by hand. Bumping
-//! [`CACHE_FORMAT_VERSION`] invalidates every cache at once when the record
-//! shape changes; an engine-build change needs no bump at all — it moves
-//! every manifest's engine identity by itself, and mismatch forces cold
-//! (#358).
+//! [`CachedScanSource::new_refresh`]: the directory is wiped and
+//! rewritten, so every read goes to the analysis engine once and the
+//! next run replays warm again. Deleting the cache directory (or the
+//! binary's whole identity directory) does the same by hand. Bumping
+//! [`CACHE_FORMAT_VERSION`] invalidates every cache at once when the
+//! record shape changes. An engine-build change needs no bump at all: it
+//! changes every manifest's engine identity by itself, and the mismatch
+//! forces cold (#358).
 //!
-//! **Degradation, never failure:** a missing or unreadable binary file drops
-//! the disk tier entirely and reads pass straight through to the engine; a
-//! corrupt cache document is logged and refetched from the engine; a failed
-//! cache write is logged and the read still succeeds. Only the engine
-//! fetch's own errors reach the caller.
+//! **Degradation, never failure:** a missing or unreadable binary file
+//! drops the disk tier entirely, and reads pass straight through to the
+//! analysis engine. A corrupt cache document is logged and refetched
+//! from the analysis engine. A failed cache write is logged, and the read
+//! still succeeds. Only the engine fetch's own errors reach the caller.
 //!
 //! **The surviving scans stay readable** (issue #298, track P18): when a
 //! binary's bytes change, the previous version's scan document set is the
 //! sibling hash directory this module keeps on disk. The binary-version
-//! pairing pass reads exactly two such document sets and no engine, so
-//! [`is_surviving_scan`] and the [`cached_functions`], [`cached_exports`],
-//! and [`cached_body`] readers are that pass's public surface: read-only,
-//! keyed by hash directory, answering the same shapes the seam answers.
-//! Unlike [`open_manifest`] they never wipe a directory — a sibling scan
+//! pairing pass reads exactly two such document sets with no calls to
+//! the analysis engine, so [`is_surviving_scan`] and the
+//! [`cached_functions`], [`cached_exports`], and [`cached_body`] readers
+//! are that pass's public surface: read-only, keyed by hash directory,
+//! answering the same shapes the seam answers. Unlike
+//! [`open_manifest`] they never wipe a directory — a sibling scan
 //! belongs to a different version's bytes, and this run's manifest has no
 //! claim on it.
 //!
 //! **What is never cached:** write-side calls (function tags, type
 //! write-back) never go through the cache, and `begin_pass`/`end_pass`
-//! heartbeat control passes through to the wrapped engine. The heartbeat
-//! counts *unique work items consumed*, not engine round trips: a cached
-//! decompile beats through the wrapped engine's heartbeat just like a
-//! live one, so a warm run's progress line keeps moving (issue #121),
-//! and a function already counted cold is not counted again warm (issue
-//! #239). Concurrent misses of one key share a single engine request.
+//! heartbeat control passes through to the wrapped analysis engine. The
+//! heartbeat counts *unique work items consumed*, not engine round
+//! trips. A cached decompile counts on that heartbeat just like a live
+//! one, so a warm run's progress line keeps moving (issue #121), and a
+//! function already counted cold is not counted again warm (issue #239).
+//! Concurrent misses of one key share a single engine request.
 
 use crate::error::{EngineError, Result};
 use crate::model::{
@@ -111,30 +116,31 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
 use tracing::{debug, warn};
 
-/// The cache record-shape version, recorded in every manifest. Bump when a
-/// cached document's shape changes: every existing directory then reads as
-/// cold instead of serving records the new readers cannot interpret. Engine
-/// drift is not this integer's duty (#358): the manifest's engine-identity
-/// field names the engine build that wrote a directory and forces every
-/// older one cold mechanically when the pinned Kuna crate moves, no
-/// maintainer bumping a constant. Version 2 was recorded when Kuna became
-/// the only engine (issue #214) — at the time this integer was the only
-/// thing keeping the retired Ghidra bridge's documents from replaying
-/// under a different engine's decompiler; the identity carries that guard
-/// now. Version 3 marks the function listing without import pointer slots
-/// — a v2 listing names each IAT slot, and no `decompile` of one can
-/// succeed. Version 4 marks the listing without ambiguous names either — a
-/// v3 listing names both thunk veneers of an import an MSVC link emitted
-/// twice, and the engine settles on neither, so no `decompile` of that name
-/// can succeed.
+/// The cache record-shape version, recorded in every manifest. Bump it
+/// when a cached document's shape changes: every existing directory then
+/// reads as cold, instead of serving records the new readers cannot
+/// interpret. Engine drift is not this integer's duty (#358): the
+/// manifest's engine-identity field names the engine build that wrote a
+/// directory and forces every older one cold automatically when the
+/// pinned Kuna crate moves — no maintainer has to bump a constant.
+/// Version 2 was recorded when Kuna became the only analysis engine
+/// (issue #214) — at the time this integer was the only thing keeping
+/// the retired Ghidra bridge's documents from replaying under a
+/// different analysis engine's decompiler; the identity carries that
+/// guard now. Version 3 marks the function listing without import
+/// pointer slots — a v2 listing names each IAT slot, and no `decompile`
+/// of one can succeed. Version 4 marks the listing without ambiguous
+/// names either — a v3 listing names both thunk veneers of an import an
+/// MSVC link emitted twice, and the analysis engine settles on neither,
+/// so no `decompile` of that name can succeed.
 ///
-/// Public because the surviving-scan readers below answer only directories
-/// written under the current version (#298), and a consumer assembling a
-/// manifest for one needs the live value, not a hand-copy.
+/// Public because the surviving-scan readers below answer only
+/// directories written under the current version (#298), and a consumer
+/// assembling a manifest for one needs the live value, not a hand-copy.
 pub const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// The `manifest.json` beside a directory's cached documents. All four
-/// fields must match this run's facts for the directory to be warm; the
+/// fields must match this run's facts for the directory to be warm. The
 /// binary hash duplicates the directory name on purpose, so a renamed or
 /// moved directory is detected rather than trusted. The surviving-scan
 /// readers expose the same record for reading (#298).
@@ -145,36 +151,37 @@ pub struct CacheManifest {
     /// The [`CACHE_FORMAT_VERSION`] this directory was written under —
     /// the record-shape gate.
     pub format_version: u32,
-    /// The program name as the engine named it.
+    /// The program name as the analysis engine named it.
     pub program: String,
     /// The engine build that answered these reads, as
     /// [`calxgloss_types::EngineProvenance::identity`] spells the stamp the
-    /// wrapped source carries beside every scan record (#358).
+    /// wrapped scan source carries beside every scan record (#358).
     ///
     /// This is the engine-drift guard: a directory filed under one engine
     /// identity and opened under another reads cold — bumping the pinned
     /// Kuna crate moves the identity without anyone touching a version
     /// integer. A manifest written before the field shipped has no identity
     /// key in its raw bytes, loads without error, and reads as no identity
-    /// at all — unknown never matches a compiled engine, so such a
-    /// directory forces cold rather than hot-replaying unknown-engine
-    /// bytes.
+    /// at all — an unknown identity never matches a compiled analysis
+    /// engine, so such a directory forces cold rather than hot-replaying
+    /// unknown-engine bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_identity: Option<String>,
 }
 
 /// The engine-identity string ([`calxgloss_types::EngineProvenance::identity`])
-/// this build's engine stamps — the very stamp the seam's
+/// that this build's analysis engine stamps — the very stamp the seam's
 /// [`ScanSource::engine_provenance`] read answers with beside every scan
 /// record (#208, #358).
 ///
-/// The manifest write leg (in [`CachedScanSource::build`]) and the
-/// surviving-scan comparison ([`is_surviving_scan`]) both answer through
-/// the seam's one construction of Kuna's stamp (`kuna_provenance`), so a
-/// pinned-Kuna bump moves the identity that gets written and the identity
-/// that gets compared in the same breath — and no hand-maintained constant
-/// feeds either. A consumer assembling a manifest, or a pin keeping a warm
-/// directory, needs this live value, not a hand-copy.
+/// The manifest that the cache constructors ([`new`](CachedScanSource::new)
+/// and [`new_refresh`](CachedScanSource::new_refresh)) write, and the
+/// surviving-scan comparison ([`is_surviving_scan`]), both use the seam's
+/// one construction of Kuna's stamp (`kuna_provenance`). So a pinned-Kuna
+/// bump changes the identity that gets written and the identity that
+/// gets compared at the same time — and no hand-maintained constant
+/// feeds either. A consumer assembling a manifest, or a pin keeping a
+/// warm directory, needs this live value, not a hand-copy.
 pub fn current_engine_identity() -> String {
     crate::scan_source::kuna_provenance().identity()
 }
@@ -199,12 +206,12 @@ enum CacheKey {
 }
 
 /// A cached view of one loaded program, safe to clone and hand to every
-/// engine in a batch.
+/// consumer in a batch.
 ///
-/// See the [module docs](crate::cache) for the tiers, the validity key, and
-/// the degradation rules. The instance is scoped to one target binary: the
-/// memo and the disk directory can never serve one program's data for
-/// another.
+/// The documentation at the top of this module covers the tiers, the
+/// validity key, and the degradation rules. The instance is scoped to one
+/// target binary: the memo and the disk directory can never serve one
+/// program's data for another.
 #[derive(Debug, Clone)]
 pub struct CachedScanSource {
     inner: Arc<Inner>,
@@ -217,9 +224,10 @@ struct Inner {
     /// was missing or unreadable, which drops the disk tier and leaves
     /// pass-through engine reads.
     cache_dir: Option<PathBuf>,
-    /// In-memory tier: one shared cell per key. The cell fills on the first
-    /// miss (disk or engine), and concurrent misses of the same key await
-    /// the one in-flight fill instead of stampeding the engine.
+    /// In-memory tier: one shared cell per key. The cell fills on the
+    /// first miss (disk or analysis engine), and concurrent misses of
+    /// the same key wait for the one in-flight fill instead of each
+    /// making its own engine request.
     memo: Mutex<HashMap<CacheKey, Arc<OnceCell<Value>>>>,
 }
 
@@ -227,16 +235,17 @@ impl CachedScanSource {
     /// Wrap `source` with a cache for the binary `binary_path`, filed under
     /// the workspace's record of effort.
     ///
-    /// The binary's file bytes are hashed once here; the program name the
-    /// manifest records is the one the loaded engine already names, so
-    /// construction never touches the engine. A missing or unreadable
-    /// `binary_path` is not an error: the source degrades to pass-through
-    /// engine reads (in-memory memo only, no disk tier).
+    /// The binary's file bytes are hashed once here. The program name the
+    /// manifest records is the one the loaded analysis engine already
+    /// names, so construction never calls the analysis engine. A missing
+    /// or unreadable `binary_path` is not an error: the source degrades to
+    /// pass-through engine reads (in-memory memo only, no disk tier).
     ///
     /// # Errors
     ///
-    /// Returns a [`Result`] only for shape reasons — construction reads no
-    /// engine, so nothing here fails on engine state.
+    /// Returns a [`Result`] only for shape reasons — construction reads
+    /// nothing from the analysis engine, so nothing here fails on
+    /// analysis-engine state.
     pub fn new(
         source: KunaSource,
         workspace: impl AsRef<Path>,
@@ -248,8 +257,8 @@ impl CachedScanSource {
 
     /// Like [`new`](Self::new), but forces the disk tier cold first: the
     /// directory for this binary's current bytes is wiped before the
-    /// manifest is opened, so every read goes to the engine and the cache
-    /// is rewritten by write-through.
+    /// manifest is opened, so every read goes to the analysis engine and
+    /// the cache is rewritten by write-through.
     ///
     /// This is the operator's escape hatch (issue #106): deleting the
     /// directory does the same by hand. The CLI's `--refresh-cache` flag
@@ -284,12 +293,12 @@ impl CachedScanSource {
             Ok(Some(hash)) => {
                 let program = source.identity().to_string();
                 let dir = cache_root(&workspace).join(binary.as_str()).join(&hash);
-                // The manifest names which engine build answered: the
-                // identity rides solely the stamp the wrapped source
-                // carries beside every scan record, so bumping the pinned
-                // Kuna crate moves the manifest's identity with it — no
-                // hand-maintained constant feeds the cache's engine key
-                // (#358).
+                // The manifest names which engine build answered. The
+                // identity comes solely from the stamp the wrapped scan
+                // source carries beside every scan record, so bumping the
+                // pinned Kuna crate changes the manifest's identity with
+                // it — no hand-maintained constant feeds the cache's
+                // engine key (#358).
                 let engine_identity = source.engine_provenance().map(|stamp| stamp.identity());
                 let manifest = CacheManifest {
                     binary_sha256: hash,
@@ -341,11 +350,12 @@ impl CachedScanSource {
     // Write-side and heartbeat pass-throughs — never cached
     // =========================================================
 
-    /// Attach `tag` to a function — refused by name.
+    /// Attach `tag` to a function — refused, with the reason named.
     ///
-    /// The Kuna engine has no function-tag write-back, and writes are never
-    /// cached anyway; the refusal is named so a vtable scan can tolerate it
-    /// (tagging is enrichment, not detection) rather than lose the scan.
+    /// The Kuna analysis engine has no function-tag write-back, and writes
+    /// are never cached anyway. The refusal states its reason so a vtable
+    /// scan can tolerate it (tagging is enrichment, not detection) rather
+    /// than lose the scan.
     pub async fn add_function_tag(&self, _function: &str, _tag: &str) -> Result<()> {
         Err(EngineError::Reported {
             message: "the Kuna engine has no function-tag write-back; vtable tagging is \
@@ -354,16 +364,16 @@ impl CachedScanSource {
         })
     }
 
-    /// Arm the wrapped engine's heartbeat for one analysis pass.
+    /// Start the wrapped scan source's heartbeat for one analysis pass.
     ///
-    /// Beats count work items consumed, not engine round trips: a cached
-    /// decompile beats through the wrapped engine's heartbeat just like a
-    /// live one, so a warm run's progress stays visible (issue #121).
+    /// The heartbeat counts work items consumed, not engine round trips.
+    /// A cached decompile counts on the heartbeat just like a live one, so
+    /// a warm run's progress stays visible (issue #121).
     pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
         self.inner.source.begin_pass(binary, pass, events);
     }
 
-    /// Disarm the wrapped engine's heartbeat.
+    /// Stop the wrapped scan source's heartbeat.
     pub fn end_pass(&self) {
         self.inner.source.end_pass();
     }
@@ -372,9 +382,9 @@ impl CachedScanSource {
     // The read path: memo → disk → engine, writing through
     // =========================================================
 
-    /// Resolve `key` through the three tiers, storing the engine answer in
-    /// both. The memo cell is shared per key, so concurrent misses of one
-    /// key fire exactly one engine request.
+    /// Resolve `key` through the three tiers, storing the analysis engine's
+    /// answer in both. The memo cell is shared per key, so concurrent
+    /// misses of one key produce exactly one engine request.
     async fn cached<T, Fut>(&self, key: CacheKey, live: impl FnOnce() -> Fut + Send) -> Result<T>
     where
         T: Serialize + DeserializeOwned,
@@ -385,9 +395,9 @@ impl CachedScanSource {
 
     /// Like [`cached`](Self::cached), also reporting whether the value was
     /// served without an engine round trip — a memo or disk hit. Callers
-    /// that count consumed work items (the heartbeat) need the distinction:
-    /// the engine path already beats inside the source, so only a hit must
-    /// beat here.
+    /// that count consumed work items (the heartbeat) need the
+    /// distinction: the engine path already counts inside the wrapped
+    /// source, so only a hit must be counted here.
     async fn cached_hit<T, Fut>(
         &self,
         key: CacheKey,
@@ -470,10 +480,11 @@ impl CachedScanSource {
 }
 
 impl ScanSource for CachedScanSource {
-    // The live tier is the wrapped engine read through the seam, so the
-    // cached records are exactly the seam shapes every consumer expects.
-    // The calls are trait-qualified so the engine's inherent methods (which
-    // answer Kuna-native shapes) never shadow the seam's mapped reads.
+    // The live tier is the wrapped scan source read through the seam, so
+    // the cached records are exactly the seam shapes every consumer
+    // expects. The calls name the trait so the analysis engine's inherent
+    // methods (which answer Kuna-native shapes) never take the call
+    // instead of the seam's mapped reads.
     async fn functions(&self) -> Result<Vec<FunctionSummary>> {
         let (list, from_cache) = self
             .cached_hit(CacheKey::Functions, || {
@@ -481,29 +492,31 @@ impl ScanSource for CachedScanSource {
             })
             .await?;
         if from_cache {
-            // A warm listing never reaches the engine, so an armed
-            // heartbeat would never learn the work list — forward it here
-            // to keep the pass's "n of m" honest on a warm run.
+            // A warm listing never reaches the analysis engine, so the
+            // heartbeat would never learn the work-list size — report it
+            // here to keep the pass's "n of m" honest on a warm run.
             self.inner.source.note_worklist(list.len());
         }
         Ok(list)
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        // The live tier fetches through `raw_decompile`, not the Kuna arm's
-        // `ScanSource::decompile`: the noise pre-filter must sit above the
-        // cache, so the memo and the disk document keep the engine's raw
-        // text — debuggable, and reversible by deleting the cache
-        // (ADR-0043, issue #271) — and the filter runs on the way out.
+        // The live tier fetches through `raw_decompile`, not through the
+        // wrapped source's `ScanSource::decompile`: the noise filter must
+        // sit above the cache, so the memo and the disk document keep the
+        // analysis engine's raw text — debuggable, and reversible by
+        // deleting the cache (ADR-0043, issue #271) — and the filter runs
+        // on the way out.
         let (body, from_cache) = self
             .cached_hit(CacheKey::Decompile(name.to_string()), || {
                 raw_decompile(&self.inner.source, name)
             })
             .await?;
         if from_cache {
-            // The engine path beats inside the source's decompile; a cached
-            // body never gets there, so count the consumed work item here
-            // (issue #121 — the dashboard's per-binary activity line).
+            // The engine path counts inside the wrapped source's
+            // decompile; a cached body never gets there, so count the
+            // consumed work item here (issue #121 — the dashboard's
+            // per-binary activity line).
             self.inner.source.tick(name);
         }
         Ok(crate::noise_filter::strip_decompiler_noise(body))
@@ -511,9 +524,9 @@ impl ScanSource for CachedScanSource {
 
     async fn disassembly(&self, name: &str) -> Result<String> {
         // The listing text is cached like every other read: a warm scan
-        // never re-disassembles (issue #245). No heartbeat beat — the
-        // read is not a decompile work item, and the scan's breaker-
-        // gated window counts it beside the body it pairs with.
+        // never re-disassembles (issue #245). No heartbeat count — this
+        // read is not a decompile work item, and the scan's
+        // breaker-gated window counts it next to the body it pairs with.
         self.cached(CacheKey::Disassembly(name.to_string()), || {
             ScanSource::disassembly(&self.inner.source, name)
         })
@@ -599,18 +612,19 @@ impl ScanSource for CachedScanSource {
     }
 
     fn engine_provenance(&self) -> Option<calxgloss_types::EngineProvenance> {
-        // The cache answers from the engine it wraps, so the record names
-        // that engine — a warm replay still says which engine and pin
-        // produced it (issue #208).
+        // The cache answers from the analysis engine it wraps, so the
+        // record names that engine: a warm replay still says which
+        // analysis engine and pin produced it (issue #208).
         ScanSource::engine_provenance(&self.inner.source)
     }
 
     fn capability_report(&self) -> calxgloss_types::CapabilityReport {
-        // A cache never changes capabilities, it only caches answers, so
-        // the wrapped engine's declaration passes through untouched —
-        // byte-identically on a warm replay as on the cold first read
-        // (issue #354). A source whose engine declares nothing propagates
-        // the empty, fully-unknown declaration.
+        // A cache never changes capabilities; it only caches answers. So
+        // the wrapped source's capability declaration passes through
+        // untouched — identical bytes on a warm replay as on the cold
+        // first read (issue #354). A source whose analysis engine
+        // declares nothing passes on the empty, fully-unknown
+        // declaration.
         ScanSource::capability_report(&self.inner.source)
     }
 }
@@ -624,21 +638,22 @@ impl ScanSource for CachedScanSource {
 /// The directory was `re/ghidra-cache`, then `re/decomp-cache` (ADR-0041's
 /// deferral, ADR-0042's uptake), and is `re/cache` from ADR-0043. The
 /// cache-format version marker inside a directory invalidates anything an
-/// old name held, and a directory under an old name is never opened again —
+/// old name held. A directory under an old name is never opened again —
 /// it stays in the workspace for its owner to delete.
 ///
 /// Public because the surviving-scan readers below (#298) name their
-/// document sets by this convention, and a consumer needs to find the
-/// identity directory's sibling hash directories without restating the path.
+/// document sets by this convention. A consumer can then find the
+/// identity directory's sibling hash directories without restating the
+/// path.
 pub fn cache_root(workspace: impl AsRef<Path>) -> PathBuf {
     workspace.as_ref().join("re").join("cache")
 }
 
 /// The rules the cache ensures in every workspace `.gitignore`. The read
 /// cache is tens of thousands of regenerable JSON documents (22 MB on the
-/// EverQuest workspace) that a rerun or `--refresh-cache` rebuilds, and a
-/// workspace repo that commits them carries that dead weight through every
-/// clone and every checkout.
+/// EverQuest workspace) that a rerun or `--refresh-cache` rebuilds. A
+/// workspace repo that commits them carries that dead weight through
+/// every clone and every checkout.
 const ENSURED_IGNORES: &[&str] = &["re/cache/"];
 
 /// Ensure the workspace `.gitignore` carries [`ENSURED_IGNORES`], creating
@@ -756,8 +771,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// any field — including an engine-identity mismatch between this run's
 /// engine build and the build that wrote the directory (#358) — or a
 /// corrupt or absent manifest means the directory's entries cannot be
-/// trusted: it is wiped (so no stale entry can be served later) and
-/// rewritten with this run's facts, leaving a cold but writable directory.
+/// trusted. The directory is then wiped, so no stale entry can be served
+/// later, and rewritten with this run's facts. This leaves a cold but
+/// writable directory.
 /// A manifest written before the identity field shipped loads without
 /// error and carries no identity, mismatches this run's stamped identity,
 /// and follows the same cold path — unknown-engine bytes are never
@@ -812,17 +828,18 @@ fn open_manifest(
 /// names the very hash it is filed under, at the current cache format
 /// version, under this run's engine build — the identity
 /// [`current_engine_identity`] names — with its function listing still on
-/// disk: a document set the pairing pass can read without an engine.
+/// disk. That is a document set the pairing pass can read without any
+/// call to the analysis engine.
 ///
-/// The four checks are exactly the conditions [`open_manifest`] uses
-/// before replaying a directory warm, with one difference: a surviving
-/// scan is only read, never opened. A mismatched or corrupt sibling is not
-/// wiped — it stands for a different version's bytes, and this run's
-/// manifest has no claim on it. A sibling filed under another engine
-/// build's identity is no surviving scan at all (#358): those bytes were
-/// answered by an engine this run cannot name, and no pairing may replay
-/// them; a manifest written before the identity field shipped reads as no
-/// identity, and stands refused the same way.
+/// The four checks are exactly the conditions a warm open of this run's
+/// directory relies on, with one difference: a surviving scan is only
+/// read, never opened. A mismatched or corrupt sibling is not wiped — it
+/// stands for a different version's bytes, and this run's manifest has no
+/// claim on it. A sibling filed under another engine build's identity is
+/// no surviving scan at all (#358): an analysis engine this run cannot
+/// name answered those bytes, and no pairing may replay them. A manifest
+/// written before the identity field shipped reads as no identity, and is
+/// refused the same way.
 pub fn is_surviving_scan(dir: &Path) -> bool {
     let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -855,10 +872,10 @@ pub fn cached_exports(dir: &Path) -> Option<Vec<Symbol>> {
     cached_doc(&doc_path(dir, &CacheKey::Exports))
 }
 
-/// The decompiled body kept for `function` — the engine's raw text, before
-/// the noise filter, exactly as write-through stored it (issue #271) — with
-/// the same miss rules as [`cached_functions`]. The decompiler names the
-/// document through the same [`safe_key`] spelling that wrote it.
+/// The decompiled body kept for `function` — the analysis engine's raw
+/// text, before the noise filter, exactly as write-through stored it
+/// (issue #271) — with the same miss rules as [`cached_functions`]. The
+/// document is named by the same file-name spelling that wrote it.
 pub fn cached_body(dir: &Path, function: &str) -> Option<String> {
     let document = cached_doc::<DecompiledFunction>(&doc_path(
         dir,
