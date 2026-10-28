@@ -1,19 +1,20 @@
 //! Body-signature matching over decompiled functions.
 //!
 //! [`LibmatchMatcher`] owns the signature set a scan reads bodies
-//! against: [`LibmatchSignature`] records, each a named bundle of
-//! normalized-line regexes with a minimum line-count floor. The set is
-//! configurable — supply it whole through
-//! [`with_signatures`](Self::with_signatures) — and
+//! against. Its records are [`LibmatchSignature`]s: each a named bundle
+//! of normalized-line regexes with a minimum line-count floor. The set
+//! is configurable — supply it whole through
+//! [`with_signatures`](LibmatchMatcher::with_signatures) — and
 //! [`default_signatures`](crate::signature::default_signatures) is the
-//! built-in starter set the engine scans with by default.
+//! built-in starter set this scan uses by default.
 //!
-//! Matching is body-shape, not bytes: the body is normalized first
+//! Matching is body shape, not bytes. The body is normalized first
 //! ([`normalize`](crate::normalize)) so Ghidra variable names, register
-//! temporaries, and volatile addresses read as wildcards, while calls,
-//! operators, constants, string literals, and control-flow keywords
-//! stand. This is the body-based complement to ADR-0012's name-shape
-//! flagging; the two never touch each other's records.
+//! temporaries, and addresses that move between builds read as
+//! wildcards, while calls, operators, constants, string literals, and
+//! control-flow keywords stand. This is the body-based complement to
+//! ADR-0012's name-shape flagging; the two never touch each other's
+//! records.
 //!
 //! The matcher holds no scan source of its own and never writes back to
 //! the program (ADR-0020); one matcher serves an entire scan.
@@ -65,29 +66,31 @@ impl LibmatchMatcher {
     /// configuration order, and report a finding for each signature the
     /// body fits.
     ///
-    /// The body is normalized once and each signature's regexes are
-    /// matched line by line against the normalized shape: a signature
-    /// fits when the raw body spans at least its
-    /// [`min_lines`](LibmatchSignature::min_lines) lines and every regex
+    /// The body is normalized once, and each signature's regexes are
+    /// matched against the normalized lines. A signature fits when the
+    /// raw body spans at least its
+    /// [`min_lines`](LibmatchSignature::min_lines) lines, every regex
     /// in [`match_patterns`](LibmatchSignature::match_patterns) matches
-    /// some normalized line while no regex in
-    /// [`exclude_patterns`](LibmatchSignature::exclude_patterns) matches
-    /// any. The floor runs before any regex: a body shorter than it is
-    /// too small to carry a real library routine.
+    /// some normalized line, and no regex in
+    /// [`exclude_patterns`](LibmatchSignature::exclude_patterns)
+    /// matches any. The line-count floor runs before any regex: a body
+    /// shorter than the floor is too small to hold a real library
+    /// routine.
     ///
-    /// Each finding names the matched symbol and its family, is scored
-    /// at the signature's own
-    /// [`confidence`](LibmatchSignature::confidence) when it carries one
-    /// and at [`BODY_MATCH_CONFIDENCE`] otherwise, and carries as its
-    /// evidence the decompiled line whose normalized form matched the
-    /// signature's first required regex. A signature that asserts
-    /// nothing — no required regexes — fits nothing, and a signature
-    /// carrying a regex that will not compile can make no claim: it
-    /// matches nothing, and an uncompilable exclusion rejects nothing.
+    /// Each finding names the matched symbol and its family. It is
+    /// scored at the signature's own
+    /// [`confidence`](LibmatchSignature::confidence) when it carries
+    /// one, and at [`BODY_MATCH_CONFIDENCE`] otherwise. Its evidence is
+    /// the decompiled line whose normalized form matched the
+    /// signature's first required regex. A signature that requires
+    /// nothing — no required regexes — fits nothing. A required regex
+    /// that will not compile makes the signature claim nothing, and an
+    /// uncompilable exclusion vetoes nothing.
     ///
     /// A regex source may carry the `{name}` placeholder: the matcher
-    /// replaces it with the scanned function's name, escaped for literal
-    /// matching, so a signature can speak of the function itself.
+    /// replaces it with the scanned function's name, escaped for
+    /// literal matching, so a signature can speak of the function
+    /// itself.
     pub fn match_function(&self, func: &DecompiledFunction) -> Vec<LibmatchFinding> {
         let lines = func.body.lines().count();
         let normalized = normalize_lines(&func.body);
@@ -144,9 +147,9 @@ impl LibmatchMatcher {
                         signature.confidence.unwrap_or(BODY_MATCH_CONFIDENCE),
                     ),
                     evidence,
-                    // P19-3: every match this pass makes states its own
-                    // version authority — the signature proved a body
-                    // shape, never WHICH release carried it.
+                    // P19-3: every match this scan makes states its
+                    // own version authority — the signature proved a
+                    // body shape, never WHICH release carried it.
                     admission: Some(VERSION_UNKNOWN_ADMISSION.into()),
                 }));
             }
@@ -155,10 +158,10 @@ impl LibmatchMatcher {
     }
 }
 
-/// Compile one signature regex source, substituting the `{name}`
+/// Compile one signature regex source, replacing the `{name}`
 /// placeholder with the scanned function's name (already escaped for
-/// literal matching). A source that will not compile answers `None`:
-/// the lenient per-entry semantics — a broken regex can claim nothing
+/// literal matching). A source that will not compile answers `None` —
+/// the lenient per-entry semantics: a broken regex can claim nothing
 /// and veto nothing.
 fn compile(source: &str, name: &str) -> Option<Regex> {
     Regex::new(&source.replace("{name}", name)).ok()

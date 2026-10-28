@@ -1,52 +1,55 @@
-//! Confidence scoring and competing-match resolution.
+//! Evidence-confidence scoring and competing-match resolution.
 //!
-//! The confidence *score* itself is the shared [`calxgloss_types::Confidence`]
-//! type (a 0–100 value) every engine rates evidence with; this module is
-//! where the libmatch scan's scoring model lives.
+//! The score itself is the shared [`calxgloss_types::Confidence`] type
+//! (a 0–100 value) that every evidence engine rates its findings with;
+//! this module is where the known-library scan's scoring model lives.
 //!
 //! [`BODY_MATCH_CONFIDENCE`] is the standard score for a body-signature
-//! match: the normalized body carried every line shape the signature
-//! requires, which is real evidence, but a regex bundle over decompiled
-//! pseudo-C approximates the routine rather than proves it — the finding
-//! stays a hypothesis, flag-only, never written back to the program
-//! (ADR-0020). A signature may override the standard score per entry.
+//! match. The normalized body carried every line shape the signature
+//! requires, which is real evidence. But a regex bundle over decompiled
+//! pseudo-C approximates the routine rather than proves it, so the
+//! finding stays a hypothesis: flag-only, never written back to the
+//! program (ADR-0020). A signature may override the standard score per
+//! entry.
 //!
 //! [`resolve_matches`] is the resolution half of the model, per
 //! ADR-0022's strongest-evidence precedent. Two signatures can fit one
-//! body — the `memcpy` loop and a broader copy-loop shape both claim a
-//! byte-copy function — and one function is one function: resolution
-//! collapses its claims to the single strongest. The highest confidence
-//! wins, a tie keeps the claim the scan surfaced first, and the survivor
-//! stands where the function first appeared, so the list keeps scan
-//! order and two scans of the same program diff cleanly. Claims for
-//! *different* functions never conflict.
+//! body: the `memcpy` loop and a broader copy-loop shape both claim a
+//! byte-copy function. One function is one function, so resolution
+//! reduces its claims to the single strongest. The highest evidence
+//! confidence wins; on a tie, the claim the scan surfaced first is
+//! kept. The survivor stands where the function first appeared, so the
+//! list keeps scan order and two scans of the same program diff
+//! cleanly. Claims for *different* functions never conflict.
 
 use crate::types::LibmatchFinding;
 
-/// Confidence of a body-signature match: the normalized body carries
-/// every line shape the signature requires and clears its line floor,
-/// which is real evidence, but a regex bundle over decompiled pseudo-C
-/// approximates the routine rather than proves it — the finding stays a
-/// hypothesis for review, not a fact applied to the program.
+/// The standard evidence confidence of a body-signature match. The
+/// normalized body carries every line shape the signature requires and
+/// clears its line floor, which is real evidence. But a regex bundle
+/// over decompiled pseudo-C approximates the routine rather than
+/// proving it, so the finding stays a hypothesis for review, not a fact
+/// applied to the program.
 pub const BODY_MATCH_CONFIDENCE: u8 = 60;
 
-/// The confidence a tail-call thunk pays to inherit its callee's match:
-/// the thunk's whole body is one call line, which proves the wrapper
-/// relationship but only relays the callee's identified shape, so the
-/// claim sits a rung below the matched body's own score. The penalty
-/// is paid once per chain, not per hop: a chain of thunks all stands
-/// at one score, so the whole chain collapses into the same downstream
-/// decision.
+/// The evidence-confidence penalty a tail-call thunk pays to inherit
+/// its callee's match. The thunk's whole body is one call line: it
+/// proves the wrapper relationship but only relays the callee's
+/// identified shape, so the claim sits a band under the matched body's
+/// own score. The penalty is paid once per chain, not per hop: a chain
+/// of thunks all stands at one score, so the whole chain collapses into
+/// the same downstream decision.
 pub const TAIL_CALL_CONFIDENCE_PENALTY: u8 = 10;
 
 /// Resolve competing claims down to one per function.
 ///
-/// Where several signatures claim one function, the highest-confidence
-/// claim wins and the rest drop; a tie keeps the claim the scan
-/// surfaced first. The survivor stands where the function first
-/// appeared in the list, so the resolved list keeps scan order exactly
-/// as the raw scan did. Claims for different functions never conflict:
-/// resolution drops duplicates of a claim, never a distinct function.
+/// Where several signatures claim one function, the claim with the
+/// highest evidence confidence wins and the rest drop; a tie keeps the
+/// claim the scan surfaced first. The survivor stands where the
+/// function first appeared in the list, so the resolved list keeps scan
+/// order exactly as the raw scan did. Claims for different functions
+/// never conflict: resolution drops duplicates of a claim, never a
+/// distinct function.
 pub fn resolve_matches(findings: Vec<LibmatchFinding>) -> Vec<LibmatchFinding> {
     let mut winners: Vec<LibmatchFinding> = Vec::new();
     let mut positions = std::collections::HashMap::<String, usize>::new();

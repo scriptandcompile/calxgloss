@@ -1,11 +1,12 @@
-//! The starter set against the only engine's real output (issue #309):
-//! the built-in signatures used to speak Ghidra's spellings alone, and
-//! Kuna — the only analysis engine (ADR-0041) — spells the same shapes
-//! its own way, so a cold batch filed a findings-empty known-library
-//! document. The fixture target is the corpus: every statically linked
-//! CRT routine it carries is decompiled by Kuna itself, and the scan
-//! here is the very engine the pipeline's known-library row builds —
-//! built-in starter set, whole listing, no supplied database.
+//! The starter set tested against the analysis engine's real output
+//! (issue #309). The built-in signatures once spoke Ghidra's spellings
+//! alone. Kuna — the only analysis engine (ADR-0041) — spells the same
+//! shapes its own way, so a cold batch filed a known-library document
+//! with no findings. The fixture target is the corpus: every
+//! statically linked CRT routine it carries is decompiled by Kuna
+//! itself. The scan here is the very one the pipeline's known-library
+//! row builds — built-in starter set, whole listing, no supplied
+//! database.
 
 use calxgloss_kuna::source::KunaSource;
 use calxgloss_libmatch::engine::LibmatchEngine;
@@ -36,19 +37,20 @@ async fn fixture_claims() -> Vec<(String, String, u8)> {
 
 #[tokio::test]
 async fn the_starter_set_lands_real_identifications_on_kuna_bodies() {
-    // The drift #306 recorded: over the same listing the Ghidra-spelled
-    // starter set found nothing at all. With the normalizer's Kuna
-    // dialect layer and the bundles' corpus-grounded alternatives, the
-    // cold scan now claims the shapes the fixture really carries.
+    // Issue #306 recorded the drift: over this same listing, the
+    // Ghidra-spelled starter set found nothing at all. With the
+    // normalizer's Kuna dialect layer and the corpus-grounded
+    // alternatives added to the bundles, the cold scan now claims the
+    // shapes the fixture really carries.
     let claims = fixture_claims().await;
     assert!(
         !claims.is_empty(),
         "a cold scan of the fixture with the built-in set files a document that says something"
     );
 
-    // The NUL scan, Kuna-spelled: the fixture's `strnlen` walks the
-    // pointer until the byte reads as false (`while (*v1) {` /
-    // `v1 = &v1[1];`) — the length-scan shape, at the standard
+    // The NUL-scan claim, in Kuna's spelling: the fixture's `strnlen`
+    // walks the pointer until the byte reads as false (`while (*v1) {`
+    // / `v1 = &v1[1];`). That is the length-scan shape, at the standard
     // body-evidence score.
     assert!(
         claims
@@ -59,12 +61,12 @@ async fn the_starter_set_lands_real_identifications_on_kuna_bodies() {
         "the strnlen body lands the strlen scan shape: {claims:?}"
     );
 
-    // The guarded `free`, Kuna-spelled: bodies that release a heap
-    // block behind a falseness test (`if (!v1)` … `free(v1);`) read as
-    // the `operator delete` wrapper's thin shape — the entry's own
-    // doctrine admits any allocation helper reads alike, which is why
-    // it claims the deliberately sloppier 50, far under the 80 the
-    // call graph's Skip classification demands.
+    // The guarded `free`, in Kuna's spelling: bodies that release a
+    // heap block behind a falseness test (`if (!v1)` … `free(v1);`)
+    // read as the `operator delete` wrapper's thin shape. The entry's
+    // own note admits any allocation helper reads alike, which is why
+    // it deliberately claims the sloppier 50 — far under the 80 that
+    // the call graph's `Skip` classification demands.
     for helper in ["__Bfree_D2A", "_execute_onexit_table"] {
         assert!(
             claims
@@ -76,11 +78,11 @@ async fn the_starter_set_lands_real_identifications_on_kuna_bodies() {
         );
     }
 
-    // The exclusions hold: the fixture's own `fixture_describe`
-    // allocates *and* frees — a body calling `malloc` is not the
+    // The exclusions hold. The fixture's own `fixture_describe`
+    // allocates *and* frees: a body calling `malloc` is not the
     // `delete` wrapper, and one calling `free` is not the `new`
-    // wrapper — and the import thunks (`memcpy`, `memset`, `strlen`
-    // as `return memcpy(a0,a1,a2); // jump-as-call`) are far under any
+    // wrapper. The import thunks (`memcpy`, `memset`, `strlen` as
+    // `return memcpy(a0,a1,a2); // jump-as-call`) sit far under every
     // entry's line-count floor. Nothing else in the listing fits.
     assert!(
         !claims
