@@ -1,4 +1,4 @@
-//! Retry loop orchestration — types, strategy selection, and the retry loop itself.
+//! Retry loop orchestration — types, retry-strategy selection, and the retry loop itself.
 //!
 //! When the LLM's first translation attempt fails verification, this module
 //! provides a structured retry loop that feeds compilation errors or failing
@@ -107,31 +107,31 @@ pub(crate) fn log_token_usage(
 }
 
 // ============================================================================
-// Strategy adapters — one closed dispatch over the prompt builders (#333)
+// Retry-strategy adapters — one dispatch over the prompt builders (#333)
 // ============================================================================
 
 /// The verdict evidence the fix prompts quote — always about **the code
-/// being fixed**: since #334 the loop routes it from the latest failed
-/// attempt's own record and seam outcome, and nobody re-verifies to
-/// re-gather it. The verifier is asked once per candidate code.
+/// being fixed**: since #334 the loop reads it from the latest failed
+/// attempt's own record and that attempt's seam outcome, and it is never
+/// gathered again by re-verifying. The verifier is asked once per code.
 pub(crate) struct UnitVerdict {
     /// The failing verdict's compile errors — what the compile_fix and
     /// escalate prompts quote when present.
     pub compilation_errors: Vec<String>,
     /// The failing behavioral-test lines as quoted — what the test-shaped
     /// prompts quote. The seam leaves its "Verification failed" sentinel
-    /// here when the verification run itself fell over.
+    /// here when the verification run itself fails.
     pub failed_test_quotes: Vec<String>,
     /// The structured payload of failing cases — the edge-case builder's
-    /// typed slice; the seam fabricates the null-filled placeholder on a
-    /// failed verification run.
+    /// typed slice; the seam substitutes the null-filled placeholder when
+    /// the verification run itself failed.
     pub structured_failed_cases: Vec<calxgloss_prompts::EdgeCaseTest>,
 }
 
 impl UnitVerdict {
     /// Route the verdict from the newest recorded attempt and the seam's
-    /// outcome for it — the routing that replaced the arms' per-attempt
-    /// re-verification (#334).
+    /// outcome for it — this replaced the per-attempt re-verification the
+    /// match arms used to do (#334).
     pub(crate) fn from_failure(result: &RetryResult, outcome: &attempt::AttemptOutcome) -> Self {
         let record = result
             .attempts
@@ -151,28 +151,28 @@ impl UnitVerdict {
     }
 }
 
-/// Everything a strategy adapter needs to build its fix prompt — the one
-/// shape that passes through the closed door (issue #333).
+/// Everything a retry-strategy adapter needs to build its fix prompt — the
+/// one request shape every retry-strategy call uses (issue #333).
 pub(crate) struct FixPromptRequest<'a> {
-    /// The unit under repair: identity, code, suite, tier, and escalate's
-    /// wider reads (address, call graph).
+    /// The unit under repair: identity, code, suite, context tier, and
+    /// escalate's wider reads (address, call graph).
     pub unit: &'a attempt::AttemptUnit<'a>,
     /// The verdict evidence the prompt quotes.
     pub verdict: &'a UnitVerdict,
     /// Failure history for failure-informed prompting.
     pub history: &'a [calxgloss_types::FailureHint],
-    /// Optional workspace path — the escalate adapter's file-context pull.
+    /// Optional workspace path — where the escalate adapter reads file context.
     pub workspace: Option<&'a std::path::Path>,
-    /// The batch's shared scan source — the escalate adapter's neighbor pull.
+    /// The batch's shared scan source — what the escalate adapter reads neighbors from.
     pub source: &'a calxgloss_decomp::PipelineSource,
     /// The seam capability report held since the batch opened its scan
-    /// source — the escalate adapter's one-family fold (issue #355).
+    /// source — what the escalate adapter uses for one family's seam check (issue #355).
     pub seam_report: &'a calxgloss_types::CapabilityReport,
 }
 
-/// The retry context's single door to the prompt builders: one closed
-/// dispatch keyed by [`RetryStrategy`], the only thing that asks them.
-/// Each strategy module's adapter keeps today's exact shape — payload
+/// The retry context's one call site for the prompt builders: one dispatch
+/// keyed by [`RetryStrategy`], the only code that asks them. Each
+/// retry-strategy module's adapter keeps today's exact shape — payload
 /// split, plain-versus-failure-informed rule (empty history means plain),
 /// and template rendering. `Default` never comes through: re-sending the
 /// original prompt is selection, and the loop-side skip arm owns it.
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(verdict.structured_failed_cases[0].error, "mismatch");
     }
 
-    /// LLM-tail outcomes have no candidate verdict to route — the match
+    /// Outcomes with no candidate code have no verdict to route — the match
     /// arm yields an empty structured slice beside the record's payload.
     #[test]
     fn unit_verdict_from_failure_carries_no_structured_cases_for_other_outcomes() {

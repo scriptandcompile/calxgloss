@@ -1,26 +1,26 @@
 //! Carry-over seeding — first attempt seeded from an accepted translation (issue #299).
 //!
-//! When a binary's newer version re-exports a function whose previous-version
-//! twin already has an *accepted* translation (a merged `re/{binary}/{function}...`
-//! branch — the review overlay's Accepted classification, ADR-0003), the new
-//! function's attempt 1 seeds from that accepted code instead of asking the
-//! LLM cold. The seeded unit then runs through the normal pipeline — baseline
-//! capture and full verification against the NEW binary's bytes — so an
-//! accepted translation is never trusted blindly: it must prove itself against
-//! the new bytes or the fresh attempt chain takes over (P18's
-//! "binary-diff-as-similarity-heuristic" bet, `docs/adr/0016`).
+//! When a target binary's newer version re-exports a function whose
+//! previous-version twin already has an *accepted* translation (a merged
+//! `re/{binary}/{function}...` branch — the review overlay's Accepted
+//! classification, ADR-0003), the new function's attempt 1 seeds from
+//! that accepted code instead of asking the LLM cold. The seeded unit
+//! runs the normal pipeline — baseline capture and full verification
+//! against the NEW target binary's bytes — so an accepted translation
+//! is never trusted blindly: it must prove itself against the new bytes
+//! or the fresh attempt chain takes over (P18's "binary-diff-as-similarity-heuristic" bet, `docs/adr/0016`).
 //!
-//! Provenance is explicit and survives into the record: every seeded result
-//! names the old function and the attempt branch its code came from, and the
-//! commit on the NEW branch says "seeded from". Nothing carries a Verified
-//! mark — carry-over is the translation hypothesis, the deterministic
-//! verification is the verdict.
+//! Provenance is explicit and stays visible in the record: every seeded
+//! result names the old function and the attempt branch its code came
+//! from, and the commit on the NEW branch says "seeded from". No seeded
+//! result carries a Verified mark — carry-over is the translation
+//! hypothesis, and the deterministic verification decides it.
 //!
-//! Seeds are collected from the pairing documents the version-pairing trigger
-//! (issue #298) leaves in `{analysis}/bdiff/` during the same pre-batch scan
-//! step, and the accepted-code lookup goes through an injected port
-//! ([`AcceptedAttemptSource`]) — the translator never touches git itself,
-//! mirroring how the trigger ports work (`version_pairing.rs`).
+//! Seeds are collected from the pairing documents the version-pairing
+//! trigger (issue #298) leaves in `{analysis}/bdiff/` during the same
+//! pre-batch scan step. The accepted-code lookup goes through an
+//! injected port ([`AcceptedAttemptSource`]) — the translator never
+//! touches git itself (`version_pairing.rs`'s trigger ports work alike).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -79,7 +79,7 @@ pub struct CarryOverRecord {
 
 impl CarryOverRecord {
     /// Provenance sentence for the commit message on the new function's
-    /// branch: names the old function and the attempt branch the code rode.
+    /// branch: names the old function and the attempt branch it came from.
     pub fn commit_note(&self) -> String {
         format!(
             "seeded from {} attempt {} (paired, {}% confidence)",
@@ -91,19 +91,19 @@ impl CarryOverRecord {
 /// Collect the carry-over seeds for `functions` from the pairing documents
 /// the version-pairing trigger left in `{analysis}/bdiff/`.
 ///
-/// Gate by gate (issue #299): the **floor gate** drops records below
-/// [`CARRY_OVER_CONFIDENCE_FLOOR`] — below it a function queues fresh exactly
-/// as it does today; the **staleness gate** refuses a document that doesn't
-/// self-name `binary` whose hash matches `binary_path`'s current bytes — a
-/// stale document describes a different version situation and seeding from
-/// it would be guesswork; and the **one-branch-one-seed rule** keeps two new
-/// functions from ever claiming the same accepted translation (the strongest
-/// pairing wins the claim). Everything degrades to "no seed": no documents,
-/// unreadable documents and functions without an accepted twin all queue
-/// fresh, unchanged from today.
+/// Gate by gate (issue #299). The **floor gate** drops records below
+/// [`CARRY_OVER_CONFIDENCE_FLOOR`] — below it a function queues fresh
+/// exactly as today. The **staleness gate** refuses a document unless it
+/// names `binary` and the hash of `binary_path`'s current bytes — a
+/// stale document describes a different version situation, and seeding
+/// from it would be guesswork. The **one-branch-one-seed rule** keeps
+/// two new functions from ever claiming the same accepted translation:
+/// the strongest pairing wins the claim. Everything degrades to "no
+/// seed": no documents, unreadable documents, and functions without an
+/// accepted twin all queue fresh, unchanged from today.
 ///
-/// One entry per function that is confidently paired *and* whose twin has an
-/// accepted translation; the rest are absent.
+/// One entry per function that is confidently paired *and* whose twin
+/// has an accepted translation; the rest are absent.
 pub fn collect_seeds(
     workspace: &Path,
     binary: &str,
@@ -116,10 +116,10 @@ pub fn collect_seeds(
         Ok(entries) => entries,
         Err(_) => return HashMap::new(), // no pairing documents → fresh translation
     };
-    // The staleness gate: a document is eligible only when it self-names this
-    // binary and its `new_bytes_sha256` is the exact bytes being translated
-    // right now — the same hash the pairing trigger recorded in this run's
-    // pre-batch scan.
+    // The staleness gate: a document is eligible only when it names this
+    // target binary itself and its `new_bytes_sha256` is the exact bytes
+    // being translated right now — the same hash the pairing trigger
+    // recorded in this run's pre-batch scan.
     let new_sha = match calxgloss_decomp::sha256_of_file(binary_path) {
         Ok(Some(sha)) => sha,
         Ok(None) => return HashMap::new(), // no live bytes to compare against
@@ -200,9 +200,9 @@ pub fn collect_seeds(
             if claimed.contains(&record.old_function) {
                 continue;
             }
-            // The old twin lives under the same binary key — branch names
-            // keep the binary verbatim, and the previous-version scan that
-            // produced this document ran under the same binary name.
+            // The old twin lives under the same binary identity — branch
+            // names keep the binary name verbatim, and the previous-
+            // version scan that produced this document ran under it.
             let Some((old_attempt, rust_code)) =
                 source.accepted_attempt(binary, &record.old_function)
             else {
@@ -406,8 +406,8 @@ mod tests {
 
     #[test]
     fn no_pairing_documents_mean_everything_queues_fresh() {
-        // A binary that has never changed version: the #298 trigger wrote
-        // nothing, and the queue's inputs are untouched.
+        // A target binary that has never changed version: the #298
+        // trigger wrote nothing, and the queue's inputs are untouched.
         let (ws, binary_path, _new_sha) = workspace_with_binary(b"one version unchanged");
         let src = source_with(&[]);
 
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn two_documents_for_one_function_strongest_pairing_wins() {
         // Successive versions each left a pairing document; the strongest
-        // confidence decides which twin the code rides in on.
+        // pairing confidence decides which twin the code comes from.
         let (ws, binary_path, new_sha) = workspace_with_binary(b"the new version");
         file_document(
             ws.path(),

@@ -1,74 +1,74 @@
-//! The evidence-scan registry — one descriptor behind the pre-batch scan
-//! phase (issue #302, spec #301).
+//! The evidence-scan registry — the descriptor rows behind the pre-batch
+//! scan phase (issue #302, spec #301).
 //!
 //! The contract, in both directions:
 //!
 //! * **What the phase owns** (and no row restates): the fan-out window and
 //!   its named cap, the measured high-water mark, the single scan-phase
 //!   heartbeat row armed around the whole group, the completion latch that
-//!   orders dependent scans, the cached-document short-circuit ahead of any
+//!   orders dependent scans, the cached-hit short-circuit ahead of any
 //!   engine read, the persist-or-skip decision with its warn-and-continue
 //!   degradation, and the join-everything / cancel-nothing rule. That
-//!   machinery lives in
-//!   [`run_prebatch_scans`](crate::TranslationPipeline::run_prebatch_scans)
-//!   and its helpers; a row never arms, joins, or latches anything.
+//!   machinery lives in the pipeline's private `run_prebatch_scans`
+//!   method and its helpers; a row never arms, joins, or latches anything.
 //! * **What a row supplies** (the whole of its per-engine knowledge): the
-//!   scan's name — carried as identity so a later engine-digest cache key
-//!   has one home; where its document is filed, named through that
-//!   engine's own persistor; how to build its engine from the batch's
-//!   shared read source; the scan-failed and save-failed warning wording;
-//!   the scan-started and cached-hit wording (operator-visible today, so
-//!   the generic pass keeps it byte-for-byte); what the success log
-//!   reports; and optional pre-scan / post-scan hooks.
+//!   scan name, kept as the scan's identity so a later engine-digest cache
+//!   key has one definition site; where its document is filed, named
+//!   through that engine's own persistor; how to build the engine from the
+//!   batch's shared read source; the scan-failed and save-failed warning
+//!   wording; the scan-started and cached-hit wording (operator-visible
+//!   today, so the generic pass keeps it byte-for-byte); what the success
+//!   log reports; and optional pre-scan / post-scan hooks.
 //!
-//! [`ScanDescriptor::new`] is the single generic constructor: it is the
-//! only place the scan's shape — short-circuit, engine call, persist,
-//! degrade, completion log — is written down. Rows are stored type-erased
-//! in the table because each engine's result is its own type and the
-//! fifteen cannot sit in one list unboxed.
+//! [`ScanDescriptor::new`] is the one generic constructor: the only place
+//! the scan's shape (short-circuit, engine call, persist, degrade,
+//! completion log) is written down. The table stores rows type-erased,
+//! because each engine's result is its own type and the fifteen rows
+//! cannot share one unboxed list.
 //!
 //! The table is `pub` on purpose: the later generic CLI scan command
-//! (P39) iterates these same rows. The descriptor is a pipeline-side
-//! description of an engine, not a trait the evidence crates implement —
-//! no evidence crate gains a dependency on, or implements, a
-//! pipeline-owned abstraction, and there is no shared persistor interface:
-//! each row names its location through its own concrete `JsonStore`-based
+//! (P39) iterates these same rows. A descriptor is a pipeline-side
+//! description of an engine, not a trait the evidence crates implement:
+//! no evidence crate depends on or implements a pipeline-owned
+//! abstraction, and there is no shared persistor interface. Each row
+//! names its document location through its own concrete `JsonStore`-based
 //! persistor, exactly as the deleted legacy path did.
 //!
 //! The run entry point takes a per-run [`ScanRunOptions`] record beside
-//! the scan context (issue #338, spec #337): the record carries exactly
-//! the concepts today's CLI flags actually need — a JSON database file
-//! overriding the engine's built-in set, suppression of the engine's own
+//! the scan context (issue #338, spec #337). The record carries exactly
+//! the concepts today's CLI flags need — a JSON database file that
+//! overrides the engine's built-in set, suppression of the engine's own
 //! write-back during the scan, and an overwrite policy for the
-//! filed-document short-circuit — and nothing else. A row interprets the
-//! options inside its own build steps, so no engine-named enum or shared
-//! per-engine config vocabulary enters the shape, and the shipped scan
-//! phase keeps calling [`ScanDescriptor::run`], which hands the
-//! defaults: the fan-out, the sequential registry legs, and the
-//! registry's own pinned tests ride the options machinery untouched.
+//! filed-document short-circuit — and nothing else. Each row interprets
+//! the options inside its own build steps, so no engine-named enum or
+//! shared per-engine config vocabulary enters the shared shape. The
+//! shipped scan phase keeps calling [`ScanDescriptor::run`], which hands
+//! the defaults: the fan-out, the sequential registry legs, and the
+//! registry's own pinned tests use the options machinery unchanged.
 //!
-//! Every scan now runs from its row (issue #305): the ordering edge that
+//! Every scan now runs from its row (issue #305). The ordering edge that
 //! once kept parameter-type inference and callback detection on the
-//! legacy path is table data too — the callback row names the inference
+//! legacy path is table data too: the callback row names the inference
 //! row in its [`ScanRow::waits_for`], and the module owns the completion
-//! latch generically ([`CompletionLatch`]): [`arm_completion_latches`]
-//! arms one latch per producer the rows declare, and the run shape
-//! hands it to the producer, publishing it on every exit whatever the
-//! outcome, and to the waiter, whose pre-scan hook awaits it before
+//! latch generically ([`CompletionLatch`]). [`arm_completion_latches`]
+//! arms one latch per producer the rows declare. The run shape hands
+//! that latch to the producer, which publishes it on every exit whatever
+//! the outcome, and to the waiter, whose pre-scan hook awaits it before
 //! composing from the producer's document. No named latch field sits on
-//! the handle or the module, and a second ordering edge added later is
-//! one more pair of rows, not new mechanism.
+//! the handle or the module, and a second ordering edge later is one
+//! more pair of rows, not new mechanism.
 //!
 //! The legacy scan plumbing — the fourteen scan methods on `ScanJob`,
 //! their pipeline wrappers, the table thunks, and the fourteen `ensure_*`
-//! entry points — was deleted by issue #308: the registry is the only way
-//! a scan enters the phase, and the operator-visible wording and document
-//! locations the legacy path produced are pinned by the registry's own
-//! tests, not by keeping dead code compiling. A new Evidence engine joins
-//! with exactly one row: a `fn x_row() -> ScanDescriptor` built through
-//! [`ScanDescriptor::new`], added to [`scan_rows`]' table — and the
-//! roster test names every row, so joining or leaving the phase is always
-//! a deliberate, reviewed edit (the `libmatch` drift, spec #301).
+//! entry points — was deleted by issue #308. The registry is now the
+//! only way a scan enters the phase, and the registry's own tests pin the
+//! operator-visible wording and document locations the legacy path
+//! produced, rather than keeping dead code compiling. A new Evidence
+//! engine joins with exactly one row: a `fn x_row() -> ScanDescriptor`
+//! built through [`ScanDescriptor::new`] and added to [`scan_rows`]'
+//! table. The roster test names every row, so joining or leaving the
+//! phase is always a deliberate, reviewed edit (the `libmatch` drift,
+//! spec #301).
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -114,11 +114,11 @@ use tracing::{debug, info, warn};
 
 use crate::pipeline::callback_signature_map;
 
-/// A future with nothing borrowed from its caller, ready to cross onto a
-/// scan task — the shape the scan-phase fan-out moves every scan in.
+/// A future that borrows nothing from its caller, so it can move onto a
+/// scan task — the shape the scan-phase fan-out uses for every scan.
 type OwnedFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-/// The row's persistor step: builds the engine's persistor over a
+/// The row's persistor step: builds the engine's persistor for a
 /// workspace root.
 type PersistorStep<P> = Arc<dyn Fn(&Path) -> P + Send + Sync + 'static>;
 
@@ -135,11 +135,11 @@ type SaveStep<T, P, SaveError> =
 
 /// The row's engine step: build the engine from the batch's shared read
 /// source and run its scan over the binary. The run's options arrive
-/// here (issue #338) and each row interprets the ones it can inside its
-/// own build — the override-capable rows read the set-override file into
-/// their own database type, and the row with a write-back consults the
-/// suppression signal when constructing its engine — so the shared
-/// shape stays free of engine-named vocabulary.
+/// here (issue #338), and each row interprets the ones it can inside its
+/// own build. The rows that can take a set override read the override
+/// file into their own database type, and the row with a write-back
+/// checks the suppression signal when it constructs its engine — so the
+/// shared shape stays free of engine-named vocabulary.
 type EngineStep<T, ScanError> = Arc<
     dyn Fn(PipelineSource, String, ScanRunOptions) -> OwnedFuture<std::result::Result<T, ScanError>>
         + Send
@@ -150,39 +150,39 @@ type EngineStep<T, ScanError> = Arc<
 /// The row's success-log step: the counts worth reporting.
 type SuccessStep<T> = Arc<dyn Fn(&ScanContext, &T) + Send + Sync + 'static>;
 
-/// An optional per-row step the phase runs around the scan: a pre-scan
-/// step runs after the short-circuit decided to scan and before the engine
-/// is built (the callback row awaits its declared dependency and composes
-/// its signature map there), and a post-scan step runs on every exit —
-/// cached hit, success, and both failures alike. Completion latches are
-/// not a row hook: the run shape itself publishes the latch a row's
-/// producer arm carries, on every exit (see [`ScanLatches`]). Rows use
-/// neither hook today beyond callback detection's pre-scan step; the
-/// shape is here so later rows need no new mechanism.
+/// An optional per-row step the phase runs around the scan. A pre-scan
+/// step runs after the short-circuit decided to scan and before the
+/// engine is built (the callback row waits for its declared dependency
+/// and composes its signature map there); a post-scan step runs on every
+/// exit — cached hit, success, and both failures alike. Completion
+/// latches are not a row hook: the run shape itself publishes the latch
+/// a row's producer arm carries, on every exit (see [`ScanLatches`]).
+/// Only callback detection uses a hook today, in its pre-scan step; the
+/// shape exists so later rows need no new mechanism.
 pub type ScanHook = Arc<dyn Fn(&ScanContext) -> OwnedFuture<()> + Send + Sync + 'static>;
 
 /// A declared dependency's completion latch — the phase's one ordering
-/// edge between rows, named only by the producer's scan name in the
-/// declaring rows (issue #305, generalizing issue #238's named field).
+/// edge between rows. Rows name the edge by the producer's scan name
+/// (issue #305, generalizing issue #238's named field).
 ///
-/// The phase arms one latch per scan a row declares it waits for; the
+/// The phase arms one latch per scan a row declares it waits for. The
 /// producer's run publishes it on every exit — cached-document hit,
 /// successful scan, and failure alike — and the waiter's run awaits it
 /// in its pre-scan hook before composing from the producer's document.
-/// What made callback detection read inference's output only after
-/// inference had run — once a positional accident of the preamble's
-/// call order — is data on the rows that depend on it.
+/// Callback detection used to read inference's output only after
+/// inference had run, from a positional accident in the preamble's call
+/// order; that order now lives as data on the rows that depend on it.
 ///
 /// A shared one-shot: every clone of the latch sees the same completion
 /// flag. [`wait`](Self::wait) answers immediately once the flag is set,
 /// so a waiter that arrives after the publish never blocks and one that
-/// arrived before is released by it. Because the publish happens on
-/// failure too — and a latch whose producer never ran closes with it —
-/// a waiter is never stranded: it releases and degrades to composing
-/// nothing when no document is in place.
+/// arrived before is released by it. The publish happens on failure too,
+/// and a latch whose producer never ran closes the same way, so a
+/// waiter never waits forever: with no producer document it simply
+/// proceeds and composes its signature map from an empty set.
 #[derive(Debug, Clone)]
 pub struct CompletionLatch {
-    /// The completion flag, kept alive across clones of the latch by
+    /// The completion flag. Every clone of the latch shares it through
     /// the same `Arc<watch::Sender>` shape the progress bus uses.
     completed: Arc<watch::Sender<bool>>,
 
@@ -200,8 +200,8 @@ impl CompletionLatch {
         }
     }
 
-    /// Publish completion — the producing scan is done, succeeded or
-    /// failed. Idempotent: a second publish changes nothing.
+    /// Publish completion — the producing scan is done, whether it
+    /// succeeded or failed. A second publish changes nothing.
     pub fn publish(&self) {
         self.completed.send_replace(true);
     }
@@ -213,9 +213,9 @@ impl CompletionLatch {
     }
 
     /// Wait for the producing scan to finish. Returns immediately when
-    /// the latch is already published; a channel closed with no
-    /// publisher left also releases, so the waiter is never stranded —
-    /// only degraded.
+    /// the latch is already published. A channel closed with no
+    /// publisher left also releases, so the waiter is never left
+    /// waiting forever — it just degrades.
     pub async fn wait(&self) {
         let mut waiter = self.waiter.clone();
         // `wait_for` re-checks the current value before each poll, so a
@@ -230,8 +230,8 @@ impl Default for CompletionLatch {
     }
 }
 
-/// The completion latches the phase hands to one row's run, wired from
-/// the table's declarations rather than from anything the row builds
+/// The completion latches the phase hands to one row's run. It wires
+/// them from the table's declarations, not from anything the row builds
 /// itself (issue #305): a row never arms or publishes a latch through a
 /// field of its own — the phase arms one [`CompletionLatch`] per declared
 /// producer ([`arm_completion_latches`]) and hands it here. Adding an
@@ -249,61 +249,61 @@ pub struct ScanLatches {
 }
 
 /// The per-run options the registry's run entry point takes beside the
-/// scan context (issue #338, spec #337) — the genuinely shared concepts
-/// the existing scan flags need, and nothing else. Every field defaults
-/// to the shipped scan phase's behavior, so the phase and its pinned
-/// tests keep calling [`ScanDescriptor::run`] untouched; a row
-/// interprets the options only inside its own build steps, so no
-/// engine-named vocabulary sits in this shape.
+/// scan context (issue #338, spec #337): the shared concepts the existing
+/// scan flags need, and nothing else. Every field defaults to the shipped
+/// scan phase's behavior, so the phase and its pinned tests keep calling
+/// [`ScanDescriptor::run`] untouched. Each row interprets the options
+/// only inside its own build steps, so no engine-named vocabulary sits
+/// in this shape.
 #[derive(Debug, Clone, Default)]
 pub struct ScanRunOptions {
-    /// A JSON database file overriding the engine's built-in set — one
-    /// concept, read through the row's own database type by the rows
+    /// A JSON database file that overrides the engine's built-in set —
+    /// one concept, read through the row's own database type by the rows
     /// that can take one (algorithm recognition's pattern set, known-
     /// library identification's signature set). The file's set replaces
-    /// the built-in one whole; a missing, unreadable, or malformed file
-    /// fails the row's scan with the error naming the path, rather than
-    /// silently degrading the scan to a partial set.
+    /// the built-in one whole. A missing, unreadable, or malformed file
+    /// fails the row's scan with the error naming the path, instead of
+    /// quietly degrading the scan to a partial set.
     pub set_override_file: Option<PathBuf>,
 
-    /// Suppress the engine's own write-back during the scan — the
-    /// signal the row that performs a write-back consults when it
-    /// builds its engine, keeping the scan read-only when the operator
-    /// asked for it.
+    /// Suppress the engine's own write-back during the scan. The row
+    /// that performs a write-back checks this signal when it builds its
+    /// engine, so the scan stays read-only when the operator asks for
+    /// it.
     pub suppress_write_back: bool,
 
     /// The overwrite policy: when set, the run bypasses the
     /// filed-document short-circuit and re-scans, replacing the filed
-    /// document on success. Failure semantics are preserved — a failed
-    /// re-scan never touches the previously filed document, because
-    /// only a successful scan saves.
+    /// document on success. The failure rule is kept: a failed re-scan
+    /// never touches the previously filed document, because only a
+    /// successful scan saves.
     pub overwrite_filed_document: bool,
 }
 
 /// The phase's run of one erased row: short-circuit, engine call,
 /// persist, degrade, completion log — composed from the row's steps by
-/// [`ScanDescriptor::new`], with the run's [`ScanRunOptions`] read by
-/// the shape itself (the overwrite policy ahead of the short-circuit)
-/// and interpreted inside the row's own engine build. Answers whether
-/// the document is in place.
+/// [`ScanDescriptor::new`]. The shape itself reads the run's
+/// [`ScanRunOptions`] (the overwrite policy ahead of the short-circuit),
+/// and the row interprets the rest inside its own engine build. The
+/// answer says whether the document is in place.
 type RunStep =
     Box<dyn Fn(ScanContext, ScanRunOptions) -> OwnedFuture<bool> + Send + Sync + 'static>;
 
 /// Everything one registered scan reads, owned by the scan itself: the
-/// binary it reads and its document is named after, the workspace root the
-/// document is filed under, and the batch's shared read source at the
-/// moment the phase armed it. A row borrows nothing from the batch.
+/// target binary it reads and its document is named after, the workspace
+/// root the document is filed under, and the batch's shared read source
+/// at the moment the phase armed it. A row borrows nothing from the batch.
 #[derive(Debug, Clone)]
 pub struct ScanContext {
-    /// The binary the scan reads and the document is named after.
+    /// The target binary the scan reads and the document is named after.
     pub binary: String,
 
     /// The workspace root the scan's document is filed under.
     pub workspace: PathBuf,
 
     /// The batch's shared read source: the armed cached source or the
-    /// loaded engine, exactly as `ScanJob`
-    /// carries it.
+    /// loaded engine, exactly as
+    /// `ScanJob` carries it.
     pub source: PipelineSource,
 
     /// The completion latches the phase armed for this row's declared
@@ -312,12 +312,12 @@ pub struct ScanContext {
     pub latches: ScanLatches,
 }
 
-/// The operator-visible wording a row carries so degradation and progress
-/// read exactly as the deleted legacy scan methods logged them (issue
-/// #308 keeps the wording, drops the plumbing). Each message matches the
-/// tracing fields the generic pass logs around it: the cached-hit debug
-/// carries `binary` and `path`, the started info carries `binary`, and
-/// both failures warn with `binary` and `error`.
+/// The operator-visible wording a row carries, so degradation and
+/// progress read exactly as the deleted legacy scan methods logged them
+/// (issue #308 keeps the wording, drops the plumbing). Each message
+/// matches the tracing fields the generic pass logs around it: the
+/// cached-hit debug carries `binary` and `path`, the started info
+/// carries `binary`, and both failures warn with `binary` and `error`.
 #[derive(Debug, Clone, Copy)]
 pub struct ScanMessages {
     /// The info line logged just before the engine read begins.
@@ -333,7 +333,7 @@ pub struct ScanMessages {
     pub save_failed: &'static str,
 }
 
-/// One scan row in its still-typed shape: the row's steps over one
+/// One scan row before type erasure: the row's steps, written over one
 /// engine's concrete result, persistor, and error types.
 /// [`ScanDescriptor::new`] erases it into the table.
 pub struct ScanRow<T, P, ScanError, SaveError>
@@ -343,7 +343,7 @@ where
     ScanError: std::fmt::Display + Send + 'static,
     SaveError: std::fmt::Display + Send + 'static,
 {
-    /// The scan's name, used in logs and carried as the scan's identity.
+    /// The scan name, used in logs and kept as the scan's identity.
     pub name: &'static str,
 
     /// The name of the scan this row's pre-scan work waits for, if any
@@ -353,13 +353,13 @@ where
     /// outcome — and to this row's run, awaited before the pre-scan
     /// hook composes from the producer's document. A declared producer
     /// missing from the table closes its latch's channel, so the waiter
-    /// releases degraded rather than stranded.
+    /// releases degraded instead of waiting forever.
     pub waits_for: Option<&'static str>,
 
     /// The row's operator-visible wording.
     pub messages: ScanMessages,
 
-    /// Builds the engine's persistor over a workspace root.
+    /// Builds the engine's persistor for a workspace root.
     pub persistor: PersistorStep<P>,
 
     /// Whether the document is already filed — the phase's short-circuit
@@ -373,9 +373,9 @@ where
     /// Persists the scan's document through the persistor.
     pub save: SaveStep<T, P, SaveError>,
 
-    /// Builds the engine from the batch's shared read source and runs its
-    /// scan over the binary, interpreting the run's options inside its
-    /// own build (issue #338).
+    /// Builds the engine from the batch's shared read source and runs
+    /// its scan over the target binary, interpreting the run's options
+    /// inside its own build (issue #338).
     pub build_and_scan: EngineStep<T, ScanError>,
 
     /// What the success log reports — genuinely per-engine (the type-
@@ -391,8 +391,8 @@ where
 }
 
 /// One registered scan as the phase's table holds it: the row's shape,
-/// type-erased, plus the identity and document location the table and its
-/// consumers read without running the scan.
+/// type-erased, plus the scan name and document location the table and
+/// its consumers read without running the scan.
 pub struct ScanDescriptor {
     name: &'static str,
     waits_for: Option<&'static str>,
@@ -401,22 +401,22 @@ pub struct ScanDescriptor {
 }
 
 impl ScanDescriptor {
-    /// Erase one typed row into the table — the single generic
+    /// Erase one typed row into the table — the one generic
     /// constructor, and the only place the scan's shape is written. The
     /// shape it applies: short-circuit on the filed document ahead of any
     /// engine read, unless the run's overwrite policy bypasses the
-    /// short-circuit and re-scans (issue #338); otherwise log the start,
-    /// run the pre-scan hook, build the engine from the batch's shared
-    /// read source — the run's options reaching that build, where the
-    /// row interprets the ones it can — persist the document, and
-    /// degrade to a warning (leaving no document on a first scan, and
-    /// leaving the previous one in place on a forced re-scan) when the
-    /// scan or the save fails — answering `false` either way, `true` on
-    /// a cached hit or a saved document. The post-scan hook runs on every
-    /// exit, and so does the publish of a producer arm's completion
-    /// latch: cached hit, success, and both failures release the waiter
-    /// alike (issue #305). The heartbeat, the window, and the joins stay
-    /// the phase's; the row never sees them.
+    /// short-circuit and re-scans (issue #338). Otherwise log the start,
+    /// run the pre-scan hook, and build the engine from the batch's
+    /// shared read source — the run's options reach that build, where
+    /// the row interprets the ones it can. Persist the document on
+    /// success. On a scan or save failure, degrade to a warning: a first
+    /// scan leaves no document, and a forced re-scan leaves the previous
+    /// one in place. The answer is `false` after either failure, `true`
+    /// on a cached hit or a saved document. The post-scan hook runs on
+    /// every exit, and so does the publish of a producer arm's
+    /// completion latch: cached hit, success, and both failures release
+    /// the waiter alike (issue #305). The heartbeat, the window, and the
+    /// joins stay the phase's; the row never sees them.
     pub fn new<T, P, ScanError, SaveError>(row: ScanRow<T, P, ScanError, SaveError>) -> Self
     where
         T: Send + 'static,
@@ -453,8 +453,8 @@ impl ScanDescriptor {
             let post_scan = post_scan.clone();
             Box::pin(async move {
                 let persistor = persistor(&ctx.workspace);
-                // The overwrite policy skips the filed-document
-                // short-circuit and re-runs the scan (issue #338); a
+                // The overwrite policy bypasses the filed-document
+                // short-circuit and re-runs the scan (issue #338). A
                 // save only ever follows a successful scan and never
                 // deletes, so a failed forced re-scan leaves the
                 // previous document filed.
@@ -558,7 +558,7 @@ impl ScanDescriptor {
 /// Control-flow pattern detection, the first scan to run from a row
 /// (issue #302). The wording matches the legacy
 /// `controlflow_detection` scan method
-/// byte-for-byte, and the document lands where that method filed it:
+/// byte-for-byte, and the document is filed where that method filed it:
 /// `re/analysis/controlflow/<binary>.json` through the engine's own
 /// persistor. No hooks — control-flow detection orders with nothing.
 fn controlflow_row() -> ScanDescriptor {
@@ -597,12 +597,12 @@ fn controlflow_row() -> ScanDescriptor {
     })
 }
 
-/// The registered scan rows: every scan the phase runs, and the only way
-/// a scan reaches the phase (issue #308). Adding a
-/// scan to (or dropping one from) the phase means editing this table —
-/// and the translator suite's roster test names the rows explicitly, so
-/// the edit is deliberate, never an accident of a list someone forgot
-/// (the `libmatch` drift, spec #301).
+/// The registered scan rows: every scan the phase runs, and the only
+/// way a scan reaches the phase (issue #308). Adding a scan to, or
+/// dropping one from, the phase means editing this table. The
+/// translator suite's roster test names the rows explicitly, so the
+/// edit is deliberate, never an accident of a list someone forgot (the
+/// `libmatch` drift, spec #301).
 pub fn scan_rows() -> Vec<ScanDescriptor> {
     vec![
         controlflow_row(),
@@ -625,15 +625,15 @@ pub fn scan_rows() -> Vec<ScanDescriptor> {
 
 /// Arm one completion latch per scan name the table declares a
 /// dependency on (issue #305): one latch per declared producer for the
-/// phase, a name declared by several waiters gets the one latch, and a
+/// phase — a name declared by several waiters gets the one latch, and a
 /// producer no row waits for gets none. The scan phase wires the result
-/// into each row's [`ScanContext`] — the producer's run publishes the
-/// latch on every exit, its waiters' runs await it — so an ordering
-/// edge is a row declaration and nothing else: a second edge added
+/// into each row's [`ScanContext`]: the producer's run publishes the
+/// latch on every exit, and its waiters' runs await it. So an ordering
+/// edge is a row declaration and nothing else — a second edge added
 /// later needs no new field on the handle or the module. A declared
 /// producer missing from the table leaves its latch with no publisher:
-/// the watch channel closes and its waiters release degraded rather
-/// than stranded.
+/// the watch channel closes, and its waiters release in a degraded
+/// state instead of waiting forever.
 pub fn arm_completion_latches(rows: &[ScanDescriptor]) -> Vec<(&'static str, CompletionLatch)> {
     let mut latches: Vec<(&'static str, CompletionLatch)> = Vec::new();
     for producer in rows.iter().filter_map(ScanDescriptor::waits_for) {
@@ -645,9 +645,9 @@ pub fn arm_completion_latches(rows: &[ScanDescriptor]) -> Vec<(&'static str, Com
 }
 
 /// Memory lifecycle detection, running from its row (issue #303). The
-/// wording matches the legacy `memory_detection`
-/// scan method byte-for-byte, and the document lands where that method
-/// filed it: `re/analysis/memory/<binary>.json` through the engine's own
+/// wording matches the legacy `memory_detection` scan method
+/// byte-for-byte, and the document is filed where that method filed it:
+/// `re/analysis/memory/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
 fn memory_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
@@ -683,7 +683,7 @@ fn memory_row() -> ScanDescriptor {
 
 /// Concurrency detection, running from its row (issue #303). The wording
 /// matches the legacy `sync_detection` scan
-/// method byte-for-byte, and the document lands at
+/// method byte-for-byte, and the document is filed at
 /// `re/analysis/sync/<binary>.json` through the engine's own persistor.
 /// No hooks — the scan orders with nothing.
 fn concurrency_row() -> ScanDescriptor {
@@ -719,7 +719,7 @@ fn concurrency_row() -> ScanDescriptor {
 /// Global-state reference-set detection, running from its row
 /// (issue #303). The wording matches the legacy
 /// `global_state_detection` scan method
-/// byte-for-byte, and the document lands at
+/// byte-for-byte, and the document is filed at
 /// `re/analysis/globalstate/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
 fn global_state_row() -> ScanDescriptor {
@@ -756,7 +756,7 @@ fn global_state_row() -> ScanDescriptor {
 
 /// Constant structure detection, running from its row (issue #303). The
 /// wording matches the legacy `const_detection`
-/// scan method byte-for-byte, and the document lands at
+/// scan method byte-for-byte, and the document is filed at
 /// `re/analysis/consts/<binary>.json` through the engine's own persistor.
 /// No hooks — the scan orders with nothing.
 fn constants_row() -> ScanDescriptor {
@@ -794,7 +794,7 @@ fn constants_row() -> ScanDescriptor {
 /// Error-handling idiom detection, running from its row (issue #303). The
 /// wording matches the legacy
 /// `error_handling_detection` scan method
-/// byte-for-byte, and the document lands at
+/// byte-for-byte, and the document is filed at
 /// `re/analysis/errhandling/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
 fn error_handling_row() -> ScanDescriptor {
@@ -831,7 +831,7 @@ fn error_handling_row() -> ScanDescriptor {
 
 /// Float/SIMD usage detection, running from its row (issue #303). The
 /// wording matches the legacy `floatsimd_detection`
-/// scan method byte-for-byte, and the document lands at
+/// scan method byte-for-byte, and the document is filed at
 /// `re/analysis/floatsimd/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
 fn floatsimd_row() -> ScanDescriptor {
@@ -868,12 +868,12 @@ fn floatsimd_row() -> ScanDescriptor {
 
 /// Type-database recovery, running from its row (issue #304). The wording
 /// matches the legacy `type_database` scan
-/// method byte-for-byte, and the document lands at
+/// method byte-for-byte, and the document is filed at
 /// `re/analysis/typesdb/<binary>.json` through the engine's own
-/// persistor. This row is the proof that no engine needs its own scan
-/// body for a richer success log: it reports named types, vtables, and
-/// inferred structs as three separate counts, and `on_saved` is the row's
-/// own closure over the engine's result type — the module holds no
+/// persistor. This row proves no engine needs its own scan body for a
+/// richer success log: it reports named types, vtables, and inferred
+/// structs as three separate counts, and `on_saved` is the row's own
+/// closure over the engine's result type — the module holds no
 /// engine-specific code. No hooks — the scan orders with nothing.
 fn type_database_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
@@ -893,10 +893,10 @@ fn type_database_row() -> ScanDescriptor {
         save: Arc::new(|persistor, db| persistor.save(db)),
         build_and_scan: Arc::new(|source, binary, options| {
             let engine = TypesDBEngine::with_source(source);
-            // The write-suppression signal is consulted right here, at
-            // this row's own engine construction (issue #338): the
-            // vtable-method tag write-back is this row's engine
-            // knowledge, and the shared shape only carries the signal.
+            // The row checks the write-suppression signal right here, at
+            // its own engine construction (issue #338): the vtable-method
+            // tag write-back is this row's engine knowledge, and the
+            // shared shape only carries the signal.
             let engine = if options.suppress_write_back {
                 engine.without_tagging()
             } else {
@@ -920,12 +920,12 @@ fn type_database_row() -> ScanDescriptor {
 
 /// Algorithm recognition, running from its row (issue #304). The wording
 /// matches the legacy `algorithm_recognition`
-/// scan method byte-for-byte, and the document lands at
+/// scan method byte-for-byte, and the document is filed at
 /// `re/analysis/algorithm/<binary>.json` through the engine's own
-/// persistor. The engine and the binary name move into the scan future —
-/// the recognition pass is deeply nested (its own concurrent pass inside)
-/// and rustc cannot prove a borrowed nested future `'static`
-/// (rust#100013), the same shape the legacy method ran. No hooks — the
+/// persistor. The engine and the binary name move into the scan future:
+/// the recognition pass is deeply nested (its own concurrent pass
+/// inside), and rustc cannot prove a borrowed nested future `'static`
+/// (rust#100013) — the same shape the legacy method ran. No hooks — the
 /// scan orders with nothing.
 fn algorithm_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
@@ -947,9 +947,9 @@ fn algorithm_row() -> ScanDescriptor {
             let engine = AlgorithmEngine::with_source(source);
             // The run's set-override file replaces the engine's built-in
             // signature sets whole inside this row's own build (issue
-            // #338) — read through the row's own database type, so a
+            // #338), read through the row's own database type. A
             // malformed file fails the scan with the error naming the
-            // file's path rather than silently scanning a partial set.
+            // file's path, instead of quietly scanning a partial set.
             Box::pin(async move {
                 let engine = match options.set_override_file {
                     Some(path) => engine.with_pattern_database(PatternDatabase::load(&path)?),
@@ -972,7 +972,7 @@ fn algorithm_row() -> ScanDescriptor {
 
 /// String-context mapping, running from its row (issue #304). The wording
 /// matches the legacy `string_context` scan
-/// method byte-for-byte, and the document lands at
+/// method byte-for-byte, and the document is filed at
 /// `re/analysis/stringctx/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
 fn string_context_row() -> ScanDescriptor {
@@ -1009,7 +1009,7 @@ fn string_context_row() -> ScanDescriptor {
 
 /// Library/API identification, running from its row (issue #304). The
 /// wording matches the legacy `api_detection`
-/// scan method byte-for-byte, and the document lands at
+/// scan method byte-for-byte, and the document is filed at
 /// `re/analysis/apidetect/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
 fn library_api_row() -> ScanDescriptor {
@@ -1045,7 +1045,7 @@ fn library_api_row() -> ScanDescriptor {
 /// Serialization-pattern detection, running from its row (issue #304).
 /// The wording matches the legacy
 /// `serialize_detection` scan method
-/// byte-for-byte, and the document lands at
+/// byte-for-byte, and the document is filed at
 /// `re/analysis/serialize/<binary>.json` through the engine's own
 /// persistor. No hooks — the scan orders with nothing.
 fn serialization_row() -> ScanDescriptor {
@@ -1082,12 +1082,12 @@ fn serialization_row() -> ScanDescriptor {
 
 /// Parameter-type inference, running from its row (issue #305). The
 /// wording matches the legacy `type_inference`
-/// scan method byte-for-byte, and the document lands where that method
-/// filed it: `re/analysis/typeinfer/<binary>.json` through the engine's
-/// own persistor. No hooks: publishing the completion latch its waiter
-/// declared is the run shape's own every-exit step, not a row hook —
-/// the row names no latch, it only *is* the producer the callback row's
-/// `waits_for` names.
+/// scan method byte-for-byte, and the document is filed where that
+/// method filed it: `re/analysis/typeinfer/<binary>.json` through the
+/// engine's own persistor. No hooks: publishing the completion latch its
+/// waiter declared is the run shape's own every-exit step, not a row
+/// hook — the row names no latch; it only *is* the producer the
+/// callback row's `waits_for` names.
 fn type_inference_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "type-inference",
@@ -1124,17 +1124,17 @@ fn type_inference_row() -> ScanDescriptor {
 /// (issue #305) — and the table's one declared ordering edge: its
 /// `waits_for` names the inference row, so the phase arms the completion
 /// latch that orders them. Its pre-scan hook is the whole of the scan's
-/// pre-scan work: await the producer's latch (released on every exit,
-/// so a failing inference scan degrades this one, never strands it),
-/// then compose the closure-contract signatures from the filed
-/// type-inference document into the cell the engine step reads back.
-/// The wording matches the legacy
+/// pre-scan work: wait for the producer's latch (released on every
+/// exit, so a failing inference scan degrades this one instead of
+/// leaving it waiting forever), then compose the closure-contract
+/// signatures from the filed type-inference document into the cell the
+/// engine step reads back. The wording matches the legacy
 /// `callback_detection` scan method
-/// byte-for-byte, and the document lands where that method filed it:
+/// byte-for-byte, and the document is filed where that method filed it:
 /// `re/analysis/callback/<binary>.json` through the engine's own
 /// persistor.
 fn callback_row() -> ScanDescriptor {
-    // The composed signature map crosses from the pre-scan hook to the
+    // The composed signature map passes from the pre-scan hook to the
     // engine step through this cell: the hook fills it after the wait
     // releases, and the engine step reads it when building the engine.
     // One row runs once per phase and `scan_rows` builds a fresh table
@@ -1186,12 +1186,12 @@ fn callback_row() -> ScanDescriptor {
                 let workspace = ctx.workspace.clone();
                 let binary = ctx.binary.clone();
                 Box::pin(async move {
-                    // The declared edge, released by the phase's arm:
-                    // the inference row publishes its latch on every
+                    // The declared edge, armed by the phase: the
+                    // inference row publishes its latch on every
                     // exit — cached hit, success, or failure — and a
                     // wait on an unclaimed latch closes with the
-                    // channel, so this scan is never stranded, only
-                    // ever degraded to an empty signature map.
+                    // channel, so this scan never waits forever; it
+                    // only degrades to an empty signature map.
                     if let Some(latch) = &latch {
                         latch.wait().await;
                     }
@@ -1208,17 +1208,17 @@ fn callback_row() -> ScanDescriptor {
 
 /// Known-library identification, joining the phase as the fifteenth row
 /// (issue #306, the drift spec #301 records: the engine, its persistor,
-/// and its CLI existed while nothing in a run ever filed its document).
-/// The document lands where its two readers already look —
+/// and its CLI existed, but no run ever filed its document).
+/// The document is filed where its two readers already look —
 /// `re/analysis/libmatch/<binary>.json` through the engine's own
 /// persistor — so the escalation prompt path finally finds a document
 /// on a cold run, and a call graph built after the phase finds it for
 /// Skip classification. No hooks — the scan orders with nothing.
 ///
-/// The batch's engine is built with the built-in starter signature set;
-/// an operator-supplied signature database reaches this row only as a
+/// The batch's engine is built with the built-in starter signature set.
+/// An operator-supplied signature database reaches this row only as a
 /// run's [set-override file](ScanRunOptions::set_override_file), read
-/// inside the row's own engine build (issue #338) — a batch never
+/// inside the row's own engine build (issue #338). A batch never
 /// guesses at a curated set, and `calxgloss libmatch` behaves exactly
 /// as before. The cached-report view and the console report stay
 /// command-only.
@@ -1227,17 +1227,17 @@ fn callback_row() -> ScanDescriptor {
 ///
 /// * The call-graph *batch* path receives a pre-built graph, so its
 ///   Skip classification still benefits only when a document already
-///   existed from an earlier run; re-ordering the graph build ahead of
+///   existed from an earlier run. Re-ordering the graph build ahead of
 ///   the batch is out of scope for this track (spec #301).
 ///
 /// The dialect gap #306 recorded as this row's second limit is closed
-/// (#309): the normalizer folds Kuna's invented spellings onto the same
-/// wildcard tokens and the starter bundles carry Kuna alternatives
+/// (#309): the normalizer maps Kuna's invented spellings onto the same
+/// wildcard tokens, and the starter bundles carry Kuna alternatives
 /// grounded in the fixture corpus, so a cold run's document carries
 /// real identifications. End-to-end `Skip` from a cold batch still
-/// awaits the first limit's fix — and a body signature's 60 sits under
+/// needs the first limit fixed — and a body signature scores 60, under
 /// the Skip floor of 80 by design, so cold-run Skip needs a supplied
-/// database at the floor regardless.
+/// database to reach that floor regardless.
 fn known_library_row() -> ScanDescriptor {
     ScanDescriptor::new(ScanRow {
         name: "known-library",
@@ -1258,9 +1258,9 @@ fn known_library_row() -> ScanDescriptor {
             let engine = LibmatchEngine::with_source(source);
             // The run's set-override file replaces the built-in starter
             // signature set inside this row's own build (issue #338),
-            // read through the row's own database type — the batch keeps
+            // read through the row's own database type. The batch keeps
             // the built-in set, and only a run that names a file gets a
-            // curated one; a malformed file fails the scan naming the
+            // curated one. A malformed file fails the scan, naming the
             // path.
             Box::pin(async move {
                 let engine = match options.set_override_file {

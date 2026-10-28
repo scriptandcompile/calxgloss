@@ -1,20 +1,20 @@
 //! Triage of decompiler warnings, in either engine's dialect.
 //!
-//! The decompiler writes its analysis failures into the pseudo-C itself —
-//! Ghidra as `/* WARNING: ... */` banners, Kuna as terse `// slug` end-of-line
-//! comments. Left unread they are cheap to miss and expensive to ignore: an
-//! unrecovered jump table decompiles to an `UNRECOVERED_JUMPTABLE` local
-//! called through a code pointer followed by a bare `return` (Ghidra), or a
-//! truncated dispatch (Kuna), and the LLM translates that wreckage faithfully
-//! into plausible, hollow Rust. This module reads the warnings out of the
-//! decompiler body before a prompt is built, so the pipeline can name the
-//! jump a human needs to look at instead of quietly translating around it.
+//! The decompiler writes its analysis failures into the pseudo-C itself:
+//! Ghidra as `/* WARNING: ... */` banners, Kuna as terse `// slug`
+//! end-of-line comments. If nothing reads them they are easy to miss and
+//! costly to ignore. An unrecovered jump table decompiles to an
+//! `UNRECOVERED_JUMPTABLE` local called through a code pointer and a bare
+//! `return` (Ghidra), or to a truncated dispatch (Kuna). The LLM renders
+//! that broken output faithfully into plausible, hollow Rust. This module
+//! reads the warnings out of the decompiler body before a prompt is
+//! built, so the pipeline can name the jump a human must inspect.
 //!
 //! Alongside the warnings it reads one body *shape*: an import thunk the
-//! symbol table named after its import decompiles as a call to its own name,
-//! and [`is_self_call_thunk`] recognizes it so the pipeline refuses the
-//! veneer instead of translating the apparent recursion into a Rust function
-//! that calls itself (issue #269).
+//! symbol table names after its import decompiles as a call to its own
+//! name, and [`is_self_call_thunk`] recognizes it, so the pipeline refuses
+//! the veneer instead of translating the apparent recursion into a Rust
+//! function that calls itself (issue #269).
 
 /// An indirect jump the decompiler could not resolve into a switch: it gave
 /// up on the jump table and treats the jump as a call. Ghidra says so with a
@@ -109,10 +109,10 @@ pub fn scan_unrecovered_jump_tables(decompiler_output: &str) -> Vec<UnrecoveredJ
 /// symbol table names the veneer after the import it jumps to. The decompiler
 /// renders a tail-jump to a symbol as a call to that symbol, which prints as
 /// a call to the function's own name: Ghidra spells it `SetCursor(); return;`,
-/// Kuna spells it `return SetCursor(); // jump-as-call`, wearing a cast when
-/// the veneer converts the return type. It reads as infinite recursion; at
-/// runtime it is a single jump, and the veneer owns no logic — callers reach
-/// the real API through the PAL mappings.
+/// Kuna spells it `return SetCursor(); // jump-as-call`, adding a cast
+/// when the veneer converts the return type. It reads as infinite
+/// recursion; at runtime it is a single jump, and the veneer contains no
+/// logic of its own — callers reach the real API through the PAL mappings.
 ///
 /// The reading is deliberately strict. Comments are stripped, the body is
 /// split into `;`-terminated statements, and the statements must be exactly
@@ -149,8 +149,8 @@ pub fn is_self_call_thunk(function: &str, decompiler_output: &str) -> bool {
 }
 
 /// The body text between the first `{` and the last `}` that follows it —
-/// the decompiler's brace block, signature line and all text after the
-/// closing brace dropped. No braces, no body.
+/// the decompiler's brace block, with the signature line and all text after
+/// the closing brace dropped. With no braces there is no body to read.
 fn between_braces(decompiler_output: &str) -> Option<String> {
     let open = decompiler_output.find('{')?;
     let close = decompiler_output[open + 1..].rfind('}')?;

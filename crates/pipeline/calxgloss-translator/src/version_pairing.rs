@@ -1,7 +1,7 @@
 //! The P18 version-change trigger: pair one version's scan against every
 //! surviving scan of the same binary (issue #298).
 //!
-//! The scan step mints its read cache under `re/cache/{identity}/{sha256}`
+//! The scan step writes its read cache under `re/cache/{identity}/{sha256}`
 //! (ADR-0043), and when a binary's bytes change the previous version's
 //! directory stays beside the new one — a surviving scan. Once the scan
 //! step has written the current version's scan documents through, this
@@ -12,13 +12,13 @@
 //! the same version finds the persisted document and reuses it instead of
 //! recomputing, and a document that does not name the live (old, new) hash
 //! pair is detected as stale and recomputed — never silently trusted.
-//! Pairings stay pairwise (old→new); longer version chains ride successive
-//! pairwise documents.
+//! Pairings stay pairwise (old→new); a longer version chain is covered by
+//! a sequence of successive pairwise documents.
 //!
 //! The pass is document-level by construction: it reads only the scan
 //! cache's own [`cached_functions`], [`cached_exports`], and [`cached_body`]
 //! readers — no engine read anywhere (ADR-0026 untouched), no program
-//! mutation (ADR-0020), no LLM — is deterministic, and completes in
+//! mutation (ADR-0020), and no LLM. It is deterministic and completes in
 //! milliseconds. A binary that has never changed version has no sibling
 //! hash directory, and this module writes nothing: the queue behaves
 //! exactly as it does today.
@@ -90,7 +90,7 @@ pub(crate) fn pair_previous_versions(workspace: &Path, binary: &str, binary_path
     for old_hash in old_hashes {
         let old_dir = identity_dir.join(&old_hash);
         if !is_surviving_scan(&old_dir) {
-            // A cold or unusable sibling directory stands for no scan:
+            // A cold or unusable sibling directory represents no scan:
             // nothing was read from it and nothing is written for it.
             continue;
         }
@@ -99,7 +99,7 @@ pub(crate) fn pair_previous_versions(workspace: &Path, binary: &str, binary_path
 }
 
 /// Pair one (old, new) hash pair, reusing the persisted document when it
-/// stands for this pair and running the pass exactly once when it does not.
+/// names this pair and running the pass exactly once when it does not.
 fn pair_one_scan(
     persistor: &BdiffPersistor,
     binary: &str,
@@ -115,9 +115,9 @@ fn pair_one_scan(
 
     // The pairing pass reads these two cached scan document sets and
     // nothing else — no engine read (ADR-0026). A directory with no
-    // readable function listing stands for no scan: the sibling was
-    // never warmed, or this run's disk tier stayed off while its scans
-    // ran, and there is nothing to pair either way.
+    // readable function listing represents no scan: the sibling was
+    // never warmed, or this run wrote no scan documents to disk while
+    // its scans ran, and there is nothing to pair either way.
     let Some(old) = assemble_snapshot(old_dir, binary, old_hash) else {
         debug!(
             binary,
@@ -147,7 +147,7 @@ fn pair_one_scan(
     }
 }
 
-/// Whether the persisted document at `key` may stand in for the pass.
+/// Whether the persisted document at `key` can replace running the pass.
 ///
 /// A document is trusted only when it names the live (old, new) hash pair
 /// itself — the staleness rule of the carry-over track: documents are
@@ -199,16 +199,16 @@ fn reusable_document(
 
 /// Assemble one version's [`ScanSnapshot`] from the scan documents it kept.
 ///
-/// The listing rides in scan order (what pairings tie on), the names ride
-/// verbatim (which spelling a name is decides which families may claim
-/// it), and each kept body rides as the scan wrote it — the cache's raw
-/// engine text, before the noise filter (issue #271). A function whose
-/// body document is missing simply carries a blank body: it pairs through
-/// the name families it still qualifies for, exactly as a blank kept body
-/// pairs nothing in the body family. `None` only when the function
-/// listing itself is absent — without a listing there is no scan here. A
-/// missing export listing leaves exports empty: exported-name evidence
-/// then claims nothing, while demangled names still pair.
+/// The listing is kept in scan order (the order that breaks ties between
+/// pairings), the names are kept verbatim (a name's spelling decides which
+/// families may claim it), and each kept body is kept exactly as the scan
+/// wrote it — the cache's raw engine text, before the noise filter (issue
+/// #271). A function whose body document is missing simply carries a blank
+/// body: it pairs through the name families it still qualifies for, exactly
+/// as a blank kept body pairs nothing in the body family. `None` only when
+/// the function listing itself is absent — without a listing there is no
+/// scan here. A missing export listing leaves exports empty: exported-name
+/// evidence then claims nothing, while demangled names still pair.
 fn assemble_snapshot(dir: &Path, binary: &str, bytes_sha256: &str) -> Option<ScanSnapshot> {
     let listing = cached_functions(dir)?;
     let exports = cached_exports(dir)
@@ -260,7 +260,7 @@ mod tests {
     }
 
     /// The scan-cache directory for one hash under the workspace's identity
-    /// directory — the layout ADR-0043 mints.
+    /// directory — the layout ADR-0043 defines.
     fn scan_dir(workspace: &Path, hash: &str) -> PathBuf {
         cache_root(workspace).join(BINARY).join(hash)
     }
@@ -559,12 +559,12 @@ mod tests {
 
     #[test]
     fn a_sibling_filed_under_another_engine_identity_is_refused() {
-        // The surviving-sibling pairing contract keeps standing over the
+        // The surviving-sibling pairing contract still applies to the
         // extended manifest (#358, the #328 pairing): a warm sibling whose
-        // manifest disagrees on the engine build that answered it — same
-        // hash, same program, same format version, nothing stale but the
-        // identity — is no surviving scan, and cross-engine pairing never
-        // happens. No version integer moved to force this refusal.
+        // manifest names a different engine build than the one that
+        // answered it — same hash, same program, same format version, only
+        // the identity is stale — is not a surviving scan, so cross-engine
+        // pairing never happens. This refusal needs no version bump.
         let ws = temp_workspace();
         let (binary_file, new_hash) = target_binary(ws.path(), b"current bytes");
         two_version_scans(ws.path(), &new_hash);
