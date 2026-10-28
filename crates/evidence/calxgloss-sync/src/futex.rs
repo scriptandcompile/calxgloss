@@ -1,16 +1,16 @@
 //! Futex-based synchronization detection.
 //!
-//! This module provides [`FutexDetector`], which recognizes direct
+//! [`FutexDetector`] recognizes direct
 //! `futex` calls and `syscall(SYS_futex, …)` shapes in a decompiled
 //! body and reads each call site as raw futex synchronization. The
 //! suggested shape is standard synchronization — `std::sync::Mutex`/
-//! `Condvar` — rather than transliterated syscalls.
+//! `Condvar` — not transliterated syscalls.
 //!
 //! [`FutexDetector::with_default_names`] builds a detector that scans
 //! against the standard spellings, and [`FutexDetector::with_names`]
-//! builds one against caller-supplied names, so custom spellings
-//! reach the scan through the same engine builder the other detectors
-//! enjoy.
+//! builds one against names the caller supplies. Custom spellings
+//! reach the scan through the same `SyncEngine` builder methods the
+//! other detectors have.
 
 use crate::types::Futex;
 use calxgloss_decomp::DecompiledFunction;
@@ -20,8 +20,9 @@ use calxgloss_types::{
     skip_char, skip_string,
 };
 
-/// The scan: plain-identifier callees, member accesses skipped, and C
-/// keywords — `if (x)` — not calls.
+/// Shared call-scan options: the callee must be a plain identifier,
+/// member accesses are skipped, and C keywords — like `if (x)` — are
+/// not calls.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>",
@@ -37,8 +38,8 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 /// The futex spelling for the suggested Rust synchronization.
 const SUGGESTION: &str = "std::sync::Mutex/Condvar";
 
-/// Confidence of a futex reading from a single call site: the call is
-/// explicit and its spelling is the whole evidence.
+/// Evidence confidence of a futex reading from a single call site: the
+/// call is explicit and its spelling is the whole evidence.
 const FUTEX_CONFIDENCE: u8 = 70;
 
 // ============================================================
@@ -47,16 +48,17 @@ const FUTEX_CONFIDENCE: u8 = 70;
 
 /// Futex-based synchronization detection over decompiled functions.
 ///
-/// The detector owns the set of direct call spellings a scan reads
-/// bodies against — `futex` out of the box — alongside the
-/// `syscall(SYS_futex, …)` shape, which it recognizes whenever the
-/// detector carries any configured name. Both are configurable through
-/// [`with_names`](Self::with_names) or [`add_name`](Self::add_name), and
-/// [`names`](Self::names) reports them in configuration order, so two
-/// detectors built the same way scan identically and results diff
-/// cleanly. The detector holds no scan source of its own and never
-/// writes back to the program; one detector serves an entire scan and
-/// can be shared by reference across concurrent per-function passes.
+/// The detector owns the set of direct call spellings the scan reads
+/// bodies against; out of the box that set is `futex`. It also
+/// recognizes the `syscall(SYS_futex, …)` shape, whenever the
+/// detector has at least one configured name. Both are configurable
+/// through [`with_names`](Self::with_names) or
+/// [`add_name`](Self::add_name), and [`names`](Self::names) reports
+/// the names in configuration order, so two detectors built the same
+/// way scan identically and their results diff cleanly. The detector
+/// holds no scan source of its own and never writes back to the
+/// program. One detector serves an entire scan and can be shared by
+/// reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FutexDetector {
     names: Vec<String>,
@@ -109,16 +111,16 @@ impl FutexDetector {
         &self.names
     }
 
-    /// The futex call sites one function's body carries.
+    /// The futex call sites in one function's body.
     ///
     /// The reading walks the body's direct calls in source order —
-    /// outside string literals, whole names only — and reports each
+    /// outside string literals, whole names only. It reports each
     /// direct call to a configured name, and each `syscall(SYS_futex,
     /// …)` shape, as one [`Futex`]. When the call spells
     /// `FUTEX_WAIT` or `FUTEX_WAKE` anywhere in its argument list,
     /// that name is the operation; otherwise the operation is the
-    /// call's own spelling. Findings come back in call order, so two
-    /// scans of one body diff cleanly.
+    /// call's own spelling. The findings come back in call order, so
+    /// two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<Futex> {
         if self.names.is_empty() {
             return Vec::new();

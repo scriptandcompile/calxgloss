@@ -1,16 +1,17 @@
 //! Async runtime detection.
 //!
-//! This module provides [`AsyncDetector`], which carries the event-loop
-//! call names a scan reads decompiled bodies against — split into two
-//! sets, the shapes that read as `tokio` (the I/O completion port and
-//! epoll families) and the shapes that read as an explicit event loop
-//! (the Win32 message pump) — and reads each recognized call site as
-//! an async-runtime record.
+//! [`AsyncDetector`] holds the event-loop call names the scan reads
+//! decompiled bodies against. The names are split into two sets: the
+//! shapes that read as `tokio` (the I/O completion port and epoll
+//! families) and the shapes that read as an explicit event loop (the
+//! Win32 message pump). The detector reads each recognized call site
+//! as an async-runtime record.
 //!
 //! [`AsyncDetector::with_default_names`] builds a detector that scans
 //! against the standard sets, and [`AsyncDetector::with_names`] builds
-//! one against caller-supplied sets, so custom spellings reach the
-//! scan through the same engine builder the other detectors enjoy.
+//! one against sets the caller supplies. Custom spellings reach the
+//! scan through the same `SyncEngine` builder methods the other
+//! detectors have.
 
 use crate::types::AsyncRuntime;
 use calxgloss_decomp::DecompiledFunction;
@@ -59,9 +60,9 @@ const TOKIO_SUGGESTION: &str = "tokio";
 /// The suggested Rust shape for the message-pump family.
 const EVENT_LOOP_SUGGESTION: &str = "an explicit event loop";
 
-/// Confidence of an async-runtime reading from a single call to a
-/// recognized name: the call is explicit and its name is the whole
-/// evidence.
+/// Evidence confidence of an async-runtime reading from a single call
+/// to a recognized name: the call is explicit and its name is the
+/// whole evidence.
 const ASYNC_CONFIDENCE: u8 = 70;
 
 // ============================================================
@@ -70,14 +71,14 @@ const ASYNC_CONFIDENCE: u8 = 70;
 
 /// Async runtime detection over decompiled functions.
 ///
-/// The detector owns two name sets a scan reads bodies against: the
-/// event-loop spellings that read as `tokio`, and the spellings that
-/// read as an explicit event loop. Both sets are configurable —
+/// The detector owns the two name sets the scan reads bodies against:
+/// the event-loop spellings that read as `tokio`, and the spellings
+/// that read as an explicit event loop. Both sets are configurable —
 /// supply them whole through [`with_names`](Self::with_names) or grow
-/// them one name at a time — and accessors report them in
+/// them one name at a time. The accessors report the names in
 /// configuration order, so two detectors built the same way scan
-/// identically and results diff cleanly. The detector holds no engine
-/// client of its own and never writes back to the program; one
+/// identically and their results diff cleanly. The detector holds no
+/// scan source of its own and never writes back to the program. One
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -155,7 +156,8 @@ impl AsyncDetector {
         &self.event_loop_names
     }
 
-    /// The typos-compatible single slice of every configured name.
+    /// Every configured name in one list, kept for compatibility with
+    /// the other detectors' accessor name.
     pub fn names(&self) -> Vec<String> {
         let mut out = self.tokio_names.clone();
         out.extend(self.event_loop_names.clone());

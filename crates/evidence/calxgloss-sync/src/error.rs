@@ -1,15 +1,15 @@
 //! Error types for the calxgloss-sync crate.
 //!
-//! This module defines `SyncError`, the unified error type used
-//! throughout the concurrency detection crate for decompiler fetches,
-//! detector runs, and JSON persistence.
+//! This module defines `SyncError`, the one error type this crate
+//! uses everywhere. It covers decompiler reads, detector runs, and
+//! JSON persistence.
 
 use thiserror::Error;
 
 /// Errors that can occur during concurrency detection operations.
 #[derive(Debug, Error)]
 pub enum SyncError {
-    /// An engine read through the analysis seam failed.
+    /// A read from the analysis engine at the seam failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -29,21 +29,22 @@ pub enum SyncError {
     #[error("empty function name")]
     EmptyFunctionName,
 
-    /// Too many of the program's functions failed to decompile for the
-    /// scan to be trusted — the signature of the bridge answering from
-    /// the wrong program. The skip-rate breaker aborts the scan rather
-    /// than letting it persist a phantom-clean record.
+    /// Too many of the program's functions failed to decompile to
+    /// trust the scan's answer. A high skip rate is the signature of
+    /// a seam letting the scan answer about the wrong program. The
+    /// skip-rate breaker is a fuse: it aborts the scan rather than
+    /// persisting a record that looks clean but is not.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
 
-    /// A concurrency scan failed for a DLL.
+    /// A concurrency scan failed for one target binary.
     #[error("concurrency scan failed for '{binary}': {reason}")]
     ScanFailed { binary: String, reason: String },
 }
 
-/// Maps the shared JSON store's errors onto this crate's error type: the
-/// store's not-found becomes [`SyncError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// Maps the shared JSON store's errors onto this crate's error type.
+/// The store's not-found becomes [`SyncError::NotFound`], and its I/O
+/// and JSON errors become the existing pass-through variants.
 impl From<calxgloss_types::persist::PersistError> for SyncError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

@@ -8,10 +8,10 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is the
-//! check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and every
-//! finding — for the translation pipeline to query.
+//! A saved result also works as a cache. [`exists`](SyncPersistor::exists)
+//! is the check a caller runs before deciding whether a scan is needed.
+//! [`load`](SyncPersistor::load) reads the whole document back — the
+//! metadata and every finding — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -33,9 +33,9 @@ use crate::types::SyncResult;
 ///     └── {binary}.json
 /// ```
 ///
-/// The default cache directory is `{workspace}/re/analysis/sync/`,
-/// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir) points
-/// the persistor at an explicit directory instead.
+/// The default cache directory is `{workspace}/re/analysis/sync/`, set
+/// by [`new`](Self::new). [`with_cache_dir`](Self::with_cache_dir)
+/// points the persistor at an explicit directory instead.
 ///
 /// # Example
 ///
@@ -92,9 +92,9 @@ impl SyncPersistor {
     /// Saves a concurrency result to JSON, keyed on its metadata's binary
     /// name.
     ///
-    /// Creates the cache directory hierarchy if it does not exist, serializes
-    /// the result, and writes it to disk — a rescan replaces the previous
-    /// document for the same binary.
+    /// Creates the cache directory hierarchy if it does not exist,
+    /// serializes the result, and writes it to disk. A rescan replaces
+    /// the previous document for the same binary.
     ///
     /// # Errors
     ///
@@ -238,10 +238,11 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #349).
+        // The coverage record the scan stamped passes through the
+        // persistor untouched: statuses, ids, order, limitation
+        // lines. A later reader — the projection seam, the report, a
+        // `--show` months later — sees exactly what was saved
+        // (issue #349).
         let dir = tempfile::tempdir().unwrap();
         let persistor = SyncPersistor::with_cache_dir(dir.path());
         let mut saved = sample_result("eqmain.dll");

@@ -1,30 +1,32 @@
 //! Concurrency and synchronization detection for calxgloss.
 //!
-//! Analyzes mutex/lock usage, atomic operations, threading
-//! constructs, and thread-local storage within each function of an
-//! open program. Results are injected as structured
-//! CONCURRENCY sections that name the Rust synchronization primitive —
-//! `std::sync::Mutex`, `parking_lot::Mutex`, `std::sync::RwLock`,
-//! `std::sync::atomic::*`, `std::thread::spawn`, `tokio::spawn`,
-//! `thread_local!` — the translation should aim at, so a
-//! multithreaded binary's synchronization survives translation instead
-//! of being transliterated into plain calls.
+//! The scan analyzes mutex/lock usage, atomic operations, threading
+//! constructs, and thread-local storage in each function of an open
+//! program.
+//!
+//! The findings are injected as structured CONCURRENCY sections. Each
+//! section names the Rust synchronization primitive the translation
+//! should use — `std::sync::Mutex`, `parking_lot::Mutex`,
+//! `std::sync::RwLock`, `std::sync::atomic::*`,
+//! `std::thread::spawn`, `tokio::spawn`, `thread_local!`. With those
+//! names in hand, a multithreaded binary's synchronization survives
+//! translation instead of being transliterated into plain calls.
 //!
 //! # Architecture
 //!
 //! The crate is organized into eleven modules:
 //!
-//! - [`types`] - Core data types: `SyncType` for the lock family a
-//!   recognized acquire belongs to; `ConcurrencyHint`, `AtomicOperation`,
-//!   `ThreadSpawn`, `TlsUsage`, `AsyncRuntime`, `Futex`, and `LockOrder`
-//!   for the detection records; `SyncFinding` as the union over the
-//!   record kinds; `SyncResult`, `ScanMetadata` for the persisted
-//!   per-binary results.
-//! - [`mutex`] - Mutex/lock pair tracking: `MutexDetector` pairs
-//!   `pthread_mutex_lock`/`unlock`, `EnterCriticalSection`/
-//!   `LeaveCriticalSection`, and `pthread_rwlock_rdlock`/`wrlock`/
-//!   `unlock` acquisitions with their releases and suggests the matching
-//!   Rust lock type.
+//! - [`types`] - Core data types. `SyncType` names the lock family a
+//!   recognized acquire belongs to. `ConcurrencyHint`,
+//!   `AtomicOperation`, `ThreadSpawn`, `TlsUsage`, `AsyncRuntime`,
+//!   `Futex`, and `LockOrder` are the detection records.
+//!   `SyncFinding` is the union over the record kinds. `SyncResult`
+//!   and `ScanMetadata` are the persisted per-binary results.
+//! - [`mutex`] - Mutex/lock pair tracking. `MutexDetector` pairs
+//!   these acquisitions with their releases: `pthread_mutex_lock`/
+//!   `unlock`, `EnterCriticalSection`/`LeaveCriticalSection`, and
+//!   `pthread_rwlock_rdlock`/`wrlock`/`unlock`. It then suggests the
+//!   matching Rust lock type.
 //! - [`atomic`] - Atomic operation detection: `AtomicDetector`
 //!   recognizes `__atomic_fetch_add`, `__sync_fetch_and_add`, and
 //!   `InterlockedIncrement`/`InterlockedDecrement` calls and suggests
@@ -48,21 +50,22 @@
 //!   select/poll, and the Win32 message pump — and suggests the Rust
 //!   async shape each one reads as.
 //! - [`cross_function`] - Cross-function readings over the bodies the
-//!   scan keeps: `CrossFunctionAnalyzer` derives each body's lock
-//!   acquisition sequence from the already-fetched decompiles and
-//!   reports two functions acquiring the same two locks in opposite
-//!   orders as a `lock_order` conflict, then reads the same bodies for
-//!   one function writing a program global another reads with no lock
-//!   both sides respect, as a `data_race` claim — which identifiers
-//!   name program globals is the `calxgloss-globalstate` crate's
-//!   shared reading, consumed directly, with only the lock-span
-//!   attribution kept here — no extra decompiler reads
-//!   round trips.
-//! - [`engine`] - Scan orchestration: `SyncEngine` runs the per-body
+//!   scan keeps. `CrossFunctionAnalyzer` derives each body's lock
+//!   acquisition sequence from the decompiles the scan already
+//!   fetched. Two functions acquiring the same two locks in opposite
+//!   orders are reported as a `lock_order` conflict. The same bodies
+//!   are then read for a `data_race` claim: one function writes a
+//!   program global another reads, with no lock both sides respect.
+//!   Deciding which identifiers name program globals is the
+//!   `calxgloss-globalstate` crate's shared reading; this crate
+//!   consumes that reading directly and keeps only the lock-span
+//!   attribution, so the pass costs no extra decompiler round trips.
+//! - [`engine`] - Scan orchestration. `SyncEngine` runs the per-body
 //!   detectors over one loaded program through a `ScanSource`
-//!   (function listing + decompile-by-name), one sequential pass that
+//!   (function listing + decompile-by-name). One sequential pass
 //!   decompiles each function exactly once and keeps the findings in
-//!   scan order, then the cross-function pass over the kept bodies.
+//!   scan order; then the cross-function pass runs over the kept
+//!   bodies.
 //! - [`persist`] - JSON persistence: `SyncPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/sync/`.
 //! - [`error`] - [`SyncError`] and the crate-wide [`Result`] alias.
