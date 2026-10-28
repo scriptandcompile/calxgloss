@@ -17,9 +17,9 @@
 //! All types derive `Serialize`/`Deserialize`.
 
 // `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb, typeinfer, algorithm, and
-// memory convention.
+// the shared 0–100 evidence score. Both are re-exported so consumers can
+// reach them through this crate. This matches the convention used by the
+// typesdb, typeinfer, algorithm, and memory crates.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -30,14 +30,13 @@ use serde::{Deserialize, Serialize};
 /// The lock family a recognized acquire belongs to.
 ///
 /// The family says which acquire and release spellings bracket the
-/// critical section — a Win32 critical section entered by
-/// `EnterCriticalSection`, a POSIX mutex locked by `pthread_mutex_lock`,
-/// or a POSIX reader/writer lock locked by `pthread_rwlock_rdlock` — and
-/// which Rust synchronization type stands in for the pairing: a poisoned
-/// `std::sync::Mutex` for the critical section, an unpoisoned
-/// `parking_lot::Mutex` for the POSIX mutex (pthread locking has no
-/// poisoning to translate), and a `std::sync::RwLock` for the
-/// reader/writer lock.
+/// critical section, and which Rust synchronization type stands in for
+/// the pairing. A Win32 critical section is entered by
+/// `EnterCriticalSection` and reads as a poisoned `std::sync::Mutex`. A
+/// POSIX mutex is locked by `pthread_mutex_lock` and reads as an
+/// unpoisoned `parking_lot::Mutex` — pthread locking has no poisoning to
+/// translate. A POSIX reader/writer lock is locked by
+/// `pthread_rwlock_rdlock` and reads as a `std::sync::RwLock`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncType {
@@ -65,14 +64,14 @@ calxgloss_types::display_serde_label!(SyncType {
 /// One mutex pairing observation about one function, with the evidence
 /// behind it.
 ///
-/// A hint is a hypothesis, not a fact applied to the program: it says
+/// A hint is a hypothesis, not a fact applied to the program. It says
 /// the function acquires a lock of [`sync_type`](Self::sync_type) —
 /// through the recognized acquire spelling [`acquire`](Self::acquire) —
-/// and releases it again through [`release`](Self::release), the two
-/// tied by the lock object the decompiler passed to both calls. The
-/// pairing reads like [`suggestion`](Self::suggestion) — the Rust
-/// synchronization type standing in for the manual lock and unlock —
-/// and the confidence says how strongly the pairing was read. The
+/// and releases it again through [`release`](Self::release). The lock
+/// object the decompiler passed to both calls ties the two together.
+/// The pairing reads like [`suggestion`](Self::suggestion): the Rust
+/// synchronization type standing in for the manual lock and unlock. The
+/// evidence confidence says how strongly the pairing was read. The
 /// acquire and release lines are kept as [`evidence`](Self::evidence)
 /// so a reviewer (or a translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +89,7 @@ pub struct ConcurrencyHint {
     /// The Rust synchronization type the pairing suggests, e.g.
     /// `std::sync::Mutex<T>`.
     pub suggestion: String,
-    /// Confidence that the hint is right, 0–100.
+    /// Evidence confidence that the hint is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the hint — the acquire and
     /// its release — kept so a reviewer (or a translation prompt) can
@@ -107,10 +106,10 @@ pub struct ConcurrencyHint {
 ///
 /// A record says the function performs a read-modify-write through the
 /// recognized call spelling [`operation`](Self::operation) —
-/// `InterlockedIncrement`, `__atomic_fetch_add`, and their kin — which
+/// `InterlockedIncrement`, `__atomic_fetch_add`, and their kin. It
 /// reads like [`suggestion`](Self::suggestion): the sized atomic type
-/// whose methods carry the same operation, `AtomicU32` for the Win32
-/// interlocked family and `AtomicU64` for the GCC builtins by default.
+/// whose methods perform the same operation — `AtomicU32` for the Win32
+/// interlocked family, and `AtomicU64` by default for the GCC builtins.
 /// Unlike the lock pairing, one call site is a whole finding — an
 /// atomic needs no release to complete the picture. The call line is
 /// kept as [`evidence`](Self::evidence) so a reviewer (or a translation
@@ -125,7 +124,7 @@ pub struct AtomicOperation {
     /// The Rust atomic type the call suggests, e.g.
     /// `std::sync::atomic::AtomicU32`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled line that supports the record — the atomic call
     /// — kept so a reviewer (or a translation prompt) can check the
@@ -142,16 +141,18 @@ pub struct AtomicOperation {
 ///
 /// A record says the function starts a thread through the recognized
 /// spawn spelling [`spawn`](Self::spawn) — `CreateThread`,
-/// `pthread_create`, `std::thread::spawn` — and, when the spawned
-/// thread's handle is waited on through a recognized join spelling,
-/// names that join in [`join`](Self::join), the two tied by the handle
-/// variable the decompiler stored the spawn's result in (or passed to
-/// it, for `pthread_create`). A joined spawn reads like
-/// [`suggestion`](Self::suggestion) `std::thread::spawn` — the join is
-/// the `JoinHandle` the translation can keep — and an unjoined one
-/// reads like `tokio::spawn`, the fire-and-forget shape. The spawn and
-/// join lines are kept as [`evidence`](Self::evidence) so a reviewer
-/// (or a translation prompt) can check the reasoning.
+/// `pthread_create`, `std::thread::spawn`. When the spawned thread's
+/// handle is waited on through a recognized join spelling, the record
+/// stores that join in [`join`](Self::join). The handle variable ties
+/// the spawn and the join together: for most spawns it is the variable
+/// the decompiler stored the spawn's result in, and for
+/// `pthread_create` it is the variable passed to the spawn. A joined
+/// spawn reads like [`suggestion`](Self::suggestion)
+/// `std::thread::spawn` — the join is the `JoinHandle` the translation
+/// can keep. An unjoined spawn reads like `tokio::spawn`, the
+/// fire-and-forget shape. The spawn and join lines are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadSpawn {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -165,7 +166,7 @@ pub struct ThreadSpawn {
     /// The Rust pattern the spawn reads like, e.g.
     /// `std::thread::spawn` or `tokio::spawn`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the record — the spawn and
     /// its join, when there is one — kept so a reviewer (or a
@@ -182,18 +183,18 @@ pub struct ThreadSpawn {
 ///
 /// A record says the function reaches per-thread data through the
 /// recognized access spelling [`access`](Self::access) —
-/// `TlsGetValue`, `pthread_getspecific`, and their kin — and, when
-/// the body also shows the key being created, names the creation
+/// `TlsGetValue`, `pthread_getspecific`, and their kin. When the body
+/// also shows the key being created, the record stores the creation
 /// spelling in [`creation`](Self::creation): `TlsAlloc` returning the
-/// index, `pthread_key_create` taking the key's address. A key
-/// created and accessed in one body is one finding at confidence 70;
-/// a lone access with no visible key creation is a fragment at 60 —
-/// the thread-local shape is there, but the key's origin sits
-/// elsewhere. Either way the data reads like
-/// [`suggestion`](Self::suggestion) `thread_local!`, the per-thread
-/// storage standing in for the key-indexed slot. The creation and
-/// access lines are kept as [`evidence`](Self::evidence) so a reviewer
-/// (or a translation prompt) can check the reasoning.
+/// index, `pthread_key_create` taking the key's address. A key created
+/// and accessed in one body is one finding at evidence confidence 70. A
+/// lone access with no visible key creation is a fragment at 60 — the
+/// thread-local shape is there, but the key's origin sits elsewhere.
+/// Either way the data reads like [`suggestion`](Self::suggestion)
+/// `thread_local!`, the per-thread storage standing in for the
+/// key-indexed slot. The creation and access lines are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsUsage {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -208,7 +209,7 @@ pub struct TlsUsage {
     /// The Rust storage pattern the record suggests, e.g.
     /// `thread_local!`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the record — the key
     /// creation and the access, when there is a creation — kept so a
@@ -226,7 +227,7 @@ pub struct TlsUsage {
 /// A record says the function reaches an event loop through the
 /// recognized call spelling [`operation`](Self::operation) —
 /// `GetQueuedCompletionStatus`, `epoll_wait`, `select`/`poll`,
-/// `GetMessage` and their kin — which reads like
+/// `GetMessage` and their kin. It reads like
 /// [`suggestion`](Self::suggestion): `tokio` for the completion-port
 /// and epoll families, an explicit event loop for the message pump.
 /// Unlike the lock pairing, one call site is a whole finding — an
@@ -243,7 +244,7 @@ pub struct AsyncRuntime {
     /// The Rust async runtime pattern the call suggests, e.g.
     /// `tokio` or `explicit event loop`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled line that supports the record — the event-loop
     /// call — kept so a reviewer (or a translation prompt) can check
@@ -265,8 +266,8 @@ pub type AsyncOperation = AsyncRuntime;
 ///
 /// A record says the function reaches raw futex synchronization
 /// through a recognized call spelling [`operation`](Self::operation) —
-/// a direct `futex` call, or `syscall(SYS_futex, …)` — which reads
-/// like [`suggestion`](Self::suggestion): standard synchronization
+/// a direct `futex` call, or `syscall(SYS_futex, …)`. It reads like
+/// [`suggestion`](Self::suggestion): standard synchronization
 /// (`std::sync::Mutex`/`Condvar`) rather than transliterated syscalls.
 /// Unlike the lock pairing, one call site is a whole finding — a
 /// futex call needs no release to complete the picture. The call
@@ -283,7 +284,7 @@ pub struct Futex {
     /// The Rust synchronization pattern the call suggests, e.g.
     /// `std::sync::Mutex/Condvar`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled line that supports the record — the futex
     /// call — kept so a reviewer (or a translation prompt) can check
@@ -305,20 +306,21 @@ pub type FutexCall = Futex;
 /// evidence behind it.
 ///
 /// A record says two functions acquire the same two lock objects in
-/// opposite relative orders — [`function`](Self::function) takes
-/// [`first_lock`](Self::first_lock) before [`second_lock`](Self::second_lock)
-/// and [`partner`](Self::partner) the other way round — the shape a
-/// deadlock takes when both run at once, which neither body reveals
-/// on its own. It reads as [`suggestion`](Self::suggestion): pick one
-/// acquisition order and hold it everywhere. Both orders are explicit
-/// body evidence, so the conflict sits level with an in-body mutex
+/// opposite relative orders. [`function`](Self::function) takes
+/// [`first_lock`](Self::first_lock) before
+/// [`second_lock`](Self::second_lock), and [`partner`](Self::partner)
+/// the other way round. This is the shape a deadlock takes when both
+/// functions run at once — neither body reveals it on its own. It
+/// reads as [`suggestion`](Self::suggestion): pick one acquisition
+/// order and hold it everywhere. Both orders are explicit body
+/// evidence, so the conflict sits level with an in-body mutex
 /// pairing. The two functions' acquire sequences are kept as
 /// [`evidence`](Self::evidence) so a reviewer (or a translation
 /// prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockOrder {
     /// The function the record is about — the earlier one in listing
-    /// order, the one whose acquire order the finding names first.
+    /// order, the one whose acquire order the finding lists first.
     pub function: String,
     /// The other function in the conflict, the later one in listing
     /// order.
@@ -331,7 +333,7 @@ pub struct LockOrder {
     /// The Rust pattern the conflict suggests, e.g. one consistent
     /// acquisition order held across the program.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The two functions' acquire sequences, kept so a reviewer (or a
     /// translation prompt) can check the reasoning.
@@ -339,11 +341,14 @@ pub struct LockOrder {
 }
 
 // Compatibility aliases for the lock-order record's spelling.
-/// Alias of [`LockOrder`], for consumers that name the reading after the pass.
+/// Alias of [`LockOrder`], for consumers that call the reading by the
+/// pass's name.
 pub type LockOrdering = LockOrder;
-/// Alias of [`LockOrder`], for consumers that name the reading after the record.
+/// Alias of [`LockOrder`], for consumers that call the reading by the
+/// record's name.
 pub type LockOrderRecord = LockOrder;
-/// Alias of [`LockOrder`], naming the cross-function origin of the claim.
+/// Alias of [`LockOrder`], for consumers that want the claim's
+/// cross-function origin in the name.
 pub type CrossFunctionLockOrder = LockOrder;
 
 // ============================================================
@@ -353,24 +358,24 @@ pub type CrossFunctionLockOrder = LockOrder;
 /// One data-race observation spanning two functions, with the evidence
 /// behind it.
 ///
-/// A record says two functions access the same global —
+/// A record says two functions access the same global:
 /// [`function`](Self::function) and [`partner`](Self::partner) both
-/// name [`variable`](Self::variable) in their bodies — and no single
+/// name [`variable`](Self::variable) in their bodies. And no single
 /// lock object covers the accesses: at least one side sits outside
 /// every recognized acquire→release span, or the two sides protect
 /// their accesses with different locks. That is the shape a data race
-/// takes when both run at once, which neither body reveals on its own.
+/// takes when both run at once — neither body reveals it on its own.
 /// It reads as [`suggestion`](Self::suggestion): one lock guarding the
 /// global, held on both sides. The unprotected side is
 /// absence-of-evidence — the body shows no lock, not proof none exists
-/// — so the claim sits one rung below the evidence-based kinds (60
-/// against 70). Both access lines are kept as
+/// — so the claim sits one band below the evidence-based kinds: 60
+/// against the pairing-level 70. Both access lines are kept as
 /// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
 /// can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataRace {
     /// The function the record is about — the earlier one in listing
-    /// order, the one whose access line the evidence names first.
+    /// order, the one whose access line the evidence lists first.
     pub function: String,
     /// The other function accessing the same global, the later one in
     /// listing order.
@@ -380,7 +385,7 @@ pub struct DataRace {
     /// The Rust pattern the race suggests, e.g. one lock guarding the
     /// global with both functions holding it.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The two functions' access lines, kept so a reviewer (or a
     /// translation prompt) can check the reasoning.
@@ -388,11 +393,14 @@ pub struct DataRace {
 }
 
 // Compatibility aliases for the data-race record's spelling.
-/// Alias of [`DataRace`], for consumers that name the reading after the shape.
+/// Alias of [`DataRace`], for consumers that call the reading by the
+/// shape's name.
 pub type DataRaceConflict = DataRace;
-/// Alias of [`DataRace`], for consumers that name the reading after the record.
+/// Alias of [`DataRace`], for consumers that call the reading by the
+/// record's name.
 pub type DataRaceRecord = DataRace;
-/// Alias of [`DataRace`], naming the cross-function origin of the claim.
+/// Alias of [`DataRace`], for consumers that want the claim's
+/// cross-function origin in the name.
 pub type CrossFunctionDataRace = DataRace;
 
 // ============================================================
@@ -401,14 +409,14 @@ pub type CrossFunctionDataRace = DataRace;
 
 /// One concurrency finding, whichever detector made it.
 ///
-/// The detectors emit the concrete records; the union is what the
-/// persisted result carries, so one list can hold every finding for a
-/// binary and a consumer reads the shared shape — function, suggestion,
-/// confidence, evidence — without naming which detector produced it.
-/// Unlike typeinfer's competing families, the detectors read disjoint
-/// body shapes and can't make competing claims for one target, so
-/// nothing is resolved between variants. The serde `kind` tag names
-/// the record shape in the persisted JSON.
+/// The detectors emit the concrete records, and the persisted result
+/// stores them as this union. One list can therefore hold every
+/// finding for a binary, and a consumer reads the shared shape —
+/// `function`, `suggestion`, `confidence`, `evidence` — without naming
+/// which detector produced it. Unlike typeinfer's competing families,
+/// the detectors read disjoint body shapes and can't make competing
+/// claims for one target, so nothing is resolved between variants. The
+/// serde `kind` tag names the record shape in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SyncFinding {
@@ -459,7 +467,7 @@ impl SyncFinding {
         }
     }
 
-    /// Confidence that the finding is right.
+    /// Evidence confidence that the finding is right.
     pub fn confidence(&self) -> Confidence {
         match self {
             SyncFinding::Mutex(record) => record.confidence,
@@ -487,8 +495,9 @@ impl SyncFinding {
         }
     }
 
-    /// The serde `kind` tag — `mutex`, `atomic`, `thread`, or `tls` —
-    /// naming the detector behind the finding.
+    /// The serde `kind` tag — `mutex`, `atomic`, `thread`, `tls`,
+    /// `async_runtime`, `futex`, `lock_order`, or `data_race` — naming
+    /// the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SyncFinding::Mutex(_) => "mutex",
@@ -502,9 +511,11 @@ impl SyncFinding {
         }
     }
 
-    /// What the finding names, spelled for a report row: the acquire/
-    /// release spellings, the atomic call spelling, the spawn/join
-    /// spellings, or the key-creation/access spellings.
+    /// What the finding points at, spelled out for a report row: the
+    /// acquire/release spellings, the atomic call spelling, the
+    /// spawn/join spellings, the key-creation/access spellings, the
+    /// event-loop or futex call spelling, the two lock objects, or the
+    /// shared variable.
     pub fn target(&self) -> String {
         match self {
             SyncFinding::Mutex(record) => format!("{}→{}", record.acquire, record.release),
@@ -531,11 +542,12 @@ impl SyncFinding {
 // Prompt conversions
 // ============================================================
 
-/// Render a finding as prompt data: the function it is about, the kind
-/// of construct the detector read, the Rust synchronization pattern the
-/// finding suggests, and the confidence and evidence behind the claim —
-/// so the escalate prompt shows the hypothesis and how strongly it was
-/// made, whichever detector produced it.
+/// Render a finding as prompt data. The prompt record holds the
+/// function the finding is about, the kind of construct the detector
+/// read, the Rust synchronization pattern the finding suggests, and the
+/// evidence confidence and evidence lines behind the claim. The
+/// escalate prompt therefore shows the hypothesis and how strongly it
+/// was made, whichever detector produced it.
 impl From<&SyncFinding> for calxgloss_prompts::ConcurrencyInfo {
     fn from(finding: &SyncFinding) -> Self {
         Self {
@@ -555,16 +567,16 @@ impl From<&SyncFinding> for calxgloss_prompts::ConcurrencyInfo {
 /// The concurrency result for one binary — the document persisted to
 /// `re/analysis/sync/{binary}.json`.
 ///
-/// The findings are the detectors' outputs in scan order: function by
-/// function in listing order, and within one function the mutex
-/// pairings, then the atomic calls, then the thread spawns, then the
-/// TLS records, then the async-runtime shapes, then the futex calls —
-/// and after every function, the cross-function findings in listing
-/// order, the lock-order conflicts before the data races. The detectors
-/// read disjoint body shapes, so a function can
-/// carry findings of every kind at once and none competes with
-/// another; the stable order means two scans of the same program diff
-/// cleanly.
+/// The findings are the detectors' outputs, in scan order. The
+/// per-function findings come first, function by function in listing
+/// order; within one function come the mutex pairings, then the atomic
+/// calls, then the thread spawns, then the TLS records, then the
+/// async-runtime shapes, then the futex calls. The cross-function
+/// findings come after the whole per-function walk, in listing order,
+/// with the lock-order conflicts before the data races. The detectors
+/// read disjoint body shapes, so one function can have findings of
+/// every kind at once and no finding competes with another. The stable
+/// order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncResult {
     /// Provenance of the scan that produced these findings.
@@ -624,8 +636,9 @@ mod tests {
     fn a_mutex_hint_serde_round_trips() {
         let record = mutex_hint();
         let json = serde_json::to_string(&record).unwrap();
-        // The lock family serializes snake_case and the confidence as
-        // a plain number, matching the workspace's serde convention.
+        // The lock family serializes snake_case and the evidence
+        // confidence as a plain number. This matches the workspace's
+        // serde convention.
         assert!(json.contains("\"sync_type\":\"std_mutex\""));
         assert!(json.contains("\"confidence\":70"));
         let back: ConcurrencyHint = serde_json::from_str(&json).unwrap();
@@ -1015,8 +1028,8 @@ mod tests {
 
     #[test]
     fn a_result_without_findings_omits_them_and_reads_back_empty() {
-        // Documents persisted before a finding landed still load, and an
-        // empty scan stays small on disk.
+        // Documents persisted before the findings list existed still
+        // load, and an empty scan stays small on disk.
         let result = SyncResult::new(ScanMetadata::new("eqmain.dll"));
         let json = serde_json::to_string(&result).expect("empty sync result should serialize");
         assert!(!json.contains("\"findings\""));
@@ -1047,9 +1060,9 @@ mod tests {
 
     #[test]
     fn a_finding_renders_into_prompt_data_whichever_kind_it_is() {
-        // The prompt conversion reaches through the union, so every kind
-        // carries its label, suggestion, confidence, and evidence whole
-        // into `ConcurrencyInfo`.
+        // The prompt conversion reaches through the union, so every
+        // kind passes its label, suggestion, evidence confidence, and
+        // evidence to `ConcurrencyInfo` without loss.
         let mutex = SyncFinding::Mutex(mutex_hint());
         let info = calxgloss_prompts::ConcurrencyInfo::from(&mutex);
         assert_eq!(info.function, "FUN_18003ab00");
