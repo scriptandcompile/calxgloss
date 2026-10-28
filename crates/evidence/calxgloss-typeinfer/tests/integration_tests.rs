@@ -1,13 +1,13 @@
 //! Integration tests for the calxgloss-typeinfer crate.
 //!
-//! These tests exercise the multi-module workflows the unit tests cannot
-//! cover on their own:
+//! These tests cover the multi-module workflows that unit tests cannot
+//! reach on their own:
 //!
 //! - **Scan to disk** — [`TypeInferEngine`] scans a canned program, the
-//!   [`TypeInferPersistor`] files the result in the workspace layout, and
+//!   [`TypeInferPersistor`] saves the result in the workspace layout, and
 //!   loading it back yields the same result the scan returned.
 //! - **Consumption** — the loaded result answers the lookups a translation
-//!   pipeline makes (the inferences made for one function) and its records
+//!   pipeline makes (what was inferred for one function), and its records
 //!   render into [`TypeInfo`] for the prompts.
 //! - **Cache behavior** — the `exists` check decides whether a scan runs,
 //!   and a rescan replaces the cached document.
@@ -42,8 +42,9 @@ fn summary(name: &str) -> FunctionSummary {
     }
 }
 
-/// A deterministic per-name address, so a test's caller map can name
-/// one function without every summary sharing a single address.
+/// A deterministic address derived from the function's name, so the
+/// summaries do not all share one address and a test's `callers` map
+/// can single out one function.
 fn addr(name: &str) -> u64 {
     0x1800_0000
         + name.bytes().fold(0u64, |hash, byte| {
@@ -60,9 +61,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 }
 
 /// A canned program implementing [`ScanSource`]: one function whose
-/// body carries a vtable dispatch, a `strlen` call, and a `CloseHandle`
-/// call — one reading family per detector — and one plain function that
-/// infers nothing.
+/// body contains a vtable dispatch, a `strlen` call, and a `CloseHandle`
+/// call — one reading for each detector family — and one plain function
+/// that infers nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -70,8 +71,8 @@ struct FakeProgram {
     /// Which functions call which, keyed by the callee's address —
     /// what the caller→callee pass reads.
     callers: HashMap<u64, Vec<String>>,
-    /// The import names the program answers with — what the `@N`
-    /// convention reading runs over.
+    /// The import names the program reports — the list the `@N`
+    /// convention reading goes through.
     imports: Vec<Symbol>,
     /// The canned SLEIGH-style disassembly text per function — what
     /// the stack-discipline detector reads (issue #247).
@@ -103,8 +104,8 @@ impl ScanSource for FakeProgram {
         Ok(self.listings.get(name).cloned().unwrap_or_default())
     }
 
-    // The rest of the shared trait's reads: these tests never make
-    // them, so they answer with empty or not-found data.
+    // The rest of the shared trait's reads: these tests never call
+    // them, so each returns empty or not-found data.
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
         Ok(Vec::new())
     }
@@ -210,9 +211,9 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_carries_at_most_one_inference_per_parameter() {
-    // `strlen`'s argument stands read by the size detector and the
-    // known-signature engine during the scan; what reaches disk is the
-    // single surviving record, so a consumer never sees a contested
+    // During the scan, the size detector and the known-signature
+    // detector both read `strlen`'s argument. Only the single surviving
+    // record reaches disk, so a consumer never sees a contested
     // parameter twice.
     let workspace = TempDir::new().unwrap();
     let result = TypeInferEngine::with_source(program())
@@ -242,10 +243,10 @@ async fn the_persisted_document_carries_at_most_one_inference_per_parameter() {
 
 #[tokio::test]
 async fn caller_propagated_parameter_records_survive_the_persistence_round_trip() {
-    // A helper whose own body proves nothing, typed by what its caller
-    // hands it: the propagated record must reach disk and read back
-    // like any inline record, so the pipeline sees the caller-revealed
-    // contract after a rescan-free load.
+    // A helper whose own body proves nothing is typed by what its
+    // caller passes in. The propagated record must reach disk and read
+    // back like any inline record, so a plain load already gives the
+    // pipeline the contract the caller revealed — no rescan needed.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
     program.bodies.insert(
@@ -306,8 +307,8 @@ async fn caller_propagated_parameter_records_survive_the_persistence_round_trip(
 #[tokio::test]
 async fn assignment_chain_local_records_survive_the_persistence_round_trip() {
     // A local typed from its assignment chain must reach disk and read
-    // back like any other record, so the pipeline's type-info
-    // extraction names the stack slot with its type after a plain load.
+    // back like any other record. After a plain load, the pipeline's
+    // type-info extraction can report the stack slot and its type.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00")];
     program.bodies.insert(
@@ -353,10 +354,10 @@ async fn assignment_chain_local_records_survive_the_persistence_round_trip() {
 
 #[tokio::test]
 async fn return_usage_records_survive_the_persistence_round_trip() {
-    // A helper whose callers use its result must have that return
-    // reading reach disk and read back like any other record, so the
-    // pipeline's type-info extraction names the return after a plain
-    // load.
+    // When a helper's callers use its result, the return reading must
+    // reach disk and read back like any other record. After a plain
+    // load, the pipeline's type-info extraction can report the return
+    // value.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
     program.bodies.insert(
@@ -418,9 +419,9 @@ async fn direction_records_survive_the_persistence_round_trip() {
     // The full evidence families — the tracer's direct write, the
     // double-pointer hand-back, and the string-function read, plus the
     // widened indexed write and read-plus-write inout of #275 — must
-    // reach disk and read back like any other record, and the list must
-    // keep them function by function in listing order so two scans of
-    // one program diff cleanly (issues #274, #275).
+    // reach disk and read back like any other record. The list keeps
+    // them grouped by function in listing order, so two scans of one
+    // program diff cleanly (issues #274, #275).
     let program = || {
         let mut program = FakeProgram::empty();
         program.listing = vec![
@@ -477,9 +478,9 @@ async fn direction_records_survive_the_persistence_round_trip() {
 
     let loaded = persistor.load("eqmain.dll").expect("load");
 
-    // The writing function carries both families: the direct write reads
-    // out at the solid-high band, the string-function read reads in at
-    // the modest band, each evidenced by its deciding line.
+    // The writing function gets both direction families: the direct
+    // write reads out at the solid-high band, the string-function read
+    // reads in at the modest band, each evidenced by its deciding line.
     let directions: Vec<&InferredType> = loaded
         .for_function("FUN_18003ab00")
         .filter(|inference| matches!(inference, InferredType::Direction(_)))
@@ -518,16 +519,16 @@ async fn direction_records_survive_the_persistence_round_trip() {
     assert_eq!(record.confidence, Confidence::new(75));
     assert_eq!(record.evidence, "*param_2 = &local_8;");
 
-    // Merely passing a parameter to a callee the pass has not read is
-    // no evidence: no direction record for the third function.
+    // Passing a parameter to a callee the pass has not read is no
+    // evidence: the third function gets no direction record.
     assert!(
         loaded
             .for_function("FUN_1800412a0")
             .all(|inference| !matches!(inference, InferredType::Direction(_)))
     );
 
-    // The widened families of #275 reach disk with their bands intact:
-    // the indexed store writes param_1 out and the field test followed
+    // The widened families of #275 reach disk with their bands intact.
+    // The indexed store writes param_1 out, and the field test followed
     // by the field store reads and writes param_2 — both at the solid
     // band 70, each evidenced by its deciding line.
     let widened: Vec<&InferredType> = loaded
@@ -550,8 +551,8 @@ async fn direction_records_survive_the_persistence_round_trip() {
     assert_eq!(field_both.confidence, Confidence::new(70));
     assert_eq!(field_both.evidence, "param_2->count = 1;");
 
-    // The confidence bands are observable through the round trip
-    // (issue #275): direct write outranks field and indexed write,
+    // The evidence confidence bands are observable through the round
+    // trip (issue #275): direct write outranks field and indexed write,
     // which outrank a read-only body.
     assert!(
         written.confidence > field_both.confidence,
@@ -607,9 +608,9 @@ async fn direction_records_survive_the_persistence_round_trip() {
 #[tokio::test]
 async fn mangling_records_survive_the_persistence_round_trip() {
     // A function whose only evidence is its own mangled symbol must
-    // have those name-borne readings reach disk and read back like any
-    // other record, so the pipeline's type-info extraction names the
-    // parameters after a plain load.
+    // still have its name-borne readings reach disk and read back like
+    // any other record. After a plain load, the pipeline's type-info
+    // extraction can report the parameters.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("?setup@Widget@@QAEXH@Z")];
     program.bodies.insert(
@@ -658,9 +659,9 @@ async fn mangling_records_survive_the_persistence_round_trip() {
 
 #[tokio::test]
 async fn convention_records_survive_the_persistence_round_trip() {
-    // Both name-borne convention channels — the mangled letter on a
+    // Both name-borne convention channels — the mangled letter in a
     // listing symbol and the `@N` decoration on an import — must reach
-    // disk under the new `convention` tag and read back like any other
+    // disk under the `convention` tag and read back like any other
     // record, beside the mangling readings of the same symbol.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("?setup@Widget@@QAEXH@Z")];
@@ -699,8 +700,8 @@ async fn convention_records_survive_the_persistence_round_trip() {
     assert_eq!(record.confidence, Confidence::new(90));
     assert_eq!(record.evidence, "?setup@Widget@@QAEXH@Z");
 
-    // The this-pointer reading for the same symbol rode along: the
-    // pair together says the function is a method.
+    // The this-pointer reading for the same symbol is also present:
+    // the pair together says the function is a method.
     assert!(
         loaded
             .for_function("?setup@Widget@@QAEXH@Z")
@@ -789,8 +790,8 @@ async fn x86_stack_discipline_records_survive_the_persistence_round_trip() {
 
     let loaded = persistor.load("eqmain.dll").expect("load");
 
-    // The callee's own epilogue: stdcall, keyed by the function whose
-    // listing carried it, evidenced by the epilogue line.
+    // The callee's own epilogue: stdcall, keyed to the function whose
+    // listing it came from, evidenced by the epilogue line.
     let epilogue = loaded
         .for_function("FUN_18003e750")
         .find(|inference| matches!(inference, InferredType::Convention(_)))
@@ -835,11 +836,11 @@ async fn x86_stack_discipline_records_survive_the_persistence_round_trip() {
 
 #[tokio::test]
 async fn the_scan_reports_a_microsoft_x64_convention_end_to_end() {
-    // The canned fixture program lists rsp-spelled functions — the
-    // fixture targets are x64 — so the x64 shape channel is what the
-    // fixture proves end to end: scan, persist, load, and the
-    // Microsoft-x64 readings stand with their band and their prologue
-    // evidence (issue #248).
+    // The canned fixture program's listings are rsp-spelled, because
+    // the fixture targets are x64. So the x64 shape channel is what
+    // this fixture proves end to end: the scan, the persisted
+    // document, the load, and the Microsoft-x64 readings, each standing
+    // with its band and its prologue evidence (issue #248).
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(
@@ -908,9 +909,9 @@ async fn the_scan_reports_a_microsoft_x64_convention_end_to_end() {
         }
     );
 
-    // The leaf: home region allocated, its register argument homed
-    // into it, a bare ret — the same reading, evidenced by its own
-    // prologue line.
+    // The leaf: it allocates the home region, homes its register
+    // argument into it, and ends in a bare ret — the same reading,
+    // evidenced by its own prologue line.
     let leaf = loaded
         .for_function("FUN_18003e750")
         .find(|inference| matches!(inference, InferredType::Convention(_)))
@@ -944,11 +945,11 @@ async fn the_scan_reports_a_microsoft_x64_convention_end_to_end() {
 
 #[tokio::test]
 async fn corroborated_and_call_site_conventions_survive_the_persistence_round_trip() {
-    // The cross-function pass (issue #249): the corroborated bump lands
-    // in place of the single reading it agrees with, and the caller
-    // carries a call-site view of its callee — both must reach disk
-    // under the convention tag, with the callee field spelled, and read
-    // back like any other record.
+    // The cross-function pass (issue #249): the corroborated bump
+    // replaces the single reading it agrees with, and the caller also
+    // gets a call-site view of its callee. Both must reach disk under
+    // the convention tag, with the callee field spelled, and read back
+    // like any other record.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("paint@12"), summary("FUN_caller")];
     program.bodies.insert(
@@ -1019,7 +1020,8 @@ async fn corroborated_and_call_site_conventions_survive_the_persistence_round_tr
     );
 
     // The caller's view of its callee: keyed by the caller, naming the
-    // callee, carrying the callee's bumped convention and confidence.
+    // callee, and carrying the callee's bumped convention and evidence
+    // confidence.
     let view: Vec<&InferredConvention> = loaded
         .for_function("FUN_caller")
         .filter_map(|inference| match inference {
@@ -1072,7 +1074,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was inferred for the function it is about to
-    // translate; the plain function carries nothing.
+    // translate; the plain function yields nothing.
     let inferred: Vec<&InferredType> = loaded.for_function("FUN_18003ab00").collect();
     assert_eq!(
         inferred.len(),
@@ -1084,9 +1086,9 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
     // Each type reading renders into prompt data naming what it types
-    // and the narrowed type with the evidence class behind it; the
-    // direction renderings are checked separately, since two of the
-    // three parameters now carry a direction reading beside their type.
+    // and the narrowed type with the evidence class behind it. The
+    // direction renderings are checked separately, because two of the
+    // three parameters have a direction reading beside their type.
     let rendered: Vec<TypeInfo> = inferred
         .iter()
         .map(|inference| TypeInfo::from(*inference))
@@ -1123,7 +1125,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
             .any(|info| info.description == "in parameter (via param_direction, confidence 60)")
     );
 
-    // The this-pointer reading keeps its class-wide reach through the
+    // The this-pointer reading keeps its class-wide scope through the
     // round trip.
     let this_ptr = inferred
         .iter()
@@ -1280,7 +1282,7 @@ impl TypeWriteSource for RecordingWriter {
 
 #[tokio::test]
 async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
-    // The full --write-back shape: scan, persist, read the document back,
+    // The full --write-back flow: scan, persist, read the document back,
     // and apply it through the write seam — no external server anywhere.
     let workspace = TempDir::new().unwrap();
     let program = program();
@@ -1298,9 +1300,10 @@ async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
         .await
         .expect("write-back");
 
-    // The surviving parameter readings land in one merged prototype —
+    // The surviving parameter readings are merged into one prototype —
     // the this-pointer reading, `strlen`'s char *, and `CloseHandle`'s
-    // void * — while the return type and the name ride on verbatim.
+    // void * — while the return type and the function name pass through
+    // verbatim.
     let log = writer.log();
     let prototypes: Vec<&String> = log
         .iter()
@@ -1315,10 +1318,11 @@ async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
         )
     );
 
-    // Every surviving type reading applied, and the pass refused nothing
-    // but the two direction readings: the program holds the function, every
-    // slot was undefined, and direction is not a program type (issues
-    // #274, #275) — they are skipped as readings, never written.
+    // Every surviving type reading was applied, and the pass refused
+    // only the two direction readings: the program contains the
+    // function, every slot was undefined, and a direction is not a
+    // program type (issues #274, #275) — the direction readings are
+    // skipped, never written.
     let params = loaded
         .inferences
         .iter()
