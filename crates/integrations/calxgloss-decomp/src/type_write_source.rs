@@ -10,18 +10,18 @@
 //! One implementation (ADR-0020's rule: the read cache implements neither
 //! write trait):
 //!
-//! * [`KunaSource`](calxgloss_kuna::KunaSource) has no persistent program
-//!   to mutate: each call compiles to a Kuna directive in the plane behind
-//!   the source (issue #209), which takes effect in the live session as far
-//!   as the engine allows and replays from the record of effort on every
-//!   load.
+//! * [`KunaSource`](calxgloss_kuna::KunaSource) has no persistent program to
+//!   mutate. Each call compiles to a Kuna directive in the plane behind the
+//!   source (issue #209). The directive takes effect in the live session as
+//!   far as the analysis engine allows, and it is replayed from the record of
+//!   effort on every load.
 //!
 //! Deliberately absent:
 //!
 //! * **A cached implementation.** The read cache never wraps writes —
 //!   writes are never cached, following the `add_function_tag` precedent —
 //!   so a write-back pass is handed the raw source, and every write reaches
-//!   the engine.
+//!   the analysis engine.
 //! * **Renaming, comments, tags, globals** — the seam covers only what type
 //!   write-back needs.
 
@@ -35,15 +35,15 @@ use crate::error::{EngineError, Result};
 pub struct NewStructField<'a> {
     /// The field's name in the Type Manager.
     pub name: &'a str,
-    /// The field's type — any data type the engine can resolve, including a
+    /// The field's type — any data type the analysis engine can resolve, including a
     /// named type created earlier in the same pass.
     pub type_name: &'a str,
-    /// The byte offset to place the field at; `None` lets the engine append it.
+    /// The byte offset to place the field at; `None` lets the analysis engine append it.
     pub offset: Option<u32>,
 }
 
 impl<'a> NewStructField<'a> {
-    /// A field the engine appends at the end of the structure.
+    /// A field the analysis engine appends at the end of the structure.
     pub fn new(name: &'a str, type_name: &'a str) -> Self {
         Self {
             name,
@@ -65,16 +65,16 @@ impl<'a> NewStructField<'a> {
 /// [`KunaSource`](calxgloss_kuna::KunaSource) implements it over the Kuna
 /// directive plane — the only implementer: the read cache deliberately
 /// never wraps writes, so a type-write pass is handed the raw source and
-/// every write reaches the engine. The futures are `Send` so a write-back
-/// pass can be driven from an orchestrating task.
+/// every write reaches the analysis engine. The futures are `Send` so a
+/// write-back pass can be driven from an orchestrating task.
 pub trait TypeWriteSource {
     /// Set the full prototype — return type and parameter types — of the
     /// function at `function_address`.
     ///
     /// The name inside the prototype text does not rename the function: the
-    /// bridge parses the signature and applies it at the address. A calling
-    /// convention spelled inside the prototype text is honoured; the
-    /// function's plate comment survives the change.
+    /// signature is parsed and applied at the address. A calling convention
+    /// spelled inside the prototype text is honoured. The function's plate
+    /// comment survives the change.
     fn set_function_prototype(
         &self,
         function_address: u64,
@@ -84,9 +84,9 @@ pub trait TypeWriteSource {
     /// Set the type of the variable (local or parameter) named `variable`
     /// in the function at `function_address`.
     ///
-    /// The bridge refuses an `undefined*` target — the write must name a
-    /// concrete type — and a miss on `variable` answers with the names it
-    /// *does* know, which the error message carries.
+    /// An `undefined*` target is refused: the write must name a concrete
+    /// type. A miss on `variable` answers with the names it *does* know, and
+    /// the error message carries them.
     fn set_local_variable_type(
         &self,
         function_address: u64,
@@ -116,7 +116,7 @@ pub trait TypeWriteSource {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Create a typedef `name` as an alias for `base_type` — any type
-    /// the engine can resolve, pointer spellings (`char *`) included.
+    /// the analysis engine can resolve, pointer spellings (`char *`) included.
     fn create_typedef(
         &self,
         name: &str,
@@ -137,10 +137,10 @@ pub trait TypeWriteSource {
 }
 
 impl TypeWriteSource for KunaSource {
-    // The Kuna source's inherent methods answer in Kuna-native shape; the
-    // seam only maps the field struct and folds a KunaError into the
-    // seam's vocabulary (ADR-0039's fold: a missing function or type is
-    // the same `NotFound`/`Malformed` an engine miss becomes).
+    // The Kuna source's own methods answer in Kuna-native shape. The seam
+    // only maps the field struct and converts a KunaError into the seam's
+    // vocabulary (ADR-0039's fold: a missing function or type becomes the
+    // same `NotFound`/`Malformed` an analysis-engine miss becomes).
     async fn set_function_prototype(&self, function_address: u64, prototype: &str) -> Result<()> {
         self.set_function_prototype(function_address, prototype)
             .await
@@ -202,14 +202,14 @@ mod tests {
     use super::*;
     use crate::cache::CachedScanSource;
 
-    /// The read cache must never grow a write impl — writes belong to the
-    /// raw source so every one reaches the engine (the function-tag
-    /// precedent). These two impls are the tripwire: the moment anyone
-    /// writes `impl TypeWriteSource for CachedScanSource`, the blanket
-    /// impl and the concrete one collide (E0119) and the crate stops
-    /// compiling. Negative reasoning is only available inside the crate
-    /// that defines the trait, which is why the guard lives here rather
-    /// than in the integration tests.
+    /// The read cache must never grow a write impl: writes belong to the raw
+    /// source, so every write reaches the analysis engine (the function-tag
+    /// precedent). The two impls below are the tripwire: the moment anyone
+    /// writes `impl TypeWriteSource for CachedScanSource`, the blanket impl
+    /// and the concrete one collide (E0119) and the crate stops compiling.
+    /// This kind of negative check only works inside the crate that defines
+    /// the trait, which is why the guard lives here rather than in the
+    /// integration tests.
     trait WriteSourceProbe {}
 
     struct Probe<T>(std::marker::PhantomData<T>);
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn the_kuna_source_implements_the_write_trait() {
         // ADR-0020's other half: the cache implements neither write trait,
-        // and the Kuna source does — this call only compiles because the
+        // and the Kuna source does. This call only compiles because the
         // blanket impl above covers `KunaSource: TypeWriteSource`.
         fn assert_probe<T: WriteSourceProbe>() {}
         assert_probe::<Probe<KunaSource>>();

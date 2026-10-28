@@ -1,23 +1,27 @@
-//! The seam's error vocabulary — the failure facts every engine's reads fold into.
+//! The seam's error vocabulary — the failure facts that analysis-engine
+//! reads are reported as.
 //!
 //! Kuna is the only analysis engine (issue #214, ADR-0041), and its named
-//! failures are folded into this vocabulary at the seam (ADR-0039's fold): a
-//! missing function, type, or byte range is [`EngineError::NotFound`] and a
-//! kind mismatch [`EngineError::Malformed`] — the same facts the old Ghidra
-//! bridge reported, so layout probes and retry logic branch on one vocabulary
-//! whichever engine answers. Every other engine failure arrives as
-//! [`EngineError::Reported`] carrying the engine's own self-explaining message.
+//! failures are converted into this vocabulary at the seam (ADR-0039's
+//! fold): a missing function, type, or byte range is
+//! [`EngineError::NotFound`] and a kind mismatch [`EngineError::Malformed`]
+//! — the same facts the retired Ghidra bridge reported, so layout probes
+//! and retry logic branch on one vocabulary whichever analysis engine
+//! answers. Every other analysis-engine failure arrives as
+//! [`EngineError::Reported`] carrying the analysis engine's own
+//! self-explaining message.
 
 use thiserror::Error;
 
-/// Errors from the scan seam, whichever engine answers the reads.
+/// Errors from the scan seam, whichever analysis engine answers the reads.
 #[derive(Debug, Error)]
 pub enum EngineError {
-    /// The engine answered, and its answer was an explanation rather than a
-    /// result.
+    /// The analysis engine answered, and its answer was an explanation
+    /// rather than a result.
     ///
-    /// The message is the engine's own — Kuna's failures are named and
-    /// self-explaining, so this variant usually carries the whole diagnosis.
+    /// The message is the analysis engine's own — Kuna's failures are named
+    /// and self-explaining, so this variant usually carries the whole
+    /// diagnosis.
     #[error("the engine reported an error: {message}")]
     Reported { message: String },
 
@@ -33,13 +37,14 @@ pub enum EngineError {
 /// The result type every seam read answers with.
 pub type Result<T> = std::result::Result<T, EngineError>;
 
-/// Fold a Kuna engine failure into the seam's error vocabulary (ADR-0039).
+/// Convert a Kuna analysis-engine failure into the seam's error vocabulary
+/// (ADR-0039's fold).
 ///
-/// A missing function or type is the same fact in the same shape — consumers
-/// already branch on [`NotFound`](Self::NotFound) for a bad name, and the
-/// typesdb scanner's layout probes read a kind mismatch as
+/// A missing function or type becomes the same fact in the same shape:
+/// consumers already branch on [`NotFound`](Self::NotFound) for a bad name,
+/// and the typesdb scanner's layout probes read a kind mismatch as
 /// [`Malformed`](Self::Malformed). Every other Kuna failure is already a
-/// named, self-explaining message, so it rides the seam as a
+/// named, self-explaining message, so it passes through the seam as a
 /// [`Reported`](Self::Reported) explanation.
 impl From<calxgloss_kuna::error::KunaError> for EngineError {
     fn from(error: calxgloss_kuna::error::KunaError) -> Self {

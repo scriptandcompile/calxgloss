@@ -1,11 +1,11 @@
-//! Parsers for the engine's decompiled pseudo-C — the Ghidra-shaped text
-//! dialect the engine reproduces (Kuna is a Ghidra port and emits the same
-//! `FUN_…`/`WARNING` shapes, issue #214).
+//! Parsers for the analysis engine's decompiled pseudo-C — the
+//! Ghidra-shaped text dialect it reproduces (Kuna is a Ghidra port and
+//! emits the same `FUN_…`/`WARNING` shapes, issue #214).
 //!
-//! Every other read answers from the engine already structured, so what
-//! stays here is the scraper over the decompiler text: the one answer whose
-//! real signature has to be recovered from the body itself. Anything
-//! unparseable is skipped rather than guessed at: a half-understood address
+//! Every other read arrives from the analysis engine already structured, so
+//! what stays here is the scraper over the decompiler text: the one answer
+//! whose real signature has to be recovered from the body itself. Anything
+//! unparseable is skipped rather than guessed at. A half-understood address
 //! is worse than a missing record, because it would silently produce a wrong
 //! call target.
 
@@ -24,12 +24,13 @@ use crate::model::DecompiledFunction;
 /// ```
 /// The signature is the first non-blank, non-comment line — joined with the
 /// lines below it if Ghidra wrapped it — and the pseudo-C follows. The two
-/// are separated at the `{` that opens the body, which is usually on its own
-/// line but can share the signature's.
+/// are separated at the `{` that opens the body. That brace is usually on its
+/// own line, but it can share the signature's line.
 ///
 /// A long signature comes back wrapped, with the return type alone above the
-/// name (often after a leading `/* WARNING: ... */` comment), so candidate
-/// lines are joined until the declarator's `(` or the body's `{` shows up.
+/// name (often after a leading `/* WARNING: ... */` comment). Candidate lines
+/// are therefore joined until the parameter list's `(` or the body's `{`
+/// shows up.
 pub fn parse_decompiled(text: &str) -> Option<DecompiledFunction> {
     let mut signature = String::new();
     for line in text
@@ -46,8 +47,9 @@ pub fn parse_decompiled(text: &str) -> Option<DecompiledFunction> {
         }
     }
 
-    // A body brace on the signature line is not part of the declarator, and
-    // leaving it there would make the signature unparseable as a C declaration.
+    // A body brace on the signature line is not part of the signature.
+    // Leaving it there would make the signature unparseable as a C
+    // declaration.
     let signature = match signature.find('{') {
         Some(idx) => signature[..idx].trim_end().to_string(),
         None => signature,
@@ -75,9 +77,9 @@ pub fn parse_decompiled(text: &str) -> Option<DecompiledFunction> {
 /// Names of functions called by a decompiled body.
 ///
 /// The decompiler already names every direct call target as `NAME(`, so the
-/// call graph's callee half can be read off the body without a request per call
-/// site. A call through a function pointer is missed, because the callee is only
-/// a value there and not a name in the text.
+/// call graph's callee half can be read off the body without a request per
+/// call site. A call through a function pointer is missed, because the callee
+/// is only a value there and not a name in the text.
 pub fn callees_from_decompiled(text: &str) -> Vec<String> {
     // Only lines between the outermost braces are scanned. The signature sits
     // outside them and ends in `(...)` too, so scanning the whole text would
@@ -104,8 +106,8 @@ pub fn callees_from_decompiled(text: &str) -> Vec<String> {
 }
 
 /// A decompiler's prefixes for a function it has no real name for, in either
-/// engine's spelling: Ghidra's uppercase `FUN_`/`LAB_`/`SUB_`, or Kuna's
-/// lowercase `sub_` (its unnamed functions are `sub_<addr>`).
+/// dialect spelling: Ghidra's uppercase `FUN_`/`LAB_`/`SUB_`, or Kuna's
+/// lowercase `sub_` (Kuna names its unnamed functions `sub_<addr>`).
 fn is_decompiler_default_name(ident: &str) -> bool {
     ident.starts_with("FUN_")
         || ident.starts_with("LAB_")
@@ -113,11 +115,12 @@ fn is_decompiler_default_name(ident: &str) -> bool {
         || ident.starts_with("sub_")
 }
 
-/// Default-named identifiers on `line` that are applied to an argument list.
+/// Default-named identifiers on `line` that are followed by an argument list.
 ///
-/// The test is that the identifier is *immediately* followed by `(`, not that a
-/// `(` appears somewhere on the line: a cast such as `(int **)FUN_1800861f0(x)`
-/// puts a parenthesis earlier, and the call is the one that matters.
+/// The test is that the identifier is *immediately* followed by `(`, not that
+/// a `(` appears somewhere on the line: a cast such as
+/// `(int **)FUN_1800861f0(x)` puts a parenthesis earlier, and the call is the
+/// one that matters.
 fn call_targets(line: &str) -> Vec<&str> {
     let bytes = line.as_bytes();
     let mut out = Vec::new();
@@ -152,7 +155,8 @@ mod tests {
 
     // The fixtures below are verbatim bodies captured from GhidraMCP 1.4 with
     // `eqmain.dll` open, and from Kuna's own listings. They are the contract:
-    // if the engine's dialect changes, these are what must change with it.
+    // if the analysis engine's dialect changes, these are what must change
+    // with it.
 
     #[test]
     fn test_parses_decompiled_output() {
@@ -160,8 +164,8 @@ mod tests {
         let body = "\nlonglong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return param_1 + ((longlong)param_2 + 4) * 8;\n}\n";
         let f = parse_decompiled(body).expect("should parse");
         assert_eq!(f.name, "FUN_18008ed50");
-        // The signature is the one thing the metadata answers get wrong, so
-        // recovering it from the body is the reason this parser exists.
+        // The metadata answers get the signature wrong, so recovering it from
+        // the body is the reason this parser exists.
         assert_eq!(
             f.signature,
             "longlong FUN_18008ed50(longlong param_1,int param_2)"
@@ -188,7 +192,7 @@ mod tests {
     #[test]
     fn test_a_body_brace_on_the_signature_line_is_not_part_of_the_signature() {
         // Ghidra usually puts the brace on its own line, but a short function
-        // can come back on one line. The declarator has to end at the brace or
+        // can come back on one line. The signature has to end at the brace or
         // it is not a signature at all.
         let f = parse_decompiled("int DrawSprite(int x, int y) { return x + y; }")
             .expect("should parse");
