@@ -4,13 +4,13 @@
 //! of one loaded program and assembles its findings into a single
 //! [`LibmatchResult`] with its scan provenance.
 //!
-//! The matcher is pure text analysis over one decompiled body, so the
-//! engine fetches each function's pseudo-C exactly once. The scan is one
-//! sequential pass over the function listing: keeping the pass
+//! The matcher reads only the text of one decompiled body, so the scan
+//! decompiles each function exactly once — its per-function pass runs
+//! one function at a time down the function listing. Keeping that pass
 //! sequential keeps the persisted finding list in a stable, diffable
-//! order, and where two signatures claim one function the resolution
-//! step ([`resolve_matches`](crate::confidence::resolve_matches)) keeps
-//! only the strongest claim, standing where the function first appeared.
+//! order. Where two signatures claim one function, the resolution step
+//! ([`resolve_matches`](crate::confidence::resolve_matches)) keeps only
+//! the strongest claim, standing where the function first appeared.
 
 use std::time::Instant;
 
@@ -25,16 +25,15 @@ use crate::types::{LibmatchFinding, LibmatchResult, ScanMetadata};
 
 /// The decompiler reads a known-library identification scan performs.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here so
-/// the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// This is the shared trait from the decompiler seam crate, re-exported
+/// here so this crate names it directly. [`KunaSource`] implements it
+/// over the in-process analysis engine; tests implement it over canned
+/// bodies, so the orchestration runs without a server. Its futures are
+/// `Send`, so a scan can be driven from an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
 /// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
+/// before the rest are replaced by a count — bounded prose beside the
 /// counts, not a dump (the P19-3 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
@@ -47,18 +46,18 @@ pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
 /// #347), beside the provenance and the timing.
 ///
 /// libmatch has one facet: `function-bodies`, the decompiled bodies the
-/// body-signature matcher reads. The function listing is always read end
-/// to end — a failed listing aborts the run, and more than half failing to
-/// decompile trips the skip-rate breaker above — so what a finished scan
-/// can not have read is exactly the bodies it skipped along the way: a
-/// nameless listing entry, or a decompile that failed. With none, the
-/// facet is `complete`, and that is the admission's point: a function no
-/// finding mentions was examined and clean, never silently unchecked.
-/// With any, the facet is `partial` and the limitation line names the
-/// unreached bodies (bounded at [`MAX_NAMED_UNREACHED`]), so silence and
-/// never-reaching are distinguishable in the filed record itself. The
-/// whole picture mirrors the single facet — there is nothing else this
-/// engine examines.
+/// body-signature matcher reads. The scan always reads the function
+/// listing end to end: a failed listing aborts the run, and more than
+/// half of the listing failing to decompile trips the skip-rate
+/// breaker. So what a finished scan can not have read is exactly the
+/// bodies it skipped along the way: a nameless listing entry, or a
+/// decompile that failed. With none, the facet is `complete`, and that
+/// is the admission's point: a function no finding mentions was
+/// examined and clean, never silently unchecked. With any, the facet is
+/// `partial` and the limitation line names the unreached bodies
+/// (bounded at [`MAX_NAMED_UNREACHED`]), so silence and never-reaching
+/// are distinguishable in the filed record itself. The whole picture
+/// mirrors the single facet — there is nothing else this scan examines.
 fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
     let total = unreached.len() + nameless;
     if total == 0 {
@@ -96,12 +95,11 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
 
 /// Orchestrates the body-signature matcher into one [`LibmatchResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
+/// The type is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds one
 /// over a loaded [`KunaSource`]. The matcher carries no state and starts
-/// with the built-in starter set —
-/// [`with_matcher`](Self::with_matcher) swaps the set whole — so one
-/// instance serves the whole scan.
+/// with the built-in starter set — [`with_matcher`](Self::with_matcher)
+/// swaps the set whole — so one instance serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct LibmatchEngine<S = KunaSource> {
     source: S,
@@ -109,8 +107,8 @@ pub struct LibmatchEngine<S = KunaSource> {
 }
 
 impl LibmatchEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the built-in
-    /// starter signature set.
+    /// An evidence engine over a loaded Kuna program, scanning with the
+    /// built-in starter signature set.
     pub fn new(source: &KunaSource) -> LibmatchEngine<KunaSource> {
         LibmatchEngine {
             source: source.clone(),
@@ -120,8 +118,8 @@ impl LibmatchEngine<KunaSource> {
 }
 
 impl<S> LibmatchEngine<S> {
-    /// An engine whose decompiles come from `source`, scanning with the
-    /// built-in starter signature set.
+    /// An evidence engine whose decompiles come from `source`, scanning
+    /// with the built-in starter signature set.
     pub fn with_source(source: S) -> Self {
         LibmatchEngine {
             source,
@@ -165,13 +163,14 @@ impl<S> LibmatchEngine<S> {
     /// group in listing order.
     ///
     /// A function whose body the decompiler cannot produce (a thunk, a
-    /// bad entry point) is skipped with a warning; only a failure of the
-    /// listing itself — the engine being down — aborts the run, since
-    /// then nothing was scanned. But when more than half the listing
-    /// fails to decompile, the skip-rate breaker aborts the run too:
-    /// that is the signature of the engine answering from the wrong
-    /// program, and skipping on would persist a phantom-clean record
-    /// (issue #71).
+    /// bad entry point) is skipped with a warning. Only a failure of the
+    /// listing read itself — the analysis engine being down — aborts the
+    /// run, since then nothing was scanned. When more than half of the
+    /// function listing has failed to decompile, the skip-rate breaker
+    /// aborts the run too. A high skip rate is the signature of the
+    /// seam answering about the wrong program. The breaker is a fuse,
+    /// not a post-mortem: it aborts rather than let the scan persist a
+    /// record that looks clean but is not (issue #71).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<LibmatchResult>
     where
         S: ScanSource,
@@ -191,9 +190,10 @@ impl<S> LibmatchEngine<S> {
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // A nameless listing entry is skipped: looking up an
+                // empty name could fetch some other function's body,
+                // and nothing can be said about the entry itself, so it
+                // passes unrecorded.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -213,11 +213,13 @@ impl<S> LibmatchEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a program
-                    // the engine cannot analyze, and an empty result
-                    // would persist as a phantom-clean record. Abort
-                    // with the counts instead of skipping on.
+                    // Skip-rate breaker: a high skip rate is the
+                    // signature of the seam answering about the wrong
+                    // program. The breaker is a fuse, not a
+                    // post-mortem: once more than half of the function
+                    // listing has failed to decompile, abort with the
+                    // counts instead of skipping on and persisting a
+                    // record that looks clean but is not.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::LibmatchError::DecompileBreaker {
                             failed: decompile_failures,
@@ -238,22 +240,23 @@ impl<S> LibmatchEngine<S> {
         let mut findings = crate::confidence::resolve_matches(findings);
 
         // The cross-function pass then propagates those claims over the
-        // bodies the scan already holds — no extra engine reads — and
-        // its findings append after every per-function finding,
-        // identical-body duplicates first and thunks after, each group
-        // in listing order.
+        // bodies the scan already holds — no new reads from the analysis
+        // engine — and its findings append after every per-function
+        // finding, identical-body duplicates first and thunks after,
+        // each group in listing order.
         findings.extend(crate::cross_function::propagate(&bodies, &findings));
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names the analysis engine and its version pin
+        // under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage inside its own scan, where
-        // the truth lives — not the registry row and not the CLI (issue
-        // #347): every listed body was read unless the scan says which
-        // ones it could not reach, and the match records themselves carry
-        // their version-authority note. The batch scan phase and the
-        // CLI's force-rescan file the same admission through the same
-        // single definition.
+        // The scan admits its own coverage, where the truth lives — not
+        // the registry row and not the CLI (issue #347): every listed
+        // body was read unless the scan says which ones it could not
+        // reach, and the match records themselves carry their
+        // version-authority note. The batch scan phase and the CLI's
+        // force-rescan file the same admission through this same single
+        // definition.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -336,8 +339,8 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads: this engine never makes
-        // them, so they answer with empty or not-found data.
+        // The rest of the shared trait's reads: this scan never makes
+        // them, so these answer with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
@@ -450,8 +453,8 @@ mod tests {
 ";
 
     /// The copy loop again, but allocating its destination first — the
-    /// `malloc` call line is what required and forbidden callee
-    /// references gate on.
+    /// `malloc` call line is the shape that required and forbidden
+    /// callee references test for.
     const ALLOCATING_COPY_BODY: &str = "\
   puVar1 = malloc(param_3);
   lVar2 = param_2;
@@ -553,9 +556,9 @@ mod tests {
   return;
 ";
 
-    /// The STL associative-container red-black rotation: the three-line
-    /// child rehang spelled by the MSVC node fields, with the parent
-    /// rewire around it.
+    /// The STL associative-container red-black rotation: three lines
+    /// re-point the child links, spelled with the MSVC node fields, and
+    /// the parent link is rewired around them.
     const TREE_ROTATE_BODY: &str = "\
   pVar1 = param_1->_Right;
   param_1->_Right = pVar1->_Left;
@@ -589,17 +592,17 @@ mod tests {
   return pVar2;
 ";
 
-    // The same shapes as Kuna (the only engine, ADR-0041) renders them:
-    // every spelling below is one observed in the fixture target's Kuna
-    // decompiles (issue #309) — `a0`-family parameters and `v1`-family
-    // temporaries, the truth test `} while (v2);` and `while (v1) {`
-    // beside the `!= 0` form, the countdown `v2 = v2 - 1`, the indexed
-    // pointer step `v1 = &v1[1]`, the `uint1` byte type, the falseness
-    // test `if (!a0)`, and the `sub_…` name for an unnamed routine. The
-    // dialect layer folds the invented names onto the same wildcard
-    // tokens, and the corpus test in `tests/kuna_corpus.rs` pins the
-    // shapes Kuna really emits; these fakes pin the rest of the set
-    // speaking the dialect too.
+    // The same shapes as Kuna (the only analysis engine, ADR-0041)
+    // renders them: every spelling below is one observed in the fixture
+    // target's Kuna decompiles (issue #309) — `a0`-family parameters and
+    // `v1`-family temporaries, the truth test `} while (v2);` and
+    // `while (v1) {` beside the `!= 0` form, the countdown `v2 = v2 - 1`,
+    // the indexed pointer step `v1 = &v1[1]`, the `uint1` byte type, the
+    // falseness test `if (!a0)`, and the `sub_…` name for an unnamed
+    // routine. The dialect layer maps the invented names onto the same
+    // wildcard tokens, and the corpus test in `tests/kuna_corpus.rs`
+    // pins the shapes Kuna really emits; these fakes pin the rest of the
+    // set speaking the dialect too.
 
     const KUNA_MEMCPY_BODY: &str = "\
   uint8 *v1; // rax | rdi
@@ -791,7 +794,7 @@ mod tests {
         assert_eq!(finding.kind(), "body_signature");
         assert_eq!(finding.target(), "memcpy");
         assert_eq!(finding.family(), LibraryFamily::Crt);
-        // The standard body-evidence score.
+        // The standard evidence confidence for a body-signature match.
         assert_eq!(
             finding.confidence().value(),
             crate::confidence::BODY_MATCH_CONFIDENCE
@@ -840,10 +843,10 @@ mod tests {
         }
     }
 
-    /// A program carrying one representative body per built-in starter-set
-    /// shape the tracer bullet's set did not yet cover: the grown CRT
-    /// memory/string set, the allocator wrappers, and the STL tree
-    /// idioms.
+    /// A program carrying one representative body per built-in
+    /// starter-set shape that the original tracer-bullet set did not
+    /// cover: the grown CRT memory/string set, the allocator wrappers,
+    /// and the STL tree idioms.
     fn starter_set_program() -> FakeProgram {
         let mut program = FakeProgram::default();
         for (name, signature, body) in [
@@ -905,8 +908,8 @@ mod tests {
     async fn crt_memory_and_string_bodies_land_their_own_symbols() {
         // Each representative MSVC CRT memory/string body lands exactly
         // one finding, naming its own symbol and the CRT family at the
-        // standard score: the grown starter set's entries must not
-        // cross-claim each other's shapes.
+        // standard evidence confidence: the grown starter set's entries
+        // must not claim each other's shapes.
         let result = scan(starter_set_program()).await;
         for (name, symbol) in [
             ("FUN_18003ac00", "memset"),
@@ -930,9 +933,9 @@ mod tests {
     async fn allocator_wrapper_bodies_land_crt_findings_at_their_sloppier_score() {
         // The `operator new`/`operator delete` wrappers: a `malloc`/`free`
         // call plus a null test is thin evidence — any allocation helper
-        // reads alike — so these entries deliberately claim a sloppier
-        // score than the standard body-evidence one, through the
-        // per-entry override.
+        // looks the same — so through the per-entry override these
+        // entries deliberately score below the standard evidence
+        // confidence.
         let result = scan(starter_set_program()).await;
         for (name, symbol) in [
             ("FUN_180045f00", "operator new"),
@@ -956,7 +959,8 @@ mod tests {
         // the rebalancing pass compiles to and the search descent that
         // walks `_Left`/`_Right` while testing `_Isnil`. The MSVC node
         // fields survive normalization, and both bodies land the tree
-        // entries naming the STL family at the standard score.
+        // entries naming the STL family at the standard evidence
+        // confidence.
         let result = scan(starter_set_program()).await;
         for (name, symbol) in [
             ("FUN_18004abcd", "std::_Tree::_Rotate_left"),
@@ -974,9 +978,9 @@ mod tests {
     }
 
     /// A program carrying one body per built-in starter-set shape, each
-    /// spelled as Kuna renders it: the dialect the only engine emits,
-    /// with every invented name folded by the normalizer's Kuna layer
-    /// (issue #309).
+    /// spelled as Kuna renders it: the dialect the only analysis engine
+    /// emits, with every invented name mapped by the normalizer's Kuna
+    /// layer (issue #309).
     fn kuna_starter_set_program() -> FakeProgram {
         let mut program = FakeProgram::default();
         for (name, signature, body) in [
@@ -1037,10 +1041,10 @@ mod tests {
     #[tokio::test]
     async fn kuna_dialect_bodies_land_the_same_symbols_as_the_ghidra_ones() {
         // One shared shape rule, one signature set: every starter-set
-        // entry must also speak Kuna, the only engine (issue #309).
-        // Each Kuna-spelled body lands exactly one finding naming the
-        // same symbol and family as its Ghidra twin — the dialect
-        // layer folds the invented names, and the corpus-grounded
+        // entry must also speak Kuna, the only analysis engine (issue
+        // #309). Each Kuna-spelled body lands exactly one finding naming
+        // the same symbol and family as its Ghidra twin — the dialect
+        // layer maps the invented names, and the corpus-grounded
         // bundle alternatives land the loop tests and steps.
         let result = scan(kuna_starter_set_program()).await;
         for (name, symbol, family) in [
@@ -1218,7 +1222,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_chain_of_tail_call_thunks_collapses_onto_the_matched_function() {
-        // Two thunks deep, listed farthest-from-the-match first: the
+        // Two thunks deep, listed farthest from the match first: the
         // first tail-calls the second, which tail-calls the matched
         // copy loop. Both inherit the match, and the chain pays the
         // penalty once, not per hop, so both stand at one score — the
@@ -1306,9 +1310,9 @@ mod tests {
     #[tokio::test]
     async fn cross_function_findings_append_after_the_per_function_findings() {
         // The thunk stands first in the listing and the identical
-        // duplicate last, but the per-function walk's claim still
-        // lands first: cross-function findings append after every
-        // per-function finding, each group in listing order.
+        // duplicate last, but the per-function pass's claim still lands
+        // first: cross-function findings append after every per-function
+        // finding, each group in listing order.
         let matcher = folded_copy_matcher();
         let mut program = FakeProgram {
             listing: vec![
@@ -1497,8 +1501,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_listing_fails_the_whole_run() {
-        // With the listing gone nothing was scanned, so the run aborts
-        // rather than returning a result that looks empty by detection.
+        // With the listing gone nothing was scanned, so the run returns
+        // an error rather than a result whose empty findings could be
+        // mistaken for a clean scan.
         let mut program = program();
         program.fail_listing = true;
         let result = LibmatchEngine::with_source(program)
@@ -1532,9 +1537,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_where_every_decompile_fails_aborts() {
-        // The skip-rate breaker: most of the listing failing to
-        // decompile is the engine answering from the wrong program, and
-        // an empty result would persist as a phantom-clean record.
+        // The skip-rate breaker: more than half of the function listing
+        // failing to decompile is the signature of the seam answering
+        // about the wrong program, and letting the scan finish would
+        // persist a record that looks clean but is not.
         let mut program = program();
         program.fail_decompiles = program
             .listing
@@ -1544,8 +1550,8 @@ mod tests {
         let result = LibmatchEngine::with_source(program)
             .scan("eqmain.dll")
             .await;
-        // The breaker trips as soon as most of the listing has failed —
-        // two of three — not only after all of them.
+        // The breaker trips as soon as more than half of the listing has
+        // failed — two of three — not only after all of them.
         assert!(matches!(
             result,
             Err(crate::LibmatchError::DecompileBreaker {
@@ -1572,7 +1578,7 @@ mod tests {
     // ============================================================
 
     /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
+    /// names every declared facet exactly once, and each fault names one
     /// drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
@@ -1580,11 +1586,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
-        // force-rescan file the same admission through this one
-        // definition. Every body was read here, so the record is
-        // complete and says nothing needs admitting.
+        // The coverage record is stamped by the evidence engine's own
+        // scan — not by the registry row and not by the CLI — so the
+        // batch scan phase and the CLI's force-rescan file the same
+        // admission through this one definition. Every body was read
+        // here, so the record is complete and says nothing needs
+        // admitting.
         let result = scan(program()).await;
         let coverage = result
             .metadata
@@ -1644,10 +1651,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_coverage_line_is_capped_at_five_names_and_counts_the_nameless() {
-        // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
-        // slot.
+        // Bounded prose beside the counts: of the six decompile
+        // failures, five are named inline and the sixth is counted, and
+        // a nameless listing entry counts toward the total without
+        // taking one of the five name slots.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = tests::FakeProgram::default();
         for (index, name) in names.iter().enumerate() {
@@ -1687,10 +1694,11 @@ mod tests {
 
     #[tokio::test]
     async fn every_finding_a_fresh_scan_makes_states_its_own_version_authority() {
-        // The per-finding admission rides the record (P19-3): the body
-        // signature proved a shape, never WHICH release carried it, and
-        // every consumer reading the document — report, prompt, a
-        // `--show` months later — sees the note beside the match.
+        // Every finding carries its own admission in the record
+        // (P19-3): a body signature proves a shape, never WHICH release
+        // carried it, so every consumer reading the document — report,
+        // prompt, a `--show` months later — sees the note beside the
+        // match.
         let result = scan(program()).await;
         assert!(
             !result.findings.is_empty(),
