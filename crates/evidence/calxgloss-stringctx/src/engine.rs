@@ -1,18 +1,18 @@
 //! String-context scan orchestration.
 //!
-//! [`StringContextEngine`] runs the string classifier, the hybrid
-//! string-to-function mapper, the format-string engine, the
-//! localization detector, and — after the per-function walk, over the
-//! bodies it keeps — the cross-function correlation pass over one open
-//! program and assembles their findings into a single
-//! [`StringContextResult`] with its scan provenance.
+//! [`StringContextEngine`] runs the parts of this crate over one open
+//! program: the string classifier, the hybrid string-to-function
+//! mapper, [`FormatStringEngine`], [`LocalizationDetector`], and
+//! [`CrossFunctionAnalyzer`]. The cross-function pass runs after the
+//! per-function pass, over the kept bodies. Their findings are combined
+//! into one [`StringContextResult`] with its scan provenance.
 //!
-//! The scan is one sequential pass over the function listing: one
-//! `strings()` call up front, one decompile per function, and xref
-//! lookups only where a function's body parse found nothing — the hybrid
-//! rule that keeps a scan cheap. Classification runs once per program
-//! string and is reused across every function that uses it, and xref
-//! responses are cached per string address so the fallback never asks
+//! The scan walks the function listing once, in order. It makes one
+//! `strings()` call up front and one decompile per function. It makes
+//! xref lookups only where a function's body parse found nothing; that
+//! hybrid rule keeps a scan cheap. Each program string is classified
+//! once, and every function that uses it reads the same answer. Xref
+//! responses are cached per string address, so the fallback never asks
 //! the same question twice.
 
 use std::collections::{HashMap, HashSet};
@@ -36,48 +36,55 @@ use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage};
 
 /// The program a string-context scan reads.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned listings, bodies, strings, and xrefs so the
-/// orchestration runs without a server. The futures are `Send` so a
-/// scan can be driven from an orchestrating task.
+/// The shared trait from the decompiler seam crate, re-exported here so
+/// the scan's generic type parameter names it directly.
+/// [`KunaSource`] implements it over the in-process analysis engine,
+/// and tests implement it over canned listings, bodies, strings, and
+/// xrefs, so the orchestration runs without a server. The futures are
+/// `Send`, so a task can drive a scan from another thread.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump (the P19-7 admitted-semantics track).
+/// How many unreached functions one coverage limitation line names by
+/// name before it reports the rest as a count. This keeps the admission
+/// a short sentence beside the counts, rather than a long list dump
+/// (the P19-7 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
-/// The facets a string-context scan declares, in order — the roster
-/// the record must name exactly once each: the decompiled bodies,
-/// the program-wide string listing, and the cross-reference lookups
-/// the fallback makes.
+/// The facets a string-context scan declares, in order. The record must
+/// name each one exactly once: the decompiled bodies, the program-wide
+/// string listing, and the cross-reference lookups the fallback makes.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies", "program-strings", "string-xrefs"];
 
-/// The coverage record every string-context scan stamps about itself
+/// The coverage record every string-context scan writes about itself
 /// (issue #351), beside the provenance and the timing.
 ///
-/// The string-context scan reads three facets. `function-bodies` — the
-/// decompiled bodies the body parse reads: the function listing is
-/// always read end to end (a failed listing aborts the run, and more
-/// than half failing to decompile trips the skip-rate breaker), so what
-/// a finished scan can not have read is exactly the bodies it skipped:
-/// a nameless listing entry, or a decompile that failed.
-/// `program-strings` — the program-wide string listing the `DAT_`
-/// resolution and the xref fallback need; a failed listing costs the
-/// scan that evidence and nothing else, so the facet is then
-/// `unavailable` with its reason rather than silently empty.
-/// `string-xrefs` — the cross-reference lookups the fallback makes for
-/// each program string when a body came up empty: every lookup failing
-/// leaves the facet `unavailable` — no cross-reference could be read —
-/// while some landing leaves it `partial`, counting the ones that
-/// never answered. With nothing skipped and every read answered, the
-/// facets are `complete`, and that is the admission's point: a string
-/// no finding maps was examined and clean, never silently unchecked.
+/// The string-context scan reads three facets.
+///
+/// `function-bodies` covers the decompiled bodies the body parse reads.
+/// The scan always reads the function listing end to end: a failed
+/// listing aborts the scan, and more than half of the listing failing
+/// to decompile trips the skip-rate breaker. So in a finished scan, the
+/// bodies it cannot have read are exactly the ones it skipped: a
+/// nameless listing entry, or a decompile that failed.
+///
+/// `program-strings` covers the program-wide string listing, which the
+/// `DAT_` resolution and the xref fallback need. A failed listing costs
+/// the scan that evidence and nothing else, so the facet is then
+/// `unavailable` with its reason, rather than silently empty.
+///
+/// `string-xrefs` covers the cross-reference lookups the fallback makes
+/// for each program string when a body came up empty. If every lookup
+/// fails, the facet is `unavailable`: no cross-reference could be read.
+/// If some lookups land, it is `partial`, and it counts the ones that
+/// never answered.
+///
+/// When nothing is skipped and every read is answered, the facets are
+/// `complete`. That is the point of the admission: a string no finding
+/// maps was examined and clean, never silently unchecked.
+///
 /// The cross-function pass reads the bodies and the string table the
-/// walk already holds, so it adds no coverage border of its own. The
-/// whole picture mirrors the three facets together.
+/// scan already holds, so it adds no coverage boundary of its own. The
+/// whole picture follows the three facets together.
 fn coverage_stamp(
     unreached: &[String],
     nameless: usize,
@@ -167,18 +174,19 @@ fn coverage_stamp(
     }
 }
 
-/// Orchestrates the classifier, hybrid mapper, format-string engine,
-/// localization detector, and cross-function analyzer into one
-/// [`StringContextResult`].
+/// Runs the classifier, the hybrid mapper, [`FormatStringEngine`],
+/// [`LocalizationDetector`], and [`CrossFunctionAnalyzer`] together and
+/// combines them into one [`StringContextResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned program data; [`new`](Self::new)
-/// builds one over a loaded [`KunaSource`]. Each sub-engine carries no
-/// per-scan state — [`with_classifier`](Self::with_classifier),
+/// This type is generic over its [`ScanSource`], so tests can run the
+/// whole orchestration over canned program data.
+/// [`new`](Self::new) builds one over a loaded [`KunaSource`]. None of
+/// the parts keep state for one scan:
+/// [`with_classifier`](Self::with_classifier),
 /// [`with_mapper`](Self::with_mapper),
 /// [`with_format_engine`](Self::with_format_engine), and
-/// [`with_localization`](Self::with_localization) swap one whole — so
-/// one of each serves the whole scan.
+/// [`with_localization`](Self::with_localization) each replace one part
+/// whole. So one of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct StringContextEngine<S = KunaSource> {
     source: S,
@@ -190,7 +198,7 @@ pub struct StringContextEngine<S = KunaSource> {
 }
 
 impl StringContextEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the
+    /// A string-context scan over a loaded Kuna program, using the
     /// classifier's standard pattern sets.
     pub fn new(source: &KunaSource) -> StringContextEngine<KunaSource> {
         StringContextEngine {
@@ -205,8 +213,8 @@ impl StringContextEngine<KunaSource> {
 }
 
 impl<S> StringContextEngine<S> {
-    /// An engine whose program data comes from `source`, scanning with
-    /// the classifier's standard pattern sets.
+    /// A string-context scan whose program data comes from `source`,
+    /// using the classifier's standard pattern sets.
     pub fn with_source(source: S) -> Self {
         StringContextEngine {
             source,
@@ -246,41 +254,44 @@ impl<S> StringContextEngine<S> {
         self
     }
 
-    /// Map the program's strings to its functions across `binary`,
-    /// decompiling each function exactly once and consulting xrefs only
-    /// where a body parse came up empty.
+    /// Map the program's strings to its functions, over the whole
+    /// program named by `binary`. Each function is decompiled exactly
+    /// once. Xrefs are consulted only where a body parse came up empty.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
-    /// becomes the key a persisted result is filed under. The findings
-    /// follow the function listing — function by function, and within
-    /// one function the classified strings, then the format-string
-    /// calls, then the localization reading — and after every function
-    /// the cross-function pass adds its string-flow findings, in listing
-    /// order, over the bodies this walk already decompiled: no extra
-    /// engine reads. So two scans of the same program diff
-    /// cleanly.
+    /// becomes the key a persisted result is filed under.
     ///
-    /// A function whose body the decompiler cannot produce (a thunk, a bad entry
-    /// point) is skipped with a warning, as is a nameless listing entry;
-    /// a failed xref lookup costs only that string's fallback coverage,
-    /// and a failed string listing only the fallback and `DAT_`
-    /// resolution. Only a failure of the function listing itself — the
-    /// server being down — aborts the run, since then nothing can be
-    /// scanned.
-    /// But when more than half the listing fails to decompile, the
-    /// skip-rate breaker aborts the run too: that is the signature of
-    /// the bridge answering from the wrong program, and skipping on
-    /// would persist a phantom-clean record (issue #71).
+    /// The findings follow the function listing, function by function.
+    /// Within one function come the classified strings, then the
+    /// format-string calls, then the localization reading. After every
+    /// function the cross-function pass adds its string-flow findings,
+    /// in listing order, over the bodies this pass already decompiled.
+    /// It makes no extra reads from the analysis engine. So two scans of
+    /// the same program diff cleanly.
+    ///
+    /// A function whose body the decompiler cannot produce (a thunk, a
+    /// bad entry point) is skipped with a warning, and so is a nameless
+    /// listing entry. A failed xref lookup costs only that string's
+    /// fallback coverage. A failed string listing costs only the
+    /// fallback and `DAT_` resolution. Only a failure of the function
+    /// listing itself — the server being down — aborts the scan, because
+    /// then there is nothing to read.
+    /// When more than half of the program's functions fail to decompile,
+    /// the skip-rate breaker aborts the scan too. A high skip rate is
+    /// the signature of the seam answering about the wrong program. The
+    /// breaker is a fuse, not a post-mortem: it stops the scan rather
+    /// than let it persist a record that looks clean but is not
+    /// (issue #71).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<StringContextResult>
     where
         S: ScanSource,
     {
         let started = Instant::now();
         let functions = self.source.functions().await?;
-        // Only the function listing is fatal. A failed string listing
-        // costs the fallback and `DAT_` resolution — the body parse
-        // still reads its direct literals — so the scan degrades to a
-        // warning rather than aborting, and the coverage record below
+        // Only a failed function listing is fatal. A failed string
+        // listing costs the fallback and `DAT_` resolution, but the
+        // body parse still reads its direct literals. So the scan logs a
+        // warning instead of aborting, and the coverage record below
         // admits the listing as unreadable (issue #351).
         let mut strings_unreadable = false;
         let program_strings = match self.source.strings().await {
@@ -298,17 +309,19 @@ impl<S> StringContextEngine<S> {
             .iter()
             .map(|string| (string.address, string.value.clone()))
             .collect();
-        // The decoded listing values, for the localization detector's
-        // non-ASCII gate: only these can carry that signal, so an
-        // escaped body literal never fakes or hides one.
+        // The decoded string values from the program's string listing.
+        // Only these can carry the localization detector's non-ASCII
+        // signal, so an escaped body literal can neither fake one nor
+        // hide one.
         let listing_values: HashSet<&str> = program_strings
             .iter()
             .map(|string| string.value.as_str())
             .collect();
 
         // Classification is a property of the string, not of the
-        // function using it: one pass over the program's strings, and
-        // every function that touches one reads the same answer.
+        // function that uses it. The scan classifies each program string
+        // once, and every function that touches it reads the same
+        // answer.
         let mut classifications: HashMap<String, (StringClassification, &'static str)> =
             HashMap::new();
         // The fallback asks each string address at most once per scan.
@@ -319,20 +332,23 @@ impl<S> StringContextEngine<S> {
         let mut xref_unreadable: HashSet<u64> = HashSet::new();
 
         let mut findings = Vec::new();
-        // The bodies the walk successfully decompiled, kept in listing
-        // order for the cross-function pass — no re-decompiling.
+        // The kept bodies: the ones this pass decompiled successfully,
+        // held in listing order for the cross-function pass. Nothing is
+        // decompiled twice.
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // The regions this walk never reached, named as it goes, so the
-        // coverage record below can admit them (issue #351).
+        // The functions this pass never reached, recorded by name as the
+        // scan goes, so the coverage record below can admit them
+        // (issue #351).
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // A listing entry with no name would make the decompile
+                // lookup land on some other function's body. Nothing can
+                // be said about such an entry, so the scan records
+                // nothing for it.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -352,12 +368,13 @@ impl<S> StringContextEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
-                    // skipping on.
+                    // Skip-rate breaker: more than half of the
+                    // program's functions have failed to decompile. A
+                    // high skip rate is the signature of the seam
+                    // answering about the wrong program. The breaker is
+                    // a fuse, not a post-mortem: it aborts with the
+                    // counts, instead of letting the scan persist a
+                    // record that looks clean but is not.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::StringCtxError::DecompileBreaker {
                             failed: decompile_failures,
@@ -380,9 +397,9 @@ impl<S> StringContextEngine<S> {
             // reading can look at the classified records just made.
             let function_findings_start = findings.len();
 
-            // The hybrid rule: a function whose body parse found strings
-            // gets no xref lookups; only a function the body came up
-            // empty on is covered through the xref fallback.
+            // The hybrid rule: if the body parse found strings, this
+            // function gets no xref lookups. Only a function whose body
+            // came up empty is covered through the xref fallback.
             let usages = if body_usages.is_empty() && format_calls.is_empty() {
                 let mut fallback = Vec::new();
                 for string in &program_strings {
@@ -419,7 +436,7 @@ impl<S> StringContextEngine<S> {
             };
 
             // A string read as a format string is recorded through its
-            // call, not as a plain classified string too.
+            // format call, and not also as a plain classified string.
             let format_keys: HashSet<(u64, String)> = format_calls
                 .iter()
                 .map(|call| (call.string_address, call.format_string.clone()))
@@ -465,12 +482,12 @@ impl<S> StringContextEngine<S> {
                 }));
             }
 
-            // The localization reading slots after the format-string
+            // The localization reading comes after the format-string
             // reading within one function. It reads the string values
-            // the scan just mapped and classified for this function —
-            // no new ScanSource reads — and lands at most one finding,
-            // beside the classified records and never reclassifying
-            // them.
+            // the scan just mapped and classified for this function, so
+            // it makes no new ScanSource reads. It adds at most one
+            // finding, beside the classified records, and never
+            // reclassifies them.
             let candidates: Vec<MappedStringSignal<'_>> = findings[function_findings_start..]
                 .iter()
                 .filter_map(|finding| match finding {
@@ -489,12 +506,12 @@ impl<S> StringContextEngine<S> {
             bodies.push(decompiled);
         }
 
-        // The cross-function pass runs after the per-function walk, over
-        // the bodies the scan already decompiled and the string table it
-        // already holds — no new `ScanSource` reads, so the
-        // exactly-once-decompile contract and the skip-rate breaker
-        // stand untouched — and its findings append after the
-        // per-function findings, in listing order. A function whose
+        // The cross-function pass runs after the per-function pass. It
+        // reads only the bodies the scan already decompiled and the
+        // string table it already holds, so it makes no new `ScanSource`
+        // reads. That keeps the exactly-once-decompile contract and the
+        // skip-rate breaker untouched. Its findings are appended after
+        // the per-function findings, in listing order. A function whose
         // decompile failed contributed no body, so it passes nothing,
         // receives nothing, and binds no edge.
         findings.extend(
@@ -505,11 +522,11 @@ impl<S> StringContextEngine<S> {
         );
 
         let mut metadata = ScanMetadata::new(binary);
-        // The engine admits its own coverage inside its own scan, where
-        // the skips and the unreadable reads happened, so the filed
-        // record says what the walk never got (issue #351) — and a
-        // complete record lets an unmentioned string read as examined
-        // and clean. Addresses that answered on a later try are read.
+        // The scan writes its own coverage admission where the skips and
+        // the unreadable reads happened, so the filed record says what
+        // this pass never reached (issue #351). A complete record lets
+        // any string it does not mention read as examined and clean. An
+        // address that answered on a later try counts as read.
         metadata.coverage = Some(coverage_stamp(
             &unreached,
             nameless,
@@ -520,7 +537,8 @@ impl<S> StringContextEngine<S> {
                 .filter(|address| !xref_cache.contains_key(*address))
                 .count(),
         ));
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names the analysis engine and its version pin,
+        // filed under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -566,9 +584,9 @@ mod tests {
         }
     }
 
-    /// A canned program implementing [`ScanSource`], with fetch counters
-    /// and failure switches so the orchestration can be watched and
-    /// broken without a server.
+    /// A canned program that implements [`ScanSource`]. It counts each
+    /// fetch and can fail each read on purpose, so these tests watch the
+    /// orchestration and break it without a server.
     #[derive(Clone, Default)]
     struct FakeProgram {
         listing: Vec<FunctionSummary>,
@@ -630,8 +648,9 @@ mod tests {
             Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
         }
 
-        // The rest of the shared trait's reads: this engine never makes
-        // them, so they answer with empty or not-found data.
+        // The rest of the shared trait's reads. The string-context scan
+        // never makes these calls, so they return empty or not-found
+        // data.
         async fn callers(&self, _address: u64) -> Result<Vec<String>> {
             Ok(Vec::new())
         }
@@ -721,9 +740,10 @@ mod tests {
             .await
             .expect("scan");
 
-        // FUN_18003ab00: the literal and the DAT_ reference classify,
-        // the sprintf call reads as a format_string finding — and the
-        // format string is not also recorded as a classified string.
+        // FUN_18003ab00: the direct literal and the DAT_ reference both
+        // classify, and the sprintf call reads as a format_string
+        // finding. The format string is not also recorded as a
+        // classified string.
         let ab00: Vec<&StringFinding> = result.for_function("FUN_18003ab00").collect();
         assert_eq!(ab00.len(), 3);
         assert_eq!(ab00[0].kind(), "classified");
@@ -733,8 +753,9 @@ mod tests {
         assert_eq!(ab00[2].kind(), "format_string");
         assert_eq!(ab00[2].target(), "%s: %d hits");
 
-        // FUN_18003e750 has no strings in its body but is xref'd by the
-        // chat-logging string — the fallback covers it.
+        // FUN_18003e750 has no strings in its body, but the chat-logging
+        // string points back to it through an xref, so the fallback
+        // covers it.
         let e750: Vec<&StringFinding> = result.for_function("FUN_18003e750").collect();
         assert_eq!(e750.len(), 1);
         assert_eq!(e750[0].target(), "********** Chat logging turned OFF.");
@@ -796,11 +817,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_where_every_decompile_fails_aborts() {
-        // The 2026-10-08 incident: the bridge answered the listing from
-        // one program and the decompiles from another, every decompile
-        // failed, and the scan nearly persisted a phantom-clean record
-        // under the target's name. The skip-rate breaker aborts with
-        // the counts instead, so nothing is persisted.
+        // The 2026-10-08 incident: the seam answered the listing from
+        // one program and the decompiles from another. Every decompile
+        // failed, and the scan nearly persisted a record that looked
+        // clean but was not, under the target's name. The skip-rate
+        // breaker aborts with the counts instead, so nothing is saved.
         let mut program = program();
         program.fail_decompile = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         let result = StringContextEngine::with_source(program)
@@ -817,9 +838,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
-        // The breaker is a circuit breaker, not a post-mortem: once
-        // most of the listing has failed, the remaining decompiles are
-        // wasted round-trips against the wrong program.
+        // The skip-rate breaker is a fuse, not a post-mortem. Once more
+        // than half the listing has failed, the remaining decompiles are
+        // wasted requests about the wrong program.
         let mut program = program();
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
@@ -900,8 +921,8 @@ mod tests {
 
     #[tokio::test]
     async fn two_xrefs_to_one_string_from_one_function_record_once() {
-        // Two call sites, one string: the fallback dedups by address
-        // and value, so the function carries a single record.
+        // Two call sites, one string: the fallback keeps one record per
+        // address and value, so the function carries a single record.
         let mut program = program();
         program
             .xrefs
@@ -1009,11 +1030,10 @@ mod tests {
             .await
             .expect("scan");
 
-        // The scan-order contract extended: within one function the
+        // The scan order, extended: within one function come the
         // classified strings, then the format-string call, then the
         // localization reading. The escaped literal and the buried
-        // language word stand as classified records — they claim no
-        // signal.
+        // language word stay classified records and claim no signal.
         let findings: Vec<&StringFinding> = result.for_function("FUN_1800412a0").collect();
         let kinds: Vec<&str> = findings.iter().map(|finding| finding.kind()).collect();
         assert_eq!(
@@ -1029,9 +1049,9 @@ mod tests {
             ]
         );
 
-        // One finding for the whole function, naming every signal kind
-        // seen and the signal strings — the buried language word and the
-        // escaped body literal claim nothing.
+        // The function gets one finding, naming every signal kind seen
+        // and the signal strings themselves. The buried language word and
+        // the escaped body literal claim nothing.
         let StringFinding::Localization(record) = findings.last().unwrap() else {
             unreachable!("the language machinery reads as a localization finding");
         };
@@ -1049,7 +1069,8 @@ mod tests {
             "pcVar1 = (char *)DAT_180129b00; pcVar2 = (char *)DAT_180129b10; \
              pcVar3 = (char *)DAT_180129b20;"
         );
-        // The pattern inference sits visibly below a classified record.
+        // This pattern-based reading scores visibly below a classified
+        // record.
         assert_eq!(record.confidence, Confidence::new(60));
         assert_eq!(
             findings.last().unwrap().suggestion(),
@@ -1085,8 +1106,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_localization_setter_reaches_the_scan() {
-        // A binary's own language spelling, reachable through the builder
-        // mirroring the other sub-engine setters.
+        // A language name this binary uses. `with_localization` makes the
+        // scan read it, in the same way as the other part setters.
         let mut program = localization_program();
         program.bodies.insert(
             "FUN_18003e750".into(),
@@ -1157,10 +1178,10 @@ mod tests {
             .await
             .expect("scan");
 
-        // The scan-order contract extended: every per-function finding
-        // first, then the cross-function flows attached to the listing's
-        // functions in order — the pair's earlier end, whichever way the
-        // string flows.
+        // The scan order, extended: every per-function finding comes
+        // first. Then the cross-function flows, attached to the listing's
+        // functions in order — to the earlier end of the pair, whichever
+        // way the string flows.
         let order: Vec<(&str, &str)> = result
             .findings
             .iter()
@@ -1180,9 +1201,10 @@ mod tests {
             ]
         );
 
-        // The literal flow: one per (passing, receiving, string) triple
-        // however often the call repeats, the first call site's line as
-        // evidence, the literal the table names no address for at 0.
+        // The literal flow: one finding per (passing, receiving, string)
+        // triple, no matter how often the call repeats. The first call
+        // site's line is the evidence. The string table names no address
+        // for this literal, so its address is 0.
         let StringFinding::CrossFunction(flow) = &result.findings[5] else {
             unreachable!("the passing call reads as a cross_function finding");
         };
@@ -1232,8 +1254,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_whose_decompile_failed_contributes_no_body_and_binds_no_edge() {
-        // The passer missing: its body never made it, so the strings it
-        // would have handed claim nothing.
+        // The passing function is missing: its body was never
+        // decompiled, so the strings it would have handed over claim
+        // nothing.
         let mut program = correlation_program();
         program.fail_decompile = vec!["FUN_18003ab00".to_string()];
         let result = StringContextEngine::with_source(program)
@@ -1261,8 +1284,9 @@ mod tests {
             1
         );
 
-        // The receiver missing: a callee whose body never made it is not
-        // a kept program function, so no edge binds to it either.
+        // The receiving function is missing: a callee whose body was
+        // never decompiled is not a kept body, so no edge binds to it
+        // either.
         let mut program = correlation_program();
         program.fail_decompile = vec!["FUN_18003e750".to_string()];
         let result = StringContextEngine::with_source(program)
@@ -1282,9 +1306,9 @@ mod tests {
     // Admitted scan coverage (issue #351)
     // ============================================================
 
-    /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
-    /// drift.
+    /// The roster pin's answer, as data. An empty list means the record
+    /// names every declared facet exactly once. Each entry is one way
+    /// the record drifts from the roster.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
@@ -1301,12 +1325,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
-        // force-rescan file the same admission through this one
-        // definition. Every body, every listing string, and every
-        // cross-reference was read here, so the record is complete and
-        // says nothing needs admitting.
+        // The coverage record comes from the scan itself, not from the
+        // registry row and not from the CLI. The batch scan phase and the
+        // CLI's force-rescan both file the same admission through this
+        // one definition. Here every body, every listing string, and
+        // every cross-reference was read, so the record is complete and
+        // admits nothing.
         let result = StringContextEngine::with_source(program())
             .scan("eqmain.dll")
             .await
@@ -1332,10 +1356,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_string_listing_makes_that_facet_unavailable_with_its_reason() {
-        // The listing failure is not silence — it is an admission: the
-        // program's strings were there to read and never arrived, so
-        // the facet says so with its reason while the body-parsed
-        // findings and the rest of the record stand.
+        // A failed listing is not silence; it is an admission. The
+        // program's strings were there to read but never arrived, so the
+        // facet says so and gives its reason. The body-parsed findings
+        // and the rest of the record still stand.
         let mut program = program();
         program.fail_strings = true;
         let result = StringContextEngine::with_source(program)
@@ -1374,9 +1398,9 @@ mod tests {
 
     #[tokio::test]
     async fn every_failed_cross_reference_lookup_makes_that_facet_unavailable() {
-        // The fallback asked and nothing answered: the xref facet is
-        // unavailable with its reason, and the failed addresses count
-        // once each however many body-empty functions retried them.
+        // The fallback asked and nothing answered, so the xref facet is
+        // unavailable with its reason. Each failed address counts once,
+        // no matter how many body-empty functions retried it.
         let mut program = program();
         program.fail_xrefs = true;
         let result = StringContextEngine::with_source(program)
@@ -1410,8 +1434,9 @@ mod tests {
 
     #[tokio::test]
     async fn some_unreadable_cross_reference_lookups_leave_the_facet_partial() {
-        // One address answered, one never did: the facet is partial and
-        // counts the lookup that was attempted and never landed.
+        // One address answered and one never did, so the facet is
+        // partial. It counts the lookup that was attempted and never
+        // answered.
         let mut program = program();
         program.fail_xref_addrs = vec![0x180129a00];
         let result = StringContextEngine::with_source(program)
@@ -1437,9 +1462,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreached_body_is_admitted_by_name_on_its_own_facet() {
-        // A decompile failure names only itself: the other two facets
-        // stand complete, so the admission cannot hide behind them or
-        // smear across them.
+        // A decompile failure is admitted on its own facet only. The
+        // other two facets stand complete, so this admission cannot hide
+        // behind them or blur into them.
         let mut program = program();
         program.fail_decompile = vec!["FUN_18003e750".into()];
         let result = StringContextEngine::with_source(program)
@@ -1468,9 +1493,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_bodies_line_is_capped_at_five_names_and_counts_the_nameless() {
-        // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
+        // Short admission, bounded counts: six decompile failures name
+        // five of them and fold the sixth into a count. A nameless
+        // listing entry counts toward the total but does not take a name
         // slot.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::default();
