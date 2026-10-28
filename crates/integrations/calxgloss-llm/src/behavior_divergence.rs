@@ -1,10 +1,12 @@
 //! Behavior-divergence detector for the translation pipeline.
 //!
-//! This module provides [`BehaviorDivergenceDetector`] which identifies when a
-//! Rust implementation passes all baseline tests but diverges on unseen inputs.
-//! This is a critical fault mode because the implementation *appears* correct
-//! (all baseline tests pass) while silently producing wrong behavior on real
-//! inputs not covered by the baseline suite.
+//! This module provides [`BehaviorDivergenceDetector`]. It finds the case
+//! where a Rust implementation passes all baseline tests but diverges on
+//! inputs the baseline suite never covers.
+//!
+//! The fault mode matters because the implementation *appears* correct: every
+//! baseline test passes, yet it silently produces wrong behavior on real
+//! inputs.
 //!
 //! # How it works
 //!
@@ -12,14 +14,14 @@
 //!
 //! 1. **Baseline tests** — the tests that originally captured the binary's
 //!    behavior. These were used for the initial verification pass.
-//! 2. **Edge-case tests** — additional inputs derived from decompiler analysis
-//!    (boundary values from `cmp` instructions, null checks, overflow
-//!    conditions, etc.). These are NOT in the baseline set.
+//! 2. **Edge-case tests** — additional inputs derived from the decompiled
+//!    output (boundary values from `cmp` instructions, null checks, overflow
+//!    conditions, and similar). These are NOT in the baseline set.
 //!
 //! When all baseline tests pass but one or more edge-case tests fail, the
-//! detector fires a [`BehaviorDivergenceSignal`] indicating that the test
-//! suite is insufficient to verify behavioral equivalence.  The signal
-//! includes suggestions for new baseline test cases that should be added.
+//! detector reports a [`BehaviorDivergenceSignal`]: the test suite is not
+//! enough to prove the Rust code behaves like the original binary. The
+//! signal includes suggestions for new baseline test cases to add.
 //!
 //! # Example
 //!
@@ -63,10 +65,10 @@ use std::collections::HashSet;
 
 /// An edge-case test used for divergence detection.
 ///
-/// Unlike baseline tests, edge-case tests target specific inputs that
-/// a decompiler analysis might reveal: boundary values, null checks,
-/// overflow conditions, and other inputs not naturally covered by
-/// the original binary's test suite.
+/// Unlike baseline tests, edge-case tests aim at specific inputs the
+/// decompiled output points to: boundary values, null checks, overflow
+/// conditions, and other inputs the original binary's test suite does not
+/// naturally cover.
 #[derive(Debug, Clone)]
 pub struct EdgeCaseTest {
     /// A human-readable label for this test (e.g., `"zero_input"`,
@@ -102,8 +104,9 @@ pub struct BehaviorDivergenceSignal {
     /// How many baseline tests passed.
     pub baseline_passed: usize,
 
-    /// Total number of baseline tests (should equal `baseline_passed` since
-    /// divergence detection only fires when baseline is fully green).
+    /// Total number of baseline tests (should equal `baseline_passed`: in the
+    /// default configuration, divergence is only reported when every baseline
+    /// test passed).
     pub baseline_total: usize,
 
     /// How many edge-case tests passed.
@@ -146,9 +149,9 @@ pub struct BehaviorDivergenceSignal {
 /// The detector has a single configurable parameter:
 ///
 /// - `require_all_baseline_pass` — Whether ALL baseline tests must pass
-///   before edge-case results are considered. Default is `true` because
-///   if baseline tests already fail, the divergence is obvious and does
-///   not require special handling.
+///   before edge-case results are considered. The default is `true`: when
+///   baseline tests already fail, the wrong behavior shows up as a plain
+///   test failure, so no special handling is needed.
 #[derive(Debug, Clone)]
 pub struct BehaviorDivergenceDetector {
     /// Whether all baseline tests must pass for divergence detection to
@@ -303,23 +306,25 @@ impl BehaviorDivergenceDetector {
         })
     }
 
-    /// Generate a decompiler-derived edge-case test suite from disassembly hints.
+    /// Build an edge-case test suite from the pattern names found in the
+    /// disassembly.
     ///
-    /// This is a heuristic generator that produces edge-case inputs based
-    /// on patterns commonly found in disassembled code. It is a starting
-    /// point — the LLM can further refine these based on the full
-    /// disassembly and decompiler output.
+    /// The generator follows fixed rules: it adds an input only when the
+    /// matching hint name is present in the set. It is a starting point —
+    /// the LLM can refine these inputs further against the full
+    /// disassembly and decompiled output.
     ///
     /// # Arguments
     ///
     /// * `num_params` — The number of parameters the function takes.
-    /// * `disassembly_hints` — A set of observed patterns in the
+    /// * `disassembly_hints` — Pattern names observed in the
     ///   disassembly, such as `"zero_check"`, `"null_check"`,
-    ///   `"overflow"`, `"negative"` (derived from decompiler analysis).
+    ///   `"overflow"`, `"negative"` (these names come from reading the
+    ///   decompiled output).
     ///
     /// # Returns
     ///
-    /// A vector of edge-case tests targeting the indicated patterns.
+    /// One edge-case test per matching pattern.
     pub fn generate_edge_cases(
         &self,
         num_params: usize,
@@ -327,7 +332,8 @@ impl BehaviorDivergenceDetector {
     ) -> Vec<EdgeCaseTest> {
         let mut tests = Vec::new();
 
-        // Always generate zero-input edge case (most common check).
+        // Zero-input edge case (the most common check): added only when a
+        // "zero_check" or "boundary" hint is present.
         if disassembly_hints.contains("zero_check") || disassembly_hints.contains("boundary") {
             let zero_inputs = gen_params(num_params, |i| match i {
                 0 => serde_json::json!(0),
@@ -401,23 +407,22 @@ impl BehaviorDivergenceDetector {
             .all(|test| is_boundary_value(&test.inputs))
     }
 
-    /// Get a confidence score for the divergence diagnosis.
-    ///
-    /// Higher scores indicate greater confidence that the test suite,
-    /// not the implementation, is the root cause.
+    /// Score how strongly a signal supports one diagnosis: the test suite,
+    /// not the implementation, is the root cause. Higher scores mean the
+    /// test results point more strongly that way.
     ///
     /// Scoring:
     /// - +1 for each baseline test passed (up to +5)
-    /// - +2 if more than half the edge cases fail (suggests systematic
+    /// - +2 if at least half the edge cases fail (points to a systematic
     ///   coverage gap, not an implementation bug)
     /// - +3 if failing edge cases are boundary values
     pub fn divergence_confidence(&self, signal: &BehaviorDivergenceSignal) -> u8 {
         let mut score: u8 = 0;
 
-        // Baseline pass rate contributes confidence.
+        // More passing baseline tests raise the score (the count is capped at 5).
         score += (signal.baseline_passed.min(5)) as u8;
 
-        // If most edge cases fail, it's likely a coverage gap.
+        // If at least half the edge cases fail, a coverage gap is likely.
         if signal.edge_tests_total > 0
             && signal.failing_edge_cases.len() * 2 >= signal.edge_tests_total
         {
@@ -520,7 +525,8 @@ fn is_boundary_value(inputs: &Value) -> bool {
 fn is_boundary_scalar(v: &Value) -> bool {
     match v {
         Value::Number(n) => {
-            // Check unsigned first for values that might overflow i64.
+            // Read the number as unsigned first — JSON numbers above i64::MAX
+            // have no signed form, and u64::MAX needs the unsigned reading.
             if let Some(u) = n.as_u64()
                 && (u == 0 || u == u32::MAX as u64 || u == u64::MAX)
             {
@@ -984,7 +990,7 @@ mod tests {
     }
 
     // =========================================================
-    // Confidence scoring
+    // Diagnosis scoring
     // =========================================================
 
     #[test]
@@ -1017,7 +1023,8 @@ mod tests {
             strategy: "initial".into(),
         };
 
-        // All boundary + high baseline pass + all edge fail = high confidence.
+        // All failures are boundary values, all 4 edge cases fail, and 10
+        // baseline tests passed: the score lands at 7 or higher.
         let confidence = detector.divergence_confidence(&signal);
         assert!(confidence >= 7);
     }
@@ -1043,7 +1050,8 @@ mod tests {
             strategy: "initial".into(),
         };
 
-        // Zero baseline + non-boundary = low confidence.
+        // No baseline passes and the failing input is not a boundary value:
+        // the score stays at 3 or below.
         let confidence = detector.divergence_confidence(&signal);
         assert!(confidence <= 3);
     }
