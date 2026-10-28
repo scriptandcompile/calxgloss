@@ -1,8 +1,8 @@
 //! Error types for the calxgloss-floatsimd crate.
 //!
-//! This module defines `FloatsimdError`, the unified error type used
-//! throughout the float/SIMD usage-flagging crate for decompiler
-//! fetches, the per-body reading, and JSON persistence.
+//! This module defines `FloatsimdError`, the one error type the
+//! float/SIMD usage-flagging crate uses everywhere: for decompiler
+//! reads, the per-body reading, and JSON persistence.
 
 use thiserror::Error;
 
@@ -25,17 +25,18 @@ pub enum FloatsimdError {
     #[error("float/SIMD result not found: {}", .path.display())]
     NotFound { path: std::path::PathBuf },
 
-    /// Too many of the program's functions failed to decompile for the
-    /// scan to be trusted — the signature of the bridge answering from
-    /// the wrong program. The skip-rate breaker aborts the scan rather
-    /// than letting it persist a phantom-clean record.
+    /// Too many of the program's functions failed to decompile for
+    /// the scan to be trusted. A high skip rate is the signature of
+    /// the seam answering about the wrong program, so the skip-rate
+    /// breaker aborts the scan instead of letting it persist a record
+    /// that looks clean but is not.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
 }
 
-/// Maps the shared JSON store's errors onto this crate's error type: the
-/// store's not-found becomes [`FloatsimdError::NotFound`], and its I/O
-/// and JSON errors fold into the existing pass-through variants.
+/// Maps the shared JSON store's errors onto this crate's error type:
+/// the store's not-found becomes [`FloatsimdError::NotFound`], and its
+/// I/O and JSON errors become the matching pass-through variants here.
 impl From<calxgloss_types::persist::PersistError> for FloatsimdError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

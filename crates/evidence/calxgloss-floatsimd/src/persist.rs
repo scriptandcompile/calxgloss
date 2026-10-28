@@ -8,11 +8,12 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is
-//! the check a caller runs before deciding whether a scan is needed,
-//! and [`load`](Self::load) reads the whole document back — metadata
-//! and every flag — for the translation pipeline and the downstream
-//! tickets to query.
+//! A persisted result doubles as a cache:
+//! [`exists`](FloatsimdPersistor::exists) is the check a caller runs
+//! before deciding whether a scan is needed, and
+//! [`load`](FloatsimdPersistor::load) reads the whole document back —
+//! metadata and every flag — for the translation pipeline and the
+//! downstream tickets to query.
 
 use std::path::{Path, PathBuf};
 
@@ -85,8 +86,8 @@ impl FloatsimdPersistor {
     /// Whether a persisted result exists for `binary`.
     ///
     /// This is the cache check: a caller that wants float/SIMD flags
-    /// without re-running the scan asks here first and only drives
-    /// the scan when the answer is `false`.
+    /// without re-running the scan asks here first and only runs the
+    /// scan when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
@@ -182,10 +183,10 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the engine stamped inside its scan is what every later
-        // reader — the projection seam, the report, a `--show` months
-        // later — sees: statuses, ids, order, and limitation lines ride
-        // the persistor untouched (issue #347).
+        // What the scan stamped inside itself is what every later
+        // reader sees — the projection seam, the report, a `--show`
+        // months later. Statuses, ids, order, and limitation lines
+        // pass through the persistor untouched (issue #347).
         let dir = tempfile::TempDir::new().expect("temp dir should be created");
         let persistor = FloatsimdPersistor::with_cache_dir(dir.path());
         let mut result = sample_result("game_logic.dll");

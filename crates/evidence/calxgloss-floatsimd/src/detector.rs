@@ -2,89 +2,91 @@
 //!
 //! [`FloatsimdDetector`] reads one decompiled body and yields at most
 //! one flag record for it: the shape the body's float evidence spells,
-//! the strongest evidence line the reading rested on, and the
-//! confidence band that evidence family scored on the Evidence scale.
+//! the strongest evidence line the reading was based on, and the
+//! confidence band that evidence family scores on the Evidence scale.
 //!
-//! The reading answers four evidence families, each keyed on its own
-//! shape in the pseudo-C:
+//! The reading looks for four evidence families, each matched by its
+//! own shape in the pseudo-C:
 //!
 //! - **Explicit float tokens** — a `float` or `double` type word in a
 //!   declaration or cast, or a float literal (`1.0f`, `3.141593`) in
 //!   an expression. The decompiler itself named the float; nothing in
 //!   the body contradicts it, so this is the strongest family.
 //! - **CRT math calls** — a call to a CRT math routine (`sqrt`,
-//!   `sin`, `floor`, `fmod`, …). The float use rides on the library
-//!   call rather than a spelled type, so it scores below an explicit
-//!   token but above any shape-only idiom.
+//!   `sin`, `floor`, `fmod`, …). The float evidence comes from the
+//!   library call rather than from a spelled-out type, so it scores
+//!   below an explicit token but above any shape-only idiom.
 //! - **Vector assembly idioms** — a `CONCAT44`-style concatenation or
 //!   `SUB4`-style extraction, the shapes the decompiler mangles SIMD
-//!   register work into. Real body evidence, but the reading is from
-//!   the idiom's shape, not a stated float type.
+//!   register work into. Real body evidence, but the reading keys on
+//!   the idiom's shape, not on a stated float type.
 //! - **Component triplets** — parallel reads of a variable's `x`, `y`
 //!   and `z` members, the x/y/z shape a vector struct or array leaves
-//!   behind. Weakest on its own: a plain integer point carries the
-//!   same members, so the flag only claims what the band says.
+//!   behind. Weakest on its own: a plain integer point struct has the
+//!   same members, so the flag only claims what its band says.
 //!
-//! The strongest family sets the record's confidence and quotes its
-//! evidence line (ties keep the first family seen); the *shape* is
-//! spelled by which families fired — only scalar families fire,
-//! `scalar_float`; only vector families, `vector_matrix`; both, one
-//! `mixed` flag naming both shapes, not two flags the consumer has to
-//! fold back together. A body with no family fires nothing: an integer
-//! function lands no flag.
+//! The strongest family decides the record's confidence, and its body
+//! line is quoted as the evidence (a tie keeps the first family seen).
+//! Which families fired decides the *shape*: only scalar families
+//! fired gives `scalar_float`; only vector families fired gives
+//! `vector_matrix`; both give one `mixed` flag naming both shapes, not
+//! two flags the consumer has to combine back into one. A body that
+//! triggers no family gets no flag: an integer function lands none.
 
 use crate::types::{FloatsimdFinding, FloatsimdRecord, ShapeKind};
 use calxgloss_decomp::DecompiledFunction;
 use regex::Regex;
 use std::sync::OnceLock;
 
-/// Confidence of a body where the decompiler itself spelled the float
-/// evidence — a `float`/`double` type word or a float literal. The
-/// decompiler's own type knowledge stated the claim outright, so the
-/// reading sits at the top of the Evidence scale for this artifact.
+/// Evidence confidence of a body where the decompiler itself spelled
+/// the float evidence — a `float`/`double` type word or a float
+/// literal. The decompiler's own type knowledge stated the claim
+/// outright, so this reading sits at the top of the Evidence scale for
+/// this artifact.
 pub const EXPLICIT_FLOAT_CONFIDENCE: u8 = 90;
 
-/// Confidence of a body whose float use shows through a CRT math
-/// import call (`sqrt`, `sin`, `floor`, `fmod`). The call is
+/// Evidence confidence of a body whose float use shows through a CRT
+/// math import call (`sqrt`, `sin`, `floor`, `fmod`). The call is
 /// unambiguous float work, but it is a library-name sighting, not a
-/// spelled type, so it reads below every explicit token.
+/// spelled-out type, so it reads below every explicit token.
 pub const CRT_MATH_CONFIDENCE: u8 = 75;
 
-/// Confidence of a body carrying `CONCAT44`/`SUB4`-style vector
-/// assembly idioms. The mangling shape is real body evidence that the
-/// decompiler was stitching SIMD register work back together, but the
-/// float reading comes from the idiom's shape, not a stated type — so
-/// the claim sits below every spelled float sighting.
+/// Evidence confidence of a body showing `CONCAT44`/`SUB4`-style
+/// vector assembly idioms. The mangling shape is real body evidence
+/// that the decompiler was stitching SIMD register work back together,
+/// but the float reading comes from the idiom's shape, not a stated
+/// type — so the claim sits below every spelled float sighting.
 pub const VECTOR_IDIOM_CONFIDENCE: u8 = 60;
 
-/// Confidence of a body that reads one variable's `x`, `y` and `z`
-/// members side by side. The x/y/z triplet is the shape a vector
-/// leaves behind, but integer points carry the same members, so the
-/// flag is a shape-only sighting — the weakest band on the artifact,
-/// and no later pass raises it from the reading's own repetition.
+/// Evidence confidence of a body that reads one variable's `x`, `y`
+/// and `z` members side by side. The x/y/z triplet is the shape a
+/// vector leaves behind, but integer points have the same members, so
+/// the flag is a shape-only sighting — the weakest band in the
+/// artifact, and no later pass raises it from repeated sightings in one
+/// reading.
 pub const COMPONENT_TRIPLET_CONFIDENCE: u8 = 40;
 
-/// The Rust shape a scalar-float flag steers a translation toward:
+/// The Rust shape a scalar-float flag tells a translation to use:
 /// plain float operations, never integer or pointer arithmetic over
 /// the mangled body.
 const SCALAR_SUGGESTION: &str =
     "translate as f32/f64 scalar float math, not integer or pointer arithmetic";
 
-/// The Rust shape a vector/matrix flag steers a translation toward:
-/// the packed-integer mangling is a vector read as integer — the
+/// The Rust shape a vector/matrix flag tells a translation to use: the
+/// packed-integer mangling is a vector read as integers — the
 /// translation should model the components, not the packing.
 const VECTOR_SUGGESTION: &str =
     "translate as a small vector struct or component array, not integer or pointer arithmetic";
 
-/// The Rust shapes a mixed flag steers a translation toward: both
+/// The Rust shapes a mixed flag tells a translation to use: both
 /// shapes in one body, scalars as floats and the mangled vector work
 /// as components.
 const MIXED_SUGGESTION: &str = "translate the float math as f32/f64 scalars and the vector idioms as component arrays or small vector structs";
 
-// The band order is a contract, not a taste call: an explicit float
-// token outranks a CRT math call, which outranks a vector assembly
-// idiom, which outranks a component triplet. A test in this module
-// pins it, and the reading below keys on it.
+// The band order is a rule, not a taste call: an explicit float token
+// scores above a CRT math call, which scores above a vector assembly
+// idiom, which scores above a component triplet. A test in this module
+// pins the order, and the reading below relies on it.
 
 /// Which half of the shape distinction an evidence family belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +97,8 @@ enum ShapeClass {
     Vector,
 }
 
-/// One evidence family the body fired: its band, its shape class, and
-/// the first body line that carried the sighting.
+/// An evidence family the body triggered: its band, its shape class,
+/// and the first body line where the sighting appeared.
 struct FamilyHit {
     confidence: u8,
     class: ShapeClass,
@@ -105,9 +107,9 @@ struct FamilyHit {
 
 /// The per-body float/SIMD evidence reading.
 ///
-/// The detector is stateless: every reading comes from the body it is
-/// handed, and nothing carries between bodies, so one instance serves
-/// a whole scan and one body is read once.
+/// The detector is stateless: every reading comes only from the body
+/// it is handed, and no information passes between bodies. One
+/// instance serves a whole scan, and each body is read once.
 #[derive(Debug, Clone, Default)]
 pub struct FloatsimdDetector;
 
@@ -120,10 +122,10 @@ impl FloatsimdDetector {
     /// Read one decompiled body and flag it, or stay silent when no
     /// evidence family fires.
     ///
-    /// At most one flag comes out per function: the shape named by
-    /// the families that fired, the confidence and evidence line of
-    /// the strongest family among them (ties keep the first family
-    /// seen, in descending band order).
+    /// At most one flag comes out per function: the shape named by the
+    /// families that fired, plus the confidence and evidence line of
+    /// the strongest family among them (a tie keeps the first family
+    /// seen — the families are checked from the highest band down).
     pub fn detect(&self, function: &DecompiledFunction) -> Option<FloatsimdFinding> {
         let body = &function.body;
         let mut hits = Vec::new();
@@ -159,8 +161,8 @@ impl FloatsimdDetector {
             return None;
         }
 
-        // The strongest family wins; the fold keeps the *first* hit on
-        // a tie, so the family order above also settles ties.
+        // The strongest family wins. On a tie the *first* hit stays,
+        // so the family order above also settles ties.
         let mut best = &hits[0];
         for hit in &hits[1..] {
             if hit.confidence > best.confidence {
@@ -190,7 +192,8 @@ impl FloatsimdDetector {
 }
 
 /// The first body line (trimmed) the pattern matches, if any — the
-/// line a family's sighting rode, quoted as the flag's evidence.
+/// line where the family's sighting appeared, quoted as the flag's
+/// evidence.
 fn first_line_matching(body: &str, pattern: &Regex) -> Option<String> {
     body.lines()
         .find(|line| pattern.is_match(line))
@@ -198,11 +201,11 @@ fn first_line_matching(body: &str, pattern: &Regex) -> Option<String> {
 }
 
 /// Whether one variable is read through all three of its `x`, `y` and
-/// `z` members somewhere in the body, and the first line carrying such
-/// a component read. The reads must hang on the *same* receiver —
+/// `z` members somewhere in the body, and the first line with such a
+/// component read. All three reads must be on the *same* receiver —
 /// `local_10.x`, `local_10.y`, `local_10.z` — because that is what
-/// parallel reads of one vector look like; three unrelated objects
-/// each named `x`, `y`, or `z` name no vector.
+/// parallel reads of one vector look like. Three unrelated objects
+/// with members named `x`, `y`, and `z` do not make a vector.
 fn component_triplet(body: &str) -> Option<String> {
     let mut components: Vec<(String, [bool; 3])> = Vec::new();
     let mut first_line: Option<String> = None;
@@ -246,10 +249,10 @@ fn explicit_floats() -> &'static Regex {
     })
 }
 
-/// Calls to CRT math routines — the import-call shape of float use
-/// the decompiler never typed as float. Longer spellings first at
-/// shared prefixes (`sqrtf` before `sqrt`) so one name never shadows
-/// its own suffixed sibling.
+/// Calls to CRT math routines — the import-call shape of float use the
+/// decompiler never typed as float. In the pattern, longer spellings
+/// come first at shared prefixes (`sqrtf` before `sqrt`), so one name
+/// never hides its own suffixed sibling.
 fn crt_math_calls() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
@@ -396,9 +399,9 @@ mod tests {
 
     #[test]
     fn an_integer_body_fires_nothing() {
-        // The false-fire floor: plain integer and pointer arithmetic,
-        // hex constants, and a decompiler variable soup — no family
-        // has anything to key on.
+        // The guard against false flags: plain integer and pointer
+        // arithmetic, hex constants, and ordinary decompiler variable
+        // names — no family has anything to match.
         let flag = detect(
             "  uVar1 = param_1 + 4;\n  DAT_180064e80 = uVar1;\n  \
              iVar2 = *(int *)(param_1 + 8);\n  if (iVar2 != 0) {\n    uVar1 = uVar1 * 0x10;\n  }\n  \
@@ -418,10 +421,10 @@ mod tests {
 
     #[test]
     fn both_shapes_in_one_body_land_one_mixed_flag() {
-        // The breakdown reads per function, not per signal: a body
-        // with explicit scalar evidence and vector mangling lands one
-        // flag naming both, carrying the strongest family's band and
-        // evidence line.
+        // Flags count per function, not per signal: a body with
+        // explicit scalar evidence and vector mangling lands one flag
+        // naming both, with the strongest family's band and evidence
+        // line.
         let flag = detect("  fVar1 = (float)uVar2;\n  local_10 = CONCAT44(uVar2 >> 4, uVar2);\n")
             .expect("both families fire");
         assert_eq!(flag.kind(), "mixed");

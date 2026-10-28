@@ -1,16 +1,16 @@
 //! Core data model for float/SIMD usage flags.
 //!
 //! The scan's reading is a per-function list of **flag records**: one
-//! [`FloatsimdRecord`] per function whose kept body carries float
-//! evidence, naming the shape that evidence spells — scalar float math,
-//! vector/matrix idioms, or both — the strongest evidence line the
-//! reading rested on, and the confidence band that family scored on the
-//! Evidence scale. [`FloatsimdFinding`] is the tagged union over the
-//! three shapes — the serde `kind` tag spells the distinction in the
-//! persisted JSON — and [`FloatsimdResult`] is the whole per-binary
-//! document: the flags in scan order, one per flagged function in
-//! listing order, so consumers never re-derive which functions do
-//! float math.
+//! [`FloatsimdRecord`] per function whose kept body shows float
+//! evidence. Each record names the shape that evidence spells —
+//! scalar float math, vector/matrix idioms, or both — quotes the
+//! strongest evidence line the reading was based on, and gives the
+//! confidence band that evidence family scores on the Evidence scale.
+//! [`FloatsimdFinding`] is the tagged union over the three shapes —
+//! the serde `kind` tag spells the distinction in the persisted JSON.
+//! [`FloatsimdResult`] is the whole per-binary document: one flag per
+//! flagged function, in scan order (the function listing's order), so
+//! consumers never re-derive which functions do float math.
 
 use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
@@ -22,10 +22,10 @@ use std::fmt;
 
 /// The float shape a function's body evidence spells.
 ///
-/// The distinction is the whole point of the artifact: a translator
-/// reading a mangled body has to know which Rust shape to reach for —
-/// plain `f32`/`f64` operations for scalar float math, component
-/// arrays or small vector structs for vector/matrix idioms — and a
+/// This distinction is the whole point of the artifact. A translator
+/// reading a mangled body has to know which Rust shape to reach for:
+/// plain `f32`/`f64` operations for scalar float math, or component
+/// arrays or small vector structs for vector/matrix idioms. And a
 /// reviewer triaging mistranslations wants to know which bodies the
 /// decompiler mangled worst.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -43,7 +43,7 @@ pub enum ShapeKind {
 }
 
 impl ShapeKind {
-    /// The spelled-out label the flag carries into reports.
+    /// The label reports use for this shape.
     pub fn label(self) -> &'static str {
         match self {
             ShapeKind::ScalarFloat => "scalar float",
@@ -65,23 +65,23 @@ impl fmt::Display for ShapeKind {
 
 /// One function's float/SIMD usage flag.
 ///
-/// The record is the artifact's atom: it names the flagged function,
-/// quotes the strongest evidence line the reading rested on, and
-/// carries the confidence band that evidence family scored on — an
-/// explicit `float` token above a CRT math call above a vector
-/// assembly idiom above a component triplet. The shape distinction
-/// lives in the [`FloatsimdFinding`] tag wrapping the record, not in a
-/// field, so a persisted record can never disagree with its own tag.
+/// This record is the artifact's atom. It names the flagged function,
+/// quotes the strongest evidence line the reading was based on, and
+/// gives the confidence band that evidence family scores: an explicit
+/// `float` token above a CRT math call above a vector assembly idiom
+/// above a component triplet. The shape distinction lives in the
+/// [`FloatsimdFinding`] tag wrapping the record, not in a field, so a
+/// persisted record can never disagree with its own tag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FloatsimdRecord {
-    /// The function whose body carries the float evidence.
+    /// The function whose body shows the float evidence.
     pub function: String,
     /// The strongest evidence line quoted from the body — the claim's
     /// evidence.
     pub evidence: String,
-    /// Confidence in the reading, on the shared 0–100 Evidence scale.
+    /// Evidence confidence in the reading, on the shared 0–100 scale.
     pub confidence: Confidence,
-    /// The Rust shape the flag steers a translation toward.
+    /// The Rust shape this flag tells a translation to use.
     pub suggestion: String,
 }
 
@@ -91,11 +91,12 @@ pub struct FloatsimdRecord {
 
 /// One float/SIMD usage finding, whichever shape it records.
 ///
-/// The union is what the persisted document carries, so one list holds
-/// every flag for a binary and a consumer reads the shared shape —
-/// function, evidence, confidence — through the accessors without
-/// naming the shape first. The serde `kind` tag names the shape in
-/// the persisted JSON: `scalar_float`, `vector_matrix`, or `mixed`.
+/// The union is what the persisted document holds, so one list carries
+/// every flag for a binary. A consumer reads the shared fields —
+/// function, evidence, evidence confidence — through the accessors
+/// without naming the shape first. The serde `kind` tag names the
+/// shape in the persisted JSON: `scalar_float`, `vector_matrix`, or
+/// `mixed`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FloatsimdFinding {
@@ -103,8 +104,8 @@ pub enum FloatsimdFinding {
     ScalarFloat(FloatsimdRecord),
     /// The body's float evidence spells vector/matrix idioms.
     VectorMatrix(FloatsimdRecord),
-    /// The body carries both shapes — one flag naming both, not two
-    /// flags the consumer has to fold back together.
+    /// The body shows both shapes — one flag naming both, not two
+    /// flags the consumer has to combine back into one.
     Mixed(FloatsimdRecord),
 }
 
@@ -127,8 +128,8 @@ impl FloatsimdFinding {
         }
     }
 
-    /// Confidence in the reading, on the Evidence scale — the band of
-    /// the strongest evidence family the body fired.
+    /// Evidence confidence in the reading — the band of the strongest
+    /// evidence family the body triggered.
     pub fn confidence(&self) -> Confidence {
         match self {
             FloatsimdFinding::ScalarFloat(record)
@@ -165,18 +166,18 @@ impl FloatsimdFinding {
         }
     }
 
-    /// What the finding names, spelled for a report row: the shape.
+    /// What the finding is about, spelled for a report row: the shape.
     pub fn target(&self) -> String {
         self.shape().label().to_string()
     }
 }
 
 /// Render a flag record as prompt data: the flagged function, the
-/// shape kind, the Rust shape the flag steers a translation toward,
-/// and the confidence and evidence behind the claim — so the
-/// module-context and escalate prompts show that mangled pseudo-C in
-/// that body likely represents float math, and the translator stops
-/// reading it as integer or pointer logic.
+/// shape kind, the Rust shape the flag tells the translation to use,
+/// and the evidence confidence and evidence line behind the claim.
+/// The module-context and escalate prompts then say that the mangled
+/// pseudo-C in that body likely represents float math, so the
+/// translator stops reading it as integer or pointer logic.
 impl From<&FloatsimdFinding> for calxgloss_prompts::FloatsimdInfo {
     fn from(finding: &FloatsimdFinding) -> Self {
         Self {
@@ -338,10 +339,10 @@ mod tests {
 
     #[test]
     fn a_flag_record_renders_into_prompt_data() {
-        // The prompt seam: a flag record carries its whole claim into
+        // The prompt seam: a flag record passes its whole claim to
         // `FloatsimdInfo` — function, shape tag, the steering
-        // suggestion the detector wrote, and the confidence and
-        // evidence behind it.
+        // suggestion the detector wrote, and the evidence confidence
+        // and evidence line behind it.
         let flag = FloatsimdFinding::VectorMatrix(record("FUN_18003ab00"));
         let info = calxgloss_prompts::FloatsimdInfo::from(&flag);
         assert_eq!(info.function, "FUN_18003ab00");
