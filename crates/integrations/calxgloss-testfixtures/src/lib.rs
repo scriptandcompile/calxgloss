@@ -1,18 +1,19 @@
 //! Checked-in test fixtures shared by the analysis engine test harnesses.
 //!
-//! The fixture target binary is a small x86-64 Windows PE DLL compiled from
-//! `fixtures/fixture_target.c` by this crate's build script — built from
-//! source as part of the test fixtures, with no manual steps and no
-//! proprietary code. Its shape is the contract the Kuna engine tests (and
-//! any future engine test) assert against: named exports, imports from two
-//! DLLs, string literals, and a switch the compiler lowers to a jump table.
+//! The fixture target binary is a small x86-64 Windows PE DLL. This crate's
+//! build script compiles it from `fixtures/fixture_target.c`, so the
+//! fixture is built from source as part of the test fixtures, with no
+//! manual steps and no proprietary code. The binary's shape is the contract
+//! the Kuna analysis engine tests (and any future analysis engine test)
+//! assert against: named exports, imports from two DLLs, string literals,
+//! and a switch the compiler turns into a jump table.
 //!
 //! [`load_target`] parses the built DLL and fails with a named error the
-//! moment the fixture stops having that shape, so a broken fixture is
-//! caught by this crate's smoke test rather than deep inside an engine test.
-//! The fixture is reachable from the Integrations integration tests and the
-//! web e2e harness as a dev-dependency; both keep a reachability test so the
-//! wiring cannot rot.
+//! moment the fixture stops having that shape, so this crate's smoke test
+//! catches a broken fixture before an analysis engine test fails deep
+//! inside itself with it. The Integrations integration tests and the web
+//! e2e harness can reach the fixture as a dev-dependency; both keep a
+//! reachability test, so the fixture stays reachable from each.
 //!
 //! # Architecture
 //!
@@ -34,7 +35,7 @@ use goblin::pe::section_table::IMAGE_SCN_MEM_EXECUTE;
 /// File name of the built fixture inside the build script's `OUT_DIR`.
 pub const TARGET_FILE_NAME: &str = "fixture_target.dll";
 
-/// The named exports the fixture must carry.
+/// The named exports the fixture must have.
 pub const EXPORT_NAMES: &[&str] = &[
     "fixture_init",
     "fixture_status",
@@ -45,12 +46,12 @@ pub const EXPORT_NAMES: &[&str] = &[
 /// The DLLs the fixture must import from, as spelled in the import table.
 pub const IMPORT_DLL_NAMES: &[&str] = &["KERNEL32.dll", "msvcrt.dll"];
 
-/// The named imports the fixture must carry.
+/// The named imports the fixture must have.
 ///
 /// These are the functions the fixture source calls directly. `snprintf`
-/// is deliberately absent: mingw implements it as a static wrapper that
-/// bottoms out in `vfprintf`, so asserting on it would pin a wrapper detail
-/// rather than the fixture's own import.
+/// is deliberately absent: mingw implements it as a static wrapper whose
+/// innermost call is to `vfprintf`, so asserting on it would assert on a
+/// mingw wrapper detail rather than on the fixture's own import.
 pub const IMPORT_FUNCTIONS: &[&str] = &[
     "GetTickCount",
     "OutputDebugStringA",
@@ -59,7 +60,7 @@ pub const IMPORT_FUNCTIONS: &[&str] = &[
     "puts",
 ];
 
-/// The string literals the engine's string scan must find in the image.
+/// The string literals the analysis engine's string scan must find in the image.
 pub const STRING_LITERALS: &[&str] = &[
     "calxgloss fixture target: hello",
     "calxgloss-fixture-target-v1",
@@ -74,9 +75,9 @@ pub const MIN_JUMP_TABLE_ENTRIES: usize = 16;
 
 /// Path to the built fixture target binary.
 ///
-/// The build script compiles the fixture into `OUT_DIR`; when the
-/// cross-compiler was missing at build time the file is absent and this
-/// reports [`TestFixturesError::ToolchainMissing`] naming the fix.
+/// The build script compiles the fixture into `OUT_DIR`. If the
+/// cross-compiler was missing at build time, the file is absent and this
+/// function reports [`TestFixturesError::ToolchainMissing`] naming the fix.
 pub fn fixture_target_path() -> Result<PathBuf> {
     let path = Path::new(env!("OUT_DIR")).join(TARGET_FILE_NAME);
     if !path.exists() {
@@ -89,7 +90,7 @@ pub fn fixture_target_path() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// A single named import, as the engine tests see it.
+/// A single named import, as the analysis engine tests see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedFunction {
     /// The DLL the symbol is imported from, as spelled in the import table.
@@ -101,7 +102,7 @@ pub struct ImportedFunction {
 /// A jump table found in the fixture image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpTable {
-    /// Name of the read-only section holding the table.
+    /// Name of the non-executable section holding the table.
     pub section: String,
     /// RVA of the table's first entry.
     pub rva: u32,
@@ -109,8 +110,8 @@ pub struct JumpTable {
     pub entries: usize,
 }
 
-/// The fixture target binary, parsed and validated against the shape the
-/// engine tests rely on.
+/// The fixture target binary, parsed and checked against the shape the
+/// analysis engine tests rely on.
 #[derive(Debug, Clone)]
 pub struct FixtureTarget {
     path: PathBuf,
@@ -153,11 +154,12 @@ impl FixtureTarget {
     }
 }
 
-/// Load the fixture target binary and validate its shape.
+/// Load the fixture target binary and check its shape.
 ///
-/// Every failure is a named [`TestFixturesError`] variant pointing at the
-/// missing element, so a fixture regression says what broke instead of
-/// failing an engine test with an opaque parse error.
+/// Every failure is a named [`TestFixturesError`] variant that names the
+/// missing element. So when the fixture stops matching the expected shape,
+/// the error says what broke, instead of an analysis engine test failing
+/// with an opaque parse error.
 pub fn load_target() -> Result<FixtureTarget> {
     let path = fixture_target_path()?;
     let bytes = std::fs::read(&path).map_err(|source| TestFixturesError::Unreadable {
@@ -263,10 +265,10 @@ impl CodeRange {
     }
 }
 
-/// Find the fixture's jump table: a run of [`MIN_JUMP_TABLE_ENTRIES`] or
-/// more consecutive 4-byte entries in a non-executable section that name
-/// code, with the table's start referenced by a rip-relative `lea` inside a
-/// code section.
+/// Find the fixture's jump table. A jump table is a run, in a
+/// non-executable section, of [`MIN_JUMP_TABLE_ENTRIES`] or more
+/// consecutive 4-byte entries that each name code, where the table's start
+/// is referenced by a rip-relative `lea` inside a code section.
 ///
 /// Entries are accepted in either spelling a compiler emits for a switch:
 /// self-relative offsets from the entry itself (GCC/clang on Windows) or
@@ -332,8 +334,9 @@ fn find_jump_table(pe: &PE, bytes: &[u8]) -> Option<JumpTable> {
 }
 
 /// True when a code section loads `table_rva` with a rip-relative `lea`
-/// (`48 8D <modrm>` with mod=00, rm=101): the compiler's table-address
-/// setup that every switch lowering through a memory table carries.
+/// (`48 8D <modrm>` with mod=00, rm=101): the table-address setup a
+/// compiler puts in the code before every switch that jumps through a
+/// memory table.
 fn referenced_by_rip_relative_lea(
     sections: &[goblin::pe::section_table::SectionTable],
     bytes: &[u8],

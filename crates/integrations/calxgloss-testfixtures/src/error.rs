@@ -2,11 +2,12 @@
 
 use thiserror::Error;
 
-/// Ways the fixture target binary can be unavailable or off-shape.
+/// Ways the fixture target binary can be missing or the wrong shape.
 ///
-/// Every shape variant names the fixture element an engine test relies on,
-/// so a fixture that stops compiling to the expected shape fails with the
-/// missing element rather than an opaque parse error inside the engine test.
+/// Each shape variant names the fixture element that an analysis engine
+/// test relies on. So when the fixture stops compiling to the expected
+/// shape, the failure names the missing element, instead of an analysis
+/// engine test failing with an opaque parse error.
 #[derive(Debug, Error)]
 pub enum TestFixturesError {
     /// The cross-compiler was not on PATH when the build script ran, so the
@@ -41,25 +42,25 @@ pub enum TestFixturesError {
         /// The machine the image actually declares.
         machine: u16,
     },
-    /// A named export the engine tests assert against is absent.
+    /// A named export the analysis engine tests assert against is absent.
     #[error("fixture target is missing expected export `{name}`")]
     MissingExport {
         /// The export name that was not found.
         name: String,
     },
-    /// An imported DLL the engine tests assert against is absent.
+    /// An imported DLL the analysis engine tests assert against is absent.
     #[error("fixture target does not import from `{dll}`")]
     MissingImportDll {
         /// The DLL name that was not found in the import table.
         dll: String,
     },
-    /// A named import the engine tests assert against is absent.
+    /// A named import the analysis engine tests assert against is absent.
     #[error("fixture target is missing expected import `{function}`")]
     MissingImportFunction {
         /// The imported function name that was not found.
         function: String,
     },
-    /// A string literal the engine's string scan must find is absent.
+    /// A string literal the analysis engine's string scan must find is absent.
     #[error("fixture target does not contain string literal `{literal}`")]
     MissingStringLiteral {
         /// The literal that was not found.

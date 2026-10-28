@@ -91,8 +91,10 @@ fn test_all_win32_core_apis_have_std_equivalents() {
     let win32_core = mappings.for_category(ApiCategory::Win32Core);
 
     for mapping in win32_core {
-        // All Win32Core APIs should reference std::, a standard pattern, or RAII
-        // Special case: SetLastError is replaced by Result-based error handling in Rust
+        // A Win32Core mapping passes when its Rust equivalent mentions
+        // std::, libloading, a "(Rust" note, Drop, JoinHandle, or Condvar.
+        // Special case: SetLastError is replaced by Result-based error
+        // handling in Rust
         let is_valid = mapping.rust_equivalent.contains("std::")
             || mapping.rust_equivalent.contains("libloading")
             || mapping.rust_equivalent.contains("(Rust")

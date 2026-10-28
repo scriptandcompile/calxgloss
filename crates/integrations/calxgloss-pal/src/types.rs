@@ -20,7 +20,7 @@ pub struct ApiMapping {
     /// The Windows API function name (e.g., `CreateFileA`, `Direct3DCreate9`).
     pub windows_api: &'static str,
 
-    /// The platform API category this call belongs to.
+    /// The API category this call belongs to.
     pub category: ApiCategory,
 
     /// The cross-platform Rust equivalent (e.g., `std::fs::File::open`, `wgpu::Instance [PAL placeholder]`).
@@ -31,10 +31,12 @@ pub struct ApiMapping {
 }
 
 impl ApiMapping {
-    /// Creates a new `ApiMapping` with owned string fields.
+    /// Creates an `ApiMapping` from owned strings.
     ///
-    /// This is useful when mappings need dynamic strings (e.g., from configuration).
-    /// For static mappings defined at compile time, prefer using `ApiMappings::default()`.
+    /// The function leaks each string, so the `&'static str` fields live for
+    /// the rest of the process. Use this when a mapping comes from dynamic
+    /// text, such as configuration. For mappings that are compiled in,
+    /// prefer using `ApiMappings::default()`.
     pub fn new(
         windows_api: impl Into<String>,
         category: ApiCategory,
@@ -56,29 +58,27 @@ impl ApiMapping {
 
 /// The complete API mapping table.
 ///
-/// This is the central lookup structure used by the analysis and translation
-/// crates to determine how to replace Windows API calls with cross-platform
-/// Rust equivalents.
+/// The analysis and translation crates use this as the lookup structure for
+/// deciding how a Windows API call is replaced with a cross-platform Rust
+/// equivalent.
 ///
 /// # Default Mappings
 ///
-/// The default implementation provides mappings for the MVP-relevant API categories:
-/// - Win32 Core → std lib (fully implemented equivalents)
+/// The default table covers the MVP-relevant API categories. For example:
+/// - Win32 Core → std lib (implemented equivalents; a few entries are PAL placeholders)
 /// - GDI → tiny-skia (PAL placeholders)
 /// - DirectX → wgpu (PAL placeholders)
 ///
 /// # Thread Safety
 ///
-/// `ApiMappings` contains only `&'static str` fields and can be safely shared
-/// across threads with `Sync + Send`.
+/// The table is compiled-in static data, so `ApiMappings` is `Sync + Send`
+/// and one value can be shared across threads.
 #[derive(Debug, Clone)]
 pub struct ApiMappings(&'static [ApiMapping]);
 
-/// Lazy-initialized category index for efficient `for_category` lookups.
-///
-/// Built once on first access, then reused. No per-call allocation or leak.
-///
-/// Defined in the `data` module.
+/// The methods below read through the category index defined in the `data`
+/// module. That index is built once, on first access, and then reused, so
+/// each lookup has no per-call allocation or leak.
 impl ApiMappings {
     /// Looks up an API mapping by its Windows API name.
     ///
@@ -114,8 +114,9 @@ impl ApiMappings {
     /// assert!(!win32_core.is_empty());
     /// ```
     pub fn for_category(&self, _category: ApiCategory) -> &[ApiMapping] {
-        // Use the lazy-initialized category index. No per-call allocation or leak.
-        // The IndexMap is built once at first access from the static data::MAPPINGS.
+        // Read through the category index: an IndexMap built once, on first
+        // use, from the static data::MAPPINGS table. The lookup itself has
+        // no per-call allocation or leak.
         CATEGORY_INDEX
             .get(&_category)
             .map(|v| v.as_slice())
@@ -144,12 +145,11 @@ impl ApiMappings {
         self.0.iter()
     }
 
-    /// Returns all API mappings grouped by category for the given set of
-    /// categories.
+    /// Returns the API mappings for the given categories, grouped by category.
     ///
-    /// This is used by the translation pipeline to inject the full mapping
-    /// table rows for the specific API categories a function touches into
-    /// the LLM prompt.
+    /// The translation pipeline uses this for the LLM prompt: for each API
+    /// category a function touches, it adds every mapping-table row for that
+    /// category.
     ///
     /// # Arguments
     ///
@@ -196,20 +196,21 @@ impl Default for ApiMappings {
 }
 
 impl ApiMappings {
-    /// Builds a table from caller-provided mappings (issue #323).
+    /// Builds a table from mappings the caller provides (issue #323).
     ///
-    /// `ApiMapping` fields are `&'static str` (the default table is compiled
-    /// in), so the owned values behind `mappings` are leaked into a leaked
-    /// boxed slice — the same convention [`ApiMapping::new`] already applies
-    /// to its own string fields. A custom table is built at startup or per
-    /// agent session, not per call, so one leak per table is bounded.
+    /// An `ApiMapping` field is `&'static str` because the default table is
+    /// compiled in. So this function leaks the owned strings behind
+    /// `mappings` into a leaked boxed slice — the same convention
+    /// [`ApiMapping::new`] already applies to its own string fields. A custom
+    /// table is built at startup or once per agent session, not per call, so
+    /// the one leak per table stays bounded.
     ///
-    /// The custom table drives every **instance-based** read: `lookup`,
-    /// `iter`, and the analyzer's API tagging. Note the known limitation:
-    /// [`for_category`](Self::for_category) (and `for_categories` through it)
-    /// indexes the static default data regardless of the instance, so the
-    /// prompt's category-grouped mapping rows still come from the default
-    /// table.
+    /// The custom table answers every read that goes through the instance:
+    /// `lookup`, `iter`, and the analyzer's API tagging. Known limitation:
+    /// [`for_category`](Self::for_category) — and `for_categories` through
+    /// it — always reads the static default data, whichever instance it is
+    /// called on, so the prompt's category-grouped mapping rows still come
+    /// from the default table.
     pub fn from_custom(mappings: Vec<ApiMapping>) -> Self {
         ApiMappings(Box::leak(mappings.into_boxed_slice()))
     }

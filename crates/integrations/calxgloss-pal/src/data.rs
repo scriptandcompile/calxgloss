@@ -1,8 +1,8 @@
-//! Static API mapping data.
+//! The compiled-in API mapping table.
 //!
-//! This module holds the `MAPPINGS` array and the `CATEGORY_INDEX` lazy
-//! initialisation. It is a separate module so that the mapping table
-//! definition doesn't bloat `lib.rs` beyond easy browsing.
+//! This module holds `MAPPINGS` and `CATEGORY_INDEX`. The index is filled in
+//! on first use. The table lives in a module of its own so `lib.rs` stays
+//! easy to browse beside it.
 
 use calxgloss_types::ApiCategory;
 use indexmap::IndexMap;
@@ -11,12 +11,12 @@ use once_cell::sync::Lazy as LazyLock;
 use crate::ApiMapping;
 
 // ============================================================
-// Static mapping data — module level for lazy category indexing
+// The static table, kept at module level so the category index can read it
 // ============================================================
 
 /// Complete list of all Windows API → Rust equivalent mappings.
 pub static MAPPINGS: &[ApiMapping] = &[
-    // All mappings defined below — moved here from Default impl
+    // The full table follows, grouped by API category.
     // ============================================================
     // Win32 Core → std lib
     // ============================================================
