@@ -1,11 +1,12 @@
 //! Known type propagation.
 //!
-//! [`KnownTypePropagationEngine`] extracts calls from decompiled text and
-//! propagates parameter types through a signature database of well-known
-//! library functions — `malloc`, `free`, `realloc`, `strlen`, `strcmp`,
-//! `strcpy`, `memcpy`, `memset`, `CloseHandle`, `CreateFileW` — matching
-//! names with A/W-suffix support and applying per-signature confidence
-//! scores.
+//! [`KnownTypePropagationEngine`] — the known-signature detector —
+//! extracts calls from decompiled text and propagates parameter types
+//! through the known-signature database of known library routines:
+//! `malloc`, `free`, `realloc`, `strlen`, `strcmp`, `strcpy`, `memcpy`,
+//! `memset`, `CloseHandle`, `CreateFileW`. Name matching tolerates the
+//! Win32 `A`/`W` suffixes, and each signature records its own evidence
+//! confidence.
 
 use crate::reading::Reading;
 use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
@@ -15,8 +16,9 @@ use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at, strip_casts,
 };
 
-/// The scan: plain-identifier callees, member accesses skipped, and C
-/// keywords — `if (x)` — not calls.
+/// Call-site scan over one body: only plain-identifier callees count,
+/// member accesses are skipped, and C keywords — `if (x)` — are not
+/// calls.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>",
@@ -30,26 +32,26 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 }
 
 // ============================================================
-// Signature database
+// Known-signature database
 // ============================================================
 
-/// Confidence of a reading propagated from a C standard-library routine:
-/// the contract behind the name is textbook, but the name is the whole
-/// evidence — a project-local helper could carry the same spelling — so
-/// the reading sits at the string-call confidence the size detector
-/// already gives these same call sites.
+/// Evidence confidence of a reading propagated from a C standard-library
+/// routine: the contract behind the name is textbook, but the name is
+/// the whole evidence — a project-local helper could share the same
+/// spelling. So the reading scores the string-call confidence the size
+/// detector gives these same call sites (both 70).
 const LIBC_CONFIDENCE: u8 = 70;
 
-/// Confidence of a reading propagated from a Win32 API routine: the
-/// names are distinctive — `CloseHandle` and `CreateFileW` are not
-/// spellings a project-local helper would take — so the contract reaches
-/// a little further than the C library's.
+/// Evidence confidence of a reading propagated from a Win32 API routine:
+/// the names are distinctive — `CloseHandle` and `CreateFileW` are not
+/// spellings a project-local helper would take — so these readings score
+/// a little higher than the C library's (75 against 70).
 const WIN32_CONFIDENCE: u8 = 75;
 
 /// The type text for an argument a contract reads as a byte buffer: the
-/// call proves the argument points into memory, not at what — a heap
-/// block, a handle, and a raw buffer all read the same way.
-/// The buffer reading the allocator and byte-routine contracts share.
+/// call proves the argument points into memory, but not at what — a
+/// heap block, a handle, and a raw buffer all read the same way. The
+/// allocator and byte-routine contracts share this buffer reading.
 pub(crate) const BYTE_BUFFER: &str = "void *";
 
 /// The type text for an argument a contract reads as a NUL-terminated
@@ -73,7 +75,7 @@ const FILL_VALUE: &str = "i32";
 
 /// One argument position of a known routine and the type its contract
 /// propagates to an argument sitting there. Positions start at 0, the
-/// same convention the size detector's string table uses; a position the
+/// same convention the size detector's string table uses. A position the
 /// contract does not read — `CreateFileW`'s sharing modes and flags — is
 /// simply absent, and an argument sitting there gets no reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,11 +86,11 @@ pub struct SignatureArg {
     pub inferred_type: &'static str,
 }
 
-/// A well-known library routine and what one of its call sites implies:
-/// the callee name to match, the per-position contract readings, the
-/// type its return value carries, and the confidence the signature
-/// carries wherever it matches. Names are spelled exactly as decompiled
-/// text shows them; A/W-suffix tolerance happens when a call is looked
+/// A known library routine and what one of its call sites implies: the
+/// callee name to match, the per-position contract readings, the type
+/// of its return value, and the evidence confidence the signature
+/// records wherever it matches. Names are spelled exactly as decompiled
+/// text shows them. A/W-suffix tolerance happens when a call is looked
 /// up, not in the entry itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnownSignature {
@@ -96,23 +98,24 @@ pub struct KnownSignature {
     pub name: &'static str,
     /// The contract's per-argument readings, in position order.
     pub args: &'static [SignatureArg],
-    /// The type the routine's return value carries, as C text — the
-    /// reading the caller→callee pass lends to a callee parameter when a
-    /// caller passes this routine's result as an argument. `None` when
-    /// the routine returns nothing useful (`void`, or a bare success
-    /// flag whose width says nothing about the callee).
+    /// The type of the routine's return value, as C text — the reading
+    /// the caller→callee pass gives to a callee parameter when a caller
+    /// passes this routine's result as an argument. `None` when the
+    /// routine returns nothing useful (`void`, or a bare success flag
+    /// whose width says nothing about the callee).
     pub returns: Option<&'static str>,
-    /// Confidence the signature carries at a matching call site, 0–100.
+    /// Evidence confidence the signature records at a matching call
+    /// site, 0–100.
     pub confidence: u8,
 }
 
-/// The standard signature set: the allocator, string, byte-fill, and
-/// handle routines whose parameter contracts propagate to the arguments
-/// at their call sites. The string trio (`strlen`, `strcmp`, `strcpy`)
-/// repeats the size detector's table on purpose — one call site is
-/// evidence to both detectors, and conflict resolution keeps the
-/// stronger reading — while the rest of the set reaches positions the
-/// size detector's families never read: the count beside a `malloc`, the
+/// The standard known-signature set: the allocator, string, byte-fill,
+/// and handle routines whose parameter contracts propagate to the
+/// arguments at their call sites. The string trio (`strlen`, `strcmp`,
+/// `strcpy`) repeats the size detector's table on purpose: one call
+/// site is evidence to both detectors, and resolution keeps the
+/// stronger reading. The rest of the set reaches positions the size
+/// detector's families never read: the count beside a `malloc`, the
 /// buffers behind a `memcpy`, the handle behind a `CloseHandle`, the
 /// wide name behind a `CreateFileW`.
 pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
@@ -245,8 +248,8 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
         confidence: WIN32_CONFIDENCE,
     },
 ];
-/// The type words a decompiler cast may spell, matching the decompiler's
-/// vocabulary the this-pointer scan already strips.
+/// The type words a decompiler cast may spell — the same vocabulary
+/// the this-pointer scan strips from the expressions it reads.
 pub(crate) fn is_type_word(word: &str) -> bool {
     matches!(
         word,
@@ -290,9 +293,9 @@ pub(crate) fn is_type_word(word: &str) -> bool {
 /// The `A`/`W` family a suffixed name stands for: `CreateFileW` splits
 /// into the base `CreateFile` and the tail letter `W`, and either
 /// spelling of the tail names the same routine — the Win32 convention
-/// where the bare base is a macro and the imports carry only suffixed
-/// forms. A name without an `A`/`W` tail, or a tail standing alone,
-/// names no family.
+/// where the bare base is a macro and the PE import table lists only
+/// the suffixed forms. A name without an `A`/`W` tail, or a tail
+/// standing alone, names no family.
 fn aw_family(name: &str) -> Option<(&str, char)> {
     let tail = name.chars().next_back()?;
     if !matches!(tail, 'A' | 'W') {
@@ -305,15 +308,14 @@ fn aw_family(name: &str) -> Option<(&str, char)> {
 /// The signature a callee name resolves to: the entry whose name the
 /// callee spells exactly, or failing that the entry sharing the callee's
 /// `A`/`W` family — a `CreateFileA` call site resolves to the
-/// `CreateFileW` entry, the two spellings being one contract over two
-/// character sets, which the callee's own spelling settles when the
-/// readings are taken. A bare base name resolves to nothing: the macro
-/// form never reaches a PE import table, and the tail letter is the only
-/// evidence of which character set the arguments carry. Everything else
-/// names no family — `CreateFile2` and `CreateFileExW` are different
-/// contracts, `myCreateFileW` is a longer name, and `CloseHandleA` or
-/// `strlenA` find no twin because an entry without a tail opens no
-/// family.
+/// `CreateFileW` entry. The two spellings are one contract over two
+/// character sets, and the callee's own spelling settles which set the
+/// readings take. A bare base name resolves to nothing: the macro form
+/// never reaches a PE import table, and the tail letter is the only
+/// evidence of the arguments' character set. Everything else names no
+/// family — `CreateFile2` and `CreateFileExW` are different contracts,
+/// `myCreateFileW` is a longer name, and `CloseHandleA` or `strlenA`
+/// find no twin because an entry without a tail opens no family.
 fn find_signature(callee: &str) -> Option<&'static KnownSignature> {
     KNOWN_SIGNATURES
         .iter()
@@ -327,11 +329,11 @@ fn find_signature(callee: &str) -> Option<&'static KnownSignature> {
 }
 
 /// A callee resolved to a signature family: the database entry and the
-/// spelling that resolved to it. The spelling travels with the match
-/// because the character-set readings follow it — the `W` tail of
-/// `CreateFileW` reads its name argument as `wchar_t *` where the `A`
-/// tail of its twin reads the same position as `char *` — while every
-/// other position's reading is the entry's own.
+/// spelling that resolved to it. The match keeps the spelling because
+/// the character-set readings depend on it: the `W` tail of
+/// `CreateFileW` reads its name argument as `wchar_t *`, where the `A`
+/// tail of its twin reads the same position as `char *`. Every other
+/// position's reading is the entry's own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignatureMatch<'a> {
     /// The database entry the callee resolved to.
@@ -343,7 +345,7 @@ pub struct SignatureMatch<'a> {
 impl SignatureMatch<'_> {
     /// The entry's per-position readings with the character set settled
     /// against the callee's spelling: a string position reads as
-    /// `wchar_t *` when the callee carries a `W` tail and `char *`
+    /// `wchar_t *` when the callee has a `W` tail and `char *`
     /// otherwise, and every other reading — a buffer, a count, a fill
     /// value — is the entry's own. Positions the contract does not read
     /// stay absent and the order is unchanged.
@@ -369,18 +371,19 @@ impl SignatureMatch<'_> {
 }
 
 // ============================================================
-// Engine
+// Known-signature detector
 // ============================================================
 
 /// One direct call extracted from a decompiled body: the callee name as
 /// the body spells it, the text of each top-level argument, and the
 /// source line holding the call.
 ///
-/// The record is the raw shape of a call site — no name is matched
-/// against the signature database and no argument is read here; those
-/// happen when a call is looked up and its arguments are read against a
-/// contract. The evidence line is carried because every reading this
-/// engine propagates cites the line that supports it.
+/// The record is the raw shape of a call site: no name is matched
+/// against the known-signature database and no argument is read here.
+/// Those happen when a call is looked up and its arguments are read
+/// against a contract. The record keeps the evidence line because every
+/// reading the known-signature detector propagates cites the line that
+/// supports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedCall {
     /// The callee name as the body spells it, e.g. `CreateFileW`.
@@ -392,28 +395,32 @@ pub struct ExtractedCall {
     pub evidence: String,
 }
 
-/// Known library signature propagation over decompiled functions.
+/// The known-signature detector: propagates known library signature
+/// contracts over decompiled functions.
 ///
-/// The engine is stateless: every reading comes from the decompiled
-/// function it is handed, so one engine serves an entire scan and can be
-/// shared across concurrent per-function passes. It holds no scan source
-/// of its own — the [`DecompiledFunction`] text is fetched once per
-/// function and read by every detector — and it never writes back to the
-/// program, only reporting what the body's call sites imply.
+/// The detector holds no state: every reading comes from the decompiled
+/// function it is handed. One instance therefore serves an entire scan
+/// and can be shared across concurrent per-function passes. It holds no
+/// scan source of its own — the [`DecompiledFunction`] text is fetched
+/// once per function and read by every detector — and it never writes
+/// back to the program. It only reports what the body's call sites
+/// imply.
 ///
 /// [`DecompiledFunction`]: calxgloss_decomp::DecompiledFunction
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnownTypePropagationEngine;
 
 impl KnownTypePropagationEngine {
-    /// An engine with the full standard signature set: the allocator,
-    /// string, and handle routines whose parameter contracts propagate to
-    /// the arguments sitting at their call sites.
+    /// The known-signature detector, with the full standard
+    /// known-signature set: the allocator, string, and handle routines
+    /// whose parameter contracts propagate to the arguments sitting at
+    /// their call sites.
     pub fn new() -> Self {
         Self
     }
 
-    /// The standard signature set the engine propagates through.
+    /// The standard known-signature set the detector propagates
+    /// through.
     pub fn signatures() -> &'static [KnownSignature] {
         KNOWN_SIGNATURES
     }
@@ -423,11 +430,11 @@ impl KnownTypePropagationEngine {
     /// A call is a plain identifier followed by a balanced argument
     /// list — `CreateFileW(lpFileName, 0x80000000, ...)`. A call through
     /// a function pointer or a vtable slot — `(*(code *)(**param_1))[3](...)`
-    /// — names no callee and yields nothing, and neither do the
-    /// control-flow keywords Ghidra writes with a parenthesised operand
-    /// (`if`, `while`, `for`, `switch`, `case`, `return`, `sizeof`). The
-    /// scan runs outside string literals, so a `name(` spelled inside a
-    /// format string invents no call, and nested calls are each extracted
+    /// — names no callee and yields nothing. Neither do the control-flow
+    /// keywords Ghidra writes with a parenthesised operand (`if`,
+    /// `while`, `for`, `switch`, `case`, `return`, `sizeof`). The scan
+    /// runs outside string literals, so a `name(` spelled inside a
+    /// format string invents no call. Nested calls are each extracted
     /// separately: `strlen(strcpy(a, b))` yields the outer and the inner
     /// site.
     pub fn extract_calls(&self, func: &DecompiledFunction) -> Vec<ExtractedCall> {
@@ -443,26 +450,27 @@ impl KnownTypePropagationEngine {
 
     /// The signature a callee name resolves to, if any.
     ///
-    /// An exact spelling resolves to its entry; failing that, a callee
-    /// carrying an `A`/`W` tail resolves to the entry sharing its base —
+    /// An exact spelling resolves to its entry. Failing that, a callee
+    /// with an `A`/`W` tail resolves to the entry sharing its base:
     /// `CreateFileA` and `CreateFileW` are one family, and the entry
     /// stands for both spellings. The returned [`SignatureMatch`] pairs
     /// the entry with the callee's own spelling, from which
     /// [`SignatureMatch::resolved_args`] settles the character-set
-    /// readings; everything else — a bare base name, a longer name, a
-    /// suffixed callee beside an entry that carries no tail — resolves
+    /// readings. Everything else — a bare base name, a longer name, a
+    /// suffixed callee beside an entry that has no tail — resolves
     /// to nothing.
     pub fn match_signature<'a>(&self, callee: &'a str) -> Option<SignatureMatch<'a>> {
         find_signature(callee).map(|signature| SignatureMatch { signature, callee })
     }
 
-    /// The type a callee's return value carries, if its signature names
+    /// The type of a callee's return value, if its signature names
     /// one. Resolves the callee through the same A/W-tolerant lookup as
-    /// [`match_signature`](Self::match_signature) and reports the entry's
-    /// [`returns`](KnownSignature::returns); a routine outside the
-    /// database, or one whose return says nothing useful (`void`, a bare
-    /// success flag), reports nothing. The caller→callee pass reads this
-    /// when a caller passes a known routine's result as an argument.
+    /// [`match_signature`](Self::match_signature) and reports the
+    /// entry's [`returns`](KnownSignature::returns). A routine outside
+    /// the known-signature database, or one whose return says nothing
+    /// useful (`void`, a bare success flag), reports nothing. The
+    /// caller→callee pass reads this when a caller passes a known
+    /// routine's result as an argument.
     pub fn return_type(&self, callee: &str) -> Option<&'static str> {
         find_signature(callee).and_then(|signature| signature.returns)
     }
@@ -471,24 +479,26 @@ impl KnownTypePropagationEngine {
     /// parameters, as [`InferredParamType`] records.
     ///
     /// A call whose callee resolves to a database entry reads each
-    /// argument sitting at a position the contract names, at the entry's
-    /// own confidence — the C library's contracts at [`LIBC_CONFIDENCE`],
-    /// the distinctive Win32 ones at [`WIN32_CONFIDENCE`] — with the
-    /// character-set readings settled by the callee's spelling: a
-    /// `CreateFileA` site reads its name argument as `char *` where the
-    /// `W` twin reads `wchar_t *`. An argument behind a cast still names
-    /// the value; an argument that is not one of the function's
-    /// parameters — a local, a literal, a nested call — names no
-    /// parameter to read, and a position the contract does not read
-    /// (`CreateFileW`'s modes and flags) reads nothing sitting there.
+    /// argument sitting at a position the contract names. The reading
+    /// scores at the entry's own evidence confidence — the C library's
+    /// contracts at `LIBC_CONFIDENCE`, the distinctive Win32 ones at
+    /// `WIN32_CONFIDENCE`. The character-set readings are settled by the
+    /// callee's spelling: a `CreateFileA` site reads its name argument
+    /// as `char *` where the `W` twin reads `wchar_t *`. An argument
+    /// behind a cast still names the value. An argument that is not one
+    /// of the function's parameters — a local, a literal, a nested call
+    /// — names no parameter to read, and a position the contract does
+    /// not read (`CreateFileW`'s modes and flags) reads nothing sitting
+    /// there.
     ///
-    /// Every reading carries [`InferenceScope::Program`]: the contract
-    /// behind it holds at every call site carrying the same value, not
+    /// Every reading records [`InferenceScope::Program`]: the contract
+    /// behind it holds at every call site passing the same value, not
     /// just the site that produced the record. When several call sites
     /// read one parameter differently, the strongest signature wins and
-    /// the rest are dropped — a parameter both measured by `strlen` and
-    /// closed by `CloseHandle` reads as the handle's `void *` — and a tie
-    /// keeps the reading the body showed first.
+    /// the rest are dropped — a parameter that one site passes to
+    /// `strlen` and another closes with `CloseHandle` reads as the
+    /// handle's `void *` — and a tie keeps the reading the body showed
+    /// first.
     pub fn propagate_known_types(&self, func: &DecompiledFunction) -> Vec<InferredParamType> {
         let params = func.parameter_names();
         if params.is_empty() {
@@ -543,8 +553,8 @@ mod tests {
 
     #[test]
     fn an_engine_carries_no_state() {
-        // One engine serves a whole scan: construction is free, equal
-        // however it is made, and clones are interchangeable.
+        // One detector serves a whole scan: construction is free, any
+        // two instances are equal, and clones are interchangeable.
         let engine = KnownTypePropagationEngine::new();
         assert_eq!(engine, KnownTypePropagationEngine);
         assert_eq!(engine.clone(), engine);
@@ -552,8 +562,9 @@ mod tests {
 
     #[test]
     fn an_engine_can_be_shared_across_scans() {
-        // The engine is driven concurrently over a program's functions,
-        // so sharing one by reference across tasks must stay sound.
+        // The detector is driven concurrently over a program's
+        // functions, so sharing one by reference across tasks must
+        // stay sound.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<KnownTypePropagationEngine>();
     }
@@ -671,7 +682,7 @@ mod tests {
         assert_eq!(reading(signature("CloseHandle"), 0), BYTE_BUFFER);
         assert_eq!(reading(signature("CreateFileW"), 0), WIDE_STRING);
         // Only the name position is read: the sharing modes, flags, and
-        // template handle carry no parameter reading.
+        // template handle get no parameter reading.
         assert_eq!(signature("CreateFileW").args.len(), 1);
     }
 
@@ -685,9 +696,10 @@ mod tests {
         for name in ["CloseHandle", "CreateFileW"] {
             assert_eq!(signature(name).confidence, WIN32_CONFIDENCE);
         }
-        // Distinctive API names outrun the C library's, and both families
-        // stay inside the scale the confidence model uses — a fact about
-        // the constants themselves, checked at compile time.
+        // Distinctive API names score higher than the C library's, and
+        // both families stay inside 0–100, the evidence-confidence
+        // scale — a fact about the constants themselves, checked at
+        // compile time.
         const {
             assert!(WIN32_CONFIDENCE > LIBC_CONFIDENCE);
             assert!(LIBC_CONFIDENCE > 0 && WIN32_CONFIDENCE <= 100);
@@ -696,8 +708,8 @@ mod tests {
 
     #[test]
     fn the_engine_propagates_through_the_standard_signature_set() {
-        // The engine's view of its database is the database itself: one
-        // shared set, not a per-engine copy.
+        // The detector's view of its known-signature database is the
+        // database itself: one shared set, not a per-detector copy.
         assert_eq!(KnownTypePropagationEngine::signatures(), KNOWN_SIGNATURES);
     }
 
@@ -749,8 +761,8 @@ mod tests {
 
     #[test]
     fn a_call_spelled_inside_a_string_literal_is_not_a_call() {
-        // The scan skips string literals whole, escaped quotes included,
-        // so a format string cannot invent a call site.
+        // The scan skips string literals entirely, escaped quotes
+        // included, so a format string cannot invent a call site.
         let extracted = calls("  printf(\"malloc( not really \\\"free(x)\\\"\");");
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].callee, "printf");
@@ -866,8 +878,8 @@ return (iVar1);";
     #[test]
     fn a_bare_base_name_resolves_to_nothing() {
         // The macro form never reaches a PE import table, and with no
-        // tail letter there is no evidence of which character set the
-        // arguments carry.
+        // tail letter there is no evidence of the arguments' character
+        // set.
         assert!(matched("CreateFile").is_none());
     }
 
@@ -882,7 +894,7 @@ return (iVar1);";
 
     #[test]
     fn entries_without_a_tail_match_their_name_only() {
-        // An entry that carries no `A`/`W` tail opens no family, so a
+        // An entry that has no `A`/`W` tail opens no family, so a
         // suffixed callee finds no twin beside it.
         assert!(matched("CloseHandleA").is_none());
         assert!(matched("strlenA").is_none());
@@ -902,10 +914,10 @@ return (iVar1);";
 
     #[test]
     fn the_a_spelling_reads_the_same_position_as_a_character_pointer() {
-        // The family match carries the contract; the callee's own tail
-        // settles the character set — the `A` twin's name argument is
-        // narrow, and propagating the entry's `wchar_t *` to it would
-        // be the one reading the split forbids.
+        // The family match supplies the contract, and the callee's own
+        // tail settles the character set: the `A` twin's name argument
+        // is narrow, and propagating the entry's `wchar_t *` to it
+        // would be the one reading the A/W split forbids.
         assert_eq!(
             resolved("CreateFileA"),
             [SignatureArg {
@@ -918,7 +930,8 @@ return (iVar1);";
     #[test]
     fn non_character_readings_are_the_entry_s_own() {
         // A buffer, a count, and a fill value say nothing about
-        // character sets, so the callee's spelling leaves them alone.
+        // character sets, so the callee's spelling does not change
+        // them.
         assert_eq!(
             resolved("malloc"),
             [SignatureArg {
@@ -947,8 +960,8 @@ return (iVar1);";
 
     #[test]
     fn resolved_readings_keep_positions_and_order() {
-        // Settling the character set rewrites readings in place: the
-        // positions the contract reads, and their order, are the
+        // Settling the character set changes readings in place: the
+        // positions the contract reads, and their order, are still the
         // entry's.
         assert_eq!(
             resolved("CreateFileA"),
@@ -967,9 +980,10 @@ return (iVar1);";
 
     #[test]
     fn a_known_routine_reports_its_return_type() {
-        // The allocator hands back a buffer, `strlen` a byte count, and
-        // `strcpy` the destination string — the readings the caller→callee
-        // pass lends when a caller passes one of these results along.
+        // The allocator returns a buffer, `strlen` a byte count, and
+        // `strcpy` the destination string — the readings the
+        // caller→callee pass gives when a caller passes one of these
+        // results to a callee.
         assert_eq!(return_type("malloc"), Some(BYTE_BUFFER));
         assert_eq!(return_type("strlen"), Some(BYTE_COUNT));
         assert_eq!(return_type("strcpy"), Some(CHAR_STRING));
@@ -982,7 +996,7 @@ return (iVar1);";
     fn a_void_or_flag_return_reports_nothing() {
         // `free` returns nothing and `CloseHandle` a bare success flag:
         // neither says anything about a callee parameter, so neither
-        // lends a reading.
+        // gives a reading.
         assert_eq!(return_type("free"), None);
         assert_eq!(return_type("CloseHandle"), None);
         assert_eq!(return_type("strcmp"), None);
@@ -1011,8 +1025,9 @@ return (iVar1);";
         assert_eq!(record.param_name.as_deref(), Some("param_1"));
         assert_eq!(record.inferred_type, "size_t");
         assert_eq!(record.method, InferenceMethod::KnownSignature);
-        // The contract behind the name holds at every call site carrying
-        // the same value, so the reading reaches past this body.
+        // The contract behind the name holds at every call site that
+        // passes the same value, so the reading applies beyond this
+        // body.
         assert_eq!(record.scope, InferenceScope::Program);
         assert_eq!(record.confidence, LIBC_CONFIDENCE);
         assert_eq!(record.evidence, "local_10 = malloc(param_1);");
@@ -1034,8 +1049,8 @@ return (iVar1);";
 
     #[test]
     fn the_a_twin_propagates_the_narrow_reading_at_the_family_confidence() {
-        // The family match carries the contract and its confidence; the
-        // callee's own tail settles the character set.
+        // The family match supplies the contract and its evidence
+        // confidence; the callee's own tail settles the character set.
         let records = propagated(
             "undefined FUN_18003ab00(undefined8 lpFileName)",
             "  hFile = CreateFileA(lpFileName, 0x80000000, 0, 0, 3, 0x80, 0);",
@@ -1049,7 +1064,7 @@ return (iVar1);";
     #[test]
     fn a_position_the_contract_does_not_read_gets_no_reading() {
         // `CreateFileW` reads only its name argument: the sharing modes,
-        // flags, and template handle sitting on parameters carry no
+        // flags, and template handle sitting on parameters get no
         // reading.
         let records = propagated(
             "undefined FUN_18003ab00(undefined8 lpFileName,undefined8 hTemplateFile)",
@@ -1093,9 +1108,9 @@ return (iVar1);";
 
     #[test]
     fn the_higher_confidence_signature_wins_a_contested_parameter() {
-        // Both contracts read position 0 of their own call: the Win32
-        // name's reading outruns the C library's, even though the body
-        // shows the string call first.
+        // Both contracts read position 0 of their own call. The Win32
+        // name's reading scores higher than the C library's, even
+        // though the body shows the string call first.
         let records = propagated(
             "undefined FUN_18003ab00(undefined8 param_1)",
             "  uVar1 = strlen(param_1);\n  bVar2 = CloseHandle(param_1);",
@@ -1108,8 +1123,8 @@ return (iVar1);";
 
     #[test]
     fn a_tie_keeps_the_reading_the_body_showed_first() {
-        // `free` and `strlen` carry the same confidence: the first
-        // contract the body shows is the one kept.
+        // `free` and `strlen` record the same evidence confidence: the
+        // first contract the body shows is the one kept.
         let records = propagated(
             "undefined FUN_18003ab00(undefined8 param_1)",
             "  free(param_1);\n  uVar1 = strlen(param_1);",
