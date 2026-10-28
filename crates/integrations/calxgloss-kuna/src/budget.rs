@@ -1,16 +1,16 @@
 //! Per-function decompile budgets for the Kuna engine (issue #211).
 //!
-//! Kuna's embeddable engine carries three per-function watchdogs, and each
-//! one is a knob the calxgloss `[analysis]` config block can set: the
-//! instruction bound one function's flow may follow (`maxinstruction`), the
-//! wall-clock budget the whole per-function drive may spend (the
-//! `--max-fn-seconds` watchdog, armed on the architecture as
-//! `kuna_fn_budget`), and the resident-set growth one function may cause
-//! (the `--max-fn-memory` watchdog, a process-wide limit in the engine's
-//! `kuna_fnmemory` module). A budget that trips fails that one function by
-//! name — see [`KunaError::DecompileBudgetExceeded`](crate::KunaError::DecompileBudgetExceeded)
-//! — so one obfuscated function cannot exhaust a memory-constrained box or
-//! hang the run.
+//! Kuna itself has three per-function watchdogs built in, and each one is
+//! a knob the calxgloss `[analysis]` config block can set. The first is
+//! the instruction bound one function's flow may follow
+//! (`maxinstruction`). The second is the wall-clock budget one whole
+//! per-function drive may spend (the `--max-fn-seconds` watchdog, armed on
+//! the architecture as `kuna_fn_budget`). The third is the resident-set
+//! growth one function may cause (the `--max-fn-memory` watchdog, a
+//! process-wide limit in Kuna's `kuna_fnmemory` module). When a budget
+//! trips, only that one function fails, by name — see
+//! [`KunaError::DecompileBudgetExceeded`] — so one obfuscated function
+//! cannot exhaust a memory-constrained box or hang the run.
 //!
 //! An unset knob leaves Kuna's own default in force: 100 000 instructions,
 //! no wall-clock budget, no memory limit. `Some(0)` means the same for all
@@ -23,14 +23,15 @@ use std::time::Duration;
 use crate::engine::KunaProgram;
 use crate::error::{KunaError, Result};
 
-/// The per-function decompile budgets a `kuna` run arms, `None` for
+/// The per-function decompile budgets a `kuna` run arms. `None` means
 /// "leave Kuna's default".
 ///
 /// The instruction and time budgets live on the loaded program's
-/// architecture and so bind exactly one program. The memory budget is
-/// process-wide in the engine (it measures the process's resident set),
-/// which one-engine-per-run makes harmless — but it is why a
-/// [`KunaSource`](crate::KunaSource) load applies it at most once, at load.
+/// architecture, so each one binds exactly one program. The memory
+/// budget lives process-wide in Kuna, because it measures the process's
+/// resident set. A run has exactly one Kuna program, so that is
+/// harmless — but it is why a [`KunaSource`](crate::KunaSource) load
+/// applies the memory budget at most once, at load.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KunaBudget {
     /// The instructions one function's flow may follow (Kuna's
@@ -67,10 +68,10 @@ impl KunaBudget {
 
     /// Arm the budgets on a freshly loaded program.
     ///
-    /// Unset knobs (and `Some(0)`) change nothing, keeping the defaults
-    /// Kuna's own reset installed. The instruction bound saturates at
-    /// `u32::MAX` — the engine's bound is a 32-bit count, and a bound past
-    /// it is unreachable anyway.
+    /// Unset knobs (and `Some(0)`) change nothing: whatever Kuna's own
+    /// reset installed stays in place. The instruction bound saturates at
+    /// `u32::MAX` — Kuna's bound is a 32-bit count, and a bound past it is
+    /// unreachable anyway.
     pub(crate) fn apply(&self, program: &mut KunaProgram) {
         let arch = program.program.arch_mut();
         if let Some(max) = self.max_instructions.filter(|max| *max > 0) {
@@ -92,9 +93,10 @@ mod tests {
 
     #[test]
     fn budget_knobs_reach_the_engine_and_unset_knobs_leave_kunas_defaults() {
-        // One test touches the process-wide memory limit on purpose: the
-        // engine keeps it in a global, so two tests arming it at once would
-        // race. The default half runs before anything is armed.
+        // One test touches the process-wide memory limit on purpose. Kuna
+        // keeps that limit in a global, so two tests setting it at the
+        // same time would race. The default check runs first, before
+        // anything is set.
         let fixture =
             calxgloss_testfixtures::load_target().expect("the fixture target builds and validates");
         let mut program = engine::load(fixture.path()).expect("the fixture must load");
@@ -118,9 +120,10 @@ mod tests {
             "Kuna sets no memory limit by default"
         );
 
-        // Every knob set reaches the engine where Kuna keeps it. The memory
-        // limit is huge on purpose — this test proves arming, and a limit
-        // that fires would poison other tests sharing the process.
+        // Every knob that is set reaches the place where Kuna keeps it.
+        // The memory limit is huge on purpose: this test proves only that
+        // the limit gets set, and a limit that actually fired would break
+        // the other tests that share this process.
         let budget = KunaBudget {
             max_instructions: Some(5_000),
             max_fn_seconds: Some(30),
@@ -148,7 +151,7 @@ mod tests {
         assert_eq!(arch.kuna_fn_budget, Some(Duration::from_secs(30)));
         assert_eq!(kuna_decomp::kuna_fnmemory::limit_mib(), 1_000_000);
 
-        // Leave the process-wide limit as the engine shipped it.
+        // Leave the process-wide limit as Kuna shipped it.
         kuna_decomp::kuna_fnmemory::set_limit_mib(0);
     }
 }

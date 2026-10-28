@@ -2,13 +2,13 @@
 
 /// Why a Kuna engine operation failed.
 ///
-/// Every variant names what broke and, where the operator can act, says what
-/// to do — raise a budget, repair a directive file — rather than surfacing an
-/// upstream backtrace. Kuna is the only analysis engine (issue #214), so no
-/// variant points at another one.
+/// Every variant names what broke. Where the operator can do something, it
+/// also says what to do — raise a budget, repair a directive file. It never
+/// shows a raw upstream backtrace. Kuna is the only analysis engine (issue
+/// #214), so no variant points at another analysis engine.
 #[derive(Debug, thiserror::Error)]
 pub enum KunaError {
-    /// A target binary could not be loaded by the Kuna engine.
+    /// The Kuna engine could not load a target binary.
     #[error("the Kuna engine could not load {path}: {reason}")]
     LoadFailed {
         /// The target that failed to load.
@@ -18,40 +18,42 @@ pub enum KunaError {
     },
 
     /// The embedded SLEIGH spec tree could not be unpacked to a writable
-    /// cache directory, so no engine load can resolve a language.
+    /// cache directory, so no load of the Kuna engine can resolve a
+    /// language.
     #[error("the Kuna engine could not unpack its embedded SLEIGH specs: {reason}")]
     SpecsUnavailable {
         /// Why every cache location was rejected.
         reason: String,
     },
 
-    /// The engine thread is gone, so no further request can be answered.
+    /// The engine thread has exited, so it can answer no further request.
     ///
     /// The thread exits when the last [`KunaSource`](crate::source::KunaSource)
-    /// handle drops, or after a fatal load failure; either way the caller
+    /// handle drops, or after a fatal load failure. Either way, the caller
     /// holds a handle to a program that is no longer running.
     #[error("the Kuna engine is no longer answering requests; its program thread has exited")]
     EngineUnavailable,
 
-    /// No function in the loaded program carries the requested name.
+    /// The loaded program has no function with the requested name.
     #[error("the Kuna engine has no function named '{name}'")]
     FunctionNotFound {
         /// The name that was asked for.
         name: String,
     },
 
-    /// The engine panicked inside one call, and the seam caught it.
+    /// Kuna panicked inside one call, and the seam caught it.
     ///
-    /// Kuna is a young engine; an upstream `unwrap` inside a listing or
-    /// decompile must cost this process nothing. The engine thread runs
-    /// every call inside `catch_unwind`, and the panic arrives here as a
-    /// named failure — never a process abort (issue #206).
+    /// Kuna is a young library, so an upstream `unwrap` panicking inside a
+    /// listing or decompile must not take this process down with it. The
+    /// engine thread runs every call inside `catch_unwind`, so the panic
+    /// arrives here as a named failure and never aborts the process
+    /// (issue #206).
     #[error(
         "the Kuna engine panicked in `{call}`: {panic}\n\
          the panic was caught at the engine seam"
     )]
     EngineFault {
-        /// The engine call that panicked.
+        /// The Kuna call that panicked.
         call: String,
         /// The panic payload, as far as it could be read.
         panic: String,
@@ -59,9 +61,10 @@ pub enum KunaError {
 
     /// The target's import/export tables or image base could not be read.
     ///
-    /// The Kuna source answers these seam reads from the same file the
-    /// engine loaded, through the `object` crate; a file the engine parsed
-    /// but these tables cannot is named here rather than answered empty.
+    /// The Kuna source answers these seam reads by reading the same file
+    /// Kuna loaded, through the `object` crate. When Kuna parsed the file
+    /// but these tables cannot be parsed, this failure is raised instead
+    /// of answering empty.
     #[error("the Kuna engine could not read the container tables of {path}: {reason}")]
     TablesUnreadable {
         /// The target whose tables were read.
@@ -70,7 +73,7 @@ pub enum KunaError {
         reason: String,
     },
 
-    /// The engine refused to decompile one function it knows exists.
+    /// Kuna refused to decompile one function that it knows exists.
     #[error("the Kuna engine could not decompile '{name}': {reason}")]
     DecompileFailed {
         /// The function the decompile named.
@@ -79,14 +82,14 @@ pub enum KunaError {
         reason: String,
     },
 
-    /// The engine stopped decompiling one function because a per-function
-    /// budget tripped (issue #211).
+    /// Kuna stopped decompiling one function because a per-function budget
+    /// tripped (issue #211).
     ///
-    /// Kuna's watchdogs fail one function, not the run: the seam names
-    /// which budget stopped it so the scan records the function as a
-    /// per-function failure and keeps walking, and the operator can raise
-    /// the budget in the `[analysis]` config block instead of losing the
-    /// run to one obfuscated body.
+    /// Kuna's watchdogs fail one function, not the whole run. The error
+    /// names which budget stopped it, so the scan records that function as
+    /// a per-function failure and keeps going. The operator can raise the
+    /// budget in the `[analysis]` config block instead of losing the run
+    /// to one obfuscated function.
     #[error(
         "the Kuna engine stopped decompiling '{name}': the {budget} budget tripped ({reason})\n\
          raise the budget in the [analysis] config block"
@@ -117,31 +120,35 @@ pub enum KunaError {
         reason: String,
     },
 
-    /// No type in the engine's type manager carries the requested name.
+    /// Kuna's type manager has no type with the requested name.
     ///
-    /// The seam maps this to the same `NotFound` an engine miss becomes, so
-    /// layout probes branch on one fact whichever engine answers.
+    /// The seam maps this to the same `NotFound` that a lookup miss
+    /// produces, so layout probes always branch on one failure kind,
+    /// whichever answer produced the miss.
     #[error("the Kuna engine's type manager has no type named '{name}'")]
     TypeNotFound {
         /// The type name that was asked for.
         name: String,
     },
 
-    /// A named type exists but is not a structure, so no layout answers.
+    /// A type with this name exists but is not a structure, so a struct
+    /// layout lookup cannot use it.
     #[error("the Kuna engine's type manager has no structure named '{name}'")]
     NotAStruct {
         /// The name that resolved to some other kind of type.
         name: String,
     },
 
-    /// A named type exists but is not an enumeration, so no members answer.
+    /// A type with this name exists but is not an enumeration, so an enum
+    /// member lookup cannot use it.
     #[error("the Kuna engine's type manager has no enumeration named '{name}'")]
     NotAnEnum {
         /// The name that resolved to some other kind of type.
         name: String,
     },
 
-    /// The requested byte range is not mapped in the loaded program.
+    /// The byte range the read asked for is not mapped in the loaded
+    /// program.
     #[error("the Kuna engine has no mapped bytes at {address:#x} for {length} bytes")]
     MemoryUnmapped {
         /// The address the read started at.
@@ -150,11 +157,12 @@ pub enum KunaError {
         length: usize,
     },
 
-    /// A write-seam declaration the engine's own grammar refused to parse.
+    /// A write-seam declaration that Kuna's own grammar refused to parse.
     ///
-    /// The declaration never reached the directive plane: a write calxgloss
-    /// can name but Kuna cannot parse is refused at the seam, where the
-    /// caller still holds the text, rather than poisoning the replay file.
+    /// The declaration never reached the directive plane. When calxgloss
+    /// can name a write but Kuna cannot parse it, the seam refuses it
+    /// while the caller still holds the text, instead of letting a bad
+    /// line into the replay file.
     #[error("the Kuna engine could not parse `{directive}`: {reason}")]
     DirectiveRejected {
         /// The declaration or type text the seam was given.
@@ -166,7 +174,8 @@ pub enum KunaError {
     /// A directive file on disk holds a line the directive grammar refuses.
     ///
     /// A half-understood directive file must never load as a quiet partial
-    /// replay; the offending line is named so the file can be repaired.
+    /// replay. The error names the offending line so the file can be
+    /// repaired.
     #[error("the directive file {path} is not readable at line {line}: {reason}")]
     DirectiveFileInvalid {
         /// The directive file that failed to parse.
@@ -177,11 +186,12 @@ pub enum KunaError {
         reason: String,
     },
 
-    /// A struct record the directive plane cannot honestly regenerate.
+    /// The directive plane cannot honestly regenerate a struct's record.
     ///
-    /// `add_struct_field` re-bodies the owning `typedef struct` record from
-    /// its own text; a record carrying a shape that text cannot re-render —
-    /// a bitfield — is named here rather than rewritten lossy.
+    /// `add_struct_field` rebuilds the owning `typedef struct` record from
+    /// that record's own text. A record in a shape that text cannot
+    /// rebuild — a bitfield — is reported here by name rather than
+    /// rewritten with a loss.
     #[error("the directive plane cannot regenerate the record for type '{name}': {reason}")]
     DirectiveRegenerationFailed {
         /// The structure whose record could not be regenerated.

@@ -1,15 +1,15 @@
 //! The compiled SLEIGH tree this build carries inside itself.
 //!
-//! The Kuna engine reads specs only through plain filesystem path reads, so
-//! the `include_bytes!` table `build.rs` generates is unpacked once into a
-//! per-user cache directory, under a name derived from its contents, and
-//! that directory is handed to the engine as its spec root. Each unpack is
-//! written to a private staging directory and renamed into place only once
-//! complete, and a `.complete` marker written last says a finished tree
-//! lives there — so a reader never sees a partial tree and concurrent first
-//! runs settle on one copy. This mirrors Kuna's own
-//! `kuna-cli/src/embedded_specs.rs`; that module is not reusable because it
-//! sits on the bin-only `kuna-cli` crate.
+//! The Kuna engine reads specs only through plain filesystem path reads.
+//! So the `include_bytes!` table that `build.rs` generates is unpacked
+//! once into a per-user cache directory, named from the contents of the
+//! tree, and that directory is passed to the Kuna engine as its spec root.
+//! Each unpack first writes into a private staging directory and renames
+//! it into place only once it is complete, and a `.complete` marker
+//! written last says a finished tree lives there. So a reader never sees a
+//! partial tree, and concurrent first runs settle on one copy. This
+//! mirrors Kuna's own `kuna-cli/src/embedded_specs.rs`; that module is not
+//! reusable because it sits on the bin-only `kuna-cli` crate.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ const COMPLETE: &str = ".complete";
 /// this cache location; an unpack takes well under a second.
 const LOCK_WAIT: Duration = Duration::from_secs(30);
 
-/// The spec root to hand the engine, unpacked once per process.
+/// The spec root to pass to the Kuna engine, unpacked once per process.
 pub(crate) fn spec_root() -> Result<String> {
     static ROOT: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
     let cached = ROOT.get_or_init(|| unpack_into_cache(generated::ID, generated::FILES));
@@ -113,8 +113,9 @@ fn unpack(base: &Path, id: &str, files: &[(&str, &[u8])]) -> std::result::Result
     })
 }
 
-/// Take `lock`, giving up after [`LOCK_WAIT`] so a stopped holder sends the
-/// caller to the next cache location instead of hanging it.
+/// Take `lock`, giving up after [`LOCK_WAIT`]. If another process still
+/// holds it, the caller moves on to the next cache location instead of
+/// waiting forever.
 fn acquire(lock: &fs::File) -> std::result::Result<(), String> {
     let deadline = Instant::now() + LOCK_WAIT;
     let mut pause = Duration::from_millis(1);

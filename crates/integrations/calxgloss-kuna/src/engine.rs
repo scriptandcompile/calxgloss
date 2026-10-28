@@ -1,12 +1,13 @@
 //! Loading a target program with the Kuna engine.
 //!
 //! Kuna needs no server, bridge, or JVM: [`load`] is the whole session
-//! start. It unpacks the embedded SLEIGH specs once, hands the engine that
-//! spec root, and drives Kuna's format-neutral object bootstrap — PE, ELF,
-//! Mach-O, and COFF all arrive through the same call. What the skeleton
-//! reports back is the program's identity: the language description the
-//! loader resolved and the entry point the format names, the facts a run
-//! must agree on before any scan reads the program.
+//! start. It unpacks the embedded SLEIGH specs once, passes that spec root
+//! to the Kuna engine, and drives Kuna's format-neutral object bootstrap —
+//! PE, ELF, Mach-O, and COFF all arrive through the same call. What
+//! [`load`] reports back is the program's identity: the language
+//! description the loader resolved and the entry point the file format
+//! names. These are the facts a run must agree on before any scan reads
+//! the program.
 
 use std::path::Path;
 
@@ -20,29 +21,30 @@ use crate::specs;
 /// the embedded specs always name the same checkout.
 pub const KUNA_RELEASE: &str = env!("CALXGLOSS_KUNA_RELEASE");
 
-/// The pinned Kuna source fingerprint — the short commit of the checkout
-/// this build's engine and embedded specs came from. Beside
-/// [`KUNA_RELEASE`] it names the exact engine source a scan record was
-/// produced by, so the record can be re-created or blamed (issue #208);
-/// `build.rs` derives it from the same lock-file pin.
+/// The pinned Kuna source fingerprint: the short commit hash of the
+/// checkout that this build's Kuna code and embedded specs came from.
+/// Beside [`KUNA_RELEASE`] it names the exact Kuna source that produced
+/// a scan record, so the record can be re-created or a change blamed on
+/// it (issue #208). `build.rs` derives it from the same lock-file pin.
 pub const KUNA_PIN_REV: &str = env!("CALXGLOSS_KUNA_PIN_REV");
 
 /// A program loaded by the Kuna engine.
 ///
-/// The loaded program stays inside: the scan reads
-/// ([`source::KunaSource`](crate::source::KunaSource)) answer through this
-/// handle, and the handle never leaves the engine thread it was built on —
-/// Kuna's program type is full of `Rc`/`RefCell` and is neither `Send` nor
+/// The loaded program stays inside the crate. Scan reads answer through
+/// this handle ([`source::KunaSource`](crate::source::KunaSource)), and
+/// the handle never leaves the engine thread it was built on: Kuna's
+/// program type is full of `Rc`/`RefCell` and is neither `Send` nor
 /// `Sync`.
 pub struct KunaProgram {
-    /// The upstream program, crate-private: `source.rs` drives it on the
+    /// The upstream program, crate-private. `source.rs` drives it on the
     /// engine thread, and nothing else may touch it.
     pub(crate) program: ConsoleProgram,
 }
 
 impl std::fmt::Debug for KunaProgram {
-    /// Reports what the handle can report — the loaded program is opaque
-    /// upstream, so the identity fields stand in.
+    /// Reports what this handle can report. The upstream program gives no
+    /// useful debug output of its own, so the identity fields are printed
+    /// in its place.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KunaProgram")
             .field("identity", &self.identity())
@@ -53,8 +55,8 @@ impl std::fmt::Debug for KunaProgram {
 }
 
 impl KunaProgram {
-    /// The engine's identity line for the loaded program — the resolved
-    /// language, e.g. `x86:LE:64:default`.
+    /// The Kuna engine's identity line for the loaded program — the
+    /// resolved language, e.g. `x86:LE:64:default`.
     pub fn identity(&self) -> &str {
         self.program.description()
     }
@@ -73,8 +75,9 @@ impl KunaProgram {
 /// Load `path` as a program with the Kuna engine, selecting the language
 /// from the file itself.
 ///
-/// A failure is always [`KunaError::LoadFailed`] naming the path and Kuna's
-/// own reason — never a raw upstream backtrace.
+/// When loading fails, the error is always [`KunaError::LoadFailed`],
+/// naming the path and Kuna's own reason. It never leaks a raw upstream
+/// backtrace.
 pub fn load(path: &Path) -> Result<KunaProgram> {
     let spec_root = specs::spec_root()?;
     let mut program = engine::bootstrap_from_object(&path.to_string_lossy(), "", &[spec_root])
@@ -82,11 +85,12 @@ pub fn load(path: &Path) -> Result<KunaProgram> {
             path: path.display().to_string(),
             reason: error.explain().to_string(),
         })?;
-    // Mirror the Kuna CLI's load sequence (bootstrap → options → commit):
-    // bootstrap only stashes the object file's entries as pending synthetic
-    // ones, and the commit installs them as the function entries the
-    // listings answer with. A scan reading the program straight after
-    // bootstrap would otherwise see the pre-commit view.
+    // This mirrors the Kuna CLI's load sequence (bootstrap → options →
+    // commit). Bootstrap only stores the object file's function entries as
+    // pending synthetic ones. The commit installs them as the function
+    // entries later listings answer with. Without this order, a scan
+    // reading the program straight after bootstrap would see the
+    // pre-commit view.
     apply_discovery_bundle(&mut program, path)?;
     program
         .commit_pending_analysis()
@@ -98,26 +102,30 @@ pub fn load(path: &Path) -> Result<KunaProgram> {
 }
 
 /// Apply Kuna's driver-default function-discovery options to a bootstrapped
-/// program, before the analysis commit installs the entries the listing
-/// answers with.
+/// program, before the analysis commit installs the function entries later
+/// listings answer with.
 ///
-/// Without these the commit installs only what the loader itself knows —
-/// the entry point, the TLS callbacks, and the code pointers the base
-/// relocations name — and a stripped image lists a couple dozen functions
-/// where it holds thousands. A 32-bit PE is the worst case: it carries no
-/// `.pdata` exception table (the x64 oracle that recovers nearly every
-/// function) and no symbol table, so the entry oracles alone find almost
-/// nothing. This mirrors the bundle `kuna decompile-all` injects for its
-/// own decompiling driver (kuna DIV-15/DIV-20/DIV-68):
+/// Without these options, the commit installs only what the loader itself
+/// knows: the entry point, the TLS callbacks, and the code pointers that
+/// base relocations name. A stripped image would then list a couple dozen
+/// functions where it holds thousands.
 ///
-/// * `listing on` — the recursive Listing walk, the direct-call closure
-///   from the loader-backed roots, and the master gate of the discovery
-///   bundle below.
-/// * `funcstart_patterns on` and `aif on` — the prologue-pattern sweep
-///   and the aggressive instruction finder, the primary discovery sources
-///   on a non-x86-64 image, where the cheap x86-64 oracles are inert.
-///   x86-64 keeps them off, exactly as Kuna's driver does: the entry
-///   oracles suffice there and the aggressive scan can over-produce.
+/// A 32-bit PE is the worst case. It has no `.pdata` exception table (the
+/// x64 oracle that recovers nearly every function) and no symbol table, so
+/// the entry oracles alone find almost nothing.
+///
+/// These options mirror the bundle `kuna decompile-all` injects for its own
+/// decompiling driver (kuna DIV-15/DIV-20/DIV-68):
+///
+/// * `listing on` — turns on the recursive Listing walk, the direct-call
+///   closure from the loader-backed roots, and the master gate of the
+///   discovery bundle below.
+/// * `funcstart_patterns on` and `aif on` — turn on the prologue-pattern
+///   sweep and the aggressive instruction finder. These are the primary
+///   discovery sources on a non-x86-64 image, where the cheap x86-64
+///   oracles do nothing. x86-64 keeps them off, exactly as Kuna's driver
+///   does: the entry oracles are enough there, and the aggressive scan can
+///   find things that are not functions.
 fn apply_discovery_bundle(program: &mut engine::ConsoleProgram, path: &Path) -> Result<()> {
     let non_x86_64 = std::fs::read(path)
         .map(|bytes| image_is_non_x86_64(&bytes))
@@ -142,9 +150,9 @@ fn apply_discovery_bundle(program: &mut engine::ConsoleProgram, path: &Path) -> 
 
 /// Whether the image bytes name an architecture other than x86-64.
 ///
-/// An image `object` cannot parse takes the x86-64 answer, as the Kuna
-/// driver's same computation does — no aggressive bundle on an architecture
-/// that cannot be named.
+/// An image that `object` cannot parse gets the x86-64 answer, matching
+/// how the Kuna driver makes the same computation: no aggressive bundle on
+/// an architecture that cannot be named.
 fn image_is_non_x86_64(bytes: &[u8]) -> bool {
     use object::Object;
     object::read::File::parse(bytes)
