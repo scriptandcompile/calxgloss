@@ -15,10 +15,10 @@
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
-// `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb, typeinfer, and algorithm
-// convention.
+// `ScanMetadata` is the shared scan provenance for one binary, and
+// `Confidence` carries the shared 0–100 evidence confidence. Both are
+// re-exported so consumers can name them through this crate, the way
+// the typesdb, typeinfer, and algorithm crates do.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -28,14 +28,14 @@ use serde::{Deserialize, Serialize};
 
 /// The allocation family a recognized allocation belongs to.
 ///
-/// The family says how the function obtained the resource — a raw
-/// `malloc` block, a zero-filled `calloc` block, a resized `realloc`
-/// block, or C++ `operator new` storage — and which release closes it:
-/// `free` for the C families, `operator delete` for the C++ ones. A
-/// translation prompt weighs the family beside the pairing's shape when
-/// choosing the Rust ownership pattern: a `malloc` block released
-/// before return reads as `Box<T>`, while `operator new[]` storage
-/// reads as a `Vec`-shaped allocation.
+/// The family says how the function got the resource — a raw `malloc`
+/// block, a zero-filled `calloc` block, a resized `realloc` block, or
+/// C++ `operator new` storage — and which release closes it: `free`
+/// for the C families, `operator delete` for the C++ ones. When
+/// choosing the Rust ownership pattern, a translation prompt uses the
+/// family together with the shape of the pairing: a `malloc` block
+/// released before return reads as `Box<T>`, and `operator new[]`
+/// storage reads as a `Vec`-shaped allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AllocationType {
@@ -68,13 +68,15 @@ calxgloss_types::display_serde_label!(AllocationType {
 /// One memory lifecycle observation about one function, with the
 /// evidence behind it.
 ///
-/// A hint is a hypothesis, not a fact applied to the program: it says
-/// the function holds a resource of [`allocation_type`](Self::allocation_type)
-/// and the allocation's pairing with its release reads like
+/// A hint is a hypothesis, not a fact about the program. It says the
+/// function holds a resource of
+/// [`allocation_type`](Self::allocation_type), and that the pairing of
+/// the allocation with its release reads like
 /// [`suggestion`](Self::suggestion) — the Rust ownership pattern the
-/// translation should aim at. The confidence and evidence together say
-/// how strongly the pairing was read; detectors emit these records and
-/// the survivors are persisted and rendered into translation prompts.
+/// translation should aim at. The evidence confidence and the evidence
+/// lines together show how strongly the pairing was read. Detectors
+/// emit these records; the survivors are persisted and rendered into
+/// translation prompts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryHint {
     /// The function the hint is about, e.g. `FUN_18003ab00`.
@@ -84,7 +86,7 @@ pub struct MemoryHint {
     /// The Rust ownership pattern the pairing suggests, e.g. `Box<T>`
     /// or `stack allocation`.
     pub suggestion: String,
-    /// Confidence that the hint is right, 0–100.
+    /// Evidence confidence that the hint is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the hint — the allocation and
     /// its release — kept so a reviewer (or a translation prompt) can
@@ -102,8 +104,8 @@ pub struct MemoryHint {
 /// closer releases it — a Win32 kernel object handle from a
 /// `CreateFile` spelling closed by `CloseHandle`, or a C stdio stream
 /// from `fopen` closed by `fclose`. A closer only ever closes a handle
-/// of its own family: `fclose` on a kernel object handle names no
-/// pairing, and neither does `CloseHandle` on a stream.
+/// of its own family: `fclose` never pairs with a kernel object
+/// handle, and `CloseHandle` never pairs with a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleType {
@@ -124,16 +126,16 @@ calxgloss_types::display_serde_label!(HandleType {
 /// One handle lifecycle observation about one function, with the
 /// evidence behind it.
 ///
-/// A record says the function opens a handle of
-/// [`handle_type`](Self::handle_type) — through the recognized opener
-/// spelling [`opener`](Self::opener) — and closes it again through
-/// [`closer`](Self::closer), the two tied by the variable the
-/// decompiler stored the opener's result in. The pairing reads like
-/// [`suggestion`](Self::suggestion) — the RAII guard pattern standing
-/// in for the manual close — and the confidence says how strongly the
-/// guard's shape was read. The opener and closer lines are kept as
-/// [`evidence`](Self::evidence) so a reviewer (or a translation
-/// prompt) can check the reasoning.
+/// The record says the function opens a handle of
+/// [`handle_type`](Self::handle_type) using the recognized opener
+/// spelling [`opener`](Self::opener), and closes it again using
+/// [`closer`](Self::closer). The same variable ties the two together:
+/// the decompiler stored the opener's result in it. The pairing reads
+/// like [`suggestion`](Self::suggestion) — the RAII guard pattern
+/// that stands in for the manual close. The evidence confidence says
+/// how strongly the guard's shape was read. The opener and closer
+/// lines are kept as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleLifecycle {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -144,17 +146,17 @@ pub struct HandleLifecycle {
     pub opener: String,
     /// The closer spelling that released the handle, e.g. `CloseHandle`.
     pub closer: String,
-    /// The named type the body spells for the handle variable —
-    /// present only where the declaration names a non-primitive type,
-    /// and the name the `Drop` impl belongs on. Optional with a
-    /// serde default so documents written before it stand read back
-    /// unchanged.
+    /// The named type the body spells for the handle variable. It is
+    /// present only when the declaration is for a non-primitive type,
+    /// and it is the name the `Drop` impl belongs on. It is optional,
+    /// with a serde default, so documents written before it was added
+    /// still read back unchanged.
     #[serde(default)]
     pub type_name: Option<String>,
     /// The Rust pattern the pairing suggests, e.g. `RAII guard struct
     /// with Drop impl`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the record — the open and
     /// its close — kept so a reviewer (or a translation prompt) can
@@ -170,12 +172,12 @@ pub struct HandleLifecycle {
 ///
 /// The style says how the code spells its reference counting —
 /// arithmetic on a named count field, or the COM `AddRef`/`Release`
-/// method pair — and what ties the two sides of a pairing: a bump
-/// answers a drop on the same field of the same owner for
-/// [`FieldArithmetic`](Self::FieldArithmetic), and on the same object
-/// variable for [`ComMethods`](Self::ComMethods). A bump never
-/// crosses styles: `AddRef` answers no field arithmetic, and neither
-/// does a field drop answer a method call.
+/// method pair — and what ties the two sides of a pairing. Under
+/// [`FieldArithmetic`](Self::FieldArithmetic) a bump pairs with a
+/// drop only on the same field of the same owner; under
+/// [`ComMethods`](Self::ComMethods) only on the same object variable.
+/// A bump never pairs across styles: `AddRef` never pairs with field
+/// arithmetic, and a field drop never pairs with a method call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CountStyle {
@@ -195,19 +197,19 @@ calxgloss_types::display_serde_label!(CountStyle {
 /// One reference-counting observation about one function, with the
 /// evidence behind it.
 ///
-/// A record says the function bumps a reference count — through
-/// [`increment`](Self::increment) — and drops it again through
-/// [`decrement`](Self::decrement), the two tied by what carries the
-/// count: the same field of the same owner under
-/// [`CountStyle::FieldArithmetic`](CountStyle::FieldArithmetic), the
-/// same object variable under
-/// [`CountStyle::ComMethods`](CountStyle::ComMethods). The pairing
-/// reads like [`suggestion`](Self::suggestion) — the shared-ownership
-/// pattern standing in for the manual counting, `Rc<T>` where the
-/// counted object stays inside the function and `Arc<T>` where the
-/// body hands it to a thread. The bump line and the drop line are
-/// kept as [`evidence`](Self::evidence) so a reviewer (or a
-/// translation prompt) can check the reasoning.
+/// The record says the function bumps a reference count using
+/// [`increment`](Self::increment) and drops it again using
+/// [`decrement`](Self::decrement). What carries the count ties the
+/// two together: under [`CountStyle::FieldArithmetic`](CountStyle::FieldArithmetic)
+/// they must be on the same field of the same owner, and under
+/// [`CountStyle::ComMethods`](CountStyle::ComMethods) on the same
+/// object variable. The pairing reads like
+/// [`suggestion`](Self::suggestion) — the shared-ownership pattern
+/// that stands in for the manual counting: `Rc<T>` when the counted
+/// object stays inside the function, `Arc<T>` when the body hands it
+/// to a thread. The bump line and the drop line are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReferenceCount {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -223,7 +225,7 @@ pub struct ReferenceCount {
     /// The Rust pattern the pairing suggests, e.g. `Rc<T>` or
     /// `Arc<T>`.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the record — the bump and
     /// its drop — kept so a reviewer (or a translation prompt) can
@@ -238,15 +240,16 @@ pub struct ReferenceCount {
 /// One memory lifecycle observation spanning two functions, with the
 /// evidence behind it.
 ///
-/// A record says the [`function`](Self::function) allocated a block of
-/// [`allocation_type`](Self::allocation_type), bound it to
-/// [`variable`](Self::variable), handed that variable to
-/// [`partner`](Self::partner) at a call site, and the partner's body
-/// released the parameter it arrived in: ownership crossed the call
-/// boundary, which is what [`suggestion`](Self::suggestion) names. The
-/// allocation line, the hand-off call line, and the partner's release
-/// line are kept as [`evidence`](Self::evidence) so a reviewer (or a
-/// translation prompt) can check the reasoning across both bodies.
+/// The record says the [`function`](Self::function) allocated a block
+/// of [`allocation_type`](Self::allocation_type), bound it to
+/// [`variable`](Self::variable), and handed that variable to
+/// [`partner`](Self::partner) at a call site. The partner's body then
+/// released the parameter it arrived in. So ownership crossed the
+/// call boundary, and [`suggestion`](Self::suggestion) describes the
+/// moved ownership. The allocation line, the hand-off call line, and
+/// the partner's release line are kept as [`evidence`](Self::evidence)
+/// so a reviewer (or a translation prompt) can check the reasoning
+/// across both bodies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CrossFunctionLifecycle {
     /// The function the record is about — the one that allocated.
@@ -261,7 +264,7 @@ pub struct CrossFunctionLifecycle {
     /// The Rust pattern the cross-function pairing suggests, e.g.
     /// `Box<T>` for ownership moved into the callee.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the record — the allocation,
     /// the hand-off call, and the partner's release.
@@ -292,14 +295,14 @@ calxgloss_types::display_serde_label!(TransferDirection {
 /// One ownership-transfer observation about one function, with the
 /// evidence behind it.
 ///
-/// A record says the [`function`](Self::function) allocated a block of
-/// [`allocation_type`](Self::allocation_type), bound it to
+/// The record says the [`function`](Self::function) allocated a block
+/// of [`allocation_type`](Self::allocation_type), bound it to
 /// [`variable`](Self::variable), and never released it in its own
-/// body: the block crossed the function boundary in the direction of
-/// [`direction`](Self::direction) — handed to
+/// body. The block crossed the function boundary in the direction of
+/// [`direction`](Self::direction): handed to
 /// [`partner`](Self::partner) at a call site, or returned to whoever
-/// calls this function — which is what [`suggestion`](Self::suggestion)
-/// names as moved ownership. The allocation line and the escape line
+/// calls this function. [`suggestion`](Self::suggestion) describes
+/// this as moved ownership. The allocation line and the escape line
 /// are kept as [`evidence`](Self::evidence) so a reviewer (or a
 /// translation prompt) can see the move.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,7 +321,7 @@ pub struct OwnershipTransfer {
     /// The Rust pattern the transfer suggests, e.g. `Box<T>` for
     /// ownership moved out of the allocating function.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled lines that support the record — the allocation
     /// and the escape.
@@ -352,13 +355,13 @@ pub enum LeakResource {
 /// One resource-leak observation about one function, with the
 /// evidence behind it.
 ///
-/// A record says the [`function`](Self::function) acquired a
-/// resource — a heap block or a handle — bound it to
-/// [`variable`](Self::variable), and the body neither released it nor
-/// let it escape: no release names the variable, no call site hands
-/// it over as a plain argument, no return carries it out whole. The
-/// leak is an absence, and the acquisition line is the only positive
-/// fact, kept as [`evidence`](Self::evidence).
+/// The record says the [`function`](Self::function) acquired a
+/// resource — a heap block or a handle — and bound it to
+/// [`variable`](Self::variable). The body never released it and never
+/// let it escape: no release uses the variable, no call site hands it
+/// over as a plain argument, and no return hands the whole block out.
+/// The leak is an absence, so the acquisition line is the only
+/// positive fact; it is kept as [`evidence`](Self::evidence).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLeak {
     /// The function the record is about — the one that acquired.
@@ -371,7 +374,7 @@ pub struct ResourceLeak {
     /// The Rust pattern the leak suggests, e.g. `Box<T>` for a block
     /// the scope should have owned, or a guard struct for a handle.
     pub suggestion: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled line that acquired the resource.
     pub evidence: String,
@@ -383,14 +386,15 @@ pub struct ResourceLeak {
 
 /// One memory lifecycle finding, whichever detector made it.
 ///
-/// The detectors emit the concrete records; the union is what the
-/// persisted result carries, so one list can hold every finding for a
-/// binary and a consumer reads the shared shape — function, suggestion,
-/// confidence, evidence — without naming which detector produced it.
-/// Unlike typeinfer's competing families, the detectors read
-/// disjoint body shapes and can't make competing claims for one target,
-/// so nothing is resolved between variants. The serde `kind` tag names
-/// the record shape in the persisted JSON.
+/// The detectors emit the concrete records, and the persisted result
+/// stores the union. One list can therefore hold every finding for a
+/// binary, and a consumer sees the shared shape — function,
+/// suggestion, evidence confidence, evidence — without saying which
+/// detector produced it. Unlike typeinfer's competing families, these
+/// detectors read disjoint body shapes and cannot make competing
+/// claims for one target, so nothing is resolved between variants. In
+/// the persisted JSON, the serde `kind` tag says which record shape
+/// is present.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemoryFinding {
@@ -433,7 +437,7 @@ impl MemoryFinding {
         }
     }
 
-    /// Confidence that the finding is right.
+    /// Evidence confidence that the finding is right.
     pub fn confidence(&self) -> Confidence {
         match self {
             MemoryFinding::Allocation(record) => record.confidence,
@@ -458,8 +462,8 @@ impl MemoryFinding {
     }
 
     /// The serde `kind` tag — `allocation`, `handle`, `ref_count`,
-    /// `cross_function`, `ownership`, or `leak` — naming the detector
-    /// behind the finding.
+    /// `cross_function`, `ownership`, or `leak` — which says which
+    /// detector produced the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             MemoryFinding::Allocation(_) => "allocation",
@@ -499,11 +503,11 @@ impl MemoryFinding {
 // Prompt conversions
 // ============================================================
 
-/// Render a finding as prompt data: the function it is about, the kind
-/// of lifecycle the detector read, the Rust pattern the pairing
-/// suggests, and the confidence and evidence behind the claim — so the
-/// escalate prompt shows the hypothesis and how strongly it was made,
-/// whichever detector produced it.
+/// Convert a finding into prompt data: the function it is about, the
+/// kind of lifecycle the detector read, the Rust pattern the pairing
+/// suggests, and the evidence confidence and evidence lines behind the
+/// claim. The escalate prompt can then show the hypothesis and how
+/// strongly it was made, whichever detector produced it.
 impl From<&MemoryFinding> for calxgloss_prompts::MemoryInfo {
     fn from(finding: &MemoryFinding) -> Self {
         Self {
@@ -523,13 +527,13 @@ impl From<&MemoryFinding> for calxgloss_prompts::MemoryInfo {
 /// The memory lifecycle result for one binary — the document persisted
 /// to `re/analysis/memory/{dll}.json`.
 ///
-/// The findings are the three detectors' outputs in scan order: function
-/// by function, and within one function the allocation pairs, then the
-/// handle lifetimes, then the reference counts — followed by the
-/// cross-function pass's findings, also in listing order. The detectors
-/// read disjoint body shapes, so a function can carry findings of every
-/// kind at once and none competes with another; the stable order means
-/// two scans of the same program diff cleanly.
+/// The findings are the three detectors' outputs in scan order:
+/// function by function, and within one function the allocation pairs
+/// first, then the handle lifetimes, then the reference counts. The
+/// cross-function pass's findings follow, also in listing order. The
+/// detectors read disjoint body shapes, so one function can have
+/// findings of every kind at once and none of them compete. Because
+/// the order is stable, two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryResult {
     /// Provenance of the scan that produced these findings.
@@ -595,9 +599,9 @@ mod tests {
     fn a_memory_hint_serde_round_trips() {
         let record = hint();
         let json = serde_json::to_string(&record).unwrap();
-        // The allocation family serializes snake_case and the
-        // confidence as a plain number, matching the workspace's
-        // serde convention.
+        // The allocation family serializes in snake_case and the
+        // evidence confidence serializes as a plain number, matching
+        // the workspace's serde convention.
         assert!(json.contains("\"allocation_type\":\"malloc\""));
         assert!(json.contains("\"confidence\":70"));
         let back: MemoryHint = serde_json::from_str(&json).unwrap();
@@ -654,9 +658,9 @@ mod tests {
     fn a_handle_lifecycle_serde_round_trips() {
         let record = handle_lifecycle();
         let json = serde_json::to_string(&record).unwrap();
-        // The handle family serializes snake_case and the confidence
-        // as a plain number, matching the workspace's serde
-        // convention.
+        // The handle family serializes in snake_case and the evidence
+        // confidence serializes as a plain number, matching the
+        // workspace's serde convention.
         assert!(json.contains("\"handle_type\":\"kernel_object\""));
         assert!(json.contains("\"confidence\":70"));
         let back: HandleLifecycle = serde_json::from_str(&json).unwrap();
@@ -704,8 +708,8 @@ mod tests {
 
     #[test]
     fn a_handle_record_written_before_the_named_type_reads_back() {
-        // The type_name field arrived with p4.5-5; documents saved by earlier
-        // builds simply do not have it.
+        // The type_name field was added in p4.5-5; documents saved by
+        // earlier builds simply do not have it.
         let json = r#"{
             "function": "FUN_180001470",
             "handle_type": "kernel_object",
@@ -736,9 +740,9 @@ mod tests {
     fn a_reference_count_serde_round_trips() {
         let record = reference_count();
         let json = serde_json::to_string(&record).unwrap();
-        // The counting style serializes snake_case and the confidence
-        // as a plain number, matching the workspace's serde
-        // convention.
+        // The counting style serializes in snake_case and the
+        // evidence confidence serializes as a plain number, matching
+        // the workspace's serde convention.
         assert!(json.contains("\"style\":\"com_methods\""));
         assert!(json.contains("\"confidence\":70"));
         let back: ReferenceCount = serde_json::from_str(&json).unwrap();
@@ -788,8 +792,9 @@ mod tests {
     fn an_allocation_finding_serde_round_trips_under_its_kind_tag() {
         let finding = MemoryFinding::Allocation(hint());
         let json = serde_json::to_string(&finding).expect("allocation finding should serialize");
-        // The union is internally tagged: the kind names the record
-        // shape and the payload's own fields sit beside it.
+        // The union is internally tagged: the kind tag says which
+        // record shape it is, and the payload's own fields sit beside
+        // it.
         assert!(json.contains("\"kind\":\"allocation\""));
         assert!(json.contains("\"allocation_type\":\"malloc\""));
         let back: MemoryFinding =
@@ -832,8 +837,9 @@ mod tests {
         });
         let json =
             serde_json::to_string(&finding).expect("cross-function finding should serialize");
-        // The union is internally tagged: the kind names the record
-        // shape and the payload's own fields sit beside it.
+        // The union is internally tagged: the kind tag says which
+        // record shape it is, and the payload's own fields sit beside
+        // it.
         assert!(json.contains("\"kind\":\"cross_function\""));
         assert!(json.contains("\"partner\":\"FUN_18003e750\""));
         assert!(json.contains("\"variable\":\"pvVar1\""));
@@ -1027,7 +1033,7 @@ mod tests {
 
     #[test]
     fn a_result_without_findings_omits_them_and_reads_back_empty() {
-        // Documents persisted before a finding landed still load, and an
+        // A document saved without a findings list still loads, and an
         // empty scan stays small on disk.
         let result = MemoryResult::new(ScanMetadata::new("eqmain.dll"));
         let json = serde_json::to_string(&result).expect("empty memory result should serialize");
@@ -1061,9 +1067,9 @@ mod tests {
 
     #[test]
     fn a_finding_renders_into_prompt_data_whichever_kind_it_is() {
-        // The prompt conversion reaches through the union, so every kind
-        // carries its label, suggestion, confidence, and evidence whole
-        // into `MemoryInfo`.
+        // The prompt conversion reads through the union, so every kind
+        // passes its label, suggestion, evidence confidence, and
+        // evidence lines fully into `MemoryInfo`.
         let allocation = MemoryFinding::Allocation(hint());
         let info = calxgloss_prompts::MemoryInfo::from(&allocation);
         assert_eq!(info.function, "FUN_18003ab00");

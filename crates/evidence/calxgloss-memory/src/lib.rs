@@ -1,10 +1,11 @@
 //! Memory lifecycle and RAII detection for calxgloss.
 //!
-//! Analyzes allocation/deallocation pairs, ownership transfer patterns,
-//! and resource lifetimes within each function and across the call
-//! graph. Results are injected as structured `MemoryHint` sections that
-//! suggest the appropriate Rust ownership pattern — `Box`, `Rc`, `Arc`,
-//! `Cow`, `ManuallyDrop` — to the translation prompts.
+//! The memory-lifecycle evidence engine finds allocation and release
+//! pairs, ownership transfers, and resource lifetimes inside each
+//! function and across the call graph. Its findings go into the
+//! translation prompts as structured `MemoryHint` sections that
+//! suggest the Rust ownership pattern to use — `Box`, `Rc`, `Arc`,
+//! `Cow`, `ManuallyDrop`.
 //!
 //! # Architecture
 //!
@@ -26,17 +27,17 @@
 //! - [`refcount`] - Reference counting detection: detects
 //!   `ref_count++`/`ref_count--` and `AddRef`/`Release` patterns and
 //!   suggests `Rc<T>`/`Arc<T>`.
-//! - [`cross_function`] - Cross-function lifecycle tracking: an
-//!   allocation left open by one function and released by a callee it
-//!   was handed to, read over the bodies one scan already holds — no
-//!   extra engine reads.
+//! - [`cross_function`] - Cross-function lifecycle tracking: one
+//!   function leaves an allocation open and a callee it was handed to
+//!   releases it. The pass reads the kept bodies the scan already
+//!   holds, so it makes no extra reads from the analysis engine.
 //! - [`engine`] - Scan orchestration: `MemoryEngine` runs the three
-//!   detectors over one loaded program through a `ScanSource`
-//!   (function listing + decompile-by-name), one sequential pass that
-//!   decompiles each function exactly once and keeps the findings in
-//!   scan order.
+//!   detectors over one loaded program through a `ScanSource` (a
+//!   function listing plus decompile-by-name). It is one sequential
+//!   pass: it decompiles each function exactly once and keeps the
+//!   findings in scan order.
 //! - [`persist`] - JSON persistence: `MemoryPersistor` saves and loads
-//!   the per-binary detection results under `re/analysis/memory/`.
+//!   the per-binary document under `re/analysis/memory/`.
 //! - [`error`] - [`MemoryError`] and the crate-wide [`Result`] alias.
 
 pub mod allocator;
