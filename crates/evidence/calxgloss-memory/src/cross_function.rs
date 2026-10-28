@@ -1,25 +1,29 @@
 //! Cross-function lifecycle tracking.
 //!
-//! The per-function detectors stop at a body's closing brace: an
-//! allocation the function never releases is invisible to the pairing,
-//! and the callee that does release it pairs nothing because no
-//! allocation sits in its own body. This module closes that gap over
-//! the bodies one scan already holds: it derives the call map from the
-//! fetched bodies — no extra engine reads — and reports the
-//! lifecycles that cross a call boundary.
+//! The per-function detectors stop at one body's closing brace. If a
+//! function allocates memory and never releases it, the pairing sees
+//! no pair. And the callee that does release the block pairs nothing
+//! either: no allocation sits in that callee's own body. This module
+//! closes that gap. It reads the kept bodies one scan already holds,
+//! derives the call map from them with no new reads from the analysis
+//! engine, and reports the lifecycles that cross a call boundary.
 //!
-//! [`CrossFunctionAnalyzer::analyze`] runs the reading: an allocation
-//! left open by [`open_allocations`](AllocatorTracker::open_allocations)
-//! either pairs — handed as a plain argument to a function this scan
-//! decompiled whose body releases the parameter it arrived in, one
+//! [`CrossFunctionAnalyzer::analyze`] makes the readings. Every
+//! allocation that
+//! [`open_allocations`](AllocatorTracker::open_allocations) leaves
+//! open ends in one of three results. It pairs: the block is handed
+//! as a plain argument to a function this scan decompiled, and that
+//! callee's body releases the parameter it arrived in. That makes one
 //! [`MemoryFinding::CrossFunction`] naming the partner and the
-//! variable — or escapes: handed to any callee or returned whole, one
-//! [`MemoryFinding::Ownership`] naming the direction of the move — or
-//! goes nowhere at all, one [`MemoryFinding::Leak`]: the block never
-//! released and never handed on. The same escape gate reads the
-//! handles [`open_handles`](HandleDetector::open_handles) leaves
-//! standing: an unclosed handle that escapes is passed over, one that
-//! escapes nowhere leaks by its opener.
+//! variable. It escapes: the block is handed to any callee or returned
+//! whole. That makes one [`MemoryFinding::Ownership`] naming the
+//! direction of the move. Or it goes nowhere at all: never released
+//! and never handed on. That makes one [`MemoryFinding::Leak`].
+//!
+//! The same escape gate reads the handles that
+//! [`open_handles`](HandleDetector::open_handles) leaves standing. An
+//! unclosed handle that escapes is passed over. An unclosed handle
+//! that escapes nowhere leaks by its opener.
 
 use std::collections::HashMap;
 
@@ -36,70 +40,72 @@ use calxgloss_types::{
     skip_string, strip_casts,
 };
 
-/// The scan: demangled `operator.new` spellings stay whole (including
-/// the `[]` of `operator.new[]`), member accesses are skipped, and C
-/// keywords are not calls — the same configuration the pairing walk
-/// uses, so both read the same call sites.
+/// The call-scan options used on every body: demangled `operator.new`
+/// spellings stay whole (including the `[]` of `operator.new[]`),
+/// member accesses are skipped, and C keywords are not calls. This is
+/// the same configuration the pairing walk uses, so both read the same
+/// call sites.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::DemangledDot,
     reject_preceding: b".>",
     skip_keywords: &NON_CALL_KEYWORDS,
 };
 
-/// Confidence of a lifecycle read across two bodies: both sides are
-/// explicit calls to recognized names and the hand-off site is
-/// concrete — this call, this argument — but the tie from the caller's
-/// variable to the callee's parameter is the decompiler's positional
-/// naming, not resolved data flow, so it sits level with an in-body
-/// pair.
+/// The evidence confidence of a lifecycle read across two bodies. Both
+/// sides are explicit calls to recognized names, and the hand-off site
+/// is concrete — this call, this argument. But the tie from the
+/// caller's variable to the callee's parameter is the decompiler's
+/// positional naming, not resolved data flow. So this read sits level
+/// with an in-body pair.
 const CROSS_CONFIDENCE: u8 = 70;
 
 /// The ownership pattern a cross-function pair reads as: the block
-/// outlives its allocating function by moving into the callee, which
-/// is exactly what a boxed value owns when it is handed over.
+/// outlives the function that allocated it by moving into the callee.
+/// That is exactly what a boxed value owns when it is handed over.
 const CROSS_SUGGESTION: &str = "Box<T>";
 
-/// Confidence of a transfer read from one body alone: the allocation
-/// and the escape are both explicit body evidence, but what the far
-/// side does with the value is unseen — the callee may store it, free
-/// it, or just borrow it — so a transfer sits below a pair whose
-/// release was actually read, at the same rung as the short-lived
-/// stack reading.
+/// The evidence confidence of a transfer read from one body alone. The
+/// allocation and the escape are both explicit body evidence, but what
+/// the far side does with the value is unseen: the callee may store
+/// it, free it, or just borrow it. So a transfer sits below a pair
+/// whose release was actually read, at the same level as the
+/// short-lived stack reading.
 const TRANSFER_CONFIDENCE: u8 = 65;
 
-/// The ownership pattern a transfer reads as: the block outlives its
-/// allocating function by moving out — into a callee or to the caller
-/// — which is what a boxed value owns when it is moved.
+/// The ownership pattern a transfer reads as: the block outlives the
+/// function that allocated it by moving out — into a callee or to the
+/// caller. That is what a boxed value owns when it is moved.
 const TRANSFER_SUGGESTION: &str = "Box<T>";
 
-/// Confidence of a leak read from one body: the acquisition is
-/// explicit and the absence of any release or escape is checked
-/// against every call site the body carries, but an absence is only
-/// what this body shows — the resource may be a deliberate
-/// process-lifetime allocation, or released through a path the scan
-/// cannot read — so a leak sits one rung below the transfer whose
-/// move was actually read.
+/// The evidence confidence of a leak read from one body. The
+/// acquisition is explicit, and the absence of any release or escape
+/// is checked against every call site the body carries. But an absence
+/// is only what this body shows: the resource may be a deliberate
+/// process-lifetime allocation, or it may be released through a path
+/// the memory scan cannot read. So a leak sits one band below the
+/// transfer whose move was actually read.
 const LEAK_CONFIDENCE: u8 = 60;
 
 /// The Rust pattern a leaked block suggests: a value boxed into the
-/// scope that should have owned it, so the block is freed on exit and
-/// the leak disappears with the owner.
+/// scope that should have owned it. The block is then freed when that
+/// scope exits, and the leak disappears with the owner.
 const LEAK_SUGGESTION: &str = "Box<T>";
 
 /// The Rust pattern a kept pointer suggests: the callee stored the
-/// block somewhere the call survives — a global, a struct field — so
-/// more than one place holds it at once, which is shared ownership,
-/// not a move. `Arc<T>` stays the reference-count detector's
-/// spelling; thread-awareness is out of scope.
+/// block somewhere the call survives — a global, a struct field. More
+/// than one place holds it at once, so this is shared ownership, not a
+/// move. `Arc<T>` stays the reference-count detector's spelling;
+/// thread-awareness is out of scope.
 const RC_SUGGESTION: &str = "Rc<T>";
 
-/// Cross-function lifecycle readings over the bodies one scan holds.
+/// Cross-function lifecycle readings over the kept bodies of one scan.
 ///
-/// The analyzer is stateless: every reading comes from the bodies it
-/// is handed and the tracker's name sets it is given, so one analyzer
-/// serves an entire scan. It fetches nothing itself — the engine hands
-/// it the same [`DecompiledFunction`] values the per-function pass
-/// already decompiled, keeping the scan at one decompile per function.
+/// The analyzer holds no state. Every reading comes from the bodies it
+/// is handed and the name sets of the tracker it is given, so one
+/// analyzer serves an entire scan. It fetches nothing itself: it gets
+/// the same [`DecompiledFunction`] values the per-function pass
+/// already decompiled, so the scan still decompiles each function
+/// exactly once.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CrossFunctionAnalyzer;
 
@@ -111,34 +117,43 @@ impl CrossFunctionAnalyzer {
     }
 
     /// The cross-function findings the program carries, in listing
-    /// order and, within one function, in allocation order then open-
-    /// handle order — one claim per open allocation.
+    /// order. Within one function, open allocations come first in
+    /// allocation order, then open handles in open order. One claim
+    /// per open allocation.
     ///
     /// For every allocation the body leaves open, the reading looks
     /// for a direct call site where the variable appears as a plain
     /// argument (seen through any cast) to a callee this scan
     /// decompiled, and checks that callee's body for a release of the
-    /// parameter that position names: a releasing callee makes a
-    /// [`MemoryFinding::CrossFunction`] pair. An open allocation that
-    /// reaches no releasing callee but does escape — handed as a plain
-    /// argument at any call site, or returned whole to the caller —
-    /// makes a [`MemoryFinding::Ownership`] transfer naming the
-    /// direction. An open allocation that neither pairs nor escapes
-    /// is a [`MemoryFinding::Leak`]: the block was taken and goes
-    /// nowhere. The same escape gate reads the handles
-    /// [`HandleDetector::open_handles`] leaves standing — an unclosed
-    /// handle that escapes is someone else's problem and says
-    /// nothing, one that escapes nowhere leaks by its opener. A callee
-    /// outside the scanned set (a library routine, a thunk that never
-    /// decompiled) releases nothing this scan can see, so it forms no
-    /// pair — but the hand-off itself is still an escape, and the
-    /// transfer reads it. Where one open variable both pairs and
-    /// escapes, the pair wins: one moved block moves once. Where the
-    /// callee reached by the pair or the transfer also *keeps* the
-    /// block — stores the parameter into a global or a struct field
-    /// — the suggestion upgrades from `Box<T>` to `Rc<T>` and the
-    /// store line joins the evidence: more than one place holds the
-    /// block, so the pattern is shared ownership, not a move.
+    /// parameter that position names. A callee that releases it makes
+    /// a [`MemoryFinding::CrossFunction`] pair.
+    ///
+    /// An open allocation that reaches no releasing callee but does
+    /// escape makes a [`MemoryFinding::Ownership`] transfer naming the
+    /// direction. It escapes by being handed as a plain argument at
+    /// any call site, or returned whole to the caller.
+    ///
+    /// An open allocation that neither pairs nor escapes is a
+    /// [`MemoryFinding::Leak`]: the block was taken and goes nowhere.
+    ///
+    /// The same escape gate reads the handles that
+    /// [`HandleDetector::open_handles`] leaves standing. An unclosed
+    /// handle that escapes belongs to whoever holds it now, so this
+    /// reading says nothing about it. An unclosed handle that escapes
+    /// nowhere leaks by its opener.
+    ///
+    /// A callee outside the scanned set (a library routine, a thunk
+    /// that never decompiled) releases nothing this scan can see, so
+    /// it forms no pair. The hand-off itself is still an escape, and
+    /// the transfer reads it.
+    ///
+    /// Where one open variable both pairs and escapes, the pair wins:
+    /// one moved block moves once. Where the callee reached by the
+    /// pair or the transfer also *keeps* the block — stores the
+    /// parameter into a global or a struct field — the suggestion
+    /// upgrades from `Box<T>` to `Rc<T>` and the store line joins the
+    /// evidence. More than one place holds the block, so the pattern
+    /// is shared ownership, not a move.
     pub fn analyze(
         &self,
         functions: &[DecompiledFunction],
@@ -191,16 +206,16 @@ impl CrossFunctionAnalyzer {
                     });
                 }
                 if let Some((callee, release, position)) = pair {
-                    // A callee that keeps the block — stores the
-                    // parameter into a global or a field — shares it
-                    // past the release, so the pattern is shared
-                    // ownership, not a move.
+                    // A callee that stores the parameter into a
+                    // global or a field keeps the block past the
+                    // release. More than one place holds it, so the
+                    // pattern is shared ownership, not a move.
                     let kept = keep_site(callee, position);
                     let mut evidence = format!(
                         "{} {} {}",
                         allocation.line,
-                        // The releasing call is the first hand-off
-                        // to the partner that named the variable.
+                        // The releasing call is the first hand-off to
+                        // this partner that names the variable.
                         line_at(
                             &func.body,
                             first_handoff(&func.body, &allocation.variable, callee)
@@ -226,9 +241,10 @@ impl CrossFunctionAnalyzer {
                         evidence,
                     }));
                 } else if let Some(escape) = escape {
-                    // The same keep reading upgrades a transfer to a
-                    // scanned callee: the block was handed over *and*
-                    // stored, so more than one place holds it.
+                    // The transfer does the same keep reading when it
+                    // reaches a scanned callee: the block was handed
+                    // over *and* stored, so more than one place holds
+                    // it.
                     let kept = escape
                         .position
                         .zip(escape.partner)
@@ -273,9 +289,9 @@ impl CrossFunctionAnalyzer {
             }
             for handle in handles.open_handles(func) {
                 // The same escape gate: a handle handed to any callee
-                // or returned whole left the function — whoever holds
-                // it now answers for closing it. Only a handle that
-                // goes nowhere leaks.
+                // or returned whole has left the function. Whoever
+                // holds it now answers for closing it. Only a handle
+                // that goes nowhere leaks.
                 if escapes(&func.body, &handle.variable) {
                     continue;
                 }
@@ -296,8 +312,8 @@ impl CrossFunctionAnalyzer {
     }
 }
 
-/// The escape an open allocation took: the direction it crossed the
-/// boundary, the callee it reached and the argument position it
+/// How an open allocation escaped: the direction it took across the
+/// call boundary, the callee it reached and the argument position it
 /// arrived at (a return names neither), and the line that shows it.
 struct Escape<'a> {
     direction: TransferDirection,
@@ -307,18 +323,18 @@ struct Escape<'a> {
 }
 
 /// The line in `callee`'s body where the parameter declared at
-/// `position` is kept — stored somewhere the call survives — or
-/// `None` when the body keeps it nowhere.
+/// `position` is kept — stored somewhere the call survives. `None`
+/// when the body keeps it nowhere.
 ///
-/// The keep is an assignment whose right side, seen through any
-/// cast, is the parameter whole, and whose left side names a place
-/// outside the callee's own frame: a struct field (`obj.field =
-/// param_1;`, `this->ptr = param_1;`) or a plain identifier the
-/// decompiler did not name as one of its own locals — Ghidra names
-/// locals `param_N`, `local_N`, and the `*Var<N>` families, so any
-/// other plain name is a program symbol the block outlives the call
-/// in. A store through a bare dereference names no place the scan
-/// can tell from a stack slot, so it keeps nothing.
+/// The keep is an assignment. Its right side, seen through any cast,
+/// is the parameter whole. Its left side names a place outside the
+/// callee's own frame: a struct field (`obj.field = param_1;`,
+/// `this->ptr = param_1;`) or a plain identifier the decompiler did
+/// not name as one of its own locals. Ghidra names its locals
+/// `param_N`, `local_N`, and the `*Var<N>` families, so any other
+/// plain name is a program symbol, and the block outlives the call in
+/// it. A store through a bare dereference names no place the scan can
+/// tell from a stack slot, so it keeps nothing.
 fn keep_site(callee: &DecompiledFunction, position: usize) -> Option<String> {
     let parameter = callee.parameter_names().into_iter().nth(position)?;
     let body = &callee.body;
@@ -392,9 +408,9 @@ fn keeps_place(left: &str) -> bool {
 
 /// Whether `name` is one of the decompiler's own local spellings: a
 /// parameter, a stack slot, or one of the typed-variable families
-/// (`iVar1`, `uVar2`, `pcVar3`, …) — a `Var` followed by digits and
-/// nothing else. Anything else a body assigns to is a program
-/// symbol, which is what makes it a global.
+/// (`iVar1`, `uVar2`, `pcVar3`, …), that is, a `Var` followed by
+/// digits and nothing else. Any other name a body assigns to is a
+/// program symbol, which is what makes it a global.
 fn is_decompiler_local(name: &str) -> bool {
     name.starts_with("param_")
         || name.starts_with("local_")
@@ -404,10 +420,10 @@ fn is_decompiler_local(name: &str) -> bool {
         })
 }
 
-/// Whether `variable` leaves this body: a plain argument (seen
-/// through any cast) at any call site, or a whole return. The same
-/// rule that turns an open allocation into a transfer gates the
-/// handle leaks — a resource that left is someone else's to close,
+/// Whether `variable` leaves this body: as a plain argument (seen
+/// through any cast) at any call site, or whole in a return. This same
+/// rule gates the handle leaks, just as it turns an open allocation
+/// into a transfer: a resource that left is someone else's to close,
 /// not a leak.
 fn escapes(body: &str, variable: &str) -> bool {
     call_sites(body, &CALL_SCAN).into_iter().any(|call| {
@@ -418,11 +434,11 @@ fn escapes(body: &str, variable: &str) -> bool {
     }) || return_site(body, variable).is_some()
 }
 
-/// The offset of the first call site handing `variable` (as a plain
-/// argument, seen through any cast) to `callee`, for the pair's
-/// evidence line. Falls back to the allocation line's own position —
-/// the pair cannot form without such a site, so this only guards the
-/// type.
+/// The offset of the first call site that hands `variable` (as a plain
+/// argument, seen through any cast) to `callee`. The pair's evidence
+/// line uses it. If no such site is found, this falls back to the
+/// allocation line's own position. The pair cannot form without such a
+/// site, so this fallback only guards the type.
 fn first_handoff(body: &str, variable: &str, callee: &DecompiledFunction) -> usize {
     call_sites(body, &CALL_SCAN)
         .into_iter()
@@ -438,9 +454,9 @@ fn first_handoff(body: &str, variable: &str, callee: &DecompiledFunction) -> usi
 }
 
 /// The offset of the `return` statement that hands `variable` whole to
-/// the caller — seen through any cast — or `None` when the body never
+/// the caller, seen through any cast. `None` when the body never
 /// returns it. `return pvVar1;` and `return (void *)pvVar1;` return
-/// the block; `return;`, `return pvVar1 + 1;`, and a return of
+/// the block. `return;`, `return pvVar1 + 1;`, and a return of
 /// anything else move nothing.
 fn return_site(body: &str, variable: &str) -> Option<usize> {
     let bytes = body.as_bytes();
@@ -471,14 +487,14 @@ fn return_site(body: &str, variable: &str) -> Option<usize> {
 }
 
 /// The line in `callee`'s body where a configured deallocator releases
-/// the parameter declared at `position`, or `None` when the body
+/// the parameter declared at `position`. `None` when the body
 /// releases that parameter nowhere.
 ///
-/// The tie is positional: the argument sitting at `position` in the
+/// The tie is positional. The argument sitting at `position` in the
 /// call arrives in the parameter the callee's signature declares at
-/// `position`, and the release must name that parameter as its first
-/// argument, seen through any cast — the same reading the in-body
-/// pairing applies to a local variable.
+/// `position`. The release must name that parameter as its first
+/// argument, seen through any cast. This is the same reading the
+/// in-body pairing applies to a local variable.
 fn release_of_parameter(
     callee: &DecompiledFunction,
     position: usize,
@@ -558,9 +574,9 @@ mod tests {
             .collect()
     }
 
-    /// The leak findings in `findings`, in report order: the function,
-    /// the variable, and the resource the record names — the
-    /// allocation family or the opener.
+    /// The leak findings in `findings`, in report order. Each entry
+    /// names the function, the variable, and the resource the record
+    /// names — the allocation family or the opener.
     fn leaks(records: &[MemoryFinding]) -> Vec<(&str, &str, String)> {
         records
             .iter()
@@ -623,8 +639,9 @@ mod tests {
 
     #[test]
     fn an_allocation_released_in_its_own_body_claims_nothing() {
-        // The pairing already owns this lifecycle; the cross-function
-        // pass starts from what the pairing leaves open.
+        // The in-body pairing already reports this lifecycle. The
+        // cross-function pass starts from what that pairing leaves
+        // open.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -642,8 +659,8 @@ mod tests {
 
     #[test]
     fn a_callee_outside_the_scanned_set_hands_the_pointer_over() {
-        // The release cannot be *named* — the callee was not scanned —
-        // but the hand-off itself is still what a Rust author should
+        // The release cannot be *named*: the callee was not scanned.
+        // But the hand-off itself is still what a Rust author should
         // see, so the escape reads as a transfer.
         let program = vec![function(
             "FUN_18003ab00",
@@ -692,9 +709,9 @@ mod tests {
 
     #[test]
     fn a_release_of_another_parameter_claims_nothing_but_the_hand_off() {
-        // The hand-off is at position 0; the callee releases the
-        // parameter at position 1 — a different value. The pair fails,
-        // the escape stands.
+        // The hand-off is at position 0, but the callee releases the
+        // parameter at position 1 — a different value. No pair forms,
+        // and the escape remains.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -739,8 +756,8 @@ mod tests {
 
     #[test]
     fn a_call_spelled_inside_a_string_literal_invents_nothing() {
-        // The spelled call inside the string forms no hand-off and no
-        // pair — but the allocation really does stand open and reaches
+        // The call spelled inside the string forms no hand-off and no
+        // pair. But the allocation really does stand open and reaches
         // nowhere, so the leak reading still sees it.
         let program = vec![
             function(
@@ -766,10 +783,10 @@ mod tests {
     #[test]
     fn a_member_call_pairs_with_nothing_but_hands_the_pointer_over() {
         // `obj.FUN_18003e750` is not a plain call to the scanned
-        // function — the implicit receiver shifts the positional tie,
-        // so no pair is claimed against that body — but the pointer
-        // still leaves at this site, so the escape reads it with the
-        // dotted callee as the named partner.
+        // function. The implicit receiver changes which argument lines
+        // up with which parameter, so no pair is claimed against that
+        // body. The pointer still leaves at this site, so the escape
+        // reads it, with the dotted callee as the named partner.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -848,7 +865,7 @@ mod tests {
     #[test]
     fn a_void_callee_releases_nothing_but_hands_the_pointer_over() {
         // A `(void)` signature declares no parameter for the argument
-        // to arrive in — the pair fails, the escape stands.
+        // to arrive in. No pair forms, and the escape remains.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -903,8 +920,8 @@ mod tests {
     #[test]
     fn a_return_of_something_else_transfers_nothing() {
         // `return pvVar1 + 1;` hands back an interior pointer, not the
-        // block; a bare `return;` hands back nothing at all. Neither
-        // escapes, so both blocks stand open and leak.
+        // block. A bare `return;` hands back nothing at all. Neither
+        // one escapes, so both blocks stand open and leak.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -931,8 +948,8 @@ mod tests {
     #[test]
     fn a_pair_wins_over_an_escape_of_the_same_allocation() {
         // The variable is both handed to a releasing callee and
-        // returned — one moved block moves once, and the pair, whose
-        // release was actually read, is the stronger claim.
+        // returned. One moved block moves once, and the pair is the
+        // stronger claim: its release was actually read.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -1018,8 +1035,8 @@ mod tests {
 
     #[test]
     fn an_escaped_allocation_is_a_transfer_not_a_leak() {
-        // The escape rule is the false-positive gate: the same open
-        // allocation reads as a transfer when it leaves, and the leak
+        // The escape rule is the false-positive gate. When an open
+        // allocation leaves, it reads as a transfer, and the leak
         // reading stays silent.
         let program = vec![
             function(
@@ -1040,9 +1057,9 @@ mod tests {
 
     #[test]
     fn an_allocation_released_in_its_own_body_leaks_nothing() {
-        // The pairing owns the released lifecycle; the leak reading
-        // starts from what the pairing leaves open, never from what
-        // it closed.
+        // The in-body pairing already reports the released lifecycle.
+        // The leak reading starts from what that pairing leaves open,
+        // never from what it closed.
         let program = vec![function(
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
@@ -1155,8 +1172,8 @@ mod tests {
     #[test]
     fn a_callee_that_keeps_the_parameter_upgrades_the_pair_to_rc() {
         // The callee frees the block *and* stores the parameter into
-        // a global: the stored copy outlives the release, so more
-        // than one place holds the block — shared ownership.
+        // a global. The stored copy outlives the release, so more than
+        // one place holds the block: shared ownership.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -1212,8 +1229,8 @@ mod tests {
 
     #[test]
     fn a_store_into_the_callee_s_own_frame_keeps_nothing() {
-        // A stack slot or a typed local is gone when the call
-        // returns — the block is not kept anywhere.
+        // A stack slot or a typed local is gone when the call returns,
+        // so the block is not kept anywhere.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -1232,8 +1249,9 @@ mod tests {
     #[test]
     fn a_keep_upgrades_a_transfer_to_a_scanned_callee() {
         // No release, but the callee stores the parameter into a
-        // global: the block was handed over *and* kept, so the
-        // transfer reads as shared ownership at its own confidence.
+        // global. The block was handed over *and* kept, so the
+        // transfer reads as shared ownership at its own evidence
+        // confidence.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -1255,10 +1273,10 @@ mod tests {
 
     #[test]
     fn a_keep_of_a_handed_over_or_returned_pointer_upgrades_nothing_else() {
-        // A return has no callee body to read, and a hand-off to a
-        // callee outside the scanned set has no body this scan holds
-        // — neither can be shown to keep, so both keep the plain
-        // transfer reading.
+        // A return has no callee body to read. A hand-off to a callee
+        // outside the scanned set has no body this scan holds. Neither
+        // can be shown to keep, so both keep the plain transfer
+        // reading.
         let program = vec![
             function(
                 "FUN_18003ab00",
