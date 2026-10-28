@@ -1,13 +1,15 @@
 //! Rust declarations rendered from the recovered type database.
 //!
 //! [`render_rust_decls`] turns a [`TypeDatabase`] into one Rust source
-//! string: every recovered type with a layout becomes a `#[repr(C)]`
-//! struct (or `#[repr(i64)]` enum) a reviewer can read side by side with
-//! the translated code. The renderer is pure — data in, string out — and
-//! deterministic: it walks each section in its stored order (named types
-//! by Type Manager path, then inferred candidates) and stamps no
-//! timestamp, so two renders of the same database are byte-identical and
-//! a rescan produces a reviewable diff, not churn.
+//! string. Every recovered type with a layout becomes a `#[repr(C)]`
+//! struct (or a `#[repr(i64)]` enum) a reviewer can read side by side with
+//! the translated code.
+//!
+//! The renderer is pure — data in, string out — and deterministic. It
+//! walks each section in its stored order (named types by Type Manager
+//! path, then inferred candidates) and stamps no timestamp. Two renders of
+//! the same database are byte-identical, so a rescan produces a reviewable
+//! diff, not churn.
 //!
 //! The rendering rules (ADR-0013):
 //!
@@ -23,8 +25,9 @@
 //! - **Layout-less types are skipped entirely**: a record the scan only
 //!   knows exists has nothing to declare.
 //!
-//! The output is a *derived artifact*: regenerated from the loaded
-//! database beside the JSON it came from, and never read back.
+//! The output is a *derived artifact*: it is regenerated from the loaded
+//! database and written beside the JSON it came from. It is never read
+//! back.
 
 use std::collections::{HashMap, HashSet};
 
@@ -41,12 +44,12 @@ const RUST_KEYWORDS: &[&str] = &[
     "virtual", "where", "while", "yield",
 ];
 
-/// Decompiler builtin type names mapped to their Rust scalar shapes.
+/// Decompiler built-in type names, mapped to their Rust scalar shapes.
 ///
-/// Sizes follow the 64-bit Windows programs this pipeline targets (Ghidra's
-/// `long` is the Windows 4-byte `long`). Widths that have no Rust scalar —
-/// `undefined3` and friends — become byte arrays so the declared size stays
-/// honest.
+/// The sizes follow the 64-bit Windows programs this pipeline targets:
+/// Ghidra's `long` is the Windows 4-byte `long`. Widths with no Rust
+/// scalar — `undefined3` and friends — become byte arrays, so the
+/// declared size stays honest.
 const PRIMITIVES: &[(&str, &str)] = &[
     ("bool", "bool"),
     ("boolean", "bool"),
@@ -83,8 +86,8 @@ const PRIMITIVES: &[(&str, &str)] = &[
     ("void", "c_void"),
 ];
 
-/// The Rust type an STL/MFC family maps onto — the hint the comment
-/// carries in place of a hand-rolled layout.
+/// The Rust type an STL/MFC family maps onto. For a flagged type, this
+/// name goes into a comment in place of a hand-rolled layout.
 fn rust_equivalent(kind: StlKind) -> &'static str {
     match kind {
         StlKind::String => "String",
@@ -97,23 +100,24 @@ fn rust_equivalent(kind: StlKind) -> &'static str {
 
 /// Render the whole database as one Rust source string.
 ///
-/// Declarations appear in the database's own stored order — named types
-/// in Type Manager path order, then inferred candidates in their stored
-/// order — and nothing volatile (timestamps, counts) is written, so the
-/// same database always renders to the same bytes.
+/// Declarations appear in the database's own stored order: named types in
+/// Type Manager path order, then inferred candidates in their stored
+/// order. Nothing volatile (timestamps, counts) is written, so the same
+/// database always renders to the same bytes.
 pub fn render_rust_decls(db: &TypeDatabase) -> String {
     let mut renderer = Renderer::new(db);
     renderer.render()
 }
 
-/// One render pass: assigns every declared type a unique sanitized name,
-/// then writes the declarations in stored order.
+/// One render pass. It first assigns every declared type a unique
+/// sanitized name, then writes the declarations in stored order.
 struct Renderer<'a> {
     db: &'a TypeDatabase,
-    /// Sanitized declaration names, keyed by Type Manager path for named
-    /// types — the key a nested field's link resolves through.
+    /// Sanitized declaration names. A named type is keyed by its Type
+    /// Manager path, and that is the key a nested field's link resolves
+    /// through.
     declared: HashMap<&'a str, String>,
-    /// Every sanitized name already handed out, so a second `SHARED` in
+    /// Every sanitized name already in use, so a second `SHARED` in
     /// another category never collides with the first.
     taken: HashSet<String>,
 }
@@ -127,7 +131,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    /// Whether this record gets a declaration at all: an STL-flagged type
+    /// Whether this record gets a declaration at all. An STL-flagged type
     /// renders as a comment instead, and a type the scan never laid out
     /// has nothing to declare.
     fn is_declared(named: &NamedType) -> bool {
@@ -193,8 +197,8 @@ impl<'a> Renderer<'a> {
                 out.push_str("}\n");
             }
             TypeKind::Union => {
-                // Unions carry no layout through today's endpoints, but a
-                // recovered one would render here, not as a struct.
+                // Today's endpoints return no layout for unions, but a
+                // recovered union would render here, not as a struct.
                 out.push_str(&format!("#[repr(C)]\npub union {name} {{\n"));
                 self.render_fields(&named.fields, named.size, out);
                 out.push_str("}\n");
@@ -207,9 +211,9 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    /// Struct fields in offset order, with an explicit padding field
-    /// wherever the next field's offset leaves a gap and, when the type's
-    /// size is known, after the last field.
+    /// Struct fields in offset order. An explicit padding field is written
+    /// wherever the next field's offset leaves a gap, and — when the
+    /// type's size is known — after the last field too.
     fn render_fields(&self, fields: &[StructField], size: Option<u64>, out: &mut String) {
         let mut taken = HashSet::new();
         let mut cursor = 0u64;
@@ -253,9 +257,9 @@ impl<'a> Renderer<'a> {
             candidate.confidence.value(),
         ));
         let mut taken = HashSet::new();
-        // Offsets are estimates: padding is only honest when every field
-        // was placed, so a candidate with any unknown offset lays its
-        // fields out bare.
+        // The offsets are estimates. Padding is only honest when every
+        // field was placed, so a candidate with any unknown offset writes
+        // its fields bare.
         let placed = candidate.fields.iter().all(|f| f.offset.is_some());
         let mut cursor = 0u64;
         for field in &candidate.fields {
@@ -294,9 +298,9 @@ fn push_padding(out: &mut String, offset: u64, gap: u64) {
     out.push_str(&format!("    _pad_{offset}: [u8; {gap}],\n"));
 }
 
-/// Map a decompiler/C type name to its Rust shape: primitives through the
-/// table, `T[N]` to an array, `T *` to a raw pointer; anything else is a
-/// type reference kept as a sanitized identifier.
+/// Map a decompiler/C type name to its Rust shape. Primitives go through
+/// the table, `T[N]` becomes an array, and `T *` becomes a raw pointer.
+/// Anything else is a type reference, kept as a sanitized identifier.
 fn map_c_type(name: &str) -> String {
     let name = name.trim();
     if let Some(base) = name.strip_suffix('*') {
@@ -320,10 +324,10 @@ fn map_c_type(name: &str) -> String {
     sanitize_type_name(name)
 }
 
-/// Sanitize a type or enum-member name into a valid Rust identifier:
-/// non-identifier characters become `_` (runs collapsed), a leading digit
-/// is prefixed, a Rust keyword gains a trailing `_`, and a name left with
-/// nothing falls back to `Anonymous`.
+/// Sanitize a type or enum-member name into a valid Rust identifier.
+/// Non-identifier characters become `_`, and runs of `_` are collapsed. A
+/// leading digit gains a `_` prefix, a Rust keyword gains a trailing `_`,
+/// and a name left with nothing falls back to `Anonymous`.
 fn sanitize_type_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
@@ -349,8 +353,8 @@ fn sanitize_type_name(name: &str) -> String {
     out
 }
 
-/// Sanitize a field name to snake_case: camelCase boundaries gain `_`,
-/// non-identifier characters become `_`, and a Rust keyword gains a
+/// Sanitize a field name to snake_case. CamelCase boundaries gain a `_`,
+/// and non-identifier characters become `_`. A Rust keyword gains a
 /// trailing `_` so the declaration stays valid.
 fn sanitize_field_name(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
@@ -392,9 +396,10 @@ fn sanitize_field_name(name: &str) -> String {
     out
 }
 
-/// The first free name: Ghidra's `(unnamed)` fields repeat and two
-/// categories can hold the same type name, so a collision gains `_2`,
-/// `_3`, … in render order — deterministic, so re-renders never churn.
+/// The first free name for a base. Ghidra's `(unnamed)` fields repeat,
+/// and two categories can hold the same type name, so a collision gains
+/// `_2`, `_3`, … in render order. That stays deterministic, so
+/// re-renders never churn.
 fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
     if taken.insert(base.to_string()) {
         return base.to_string();
@@ -409,8 +414,8 @@ fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
     }
 }
 
-/// One `pub name: type,` field line, with its trailing comment when the
-/// field carries a note.
+/// One `pub name: type,` field line, with a trailing comment when the
+/// field has a note.
 fn push_field(out: &mut String, name: &str, ty: &str, comment: Option<&str>) {
     match comment {
         Some(note) => out.push_str(&format!("    pub {name}: {ty}, // {note}\n")),
@@ -730,8 +735,8 @@ mod tests {
 
     #[test]
     fn a_candidate_with_unplaced_fields_lays_its_fields_out_bare() {
-        // Offsets are estimates: with any field unplaced, gaps are not
-        // trustworthy, so no padding is claimed.
+        // The offsets are estimates. With any field unplaced the gaps are
+        // not trustworthy, so no padding is claimed here.
         let candidate = InferredStruct {
             name: "PLAYER".to_string(),
             name_origin: NameOrigin::LiteralPrefix,

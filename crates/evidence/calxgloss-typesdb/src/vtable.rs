@@ -1,13 +1,17 @@
 //! Vtable detection.
 //!
-//! [`VtableDetector`] with `detect_vtables()` scans the paged `data_items()`
-//! output for vtable-shaped data objects — `vftable`-named items preceded by
-//! `vftable_meta_ptr` entries (the MSVC RTTI pattern), keyed by address since
-//! `vftable` names are not unique. It reads each table's bytes through
-//! `read_memory` to resolve method pointers to names and addresses, follows
-//! the RTTI chain (metadata pointer → CompleteObjectLocator → TypeDescriptor
-//! and ClassHierarchyDescriptor) to recover the owning class and track
-//! base-class inheritance, recognizes COM interfaces via the
+//! [`VtableDetector`] with `detect_vtables()` finds vtable-shaped data
+//! objects in the paged `data_items()` output. Ghidra's MSVC analysis names
+//! every vtable `vftable`, and a `vftable` item preceded by a
+//! `vftable_meta_ptr` item matches the MSVC RTTI pattern. The detector keys
+//! tables by address because `vftable` names are not unique.
+//!
+//! For each table, the detector reads the table's bytes through
+//! `read_memory` to resolve method pointers to names and addresses. When a
+//! metadata pointer is present, it follows the RTTI chain (metadata
+//! pointer → CompleteObjectLocator → TypeDescriptor and
+//! ClassHierarchyDescriptor) to recover the owning class and track
+//! base-class inheritance. It recognizes COM interfaces by the
 //! QueryInterface/AddRef/Release pattern, and tags the methods of confirmed
 //! vtables with `add_function_tag`.
 
@@ -18,11 +22,12 @@ use calxgloss_kuna::KunaSource;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
 
-/// The one write a vtable scan performs.
+/// The one write the vtable scan performs.
 ///
-/// Deliberately separate from [`ScanSource`]: the shared seam is read-only,
-/// and the read cache never answers a write. Kuna has no tag write-back yet,
-/// so its implementation refuses by name; tests record the tags they are
+/// This trait is deliberately separate from [`ScanSource`]: the shared seam
+/// is read-only, and the read cache never answers a write. The analysis
+/// engine (Kuna) has no function-tag write-back yet, so its implementation
+/// returns an error naming the refusal; tests record the tags they are
 /// given.
 pub trait TagSink {
     /// Attach `tag` to the function at `address`.
@@ -35,8 +40,8 @@ pub trait TagSink {
 
 impl TagSink for KunaSource {
     async fn add_function_tag(&self, _address: u64, _tag: &str) -> Result<()> {
-        // The Kuna engine has no function-tag write-back; the refusal is
-        // named, never silent — tagging is enrichment, not detection.
+        // The analysis engine has no function-tag write-back. The refusal
+        // is named, never silent — tagging is enrichment, not detection.
         Err(EngineError::Reported {
             message: "the Kuna engine has no function-tag write-back; vtable tagging is \
                       enrichment, not detection, and the scan continues without it"
@@ -48,8 +53,9 @@ impl TagSink for KunaSource {
 
 impl TagSink for calxgloss_decomp::PipelineSource {
     async fn add_function_tag(&self, _address: u64, _tag: &str) -> Result<()> {
-        // Both arms refuse by name: writes are never cached, and the
-        // wrapped engine has no tag write-back.
+        // This implementation also refuses by name: writes are never
+        // cached, and the wrapped analysis engine has no function-tag
+        // write-back.
         Err(EngineError::Reported {
             message: "the Kuna engine has no function-tag write-back; vtable tagging is \
                       enrichment, not detection, and the scan continues without it"
@@ -117,9 +123,9 @@ const COM_PREFIX: [&str; 3] = ["queryinterface", "addref", "release"];
 
 /// Whether a defined data item is a vtable.
 ///
-/// Ghidra's MSVC analysis names every vtable `vftable`; other defined data —
-/// jump tables, plain pointer arrays — carries different labels and is not a
-/// vtable no matter how pointer-shaped it looks.
+/// Ghidra's MSVC analysis names every vtable `vftable`. Other defined data
+/// — jump tables, plain pointer arrays — has a different label, and it is
+/// not a vtable however pointer-shaped it looks.
 fn is_vtable_candidate(item: &DataItem) -> bool {
     item.label.eq_ignore_ascii_case(VTABLE_LABEL)
 }
@@ -185,9 +191,10 @@ fn looks_like_com_interface(methods: &[VtableMethod]) -> bool {
 /// Whether an error means "nothing readable at that address" rather than
 /// "the server could not answer".
 ///
-/// A bad RTTI pointer produces `NotFound`/`Malformed` refusals from
-/// `read_memory`, which degrade one vtable's class information. Anything
-/// else — transport, a reported server failure — is a broken scan.
+/// A bad RTTI pointer makes `read_memory` answer with a `NotFound` or
+/// `Malformed` error. That only degrades the one vtable whose chain led to
+/// it. Anything else — a transport failure, a reported server failure — is
+/// a broken scan.
 fn is_read_miss(error: &EngineError) -> bool {
     matches!(
         error,
@@ -256,12 +263,13 @@ impl<S> VtableDetector<S> {
 
     /// Detect every vtable the listing holds, sorted by address.
     ///
-    /// A table paired with a preceding `vftable_meta_ptr` entry is confirmed
-    /// by the RTTI pattern, and its class name, base classes, and method tags
-    /// are recovered from there. A table whose RTTI chain misses is still
-    /// reported at method-pointer fidelity — a vtable known to exist without
-    /// its class is worth keeping. A failure of the listing itself aborts the
-    /// whole scan, because every later table would hit it too.
+    /// A table paired with a preceding `vftable_meta_ptr` entry is
+    /// confirmed by the RTTI pattern: its class name, base classes, and
+    /// method tags are recovered from that chain. A table whose RTTI chain
+    /// misses is still reported, with its methods read straight from the
+    /// table's bytes — a vtable known to exist without its class is worth
+    /// keeping. A failure of the listing itself aborts the whole scan,
+    /// because every later table would hit it too.
     pub async fn detect_vtables(&self) -> Result<Vec<Vtable>>
     where
         S: ScanSource + TagSink,
@@ -307,7 +315,8 @@ impl<S> VtableDetector<S> {
                 class_name: rtti.class_name,
                 base_classes: rtti.base_classes,
                 is_com_interface: is_com,
-                // The engine's flag pass fills this in after the scans.
+                // A flagging pass fills this in after every recovery scan
+                // has assembled.
                 stl_kind: None,
             });
         }
@@ -322,9 +331,9 @@ impl<S> VtableDetector<S> {
 
     /// The size of one table entry.
     ///
-    /// Ghidra types vftables `pointer[N]`, so the declared count divides the
-    /// item length into exact element sizes; a table typed otherwise falls
-    /// back to the configured pointer size.
+    /// Ghidra types vftables as `pointer[N]`, so the declared count divides
+    /// the item length into an exact element size. A table typed any other
+    /// way falls back to the configured pointer size.
     fn element_size(&self, item: &DataItem) -> usize {
         if let Some(count) = pointer_array_count(&item.type_name)
             && count > 0
@@ -337,10 +346,10 @@ impl<S> VtableDetector<S> {
 
     /// The method slots of one table, read from its bytes.
     ///
-    /// Each entry is a pointer to the method's function; names come from the
-    /// function listing, and a pointer landing outside any known function is
-    /// reported with its address only. A table whose bytes cannot be read is
-    /// reported with no methods.
+    /// Each entry is a pointer to the method's function. Names come from
+    /// the function listing; a pointer that lands outside any known
+    /// function is reported with its address only. A table whose bytes
+    /// cannot be read is reported with no methods.
     async fn read_methods(
         &self,
         item: &DataItem,
@@ -380,8 +389,8 @@ impl<S> VtableDetector<S> {
     }
 
     /// One `read_memory` that treats a refusal as a miss rather than a
-    /// failure: the RTTI chain is enrichment, and a bad pointer degrades the
-    /// one vtable that followed it.
+    /// failure. The RTTI chain is enrichment: a bad pointer degrades only
+    /// the one vtable whose chain followed it.
     async fn probe_read(&self, address: u64, length: usize) -> Result<Option<Vec<u8>>>
     where
         S: ScanSource,
@@ -393,9 +402,10 @@ impl<S> VtableDetector<S> {
         }
     }
 
-    /// Walk one vtable's RTTI chain: metadata pointer → CompleteObjectLocator
-    /// → TypeDescriptor (the class name) and ClassHierarchyDescriptor (its
-    /// bases). Every step degrades to what the earlier steps established.
+    /// Walk one vtable's RTTI chain: metadata pointer →
+    /// CompleteObjectLocator → TypeDescriptor (the class name) and
+    /// ClassHierarchyDescriptor (its bases). When a step fails, the result
+    /// keeps whatever the earlier steps recovered.
     async fn read_rtti(&self, meta: &DataItem, image_base: u64) -> Result<Rtti>
     where
         S: ScanSource,
@@ -483,9 +493,10 @@ impl<S> VtableDetector<S> {
 
     /// Tag the resolved methods of a confirmed vtable.
     ///
-    /// Tagging is enrichment, not detection: a method that refuses a tag
-    /// (a pointer into a thunk, say) is warned about and the scan continues.
-    /// Each function is tagged once however many vtables dispatch to it.
+    /// Tagging is enrichment, not detection: when a method refuses a tag
+    /// (a pointer into a thunk, say), the scan warns about it and
+    /// continues. Each function is tagged once, however many vtables
+    /// dispatch to it.
     async fn tag_methods(&self, methods: &[VtableMethod], tag: &str, tagged: &mut HashSet<u64>)
     where
         S: TagSink,
@@ -594,8 +605,9 @@ mod tests {
         }
     }
 
-    /// A source over canned listings and memory, recording every read and
-    /// every tag so tests can assert what the scan touched.
+    /// A source over canned listings and memory. It records every read and
+    /// every tag, so tests can check exactly which addresses the vtable
+    /// scan read and which functions it tagged.
     struct MockSource {
         items: Vec<DataItem>,
         functions: Vec<FunctionSummary>,
