@@ -31,7 +31,7 @@
 //! # API-Aware Prompt Augmentation
 //!
 //! When a function calls Windows APIs, the prompt builder automatically
-//! injects the full mapping table rows for each API category the function touches.
+//! adds the full mapping table rows for each API category those calls belong to.
 //! This gives the LLM detailed context about how to translate specific APIs
 //! (e.g., every Win32 Core mapping, every DirectX mapping, every GDI mapping)
 //! rather than just the one-liner `api.name → api.pal_mapping` shown in the
@@ -841,8 +841,8 @@ mod tests {
     #[test]
     fn test_escalate_template_renders_branch_inventory_records() {
         // A retry after a divergence sees the same branch context as the
-        // first attempt: the inventory records ride the escalate CONTROL
-        // FLOW section carrying kind, suggestion, confidence, and evidence.
+        // first attempt: the escalate CONTROL FLOW section shows each
+        // branch record's kind, suggestion, confidence, and evidence.
         let findings = vec![
             ControlFlowInfo {
                 function: "FUN_18003ab00".to_string(),
@@ -988,8 +988,8 @@ mod tests {
         assert!(prompt.contains("global_write of `DAT_180064e80`"));
         assert!(prompt.contains("confidence 85"));
         assert!(prompt.contains("DAT_180064e80 = param_1"));
-        // The purity flag renders as the steering: a function with
-        // global accesses is pushed to struct state, never a static.
+        // The purity flag changes the steering text: a function with
+        // global accesses is directed to struct state, never a static.
         assert!(prompt.contains("rather than in a Rust `static`"));
     }
 
@@ -1180,7 +1180,8 @@ mod tests {
     fn test_escalate_template_data_table_rides_the_const_findings_section() {
         // The table facts reach a retry through the finding union's
         // prompt conversion — the escalate side of the table context,
-        // so a retry after a divergence does not re-scatter the table.
+        // so a retry after a divergence does not scatter the table
+        // across the prompt again.
         let findings = vec![ConstInfo {
             function: String::new(),
             kind: "data_table".to_string(),
@@ -1264,8 +1265,8 @@ mod tests {
 
     #[test]
     fn test_module_context_template_renders_branch_inventory_records() {
-        // A function's branch inventory rides the same CONTROL FLOW
-        // section as the other findings: each branch site is named by
+        // A function's branch inventory appears in the same CONTROL FLOW
+        // section as the other findings: each branch site is listed by
         // what it guards and the condition behind it, beside the
         // switch/loop/recursion readings.
         let req = sample_request();
@@ -1414,8 +1415,8 @@ mod tests {
         assert!(prompt.contains("global_write of `DAT_180064e80`"));
         assert!(prompt.contains("confidence 85"));
         assert!(prompt.contains("DAT_180064e80 = param_1"));
-        // The purity flag renders as the steering: a function with
-        // global accesses is pushed to struct state, never a static.
+        // The purity flag changes the steering text: a function with
+        // global accesses is directed to struct state, never a static.
         assert!(prompt.contains("rather than in a Rust `static`"));
     }
 
@@ -1462,7 +1463,7 @@ mod tests {
         assert!(prompt.contains("vector_matrix shape"));
         assert!(prompt.contains("confidence 60"));
         assert!(prompt.contains("CONCAT44(uVar2 >> 4, uVar2 & 0xfffffff)"));
-        // The steering renders as the section's point: mangled vector
+        // The steering text makes the section's point: mangled vector
         // pseudo-C is float math, never integer or pointer logic.
         assert!(prompt.contains("Translate the math as float"));
     }
@@ -1520,17 +1521,17 @@ mod tests {
             evidence: "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
                 .to_string(),
             // The section body was pinned before P19-3 gave match records
-            // a version-authority note, so the fixture carries none —
-            // the pinned render stays byte-identical, and a note-bearing
-            // finding renders one extra "Admission:" line, pinned beside.
+            // a version-authority note, so this fixture has none — the
+            // pinned render stays byte-identical. A finding with a note
+            // renders one extra "Admission:" line, pinned alongside.
             admission: String::new(),
         }
     }
 
     #[test]
     fn test_module_context_template_renders_known_library_section() {
-        // The section names the matched callee by symbol, family, and
-        // confidence, and steers the call onto the Rust equivalent.
+        // The section lists the matched callee by symbol, family, and
+        // confidence, and points the translator to the call's Rust equivalent.
         let req = sample_request();
         let prompt = build_module_context_prompt(
             &req,
@@ -1572,7 +1573,7 @@ mod tests {
 
     #[test]
     fn test_module_context_template_renders_parameter_direction_section() {
-        // Each record names its parameter, its direction, and the body
+        // Each record states its parameter, its direction, and the body
         // line that decided it — the shape the first attempt needs to
         // pick the right Rust borrow instead of guessing from the type.
         let req = sample_request();
@@ -1598,7 +1599,7 @@ mod tests {
         assert!(prompt.contains("param_3 is inout"));
         assert!(prompt.contains("confidence 70"));
         assert!(prompt.contains("param_3[0] = 3;"));
-        // The section steers the signature shape the readings name.
+        // The section directs the signature shape that the readings identify.
         assert!(prompt.contains("a read-modify-write through a mutable borrow"));
     }
 
@@ -1788,10 +1789,10 @@ mod tests {
     }
 
     fn type_info_pair() -> Vec<TypeInfo> {
-        // The two readings one pointer parameter's records render through
+        // The two readings of one pointer parameter's records render through
         // the typeinfer union's prompt conversion (issue #274): the type
-        // reading and the direction reading, both naming the parameter,
-        // so the pair lands side by side in one section (issue #276).
+        // reading and the direction reading. Both state the parameter's
+        // name, so the pair lands side by side in one section (issue #276).
         vec![
             TypeInfo {
                 name: "param_1".to_string(),
@@ -1807,7 +1808,7 @@ mod tests {
     #[test]
     fn test_escalate_template_renders_direction_line_beside_the_type_line() {
         // An escalated attempt sees the direction beside the type: the
-        // existing type-info section carries both lines, and no separate
+        // existing type-info section renders both lines, and no separate
         // directions section joins the prompt.
         let prompt = build_escalate_prompt_with_context(
             "FUN_1800412a0".to_string(),
@@ -2175,7 +2176,7 @@ mod tests {
         assert!(prompt.contains("confidence 100"));
         assert!(prompt.contains("  catch(...) {"));
         // The failure code arrives spelled as the translator's hex
-        // literal, with the site it surfaced at named.
+        // literal, and the line states the site it surfaced at.
         assert!(prompt.contains("failure code 0x80070057"));
         assert!(prompt.contains("from a `return` site"));
         assert!(prompt.contains("confidence 85"));
@@ -2246,7 +2247,7 @@ mod tests {
         )
         .expect("the prompt should render");
 
-        // The raise idiom bullet names the code it raises inline.
+        // The raise idiom bullet states the code it raises, inline.
         assert!(prompt.contains("raised exception idiom"));
         assert!(prompt.contains("raising code 0xe06d7363"));
     }
@@ -2268,8 +2269,8 @@ mod tests {
         )
         .expect("the prompt should render");
 
-        // The inherited-code bullet names the code and the partner that
-        // hands it up.
+        // The inherited-code bullet states the code and the partner that
+        // passes it up.
         assert!(prompt.contains("inherited failure code"));
         assert!(prompt.contains("carried from `FUN_1800412a0`"));
         assert!(prompt.contains("failure code 0x80070057"));
@@ -2318,7 +2319,7 @@ mod tests {
     // ============================================================
 
     /// The verbatim steering paragraph of the shared global-state section,
-    /// pinned byte-for-byte from the pre-include renders: the lift into
+    /// pinned byte-for-byte from the pre-include renders: the move into
     /// `templates/sections/global_state.j2` may not drift a character.
     const GLOBAL_STATE_STEERING: &str = "The program globals this function reads and writes, recorded by static\n\
         analysis. This function does not own this state — it shares it with the\n\
@@ -2338,9 +2339,9 @@ mod tests {
         format!("## {heading}\n\n{GLOBAL_STATE_STEERING}\n\n{GLOBAL_STATE_ENTRY}")
     }
 
-    // Fixtures for the sections lifted onto shared includes by #318. Each
-    // one feeds a single finding (or pair) of the matching bundle list so
-    // the section suite renders one section per template run.
+    // Fixtures for the sections moved onto shared includes by #318. Each
+    // fixture puts a single finding (or pair) into the matching bundle
+    // list, so each section-suite run renders one section.
 
     fn algorithm_fixture() -> AlgorithmInfo {
         AlgorithmInfo {
@@ -2394,8 +2395,8 @@ mod tests {
         }
     }
 
-    /// The structures the type database feeds the shared include: two of
-    /// them, so the pinned body covers the blank line the include keeps
+    /// The type database passes two structures to the shared include. The
+    /// pinned body therefore covers the blank line the include keeps
     /// between structures as well as each structure's size and fields.
     fn data_structures_fixtures() -> Vec<StructuredData> {
         vec![
@@ -2459,8 +2460,8 @@ mod tests {
         }
     }
 
-    /// Renders the escalate template against an arbitrary bundle — the
-    /// escalate call sites of the shared includes all live in this one
+    /// Renders the escalate template against an arbitrary bundle. All the
+    /// escalate call sites of the shared includes live in this one
     /// template, so one render helper drives every escalate row.
     fn render_escalate_full(bundle: &EvidenceBundle) -> String {
         build_escalate_prompt(
@@ -2488,10 +2489,11 @@ mod tests {
             .expect("the full-module prompt should render")
     }
 
-    /// Renders the rich template against an arbitrary bundle — the tier
-    /// templates render from their request-sourced finding lists rather
-    /// than from a gathered bundle, so this helper carries the include-fed
-    /// lists out of the bundle into the tier's prompt data (#319).
+    /// Renders the rich template against an arbitrary bundle. The tier
+    /// templates render from the finding lists that come with their
+    /// request, not from a gathered bundle, so this helper copies the
+    /// include-fed lists out of the bundle and into the tier's prompt
+    /// data (#319).
     fn render_rich_full(bundle: &EvidenceBundle) -> String {
         let req = sample_request();
         let mut data = ComplexityPromptData::from_request(&req);
@@ -2521,9 +2523,9 @@ mod tests {
     }
 
     /// #320: with a wholly empty bundle the escalate template shows no
-    /// evidence section at all — every one of its headings carries the
-    /// `## ADDITIONAL CONTEXT — ` prefix — and leaves no stray blank line
-    /// where the sections used to be.
+    /// evidence section at all. Every one of those headings starts with
+    /// the `## ADDITIONAL CONTEXT — ` prefix — and no stray blank line
+    /// is left where the sections used to be.
     #[test]
     fn empty_bundle_escalate_omits_every_evidence_section() {
         let prompt = render_escalate_full(&EvidenceBundle::default());
@@ -2533,8 +2535,9 @@ mod tests {
     }
 
     /// #320: the same empty-bundle contract for the module-context
-    /// template — every bundle-fed heading is absent, the request-fed
-    /// sections still render, and the seams between them stay clean.
+    /// template: every heading fed by the bundle is absent, the sections
+    /// fed by the request still render, and the blank lines between them
+    /// stay clean.
     #[test]
     fn empty_bundle_module_context_omits_every_evidence_section() {
         let prompt = render_module_context_full(&EvidenceBundle::default());
@@ -2584,153 +2587,155 @@ mod tests {
         assert!(!prompt.contains("\n\n\n"));
     }
 
-    /// The type information section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate, rich and
-    /// detailed — the tier bodies were checked against the escalate body for
-    /// identity before merging onto this one include); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the type information section — steering paragraph
+    /// and entries — pinned byte-for-byte from the pre-include renders.
+    /// Shared by its consuming templates: escalate, rich, and detailed.
+    /// Before the tier bodies merged onto this one include, they were
+    /// checked against the escalate body for identity. The section suite
+    /// re-renders each consuming template against it.
     const TYPE_INFORMATION_SECTION_BODY: &str = "The following types were inferred by Ghidra's type database:\n\n- `param_1`: char * (via string_function, confidence 70)\n\n- `param_1`: out parameter (via param_direction, confidence 75)";
 
     fn expected_type_information_section(heading: &str) -> String {
         format!("## {heading}\n\n{TYPE_INFORMATION_SECTION_BODY}")
     }
 
-    /// The recognized algorithms section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the recognized algorithms section — steering
+    /// paragraph and entries — pinned byte-for-byte from the pre-include
+    /// renders. Its only consumer is the escalate template. The section
+    /// suite re-renders each consuming template against it.
     const RECOGNIZED_ALGORITHMS_SECTION_BODY: &str = "The following known algorithms were recognized in this function by static\nanalysis. Where a recognition is credible, implement the known algorithm\nidiomatically in Rust instead of transliterating the pseudo-C line by line:\n\n- **comparison_sort** (sorting; via cfg_pattern, confidence 70)\n  Evidence: `for (iVar1 = 0; iVar1 &#60; count; iVar1++) { if (puVar2[iVar1] &#62; puVar2[iVar1 + 1]) {`";
 
     fn expected_recognized_algorithms_section(heading: &str) -> String {
         format!("## {heading}\n\n{RECOGNIZED_ALGORITHMS_SECTION_BODY}")
     }
 
-    /// The memory lifecycle section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the memory lifecycle section — steering
+    /// paragraph and entries — pinned byte-for-byte from the pre-include
+    /// renders. Its only consumer is the escalate template. The section
+    /// suite re-renders each consuming template against it.
     const MEMORY_LIFECYCLE_SECTION_BODY: &str = "The following memory lifecycles were recognized in this function by static\nanalysis. Where a finding is credible, express the resource with the suggested\nRust ownership pattern instead of transliterating the manual allocate/free or\nopen/close pairs:\n\n- **RAII guard struct with Drop impl** (handle lifecycle, confidence 70)\n  Evidence: `hFile = CreateFileW(...); CloseHandle(hFile);`";
 
     fn expected_memory_lifecycle_section(heading: &str) -> String {
         format!("## {heading}\n\n{MEMORY_LIFECYCLE_SECTION_BODY}")
     }
 
-    /// The concurrency section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the concurrency section — steering paragraph and
+    /// entries — pinned byte-for-byte from the pre-include renders. Its
+    /// only consumer is the escalate template. The section suite
+    /// re-renders each consuming template against it.
     const CONCURRENCY_SECTION_BODY: &str = "The following concurrency constructs were recognized in this function by static\nanalysis. Where a finding is credible, express the synchronization with the\nsuggested Rust type instead of transliterating the manual lock/unlock or\nspawn/join calls:\n\n- **std::sync::Mutex<T>** (mutex construct, confidence 70)\n  Evidence: `pthread_mutex_lock(&mtx); ... pthread_mutex_unlock(&mtx);`";
 
     fn expected_concurrency_section(heading: &str) -> String {
         format!("## {heading}\n\n{CONCURRENCY_SECTION_BODY}")
     }
 
-    /// The serialization section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the serialization section — steering paragraph
+    /// and entries — pinned byte-for-byte from the pre-include renders.
+    /// Its only consumer is the escalate template. The section suite
+    /// re-renders each consuming template against it.
     const SERIALIZATION_SECTION_BODY: &str = "The following endianness and serialization patterns were recognized in this\nfunction by static analysis — byte-swap calls, hand-rolled bit-packing chains,\nand file-format signature comparisons. Where a finding is credible, express\nthe format with the suggested Rust type or crate instead of transliterating\nthe manual swaps, shifts, and masks:\n\n- **byteorder::BE::read_u32** (byteswap pattern, confidence 70)\n  Evidence: `uVar1 = (uVar4 << 24) | ((uVar4 >> 8) & 0xff00);`";
 
     fn expected_serialization_section(heading: &str) -> String {
         format!("## {heading}\n\n{SERIALIZATION_SECTION_BODY}")
     }
 
-    /// The constants section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the constants section — steering paragraph and
+    /// entries — pinned byte-for-byte from the pre-include renders. Its
+    /// only consumer is the escalate template. The section suite
+    /// re-renders each consuming template against it.
     const CONSTANTS_SECTION_BODY: &str = "The following constant structures were recognized in this function by static\nanalysis — flag-bit groups, enumerated dispatch runs, and values repeated\nacross the program. Where a finding is credible, express it with the suggested\nRust shape instead of scattering the bare integer literals:\n\n- **bitflags! struct Flags: u32** (bitflag_group, confidence 70)\n  Evidence: `if ((uVar1 & 0x10) != 0) { ... } uVar1 = uVar1 | 0x20;`";
 
     fn expected_constants_section(heading: &str) -> String {
         format!("## {heading}\n\n{CONSTANTS_SECTION_BODY}")
     }
 
-    /// The callbacks section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the callbacks section — steering paragraph and
+    /// entries — pinned byte-for-byte from the pre-include renders. Its
+    /// only consumer is the escalate template. The section suite
+    /// re-renders each consuming template against it.
     const CALLBACKS_SECTION_BODY: &str = "The following callback and function-pointer patterns were recognized in this\nfunction by static analysis. Where a finding is credible, express the callback\nboundary with the suggested Rust pattern instead of transliterating the raw\ntable indexing or registration call:\n\n- **Vec<Box<dyn Fn(i32)>>** (fp_array pattern, confidence 70)\n  Evidence: `handlers[uVar2](iVar3);`";
 
     fn expected_callbacks_section(heading: &str) -> String {
         format!("## {heading}\n\n{CALLBACKS_SECTION_BODY}")
     }
 
-    /// The control flow section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate, full-module,
-    /// rich and detailed — the tier bodies were identical to the escalate body
-    /// before merging); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the control flow section — steering paragraph and
+    /// entries — pinned byte-for-byte from the pre-include renders. Shared
+    /// by its consuming templates: escalate, full-module, rich, and
+    /// detailed. Before merging, the tier bodies were identical to the
+    /// escalate body. The section suite re-renders each consuming template
+    /// against it.
     const CONTROL_FLOW_SECTION_BODY: &str = "The following control-flow patterns were recognized in this function by static\nanalysis. Where a finding is credible, express the construct with the suggested\nRust pattern instead of transliterating the raw conditional chain or recursive\ncall:\n\n- **enum State + match state { /* 3 states */ }** (state_machine construct, confidence 70)\n  Evidence: `state variable state with 3 states idle: STATE_IDLE`";
 
     fn expected_control_flow_section(heading: &str) -> String {
         format!("## {heading}\n\n{CONTROL_FLOW_SECTION_BODY}")
     }
 
-    /// The control flow branch section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (module-context, driven by `branch_site_fixture`); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the control flow branch section — steering
+    /// paragraph and entries — pinned byte-for-byte from the pre-include
+    /// renders. Its consumer is module-context, driven by
+    /// `branch_site_fixture`. The section suite re-renders each consuming
+    /// template against it.
     const CONTROL_FLOW_BRANCH_SECTION_BODY: &str = "The following control-flow patterns were recognized in this function by static\nanalysis. Where a finding is credible, express the construct with the suggested\nRust pattern instead of transliterating the raw conditional chain or recursive\ncall:\n\n- **keep the early return behind param_1 == 0** (branch_site construct, confidence 80)\n  Evidence: `if (param_1 == 0) {`";
 
     fn expected_control_flow_branch_section(heading: &str) -> String {
         format!("## {heading}\n\n{CONTROL_FLOW_BRANCH_SECTION_BODY}")
     }
 
-    /// The calling convention section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate and module-context); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the calling convention section — steering
+    /// paragraph and entries — pinned byte-for-byte from the pre-include
+    /// renders. Shared by its consuming templates: escalate and
+    /// module-context. The section suite re-renders each consuming
+    /// template against it.
     const CALLING_CONVENTION_SECTION_BODY: &str = "The calling conventions detected for this function and its callees by\nstatic analysis — mangled-name letters, `@N` import decorations, callee\nepilogues, caller stack cleanup, and the x64 call shape. Spell extern\ndeclarations and any stack cleanup with the detected convention instead\nof assuming `__stdcall`, and do not invent stack cleanup for a convention\nthat leaves none:\n\n- **stdcall** (via callee_epilogue, confidence 80)\n  Evidence: `00401007  RET 0xC`";
 
     fn expected_calling_convention_section(heading: &str) -> String {
         format!("## {heading}\n\n{CALLING_CONVENTION_SECTION_BODY}")
     }
 
-    /// The floatsimd section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate and module-context); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the floatsimd section — steering paragraph and
+    /// entries — pinned byte-for-byte from the pre-include renders.
+    /// Shared by its consuming templates: escalate and module-context.
+    /// The section suite re-renders each consuming template against it.
     const FLOATSIMD_SECTION_BODY: &str = "This function's body carries float/SIMD evidence, recorded by static\nanalysis — the decompiler mangles vector math into concatenations,\nextractions, and undefined-typed arithmetic, and reading it as integer\nor pointer logic mistranslates it. Translate the math as float: for a\nscalar shape use plain `f32`/`f64` operations; for a vector/matrix\nshape use component arrays or small vector structs, never packed\nintegers:\n\n- **translate as a small vector struct or component array, not integer or pointer arithmetic** (vector_matrix shape, confidence 60)\n  Evidence: `local_10 = CONCAT44(uVar2 >> 4, uVar2 & 0xfffffff);`";
 
     fn expected_floatsimd_section(heading: &str) -> String {
         format!("## {heading}\n\n{FLOATSIMD_SECTION_BODY}")
     }
 
-    /// The string context section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the string context section — steering paragraph
+    /// and entries — pinned byte-for-byte from the pre-include renders.
+    /// Its only consumer is the escalate template. The section suite
+    /// re-renders each consuming template against it.
     const STRING_CONTEXT_SECTION_BODY: &str = "The following strings were mapped to this function by static analysis —\nclassified into their role, and for format-string calls the Rust argument\ntypes the specifiers imply. Where a finding is credible, name the string's\nrole in the translation instead of transliterating the raw literal or\n`DAT_` reference:\n\n- **config file path** (file_path string, confidence 70)\n  Evidence: `lFile = CreateFileA(\"Journal.txt\",...);`";
 
     fn expected_string_context_section(heading: &str) -> String {
         format!("## {heading}\n\n{STRING_CONTEXT_SECTION_BODY}")
     }
 
-    /// The libraries apis section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (escalate); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the libraries apis section — steering paragraph
+    /// and entries — pinned byte-for-byte from the pre-include renders.
+    /// Its only consumer is the escalate template. The section suite
+    /// re-renders each consuming template against it.
     const LIBRARIES_APIS_SECTION_BODY: &str = "The following library APIs were identified by static analysis — from the\nbinary's import table and from the call paths reaching them out of this\nfunction. Where a finding is credible, call the API through the suggested\nRust crate instead of transliterating the raw import or declaring it as an\n`extern \"C\"` stub:\n\n- **flate2** for `inflate` (zlib import, confidence 90)\n  Evidence: `inflate`";
 
     fn expected_libraries_apis_section(heading: &str) -> String {
         format!("## {heading}\n\n{LIBRARIES_APIS_SECTION_BODY}")
     }
 
-    /// The libmatch section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (module-context); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the libmatch section — steering paragraph and
+    /// entries — pinned byte-for-byte from the pre-include renders. Its
+    /// only consumer is the module-context template. The section suite
+    /// re-renders each consuming template against it.
     const LIBMATCH_SECTION_BODY: &str = "The functions this one calls that static analysis has identified as\nstatically linked known-library code — the C runtime or the C++ standard\nlibrary. Do NOT re-implement these bodies: map each call onto the\nsuggested Rust equivalent instead:\n\n- **slice copy / std::ptr::copy_nonoverlapping** — `FUN_18003ab00` matches `memcpy` (crt library, confidence 90)\n  Evidence: `  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);`";
 
     fn expected_libmatch_section(heading: &str) -> String {
         format!("## {heading}\n\n{LIBMATCH_SECTION_BODY}")
     }
 
-    /// The parameter direction section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (module-context); the
+    /// The full body of the parameter direction section — steering
+    /// paragraph and entries — pinned byte-for-byte from the pre-include
+    /// renders. Its only consumer is the module-context template. The
     /// section suite re-renders each consuming template against it.
     const PARAMETER_DIRECTION_SECTION_BODY: &str = "Which way data flows through this function's pointer parameters, read from\nits body by static analysis. Give each parameter the Rust shape its\ndirection names — an `in` parameter a shared borrow, an `out` parameter a\nmutable borrow or a value handed back to the caller, an `inout` parameter\na read-modify-write through a mutable borrow — and add no mutability a\ndirection reading does not claim:\n\n- **param_2 is out** (via param_direction, confidence 75)\n  Evidence: `*param_2 = 0;`";
 
@@ -2738,23 +2743,23 @@ mod tests {
         format!("## {heading}\n\n{PARAMETER_DIRECTION_SECTION_BODY}")
     }
 
-    /// The data tables section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its consumers (module-context); the
-    /// section suite re-renders each consuming template against it.
+    /// The full body of the data tables section — steering paragraph and
+    /// entries — pinned byte-for-byte from the pre-include renders. Its
+    /// only consumer is the module-context template. The section suite
+    /// re-renders each consuming template against it.
     const DATA_TABLES_SECTION_BODY: &str = "The defined data objects this function indexes that static analysis has\nrecognized as constant data tables — objects whose bytes decode coherently\nat one element width and that nothing in the program writes. Where a\nfinding is credible, render each lookup of one of these objects as a named\n`const` array of the element type and entry count shown, indexed where the\noriginal offsets the object — do not re-scatter the decoded entries as\nmatch arms or magic numbers:\n\n- **DAT_1400a1b60**: `const [u16; 12]` (confidence 70)";
 
     fn expected_data_tables_section(heading: &str) -> String {
         format!("## {heading}\n\n{DATA_TABLES_SECTION_BODY}")
     }
 
-    /// The data-structure section
-    /// body — steering paragraph and entries — pinned byte-for-byte from
-    /// the pre-include renders, shared by its three consumers (escalate,
-    /// module-context, full-module); the section suite re-renders each
-    /// consuming template against it. Two structures, so the pin covers
-    /// the blank line the include keeps between them as well as each
-    /// structure's size and field lines.
+    /// The full body of the data-structure section — steering paragraph
+    /// and entries — pinned byte-for-byte from the pre-include renders.
+    /// Shared by its three consuming templates: escalate, module-context,
+    /// and full-module. The section suite re-renders each consuming
+    /// template against it. The fixture holds two structures, so the pin
+    /// covers the blank line the include keeps between them as well as
+    /// each structure's size and field lines.
     const DATA_STRUCTURES_SECTION_BODY: &str = "The following data structures are used in or near this function:\n\n### Player\nSize: 16 bytes\nFields:\n\n- `hp` : u32 (offset: 0)\n\n- `mp` : u16 (offset: 4)\n\n### SaveGame\nSize: 8 bytes\nFields:\n\n- `slot` : u32 (offset: 0)";
 
     fn expected_data_structures_section(heading: &str) -> String {
@@ -3012,7 +3017,8 @@ mod tests {
 
     /// The parametrized section suite: every row's populated findings must
     /// render its heading and entries verbatim, and an empty findings list
-    /// must omit the section without leaving stray blank lines at the seam.
+    /// must omit the section without leaving stray blank lines between the
+    /// sections that remain.
     #[test]
     fn the_section_suite_renders_populated_findings_and_omits_empty_ones() {
         for row in SECTION_SUITE_ROWS {
@@ -3079,7 +3085,8 @@ mod tests {
     }
 
     /// A scan that read every facet it attempted, filed under the named
-    /// engine (the section-suite rows carry one per producing scan).
+    /// engine. Each producing scan has one row in the section-suite
+    /// table.
     fn complete_coverage() -> calxgloss_types::ScanCoverage {
         calxgloss_types::ScanCoverage {
             status: calxgloss_types::CoverageStatus::Complete,
@@ -3124,9 +3131,9 @@ mod tests {
     /// The heading the escalate template passes the libraries-apis include.
     const LIBRARIES_APIS_HEADING: &str = "ADDITIONAL CONTEXT — LIBRARIES AND APIS";
 
-    /// The pinned wording stands at both ends of its journey: the shared
-    /// coverage type produces it from an apidetect-shaped record, and the
-    /// prompt-side view carries that same line verbatim.
+    /// The pinned wording is checked at both ends: the shared coverage
+    /// type produces it from an apidetect-shaped record, and the rendered
+    /// prompt shows that same line verbatim.
     #[test]
     fn the_api_admission_wording_is_pinned_at_both_ends_of_its_journey() {
         assert_eq!(
@@ -3223,9 +3230,10 @@ mod tests {
 
     // ---- #355: the seam's own capability admission ----------------------
 
-    /// A reason line no other family in this repo invents — if a seam
-    /// admission ever leaks out of the imported-APIs section into another
-    /// family's section, this name travels with it and the pin faults.
+    /// A reason line no other family in this repo invents. If a seam
+    /// admission ever appears outside the imported-APIs section, in
+    /// another family's section, this string appears with it and the
+    /// pinned test fails.
     const SEAM_UNREACHED: &str = "Zanthoxylum";
 
     /// The one admission wording the section suite pins for the seam's
@@ -3253,10 +3261,10 @@ mod tests {
         }
     }
 
-    /// The pinned wording stands at both ends of its journey (issue #355):
-    /// the shared capability type produces the admission line from its own
-    /// entry, and the prompt-side view carries that same line verbatim —
-    /// one set of words from the engine's declaration to the rendered line.
+    /// The pinned wording is checked at both ends (issue #355): the shared
+    /// capability type produces the admission line from its own entry, and
+    /// the rendered prompt shows that same line verbatim — one set of words,
+    /// from the engine's declaration to the rendered line.
     #[test]
     fn the_seam_admission_wording_is_pinned_at_both_ends_of_its_journey() {
         assert_eq!(
@@ -3282,9 +3290,9 @@ mod tests {
     }
 
     /// A declared-unavailable family appends exactly one bounded admission
-    /// line beside the entries, pinned byte-for-byte (issue #355) — and the
-    /// unreached family's name occurs exactly once in the whole prompt:
-    /// crossing into another family's section fails this pin.
+    /// line beside the entries, pinned byte-for-byte (issue #355). The
+    /// unreached family's name occurs exactly once in the whole prompt: if
+    /// it appears in another family's section, this test fails.
     #[test]
     fn a_seam_unavailable_admission_appends_exactly_one_line_beside_entries() {
         let mut bundle = EvidenceBundle::default();
@@ -3406,9 +3414,9 @@ mod tests {
     }
 
     /// The seam admission and the scan's own coverage admission are two
-    /// different admits — one the document's, one the live engine's — and
-    /// when both fall short each keeps exactly its own line, in order,
-    /// never merging (issue #355).
+    /// different admissions: one the document's, one the live engine's.
+    /// When both fall short, each keeps exactly its own line, in order,
+    /// and the two never merge (issue #355).
     #[test]
     fn the_scan_admission_and_the_seam_admission_keep_their_own_lines() {
         let mut bundle = EvidenceBundle::default();
@@ -3432,13 +3440,13 @@ mod tests {
         );
     }
 
-    /// The doctrine pair, byte-level (issue #359): the scan coverage
+    /// The doctrine pair, byte-level (issue #359). The scan coverage
     /// doctrine (P19, what a filed scan examined) and the seam capability
     /// doctrine (P20, what the open session can answer) are two different
-    /// admits, and their shared wording is deliberately collidable — a
+    /// admissions, and their shared wording may collide on purpose: a
     /// coverage admission and a capability admission CAN be byte-identical
-    /// raw, so the proof sits at both ends of their journeys: each keeps
-    /// its own frame and the two lines never merge. The `Tanglewood`
+    /// as raw data. So the proof sits at both ends of each admission: each
+    /// keeps its own frame and the two lines never merge. The `Tanglewood`
     /// sentinel is coined here and belongs to neither doctrine's fixtures.
     #[test]
     fn a_coverage_admission_and_a_capability_admission_worded_alike_never_share_bytes_at_either_end() {
@@ -3446,8 +3454,8 @@ mod tests {
 
         // The collision, built on purpose: the same status word and the
         // same sentence make the two doctrines' raw admission strings
-        // byte-identical at the data level — this is exactly why the
-        // frames are load-bearing.
+        // byte-identical at the data level. That is exactly why each
+        // admission needs its own frame.
         let coverage = calxgloss_types::ScanCoverage {
             status: calxgloss_types::CoverageStatus::Unavailable,
             facets: vec![calxgloss_types::FacetCoverage {
@@ -3468,11 +3476,11 @@ mod tests {
              frames separate them, not that the words differ"
         );
 
-        // The prompt end: each colliding admission rides its own frame —
-        // `Coverage:` for the scan record, `Analysis engine:` for the
-        // seam — each framed line exactly once, and the shared sentence
-        // exactly twice, once per line. A merge or a swallowed line would
-        // drop a frame or count the sentence only once.
+        // The prompt end: each colliding admission appears inside its
+        // own frame — `Coverage:` for the scan record, `Analysis engine:`
+        // for the seam. Each framed line appears exactly once, and the
+        // shared sentence exactly twice, once per line. A merge or a lost
+        // line would drop a frame or count the sentence only once.
         let mut bundle = EvidenceBundle::default();
         bundle.api_findings.push(api_fixture());
         bundle.api_coverage = CoverageInfo::from(&coverage);
@@ -3511,11 +3519,11 @@ mod tests {
 
     // ---- #357: the capability fan-out to every prompt-fed family ---------
 
-    /// One unreached reason name per fed family, all botanical and all
-    /// distinct — including from the names the other tracks coined
+    /// One unreached reason name per fed family. All are plant names and
+    /// all are distinct, including from the names the other tracks coined
     /// (`Zanthoxylum` for imports here, `Quincunx` and `Ginkgo` in the
-    /// translator). A reason's name reaching a section its family does
-    /// not feed trips one of the absence assertions below.
+    /// translator). If a reason's name appears in a section its family
+    /// feeds nothing to, one of the absence assertions below fails.
     fn set_decompilation_cap(b: &mut EvidenceBundle, line: &str) {
         b.decompilation_cap_line = line.to_string();
     }
@@ -3539,7 +3547,7 @@ mod tests {
     }
 
     /// One fed family's whole fan-out: its roster id, its unreached
-    /// reason, the bundle field the fold writes, and the headings of
+    /// reason, the bundle field the fan-out writes, and the headings of
     /// every section its facets feed, per host template — in host order
     /// escalate, module-context, full-module, rich, detailed. This table
     /// IS the facet-lineage record on the prompt side: it is where the
@@ -3685,14 +3693,14 @@ mod tests {
         },
     ];
 
-    /// The fan-out at the prompt surface: every fed family's admission
-    /// rides exactly the sections its facets feed, as exactly one
-    /// `Analysis engine:` line per fed section — heading-plus-line where
-    /// the surface filed nothing — on all five host templates; no other
+    /// The fan-out at the prompt surface. Every fed family's admission
+    /// appears in exactly the sections its facets feed, as exactly one
+    /// `Analysis engine:` line per fed section — heading plus line where
+    /// the surface filed nothing — on all five host templates. No other
     /// family's name ever appears in a section the family feeds nothing
     /// of, and a family that feeds a host nothing leaves that host's
-    /// bytes untouched (issue #357's counting, crossing, and doctrine
-    /// criteria at once).
+    /// bytes untouched. This pins issue #357's counting, crossing, and
+    /// doctrine criteria at once.
     #[test]
     fn every_fed_familys_admission_rides_exactly_its_own_sections() {
         let renderers: [fn(&EvidenceBundle) -> String; 5] = [
@@ -3758,9 +3766,9 @@ mod tests {
         }
     }
 
-    /// One prompt, every fed family unavailable at once: each family
-    /// still owns exactly its own line count, a section fed by several
-    /// families carries every one of their lines under the one heading
+    /// One prompt, every fed family unavailable at once. Each family
+    /// still owns exactly its own line count. A section fed by several
+    /// families shows every one of their lines under the one heading
     /// it opens — in roster order, beside the entries when entries
     /// exist — and each family's wording stays in its own lines
     /// (issue #357).
@@ -3854,10 +3862,10 @@ mod tests {
         );
     }
 
-    /// Beside populated entries the lines still ride — one per fed
-    /// family, after the entries, and the very next section's heading
-    /// opens cleanly beneath them (issue #357, the beside-the-entries
-    /// half of the #355 shape fanned out).
+    /// Beside populated entries the admission lines still appear — one
+    /// per fed family, after the entries — and the very next section's
+    /// heading opens cleanly beneath them (issue #357, the
+    /// beside-the-entries half of the #355 shape fanned out).
     #[test]
     fn fanout_admissions_ride_beside_entries_and_leave_the_next_heading_clean() {
         let mut bundle = EvidenceBundle::default();
@@ -3883,11 +3891,11 @@ mod tests {
         );
     }
 
-    /// Both silence-shapes across the whole fan-out: every family
-    /// answerable and every family undeclared fold to empty fields, and
-    /// every host then renders byte-for-byte what it rendered before
-    /// the seam ever spoke — the all-answerable fixture identity the
-    /// criteria demand at every consumer (issue #357).
+    /// Both silence-shapes across the whole fan-out: with every family
+    /// answerable, and with every family undeclared, the fields are empty
+    /// either way. Every host then renders byte-for-byte what it rendered
+    /// before the seam admission existed — the all-answerable fixture
+    /// identity the criteria demand at every consumer (issue #357).
     #[test]
     fn answerable_and_undeclared_families_render_byte_identically_to_silence() {
         let answerable = calxgloss_types::CapabilityReport {
@@ -3925,10 +3933,10 @@ mod tests {
         }
     }
 
-    /// The families that feed no prompt surface stop at the seam
-    /// declaration: `function-inventory`, `exports`, `image-base`, and
-    /// `memory-reads` grow no bundle field, no include parameter, and
-    /// no template reference anywhere in this crate — the pins scan the
+    /// The families that feed no prompt surface go no further than the
+    /// seam declaration: `function-inventory`, `exports`, `image-base`,
+    /// and `memory-reads` gain no bundle field, no include parameter, and
+    /// no template reference anywhere in this crate. The pins scan the
     /// very sources the renderer compiles from (issue #357).
     #[test]
     fn families_that_feed_no_prompt_surface_grow_no_field_and_no_parameter() {
@@ -4009,9 +4017,9 @@ mod tests {
     /// The heading the module-context template passes the libmatch include.
     const KNOWN_LIBRARY_HEADING: &str = "KNOWN LIBRARY FUNCTIONS";
 
-    /// The pinned wording stands at both ends of its journey: the shared
-    /// coverage type produces it from a libmatch-shaped record, and the
-    /// prompt-side view carries that same line verbatim.
+    /// The pinned wording is checked at both ends: the shared coverage
+    /// type produces it from a libmatch-shaped record, and the rendered
+    /// prompt shows that same line verbatim.
     #[test]
     fn the_libmatch_admission_wording_is_pinned_at_both_ends_of_its_journey() {
         assert_eq!(
@@ -4107,11 +4115,11 @@ mod tests {
         );
     }
 
-    /// The per-finding note (issue #347): a match record carrying its
+    /// The per-finding note (issue #347): a match record that includes its
     /// version-authority admission renders one extra line beside its
-    /// evidence — the prompt is never shown a versioned claim the
-    /// signature never established — while a note-less record renders
-    /// the pinned body untouched (pinned by the section suite above).
+    /// evidence, so the prompt is never shown a versioned claim the
+    /// signature never established. A record with no note renders the
+    /// pinned body untouched (pinned by the section suite above).
     #[test]
     fn an_admitted_libmatch_finding_renders_its_note_beside_its_evidence() {
         let mut finding = libmatch_fixture();
@@ -4124,10 +4132,9 @@ mod tests {
             libmatch_findings: vec![libmatch_fixture()],
             ..Default::default()
         });
-        // Un-stamp the note line from the admitted render: what's left
-        // must be exactly the note-less render — the note rides exactly
-        // one extra line, right after the evidence line, and nothing
-        // else moves.
+        // Remove the note line from the admitted render: what is left
+        // must be exactly the note-less render. The note adds exactly one
+        // line, right after the evidence line, and nothing else moves.
         assert_eq!(
             admitted.replace(
                 &format!("{LIBMATCH_SECTION_BODY}\n  Admission: Signature match, version unknown"),
@@ -4164,9 +4171,9 @@ mod tests {
     /// The heading the escalate template passes the floatsimd include.
     const ESCALATE_FLOATSIMD_HEADING: &str = "ADDITIONAL CONTEXT — FLOAT/SIMD";
 
-    /// The pinned wording stands at both ends of its journey: the shared
-    /// coverage type produces it from a floatsimd-shaped record, and the
-    /// prompt-side view carries that same line verbatim.
+    /// The pinned wording is checked at both ends: the shared coverage
+    /// type produces it from a floatsimd-shaped record, and the rendered
+    /// prompt shows that same line verbatim.
     #[test]
     fn the_floatsimd_admission_wording_is_pinned_at_both_ends_of_its_journey() {
         assert_eq!(
@@ -4314,9 +4321,9 @@ mod tests {
         }
     }
 
-    /// The one qualification wording the consts sections carry (issue
-    /// #348) — the same line beside the constants entries and beside the
-    /// data-tables entries, since one constant scan feeds both.
+    /// The one qualification wording that appears in both consts sections
+    /// (issue #348): the same line beside the constants entries and beside
+    /// the data-tables entries, since one constants scan feeds both.
     const CONSTS_ADMISSION: &str = "partial — 2 function bodies unreached: FUN_18003e750, +1 more; \
                                     1 data-object memory window unreadable: DAT_1400a1c00";
 
@@ -4324,10 +4331,9 @@ mod tests {
     const ESCALATE_CONSTANTS_HEADING: &str = "ADDITIONAL CONTEXT — CONSTANTS";
     const MODULE_CONTEXT_DATA_TABLES_HEADING: &str = "DATA TABLES";
 
-    /// The pinned wording stands at both ends of its journey for both
-    /// engines: the shared coverage type produces it from the records
-    /// their scans stamp, and the prompt-side view carries that same line
-    /// verbatim.
+    /// The pinned wording is checked at both ends for both engines: the
+    /// shared coverage type produces it from the records their scans
+    /// stamp, and the rendered prompt shows that same line verbatim.
     #[test]
     fn the_typesdb_and_consts_admission_wording_is_pinned_at_both_ends_of_their_journeys() {
         assert_eq!(
@@ -4388,9 +4394,9 @@ mod tests {
     }
 
     /// A falling-short typesdb record appends exactly one bounded
-    /// qualification line beside the structures — the admission rides the
-    /// section, it never replaces or reflows it, and one line is the whole
-    /// of the bloat budget (issue #348).
+    /// qualification line beside the structures. The admission joins the
+    /// section without replacing or reflowing it, and one line is the
+    /// whole growth allowed (issue #348).
     #[test]
     fn a_falling_short_typesdb_record_qualifies_the_section_beyond_its_entries() {
         let mut bundle = EvidenceBundle::default();
@@ -4420,12 +4426,12 @@ mod tests {
         );
     }
 
-    /// The empty-findings doctrine, typesdb side (issue #348): structures
+    /// The empty-findings doctrine, typesdb side (issue #348). Structures
     /// the scan never recovered establish nothing about the function, so a
-    /// falling-short record over an empty list opens no section to qualify
-    /// — unlike the constants and float/SIMD sections, whose headings the
-    /// admission does open. What the reader sees is the entries plus a
-    /// line, or nothing at all.
+    /// falling-short record over an empty list opens no section to qualify.
+    /// This differs from the constants and float/SIMD sections, whose
+    /// headings the admission does open. What the reader sees is the
+    /// entries plus a line, or nothing at all.
     #[test]
     fn empty_data_structures_under_a_falling_short_typesdb_record_establish_no_section() {
         let unstamped = render_module_context_full(&EvidenceBundle::default());
@@ -4588,8 +4594,8 @@ mod tests {
     /// single `function-bodies` facet fell short, naming the bodies the
     /// decompiler never produced — never an examined-and-clean body the
     /// finding list left unmentioned. Each engine names different bodies,
-    /// so a coverage value crossing into another engine's section fails
-    /// every pin below.
+    /// so if one engine's coverage value appears in another engine's
+    /// section, every pin below fails.
     fn control_flow_admitting_coverage() -> calxgloss_types::ScanCoverage {
         calxgloss_types::ScanCoverage {
             status: calxgloss_types::CoverageStatus::Partial,
@@ -4638,10 +4644,9 @@ mod tests {
     const ESCALATE_MEMORY_HEADING: &str = "ADDITIONAL CONTEXT — MEMORY LIFECYCLE";
     const ESCALATE_CONCURRENCY_HEADING: &str = "ADDITIONAL CONTEXT — CONCURRENCY";
 
-    /// The pinned wording stands at both ends of its journey for all
-    /// three engines: the shared coverage type produces it from the
-    /// records their scans stamp, and the prompt-side view carries those
-    /// same lines verbatim.
+    /// The pinned wording is checked at both ends for all three engines:
+    /// the shared coverage type produces it from the records their scans
+    /// stamp, and the rendered prompt shows those same lines verbatim.
     #[test]
     fn the_control_flow_memory_and_sync_admission_wording_is_pinned_at_both_ends() {
         assert_eq!(
@@ -4718,9 +4723,9 @@ mod tests {
     }
 
     /// A falling-short control-flow record appends exactly one bounded
-    /// qualification line at each of the section's three consumers — the
-    /// admission rides the section, it never replaces or reflows it, and
-    /// one line is the whole of the bloat budget (issue #349). The
+    /// qualification line at each of the section's three consumers. The
+    /// admission joins the section without replacing or reflowing it, and
+    /// one line is the whole growth allowed (issue #349). The
     /// module-context row feeds the branch-site fixture, so its pinned
     /// body is the branch entry's.
     #[test]
@@ -4778,8 +4783,8 @@ mod tests {
 
     /// A falling-short memory record and a falling-short sync record each
     /// append exactly one bounded qualification line beside their own
-    /// entries in the escalate prompt — the two admissions never borrow
-    /// each other's wording, and each section keeps one heading (issue
+    /// entries in the escalate prompt — the two admissions never use each
+    /// other's wording, and each section keeps one heading (issue
     /// #349).
     #[test]
     fn partial_memory_and_sync_records_append_one_qualification_line_each() {
@@ -4906,14 +4911,15 @@ mod tests {
 
     /// Coverage records in the shape these four scans file. The
     /// algorithm-recognition scan names the bodies its decompiler never
-    /// produced beside the caller edges it could not read; the
-    /// string-context scan lost its program-string listing and the xrefs
-    /// that ride on it, while still reading every body; the type-inference
-    /// scan read a truncated machine listing, lost its import listing, and
-    /// could not read one caller edge; the serialization-pattern scan —
-    /// like the global-state scan before it — has one facet, one missing
-    /// body. Each engine names different functions, so a coverage value
-    /// crossing into another engine's section fails every pin below.
+    /// produced beside the caller edges it could not read. The
+    /// string-context scan lost its program-string listing, and the
+    /// cross-references that depended on it went with it, while still
+    /// reading every body. The type-inference scan read a truncated
+    /// machine listing, lost its import listing, and could not read one
+    /// caller edge. The serialization-pattern scan — like the
+    /// global-state scan before it — has one facet and one missing body.
+    /// Each engine names different functions, so if one engine's coverage
+    /// value appears in another engine's section, every pin below fails.
     fn algorithm_admitting_coverage() -> calxgloss_types::ScanCoverage {
         calxgloss_types::ScanCoverage {
             status: calxgloss_types::CoverageStatus::Partial,
@@ -4996,7 +5002,7 @@ mod tests {
 
     /// The one qualification wording each section suite pins for its
     /// engine's section (issue #351). The type-inference admission is one
-    /// record — its joined form names three gaps — shared by the type
+    /// record whose joined form names three gaps, shared by the type
     /// information, calling convention, and parameter direction surfaces.
     const ALGORITHM_ADMISSION: &str = "partial — 1 function body unreached: FUN_180070010; 1 caller edge unreadable: FUN_180070020";
     const STRINGCTX_ADMISSION: &str =
@@ -5013,9 +5019,9 @@ mod tests {
     const MODULE_CALLING_CONVENTION_HEADING: &str = "CALLING CONVENTION";
     const MODULE_PARAMETER_DIRECTION_HEADING: &str = "PARAMETER DIRECTIONS";
 
-    /// The pinned wording stands at both ends of its journey: the shared
-    /// coverage type produces each admission from a scan-shaped record, and
-    /// the prompt-side view carries that same line verbatim (issue #351).
+    /// The pinned wording is checked at both ends: the shared coverage
+    /// type produces each admission from a scan-shaped record, and the
+    /// rendered prompt shows that same line verbatim (issue #351).
     #[test]
     fn the_four_admission_wordings_are_pinned_at_both_ends_of_their_journey() {
         for (record, pinned) in [
@@ -5075,8 +5081,9 @@ mod tests {
             );
         }
 
-        // The tier templates carry the type information surface; a complete
-        // type-inference record must leave their renders byte-identical too.
+        // The tier templates render the type information surface; a
+        // complete type-inference record must leave their renders
+        // byte-identical too.
         let req = sample_request();
         let mut rich_data = ComplexityPromptData::from_request(&req);
         rich_data.type_info = type_info_pair();
@@ -5106,9 +5113,9 @@ mod tests {
     }
 
     /// A falling-short record appends exactly one bounded qualification
-    /// line beside the entries of every section the producing scan feeds —
-    /// and for type inference, that ONE record lands identically on all
-    /// THREE of its surfaces across BOTH their consumers (issue #351).
+    /// line beside the entries of every section the producing scan feeds.
+    /// For type inference, that ONE record lands identically on all THREE
+    /// of its surfaces across BOTH their consumers (issue #351).
     #[test]
     fn each_falling_short_record_appends_one_line_per_section_it_qualifies() {
         let mut bundle = EvidenceBundle::default();
@@ -5217,8 +5224,8 @@ mod tests {
         );
     }
 
-    /// The type information surface's two tier consumers carry the same
-    /// record too: one type-inference admission renders identical bytes on
+    /// The type information surface's two tier consumers use the same
+    /// record too: one type-inference admission renders identical bytes in
     /// the type information section of the rich and detailed templates
     /// (issue #351).
     #[test]
@@ -5341,8 +5348,8 @@ mod tests {
     /// single `function-bodies` facet fell short, naming the bodies the
     /// decompiler never produced — never an examined-and-clean body the
     /// finding list left unmentioned. Each engine names different bodies,
-    /// so a coverage value crossing into another engine's section fails
-    /// every pin below.
+    /// so if one engine's coverage value appears in another engine's
+    /// section, every pin below fails.
     fn globalstate_admitting_coverage() -> calxgloss_types::ScanCoverage {
         calxgloss_types::ScanCoverage {
             status: calxgloss_types::CoverageStatus::Partial,
@@ -5393,11 +5400,11 @@ mod tests {
     const MODULE_ERROR_HANDLING_HEADING: &str = "ERROR HANDLING";
 
     /// The error-handling section's body as each host template renders it
-    /// inline — the steering wording genuinely differs between the retry
-    /// prompt and the module translation, so the block is the one section
-    /// kept inline rather than lifted onto an include; each copy is
-    /// pinned beside its own steering (issue #350). Both rows below are
-    /// what `seh_finding()` and `code_finding()` render, in list order.
+    /// inline. The steering wording genuinely differs between the retry
+    /// prompt and the module translation, so this is the one section kept
+    /// inline rather than moved onto an include; each copy is pinned
+    /// beside its own steering (issue #350). Both rows below are what
+    /// `seh_finding()` and `code_finding()` render, in list order.
     const ERROR_HANDLING_ROWS: &str = "- **translate the frame as a Rust match arms ladder** (try/catch frame idiom, confidence 100)\n  \
         Evidence: `  catch(...) {`\n\n\
         - **failure code 0x80070057** (failure code from a `return` site, confidence 85)\n  \
@@ -5417,10 +5424,9 @@ mod tests {
         below as the numeric codes of the Rust error values the function hands back\n\
         instead of collapsing them into ad-hoc error variants:";
 
-    /// The pinned wording stands at both ends of its journey for all
-    /// three engines: the shared coverage type produces it from the
-    /// records their scans stamp, and the prompt-side view carries those
-    /// same lines verbatim.
+    /// The pinned wording is checked at both ends for all three engines:
+    /// the shared coverage type produces it from the records their scans
+    /// stamp, and the rendered prompt shows those same lines verbatim.
     #[test]
     fn the_global_state_error_handling_and_callback_admission_wording_is_pinned_at_both_ends() {
         assert_eq!(
@@ -5497,9 +5503,9 @@ mod tests {
 
     /// A falling-short record for each engine appends exactly one bounded
     /// qualification line beside its own entries at each of the
-    /// section's consumers — the admission rides the section, it never
-    /// replaces or reflows it, and one line is the whole of the bloat
-    /// budget (issue #350).
+    /// section's consumers. The admission joins the section without
+    /// replacing or reflowing it, and one line is the whole growth
+    /// allowed (issue #350).
     #[test]
     fn the_global_state_error_handling_and_callback_rides_append_exactly_one_qualification_line() {
         let mut bundle = EvidenceBundle::default();
@@ -5664,16 +5670,15 @@ mod tests {
     /// engine on the P19 track. For each, an empty findings list under a
     /// complete record renders byte-identically to the unstamped silence
     /// P19 shipped on — and never the same bytes as the same emptiness
-    /// under that engine's own falling-short record, whose section
-    /// carries its one admission line. The pin is per-engine in kind
-    /// (tickets #346-#351 each pinned their own pair); this sweep is the
-    /// track statement that no engine was left out, one failure report
-    /// naming the engine that broke it.
+    /// under that engine's own falling-short record, whose section shows
+    /// its one admission line. Tickets #346-#351 each pinned a pair for
+    /// their own engine; this sweep is the track statement that no engine
+    /// was left out, one failure report naming the engine that broke it.
     ///
     /// typesdb is the one row whose pair has its own established shape
     /// (issue #348): with no structures recovered the section stays shut
     /// under either record — zero vtables is a property of the target,
-    /// not a gap beside entries — so the pair rides populated
+    /// not a gap beside entries — so the typesdb pair uses populated
     /// structures, pinned after the sweep.
     #[test]
     fn the_whole_track_renders_empty_findings_under_complete_and_falling_short_coverage_never_alike()
@@ -5791,7 +5796,7 @@ mod tests {
                 SERIALIZE_ADMISSION,
             ),
             (
-                // The empty type-inference admission surfaces on its
+                // The empty type-inference admission appears on its
                 // convention and parameter-direction sections — the
                 // escalate heading the #351 pin established.
                 "type-inference",
@@ -5831,7 +5836,7 @@ mod tests {
         }
 
         // The typesdb row, per its established shape (#348): the pair
-        // rides populated structures — complete adds nothing,
+        // uses populated structures — complete adds nothing,
         // falling-short adds its one line.
         let mut structures = EvidenceBundle::default();
         structures
@@ -5891,8 +5896,8 @@ mod tests {
     /// render side: the (template × section) include set across the template
     /// tree is exactly the rows of the section suite above, and every
     /// imported scope must actually be called. A forgotten or
-    /// accidentally-dropped include fails here loudly instead of silently
-    /// shrinking a prompt.
+    /// accidentally dropped include fails here loudly, instead of silently
+    /// making a prompt smaller.
     #[test]
     fn the_template_section_include_set_is_exactly_the_registered_rows() {
         let templates_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates"));
