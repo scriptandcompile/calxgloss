@@ -24,10 +24,10 @@
 //! runs it under Wine. See the `run` module for the details.
 //!
 //! Global side-effect expectations are not captured from the Wine run — the
-//! harness reports return values only. They are supplied by the global-state
-//! reference sets: [`global_state_expectations`] turns the function's access
-//! records in the persisted artifact into typed `GlobalRead`/`GlobalWrite`
-//! expectations naming each global.
+//! harness reports return values only. They come from the global-state scan
+//! instead: [`global_state_expectations`] turns the function's access records
+//! in the persisted global-state document into typed `GlobalRead`/
+//! `GlobalWrite` expectations, each naming one global.
 //!
 //! # Example
 //!

@@ -6,17 +6,17 @@ use crate::wine::types::HarnessSpec;
 
 use std::fmt::Write as _;
 
-/// Generate the generated harness's `invoke` function.
+/// Build the `invoke` function of the generated harness.
 ///
-/// This is the only part that varies per function, so it is generated between
-/// two fixed chunks of harness code.
+/// This is the only part that changes from one function under test to the
+/// next, so it is written between two fixed chunks of harness code.
 pub fn generate_invoke(spec: &HarnessSpec) -> Result<String> {
     let expected = spec.params.len();
     let mut out = String::new();
 
-    // Buffers requested by pointer arguments must outlive the call into the target
-    // function, so they are held in an arena. Only emitted when a pointer is
-    // actually present, otherwise it would be an unused binding.
+    // Buffers requested by pointer arguments must outlive the call into the
+    // target function, so they are kept in one arena. The arena is only
+    // emitted when a pointer is present, otherwise it would be unused.
     let has_pointer = spec
         .params
         .iter()
@@ -103,8 +103,8 @@ pub fn generate_invoke(spec: &HarnessSpec) -> Result<String> {
                     "if r.is_null() { \"p:null\".to_string() } else { format!(\"p:0x{:x}\", r as usize) }"
                         .to_string()
                 }
-                // Integers go out in decimal. `{r}` captures the binding, so no
-                // positional argument is passed.
+                // Integers are sent as decimal text. `{r}` captures the binding,
+                // so no positional argument is passed.
                 _ => format!("format!(\"{}:{{r}}\")", kind.tag()),
             };
             writeln!(out, "    Ok({rendered})").expect("writing to a String cannot fail");

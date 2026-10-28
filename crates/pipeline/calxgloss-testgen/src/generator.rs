@@ -120,8 +120,8 @@ impl TestGenerator {
     ///
     /// Convenience method that extracts the disassembly from the function info
     /// and calls [`generate_test_inputs`](Self::generate_test_inputs). The
-    /// branch inventory arrives with the pipeline wiring (#261); until then
-    /// this hands an empty inventory, which is today's behavior exactly.
+    /// pipeline gets its branch inventory in a later change (#261); until
+    /// then this passes an empty inventory, keeping behavior unchanged.
     pub async fn generate_test_inputs_from_function(
         &self,
         function_info: &FunctionInfo,

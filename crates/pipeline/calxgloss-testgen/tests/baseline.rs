@@ -195,8 +195,8 @@ fn baseline_reaches_memory_accessing_functions() {
 
     // FUN_180081be0 returns void and writes 0 to [param_1 + 0xe5]. There is no
     // return value to check, so this asserts the call completes and writes to a
-    // live buffer rather than faulting — which is what a raw unmapped address
-    // would have done.
+    // live buffer instead of faulting the way it would if the harness passed a
+    // raw unmapped address.
     let setter_sig = parse_signature("void FUN_180081be0(undefined *param_1)").unwrap();
     let setter = HarnessSpec::new(
         "FUN_180081be0",
@@ -211,7 +211,7 @@ fn baseline_reaches_memory_accessing_functions() {
     let result = &report.results[0];
     assert!(!result.crashed, "setter crashed: {:?}", result.error);
     assert!(result.ok, "setter failed: {:?}", result.error);
-    // A void call carries no payload.
+    // A void call sends no payload.
     assert_eq!(result.returned, Value::Null);
 }
 
@@ -225,9 +225,9 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
     let image = PeImage::parse(&binary).expect("PE should parse");
     let work = tempfile::tempdir().expect("tempdir");
 
-    // Calling through a null pointer must fault. The runner has to come back with
-    // a failed result rather than losing the whole batch, which is what the
-    // per-case isolation pass exists for.
+    // Calling through a null pointer must fault. The runner has to come back
+    // with a failed result rather than losing the whole batch, which is the
+    // job of the per-case isolation retry.
     let sig = parse_signature("uint FUN_1800470a0(undefined *param_1)").unwrap();
     let spec = HarnessSpec::new(
         "FUN_1800470a0",
@@ -299,13 +299,13 @@ fn baseline_resolves_a_va_through_the_image_base() {
     };
     let image = PeImage::parse(&binary).expect("PE should parse");
 
-    // This is the step the whole design rests on: a decompiler virtual address
-    // becomes a call target via the image base.
+    // This is the step the whole design depends on: a decompiler virtual
+    // address becomes a call target through the image base.
     let decomp_va = image.va_from_rva(TARGET_RVA);
     let locator = calxgloss_testgen::locator_for_va(&image, decomp_va).expect("locator");
     assert_eq!(locator, FunctionLocator::Rva(TARGET_RVA));
 
-    // And the same thing driven by the decompiler's function naming.
+    // The same lookup driven by the decompiler's function name.
     let by_name =
         calxgloss_testgen::locator_for_function(&image, "FUN_18008ed50").expect("locator");
     assert_eq!(by_name, FunctionLocator::Rva(TARGET_RVA));
@@ -322,7 +322,7 @@ fn full_load_mode_still_produces_a_baseline() {
     let work = tempfile::tempdir().expect("tempdir");
 
     let mut spec = spec(TARGET_SIGNATURE, TARGET_RVA);
-    // Runs Delphi's DllMain, which is what a function needing runtime state needs.
+    // Runs Delphi's DllMain, which a function needing runtime state requires.
     spec.load_mode = LoadMode::Full;
 
     let test_cases = cases();
@@ -352,9 +352,9 @@ fn full_load_mode_still_produces_a_baseline() {
 #[test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 fn generated_harness_has_no_dependencies() {
-    // The generated project must stay dependency-free so cross-compiling it does
-    // not need a registry fetch. This is what keeps the harness build fast and
-    // hermetic.
+    // The generated project must stay dependency-free so cross-compiling it
+    // does not need a registry fetch. That keeps the harness build fast and
+    // self-contained.
     let spec = HarnessSpec::new(
         "FUN_18008ed50",
         FunctionLocator::Rva(TARGET_RVA),
@@ -385,7 +385,7 @@ async fn baseline_runner_returns_ground_truth_for_a_ghidra_function() {
     let work = tempfile::tempdir().expect("tempdir");
     let runner = BaselineRunner::new(work.path());
 
-    // Expectations are stated here so the comparison is exercised, not just the
+    // Expectations are stated here so the comparison is tested, not just the
     // capture: the model below is derived from the decompiled body.
     let expected: Vec<Value> = cases()
         .iter()

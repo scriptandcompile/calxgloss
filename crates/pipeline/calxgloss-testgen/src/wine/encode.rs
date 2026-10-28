@@ -88,7 +88,7 @@ fn encode_value(kind: ScalarKind, name: &str, value: &Value) -> Result<String> {
         ScalarKind::U64 => format!("{}", as_int(value)?),
         ScalarKind::F32 | ScalarKind::F64 => {
             // Accept either a JSON number or an explicit bit pattern, so callers
-            // can pin NaN payloads that JSON cannot represent.
+            // can set exact NaN values that JSON cannot represent.
             match value {
                 Value::String(s) => s.clone(),
                 other => other
@@ -179,7 +179,7 @@ fn encode_alloc(name: &str, spec: &serde_json::Map<String, Value>) -> Result<Str
                 .strip_prefix("0x")
                 .or_else(|| t.strip_prefix("0X"))
                 .unwrap_or(t);
-            // Two hex digits is one byte; anything else is a mistake worth naming.
+            // Two hex digits is one byte; anything longer is an error worth reporting.
             if hex.len() > 2 {
                 bail!(
                     "'{name}': allocation fill '{s}' is more than one byte; fill sets every byte"
@@ -196,7 +196,7 @@ fn encode_alloc(name: &str, spec: &serde_json::Map<String, Value>) -> Result<Str
 /// Decode one `<kind>:<value>` payload into JSON.
 pub fn decode_value(payload: &str) -> Value {
     let Some((tag, raw)) = payload.split_once(':') else {
-        // A void return carries an empty payload.
+        // A void return sends an empty payload.
         return Value::Null;
     };
     match tag {

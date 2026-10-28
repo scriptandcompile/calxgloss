@@ -1,8 +1,8 @@
 //! Test input generation for function baseline testing.
 //!
-//! This module provides functionality to generate diverse test inputs based on
-//! function signatures and disassembly analysis. Generated inputs cover boundary
-//! values, typical values, and edge cases identified from the disassembly.
+//! This module generates diverse test inputs from function signatures and
+//! disassembly analysis. Generated inputs cover boundary values, typical
+//! values, and edge cases found in the disassembly.
 //!
 //! # Generation Strategy
 //!
@@ -17,7 +17,7 @@
 //!    from the control-flow scan's branch inventory: the equality value for
 //!    equality guards, the immediate ±1 for relational guards, a null/zero
 //!    probe for null-check guards and shape-only readings, and one case
-//!    value per switch arm; parameters the condition does not involve hold
+//!    value per switch arm; parameters the condition does not involve keep
 //!    typical values
 //! 4. **Combination** — merge all sets and deduplicate to produce the final
 //!    test case list, capped per function with the lowest-confidence branch
@@ -107,9 +107,9 @@ impl DisassemblyEdgeCases {
     /// - `cmp reg, -1` — negative one checks
     /// - `cmp reg, 256` / `cmp reg, 65536` — common boundary values
     ///
-    /// Both spellings read: the lowercase objdump-style spelling the
-    /// retired bridge used to serve (`cmp eax, 256`) and the engine's
-    /// uppercase SLEIGH listing with `0x` hex immediates (`CMP EAX,0x64`).
+    /// Both spellings are read: the lowercase objdump-style one the older
+    /// bridge produced (`cmp eax, 256`) and the analysis engine's uppercase
+    /// SLEIGH listing with `0x` hex immediates (`CMP EAX,0x64`).
     ///
     /// # Arguments
     ///
@@ -266,21 +266,21 @@ fn parse_immediate(text: &str) -> Option<i64> {
 ///
 /// This is the main entry point for test input generation. It combines
 /// signature-based and disassembly-based test generation to produce
-/// comprehensive test coverage, and grows one branch-targeted case per
-/// branch target from the control-flow scan's branch inventory so the
-/// suite pins each branch the decompiled body reveals, not just the
-/// happy path.
+/// broad test coverage, and adds one branch-targeted case per branch
+/// target from the control-flow scan's branch inventory, so the suite
+/// covers each branch the decompiled body shows, not just the usual
+/// path.
 ///
 /// # Arguments
 ///
 /// * `signature` — The function signature string.
 /// * `disassembly` — Raw disassembly for edge case detection.
 /// * `branch_inventory` — The target function's branch-site records from
-///   the control-flow scan, in body order (the caller hands the records
-///   for this function; the generator does not filter by name). An empty
-///   inventory means today's behavior exactly: the output is byte-identical
-///   to what the same signature and disassembly produced before the seam
-///   grew this parameter.
+///   the control-flow scan, in body order (the caller supplies the
+///   records for this function; the generator does not filter by name).
+///   An empty inventory keeps today's behavior exactly: the output is
+///   byte-identical to what the same signature and disassembly produced
+///   before this parameter was added.
 ///
 /// # Returns
 ///
@@ -288,11 +288,11 @@ fn parse_immediate(text: &str) -> Option<i64> {
 /// return values and side effects are left empty (null/empty) since they
 /// must be captured from baseline execution.
 ///
-/// Branch-targeted cases ride after the existing suite, deduplicated
-/// against it; the suite is capped at [`MAX_TEST_CASES_PER_FUNCTION`] per
-/// function, and when the cap bites the lowest-confidence branch cases
-/// drop first — ties break toward the later site in body order — so the
-/// boundary cases mined from the signature and disassembly always survive.
+/// Branch-targeted cases come after the existing suite, deduplicated
+/// against it; the suite is capped at `MAX_TEST_CASES_PER_FUNCTION` per
+/// function, and when the cap applies the lowest-confidence branch cases
+/// drop first — ties go to the later site in body order — so the boundary
+/// cases taken from the signature and disassembly always stay in the suite.
 ///
 /// # Example
 ///
@@ -345,11 +345,11 @@ pub fn generate_test_inputs(
     // Deduplicate test inputs
     test_cases = deduplicate_tests(test_cases);
 
-    // Branch-targeted cases ride after the deduplicated suite so an empty
-    // inventory leaves today's output byte-identical. They dedup against
-    // the boundary cases first — a branch case duplicating a case the
-    // suite already holds never consumes cap room — and when the cap
-    // bites the lowest-confidence branch cases drop first.
+    // Branch-targeted cases come after the deduplicated suite, so an empty
+    // inventory leaves today's output byte-identical. They dedup against the
+    // boundary cases first — a branch case duplicating a case the suite
+    // already contains never uses up cap space — and when the cap applies,
+    // the lowest-confidence branch cases drop first.
     if !branch_inventory.is_empty() {
         let existing: HashSet<String> = test_cases.iter().map(|t| t.inputs.to_string()).collect();
         let mut branch: Vec<BranchCase> = generate_branch_tests(parsed.as_ref(), branch_inventory)
@@ -540,13 +540,13 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
     tests
 }
 
-/// The per-function ceiling on generated test cases. A branch-heavy body
-/// cannot explode the baseline suite: when the cap bites, branch-targeted
-/// cases drop — lowest confidence first — before any boundary case mined
-/// from the signature or disassembly is touched.
+/// The per-function limit on generated test cases. A body with many
+/// branches cannot grow the baseline suite without limit: when the cap
+/// applies, branch-targeted cases drop — lowest confidence first — and
+/// boundary cases taken from the signature or disassembly are never dropped.
 const MAX_TEST_CASES_PER_FUNCTION: usize = 40;
 
-/// A branch-targeted case tagged with the confidence of the record that
+/// A branch-targeted case stored with the confidence of the record that
 /// produced it and the site's position in body order — the two facts the
 /// per-function cap uses to decide which cases drop first.
 struct BranchCase {
@@ -572,17 +572,17 @@ enum Probe {
 ///
 /// - an equality guard (`==`/`!=`) yields its equality value;
 /// - a relational guard (`<` `<=` `>` `>=`) yields the immediate ±1 — both
-///   sides of the boundary, so an off-by-one mistranslation diverges on
-///   one of them (loop-exit boundaries included: whichever side the exit
-///   sits on, the pair straddles it);
+///   sides of the boundary, so an off-by-one mistranslation gives a
+///   different result on one of them (loop-exit boundaries included: the
+///   pair has one value on each side, wherever the exit is);
 /// - a null-check guard (an equality guard against zero) and a shape-only
 ///   reading that names no predicate yield a null/zero probe and nothing
-///   else — a record that read no constant fabricates no boundary;
+///   else — a record that read no constant states no boundary value;
 /// - a switch arm yields its case value; a named case constant that is not
-///   a literal degrades to the null/zero probe rather than inventing a
+///   a literal falls back to the null/zero probe rather than inventing a
 ///   value for the name.
 ///
-/// Parameters the condition does not involve hold typical values, and the
+/// Parameters the condition does not involve keep typical values, and the
 /// probe respects the parameter types the signature declares so the Wine
 /// harness can encode it — a probe outside the parameter's representable
 /// range drops that case instead of producing an unencodable input.
@@ -602,9 +602,9 @@ fn generate_branch_tests(
             let Some(test) = test else { continue };
             let key = test.inputs.to_string();
             if let Some(&first) = seen.get(&key) {
-                // Two sites probing the same input set: keep the copy
-                // backed by the more confident record so the cap drops
-                // the right one when it bites.
+                // Two sites probing the same input set: keep the copy backed
+                // by the more confident record so the cap drops the right one
+                // when it applies.
                 if confidence > cases[first].confidence {
                     cases[first].confidence = confidence;
                 }
@@ -626,7 +626,7 @@ fn generate_branch_tests(
 fn branch_probes(site: &BranchSite) -> Vec<Probe> {
     if site.guards == GuardedTarget::SwitchArm {
         // A case arm probes its own case value; a named constant that is
-        // not a literal probes null/zero rather than fabricating a value.
+        // not a literal probes null/zero rather than inventing a value.
         return vec![
             site.immediate
                 .as_deref()
@@ -647,11 +647,11 @@ fn branch_probes(site: &BranchSite) -> Vec<Probe> {
                 .map(Probe::Value)
                 .collect(),
             Some(Probe::Float(f)) => vec![Probe::Float(f - 1.0), Probe::Float(f + 1.0)],
-            // A guard that read no constant claims no boundary.
+            // A guard that read no constant states no boundary.
             None | Some(Probe::Zero) => vec![Probe::Zero],
         },
         // Shape-only readings (no operator) and operator-only readings
-        // (the other side is a name, not a constant) claim no boundary:
+        // (the other side is a name, not a constant) state no boundary:
         // a null/zero probe and nothing else.
         _ => vec![Probe::Zero],
     }
@@ -693,10 +693,10 @@ fn param_index(params: &[ParameterTypeInfo], name: &str) -> Option<usize> {
 }
 
 /// Build one branch-targeted case for a parsed signature: a value probe
-/// lands on the first parameter the condition names, falling back to the
-/// first integer parameter when the condition reads only locals; a
-/// null/zero probe zeroes every named parameter — or every parameter when
-/// the site names none. All other parameters hold typical values.
+/// goes to the first parameter the condition names, or to the first integer
+/// parameter when the condition reads only locals; a null/zero probe zeroes
+/// every named parameter — or every parameter when the site names none. All
+/// other parameters keep typical values.
 fn branch_case_for_signature(
     parsed: &ParsedSignature,
     site: &BranchSite,
@@ -732,9 +732,9 @@ fn branch_case_for_signature(
 }
 
 /// Build one branch-targeted case without a signature, on the generic
-/// three-parameter shape [`generate_generic_tests`] uses: the probe lands
-/// on the parameter the condition names positionally (`param_1` becomes
-/// `param_0`), else on `param_0`; the rest hold zero.
+/// three-parameter shape [`generate_generic_tests`] uses: the probe goes to
+/// the parameter the condition names positionally (`param_1` becomes
+/// `param_0`), else to `param_0`; the rest are zero.
 fn branch_case_generic(site: &BranchSite, probe: &Probe) -> Option<TestCase> {
     let named: Vec<usize> = site
         .params
@@ -799,8 +799,8 @@ fn encode_probe(param: &ParameterTypeInfo, probe: &Probe) -> Option<serde_json::
 }
 
 /// The declared width of an integer parameter in bits. `ParameterTypeInfo`
-/// carries a width only for digit spellings (`int8`); the spelled-out C
-/// dialects both front ends emit — `unsigned char`, `short`, `long long` —
+/// has a width only for digit spellings (`int8`); the spelled-out C names
+/// both disassemblers emit — `unsigned char`, `short`, `long long` —
 /// get their width from the keyword, matching the scalar kinds the Wine
 /// harness range-checks on.
 fn declared_bit_width(param: &ParameterTypeInfo) -> Option<u32> {
@@ -822,9 +822,9 @@ fn declared_bit_width(param: &ParameterTypeInfo) -> Option<u32> {
     })
 }
 
-/// Whether an integer probe sits inside the parameter's declared range.
-/// A parameter with no known width accepts any probe — the harness's own
-/// range check is the backstop, as it is for today's boundary values.
+/// Whether an integer probe is within the parameter's declared range. A
+/// parameter with no known width accepts any probe — the harness's own
+/// range check is the final guard, as it is for today's boundary values.
 fn probe_fits(param: &ParameterTypeInfo, n: i64) -> bool {
     match (declared_bit_width(param), param.is_signed) {
         (Some(w), true) if w < 64 => -(1i64 << (w - 1)) <= n && n < 1i64 << (w - 1),
@@ -1071,8 +1071,8 @@ mod tests {
 
     #[test]
     fn ghidra_mcp_style_lowercase_text_still_reads() {
-        // The lowercase objdump-style spelling the retired bridge served —
-        // the Kuna additions must not change what this yields.
+        // The lowercase objdump-style spelling the older bridge produced —
+        // the Kuna additions must not change what this returns.
         let cases = DisassemblyEdgeCases::from_disassembly(
             "cmp eax, 0\nje zero_handler\ncmp ecx, 256\nja out_of_bounds\ncmp edx, -1\ntest eax, eax",
         );
@@ -1105,7 +1105,7 @@ mod tests {
 
     // ---- branch-targeted cases -------------------------------------
 
-    /// One branch-site record for the inventory a test hands the seam.
+    /// One branch-site record for the inventory a test passes along.
     fn sample_branch_site(
         condition: &str,
         params: &[&str],
@@ -1127,12 +1127,12 @@ mod tests {
         }
     }
 
-    /// The input sets a suite carries, as dedup keys.
+    /// The input sets a suite contains, as dedup keys.
     fn input_keys(tests: &[TestCase]) -> HashSet<String> {
         tests.iter().map(|t| t.inputs.to_string()).collect()
     }
 
-    /// The value fed to one input key across a suite.
+    /// The values a suite gives to one input key.
     fn probed_values(tests: &[TestCase], key: &str) -> Vec<serde_json::Value> {
         tests
             .iter()
@@ -1142,11 +1142,11 @@ mod tests {
 
     #[test]
     fn an_empty_inventory_leaves_the_output_byte_identical() {
-        // The seam grew an inventory parameter; with an empty inventory
-        // the same signature and disassembly must produce byte-identical
-        // suites to the ones recorded before the seam grew — over the
-        // signature+disassembly, signature-only, and disassembly-only
-        // paths.
+        // generate_test_inputs gained an inventory parameter; with an empty
+        // inventory the same signature and disassembly must produce suites
+        // byte-identical to the ones recorded before that parameter existed —
+        // over the signature+disassembly, signature-only, and
+        // disassembly-only paths.
         const GOLDEN_SIG_DIS: &str =
             include_str!("../tests/golden/testgen_empty_inventory_sig_dis.json");
         const GOLDEN_SIG_ONLY: &str =
@@ -1186,8 +1186,8 @@ mod tests {
 
     #[test]
     fn a_relational_guard_yields_the_immediate_plus_and_minus_one() {
-        // The pair straddles the boundary, so an off-by-one mistranslation
-        // of the loop exit diverges on one of the two probes.
+        // The two probes sit either side of the boundary, so an off-by-one
+        // mistranslation of the loop exit gives a different result on one.
         let sig = "int __stdcall Sum(int x)";
         let inventory = [sample_branch_site(
             "param_1 < 10",
@@ -1209,9 +1209,9 @@ mod tests {
     #[test]
     fn a_null_check_guard_yields_a_null_zero_probe_and_nothing_else() {
         // `param_1 == 0` is a null check: the guard against zero probes
-        // null/zero on the parameter it names and claims no other
+        // null/zero on the parameter it names and states no other
         // boundary — the single case it adds zeroes that parameter and
-        // holds the rest typical.
+        // keeps the rest at typical values.
         let sig = "int __stdcall Idx(int i, int n)";
         let inventory = [sample_branch_site(
             "param_1 == 0",
@@ -1239,8 +1239,8 @@ mod tests {
     #[test]
     fn a_shape_only_record_yields_only_a_null_zero_probe() {
         // A compound condition reads shape-only: it names its parameters
-        // but claims no boundary, so the only case it adds zeroes them
-        // and holds the rest typical.
+        // but states no boundary, so the only case it adds zeroes them
+        // and keeps the rest at typical values.
         let sig = "int __stdcall Gate(int a, int b, int c)";
         let inventory = [sample_branch_site(
             "param_1 == 0 && param_2 == 1",
@@ -1294,9 +1294,9 @@ mod tests {
 
     #[test]
     fn a_named_case_constant_probes_null_zero_instead_of_a_fabricated_value() {
-        // `case STATE_RUN:` names no literal; the record fabricates no
-        // value, so its probe is the null/zero one — which for this
-        // signature already sits in the suite as a boundary case.
+        // `case STATE_RUN:` names no literal; the record invents no value,
+        // so its probe is the null/zero one — which for this signature is
+        // already in the suite as a boundary case.
         let sig = "int __stdcall State(int s)";
         let inventory = [sample_branch_site(
             "case STATE_RUN:",
@@ -1374,9 +1374,9 @@ mod tests {
 
     #[test]
     fn the_cap_drops_the_lowest_confidence_branch_cases_first() {
-        // Enough exact readings to bite the cap, plus one shape-only
+        // Enough exact readings to hit the cap, plus one shape-only
         // reading whose probe is a distinct input set: the 50-confidence
-        // probe goes first, then the later sites among the 80s.
+        // probe is dropped first, then the later sites among the 80s.
         let sig = "int __stdcall Wide(int x, int y)";
         let without = generate_test_inputs(sig, "", &[]).unwrap();
         let mut inventory: Vec<BranchSite> = (2..32)
@@ -1413,8 +1413,8 @@ mod tests {
                 .any(|t| t.inputs == json!({"param_0": 0, "param_1": 42}))
         );
         // ...and among the exact readings the later sites dropped first:
-        // every probe up to the boundary survives, every probe past it
-        // does not.
+        // every probe up to the cutoff stays, every probe past it does
+        // not.
         let room = MAX_TEST_CASES_PER_FUNCTION - without.len();
         let dropped = 31 - room; // 30 exact probes plus the shape-only one
         assert!(dropped >= 1, "the inventory is meant to bite the cap");
@@ -1470,8 +1470,8 @@ mod tests {
     #[test]
     fn an_operator_only_reading_probes_null_zero_not_a_fabricated_boundary() {
         // `param_1 == STATE_IDLE` read the operator but the other side is
-        // a name: no boundary is claimed, so the probe zeroes the named
-        // parameter and holds the rest typical.
+        // a name: no boundary is stated, so the probe zeroes the named
+        // parameter and keeps the rest at typical values.
         let sig = "int __stdcall S(int x, int y)";
         let inventory = [sample_branch_site(
             "param_1 == STATE_IDLE",

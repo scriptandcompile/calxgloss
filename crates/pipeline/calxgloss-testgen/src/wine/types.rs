@@ -50,8 +50,8 @@ impl FunctionLocator {
 /// A scalar type the harness can marshal across the FFI boundary.
 ///
 /// Structs, arrays, and unrecognised type names are deliberately unsupported:
-/// marshalling them correctly is not guessable, and a wrong guess produces
-/// silently incorrect baselines.
+/// there is no safe way to infer how to marshal them, and a wrong guess
+/// quietly produces an incorrect baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarKind {
     I8,
@@ -64,7 +64,7 @@ pub enum ScalarKind {
     U64,
     F32,
     F64,
-    /// A pointer, carried as a `void*`.
+    /// A pointer, passed as a `void*`.
     Ptr,
     /// No return value.
     Unit,
@@ -99,7 +99,7 @@ impl ScalarKind {
             return Some(ScalarKind::Unit);
         }
         // Strip mutability markers before matching, so `*mut u8` and
-        // `*const u8` both collapse to "a pointer".
+        // `*const u8` are both read as "a pointer".
         if t.starts_with('*') {
             return Some(ScalarKind::Ptr);
         }
@@ -162,9 +162,9 @@ impl HarnessSpec {
     /// `machine` is the target's architecture, which decides the width of
     /// pointer-sized integer types.
     ///
-    /// Returns an error naming the offending type when a parameter or the return
-    /// value is not a marshallable scalar, so the failure is actionable rather
-    /// than a compile error inside generated code.
+    /// Returns an error naming the offending type when a parameter or the
+    /// return value is not a marshallable scalar, so the caller can fix the
+    /// signature instead of getting a compile error inside generated code.
     pub fn new(
         function_label: &str,
         locator: FunctionLocator,
@@ -185,7 +185,7 @@ impl HarnessSpec {
             })?;
             params.push(ParamSpec {
                 // Ghidra names parameters param_1..param_N; fall back to a
-                // positional name so the inputs map is still addressable.
+                // positional name so every parameter can still be given input.
                 name: p.name.clone().unwrap_or_else(|| format!("param_{}", i + 1)),
                 kind,
                 rust_type,
@@ -265,9 +265,9 @@ pub struct HarnessReport {
     /// Per-case outcomes. Cases killed by a crash are present with
     /// `crashed: true` when isolation identified them.
     pub results: Vec<HarnessTestResult>,
-    /// How many of `results` the harness actually reported, as opposed to
-    /// entries synthesised after it died. Only reported cases count towards
-    /// deciding whether a run finished.
+    /// How many of `results` the harness actually reported, not counting the
+    /// placeholder entries added after it died. Only these reported cases
+    /// decide whether a run finished.
     pub reported: usize,
     /// The address the module was actually mapped at, when reported.
     pub module_base: Option<u64>,

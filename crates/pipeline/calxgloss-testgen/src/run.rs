@@ -1,8 +1,8 @@
 //! Baseline test execution infrastructure.
 //!
 //! Runs test cases against the *original* DLL to establish what the real
-//! function does, which is the reference the translated model is later judged
-//! against.
+//! function does; the translated model is later compared against that
+//! result.
 //!
 //! # Execution Model
 //!
@@ -43,8 +43,8 @@ use crate::{FfiBinding, parse_signature};
 
 /// Context data passed during test execution.
 ///
-/// Carries information about the function being tested, the test
-/// inputs, and expected behavior.
+/// Holds information about the function being tested, the test inputs,
+/// and the expected behavior.
 #[derive(Debug, Clone)]
 pub struct TestContext {
     /// The DLL being tested.
@@ -172,11 +172,11 @@ impl BaselineRunner {
 
 /// Whether an observed return value agrees with what the test case expected.
 ///
-/// JSON carries no integer widths, so the two sides are compared as they are
-/// rather than re-interpreted. The harness already reports a value at the exact
-/// width the signature declares, so an expectation derived from that same
-/// signature agrees without any coercion — and guessing at a width here could
-/// either hide a genuine divergence or invent a false one.
+/// JSON has no integer widths, so the two sides are compared as they stand,
+/// not re-interpreted. The harness already reports each value at the exact
+/// width the signature declares, so an expectation built from that same
+/// signature matches directly, with no conversion — and guessing a width
+/// here could hide a real difference or invent a false one.
 fn values_match(expected: &Value, actual: &Value) -> bool {
     match (expected, actual) {
         // Beyond i64, JSON can only hold the value as a float; that is the
@@ -192,14 +192,14 @@ fn values_match(expected: &Value, actual: &Value) -> bool {
 /// Turn harness outcomes into [`TestResult`]s, one per test case.
 ///
 /// `passed` means the call completed and, where the test case states an
-/// expectation, that the observed return value matched it. A test case with no
-/// expectation (`expected_return` is `null`) records what the function did
-/// without asserting anything about it — the baseline's job is to establish
-/// ground truth, so an unremarked-upon result is not a failure.
+/// expectation, that the observed return value matched it. A test case with
+/// no expectation (`expected_return` is `null`) records what the function
+/// did without asserting anything — the baseline's job is to establish
+/// ground truth, so a result nobody checked is not a failure.
 ///
-/// Cases the harness never reported are surfaced as failures rather than
-/// dropped: a missing result means the function did something the harness could
-/// not account for, and silently omitting it would hide that.
+/// Cases the harness never reported become failures rather than being
+/// dropped: a missing result means something went wrong that the harness
+/// did not report, and quietly leaving it out would hide that.
 fn collect_results(
     outcomes: &[crate::wine::HarnessTestResult],
     tests: &[TestCase],

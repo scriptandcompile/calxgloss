@@ -1,8 +1,8 @@
 //! FFI binding generation for linking against original DLLs.
 //!
-//! This module provides functionality to parse Windows function signatures
-//! and generate Rust `extern "C"` blocks that can be used to call the
-//! original (untranslated) functions via FFI.
+//! This module reads Windows function signatures and generates the Rust
+//! `extern "C"` blocks used to call the original (untranslated) functions
+//! through FFI.
 //!
 //! # Type Mappings
 //!
@@ -385,17 +385,17 @@ impl FfiBindingBuilder {
 
 /// Map a decompiler type name to a Rust FFI type.
 ///
-/// the decompiler emits a different vocabulary from a C SDK: it writes
-/// `longlong` and `ulonglong` without a space, `undefined4` instead of `int`,
-/// and `pointer`/`code` for types it could not resolve. None of those are in
-/// [`TYPE_MAP`], and falling through to the raw string would emit invalid Rust,
-/// so they are normalised here.
+/// The decompiler names types with different words than a C SDK does: it
+/// writes `longlong` and `ulonglong` without a space, `undefined4` instead
+/// of `int`, and `pointer`/`code` for types it could not resolve. None of
+/// those are in `TYPE_MAP`, and passing the raw string through would emit
+/// invalid Rust, so this function normalises them.
 ///
 /// Resolution order:
 /// 1. An exact match in `type_map`, so SDK spellings like `DWORD` and
 ///    `unsigned int` keep their existing mapping.
 /// 2. Ghidra's own spellings, with pointer depth preserved.
-/// 3. [`windows_type_to_rust`] as a fallback.
+/// 3. `windows_type_to_rust` as a fallback.
 ///
 /// Pointer depth is significant: `undefined **` becomes `*mut *mut u8`, not
 /// `*mut u8`, because a single level would silently drop a dereference.
@@ -422,15 +422,15 @@ pub fn decompiler_type_to_rust(type_name: &str, type_map: &HashMap<String, Strin
     if let Some(rest) = base.strip_prefix("const") {
         base = rest.trim();
     }
-    // Ghidra writes `unsigned long` and friends; the map keys include
-    // `unsigned`, so retry the full form before reducing it.
+    // Ghidra writes `unsigned long` and similar names; the map keys include
+    // `unsigned`, so look up the whole name once more before shortening it.
     if let Some(mapped) = type_map.get(base) {
         return apply_pointer_depth(mapped, depth);
     }
 
     let scalar = match base {
-        // Width-qualified unknowns. Ghidra's `undefinedN` is unsigned storage of
-        // unknown interpretation, so it is mapped to the unsigned type.
+        // Types known only by their width. Ghidra's `undefinedN` holds an
+        // untyped unsigned value, so it maps to the unsigned type of that width.
         "undefined1" | "byte" | "uchar" => "u8",
         "undefined2" | "ushort" | "word" => "u16",
         "undefined4" | "uint" | "dword" => "u32",
@@ -451,8 +451,8 @@ pub fn decompiler_type_to_rust(type_name: &str, type_map: &HashMap<String, Strin
         "bool" | "BOOL" => "i32",
 
         _ => {
-            // Unknown: hand the original string to the Windows mapper, which
-            // will pass it through unchanged. The caller validates the result.
+            // Unknown: pass the original string to the Windows mapper, which
+            // leaves it as-is. The caller validates the result.
             return windows_type_to_rust(trimmed, type_map);
         }
     };
@@ -462,13 +462,13 @@ pub fn decompiler_type_to_rust(type_name: &str, type_map: &HashMap<String, Strin
 
 /// Wrap a mapped scalar in the number of pointer levels it was written with.
 fn apply_pointer_depth(scalar: &str, depth: usize) -> String {
-    // The decompiler spellings above already carry their own `*` where the type is
-    // itself a pointer (`pointer`, `void`), so don't double-wrap those.
+    // The decompiler spellings above already include their own `*` where the
+    // type is itself a pointer (`pointer`, `void`), so don't add another there.
     let base_pointer = scalar.starts_with('*');
     let mut out = scalar.to_string();
     for _ in 0..depth {
         if base_pointer {
-            // Re-point through the pointee, e.g. `*mut u8` -> `*mut *mut u8`.
+            // Add one more pointer layer around the existing one, e.g. `*mut u8` -> `*mut *mut u8`.
             out = format!("mut {}", out);
             out = format!("*{out}");
         } else {

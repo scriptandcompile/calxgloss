@@ -33,16 +33,16 @@
 //! # Wire protocol
 //!
 //! The generated harness deliberately has **no dependencies**, so the
-//! cross-compile stays hermetic and fast. Test cases are encoded as a series
+//! cross-compile stays self-contained and fast. Test cases are encoded as a series
 //! of `<tag>:<value>` lines on stdin. Results come back on stdout as
 //! `<index>\t<ok|err>\t<value>`.
 //!
 //! # Crash isolation
 //!
-//! A function that faults kills the harness process, taking every later case
-//! with it. When a batch run dies without reporting all cases, the runner
-//! retries case-by-case so one bad input does not discard the rest. Note that
-//! this only covers *crashes*; a hang is still fatal.
+//! A function that faults kills the harness process, which loses every later
+//! case in the batch. When a batch run dies without reporting all cases, the
+//! runner retries case-by-case so one bad input does not lose the rest.
+//! Note that this only covers *crashes*; a hanging call is still fatal.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -163,9 +163,9 @@ impl WineRunner {
 
     /// Write, compile, and run a harness, returning its report.
     ///
-    /// A batch run that dies before reporting every case is retried one case at
-    /// a time so a single faulting input is attributed rather than discarding
-    /// the whole batch.
+    /// A batch run that dies before reporting every case is retried one case
+    /// at a time, so the runner can name the single faulting input instead of
+    /// losing the whole batch.
     #[instrument(skip_all, fields(function = %spec.function_label))]
     pub fn run(
         &self,
@@ -185,11 +185,11 @@ impl WineRunner {
 
         let mut report = self.invoke(spec, &exe, &wine_dll, &payload, None);
 
-        // `results` is padded with synthesised crashed entries when the harness
-        // dies, so its length can reach the full count even though the run fell
-        // over. Compare the number the harness actually *reported* instead,
-        // otherwise the placeholders for every case after the faulting one are
-        // mistaken for real answers and never re-examined.
+        // `results` is padded with placeholder crashed entries when the harness
+        // dies, so its length can reach the full count even though the run
+        // stopped early. Compare the number the harness actually *reported*;
+        // otherwise the placeholders for every case after the faulting one
+        // look like real answers and never get re-run.
         if report.reported < tests.len() {
             // The process died partway through. Re-run each case on its own to
             // find out which one is responsible and recover the rest.
@@ -202,9 +202,9 @@ impl WineRunner {
             let mut isolated = Vec::with_capacity(tests.len());
             for index in 0..tests.len() {
                 let mut single = self.invoke(spec, &exe, &wine_dll, &payload, Some(index));
-                // A case that succeeded in isolation may also have succeeded in
-                // the batch; prefer the batch's reading when both agree, since
-                // it came from a process that had the same runtime state.
+                // A case that succeeds in isolation may have succeeded in the
+                // batch too; when both agree, keep the batch's value, since it
+                // came from a process with the same runtime state as the rest.
                 let batch_succeeded = report.results.iter().any(|b| b.index == index && b.ok);
                 if single.reported == 1
                     && single.results[0].ok
@@ -245,7 +245,7 @@ impl WineRunner {
             .arg("--binary")
             .arg(wine_dll)
             .args(spec.locator.harness_args())
-            // Wine's own diagnostics drown out the harness output.
+            // Wine's own diagnostics would hide the harness output.
             .env("WINEDEBUG", "-all")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -311,9 +311,9 @@ impl WineRunner {
 
         if results.len() < expected {
             // A fault inside the target is caught by the harness's own crash
-            // handler, which terminates with a known status. A signal death is
-            // the older fallback path, kept because a fault can also happen
-            // outside the handler's reach, e.g. on a loader thread.
+            // handler, which exits with a known status. Death by signal is the
+            // older path still handled here, because a fault can also happen
+            // where the handler cannot catch it, e.g. on a loader thread.
             let crashed_in_target =
                 matches!(output.status.code(), Some(code) if code as u32 == HARNESS_CRASH_EXIT);
             let signal = terminating_signal(&output.status);
@@ -528,8 +528,8 @@ fn sanitize(label: &str) -> String {
 
 /// The signal that killed a process, if it was killed by one.
 ///
-/// Windows faults inside Wine surface this way, which is how a crash in the
-/// function under test becomes visible to the runner.
+/// Faults from Windows code inside Wine show up this way, which is how the
+/// runner sees a crash in the function under test.
 fn terminating_signal(status: &std::process::ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
     status.signal()

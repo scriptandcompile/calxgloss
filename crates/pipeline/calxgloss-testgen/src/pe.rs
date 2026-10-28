@@ -1,8 +1,8 @@
 //! PE image metadata needed to reach functions inside a Windows DLL.
 //!
-//! Baseline execution calls *internal* functions. The engine reports those
-//! as virtual addresses, but they are absent from the export table, so
-//! calling them requires three conversions:
+//! Baseline execution calls *internal* functions. The decompiler reports
+//! those as virtual addresses, but they are absent from the export table,
+//! so calling them requires three conversions:
 //!
 //! ```text
 //!   Decompiler VA  --(subtract image_base)-->  RVA  --(add runtime base)-->  callable address
@@ -74,9 +74,9 @@ pub struct ImportEntry {
     /// Imported symbol name.
     ///
     /// Imports by ordinal with no hint/name entry are reported as
-    /// `ORDINAL <n>`, mirroring what Ghidra calls `Ordinal_N`. Treating those
-    /// as API identifiers is a false positive, so callers that tag Windows API
-    /// usage should skip them via [`is_unnamed`](Self::is_unnamed).
+    /// `ORDINAL <n>`, matching how Ghidra names them (`Ordinal_N`). Reading
+    /// those names as Windows API identifiers would be wrong, so callers
+    /// should skip them via [`is_unnamed`](Self::is_unnamed).
     pub function: String,
 }
 
@@ -128,9 +128,9 @@ impl PeImage {
             other => Machine::Other(other),
         };
 
-        // The mapped extent of the image, derived from the section table rather
-        // than trusted from the header. This is what bounds an RVA: a value that
-        // lands past the last section is not mapped and cannot be called.
+        // The mapped extent of the image, computed from the section table
+        // rather than trusted from the header. This is what bounds an RVA: a
+        // value past the last section is not mapped and cannot be called.
         let image_end = pe
             .sections
             .iter()
@@ -146,9 +146,9 @@ impl PeImage {
             .unwrap_or(0);
 
         // The export address table is the authority on ordinals: slot `i` holds
-        // ordinal `base + i`. goblin's `pe.exports` carries correct names and
-        // RVAs but is *not* in address-table order, so ordinals cannot be
-        // recovered from its position. Build the two views and join on RVA.
+        // ordinal `base + i`. goblin's `pe.exports` has correct names and RVAs
+        // but is *not* in address-table order, so ordinals cannot be read from
+        // its position. Build the two views and join them on RVA.
         let names_by_rva: HashMap<u32, &str> = pe
             .exports
             .iter()
@@ -290,8 +290,8 @@ impl PeImage {
 
     /// Convert a decompiler virtual address to an RVA.
     ///
-    /// the decompiler reports addresses at the image's preferred base, so the RVA is the
-    /// offset from [`image_base`](Self::image_base).
+    /// The decompiler reports addresses against the image's preferred base, so
+    /// the RVA is the offset from [`image_base`](Self::image_base).
     pub fn rva_from_va(&self, va: u64) -> Result<u32> {
         if va < self.image_base {
             bail!(
@@ -333,8 +333,8 @@ impl PeImage {
 
     /// Look up an export by name, falling back to treating the name as an ordinal.
     ///
-    /// This is what lets a caller that only knows a symbol string work against
-    /// DLLs that export by ordinal only.
+    /// This lets a caller that only knows a symbol string still use DLLs that
+    /// export by ordinal only.
     pub fn resolve_symbol(&self, symbol: &str) -> Result<u32> {
         if let Ok(rva) = self.export_rva_by_name(symbol) {
             return Ok(rva);
@@ -449,9 +449,9 @@ mod tests {
         }
     }
 
-    /// Cross-checks the parser against a real DLL, confirming it agrees with what
-    /// `objdump -p` and the decompiler report. Ignored by default because it needs a real
-    /// file; eqmain.dll expectations are asserted below.
+    /// Checks the parser against a real DLL and confirms it agrees with what
+    /// `objdump -p` and the decompiler report. Ignored by default because it
+    /// needs a real file; the eqmain.dll checks are asserted further below.
     ///
     /// ```text
     /// CALXGLOSS_TEST_DLL=/path/to/eqmain.dll cargo test -p calxgloss-testgen \
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(img.image_base(), 0x1_8000_0000);
         assert!(img.is_dll());
 
-        // decompiler addresses of the functions exercised during baseline probing.
+        // Decompiler addresses of the functions used during baseline probing.
         assert_eq!(img.rva_from_va(0x1_8008_ed50).unwrap(), 0x8ed50);
         assert_eq!(img.rva_from_va(0x1_8004_70a0).unwrap(), 0x470a0);
         assert_eq!(img.rva_from_va(0x1_8008_1be0).unwrap(), 0x81be0);

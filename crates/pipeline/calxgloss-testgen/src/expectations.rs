@@ -2,16 +2,16 @@
 //!
 //! The baseline harness captures return values, not side effects — reading
 //! back what a Wine call mutated would need a per-type view of the
-//! arguments. The global-state reference sets close that gap from the other
-//! side: the persisted per-binary document already names every program
-//! global the function reads and writes, so the test generator turns those
+//! arguments. The global-state scan fills that gap from the other side:
+//! the persisted per-binary document already names every program global
+//! the function reads and writes, so the test generator turns those
 //! access records into typed [`SideEffectKind::GlobalRead`] /
-//! [`SideEffectKind::GlobalWrite`] expectations carrying the global's name
-//! in the detail string. A global side effect is therefore a named,
+//! [`SideEffectKind::GlobalWrite`] expectations that put the global's
+//! name in the detail string. A global side effect is therefore a named,
 //! machine-comparable kind, never a free-form `Other` string.
 //!
-//! Capture mechanics stay untouched: the expectations are *supplied* by
-//! the artifact, and the harness still only reports return values.
+//! Capture mechanics stay unchanged: the expectations come *from* the
+//! artifact, and the harness still only reports return values.
 
 use std::path::Path;
 
@@ -26,16 +26,16 @@ use tracing::debug;
 /// workspace (`re/analysis/globalstate/{binary}.json`) and turns the
 /// target function's own access records into expectations: one
 /// `GlobalRead` per global the function loaded and one `GlobalWrite`
-/// per global it stored through, each naming the global in the detail
-/// string. A global sighted many times in the body yields one
-/// expectation of its kind — the expectation says *that* the function
+/// per global it stored to, each naming the global in the detail
+/// string. A global read or written many times in the body yields one
+/// expectation of its kind — the expectation states *that* the function
 /// touches the global, not how often — and the expectations keep the
 /// document's finding order, so two runs over one document agree.
 ///
 /// Returns an empty vector when no document is persisted for `binary`
-/// (the scan has not run) or the document is unreadable: a missing
-/// reading supplies no expectations, it never fails generation. Rollup
-/// index records are about globals, not functions, and stay out.
+/// (the scan has not run) or the document is unreadable: a missing scan
+/// adds no expectations and never fails generation. Rollup index records
+/// are about globals, not functions, and are left out.
 pub fn global_state_expectations(
     workspace: &Path,
     binary: &str,
@@ -107,9 +107,9 @@ mod tests {
 
     #[test]
     fn expectations_name_globals_with_the_typed_kinds() {
-        // The acceptance shape: a function with a persisted global-state
-        // document gets GlobalRead/GlobalWrite expectations naming the
-        // globals — not Other(...) strings — in finding order.
+        // The case this feature exists for: a function with a persisted
+        // global-state document gets GlobalRead/GlobalWrite expectations that
+        // name the globals — not Other(...) strings — in finding order.
         let dir = TempDir::new().expect("temp workspace");
         persist_findings(
             dir.path(),
@@ -147,8 +147,8 @@ mod tests {
 
     #[test]
     fn one_global_sighted_many_times_yields_one_expectation_per_kind() {
-        // The expectation says the function touches the global, not how
-        // often; a read and a write of one global stay two distinct
+        // One expectation records that the function touches the global, not
+        // how often; a read and a write of one global remain two separate
         // expectations.
         let dir = TempDir::new().expect("temp workspace");
         persist_findings(
@@ -190,8 +190,8 @@ mod tests {
 
     #[test]
     fn a_missing_or_corrupt_document_supplies_nothing() {
-        // The feature degrades gracefully: no scan yet, or an unreadable
-        // document, means no expectations — generation never fails.
+        // With no scan yet, or an unreadable document, the call returns no
+        // expectations — generation never fails.
         let dir = TempDir::new().expect("temp workspace");
         assert!(global_state_expectations(dir.path(), "eqmain.dll", "FUN_a").is_empty());
 
