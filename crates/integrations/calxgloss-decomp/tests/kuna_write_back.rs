@@ -1,34 +1,34 @@
-//! The Kuna engine behind the `TypeWriteSource` seam, end to end (issue
-//! #209, part of epic #203).
+//! The Kuna analysis engine behind the `TypeWriteSource` seam, tested
+//! end to end (issue #209, part of epic #203).
 //!
 //! These tests drive the seam itself — `TypeWriteSource` over
 //! `KunaSource`, read back through `ScanSource` — over the checked-in
-//! fixture DLL: a write compiles to a directive that changes what the
-//! seam's own reads answer, the directive file persists in the record of
-//! effort and replays on a fresh load, and misses arrive in the seam's own
-//! error vocabulary. The engine-native API is pinned in
+//! fixture DLL. A write compiles to a directive that changes what the
+//! seam's own reads answer. The directive file persists in the record of
+//! effort and replays on a fresh load. A miss arrives in the seam's own
+//! error vocabulary. The analysis engine's own API is pinned in
 //! `calxgloss-kuna/tests/kuna_write_back.rs`.
 //!
-//! Both seams are RPITIT traits, not dyn-compatible, so the calls below
-//! name the trait explicitly (`TypeWriteSource::…(&source, …)`) — that
-//! also forces the seam's mapping rather than the source's inherent
-//! method of the same name.
+//! Neither seam trait is dyn-compatible, so the calls below name the
+//! trait explicitly (`TypeWriteSource::…(&source, …)`). Naming the trait
+//! also makes the call go through the seam's method rather than the
+//! source's inherent method of the same name.
 
 use calxgloss_decomp::{EngineError, NewStructField, ScanSource, TypeWriteSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_kuna::directives::directive_file_path;
 use calxgloss_testfixtures::TARGET_FILE_NAME;
 
-/// The loader's spelling of a fixture name: MinGW COFF symbols carry a
-/// leading underscore, so the listing may report `_fixture_tick` where
+/// The loader's spelling of a fixture name. MinGW COFF symbols start with
+/// a leading underscore, so the listing may report `_fixture_tick` where
 /// the export table says `fixture_tick`.
 fn loader_name(raw: &str) -> String {
     raw.trim_start_matches('_').to_string()
 }
 
-/// A Kuna source loaded with its directive plane at the canonical
-/// record-of-effort location under `workspace`, replayed from any file
-/// already there.
+/// The fixture loaded with Kuna, with its directive plane at the standard
+/// record-of-effort location under `workspace`, replaying any directive
+/// file already stored there.
 fn source_with_plane(workspace: &std::path::Path) -> KunaSource {
     let fixture = calxgloss_testfixtures::load_target()
         .expect("fixture target should build and validate from the integration tests");
@@ -121,8 +121,9 @@ async fn a_struct_written_through_the_seam_survives_a_reload() {
             .await
             .expect("the seam should accept the field addition");
 
-        // The live session keeps the created body: Kuna refuses to re-body
-        // a completed record, so the regenerated record waits for replay.
+        // The live session keeps the created body: Kuna refuses to
+        // rebuild a record it has already created, so the regenerated
+        // record waits for replay.
         let layout = ScanSource::struct_layout(&source, "RECT")
             .await
             .expect("the created struct should answer through the seam");
@@ -161,8 +162,9 @@ async fn seam_refusals_arrive_in_the_seam_error_vocabulary() {
     let dir = tempfile::tempdir().expect("temp dir");
     let source = source_with_plane(dir.path());
 
-    // A function that is not there is the same named NotFound the seam
-    // reports — the Kuna fold, not a new error shape.
+    // A missing function reports the same named NotFound the seam
+    // already reports — Kuna's errors are converted into the seam's
+    // error shapes, so no new error shape appears.
     let error =
         TypeWriteSource::set_function_prototype(&source, 0xdead_beef, "int no_such_function(void)")
             .await

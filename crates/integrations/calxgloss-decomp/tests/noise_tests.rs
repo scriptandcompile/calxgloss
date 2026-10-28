@@ -1,18 +1,19 @@
-//! The decompiler-noise pre-filter at the seam's `decompile` read exits
-//! (issues #271–#273).
+//! The decompile noise filter at the exits of the seam's `decompile`
+//! reads (issues #271–#273).
 //!
-//! The fake-engine-body assertions drive the cached source in the tampered-
-//! document style of `cache_tests.rs`: bodies the fixture engine could never
-//! answer — standalone guard calls and the if-wrapped cookie compare beside
-//! real statements — are seeded into the disk tier, and the replayed read
-//! comes back stripped while the document on disk keeps the raw text. That
-//! proves the shared filter sits at the cached source's exit *above* the
-//! cache, with raw staying raw (ADR-0043). The in-process Kuna source's
-//! exit is pinned from the other side: the fixture's canary-free bodies
-//! come back byte-identical against the engine's own raw text, so the
-//! filter at that exit changes exactly nothing it must not change. The
-//! filter's behavior on fake bodies — the strips themselves, the
-//! conservative gate, the never-empties rule, the debug log — is pinned in
+//! The tests that seed fake analysis-engine bodies drive the cached
+//! source in the tampered-document style of `cache_tests.rs`: a body the
+//! fixture's analysis engine could never answer — standalone guard calls
+//! and the if-wrapped cookie compare sitting beside real statements — is
+//! seeded into the disk tier. The replayed read comes back stripped,
+//! while the document on disk keeps the raw text. That proves the shared
+//! filter sits at the cached source's exit *above* the cache, with raw
+//! staying raw (ADR-0043). The in-process Kuna source's exit is pinned
+//! from the other side: the fixture's canary-free bodies come back
+//! byte-identical to the analysis engine's own raw text, so the filter
+//! at that exit changes exactly nothing it must not change. The filter's
+//! behavior on fake bodies — the strips themselves, the conservative
+//! gate, the never-empties rule, the debug log — is pinned in
 //! `noise_filter`'s unit tests.
 
 use calxgloss_decomp::{CachedScanSource, DecompiledFunction, PipelineSource, ScanSource};
@@ -41,9 +42,9 @@ async fn a_seeded_body_of_guard_calls_comes_back_stripped_and_stays_raw_on_disk(
     let (workspace, binary) = workspace_with_fixture();
     let source = cached_source(workspace.path(), &binary);
 
-    // Seed a fake engine body the fixture could never answer: standalone
-    // calls to each guard name — at top level and inside a block — beside
-    // the function's real statements.
+    // Seed a fake analysis-engine body the fixture could never answer:
+    // standalone calls to each guard name, at top level and inside a
+    // block, beside the function's real statements.
     let fake = DecompiledFunction {
         name: "gs_theater".into(),
         signature: "void gs_theater(int param_1)".into(),
@@ -115,11 +116,12 @@ async fn a_seeded_body_of_guard_calls_comes_back_stripped_and_stays_raw_on_disk(
 
 #[tokio::test]
 async fn a_seeded_full_canary_body_comes_back_stripped_and_stays_raw_on_disk() {
-    // The prologue+epilogue idiom (issues #272–#273): the save line and the
-    // if-wrapped comparison with its failure call come out whole, but the
-    // declaration stays — the equality test and the return still name the
-    // local. That equality test, with a real call in its block, is the
-    // conservative gate's and stands byte-for-byte.
+    // The prologue+epilogue idiom (issues #272–#273): the save line and
+    // the if-wrapped comparison with its failure call come out whole.
+    // The declaration stays, because the equality test and the return
+    // still refer to the local. That equality test, with a real call in
+    // its block, is the conservative gate's case, and it stands
+    // byte-for-byte.
     let (workspace, binary) = workspace_with_fixture();
     let source = cached_source(workspace.path(), &binary);
     let fake = DecompiledFunction {
@@ -178,10 +180,10 @@ async fn a_seeded_full_canary_body_comes_back_stripped_and_stays_raw_on_disk() {
 
 #[tokio::test]
 async fn a_seeded_canary_body_loses_its_orphaned_cookie_declaration_too() {
-    // Issue #273's local sweep at the seam: with the save and the compare
-    // gone, nothing references local_8 anymore, and its declaration goes
-    // with the idiom — while the function's real statements and return
-    // come back byte-identical.
+    // Issue #273's sweep of orphaned locals at the seam: with the save
+    // and the compare gone, nothing references local_8 anymore, so its
+    // declaration goes with the idiom. The function's real statements
+    // and return come back byte-identical.
     let (workspace, binary) = workspace_with_fixture();
     let source = cached_source(workspace.path(), &binary);
     let fake = DecompiledFunction {
@@ -248,10 +250,11 @@ async fn a_seeded_body_without_guard_calls_comes_back_byte_identical() {
 
 #[tokio::test]
 async fn the_in_process_kuna_source_passes_canary_free_bodies_byte_identical() {
-    // The Kuna arm's exit filter (issue #271) against the engine's own raw
-    // text: a body with no canary noise comes back from the seam read
-    // byte-identical to the raw engine read, in the other direction proving
-    // nothing at that exit touches what it must not touch.
+    // The Kuna arm's exit filter (issue #271), checked against the
+    // analysis engine's own raw text: a body with no canary noise comes
+    // back from the seam read byte-identical to the raw read. That is
+    // the other direction of the proof — nothing at that exit changes
+    // what it must not change.
     let fixture = calxgloss_testfixtures::load_target()
         .expect("fixture target should build and validate from the integration tests");
     let source =

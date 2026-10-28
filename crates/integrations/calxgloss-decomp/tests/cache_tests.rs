@@ -1,21 +1,25 @@
 //! `CachedScanSource` end-to-end, driven through the shared `ScanSource`
-//! seam over the Kuna engine on the checked-in fixture DLL (issue #214).
+//! seam over the Kuna analysis engine on the checked-in fixture DLL
+//! (issue #214).
 //!
-//! The cache's whole contract is observable from outside: a first instance
-//! fetches live and writes through, a second instance over the same
-//! workspace replays from disk, changed bytes or a mismatched manifest mean
-//! cold, a corrupt document degrades to a live refetch, and heartbeats pass
-//! straight through. With no server to count calls at, the instrumentation
-//! is the documents themselves: a tampered document whose value comes back
-//! proves a disk replay, and a corrupt document whose real value comes back
-//! proves a live refetch. No cache internals are inspected.
+//! The read cache's whole contract is observable from outside. A first
+//! instance fetches live and writes through. A second instance over the
+//! same workspace replays from disk. Changed bytes or a mismatched
+//! manifest mean cold. A corrupt document degrades to a live refetch,
+//! and heartbeats pass straight through. There is no separate
+//! analysis-engine process to count calls against, so the documents
+//! themselves are the instrumentation: a tampered document whose value
+//! comes back proves a disk replay, and a corrupt document whose real
+//! value comes back proves a live refetch. No cache internals are
+//! inspected.
 
 use calxgloss_decomp::{CachedScanSource, EngineError, FunctionSummary, ScanSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_testfixtures::{EXPORT_NAMES, STRING_LITERALS, TARGET_FILE_NAME};
 use std::path::{Path, PathBuf};
 
-/// The fixture's own entry point, listed with MinGW's leading underscore.
+/// Find the fixture export named `want` in a function listing, matching
+/// through MinGW's leading underscore.
 fn fixture_export(functions: &[FunctionSummary], want: &str) -> FunctionSummary {
     functions
         .iter()
@@ -57,8 +61,9 @@ fn cached_source(workspace: &Path, binary: &Path) -> CachedScanSource {
     CachedScanSource::new(source, workspace, TARGET_FILE_NAME, binary).expect("cached source")
 }
 
-/// Drive every cached read once, asserting each answers with the fixture's
-/// own values — cached or not, the answers must be the engine's.
+/// Drive every cached read once, asserting each answers with the
+/// fixture's own values — cached or not, the answers must be the analysis
+/// engine's.
 async fn drive_reads<S: ScanSource>(source: &S) {
     let functions = source.functions().await.expect("function listing");
     let tick = fixture_export(&functions, "fixture_tick");
@@ -191,9 +196,10 @@ async fn a_second_instance_over_the_same_workspace_replays_from_disk() {
         .expect("the disk tier is on")
         .to_path_buf();
 
-    // Tamper the listing with a value the engine could never answer. If a
-    // fresh instance returns it, that read came off disk — the only
-    // possible replay source — with no engine round trip at all.
+    // Tamper the listing with a value the analysis engine could never
+    // answer. If a fresh instance returns it, that read came off disk —
+    // the only possible replay source — with no analysis-engine round
+    // trip at all.
     let sentinel_functions = vec![FunctionSummary {
         name: "sentinel_function".into(),
         address: 1,
@@ -208,8 +214,8 @@ async fn a_second_instance_over_the_same_workspace_replays_from_disk() {
         "the second instance must replay the tampered document, proving a disk read"
     );
 
-    // And the untouched documents replay the engine's own values: the
-    // string listing still carries the fixture's literals.
+    // And the untouched documents replay the analysis engine's own
+    // values: the string listing still holds the fixture's literals.
     let strings = second.strings().await.expect("strings replay");
     for want in STRING_LITERALS {
         assert!(
@@ -222,9 +228,9 @@ async fn a_second_instance_over_the_same_workspace_replays_from_disk() {
 #[tokio::test]
 async fn a_warm_disassembly_replays_from_disk_without_an_engine_round_trip() {
     // Issue #245: the listing text is cached like every other scan read.
-    // A cold read files it under the scan-cache convention, and a warm
-    // instance replays it with no engine round trip at all — a warm scan
-    // never re-disassembles.
+    // A cold read files it under the scan read cache's convention, and a
+    // warm instance replays it with no analysis-engine round trip at all
+    // — a warm scan never disassembles twice.
     let (workspace, binary) = workspace_with_fixture();
     let first = cached_source(workspace.path(), &binary);
     drive_reads(&first).await;
@@ -242,8 +248,8 @@ async fn a_warm_disassembly_replays_from_disk_without_an_engine_round_trip() {
         "the cold listing is filed under disassembly/"
     );
 
-    // Tamper it with a value the engine could never answer. A fresh
-    // instance returning it proves the warm read came off disk.
+    // Tamper it with a value the analysis engine could never answer. A
+    // fresh instance returning it proves the warm read came off disk.
     calxgloss_types::save_json(&document, &"sentinel listing text").expect("tampered");
     let second = cached_source(workspace.path(), &binary);
     let replayed = second
@@ -267,9 +273,9 @@ async fn a_refresh_instance_goes_cold_and_rewrites_the_cache() {
         .expect("the disk tier is on")
         .to_path_buf();
 
-    // Tamper the listing, then take the refresh escape hatch (issue #106):
-    // same workspace, same bytes, warm disk tier — a refreshing instance
-    // ignores it and refetches from the engine.
+    // Tamper the listing, then take the refresh escape hatch (issue
+    // #106): same workspace, same bytes, warm disk tier — a refreshing
+    // instance ignores the tier and refetches from the analysis engine.
     let sentinel = vec![FunctionSummary {
         name: "sentinel_function".into(),
         address: 1,
@@ -286,8 +292,8 @@ async fn a_refresh_instance_goes_cold_and_rewrites_the_cache() {
         "a refresh refetches live instead of replaying the tampered document"
     );
 
-    // And the refresh rewrote the cache: a third plain instance replays the
-    // engine's values, not the sentinel.
+    // And the refresh rewrote the cache: a third plain instance replays
+    // the analysis engine's values, not the sentinel.
     let third = cached_source(workspace.path(), &binary);
     let replayed = third.functions().await.expect("third listing");
     assert_ne!(
@@ -353,8 +359,8 @@ async fn a_failed_live_fetch_is_not_cached_and_does_not_poison_the_key() {
         "a failed fetch writes nothing"
     );
 
-    // A later read of the same key goes to the engine again, and a real
-    // decompile still works around the failed key.
+    // A later read of the same key goes to the analysis engine again,
+    // and a real decompile still works around the failed key.
     let again = source
         .decompile("no_such_function_anywhere")
         .await
@@ -417,11 +423,11 @@ fn find_pe_signature(bytes: &[u8]) -> Option<usize> {
 
 #[tokio::test]
 async fn a_manifest_field_mismatch_yields_a_cold_cache() {
-    // The engine-identity arms (#358): tampering the identity to another
-    // engine build's value, or taking the key out entirely to stand for a
+    // The engine-identity arms (#358): rewriting the identity to another
+    // engine build's value, and removing the key entirely to stand for a
     // manifest written before the field shipped, must both read cold —
-    // never an error over the identity-less bytes, never a hot replay of
-    // bytes this run's engine cannot vouch for.
+    // never an error over the identity-less bytes, and never a hot replay
+    // of bytes this run's analysis engine cannot vouch for.
     for field in [
         "binary_sha256",
         "format_version",
@@ -510,8 +516,9 @@ async fn a_corrupt_cache_document_refetches_live_instead_of_failing() {
 async fn an_unreadable_binary_path_degrades_to_pass_through_engine_reads() {
     let (workspace, binary) = workspace_with_fixture();
 
-    // The engine loaded the real fixture; the *hashing* path is missing,
-    // which drops the disk tier but leaves the loaded engine answering.
+    // The analysis engine loaded the real fixture; the path used for
+    // hashing is missing, so the disk tier drops out but the loaded
+    // analysis engine keeps answering.
     let source = KunaSource::load(&binary).expect("the fixture loads");
     let missing = workspace.path().join("absent.exe");
     let cached = CachedScanSource::new(source, workspace.path(), TARGET_FILE_NAME, &missing)
@@ -584,10 +591,10 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
     let first = cached_source(workspace.path(), &binary);
     drive_reads(&first).await;
 
-    // A warm instance armed for a pass consumes work items without an
-    // engine round trip — the heartbeat must still count them, or the
-    // dashboard's per-binary activity line goes silent on every warm run
-    // (issue #121).
+    // A warm instance armed for a pass consumes work items with no
+    // analysis-engine round trip. The heartbeat must still count them, or
+    // the dashboard's per-binary activity line goes silent on every warm
+    // run (issue #121).
     let second = cached_source(workspace.path(), &binary);
     let events = calxgloss_types::TranslationEvents::new(64);
     let mut rx = events.subscribe();
@@ -669,8 +676,9 @@ async fn an_interrupted_run_leaves_every_written_entry_individually_valid() {
 
     // The restart resumes from where it stopped: the written entries
     // replay, the rest fetch normally. Tamper the replayed ones — the
-    // restart must return the tampered values (proof they came from disk)
-    // while the never-fetched ones arrive live from the engine.
+    // restart must return the tampered values (proof they came from
+    // disk), while the never-fetched ones arrive live from the analysis
+    // engine.
     let dir2 = dir.clone();
     let sentinel = vec![FunctionSummary {
         name: "sentinel_function".into(),
@@ -731,12 +739,13 @@ fn the_cache_forwards_the_engine_provenance() {
 // Engine-identity cache key (issue #358)
 // ============================================================
 
-/// The manifest a fresh scan directory files names the engine identity the
-/// wrapped source already stamps beside every scan record, byte for byte:
-/// the compiled release-and-pin strings, so the next pinned-Kuna bump moves
-/// the written identity and the compared identity together and every older
-/// directory reads cold mechanically, with no hand-bumped constant in the
-/// chain.
+/// The manifest a fresh scan directory files records the engine identity
+/// byte for byte as the identity the wrapped source already stamps
+/// beside every scan record. The stamp is built from the compiled
+/// release-and-pin strings, so the next pinned-Kuna bump moves the
+/// written identity and the compared identity together: every older
+/// directory reads cold mechanically, with no hand-bumped constant in
+/// the chain.
 #[test]
 fn a_fresh_manifest_files_the_identity_the_seam_stamps() {
     let (workspace, binary) = workspace_with_fixture();
@@ -772,11 +781,11 @@ fn a_fresh_manifest_files_the_identity_the_seam_stamps() {
 // Capability report pass-through (issue #354)
 // ============================================================
 
-/// A cache never changes capabilities, it only caches answers — so the
-/// wrapped engine's declaration rides `CachedScanSource` and
-/// `PipelineSource` byte-identically, and a source whose engine declares
-/// nothing would propagate the same empty, fully-unknown declaration the
-/// trait default hands up.
+/// The read cache never changes capabilities; it only caches answers. So
+/// the wrapped analysis engine's declaration passes through
+/// `CachedScanSource` and `PipelineSource` byte-identically. A source
+/// whose analysis engine declares nothing propagates the same empty,
+/// fully-unknown declaration the trait default returns.
 #[test]
 fn the_cache_and_pipeline_wrappers_pass_the_capability_report_through_byte_identically() {
     let (workspace, binary) = workspace_with_fixture();

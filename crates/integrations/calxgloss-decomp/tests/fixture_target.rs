@@ -1,11 +1,11 @@
 //! The fixture target binary must be reachable from the Integrations
 //! integration tests.
 //!
-//! The Kuna engine tests drive the same `drive_all<S: ScanSource>` seam
-//! harness over this fixture that `integration_tests.rs` runs over canned
-//! and stand-in sources, so the fixture's dev-dependency wiring and shape
-//! are pinned here — a later ticket asserts seam behavior against
-//! `load_target()` without re-building the DLL by hand.
+//! The analysis engine tests drive the same `drive_all<S: ScanSource>`
+//! seam harness over this fixture that `integration_tests.rs` runs over
+//! canned and stand-in sources. So the fixture's dev-dependency wiring
+//! and shape are pinned here: a later ticket asserts seam behavior
+//! against `load_target()` without building the DLL by hand.
 
 #[test]
 fn fixture_target_is_reachable_and_valid() {

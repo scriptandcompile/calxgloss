@@ -1,13 +1,13 @@
-//! The Kuna engine behind the `ScanSource` seam, end to end (issues #206,
-//! #207, and #208, part of epic #203).
+//! The Kuna analysis engine behind the `ScanSource` seam, end to end
+//! (issues #206, #207, and #208, part of epic #203).
 //!
 //! These tests drive the seam itself — `ScanSource` through
-//! `PipelineSource::Kuna` — over the checked-in fixture DLL: every read the
-//! trait carries answers from the one in-process program, misses arrive in
-//! the seam's error vocabulary, and a scan assembled purely from
-//! seam reads persists `FunctionInfo` and `DllInfo` records the web's
-//! artifact layout reads back. The engine-native API is pinned in
-//! `calxgloss-kuna/tests/kuna_scan.rs`.
+//! `PipelineSource::Kuna` — over the checked-in fixture DLL. Every read
+//! the trait defines answers from the one program loaded in the process.
+//! Misses arrive in the seam's error vocabulary, and a scan built purely
+//! from seam reads persists `FunctionInfo` and `DllInfo` records that
+//! the web's artifact layout reads back. The analysis engine's own API
+//! is pinned in `calxgloss-kuna/tests/kuna_scan.rs`.
 
 use calxgloss_decomp::{EngineError, PipelineSource, QUERY_FAMILIES, ScanSource, Xref};
 use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
@@ -19,9 +19,9 @@ use calxgloss_types::{
     analysis_dir, load_json, save_json,
 };
 
-/// The loader's spelling of a fixture name: MinGW COFF symbols carry a
-/// leading underscore, so the listing may report `_fixture_init` where the
-/// export table says `fixture_init`.
+/// The loader's spelling of a fixture name. MinGW COFF symbols start with
+/// a leading underscore, so the listing may report `_fixture_init` where
+/// the export table says `fixture_init`.
 fn loader_name(raw: &str) -> String {
     raw.trim_start_matches('_').to_string()
 }
@@ -111,10 +111,10 @@ async fn an_unknown_function_name_is_a_named_miss_at_the_seam() {
 
 #[tokio::test]
 async fn the_seam_answers_the_disassembly_read_with_listing_text() {
-    // Issue #245: the seam's new per-function disassembly-text read,
-    // answered by the Kuna arm with the engine's own listing — an address
-    // column, then uppercase SLEIGH mnemonics with `0x` hex operands —
-    // and a miss in the seam's error vocabulary.
+    // Issue #245 added the seam's per-function disassembly-text read.
+    // The Kuna arm answers it with the analysis engine's own listing: an
+    // address column, then uppercase SLEIGH mnemonics with `0x` hex
+    // operands. A miss arrives in the seam's error vocabulary.
     let source = fixture_pipeline_source();
     let functions = source.functions().await.expect("functions read");
     let tick = functions
@@ -222,9 +222,10 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         "the walk names the referring function and the reference kind: {xrefs:?}"
     );
 
-    // callers dedups the xref listing's function names in first-reference
-    // order — the exact shape the seam's read answers with, which is why
-    // the call-graph builder needs no engine special case.
+    // callers deduplicates the xref listing's function names, keeping
+    // the order of first reference. That is exactly the shape the seam's
+    // own read answers with, which is why the call-graph builder needs no
+    // special case for the analysis engine.
     let callers = source.callers(address).await.expect("callers read");
     let mut expected: Vec<String> = Vec::new();
     for xref in &xrefs {
@@ -252,8 +253,9 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         "no fixture export calls fixture_tick: {tick_callers:?}"
     );
 
-    // The type-library listing answers from the engine's interned factory:
-    // every entry named, classified, and pathed from its category.
+    // The type-library listing answers from the analysis engine's
+    // interned factory: every entry has a name, a category, and a path
+    // built from that category.
     let types = source.data_types(None).await.expect("data types read");
     assert!(!types.is_empty(), "the engine interns its core vocabulary");
     for entry in &types {
@@ -263,8 +265,8 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         );
         assert_eq!(entry.path, format!("/{}/{}", entry.category, entry.name));
     }
-    // The category filter answers like the bridge's: a case-insensitive
-    // substring of the category.
+    // The category filter matches as the retired Ghidra bridge's did: a
+    // case-insensitive substring of the category.
     let structs = source
         .data_types(Some("Struct"))
         .await
@@ -276,9 +278,10 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         "the filter matched outside its bucket: {structs:?}"
     );
 
-    // The layout read answers for a structure the engine's own analysis
-    // interned, and misses in the vocabulary the scanner's probes branch
-    // on: an unknown name is NotFound, a kind mismatch is Malformed.
+    // The layout read answers for a structure the analysis engine's own
+    // analysis interned. Its misses arrive in the vocabulary the
+    // scanner's probes branch on: an unknown name is NotFound, a kind
+    // mismatch is Malformed.
     let iobuf = source
         .struct_layout("_iobuf")
         .await
@@ -317,8 +320,8 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         "expected the bridge's Malformed, got {enum_miss:?}"
     );
 
-    // Data items answer from the engine's symbol table: labeled in-image
-    // globals with their applied types.
+    // Data items answer from the analysis engine's symbol table: labeled
+    // in-image globals with their applied types.
     let items = source.data_items().await.expect("data items read");
     for item in &items {
         assert!(
@@ -358,9 +361,9 @@ async fn a_kuna_scan_persists_function_and_dll_records_the_web_reads_back() {
             name: listed.name.clone(),
             address: listed.address,
             binary: binary.clone(),
-            // The seam carries no disassembly read at all — nothing in
-            // the engine path produces one — so the record
-            // carries what the seam answers.
+            // This scan does not call the seam's disassembly read, so
+            // the record keeps an empty disassembly field: every filled
+            // field comes from a seam read the scan actually runs.
             disassembly: String::new(),
             decompiler_output: decompiled.body,
             windows_apis: Vec::new(),
@@ -442,10 +445,11 @@ async fn a_kuna_scan_persists_function_and_dll_records_the_web_reads_back() {
     }
 }
 
-/// The seam's own provenance read (issue #208): a Kuna-powered pipeline
-/// names its engine, release, and pinned source, so a scan record built
-/// over it can carry them — and the read cache forwards what the engine it
-/// wraps names.
+/// The seam's own provenance read (issue #208): the Kuna-powered
+/// pipeline records the analysis engine's name, its release, and its
+/// pinned source, so a scan record built over it can store them — and
+/// the read cache forwards whatever the analysis engine it wraps
+/// records.
 #[test]
 fn the_seam_names_its_engine() {
     let provenance = fixture_pipeline_source()
@@ -462,13 +466,13 @@ fn the_seam_names_its_engine() {
     );
 }
 
-/// The seam's own capability read (issue #354): the live Kuna source over
-/// the fixture declares its full roster honestly — every query family the
-/// seam exposes named exactly once, all answerable, none with a reason to
-/// admit — pairing one-for-one against the seam crate's family roster.
-/// Today every family is answerable, so there is nothing to admit; the
-/// day a pin cannot answer one, the day's declaration is where that
-/// appears, reasoned, and this pin fails.
+/// The seam's own capability read (issue #354): the live Kuna source
+/// over the fixture declares its full roster honestly. Every query
+/// family the seam exposes appears exactly once, all answerable, none
+/// with a reason to admit. The declaration pairs one-for-one against the
+/// seam crate's family roster. Today every family is answerable, so
+/// there is nothing to admit. The day a pin cannot answer a family, the
+/// day's declaration must state it, with a reason, and this pin fails.
 #[test]
 fn the_kuna_source_declares_its_full_answer_surface() {
     let report = fixture_pipeline_source().capability_report();

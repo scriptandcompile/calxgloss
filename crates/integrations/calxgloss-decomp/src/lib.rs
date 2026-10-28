@@ -23,10 +23,10 @@
 //! * [`EngineError`] is the seam's error vocabulary — a named miss, a
 //!   malformed answer, an analysis-engine failure report. Every error the
 //!   analysis engine itself raises is converted into one of these three.
-//! * [`parse`] and [`model`] hold the Ghidra-shaped text formats and record
+//! * [`parse`] and `model` hold the Ghidra-shaped text formats and record
 //!   types that remain live vocabulary: decompiled pseudo-C in the FUN_…
 //!   dialect, the scraper that reads it, and the shapes the persisted
-//!   records carry.
+//!   records keep.
 //! * `noise_filter` is the decompile noise filter — the one pure text pass
 //!   applied at the exit of the `decompile` read in both sources, so every
 //!   consumer sees pseudo-C with recognized compiler noise (the GS
