@@ -1,15 +1,15 @@
 //! Git branch, commit, and merge automation for translation units of work.
 //!
-//! This crate provides [`git_manager::GitManager`], the central orchestrator
-//! for all Git operations performed during the translation pipeline. Every
-//! translation attempt gets its own branch following the naming convention
-//! `re/{binary}/{function}v{N}`.
+//! This crate provides [`git_manager::GitManager`]. It performs every Git
+//! operation the translation pipeline needs. Every attempt gets its own
+//! branch, following the naming convention `re/{binary}/{function}v{N}` —
+//! N is the attempt number.
 //!
 //! # Branching Strategy
 //!
-//! - **Success**: Branch created → files committed → merged to `main`
-//! - **Failure**: Branch created → files committed → branch retained (never deleted)
-//! - **Retries**: New attempt gets a new branch with incremented version number
+//! - **Success**: the branch is created, its files are committed, and it is merged into `main`.
+//! - **Failure**: the branch is created and its files committed; the branch is retained, never deleted.
+//! - **Retries**: each fresh attempt gets a new branch with the next attempt number.
 //!
 //! # Commit Message Convention
 //!

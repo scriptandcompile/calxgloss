@@ -1,12 +1,12 @@
 //! Verification — compile and test translated Rust code against baseline behavior.
 //!
-//! This crate provides the [`Verifier`] struct, which takes translated Rust code
-//! and baseline test cases, compiles the code in a sandboxed temporary project,
-//! and verifies that the output matches the original binary's behavior.
+//! This crate provides the [`Verifier`] struct. It takes translated Rust
+//! code and baseline test cases, compiles the code in a sandboxed scratch
+//! project, and verifies that the output matches the original binary's behavior.
 //!
 //! # Workflow
 //!
-//! 1. Scaffold a minimal Cargo project in a temporary directory
+//! 1. Scaffold a minimal Cargo project in a scratch directory
 //! 2. Write the translated code as a library module
 //! 3. Provide stub implementations for common external dependencies (PAL traits, etc.)
 //! 4. Run `cargo check` to verify compilation

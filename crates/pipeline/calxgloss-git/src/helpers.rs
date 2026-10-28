@@ -4,7 +4,7 @@ use calxgloss_types::TypesError;
 use git2::Repository;
 use git2::Signature;
 
-/// Create a Git signature from repo config or the provided InitConfig.
+/// Builds a Git commit signature from the repo config, falling back to the given InitConfig.
 pub(super) fn make_signature(
     repo: &Repository,
     config: &super::InitConfig,

@@ -335,7 +335,7 @@ fn test_merge_conflicts_detected() {
     assert!(matches!(result_a, MergeResult::Merged { .. }));
 
     // B edits the same file from the same base — the merge must report the
-    // conflict instead of dying at the tree-write step (issue #83).
+    // conflict instead of failing at the tree-write step (issue #83).
     let result_b = manager.merge_to_main(&branch_b).expect("merge v2");
     match result_b {
         MergeResult::Conflicts {
@@ -869,8 +869,8 @@ fn accepted_attempt_translation_prefers_the_highest_merged_attempt() {
 
 #[test]
 fn accepted_attempt_translation_is_none_when_a_higher_attempt_is_unmerged() {
-    // v2 under review must not mask the accepted v1 — nor may v2's own
-    // unmerged code seed. The accepted state is exactly what main holds.
+    // v2 under review must not hide the accepted v1, and v2's own unmerged code
+    // must not become a carry-over seed either. The accepted state is exactly what main holds.
     let (tmp_dir, manager) = temp_git_repo();
     file_translation_attempt(
         &manager,

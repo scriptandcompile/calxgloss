@@ -11,21 +11,21 @@
 //! |-------------|----------------------|
 //! | `MicrosoftSdk` | Shim layer branch (e.g. `re/shim/wgpu`) |
 //! | `KnownThirdParty` | Shim layer branch (e.g. `re/shim/fmod-rs`) |
-//! | `WindowsOs` | No shim deps — PAL uses std lib directly |
-//! | `ProjectSpecific` | No shim deps — pure RE target |
-//! | `UnknownThirdParty` | No shim deps — treat as opaque |
-//! | `RuntimeLibrary` | No shim deps — skip during translation |
+//! | `WindowsOs` | No shim dependencies — the PAL uses the standard library directly |
+//! | `ProjectSpecific` | No shim dependencies — pure reverse-engineering target |
+//! | `UnknownThirdParty` | No shim dependencies — treat the DLL as opaque |
+//! | `RuntimeLibrary` | No shim dependencies — skipped during translation |
 
 use std::collections::HashMap;
 
 use calxgloss_types::DllCategory;
 use git2::Repository;
 
-/// Encodes the mapping from DLL names to their required shim layer crates.
+/// Holds the mapping from DLL names to the shim layer crates they require.
 ///
-/// This is the canonical lookup used by [`DependencyChecker`] to determine
-/// what shim branches must be merged before a function branch for a given DLL
-/// can be safely created.
+/// [`DependencyChecker`] uses this mapping to decide which shim branches must
+/// be merged into `main` before it can safely create a function translation
+/// branch for that DLL.
 ///
 /// The mapping covers all Microsoft SDK and known third-party DLLs that have
 /// Rust crate equivalents but need a shim layer for API compatibility.
@@ -82,7 +82,7 @@ pub struct DependencyCheckResult {
     pub required: Vec<String>,
     /// Dependencies that are already merged into main.
     pub satisfied: Vec<String>,
-    /// Dependencies that are NOT yet merged (unblocked predecessors).
+    /// Dependencies that are NOT merged into main yet — these branches must merge first.
     pub unmet: Vec<String>,
 }
 
@@ -249,9 +249,9 @@ impl DependencyChecker {
     ) -> DependencyCheckResult {
         let mut result = self.check(binary, category, crate_replacement);
 
-        // Clear the placeholder unmet list and repopulate based on actual
-        // merge status. The `check` method pre-fills `unmet` with the
-        // required names; we replace them with accurate resolved values.
+        // `check` pre-fills `unmet` with the required names. Clear that
+        // placeholder, then fill `satisfied` and `unmet` again from the real
+        // merge status of each required branch.
         result.unmet.clear();
 
         // Check each required dependency against main

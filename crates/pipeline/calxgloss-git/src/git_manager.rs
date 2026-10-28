@@ -1,9 +1,9 @@
 //! GitManager — branch, commit, merge, and acceptance operations.
 //!
-//! This module provides the [`GitManager`] struct, the central orchestrator
-//! for all Git operations performed during the translation pipeline.
-//! Every translation attempt gets its own branch following the naming
-//! convention `re/{binary}/{function}v{N}`.
+//! This module provides the [`GitManager`] struct. It performs every Git
+//! operation the translation pipeline needs. Every attempt gets its own
+//! branch, following the naming convention `re/{binary}/{function}v{N}` —
+//! N is the attempt number.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -31,18 +31,18 @@ pub enum MergeResult {
     Merged { merge_hash: String },
     /// Main already contains the branch's commits — nothing to do.
     AlreadyUpToDate,
-    /// The branch cannot merge cleanly; `conflicted_files` names every file
-    /// with a content conflict and main is left untouched.
+    /// The branch cannot merge cleanly. `conflicted_files` lists every file
+    /// with a content conflict, and `main` is left untouched.
     Conflicts {
         conflicted_files: Vec<String>,
         error: String,
     },
 }
 
-/// Collects the paths of every conflicted entry in a merge index, sorted and
-/// deduplicated — libgit2 records one index entry per stage (ancestor, ours,
-/// theirs) for the same path, so a single conflicting file appears up to
-/// three times.
+/// The paths of every conflicted entry in a merge index, sorted and with
+/// duplicates removed. libgit2 records one index entry per merge stage
+/// (ancestor, ours, theirs) for the same path, so one conflicting file can
+/// appear up to three times.
 fn conflicted_paths(index: &git2::Index) -> Result<Vec<String>, TypesError> {
     let conflicts = index
         .conflicts()
@@ -77,19 +77,19 @@ pub struct PatchRecord {
     pub compilation_errors: Vec<String>,
     pub test_failures: Vec<String>,
     pub commit_hash: String,
-    /// The reviewer's stated issue, set only on patch *request* records —
-    /// written by the review UI's request-patch action to say what to fix.
-    /// Pipeline failure records ([`GitManager::store_failure`]) and
-    /// successful retry records leave this `None`, which is how the
-    /// dashboard builder tells a requested patch (`PatchRequested`) from an
-    /// attempt that merely failed (`PendingReview`).
+    /// The reviewer's stated issue. Set only on request-patch records: the
+    /// review UI's request-patch action writes it to say what to fix.
+    /// Pipeline failure records ([`GitManager::store_failure`]) and successful
+    /// retry records leave it `None`. That is how the dashboard builder tells
+    /// a requested patch (`PatchRequested`) from an attempt that only
+    /// failed, without a patch request (`PendingReview`).
     #[serde(default)]
     pub patch_request: Option<String>,
 }
 
-/// The failure fields of a translation attempt, carried as one record into
-/// [`GitManager::store_failure`] instead of as loose positional parameters
-/// (issue #268) — adjacent same-typed lists can no longer be transposed.
+/// The failure fields of one attempt, bundled into a single record for
+/// [`GitManager::store_failure`] instead of loose positional arguments (issue
+/// #268) — adjacent same-typed lists can no longer be swapped in the call.
 #[derive(Debug, Clone, Default)]
 pub struct FailureRecord {
     /// The failure description shown to reviewers.
@@ -566,8 +566,8 @@ impl GitManager {
 
             let mut checkout_opts = CheckoutBuilder::new();
             checkout_opts.force();
-            // Get the updated main reference directly from the repo (main_ref is stale
-            // after reference() updates the ref on disk)
+            // Re-read `main` from the repo: `main_ref` above is stale, because
+            // `reference()` just updated the ref on disk.
             let main_commit = self
                 .repo
                 .find_reference("refs/heads/main")
@@ -597,10 +597,10 @@ impl GitManager {
             .merge_commits(&main_commit, &branch_commit, None)
             .map_err(|e| TypesError::InvalidBranchName(format!("Merge failed: {}", e)))?;
 
-        // Detect conflicts before committing: a conflicted merge index cannot
-        // produce a tree, and letting the tree-write fail surfaces as an
-        // opaque error while the reviewer believes the unit was accepted
-        // (issue #83).
+        // Detect conflicts before committing. A conflicted merge index cannot
+        // produce a tree, so letting the tree-write fail would surface an
+        // opaque error — and the reviewer could believe the unit was accepted
+        // when it was not (issue #83).
         if merge_index.has_conflicts() {
             let conflicted_files = conflicted_paths(&merge_index)?;
             warn!(
@@ -640,7 +640,7 @@ impl GitManager {
 
         let mut checkout_opts = CheckoutBuilder::new();
         checkout_opts.force();
-        // Use the merge commit we just created (main_ref is stale after commit())
+        // `commit()` just moved `main` to the merge commit; `main_ref` above is stale.
         let main_commit = self
             .repo
             .find_reference("refs/heads/main")
@@ -718,9 +718,9 @@ impl GitManager {
         Ok(result)
     }
 
-    /// Rejects a branch and stores a rejection record.
+    /// Sends a branch back and stores the send-back record.
     ///
-    /// The rejection reason is saved to
+    /// The send-back reason is saved to
     /// `re/rejections/{binary}/{function}/v{N}.json` so the dashboard can
     /// display send-back history.
     pub fn reject_branch(&self, branch: &GitBranch, reason: &str) -> Result<PathBuf, TypesError> {
@@ -945,29 +945,29 @@ impl GitManager {
         }
     }
 
-    /// The repo-relative path a translated function's code rides at.
+    /// The repo-relative path that stores a translated function's code.
     ///
-    /// The single spelling of the convention: the auto pipeline writes and
-    /// commits `src/modules/{function}/translated.rs`, and carry-over
-    /// seeding (issue #299) reads an accepted translation's code back from
-    /// exactly that path. Both sides name it here so the write and the read
-    /// can never drift apart.
+    /// This is the one spelling of the convention: the auto pipeline writes and
+    /// commits `src/modules/{function}/translated.rs`, and carry-over seeding
+    /// (issue #299) reads an accepted translation's code back from exactly that
+    /// path. The write side and the read side both take the path from this one
+    /// function, so they can never drift apart.
     pub fn translated_module_path(function: &str) -> String {
         format!("src/modules/{function}/translated.rs")
     }
 
     /// The accepted (merged) translation for one function of one binary,
-    /// as `(attempt, rust_code)` — the carry-over seed's source (issue #299).
+    /// as `(attempt, rust_code)` — the source for carry-over seeding (issue #299).
     ///
     /// A function's translation is *accepted* when its `re/{binary}/{function}v{N}`
-    /// branch is merged into `main` — the review overlay's Accepted
-    /// classification (ADR-0003) read straight off git. The highest merged
-    /// attempt wins (a later attempt that landed supersedes earlier ones),
-    /// and its `translated.rs` is returned **verbatim** from that branch's
-    /// tip tree — the same bytes the merge recorded, not a re-render.
+    /// branch is merged into `main` — that is the review overlay's Accepted
+    /// classification (ADR-0003), taken from git state. The highest merged
+    /// attempt wins: a later attempt that landed replaces the earlier ones.
+    /// Its `translated.rs` is returned **verbatim** from that branch's tip
+    /// tree — the same bytes the merge recorded, not a re-render.
     ///
     /// `None` when nothing qualifies: no branches for the pair, none merged
-    /// (work-in-progress and rejected branches are never a seed), or the
+    /// (work-in-progress and send-back branches are never a seed), or the
     /// merged branch holds no translated module at its tip.
     pub fn accepted_attempt_translation(
         &self,
@@ -1041,7 +1041,7 @@ impl GitManager {
         Ok(())
     }
 
-    /// Archives a branch by renaming it to an `refs/archive/` reference.
+    /// Archives a branch by renaming it to a `refs/archive/` reference.
     ///
     /// The branch is not deleted; instead it is renamed to
     /// `refs/archive/re/{binary}/{function}/v{N}` so it remains reachable for
