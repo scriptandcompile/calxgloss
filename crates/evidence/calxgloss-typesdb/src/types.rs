@@ -1,22 +1,24 @@
 //! Core data types for the recovered type database.
 //!
-//! This module holds the serialized shape of everything the recovery engines
+//! This module holds the serialized shape of everything the recovery scans
 //! produce:
 //!
-//! - [`NamedType`], [`TypeKind`], [`StructField`]: named types pulled from
-//!   the engine's type listing (struct, class, union, enum) with field layouts.
+//! - [`NamedType`], [`TypeKind`], [`StructField`]: named types read from
+//!   the analysis engine's type listing (struct, class, union, enum), with
+//!   field layouts.
 //! - `Vtable`, `VtableMethod`: detected vtables with resolved method pointers
 //!   and base-class inheritance.
 //! - `InferredStruct`, `InferredField`, `FieldType`: struct layouts inferred
-//!   from string-literal clustering, with confidence scores.
-//! - `TypeDatabase`, `ScanMetadata`: the persisted per-DLL database and its
-//!   scan provenance.
+//!   from string-literal clustering, with evidence confidence scores.
+//! - `TypeDatabase`, `ScanMetadata`: the persisted per-binary document and
+//!   its scan provenance.
 //!
-//! All types derive `Serialize`/`Deserialize`. Engine scan records convert into
-//! recovered records via `From<&StructFieldLayout>` and `From<&calxgloss_decomp::EnumMember>`
-//! — the engine and persisted shapes stay deliberately split, and these impls are
-//! the only mapping between them. Recovered records also convert into prompt
-//! data: `From<&NamedType>` and `From<&InferredStruct>` render a
+//! All types derive `Serialize`/`Deserialize`. The seam's wire records
+//! convert into recovered records via `From<&StructFieldLayout>` and
+//! `From<&calxgloss_decomp::EnumMember>`. The seam's shapes and the
+//! persisted shapes stay deliberately split, and these impls are the only
+//! mapping between them. Recovered records also convert into prompt data:
+//! `From<&NamedType>` and `From<&InferredStruct>` build a
 //! [`calxgloss_prompts::StructuredData`] for the translation prompts.
 
 use crate::stl::StlKind;
@@ -25,9 +27,10 @@ use calxgloss_prompts::StructuredData;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-// `ScanMetadata` is the shared per-binary scan provenance and `Confidence` the
-// shared 0–100 evidence score; both live in `calxgloss-types` so every engine
-// crate keys its artifacts and scores the same way. Re-exported here so
+// `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
+// the shared 0–100 evidence confidence score. Both live in
+// `calxgloss-types` so every evidence engine crate keys its artifacts and
+// scores the same way. They are re-exported here so
 // `calxgloss_typesdb::types::*` keeps resolving for existing callers.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 
@@ -35,27 +38,27 @@ pub use calxgloss_types::{Confidence, ScanMetadata};
 // Type kind
 // ============================================================
 
-/// The kind of a named type in the engine's type listing.
+/// The kind of a named type in the analysis engine's type listing.
 ///
 /// The bridge classifies every Type Manager entry as struct, union, enum,
-/// typedef, pointer, array, function, or primitive. The engine models C++ classes
-/// as structures, so a recovered class arrives as [`TypeKind::Struct`];
-/// [`TypeKind::Class`] is reserved for kinds confirmed by other signals
-/// (RTTI, vtable linkage).
+/// typedef, pointer, array, function, or primitive. The analysis engine
+/// stores C++ classes as structures, so a recovered class arrives as
+/// [`TypeKind::Struct`]. [`TypeKind::Class`] is reserved for kinds
+/// confirmed by other signals (RTTI, vtable linkage).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeKind {
-    /// A structure (or a C++ class, which the engine stores as a structure).
+    /// A structure (or a C++ class, which the analysis engine stores as a structure).
     Struct,
     /// A class confirmed by a signal beyond its structure layout.
     Class,
     /// A union. The bridge classifies unions but exposes no layout endpoint,
-    /// so a recovered union carries its size but no fields.
+    /// so a recovered union records its size but no fields.
     Union,
     /// An enumeration with named members.
     Enum,
-    /// A typedef alias. The alias target is not reported by the endpoints
-    /// the scan reads, so a typedef carries its size only.
+    /// A typedef alias. The endpoints the scan reads do not report the
+    /// alias target, so a typedef records its size only.
     Typedef,
     /// Anything the scan could not classify into the kinds above (function
     /// signatures, primitives outside the builtin category).
@@ -78,12 +81,13 @@ calxgloss_types::display_serde_label!(TypeKind {
 /// One field of a recovered structure layout.
 ///
 /// The persisted counterpart of the wire shape `calxgloss_decomp::StructFieldLayout`.
-/// The two stay deliberately split — that one is the parsed `struct_layout()`
-/// answer owned by the seam, this one the serde'd recovered record —
-/// and [`From<&StructFieldLayout>`] is the only mapping between them.
+/// The two stay deliberately split. `calxgloss_decomp::StructFieldLayout` is
+/// the parsed `struct_layout()` answer owned by the seam; this is the
+/// serde'd recovered record. [`From<&StructFieldLayout>`] is the only
+/// mapping between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructField {
-    /// Field name as the engine labels it; `(unnamed)` for anonymous fields.
+    /// Field name as the analysis engine labels it. `(unnamed)` for anonymous fields.
     pub name: String,
     /// Byte offset of the field from the start of the structure.
     pub offset: u64,
@@ -91,17 +95,17 @@ pub struct StructField {
     pub size: u64,
     /// The field's data type name, e.g. `dword` or `char[2]`.
     pub type_name: String,
-    /// The Type Manager path of the recovered named type this field's
-    /// `type_name` names — set by the scan's nesting pass when exactly one
-    /// recovered type carries that name (paths, not names, are the unique
-    /// keys). `None` for a field typed as a primitive or an unrecovered
+    /// The Type Manager path of the recovered named type that this field's
+    /// `type_name` refers to. The scan's nesting pass sets it when exactly
+    /// one recovered type has that name; paths, not names, are the unique
+    /// keys. `None` for a field typed as a primitive or an unrecovered
     /// type, for a name several recovered types share, and for databases
     /// written before the nesting pass existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_type: Option<String>,
-    /// The kind of the linked type, carried through the link so a field
-    /// typed as a recovered union reads as a union rather than being
-    /// misread as a struct. `None` exactly when `linked_type` is.
+    /// The kind of the linked type, stored with the link. It keeps a field
+    /// typed as a recovered union from being misread as a struct. `None`
+    /// exactly when `linked_type` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_kind: Option<TypeKind>,
 }
@@ -117,23 +121,24 @@ impl StructField {
 /// One member of a recovered enumeration.
 ///
 /// The persisted counterpart of the wire shape `calxgloss_decomp::EnumMember`.
-/// The two records are identical today but stay split on purpose, for the same
-/// reason as [`StructField`], and [`From<&calxgloss_decomp::EnumMember>`] is
-/// the only mapping between them.
+/// The two records are identical today but stay split on purpose, for the
+/// same reason as [`StructField`].
+/// [`From<&calxgloss_decomp::EnumMember>`] is the only mapping between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnumMember {
     /// Member name, e.g. `ExceptionContinueExecution`.
     pub name: String,
-    /// Member value; signed because the engine's enums may hold negative values.
+    /// Member value. Signed because the analysis engine's enums may hold
+    /// negative values.
     pub value: i64,
 }
 
 /// Wire → recovered conversions for the layout leaves.
 ///
-/// These impls are the single place the seam record shapes and the persisted
-/// recovered shapes meet; keeping the field copies here rather than inline in
-/// [`NamedType::from_struct`] / [`NamedType::from_enum`] means a wire-shape
-/// change breaks exactly one compile.
+/// These impls are the only place where the seam's record shapes and the
+/// persisted recovered shapes meet. The field copies live here rather than
+/// inline in [`NamedType::from_struct`] / [`NamedType::from_enum`], so a
+/// change to the wire shapes breaks exactly one compile.
 impl From<&StructFieldLayout> for StructField {
     fn from(field: &StructFieldLayout) -> Self {
         Self {
@@ -161,17 +166,18 @@ impl From<&calxgloss_decomp::EnumMember> for EnumMember {
 // Named types
 // ============================================================
 
-/// A named type recovered from the engine's type listing.
+/// A named type recovered from the analysis engine's type listing.
 ///
-/// The Type Manager holds every type the program knows about, including types
-/// never applied to a symbol, so a `NamedType` may describe a type that
-/// appears nowhere in the listing. `path` is the Type Manager path and is
-/// unique — type *names* are not, so the database keys by path.
+/// The Type Manager holds every type the program knows about, including
+/// types never applied to a symbol. So a `NamedType` can describe a type
+/// that appears nowhere in the listing. `path` is the Type Manager path
+/// and is unique. Type *names* are not unique, so the database keys by
+/// path.
 ///
-/// A type whose layout probe missed or failed still appears, with `size`
-/// taken from the listing and `fields`/`members` empty: a type known to exist
-/// without its layout is worth keeping, and the kind records what the scan
-/// could establish about it.
+/// A type whose layout probe found nothing or failed is still recorded.
+/// Its `size` comes from the listing and its `fields`/`members` stay
+/// empty. A type known to exist is worth keeping even without its
+/// layout, and `kind` records what the scan could establish about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamedType {
     /// The type name, e.g. `IMAGE_DOS_HEADER`. Pointer variants arrive as
@@ -184,7 +190,7 @@ pub struct NamedType {
     pub category: String,
     /// Full path through the Type Manager, e.g. `/pe/IMAGE_DOS_HEADER`.
     pub path: String,
-    /// Size in bytes. `None` when the engine reports the size as `variable`.
+    /// Size in bytes. `None` when the analysis engine reports the size as `variable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     /// Alignment in bytes, when a layout probe reported one.
@@ -196,8 +202,8 @@ pub struct NamedType {
     /// Enumeration members. Empty for kinds without members.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<EnumMember>,
-    /// The STL/MFC family this type's name matches — set by the scan's
-    /// STL flagging pass when the recovered name spells a known
+    /// The STL/MFC family this type's name matches. The scan's STL
+    /// flagging pass sets it when the recovered name spells a known
     /// standard-library shape (`basic_string`/`CString`, `vector`, `list`,
     /// the `map`/`set` family, a smart pointer). Flag-only: the record
     /// stays in every section and answers every lookup. `None` for the
@@ -210,8 +216,9 @@ pub struct NamedType {
 impl NamedType {
     /// A type recorded from the listing alone, without a layout.
     ///
-    /// This is the degraded shape: the scan knows the type exists, what
-    /// category it sits in, and how large it is, but nothing of its internals.
+    /// This is the degraded shape: the scan knows the type exists, which
+    /// category it sits in, and how large it is, but nothing about its
+    /// internals.
     pub fn from_listing(entry: &DataTypeEntry, kind: TypeKind) -> Self {
         Self {
             name: entry.name.clone(),
@@ -229,9 +236,9 @@ impl NamedType {
 
     /// A structure confirmed by a `struct_layout()` answer.
     ///
-    /// The layout's size and alignment win over the listing's: the layout is
-    /// the authoritative read of the same type, and the listing may have
-    /// rendered the size as `variable`.
+    /// When the layout and the listing disagree, the layout's size and
+    /// alignment are used. The layout is the authoritative read of the
+    /// same type, and the listing may report the size as `variable`.
     pub fn from_struct(entry: &DataTypeEntry, layout: &StructLayout) -> Self {
         Self {
             name: entry.name.clone(),
@@ -285,7 +292,7 @@ pub struct VtableMethod {
     pub slot: usize,
     /// The address the slot's pointer points at.
     pub address: u64,
-    /// The function the engine has at that address. `None` when the pointer lands
+    /// The function the analysis engine has at that address. `None` when the pointer lands
     /// outside any known function body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -293,17 +300,17 @@ pub struct VtableMethod {
 
 /// A vtable recovered from the program's defined data.
 ///
-/// Ghidra names every MSVC vtable `vftable`, so the label identifies nothing
-/// on its own and the database keys by address. A vtable paired with the
-/// `vftable_meta_ptr` entry that precedes it is confirmed by the RTTI pattern,
-/// and its class name and base classes are recovered by following the RTTI
-/// chain; an unpaired one is still a vtable, just without the RTTI record to
-/// read.
+/// Ghidra names every MSVC vtable `vftable`, so the label identifies
+/// nothing on its own; the database keys by address. When a
+/// `vftable_meta_ptr` entry precedes a table, the pair confirms the RTTI
+/// pattern, and the scan follows the RTTI chain to recover the class name
+/// and base classes. A table without that pair is still a vtable; it just
+/// has no RTTI record to read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vtable {
     /// Address of the table itself.
     pub address: u64,
-    /// The label the engine shows, e.g. `vftable`.
+    /// The label the analysis engine shows, e.g. `vftable`.
     pub label: String,
     /// Size of the table in bytes.
     pub size: u64,
@@ -337,7 +344,7 @@ pub struct Vtable {
 }
 
 impl Vtable {
-    /// Whether the table carried the `vftable_meta_ptr` RTTI confirmation.
+    /// Whether the table had the `vftable_meta_ptr` RTTI confirmation.
     pub fn is_confirmed(&self) -> bool {
         self.meta_ptr_address.is_some()
     }
@@ -355,10 +362,11 @@ impl Vtable {
 
 /// The kind inferred for one string-inferred field.
 ///
-/// The kind comes from the *shape* of the literal that named the field —
-/// `width=100` suggests an integer, `ratio=0.5` a float, `enabled=true` a
-/// flag, a bare identifier text — so it is a suggestion for the translator
-/// rather than a fact read out of the program.
+/// The kind comes from the *shape* of the literal that named the field:
+/// `width=100` suggests an integer, `ratio=0.5` suggests a float,
+/// `enabled=true` suggests a flag, and a bare identifier suggests text.
+/// It is a suggestion for the translator, not a fact read out of the
+/// program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldType {
@@ -407,10 +415,12 @@ impl fmt::Display for FieldType {
 
 /// How an inferred struct's name was derived.
 ///
-/// The name is part of the evidence report: a candidate named from the data
-/// it came from is a better hypothesis than one named after its own address.
-/// The variants are ordered strongest evidence first — the evidence ladder
-/// the confidence score pays out through [`NameOrigin::confidence_bonus`].
+/// The name is part of the evidence report: a candidate named from the
+/// data it came from is a better hypothesis than one named after its own
+/// address. The variants are ordered from strongest evidence to weakest;
+/// this order is the confidence ladder of string-guided inference.
+/// [`NameOrigin::confidence_bonus`] converts the ladder into evidence
+/// confidence points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NameOrigin {
@@ -426,14 +436,15 @@ pub enum NameOrigin {
 }
 
 impl NameOrigin {
-    /// The confidence points this origin contributes to a candidate's score.
+    /// The evidence confidence points this origin adds to a candidate's score.
     ///
-    /// The payouts follow the enum order: a name the program itself carries
-    /// (an RTTI class name) beats one guessed from the literals, which beats
-    /// one guessed from function stems, which beats the address fallback.
-    /// This is the single source for the ladder, so a candidate re-named
-    /// after linking can be re-scored by swapping one origin's payout for
-    /// another's.
+    /// The points follow the order the variants are declared in: a name
+    /// the program itself stores (an RTTI class name) scores higher than
+    /// one guessed from the literals, which scores higher than one guessed
+    /// from function stems, which scores higher than the address fallback.
+    /// These points are the single source of the ladder, so a candidate
+    /// re-named after linking is re-scored by using the new origin's points
+    /// instead of the old origin's.
     pub fn confidence_bonus(&self) -> u8 {
         match self {
             NameOrigin::VtableClass => 35,
@@ -462,8 +473,8 @@ pub struct InferredField {
     pub source_value: String,
     /// Address of that literal.
     pub source_address: u64,
-    /// The STL/MFC family the field's suggested type matches — set by the
-    /// scan's STL flagging pass, so a text-typed field reads as the
+    /// The STL/MFC family the field's suggested type matches. The scan's
+    /// STL flagging pass sets it, so a text-typed field reads as the
     /// string family rather than as an untyped pointer. Flag-only. `None`
     /// for a suggested type with no shape and for databases written before
     /// the flagging pass existed.
@@ -481,11 +492,12 @@ impl InferredField {
 
 /// A struct candidate inferred from clustered string literals.
 ///
-/// Literals the same functions point at are grouped together, and a group
-/// large enough to read as a field list becomes a candidate: the literals
-/// name the fields, and the confidence score says how far the evidence
-/// supports reading them as one struct. Nothing here was declared in the
-/// program — a candidate is a hypothesis for the translator to test.
+/// The scan groups the literals that the same functions point at. A
+/// group large enough to look like a field list becomes a candidate:
+/// the literals give the field names, and the evidence confidence score
+/// says how far the evidence supports reading them as one struct. The
+/// program declares none of this — a candidate is a hypothesis for the
+/// translator to test.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferredStruct {
     /// Name derived from the cluster; see [`InferredStruct::name_origin`].
@@ -494,19 +506,21 @@ pub struct InferredStruct {
     pub name_origin: NameOrigin,
     /// Fields, in literal-address order.
     pub fields: Vec<InferredField>,
-    /// Confidence that the cluster is one struct, 0–100.
+    /// Evidence confidence that the cluster is one struct, 0–100.
     pub confidence: Confidence,
-    /// Every function that references the candidate's literals — including
-    /// hub functions, which point at so many literals that they cannot
-    /// cluster one struct but still evidence the ones they read. The
-    /// cross-reference merge pass compares these sets across candidates.
+    /// Every function that references the candidate's literals. This
+    /// includes hub functions: they point at so many literals that no one
+    /// struct can be clustered from them, but they still support the
+    /// candidates whose literals they read. The cross-reference merge pass
+    /// compares these function sets across candidates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub referenced_by: Vec<String>,
     /// The address of the RTTI-confirmed vtable this candidate was linked
-    /// to — set when its referencing functions include that table's methods,
-    /// which is why the name is then the table's class name
-    /// ([`NameOrigin::VtableClass`]). `None` for an unlinked candidate, and
-    /// for databases written before the linking pass existed.
+    /// to. The linking pass sets it when the candidate's referencing
+    /// functions include that table's methods; that is why the name then
+    /// becomes the table's class name ([`NameOrigin::VtableClass`]).
+    /// `None` for an unlinked candidate, and for databases written before
+    /// the linking pass existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_vtable: Option<u64>,
     /// How many half-candidates the cross-reference merge pass combined into
@@ -525,7 +539,7 @@ impl InferredStruct {
     }
 
     /// Whether the candidate was linked to an RTTI-confirmed vtable, and so
-    /// carries that table's class name.
+    /// has that table's class name.
     pub fn is_linked(&self) -> bool {
         self.linked_vtable.is_some()
     }
@@ -542,12 +556,12 @@ impl InferredStruct {
 // ============================================================
 
 /// Render a Type Manager record as prompt data. Structure fields keep
-/// their offsets; enum members arrive as fields whose "type" is the
+/// their offsets. Enum members arrive as fields whose "type" is the
 /// member value and whose offset is unknown (`-1`). A field the nesting
-/// pass linked to a recovered named type renders its kind in front of
-/// the name — `union VALUE`, not just `VALUE` — so the layout reads as a
-/// tree inside the existing field list, with no new prompt section. A
-/// type the STL flagging pass recognized names its family in the type
+/// pass linked to a recovered named type shows its kind in front of the
+/// type name — `union VALUE`, not just `VALUE` — so the layout reads as
+/// a tree inside the existing field list, with no new prompt section. A
+/// type the STL flagging pass recognized shows its family in the type
 /// description — `basic_string<…> (STL string)` — so the translator maps
 /// it to a Rust equivalent instead of inventing a raw layout.
 impl From<&NamedType> for StructuredData {
@@ -586,9 +600,9 @@ impl From<&NamedType> for StructuredData {
 }
 
 /// Render an inferred candidate as prompt data. Field types are the C
-/// declarations the inference suggested; offsets are estimates and stay
+/// declarations the inference suggested. Offsets are estimates, and stay
 /// unknown (`-1`) when the candidate could not place a field. A field
-/// the STL flagging pass recognized names its family in the type —
+/// the STL flagging pass recognized shows its family in the type —
 /// `char * (STL string)` — so the translator maps it to a Rust string
 /// type instead of hand-rolling a buffer.
 impl From<&InferredStruct> for StructuredData {
@@ -620,16 +634,17 @@ impl From<&InferredStruct> for StructuredData {
 /// The recovered type database for one binary — the document persisted
 /// to `re/analysis/typesdb/{dll}.json`.
 ///
-/// The three sections are the outputs of the three recovery engines:
-/// [`NamedType`]s from the Type Manager scan, [`Vtable`]s from vtable
-/// detection, and [`InferredStruct`]s from string-guided inference. Each
-/// section keeps a stable order — path, address, confidence — so two
-/// scans of the same program diff cleanly.
+/// The three sections are the products of the crate's three recovery
+/// scans: [`NamedType`]s from the Type Manager scan, [`Vtable`]s from
+/// vtable detection, and [`InferredStruct`]s from string-guided
+/// inference. Each section keeps a stable order: named types by path,
+/// vtables by address, candidates by evidence confidence. Two scans of
+/// the same program therefore diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeDatabase {
     /// Provenance of the scan that produced this database.
     pub metadata: ScanMetadata,
-    /// Named types from the engine's type listing, in Type Manager path
+    /// Named types from the analysis engine's type listing, in Type Manager path
     /// order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_types: Vec<NamedType>,
@@ -637,7 +652,7 @@ pub struct TypeDatabase {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vtables: Vec<Vtable>,
     /// Struct candidates from string-guided inference, highest
-    /// confidence first.
+    /// evidence confidence first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inferred_structs: Vec<InferredStruct>,
 }
@@ -757,7 +772,7 @@ mod tests {
 
     #[test]
     fn a_field_written_before_the_nesting_pass_still_loads() {
-        // The shipped MVP shape: fields carry no `linked_type` or
+        // The shipped MVP shape: fields have no `linked_type` or
         // `linked_kind` key. The new fields default, so old cached
         // documents keep loading.
         let json = r#"{
@@ -833,7 +848,7 @@ mod tests {
 
     #[test]
     fn records_written_before_the_stl_flag_still_load() {
-        // The shipped MVP shape: no record carries an `stl_kind` key.
+        // The shipped MVP shape: no record has an `stl_kind` key.
         // The field defaults, so old cached documents keep loading.
         let named: NamedType = serde_json::from_str(
             r#"{
@@ -1221,8 +1236,8 @@ mod tests {
     #[test]
     fn a_linked_field_renders_its_kind_in_the_prompt_field_list() {
         // Nesting shows up inside the existing field list: a linked
-        // field's type carries the linked kind, so a union field cannot
-        // be misread as a struct; unlinked fields stay verbatim.
+        // field's type includes the linked kind, so a union field cannot
+        // be misread as a struct. Unlinked fields stay verbatim.
         let recovered = NamedType {
             fields: vec![
                 StructField {
@@ -1261,9 +1276,9 @@ mod tests {
 
     #[test]
     fn a_flagged_named_type_names_its_stl_family_in_the_prompt_name() {
-        // The kind rides in the type description, so the translator maps
-        // the type to a Rust equivalent instead of inventing a raw layout
-        // (issue #140).
+        // The STL family is included in the type description, so the
+        // translator maps the type to a Rust equivalent instead of
+        // inventing a raw layout (issue #140).
         let recovered = NamedType {
             stl_kind: Some(StlKind::String),
             ..NamedType::from_listing(&entry("basic_string", "pe", Some(24)), TypeKind::Class)
