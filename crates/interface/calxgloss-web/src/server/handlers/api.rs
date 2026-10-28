@@ -15,7 +15,8 @@ use super::super::{
     ServerState, ServerStatus, UnitResponse, UnitResponseInner,
 };
 
-/// Optional JSON body extractor — returns None when no body is present.
+/// Optional JSON body extractor — returns None when no body is present or
+/// the body fails to parse as JSON.
 pub struct OptionalJson<T>(pub Option<T>);
 
 impl<S, T> axum::extract::FromRequest<S> for OptionalJson<T>
@@ -334,7 +335,7 @@ fn action_error(e: anyhow::Error) -> ServerError {
 /// When the `ActionsState` is configured (via `build_router_with_actions`), this
 /// delegates to [`crate::accept_unit`] which also writes
 /// a persistent action record.  In the basic router (no actions backend) the Git
-/// operation runs directly as before.
+/// operation runs directly.
 pub async fn api_accept_unit(
     State(combined): State<super::super::CombinedState>,
     Path(unit_id): Path<String>,
@@ -387,7 +388,7 @@ pub(crate) async fn perform_accept(
     let merge_hash = match &result {
         calxgloss_git::MergeResult::Merged { merge_hash } => Some(merge_hash.clone()),
         calxgloss_git::MergeResult::AlreadyUpToDate => None,
-        // A conflicted merge landed nothing on main — report the conflict
+        // A conflicted merge adds nothing to main — report the conflict
         // instead of answering as if the unit had been accepted (issue #83).
         calxgloss_git::MergeResult::Conflicts {
             conflicted_files,
@@ -414,7 +415,7 @@ pub(crate) async fn perform_accept(
 
 // ─── POST /api/units/:id/send-back ───────────────────────────────────
 
-/// Sends a unit back to the LLM with reviewer comments.
+/// Sends a unit back to the LLM with the reviewer's reason.
 ///
 /// When `ActionsState` is present this also writes a persistent action record.
 pub async fn api_send_back_unit(
@@ -486,8 +487,7 @@ pub(crate) async fn perform_send_back(
 
 /// Requests a patch for a unit of work, identifying the specific issue.
 ///
-/// This is the real implementation (step 5.7): it delegates to
-/// [`crate::request_patch`] which:
+/// Delegates to [`crate::request_patch`] which:
 /// 1. Returns the existing in-progress patch if the unit's next attempt
 ///    already has one (`action: "patch_already_in_progress"`, issue #84).
 /// 2. Creates a new version branch (v{N+1}) via `calxgloss-git`.
@@ -530,8 +530,8 @@ pub async fn api_request_patch(
 
 /// Returns the dependency graph for visualization in the web UI.
 ///
-/// Nodes carry their binary and confidence from the dashboard units; this
-/// handler additionally enriches each node with its total token usage from
+/// The dashboard units already supply each node's binary and confidence.
+/// This handler adds each node's total token usage, read from
 /// `re/analysis/token_usage.json` (issue #76). A unit with no recorded
 /// attempts keeps `token_usage: null` — absence is reported honestly, never
 /// as zero.
@@ -550,7 +550,8 @@ pub async fn api_get_dependency_graph(
 /// A node's total is the sum of `tokens_used` over the log entries whose
 /// (binary, function) pair matches the node's unit — the same join the unit
 /// detail process section uses. The pair is read from the node's own unit
-/// reference (`{binary}/{function}/v{N}`, parsed by the shared grammar), so
+/// reference (`{binary}/{function}/v{N}`, parsed by the shared branch-name
+/// grammar), so
 /// every graph node is joined regardless of which dashboard list its status
 /// routes it into. A missing or corrupt log, or no entries for the unit,
 /// leaves the node at `None`; entries that sum to zero are a real total.
@@ -729,7 +730,7 @@ pub async fn api_server_restart(
 /// Runtime log-level change (issue #60): validates the level name and
 /// reloads the process's tracing `EnvFilter`. The change is scoped to the
 /// running process — nothing persists, and the next start re-reads the CLI
-/// verbosity flags. Invalid names are rejected with 400.
+/// verbosity flags. An invalid level name answers 400.
 ///
 /// Registered in **all** routers.
 pub async fn api_server_log_level(

@@ -1,8 +1,8 @@
 //! Translation scope control endpoints (issue #93, W2.5).
 //!
 //! The operator steers the live run over REST: which binaries to translate,
-//! which functions to skip or prioritize, and the constraints that bound
-//! consumption. All six endpoints are live-router only — a plain `serve`
+//! which functions to skip or prioritize, and the budgets that bound what
+//! the run consumes. All six endpoints are live-router only — a plain `serve`
 //! router has no pipeline to steer — and each answers 503 when the live
 //! router was built without a scope handle attached, mirroring the
 //! lifecycle endpoints' honesty rule.
@@ -27,8 +27,9 @@ pub(crate) fn scope_handle(combined: &CombinedState) -> Result<ScopeControl, Ser
 }
 
 /// The status payload every endpoint echoes: current scope, constraints,
-/// the run's token spend, and the backend's context-tier enumeration the
-/// dashboard's tier select populates from (issue #109).
+/// the run's token spend, and the full list of context tiers the backend
+/// supports — the dashboard's tier select fills its options from it
+/// (issue #109).
 fn status(scope: &ScopeControl) -> Json<ScopeStatusResponse> {
     Json(ScopeStatusResponse {
         scope: scope.scope(),

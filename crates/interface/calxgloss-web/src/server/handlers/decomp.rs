@@ -23,7 +23,7 @@ pub async fn api_get_unit_decomp(
 
     let binary = unit.binary.clone();
 
-    // Try to read engine data from analysis artifacts on disk
+    // Try to read the function's decompiler data from analysis artifacts on disk
     if let Ok(ctx) = load_decomp_artifacts(state.repo_path(), &binary, &func_name) {
         return Ok(Json(DecompContextResponse::ok(ctx)));
     }
@@ -51,7 +51,8 @@ pub(crate) fn load_decomp_artifacts(
 
     let content = std::fs::read_to_string(&func_file)?;
 
-    // Try to deserialize as a FunctionInfo from calxgloss-types
+    // Deserialize through a local struct carrying only the fields this
+    // endpoint reads
     #[derive(serde::Deserialize)]
     struct DecompArtifact {
         #[serde(skip_serializing_if = "Option::is_none")]

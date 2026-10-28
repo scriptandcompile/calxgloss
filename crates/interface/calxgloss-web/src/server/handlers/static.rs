@@ -1,4 +1,5 @@
-//! Static file serving: HTML fallback for the frontend.
+//! Static file serving: the fallback route that answers requests for the
+//! frontend's files.
 
 use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
@@ -31,7 +32,7 @@ pub async fn static_fallback(
     // Parse the path from the request URI
     let path_str = req.uri().path().to_string();
 
-    // Only handle GET requests, reject everything else
+    // Only GET requests are served here; anything else gets 405 Method Not Allowed
     if req.method() != Method::GET {
         return (
             StatusCode::METHOD_NOT_ALLOWED,

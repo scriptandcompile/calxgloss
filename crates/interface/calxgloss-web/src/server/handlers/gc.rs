@@ -17,8 +17,8 @@ use tracing::info;
 
 /// Returns stale branch candidates eligible for archival.
 ///
-/// Walks all unmerged `re/*` translation branches, checks their last commit
-/// date, and returns those older than the threshold (default 7 days).
+/// Checks every unmerged `re/*` translation branch's last commit date and
+/// returns those older than the threshold (default 7 days).
 pub async fn api_get_gc_candidates(
     State(state): State<ServerState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -93,9 +93,10 @@ pub async fn api_get_gc_candidates(
 
 // ─── POST /api/gc/archive ────────────────────────────────────────────
 
-/// Archives one or more stale branches to `refs/archive/`.
+/// Archives branches to `refs/archive/`.
 ///
-/// When `branches` is empty, all available candidates are archived.
+/// When `branches` is empty, every unmerged translation branch is archived —
+/// the candidates endpoint's age threshold does not apply here.
 /// When specific branches are listed, only those are archived.
 pub async fn api_archive_gc(
     State(state): State<ServerState>,

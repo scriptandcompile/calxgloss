@@ -39,7 +39,7 @@ fn classification_handle(
 }
 
 /// The classification artifact path for one binary — the same sanitization
-/// the classify command used to write it (`/` and `\` become `_`).
+/// the classify command uses when it writes the file (`/` and `\` become `_`).
 pub(crate) fn classification_record_path(repo_path: &Path, binary: &str) -> std::path::PathBuf {
     let sanitized: String = binary
         .chars()
@@ -69,9 +69,9 @@ fn recorded_classification(
         return None;
     }
     // Strategy is serialized from `calxgloss_analysis::Strategy`: unit
-    // variants land as bare strings ("PalMapping"), struct variants as
-    // tagged objects ({"CrateReplacement": {…}}). The variant name is the
-    // strategy either way — same reading as the pipeline rows use.
+    // variants become bare strings ("PalMapping"), struct variants become
+    // tagged objects ({"CrateReplacement": {…}}). Either way, the variant
+    // name is the strategy — the same reading the pipeline rows use.
     let strategy = match value.get("strategy") {
         Some(serde_json::Value::String(s)) => s.clone(),
         Some(serde_json::Value::Object(obj)) => obj.keys().next().cloned().unwrap_or_default(),
