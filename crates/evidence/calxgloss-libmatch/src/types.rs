@@ -5,8 +5,8 @@
 //!
 //! - `LibmatchMatch`, `LibraryFamily`: the per-function detection record —
 //!   the matched library symbol and its family (CRT/STL), the Rust
-//!   equivalent the match suggests, and the confidence and evidence behind
-//!   the claim.
+//!   equivalent the match suggests, and the evidence confidence and
+//!   evidence line behind the claim.
 //! - `LibmatchFinding`: the finding union — the per-function
 //!   body-signature match and the cross-function propagation kinds
 //!   (identical-body inheritance, tail-call thunks) — serde-tagged by
@@ -16,10 +16,10 @@
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
-// `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb, typeinfer, and algorithm
-// convention.
+// `ScanMetadata` is the shared per-binary scan provenance. `Confidence` is
+// the shared 0–100 evidence-confidence score. Both are re-exported so
+// consumers can name them through this crate — the same convention the
+// typesdb, typeinfer, and algorithm crates use.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -31,10 +31,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// The family says which body of standard code the matched function came
 /// from — the C runtime the compiler statically links, or the C++
-/// standard library's template instantiations — so a reviewer (and, later,
-/// a translation prompt) knows which Rust equivalent to reach for: CRT
-/// memory and string routines map to `std` slices and intrinsics, STL
-/// container idioms map to `Vec`/`BTreeMap`/`Rc`.
+/// standard library's template instantiations. A reviewer (and, later, a
+/// translation prompt) can tell which Rust equivalent to use: CRT memory
+/// and string routines map to `std` slices and intrinsics, STL container
+/// idioms map to `Vec`/`BTreeMap`/`Rc`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LibraryFamily {
@@ -57,25 +57,26 @@ calxgloss_types::display_serde_label!(LibraryFamily {
 // ============================================================
 
 /// What every P19-3 match record states about its own version authority:
-/// the signature matched SOME release of the library, and which release is
-/// not established — the record carries no version witness, only the
-/// signature plus its confidence score. This is the admission a reader
-/// sees, in the report's libmatch section beside each match and in the
-/// scan-coverage line: the engine states what it did NOT establish, next
-/// to what it did (`docs/admitted-semantics.md`). The note rides the
-/// record itself, so a filed document stays honest no matter who renders
-/// it.
+/// the signature matched SOME release of the library, and which release
+/// is not established. The record carries no evidence naming the
+/// release — only the signature and its evidence confidence. A reader sees this
+/// admission in the report's libmatch section beside each match and in
+/// the scan-coverage line: the scan states what it did NOT establish,
+/// beside what it did (the story stands in `CHANGELOG.md` under issue
+/// #347). The note is stored inside the record itself, so a filed
+/// document states its own version authority no matter who renders it.
 pub const VERSION_UNKNOWN_ADMISSION: &str = "Signature match, version unknown";
 
 /// One known-library identification of one function, with the evidence
 /// behind it.
 ///
-/// A match is a hypothesis, not a fact applied to the program (ADR-0020):
-/// it says the decompiled body *reads like* the statically linked body of
+/// A match is a hypothesis, not a fact applied to the program (ADR-0020).
+/// It says the decompiled body *reads like* the statically linked body of
 /// [`symbol`](Self::symbol) from the [`family`](Self::family) library, at
-/// the given confidence, with the matched normalized shape kept as
+/// the recorded evidence confidence. The raw decompiled line whose
+/// normalized shape carried the match is kept as
 /// [`evidence`](Self::evidence) so a reviewer can check the reasoning.
-/// [`suggestion`](Self::suggestion) names the Rust equivalent a
+/// [`suggestion`](Self::suggestion) gives the Rust equivalent a
 /// translation should map calls onto rather than re-implement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibmatchMatch {
@@ -88,14 +89,15 @@ pub struct LibmatchMatch {
     /// The Rust equivalent the match suggests, e.g. a `std` slice copy
     /// for `memcpy`.
     pub suggestion: String,
-    /// Confidence that the match is right, 0–100.
+    /// Evidence confidence that the match is right, 0–100.
     pub confidence: Confidence,
-    /// The decompiled line whose normalized shape carried the signature's
-    /// first required pattern — kept so a reviewer can check the
-    /// reasoning.
+    /// The raw decompiled line whose normalized shape matched the
+    /// signature's first required regex — kept so a reviewer can check
+    /// the reasoning. For a propagated finding, the inheriting body's
+    /// own line standing in the matched body's evidence position.
     pub evidence: String,
     /// P19-3: what the record admits about its own version authority —
-    /// [`VERSION_UNKNOWN_ADMISSION`] for every match the engine produces,
+    /// [`VERSION_UNKNOWN_ADMISSION`] for every match the scan produces,
     /// because a signature match never establishes WHICH release matched.
     /// Optional with a default so pre-P19-3 documents, which carry no such
     /// note, still load.
@@ -109,14 +111,14 @@ pub struct LibmatchMatch {
 
 /// One known-library finding, whichever pass made it.
 ///
-/// The union is what the persisted result carries: the per-function
-/// body-signature match and the cross-function propagation kinds — an
-/// identical-body duplicate inheriting a match, a tail-call thunk
-/// inheriting at a penalty — all riding the same [`LibmatchMatch`]
-/// record, so consumers reading the shared shape (function, kind,
-/// target, confidence, evidence) are unaffected by which pass made the
-/// finding. The serde `kind` tag names the record shape in the
-/// persisted JSON.
+/// The persisted result carries every kind in this union: the
+/// per-function body-signature match and the cross-function propagation
+/// kinds — an identical-body duplicate inheriting a match, a tail-call
+/// thunk inheriting at a confidence penalty. Every variant stores the
+/// same [`LibmatchMatch`] record, so a consumer reading the shared shape
+/// (function, kind, target, confidence, evidence) is unaffected by which
+/// pass made the finding. The serde `kind` tag labels the record shape
+/// in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LibmatchFinding {
@@ -124,7 +126,8 @@ pub enum LibmatchFinding {
     BodySignature(LibmatchMatch),
     /// A body whose normalized shape is identical to a matched body —
     /// a linker-folded (COMDAT/ICF) copy of the same routine — which
-    /// inherits the match whole, at the matched body's confidence.
+    /// inherits the match whole, at the matched body's own evidence
+    /// confidence.
     IdenticalBody(LibmatchMatch),
     /// A body whose only statement is a tail call to a matched
     /// function — a thunk or wrapper — which inherits the match at a
@@ -148,8 +151,8 @@ impl LibmatchFinding {
         &self.record().function
     }
 
-    /// The matched library symbol, e.g. `memcpy` — what the finding
-    /// names, spelled for a report row.
+    /// The matched library symbol, e.g. `memcpy` — the word the finding
+    /// reports, in the spelling a report row shows.
     pub fn target(&self) -> &str {
         &self.record().symbol
     }
@@ -164,12 +167,12 @@ impl LibmatchFinding {
         &self.record().suggestion
     }
 
-    /// Confidence that the finding is right.
+    /// Evidence confidence that the finding is right.
     pub fn confidence(&self) -> Confidence {
         self.record().confidence
     }
 
-    /// The decompiled lines that support the finding.
+    /// The decompiled line that supports the finding.
     pub fn evidence(&self) -> &str {
         &self.record().evidence
     }
@@ -182,7 +185,7 @@ impl LibmatchFinding {
     }
 
     /// The serde `kind` tag — `body_signature`, `identical_body`, or
-    /// `tail_call_thunk` — naming the pass behind the finding.
+    /// `tail_call_thunk` — which tells which pass made the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             LibmatchFinding::BodySignature(_) => "body_signature",
@@ -192,13 +195,13 @@ impl LibmatchFinding {
     }
 }
 
-/// Render a finding as prompt data: the function it identifies, the
+/// Turn a finding into prompt data: the function it identifies, the
 /// library symbol it matched, the family that symbol belongs to, the
-/// Rust equivalent the match suggests, the confidence and evidence
-/// behind the claim, and what the record admits about its own version
-/// authority — so a translation prompt naming this function's callees
-/// can show the translator what a call is really calling, how strongly
-/// that was read, and what the match does NOT establish.
+/// Rust equivalent the match suggests, the evidence confidence and
+/// evidence line behind the claim, and what the record admits about its
+/// own version authority. A translation prompt naming this function's
+/// callees can then show the translator what a call really calls, how
+/// strongly that was read, and what the match does NOT establish.
 impl From<&LibmatchFinding> for calxgloss_prompts::LibmatchInfo {
     fn from(finding: &LibmatchFinding) -> Self {
         Self {
@@ -220,11 +223,12 @@ impl From<&LibmatchFinding> for calxgloss_prompts::LibmatchInfo {
 /// The known-library identification result for one binary — the document
 /// persisted to `re/analysis/libmatch/{binary}.json`.
 ///
-/// The findings follow the function listing — function by function, and
-/// within one function the signature matches in configuration order — so
-/// two scans of the same program diff cleanly. Where two signatures claim
-/// one function, the scan reports the strongest claim only, standing
-/// where that function first appeared.
+/// The findings follow the function listing, so two scans of the same
+/// program diff cleanly. Each function carries at most one finding: where
+/// two signatures claim one function, the scan keeps the strongest claim,
+/// and a tie keeps the claim the scan surfaced first — the configured
+/// order decides ties. The surviving finding stands where that function
+/// first appeared in the listing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibmatchResult {
     /// Provenance of the scan that produced these findings.
@@ -349,8 +353,8 @@ mod tests {
 
     #[test]
     fn an_admitted_match_record_carries_its_note_through_serde() {
-        // P19-3: the admission rides the record, so a filed document
-        // states its own version authority when it is read back.
+        // P19-3: the note is stored inside the record, so a filed
+        // document states its own version authority when it is read back.
         let mut record = matched();
         record.admission = Some(VERSION_UNKNOWN_ADMISSION.into());
         let json = serde_json::to_string(&record).unwrap();
@@ -367,7 +371,7 @@ mod tests {
             calxgloss_prompts::LibmatchInfo::from(&LibmatchFinding::BodySignature(matched()));
         assert_eq!(info.function, "FUN_18003ab00");
         assert_eq!(info.symbol, "memcpy");
-        // The family reaches the prompt as its serde label — the same
+        // The family arrives in the prompt as its serde label — the same
         // spelling the persisted document carries.
         assert_eq!(info.family, "crt");
         assert_eq!(

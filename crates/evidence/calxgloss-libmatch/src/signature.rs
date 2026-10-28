@@ -1,13 +1,13 @@
 //! Body signatures: the named shapes of statically linked library code.
 //!
 //! A [`LibmatchSignature`] is one entry of the set a scan reads bodies
-//! against: a library symbol and its family, the per-line regex bundle
-//! that its *normalized* body must carry, an optional exclusion bundle
-//! that vetoes look-alike shapes, a minimum line-count floor that keeps
-//! tiny functions from accidentally fitting a broad shape, and an
-//! optional per-entry confidence that overrides the scan's standard
-//! body-evidence score. The entry type is its own serde shape, per
-//! ADR-0023's pattern-database precedent, so a supplied
+//! against. An entry names a library symbol and its family, the bundle
+//! of per-line regexes its *normalized* body must carry, an optional
+//! bundle of exclusions that rejects look-alike shapes, a minimum
+//! line-count floor that keeps tiny functions from accidentally fitting
+//! a broad shape, and an optional per-entry evidence confidence that
+//! overrides the scan's standard score. The entry type is its own serde
+//! shape, per ADR-0023's pattern-database precedent, so a supplied
 //! [database file](crate::signature_db) carries these entries whole
 //! without a format change.
 //!
@@ -22,20 +22,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::LibraryFamily;
 
-/// One known-library body signature — a named bundle of normalized-line
-/// regexes with the line-count floor that keeps it honest.
+/// One known-library body signature: a named bundle of normalized-line
+/// regexes with a line-count floor.
 ///
 /// A signature identifies exactly one library symbol: its
 /// [`symbol`](Self::symbol) and [`family`](Self::family) are what a
-/// finding records when the signature matches. The normalized body must
-/// carry a line matching every regex in
-/// [`match_patterns`](Self::match_patterns) and none matching any in
-/// [`exclude_patterns`](Self::exclude_patterns), and the raw body must
-/// span at least [`min_lines`](Self::min_lines) lines — tiny functions
-/// accidentally fit broad shapes, so the floor refuses them. Each regex
-/// is matched against a single normalized line; a source may carry the
-/// `{name}` placeholder, which the matcher replaces with the scanned
-/// function's name, escaped for literal matching.
+/// finding records when the signature matches. A body fits the signature
+/// when some normalized line matches every regex in
+/// [`match_patterns`](Self::match_patterns), no normalized line matches
+/// any regex in [`exclude_patterns`](Self::exclude_patterns), and the
+/// raw body spans at least [`min_lines`](Self::min_lines) lines. Tiny
+/// functions accidentally fit broad shapes, so the floor refuses them.
+/// Each regex is matched against a single normalized line. A source may
+/// carry the `{name}` placeholder: the matcher replaces it with the
+/// scanned function's name, escaped for literal matching.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LibmatchSignature {
@@ -46,10 +46,10 @@ pub struct LibmatchSignature {
     /// Regex sources, each of which must match some normalized line of
     /// the body. A source may carry the `{name}` placeholder.
     pub match_patterns: Vec<String>,
-    /// Regex sources, any of which rejects the match when it appears in
-    /// a normalized line of the body — shapes that make the matched
-    /// signature read differently (a guard branch turning `memcpy` into
-    /// a `memmove` overlap check, say). A source may carry the same
+    /// Regex sources: when any of them matches a normalized line of the
+    /// body, the match is rejected. These rule out shapes that mean a
+    /// different routine (a guard branch turning a `memcpy` shape into a
+    /// `memmove` overlap check, say). A source may carry the same
     /// `{name}` placeholder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_patterns: Vec<String>,
@@ -57,17 +57,16 @@ pub struct LibmatchSignature {
     /// considered.
     #[serde(default)]
     pub min_lines: usize,
-    /// Optional per-entry confidence (0–100) overriding the scan's
-    /// standard body-evidence score
-    /// ([`BODY_MATCH_CONFIDENCE`](crate::confidence::BODY_MATCH_CONFIDENCE))
-    /// for the findings this signature makes — a hand-tuned signature
-    /// can claim more (or less) trust than the standard set pays.
-    /// Absent means the standard score.
+    /// Optional per-entry evidence confidence (0–100) for the findings
+    /// this signature makes, overriding the scan's standard score
+    /// ([`BODY_MATCH_CONFIDENCE`](crate::confidence::BODY_MATCH_CONFIDENCE)).
+    /// A hand-tuned signature can score higher (or lower) than the
+    /// standard set. Absent means the standard score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
-    /// The Rust equivalent the match suggests, spelled for a finding's
-    /// suggestion — what a translation should map calls onto rather
-    /// than re-implement.
+    /// The Rust equivalent the match suggests, written into a finding's
+    /// suggestion: what a translation should map calls onto rather than
+    /// re-implement.
     pub suggestion: String,
 }
 
@@ -76,10 +75,10 @@ impl LibmatchSignature {
     /// small to carry a real library routine.
     pub const DEFAULT_MIN_LINES: usize = 6;
 
-    /// A signature named `symbol` in `family` requiring every one of
-    /// `match_patterns` against the normalized body, with no
-    /// exclusions, the default line-count floor, the scan's standard
-    /// score, and `suggestion` as its suggestion.
+    /// A signature named `symbol` in `family`. It requires every one of
+    /// `match_patterns` to match a normalized line of the body, and
+    /// starts with no exclusions, the default line-count floor, the
+    /// scan's standard score, and `suggestion` as its suggestion.
     pub fn new(
         symbol: impl Into<String>,
         family: LibraryFamily,
@@ -102,25 +101,25 @@ impl LibmatchSignature {
 /// shapes, hand-authored against the [normalize](crate::normalize)
 /// contract.
 ///
-/// The set is kept small on purpose — every entry is a standing
-/// false-positive risk against the program's own routines — and covers
-/// the routines a statically linked CRT puts in nearly every binary
-/// plus the associative-container tree idioms the STL compiles to. The
+/// The set is kept small on purpose: every entry is a standing false-
+/// positive risk against the program's own routines. It covers the
+/// routines a statically linked CRT puts in nearly every binary, plus
+/// the associative-container tree idioms the STL compiles to. The
 /// exclusion bundles are what separate look-alike loop shapes: the copy
 /// loop without a guard is `memcpy`, the fill loop that stores a cast
-/// byte instead of a source read is `memset`, the one with an overlap
-/// branch is neither. The allocator wrappers are the set's deliberately
-/// sloppier entries: a `malloc`/`free` call with a null test is a thin
-/// shape any allocation helper reads alike, so they claim a lower score
-/// through the per-entry override.
+/// byte instead of a source read is `memset`, and the loop with an
+/// overlap branch is neither. The allocator wrappers are the set's
+/// deliberately sloppier entries: a `malloc`/`free` call with a null
+/// test is a thin shape any allocation helper reads alike, so they score
+/// lower than the standard score through the per-entry override.
 ///
-/// Each bundle speaks the shape in **every dialect the engine emits**:
-/// where two engines spell one shape differently, the line's source
-/// carries the alternation, and every Kuna alternative is grounded in a
-/// spelling observed in the fixture target's Kuna decompiles (issue
-/// #309), not imagined — the corpus comment at each entry quotes it.
-/// Shapes Kuna has not been observed to emit (its rendering of the MSVC
-/// allocator wrappers and the `strcmp` equality carry, say) stay
+/// Each bundle speaks the shape in **every dialect a decompiler
+/// emits**: where Ghidra and Kuna spell one shape differently, the
+/// line's regex source carries the alternation. Every Kuna alternative
+/// is grounded in a spelling observed in the fixture target's Kuna
+/// decompiles (issue #309), not imagined — each entry's corpus comment
+/// quotes it. Where Kuna has never been observed to emit a shape (its
+/// rendering of the whole `strcmp` loop, say), the bundle stays
 /// single-dialect rather than guessed at; the operator-supplied
 /// [signature database](crate::signature_db) is the path for those.
 pub fn default_signatures() -> Vec<LibmatchSignature> {
@@ -214,9 +213,9 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
         // The CRT string copy: a byte load, a bare byte store, and the
         // NUL-terminated loop — the copy that carries the terminator,
         // with no guard branch. The load/store statements are spelled
-        // alike by both engines (`v1 = *b;` / `cVar1 = *param_2;`); the
-        // loop test is Ghidra's `while (VAR != '\0')` or Kuna's truth
-        // test on the loaded byte (`while (v1) {`, the fixture's
+        // alike by both decompilers (`v1 = *b;` / `cVar1 = *param_2;`);
+        // the loop test is Ghidra's `while (VAR != '\0')` or Kuna's
+        // truth test on the loaded byte (`while (v1) {`, the fixture's
         // `__strcp_D2A`).
         LibmatchSignature::new(
             "strcpy",
@@ -232,8 +231,9 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
         // The CRT allocator wrappers: `operator new` is a `malloc` call
         // with a null test, `operator delete` a guarded `free`. The
         // shapes are thin — any allocation helper reads alike — so both
-        // entries deliberately claim a sloppier score than the standard
-        // body-evidence one. Kuna tests the pointer's falseness (`if
+        // entries deliberately score below the standard body-match score
+        // through the per-entry override. Kuna tests the pointer's
+        // falseness (`if
         // (!a0)`, seen throughout the fixture's CRT code) beside
         // Ghidra's explicit compare to `(void *)0x0`. The exclusion
         // bundles keep the wrappers apart from each other and from any
@@ -269,7 +269,7 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
         // `_Isnil`. The node fields are debug-carried facts the dialect
         // layer never folds, and the pointers around them are ordinary
         // temporaries it folds whole — so one bundle reads the field
-        // walk whichever engine named the pointers.
+        // walk whichever decompiler named the pointers.
         LibmatchSignature::new(
             "std::_Tree::_Rotate_left",
             LibraryFamily::Stl,
@@ -293,11 +293,11 @@ pub fn default_signatures() -> Vec<LibmatchSignature> {
     ]
 }
 
-/// Chainable additions to a signature, mirroring the workspace's
+/// Chainable additions to a signature, following the workspace's
 /// builder convention.
 impl LibmatchSignature {
-    /// Vetoes the shapes `patterns` spells: any of them appearing in a
-    /// normalized line rejects the match.
+    /// Rejects the match when any of `patterns` matches a normalized
+    /// line of the body.
     pub fn with_exclusions(
         mut self,
         patterns: impl IntoIterator<Item = impl Into<String>>,
@@ -313,8 +313,8 @@ impl LibmatchSignature {
         self
     }
 
-    /// Claims `confidence` (0–100) instead of the scan's standard
-    /// body-evidence score.
+    /// Sets `confidence` (0–100) as this entry's evidence confidence, in
+    /// place of the scan's standard score.
     pub fn with_confidence(mut self, confidence: u8) -> Self {
         self.confidence = Some(confidence);
         self
@@ -420,8 +420,8 @@ mod tests {
     fn built_in_entries_score_at_the_standard_confidence_unless_deliberately_sloppier() {
         // An entry that overrides the standard score is one the set
         // deliberately reads sloppier — the thin allocator-wrapper
-        // shapes — and it claims less trust than the standard
-        // body-evidence score, never more.
+        // shapes — and it scores below the standard evidence confidence,
+        // never above it.
         let signatures = default_signatures();
         let mut overridden = 0;
         for signature in &signatures {
