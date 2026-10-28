@@ -1,4 +1,6 @@
-//! Dashboard-related handlers: dashboard, view, accept, send-back, accept-all.
+//! Handlers for the `dashboard` command and its parts: the dashboard
+//! itself, and its view, accept, send-back, and accept-all
+//! subcommands.
 
 use anyhow::{Context, Result};
 use calxgloss::ReviewStatus;
@@ -270,8 +272,8 @@ pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Resu
 
 /// Handle the `dashboard accept-all` subcommand.
 ///
-/// Builds the dashboard, topologically sorts pending units by dependency,
-/// and accepts each one in order.
+/// Builds the review dashboard, sorts the pending units into
+/// dependency order, and accepts each one in that order.
 pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
     // Find the git repository
     let repo_path = find_repo_path()?;

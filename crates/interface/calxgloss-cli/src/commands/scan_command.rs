@@ -1,46 +1,53 @@
-//! The generic scan command — one CLI handler riding the scan registry's
-//! descriptor rows (issue #339, spec #337).
+//! The generic scan command — one CLI handler that runs every scan
+//! subcommand from the scan registry's descriptor rows (issue #339,
+//! spec #337).
 //!
 //! Every scan subcommand repeats the same body: resolve the workspace,
-//! load the engine over `target_dir/<binary>`, run the scan, persist the
-//! document, print a report. The pipeline already writes that shape once
-//! in [`scan_registry`]'s rows; this module lets the CLI read it from the
-//! same place. What is genuinely per-engine lives in one contribution
-//! entry per scan subcommand: the cached-document loader (through the
-//! engine's own persistor, as the `--show` path has always done), the
-//! report printer, a derivation of the registry's [`ScanRunOptions`] from
-//! the command's clap flags, and optionally a post-scan step holding the
-//! retained engine source and the loaded document. The entry names the
-//! registry row it serves; the scan itself — engine build, scan, persist,
-//! warn-and-continue degradation, document location — stays the row's,
-//! with its operator-visible wording byte-for-byte.
+//! load the Kuna engine over `target_dir/<binary>`, run the scan,
+//! persist the document, print a report. The pipeline already writes
+//! that shape once, in [`scan_registry`](calxgloss_translator::scan_registry)'s
+//! rows; this module lets the CLI read it from the same place. What
+//! genuinely belongs to each evidence engine lives in one contribution
+//! entry per scan subcommand: the cached-document loader (reading
+//! through the evidence engine's own persistor, as the `--show` path
+//! has always done), the report printer, a derivation of the registry's
+//! [`ScanRunOptions`] from the command's clap flags, and optionally a
+//! post-scan step that takes the retained Kuna engine source and the
+//! loaded document. The entry names the registry row it serves. The
+//! scan itself — the row's evidence engine build, the scan, the
+//! persist, the warn-and-continue degradation, the document location —
+//! stays the row's, and the wording an operator sees stays
+//! byte-for-byte identical.
 //!
 //! The generic flow, in order:
 //!
 //! * `--show` is a report on the cached document: the entry's loader
 //!   reads the filed document and the printer prints it. A missing
-//!   document fails with the entry's own remediation wording, naming
-//!   the exact command that would produce it. The engine is loaded on
-//!   this path only when a step actually reads the program — an entry
-//!   whose post-scan step wants the engine for this command line (the
-//!   type-inference write-back under `--write-back`) answers so through
-//!   its own `show_loads_program` step; `--show` alone never loads it.
-//! * A scan run loads the engine exactly once — the settings-aware Kuna
-//!   load honoring the `[analysis]` per-function budgets (ADR-0050's
-//!   carried line that P39 folds engine loading) — wraps it as the
-//!   pipeline's shared read source, and hands the row a [`ScanContext`]
-//!   with empty latches (a one-shot CLI run orders with nothing; the
-//!   callback row's own pre-scan hook composes from cached documents with
-//!   no latch). The CLI's force-rescan contract travels as the
-//!   overwrite policy: the phase's cached-hit short-circuit is not
+//!   document fails with the entry's own remediation wording, which
+//!   names the exact command that would produce it. The Kuna engine is
+//!   loaded on this path only when a step actually reads the program.
+//!   An entry whose post-scan step wants the Kuna engine for this
+//!   command line — the type-inference write-back under
+//!   `--write-back` — answers yes through its own `show_loads_program`
+//!   step; `--show` alone never loads the Kuna engine.
+//! * A scan run loads the Kuna engine exactly once: the settings-aware
+//!   Kuna load honoring the `[analysis]` per-function budgets (ADR-0050
+//!   carries that line, P39 covers engine loading). The handler wraps
+//!   the source as the pipeline's shared read source and hands the row
+//!   a [`ScanContext`] with empty latches: a one-shot CLI run has
+//!   nothing to order scans by, so the latches stay empty, and the
+//!   callback row's own pre-scan hook composes from cached documents
+//!   regardless. The CLI's refresh-cache contract reaches the row as
+//!   its overwrite policy: the phase's cached-hit short-circuit is not
 //!   adopted here.
-//! * After a successful run the freshly filed document is loaded back
-//!   through the entry's loader — the accepted extra disk read that makes
-//!   the run's report and a later `--show` report the same read of the
-//!   same document — the post-scan step runs over the retained source
-//!   and the loaded document, and the printer prints.
+//! * After a successful run, the entry's loader reads the freshly filed
+//!   document back from disk. That extra disk read is accepted on
+//!   purpose: it makes the run's report and a later `--show` report the
+//!   same read of the same document. Then the post-scan step runs over
+//!   the retained Kuna engine source and the loaded document, and the
+//!   printer prints.
 //!
-//! The clap variant blocks in the CLI argument types stay untouched;
+//! The clap variant blocks in the CLI argument types stay untouched.
 //! [`ScanFlags`] is the shape the routing arm hands the entry's flag
 //! interpretation. The managed-binary CLI guard applies where it applies
 //! today — the translate/auto paths, never a scan command — so this
@@ -49,14 +56,15 @@
 //! The table is complete (issue #341): all fifteen scan commands ride
 //! through [`ride`], which maps each clap variant onto its entry and
 //! flags, and one `main.rs` arm drives them all. The three last riders
-//! carry their per-engine flags in [`ScanFlags`] — the set-override file
-//! (`algorithm --patterns`, `libmatch --signatures`) reaches the row
-//! build through the registry's own options record, and the
-//! type-inference write-back rides the entry's post-scan step over the
-//! retained engine source. `bdiff` has no registry row and stays
-//! outside the generic path. The suite's pairing tests pin this complete
-//! contribution table against the registry roster one-for-one — the
-//! pair can never drift silently (issue #342).
+//! keep their command-specific flags in [`ScanFlags`]: the set-override
+//! file (`algorithm --patterns`, `libmatch --signatures`) reaches the
+//! row's evidence engine build through the registry's own options
+//! record, and the type-inference write-back runs in the entry's
+//! post-scan step over the retained Kuna engine source. `bdiff` has no
+//! registry row and stays outside the generic path. The suite's pairing
+//! tests pin this complete contribution table against the registry
+//! roster one-for-one, so the pair can never drift silently
+//! (issue #342).
 
 use std::any::Any;
 use std::future::Future;
@@ -71,18 +79,19 @@ use calxgloss_translator::scan_registry::{ScanContext, ScanLatches, ScanRunOptio
 use crate::Settings;
 use crate::utils::*;
 
-/// A loaded scan document, type-erased so one entry shape can carry the
-/// fifteen different document types the engines file. The entry's own
-/// loader produces it, and the entry's own printer and post-scan step
-/// read it back, so the downcast never crosses entries. The handler owns
-/// it as a `Box` so its post-scan step can take `&mut` of the entry's
-/// own document (the type-inference step leaves its write-back report
-/// there for the printer to render).
+/// A loaded scan document, type-erased so one entry shape can hold the
+/// fifteen different document types the evidence engines file. The
+/// entry's own loader produces it, and the entry's own printer and
+/// post-scan step read it back, so the downcast never crosses entries.
+/// The handler owns it as a `Box` so its post-scan step can take
+/// `&mut` of the entry's own document (the type-inference step leaves
+/// its write-back report there for the printer to render).
 type LoadedDocument = Box<dyn Any + Send + Sync>;
 
 /// The entry's cached-document loader: read the filed document through
-/// the engine's own persistor. A missing document arrives as the entry's
-/// remediation error, naming the exact producing command.
+/// the evidence engine's own persistor. When the document is missing,
+/// the entry's remediation error arrives, naming the exact command
+/// that produces one.
 type LoadStep = Arc<dyn Fn(&Path, &str) -> Result<LoadedDocument>>;
 
 /// The entry's report printer, over the loaded document.
@@ -94,10 +103,10 @@ type PrintStep = Arc<dyn Fn(&dyn Any, &Path, &str) -> Result<()>>;
 type OptionsStep = Arc<dyn Fn(&ScanFlags) -> ScanRunOptions>;
 
 /// The parsed flags of one scan command run, exactly as its clap variant
-/// holds them: `binary` and `show` sit on every scan variant, and the
-/// per-engine flags ride alongside. The clap blocks stay in the CLI
-/// argument types; this is the shape the routing arm hands the entry for
-/// interpretation.
+/// holds them. `binary` and `show` sit on every scan variant, and each
+/// command's own extra flags sit beside them. The clap blocks stay in
+/// the CLI argument types; this is the shape the routing arm hands the
+/// entry for interpretation.
 pub(crate) struct ScanFlags {
     /// The binary to scan and the document is named after.
     pub binary: String,
@@ -106,35 +115,39 @@ pub(crate) struct ScanFlags {
     /// Do not attempt the type-database scan's vtable-method tag
     /// write-back — read by the type-database entry's flag derivation.
     pub no_tag: bool,
-    /// A JSON set document to scan in place of the engine's built-in
-    /// set — `algorithm --patterns` and `libmatch --signatures` reach
-    /// the row build through the registry's own set-override option,
-    /// which each capable row interprets inside its own engine build.
+    /// A JSON set document to scan in place of the evidence engine's
+    /// built-in set. `algorithm --patterns` and `libmatch
+    /// --signatures` reach the row build through the registry's own
+    /// set-override option, which each capable row interprets inside
+    /// its own evidence engine build.
     pub set_override_file: Option<PathBuf>,
-    /// Apply the surviving inferences back through the engine type-write
-    /// API — read by the type-inference entry's post-scan step.
+    /// Apply the surviving inferences back through the Kuna engine's
+    /// type-write API — read by the type-inference entry's post-scan
+    /// step.
     pub write_back: bool,
     /// The confidence floor (0–100) a record needs to be written back;
     /// only read alongside `write_back`.
     pub confidence_floor: u8,
 }
 
-/// The future an entry's post-scan step hands back — a write-back pass
-/// is async, like the registry row's own scan, and rides the same
-/// boxed-future shape, borrowing the source and the document it works
+/// The future an entry's post-scan step returns. A write-back pass is
+/// async, like the registry row's own scan, so it uses the same
+/// boxed-future shape. It borrows the source and the document it works
 /// over.
 pub(crate) type PostScanFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 
-/// The entry's optional post-scan step: the retained engine source, the
-/// workspace and binary, the command line's flags, and the loaded
-/// document as the entry can mutate it — the seam the type-inference
-/// write-back rides, and the home of the one side effect a registry row
-/// does not file (the type database's generated Rust declarations).
+/// The entry's optional post-scan step takes the retained Kuna engine
+/// source, the workspace and binary, the command line's flags, and the
+/// loaded document as the entry can mutate it. This is the seam the
+/// type-inference write-back uses, and the only place the one side
+/// effect a registry row does not file itself happens (the type
+/// database's generated Rust declarations).
 /// The erased post-scan step the table holds: one entry's typed step,
-/// downcast-bridged to the table's erased document. A trait (not an
-/// `Fn` trait object) because the bridged call ties one shared lifetime
-/// across the erased arguments and the returned future — the shape a
-/// hand-written impl states exactly and closure inference cannot.
+/// downcast-bridged to the table's erased document. It is a trait, not
+/// an `Fn` trait object, because the bridged call ties one shared
+/// lifetime across the erased arguments and the returned future. A
+/// hand-written impl states that shape exactly; closure inference
+/// cannot.
 trait ErasedPostScan {
     /// Run the entry's step over one erased call, its document read
     /// back as the entry's own type. A downcast miss is an
@@ -179,9 +192,9 @@ where
 /// The table's erased post-scan step.
 type PostScanStep = Arc<dyn ErasedPostScan>;
 
-/// The entry's typed post-scan step, over the retained engine source,
-/// the command line's flags, and the entry's own document type as the
-/// entry can mutate it.
+/// The entry's typed post-scan step. It takes the retained Kuna engine
+/// source, the command line's flags, and the entry's own document type
+/// as the entry can mutate it.
 pub(crate) type PostScanFn<D> = for<'a> fn(
     &'a PipelineSource,
     &'a Path,
@@ -191,31 +204,34 @@ pub(crate) type PostScanFn<D> = for<'a> fn(
 ) -> PostScanFuture<'a>;
 
 /// One scan subcommand's whole CLI-side contribution, still typed over
-/// its engine's document type: what the generic command cannot know on
-/// its own. [`ScanContribution::new`] erases it into the table's shape,
-/// exactly as the registry's own [`ScanDescriptor::new`](calxgloss_translator::scan_registry::ScanDescriptor::new)
+/// its evidence engine's document type: this is what the generic
+/// command cannot know on its own. [`ScanContribution::new`] erases it
+/// into the table's shape, exactly as the registry's own
+/// [`ScanDescriptor::new`](calxgloss_translator::scan_registry::ScanDescriptor::new)
 /// erases a typed row.
 pub(crate) struct ScanContributionSteps<D> {
     /// The registry row this entry serves, named by its identity in the
     /// registry's table.
     pub row: &'static str,
-    /// Loads the filed document through the engine's own persistor.
+    /// Loads the filed document through the evidence engine's own
+    /// persistor.
     pub load: fn(&Path, &str) -> Result<D>,
     /// Prints the report over the loaded document.
     pub print: fn(&D, &Path, &str) -> Result<()>,
     /// Derives the per-run options from the command's parsed flags.
     pub derive_options: fn(&ScanFlags) -> ScanRunOptions,
-    /// An optional step over the retained engine source and the loaded
-    /// document, run after the scan and before the report prints — the
-    /// step leaves whatever the report needs of it in the entry's own
-    /// document. The scan-run path runs the step whenever the entry has
-    /// one; the step interprets its own flags.
+    /// An optional step over the retained Kuna engine source and the
+    /// loaded document. It runs after the scan and before the report
+    /// prints, and it leaves whatever the report needs of it in the
+    /// entry's own document. The scan-run path runs the step whenever
+    /// the entry has one; the step interprets its own flags.
     pub post_scan: Option<PostScanFn<D>>,
-    /// Whether the `--show` path loads the engine at all for this
-    /// command line: only a post-scan step that reads the program — the
-    /// type-inference write-back under `--write-back` — answers true.
-    /// `--show` alone never loads the engine; `--show --write-back`
-    /// does. The scan-run path always loads it, since the scan needs it.
+    /// Whether the `--show` path loads the Kuna engine at all for this
+    /// command line. Only a post-scan step that reads the program —
+    /// the type-inference write-back under `--write-back` — answers
+    /// true. `--show` alone never loads the Kuna engine; `--show
+    /// --write-back` does. The scan-run path always loads it, because
+    /// the scan needs it.
     pub show_loads_program: fn(&ScanFlags) -> bool,
 }
 
@@ -283,12 +299,13 @@ fn typed_document_mut<'a, D: Any>(
     })
 }
 
-/// Run one scan subcommand through the generic shape: load the row's
-/// document and print it (`--show`), or load the engine once, run the
-/// registry row with the CLI's force-rescan overwrite policy, read the
-/// freshly filed document back, run the entry's post-scan step, and
-/// print. The report printed after a run and the report `--show` prints
-/// later are the same read of the same document.
+/// Run one scan subcommand through the generic shape. `--show`: load
+/// the row's document and print it. Otherwise: load the Kuna engine
+/// once, run the registry row with the CLI's refresh-cache overwrite
+/// policy, read the freshly filed document back, run the entry's
+/// post-scan step, and print. The report printed after a run and the
+/// report `--show` prints later are the same read of the same
+/// document.
 pub(crate) async fn handle_scan_command(
     entry: &ScanContribution,
     flags: &ScanFlags,
@@ -308,9 +325,9 @@ pub(crate) async fn handle_scan_command(
         })?;
 
     if flags.show {
-        // A report on the cached document: the engine is loaded here
-        // only when the entry's post-scan step reads the program for
-        // this exact command line — `--show` alone never loads it,
+        // A report on the cached document: the Kuna engine is loaded
+        // here only when the entry's post-scan step reads the program
+        // for this exact command line — `--show` alone never loads it,
         // `--show --write-back` does. The step runs before the printer
         // and leaves its follow-on report in the entry's own document,
         // so the printed order matches the scan path's.
@@ -333,21 +350,23 @@ pub(crate) async fn handle_scan_command(
         return Ok(());
     }
 
-    // The engine load, folded in here (ADR-0050's carried line that P39
-    // folds engine loading): the settings-aware Kuna load honoring the
-    // `[analysis]` per-function budgets, wrapped as the pipeline's
-    // shared read source and retained for the post-scan step.
+    // The Kuna engine load happens here (ADR-0050 carries the line
+    // that P39 covers engine loading). It honors the `[analysis]`
+    // per-function budgets from the settings; its source is wrapped as
+    // the pipeline's shared read source and retained for the post-scan
+    // step.
     let source = load_kuna_source(settings, &flags.binary)?;
 
-    // The seam's own capability declaration, pulled exactly once beside
-    // the source's opening and held for the rest of the run (issue #355).
-    // Reading it costs no additional engine read — it is the engine's
-    // self-statement, not a query about the target — and the run report
-    // below prints from this copy, never a fresh ask.
+    // The seam's own capability declaration, read exactly once when the
+    // source opens and held for the rest of the run (issue #355).
+    // Reading it costs no extra Kuna engine request — the declaration
+    // is the Kuna engine's self-statement, not a query about the
+    // target — and the run report below prints from this copy, never
+    // a fresh ask.
     let seam_report = source.capability_report();
 
     let options = ScanRunOptions {
-        // The CLI's force-rescan contract: a scan command always
+        // The CLI's refresh-cache contract: a scan command always
         // re-scans, so the phase's cached-hit short-circuit is bypassed
         // (issue #338's overwrite policy); a failed re-scan still leaves
         // the previously filed document in place, because only a
@@ -359,9 +378,9 @@ pub(crate) async fn handle_scan_command(
         binary: flags.binary.clone(),
         workspace: workspace.to_path_buf(),
         source: PipelineSource::Kuna(source.clone()),
-        // A one-shot CLI run orders with nothing: the phase's latches
-        // stay empty and the callback row's own pre-scan hook composes
-        // from cached documents regardless.
+        // A one-shot CLI run has nothing to order scans by: the phase's
+        // latches stay empty, and the callback row's own pre-scan hook
+        // composes from cached documents regardless.
         latches: ScanLatches::default(),
     };
     if !row.run_with_options(ctx, options).await {
@@ -379,13 +398,13 @@ pub(crate) async fn handle_scan_command(
     // later `--show` report are the same read of the same document.
     let mut document = (entry.load)(workspace, &flags.binary)?;
 
-    // The entry's post-scan step runs over the retained source and the
-    // loaded document before the report prints — the declarations the
-    // type-database step writes and the write-back report the
-    // type-inference step leaves behind are both rendered from the
-    // document and disk state the printer then reads. The step
-    // interprets its own flags: without `--write-back` the
-    // type-inference step does nothing.
+    // The entry's post-scan step runs over the retained Kuna engine
+    // source and the loaded document before the report prints. The
+    // declarations the type-database step writes, and the write-back
+    // report the type-inference step leaves behind, are both rendered
+    // from the document and the files on disk that the printer then
+    // reads. The step interprets its own flags: without `--write-back`
+    // the type-inference step does nothing.
     if let Some(post_scan) = &entry.post_scan {
         post_scan
             .call(
@@ -400,28 +419,29 @@ pub(crate) async fn handle_scan_command(
 
     (entry.print)(document.as_ref(), workspace, &flags.binary)?;
 
-    // The seam admission lines, last (issue #355, ADR-0054): printed only
-    // when the opened seam itself admitted something — under Kuna's
-    // all-answerable declaration nothing prints and the whole report is
-    // byte-identical to before this line existed. The `--show` path never
-    // opens a seam to ask, so the line belongs to the run report alone:
-    // the recorded exemption to the run-equals-`--show` identity.
+    // The seam admission lines print last (issue #355, ADR-0054). They
+    // print only when the opened seam itself admitted something. Under
+    // the Kuna engine's all-answerable declaration nothing prints, and
+    // the whole report is byte-identical to what it was before these
+    // lines existed. The `--show` path never opens a seam to ask, so
+    // the lines belong to the run report alone: the recorded exemption
+    // to the run-equals-`--show` identity.
     print_seam_admissions(&seam_report);
     Ok(())
 }
 
-/// The ride table (issues #339–#341): every clap variant that reaches a
-/// registry row through the generic handler, mapped to its module's
-/// contribution entry and the [`ScanFlags`] read off the variant. The
-/// `main.rs` arm matches exactly these variants and hands the pair to
-/// [`handle_scan_command`]; the only variant outside the table is
-/// `bdiff`, which has no row to ride and keeps its dedicated pure-report
-/// arm. Adding a command to the table is one entry here and one variant
-/// in the arm, and the suite's roster assertion below pins the two
-/// together. Adding an engine is one registry row plus one small
-/// contribution entry: the pairing tests below pin the contribution
-/// table against the registry roster one-for-one, so the pair can never
-/// drift silently (issue #342).
+/// The ride table (issues #339–#341): for every clap variant that
+/// reaches a registry row through the generic handler, it gives the
+/// module's contribution entry and the [`ScanFlags`] read off that
+/// variant. The `main.rs` arm matches exactly these variants and hands
+/// the pair to [`handle_scan_command`]. The only variant outside the
+/// table is `bdiff`: it has no row to ride, so it keeps its dedicated
+/// pure-report arm. Adding a command to the table means one entry here
+/// and one variant in the arm; the suite's roster assertion below pins
+/// the two together. Adding an evidence engine means one registry row
+/// plus one small contribution entry; the pairing tests below pin the
+/// contribution table against the registry roster one-for-one, so the
+/// pair can never drift silently (issue #342).
 pub(crate) fn ride(command: &crate::cli_types::Command) -> Option<(ScanContribution, ScanFlags)> {
     use crate::cli_types::Command;
     let (entry, flags) = match command {
@@ -562,8 +582,9 @@ pub(crate) fn ride(command: &crate::cli_types::Command) -> Option<(ScanContribut
             },
         ),
         // The three flag-carrying riders (issue #341): each variant's
-        // per-engine flag reaches its row build or post-scan step
-        // through the flags below, interpreted by the entry alone.
+        // own extra flag reaches the row's evidence engine build or the
+        // entry's post-scan step through the flags below, interpreted by
+        // the entry alone.
         Command::Algorithm {
             binary,
             show,
@@ -636,8 +657,8 @@ mod tests {
     }
 
     /// Settings resolving `target_dir` to `dir` and everything else to
-    /// defaults, so the engine load and the `[analysis]` fold ride the
-    /// same path production takes.
+    /// defaults. The Kuna engine load and the `[analysis]` budgets it
+    /// consumes then follow the same path production takes.
     fn settings_over(dir: &Path) -> Settings {
         let layers = Layers::default();
         let flags = FileConfig {
@@ -652,7 +673,8 @@ mod tests {
         Settings::resolve(&layers, flags, &loaded)
     }
 
-    /// Parse the `typesdb` shape of flags — the entry's rider.
+    /// Build the `typesdb` shape of flags — the shape `ride` produces
+    /// for the type-database entry.
     fn typesdb_flags(no_tag: bool) -> ScanFlags {
         ScanFlags {
             binary: "fixture-target".to_string(),
@@ -737,7 +759,7 @@ mod tests {
     async fn show_reads_the_filed_document_without_touching_the_engine() {
         // With the filed document in place and the target itself gone,
         // `--show` still succeeds: nothing on this path reads the
-        // program, so nothing loads the engine.
+        // program, so nothing loads the Kuna engine.
         let ws = fixture_workspace();
         handle_scan_command(
             &typesdb::contribution(),
@@ -768,11 +790,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_command_run_always_rescans_over_a_filed_document() {
-        // The CLI's force-rescan contract: the overwrite policy travels,
-        // the phase's cached-hit short-circuit is not adopted. A second
-        // run over a tampered filed document succeeds only by re-scanning
-        // and replacing it — a short-circuited run would have failed
-        // loading the tamper.
+        // The CLI's refresh-cache contract: the overwrite policy reaches
+        // the row, and the phase's cached-hit short-circuit is not
+        // adopted. A second run over a tampered filed document succeeds
+        // only by re-scanning and replacing it — a short-circuited run
+        // would have failed loading the tamper.
         let ws = fixture_workspace();
         handle_scan_command(
             &typesdb::contribution(),
@@ -870,11 +892,11 @@ mod tests {
         );
     }
 
-    /// The fixture's real shapes renamed to custom names, copied from the
-    /// pipeline's override tests: a file's set replaces the built-in one
-    /// whole, so a filed document carrying only these claims proves the
-    /// option drove the row's own engine build (issue #338's behavior,
-    /// observed here from the CLI side).
+    /// The fixture's real shapes renamed to custom names, copied from
+    /// the pipeline's override tests. A file's set replaces the
+    /// built-in one whole, so a filed document carrying only these
+    /// claims proves the option drove the row's own evidence engine
+    /// build (issue #338's behavior, observed here from the CLI side).
     const CUSTOM_PATTERN_DATABASE: &str = r#"{
         "control_flow": [
             {
@@ -907,8 +929,9 @@ mod tests {
     async fn a_set_override_file_scans_the_fixture_from_the_file_s_own_set() {
         // The CLI-side end of the set-override option (issue #341): the
         // flag reaches the row through the entry's derivation, the row
-        // interprets it in its own engine build, and the filed document
-        // carries the file's renamed claims over the fixture target.
+        // interprets it in its own evidence engine build, and the filed
+        // document carries the file's renamed claims over the fixture
+        // target.
         let ws = fixture_workspace();
         let settings = settings_over(ws.path());
 
@@ -1030,9 +1053,10 @@ mod tests {
         // The type-inference follow-on (issue #341): `--write-back
         // --confidence-floor 0` applies through the typeinfer crate's
         // own write-back API over the retained source on the scan path,
-        // `--show --write-back` loads the engine and applies over the
-        // filed document, and `--show` without the flag never loads the
-        // engine at all — with the target gone it still reports.
+        // `--show --write-back` loads the Kuna engine and applies over
+        // the filed document, and `--show` without the flag never loads
+        // the Kuna engine at all — with the target gone it still
+        // reports.
         let ws = fixture_workspace();
         let settings = settings_over(ws.path());
         let entry = crate::commands::typeinfer::contribution();
@@ -1083,7 +1107,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_write_back_without_its_target_load_fails_naming_the_write() {
-        // The show-path engine load sits behind the flag: with the
+        // The show-path Kuna engine load sits behind the flag: with the
         // document filed but the target gone, `--show --write-back`
         // fails — there is no program to write into — while `--show`
         // alone (the test above) stands.
@@ -1283,9 +1307,9 @@ mod tests {
             );
         }
 
-        // The per-engine flags ride along on their own variants: the
-        // set-override paths and the write-back pair arrive on the
-        // flags exactly as clap parsed them.
+        // Each command's own extra flags ride along on their own
+        // variants: the set-override paths and the write-back pair
+        // arrive on the flags exactly as clap parsed them.
         use crate::cli_types::Command;
         let override_path = std::path::PathBuf::from("my-database.json");
         for (command, named) in [
@@ -1335,23 +1359,25 @@ mod tests {
         );
     }
 
-    /// The pairing pin (issue #342), the `libmatch` drift doctrine paid
-    /// in at the CLI side: the CLI contribution table and the registry
-    /// roster must name the same rows, one entry per row. The fault list
-    /// is the data-level verdict — empty means paired, and each fault
-    /// spells its drift: a roster row no CLI entry names, an entry
-    /// naming a row the roster does not hold, or two entries crowded
-    /// onto one row. Adding an engine is one registry row plus one
-    /// small contribution entry, and neither half can drift silently.
-    /// The pair's twin is the translator's named-roster test
+    /// The pairing pin (issue #342) applies the `libmatch` drift
+    /// doctrine at the CLI side: the CLI contribution table and the
+    /// registry roster must name the same rows, one entry per row. The
+    /// fault list is the data-level verdict: an empty list means
+    /// paired, and each fault names its drift — a roster row no CLI
+    /// entry names, an entry naming a row the roster does not hold, or
+    /// two entries crowded onto one row. Adding an evidence engine
+    /// means one registry row plus one small contribution entry, and
+    /// neither half can drift silently. The pair's twin is the
+    /// translator's named-roster test
     /// `the_registered_rows_are_exactly_the_named_roster`
-    /// (crates/pipeline/calxgloss-translator/src/pipeline.rs): that one
-    /// pins the roster against its spelled list so a row enters only by
-    /// review, this one pins every roster row to exactly one CLI
-    /// contribution. Completeness follows: the behavior suite's walk
-    /// `every_ridden_command_files_shows_rescans_and_survives_a_failed_rescan`
-    /// drives the very entries read here, so a green pairing means every
-    /// engine in the roster is pinned through the generic handler.
+    /// (crates/pipeline/calxgloss-translator/src/pipeline.rs). That
+    /// test pins the roster against its spelled list, so a row enters
+    /// only by review; this test pins every roster row to exactly one
+    /// CLI contribution. Completeness follows: the behavior suite's
+    /// walk `every_ridden_command_files_shows_rescans_and_survives_a_failed_rescan`
+    /// drives the very entries read here, so a green pairing means
+    /// every evidence engine in the roster is pinned through the
+    /// generic handler.
     fn pairing_faults(entry_rows: &[&str], roster_rows: &[&str]) -> Vec<String> {
         let mut faults = Vec::new();
         for row in roster_rows {
@@ -1379,7 +1405,7 @@ mod tests {
     #[test]
     fn the_cli_contribution_table_pairs_one_for_one_with_the_registry_roster() {
         // Fifteen entries against fifteen rows, green: both sides read
-        // from their tables' own data, never a spelled name list.
+        // from their own tables' data, never a spelled list of names.
         let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
         let roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
         assert_eq!(entry_rows.len(), 15, "one CLI entry per scan command");
@@ -1398,9 +1424,10 @@ mod tests {
 
     #[test]
     fn the_pairing_fails_when_a_roster_row_has_no_cli_entry() {
-        // Proven in-test with a fixture row: what a new engine's registry
-        // row looks like before its CLI contribution is reviewed must
-        // come back as a fault — the pin bites before any real drift.
+        // Proven in-test with a fixture row: what a new evidence
+        // engine's registry row looks like before its CLI contribution
+        // is reviewed must come back as a fault — the pin bites before
+        // any real drift.
         let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
         let mut roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
         roster_rows.push("fixture-row-without-a-cli-entry");
@@ -1451,15 +1478,16 @@ mod tests {
         );
     }
 
-    /// One entry's full scenario walk: `--show` over an unscanned
-    /// workspace fails naming the exact producing command; the scan ride
-    /// succeeds and files the document at the row's own path (the
-    /// report's print rides the same Ok path), readable back through the
-    /// entry; the re-scan replaces the filed document outright — the CLI
-    /// never adopts the cached-hit short-circuit; a failed re-scan leaves
-    /// the previous document in place; and a `--show` over the filed
-    /// document with the target gone succeeds — the entry never loads
-    /// the engine to report what it already holds.
+    /// One entry's full scenario walk. `--show` over an unscanned
+    /// workspace fails, naming the exact command that would produce
+    /// the document. The scan ride succeeds and files the document at
+    /// the row's own path, and the report prints on that same success
+    /// path; the entry can read the document back. The re-scan
+    /// replaces the filed document outright — the CLI never adopts the
+    /// cached-hit short-circuit. A failed re-scan leaves the previous
+    /// document in place. And a `--show` over the filed document with
+    /// the target gone succeeds: the entry never loads the Kuna engine
+    /// to report what it already holds.
     async fn ride_one(cli: &'static str, entry: &ScanContribution) {
         let ws = fixture_workspace();
         let settings = settings_over(ws.path());
@@ -1532,7 +1560,7 @@ mod tests {
         );
 
         // Scenario: a failed re-scan leaves the previous document
-        // in place. With the target gone the engine load fails
+        // in place. With the target gone the Kuna engine load fails
         // before the row runs, so nothing touches the filed file.
         let before = std::fs::read(&filed).expect("the filed document");
         std::fs::remove_file(ws.path().join("fixture-target")).expect("target gone");
@@ -1577,8 +1605,8 @@ mod tests {
     }
 
     /// The fifteen walk tests below and the completeness guard both
-    /// expand from this one listing, so an engine joining the ride table
-    /// gets its own walk test or the guard fails.
+    /// expand from this one listing, so an evidence engine joining the
+    /// ride table gets its own walk test or the guard fails.
     macro_rules! for_each_ridden_cli {
         ($f:ident) => {
             $f!(rides_typesdb, "typesdb");
@@ -1600,13 +1628,13 @@ mod tests {
     }
 
     // The behavior suite over the whole ride table (issues #339-#341):
-    // every entry the pairing tests pin green rides this walk, so the
-    // fifteen entries here are the whole table - every engine in the
-    // roster is pinned through the generic handler (issue #342's
-    // completeness half). One test per entry: the fifteen walks each
-    // load their own engine, and as a single test they ran the whole
-    // table serially - over three minutes when the scans otherwise
-    // overlap across test threads.
+    // every entry the pairing tests pin green also runs this walk, so
+    // the fifteen entries here are the whole table - every evidence
+    // engine in the roster is pinned through the generic handler
+    // (issue #342's completeness half). One test per entry: each of
+    // the fifteen walks loads its own Kuna engine. As a single test
+    // they would run the whole table serially - over three minutes -
+    // while as separate tests the scans overlap across test threads.
     macro_rules! define_ride_test {
         ($name:ident, $cli:literal) => {
             #[tokio::test]
@@ -1640,14 +1668,14 @@ mod tests {
 
     #[tokio::test]
     async fn the_callback_riding_observes_the_cached_type_inference() {
-        // The enrichment the old CLI wired by hand now rides the row's
-        // own pre-scan hook: with a filed type-inference document the
-        // `callback-detection` row composes real callable contracts into
-        // its engine, and the filed type-inference records read back
-        // through `callback_signature_map` prove the document the hook
-        // composes from is in place. Without the document the ride is
-        // exactly what it was (issue #173's degradation, observed over
-        // the fixture).
+        // The enrichment the old CLI built by hand now runs through the
+        // row's own pre-scan hook: with a filed type-inference document
+        // the `callback-detection` row composes real callable contracts
+        // into its evidence engine, and the filed type-inference
+        // records read back through `callback_signature_map` prove the
+        // document the hook composes from is in place. Without the
+        // document the scan run is exactly what it was before
+        // (issue #173's degradation, observed over the fixture).
         let flags = ScanFlags {
             binary: "fixture-target".to_string(),
             show: false,
@@ -1657,8 +1685,9 @@ mod tests {
             confidence_floor: 0,
         };
 
-        // Enriched workspace: the producing row's ride files the
-        // type-inference document the callback row's hook composes from.
+        // Enriched workspace: the producing scan run files the
+        // type-inference document the callback row's hook composes
+        // from.
         let enriched = fixture_workspace();
         handle_scan_command(
             &crate::commands::typeinfer::contribution(),
@@ -1706,12 +1735,13 @@ mod tests {
     #[test]
     fn seam_admission_lines_name_only_families_the_opened_seam_admitted() {
         // A hand-declared report — the shape a degraded seam would hand
-        // the run: one family unavailable with its own bounded reason, one
-        // answerable, and one the declaration never mentions (unknown, and
-        // silent). Exactly one line, word for word in the shared admission
-        // wording. The `Zanthoxylum` name belongs to no other family's
-        // wording — if a line ever crossed into another family's report,
-        // these exact strings would fault.
+        // the run. One family is unavailable, with its own bounded
+        // reason; one family is answerable; the declaration never
+        // mentions a third (so it is unknown, and silent). Exactly one
+        // line prints, word for word in the shared admission wording.
+        // The `Zanthoxylum` name belongs to no other family's wording:
+        // if a line ever crossed into another family's report, these
+        // exact strings would fault.
         let report = calxgloss_types::CapabilityReport {
             families: vec![
                 calxgloss_types::FamilyCapability {
@@ -1735,10 +1765,11 @@ mod tests {
 
     #[test]
     fn a_full_answerable_declaration_yields_not_one_seam_line() {
-        // The real Kuna fixture's live declaration, run through the very
-        // function the run report prints from: an empty Vec — the report
-        // adds no bytes anywhere (the process-level pin pairs this with
-        // byte-identical run stdout and the run-equals-`--show` identity).
+        // The Kuna engine's live declaration over the real fixture,
+        // passed through the very function the run report prints from:
+        // an empty Vec, so the report adds no bytes anywhere. The
+        // process-level pin pairs this with byte-identical run stdout
+        // and the run-equals-`--show` identity.
         let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
         let engine =
             calxgloss_kuna::KunaSource::load(fixture.path()).expect("the fixture must load");
@@ -1753,14 +1784,15 @@ mod tests {
         // The doctrine pair, byte-level (issue #359): the scan coverage
         // doctrine (P19 — what a filed scan examined) and the seam
         // capability doctrine (P20 — what the open session can answer)
-        // share their admission machinery, and that shared wording is
-        // deliberately collidable: a coverage admission and a capability
-        // admission CAN spell byte-identical raw strings. At the report end
-        // each rides its own frame — the `Coverage:` label column over the
-        // coverage admission, the family-id prefix and `Seam:` label column
-        // over the seam line — and the pinned frames prove the two lines
-        // never merge and never borrow each other's frame. `Tanglewood` is
-        // coined for this pin and belongs to neither doctrine's fixtures.
+        // share their admission machinery. The shared wording is
+        // allowed to collide on purpose: a coverage admission and a
+        // capability admission CAN spell byte-identical raw strings.
+        // At the report end each gets its own frame: the `Coverage:`
+        // label column over the coverage admission, and the family-id
+        // prefix plus `Seam:` label column over the seam line. The
+        // pinned frames prove the two lines never merge and never
+        // borrow each other's frame. `Tanglewood` is coined for this
+        // pin and belongs to neither doctrine's fixtures.
         const SENTINEL: &str = "Tanglewood bridge offline";
 
         // The collision, built on purpose: same status word, same sentence,
@@ -1787,9 +1819,10 @@ mod tests {
              frames separate them, not that the words differ"
         );
 
-        // Report end: the seam line wears the family id, the coverage
-        // admission never does; neither line ever wears the other's frame,
-        // and the two lines stay two — never one merged admission.
+        // Report end: the seam line shows the family id; the coverage
+        // admission never does. Neither line ever shows the other's
+        // frame, and the two lines stay two — never one merged
+        // admission.
         let seam_lines = seam_admission_lines(&report);
         let coverage_admission = coverage.admission().expect("an unavailable scan admits");
         assert_eq!(
@@ -1817,9 +1850,9 @@ mod tests {
             !coverage_admission.contains("imports") && !coverage_admission.contains("Seam"),
             "the coverage admission never wears the seam doctrine's family id or label frame"
         );
-        // The shared sentence alone identifies neither doctrine — a reader
-        // telling the two admits apart reads the frames, and both frames
-        // stand beside their own line at the report end.
+        // The shared sentence alone identifies neither doctrine: a
+        // reader telling the two admissions apart reads the frames,
+        // and each frame stands beside its own line at the report end.
         assert!(
             seam_lines[0].contains(SENTINEL) && coverage_admission.contains(SENTINEL),
             "both lines carry the shared sentence once each, in their own frames"
