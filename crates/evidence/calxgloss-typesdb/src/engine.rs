@@ -1,26 +1,26 @@
 //! Type database recovery orchestration.
 //!
-//! [`TypesDBEngine`] runs the three recovery engines — named type recovery,
+//! [`TypesDBEngine`] runs the three recovery scans — named type recovery,
 //! vtable detection, and string-guided inference — concurrently against one
 //! loaded program and assembles their results into a single
 //! [`TypeDatabase`] with its scan provenance.
 //!
 //! The three scans read disjoint seam reads (`data_types()`,
 //! `data_items()` + `read_memory()`, and `strings()` + `xrefs_to()`),
-//! so they run as concurrent tasks rather than one after another. Each engine
+//! so they run as concurrent tasks rather than one after another. Each scan
 //! already degrades internally for missing or malformed data, so an error
-//! surfacing here means the engine itself failed mid-scan; the run aborts
-//! with that error rather than returning a database whose sections were
-//! built against different programs or different moments.
+//! surfacing here means the analysis engine itself failed mid-scan; the
+//! orchestration aborts with that error rather than returning a database
+//! whose sections were built against different programs or different moments.
 //!
 //! After the scans, a pure in-memory pass links string-inferred candidates
 //! to RTTI-confirmed vtables: a candidate whose referencing functions include
 //! a confirmed table's methods takes that table's demangled class name and
 //! records the link. A second pass then merges candidates whose referencing
 //! functions overlap — one struct read by a hub function splits into half-
-//! candidates, and the overlap through the hub is what ties them back
-//! together — keeping the stronger half's name and link and unioning the
-//! fields. A third pass links struct fields to the recovered named types
+//! candidates, and the two halves' overlap at the hub is what shows them as
+//! one struct. The merge keeps the stronger half's name and link and unions
+//! the fields. A third pass links struct fields to the recovered named types
 //! they name, so a layout whose field is another recovered type reads as a
 //! tree: the field records that type's Type Manager path and kind, and a
 //! field typed as a recovered union carries the union kind. A fourth pass
@@ -46,20 +46,20 @@ use std::time::Instant;
 use tracing::info;
 
 /// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned listings so the orchestration runs without
-/// a server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// so this crate's generic scanners keep naming it directly;
+/// [`KunaSource`] implements it over the in-process analysis engine, and
+/// tests implement it over canned listings so the orchestration runs
+/// without a server. The futures are `Send` so a scan can be driven from
+/// an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
 /// The facet ids typesdb declares — the roster, spelled once here the
 /// way the CLI pairing pin (#342) spells its roster and the way
-/// apidetect (#346) and floatsimd (#347) spell theirs. Every facet a
-/// freshly stamped coverage record names is read against this list by
-/// the pin below, and every drift direction is a fault: a declared
-/// facet the scan stopped stamping, a facet stamped twice, and an id
-/// the scan invented outside the roster all fail loudly.
+/// apidetect (#346) and floatsimd (#347) spell theirs. The pin below
+/// reads every facet id a freshly stamped coverage record names against
+/// this list. Every drift is a fault and fails loudly: a declared facet
+/// the scan stopped stamping, a facet stamped twice, and an id the scan
+/// invented outside the roster.
 pub const DECLARED_FACETS: &[&str] = &["vtables"];
 
 /// The coverage record every typesdb scan stamps about itself (issue
@@ -71,11 +71,10 @@ pub const DECLARED_FACETS: &[&str] = &["vtables"];
 /// detector to find, and zero recorded vtables is then a property of the
 /// target, not of the program's shape — so the facet is `unavailable` with
 /// that reason rather than a quiet zero. A scan that found at least one
-/// table read the walk end to end and the facet is `complete`, and the
-/// named types and string-inferred candidates beside it are unaffected
-/// either way. The whole picture mirrors the single facet — there is
-/// nothing else this engine examines over a vtable (the P19-4
-/// admitted-semantics track).
+/// table read the walk end to end, so the facet is `complete`. The named
+/// types and string-inferred candidates beside it are unaffected either
+/// way. The whole picture mirrors the single facet: over a vtable, this
+/// scan examines nothing else (the P19-4 admitted-semantics track).
 fn coverage_stamp(vtables_found: usize) -> ScanCoverage {
     let (status, limitation) = if vtables_found == 0 {
         (
@@ -95,11 +94,11 @@ fn coverage_stamp(vtables_found: usize) -> ScanCoverage {
     }
 }
 
-/// Orchestrates the three recovery engines into one [`TypeDatabase`].
+/// Orchestrates the three recovery scans into one [`TypeDatabase`].
 ///
-/// The engine is generic over the same source traits as the scanners it
-/// drives, so tests can run the whole orchestration over canned responses;
-/// [`new`](Self::new) builds one over a loaded [`KunaSource`].
+/// TypesDBEngine is generic over the same source traits as the scanners
+/// it drives, so tests can run the whole orchestration over canned
+/// responses; [`new`](Self::new) builds one over a loaded [`KunaSource`].
 #[derive(Debug, Clone)]
 pub struct TypesDBEngine<S = KunaSource> {
     scanner: TypeLibraryScanner<S>,
@@ -108,7 +107,7 @@ pub struct TypesDBEngine<S = KunaSource> {
 }
 
 impl TypesDBEngine<KunaSource> {
-    /// An engine over a loaded Kuna program.
+    /// A TypesDBEngine over a loaded Kuna program.
     pub fn new(source: &KunaSource) -> TypesDBEngine<KunaSource> {
         TypesDBEngine {
             scanner: TypeLibraryScanner::new(source),
@@ -119,7 +118,7 @@ impl TypesDBEngine<KunaSource> {
 }
 
 impl<S> TypesDBEngine<S> {
-    /// An engine whose three scanners share one source.
+    /// A TypesDBEngine whose three scanners share one source.
     pub fn with_source(source: S) -> Self
     where
         S: Clone,
@@ -149,13 +148,14 @@ impl<S> TypesDBEngine<S> {
         self
     }
 
-    /// Regex the string listing is filtered by.
+    /// Filter the string listing by this regular expression.
     pub fn with_string_filter(mut self, pattern: impl Into<String>) -> Self {
         self.strings = self.strings.with_string_filter(pattern);
         self
     }
 
-    /// Report inferred candidates scoring `threshold` or higher.
+    /// Report only inferred candidates whose evidence confidence scores
+    /// `threshold` or higher.
     pub fn with_min_confidence(mut self, threshold: u8) -> Self {
         self.strings = self.strings.with_min_confidence(threshold);
         self
@@ -167,8 +167,9 @@ impl<S> TypesDBEngine<S> {
         self
     }
 
-    /// Assume `pointer_size` for vtable entries and text-typed fields —
-    /// one program, one pointer size, so the knob reaches both scanners.
+    /// Assume `pointer_size` for vtable entries and text-typed fields.
+    /// One program has one pointer size, so this setting reaches both
+    /// scanners.
     pub fn with_pointer_size(mut self, pointer_size: usize) -> Self {
         self.vtables = self.vtables.with_pointer_size(pointer_size);
         self.strings = self.strings.with_pointer_size(pointer_size as u64);
@@ -198,11 +199,12 @@ impl<S> TypesDBEngine<S> {
         let stl_flagged = flag_stl_types(&mut named_types, &mut vtables, &mut inferred_structs);
 
         let mut metadata = ScanMetadata::new(binary);
-        // The engine admits its own coverage where the truth lives, beside
-        // the provenance and the timing (issue #348).
+        // The orchestration stamps its own coverage where the truth
+        // lives, beside the provenance and the timing (issue #348).
         metadata.coverage = Some(coverage_stamp(vtables.len()));
-        // The source names its engine and pin under `kuna` (issue #208). The three scanners share one source, so any of
-        // them can answer for it.
+        // The source names its analysis engine and its pinned release
+        // under `kuna` (issue #208). The three scanners share one
+        // source, so any of them can answer for it.
         metadata.engine = self.scanner.source().engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -232,9 +234,10 @@ impl<S> TypesDBEngine<S> {
 /// a vtable whose RTTI chain resolved a class name, the literals most likely
 /// belong to that class: the candidate records the link by vtable address,
 /// takes the demangled class name — the strongest name origin — and its
-/// confidence is re-scored for the stronger naming evidence. A candidate
-/// matching several tables links to the one sharing the most methods; ties
-/// go to the lowest address, so two scans of one program diff cleanly.
+/// evidence confidence is re-scored for the stronger naming evidence. A
+/// candidate matching several tables links to the one sharing the most
+/// methods; ties go to the lowest address, so two scans of one program diff
+/// cleanly.
 ///
 /// A table that is not RTTI-confirmed, or whose class name never resolved,
 /// links nothing: the link exists to carry a real class name, and without
@@ -309,14 +312,15 @@ const MERGE_OVERLAP_DENOMINATOR: usize = 2;
 /// link (ties go to the lower first-field address), unions the fields in
 /// literal-address order with offsets re-accumulated, and unions the
 /// referencing functions. The score re-reads the merged evidence: the
-/// strongest half's confidence plus the inference score's own breadth and
-/// agreement payouts for the fields and functions the merge adds, so a
-/// merge never scores below the half it grew from. The number of halves
-/// is recorded in [`InferredStruct::merged_from`].
+/// strongest half's evidence confidence plus the inference score's own
+/// breadth and agreement payouts for the fields and functions the merge
+/// adds, so a merge never scores below the half it grew from. The number
+/// of halves is recorded in [`InferredStruct::merged_from`].
 ///
 /// Candidates are visited in literal-address order and the final list is
-/// re-sorted by confidence and name, so two scans of one program produce
-/// identical databases. Returns how many candidates the pass folded away.
+/// re-sorted by evidence confidence and name, so two scans of one program
+/// produce identical databases. Returns how many candidates the merge
+/// removed.
 fn merge_candidates(candidates: &mut Vec<InferredStruct>) -> usize {
     if candidates.len() < 2 {
         return 0;
@@ -429,9 +433,10 @@ fn merge_group(members: &[&InferredStruct]) -> Option<InferredStruct> {
         .collect();
 
     // Re-score for the merged evidence with the inference score's own
-    // payouts: 8 per field the merge adds past the widest half (up to
-    // five counted), 5 per reader it adds past the widest half's reader
-    // set (up to four counted), on top of the strongest half's score.
+    // payouts, on top of the strongest half's evidence confidence: 8 per
+    // field the merge adds past the widest half (up to five counted),
+    // and 5 per reader it adds past the widest half's reader set (up to
+    // four counted).
     let widest = members.iter().map(|c| c.fields.len()).max().unwrap_or(0);
     let breadth = fields.len().saturating_sub(widest).min(5) * 8;
     let widest_readers = members
@@ -535,10 +540,10 @@ fn link_nested_fields(named_types: &mut [NamedType]) -> usize {
 ///
 /// Flag-only: flagged records stay in every section and lookup, exactly the
 /// way ADR-0009 keeps weak candidates — the flag tells the LLM what it is
-/// looking at, it does not hide the record (issue #140). The pass runs last,
-/// after merging and nesting, so each record is flagged once and the flag
-/// lands on the record that survives rather than on a duplicate that gets
-/// folded away. Returns the number of flagged records for the scan log.
+/// looking at but does not hide the record (issue #140). The pass runs last,
+/// after merging and nesting, so each record is flagged once: the flag marks
+/// the record that survives, not a duplicate the merge removed. Returns the
+/// number of flagged records for the scan log.
 fn flag_stl_types(
     named_types: &mut [NamedType],
     vtables: &mut [Vtable],
@@ -551,7 +556,7 @@ fn flag_stl_types(
             flagged += 1;
         }
     }
-    // RTTI-demangled class names carry the shapes the same way Type
+    // RTTI-demangled class names match the shapes the same way Type
     // Manager names do (issue #140).
     for vtable in vtables.iter_mut() {
         if let Some(class_name) = &vtable.class_name
@@ -636,7 +641,7 @@ mod tests {
     }
 
     /// State shared by every clone of a [`FakeProgram`], so a test can read
-    /// what the scans did after the engine has consumed its source.
+    /// what the scans did after the orchestration has consumed its source.
     #[derive(Debug, Default)]
     struct Stats {
         in_flight: AtomicUsize,
@@ -645,9 +650,9 @@ mod tests {
     }
 
     /// A canned program implementing [`ScanSource`] and [`TagSink`], so the
-    /// whole orchestration runs without a server. Every source call yields,
-    /// the way a real HTTP call pends, which is what lets the concurrency
-    /// test observe the scans overlapping.
+    /// whole orchestration runs without a server. Every source call yields
+    /// first, the way a real HTTP call pends, so the concurrency test can
+    /// observe the scans overlapping.
     #[derive(Clone)]
     struct FakeProgram {
         listing: Vec<DataTypeEntry>,
@@ -817,7 +822,7 @@ mod tests {
     /// The same program, but the `Widget` fields are read across two
     /// methods plus a hub: the hub points at 25 literals, so it cannot
     /// cluster them, and the field list splits into two half-candidates
-    /// that the merge pass has to stitch back together through the hub.
+    /// that the merge pass has to join back into one through the hub.
     fn program_split_by_a_hub() -> FakeProgram {
         let mut program = program();
         for (address, value) in [
@@ -1141,9 +1146,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_scan_fails_the_whole_run() {
-        // Each engine degrades internally for missing data, so an error
-        // here is a server failure: the run aborts rather than returning a
-        // database with a silently missing section.
+        // Each scanner degrades internally for missing data, so an error
+        // here is a server failure: the whole scan aborts rather than
+        // returning a database with a silently missing section.
         let mut program = program();
         program.fail_items = true;
         let result = TypesDBEngine::with_source(program).scan("eqmain.dll").await;
@@ -1166,16 +1171,16 @@ mod tests {
 
     // -- admitted coverage (P19 admitted-semantics track, issue #348) -----
 
-    /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
+    /// The data-level result of the roster pin: empty means the record
+    /// names every declared facet exactly once; each fault names one
     /// drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
 
-    /// Runs the engine's own scan over `program`: the coverage stamp rides
-    /// this call, the one definition the batch scan phase and the CLI's
-    /// force-rescan both go through.
+    /// Runs the TypesDBEngine's own scan over `program`: every coverage
+    /// stamp comes from this call, the one definition the batch scan
+    /// phase and the CLI's force-rescan both go through.
     async fn scan(program: FakeProgram) -> TypeDatabase {
         TypesDBEngine::with_source(program)
             .scan("eqmain.dll")
@@ -1211,10 +1216,10 @@ mod tests {
     #[tokio::test]
     async fn a_target_yielding_no_vtable_evidence_stamps_the_facet_unavailable_with_its_reason() {
         // The data objects the RTTI walk starts from are gone, so the walk
-        // finds nothing to read — while the Type Manager listing and the
-        // string clusters still carry their findings. Zero recorded vtables
-        // beside a database that still names types reads as the target
-        // carrying no RTTI, never as the program having no classes.
+        // finds nothing to read, while the Type Manager listing and the
+        // string clusters still produce their findings. Zero recorded
+        // vtables beside a database that still names types reads as the
+        // target having no RTTI, never as the program having no classes.
         let mut program = program();
         program.items.clear();
         let db = scan(program).await;
@@ -1418,7 +1423,8 @@ mod tests {
     #[tokio::test]
     async fn the_confidence_threshold_still_filters_with_the_merge_in_place() {
         // The hub-split halves each score 76; a threshold above that
-        // filters them before they can merge, exactly as before the pass.
+        // filters them before they can merge, exactly as it did before
+        // the merge pass existed.
         let db = TypesDBEngine::with_source(program_split_by_a_hub())
             .with_min_confidence(80)
             .without_tagging()
