@@ -1,29 +1,32 @@
 //! The endianness profiler: the program-wide view of the byte-swap findings.
-//! The [`FormatCombiner`](crate::format::FormatCombiner) already answers "what
-//! order does *this function's* reads assume" — but a real binary swaps at
-//! several widths in several functions, and the analyst needs one answer for
-//! the whole program: which widths carry network-order traffic, and which
-//! functions contribute each width. This module aggregates the scan's
-//! byte-swap findings by entry width into one [`EndiannessMap`] finding,
-//! appended after the per-function findings by the [`SerializeEngine`].
+//! The [`FormatCombiner`](crate::format::FormatCombiner) already answers
+//! "what order does *this function's* reads assume". But a real binary
+//! swaps at several widths in several functions, and the analyst needs
+//! one answer for the whole program: which widths have network-order
+//! traffic, and which functions contribute each width. This module groups
+//! the scan's byte-swap findings by entry width into one
+//! [`EndiannessMap`] finding. The
+//! [`SerializeEngine`](crate::engine::SerializeEngine) appends it after
+//! the per-function findings.
 //!
-//! The map is deliberately conservative, in the same spirit as the composed
-//! format record: an entry claims [`WireEndianness::BigEndian`] only when a
+//! The map is deliberately conservative, like the composed format record.
+//! An entry claims [`WireEndianness::BigEndian`] only when a
 //! network-order name (`ntohl`/`ntohs`/`htons`/`htonl`) appears at that
-//! width — a bare `bswap` says only that bytes get reversed somewhere, and
-//! the entry says exactly that, `reversal_only`, claiming no wire order. The
-//! confidence is fixed at [`ENDIANNESS_MAP_CONFIDENCE`], one rung above the
-//! raw byte-swap floor: the map rides on top of the byte-swap findings, and a
-//! program-wide aggregation is stronger evidence than any single call site.
+//! width. A bare `bswap` says only that bytes get reversed somewhere;
+//! the entry says exactly that, `reversal_only`, and claims no wire
+//! order. The evidence confidence is fixed at
+//! [`ENDIANNESS_MAP_CONFIDENCE`], one band above the raw byte-swap floor.
+//! The map builds on the byte-swap findings, and a program-wide
+//! aggregation is stronger evidence than any single call site.
 
 use crate::format::{is_network_read, is_network_write};
 use crate::types::{EndiannessEntry, EndiannessMap, SerializeFinding, WireEndianness};
 
-/// The fixed confidence of every [`EndiannessMap`] the profiler produces:
-/// above the byte-swap floor of 70 — the map rides on top of the byte-swap
-/// findings, and a program-wide aggregation is stronger evidence than any
-/// single call site — and below the lone-magic floor of 80, the same rung as
-/// the composed format record.
+/// The fixed evidence confidence of every [`EndiannessMap`] this profiler
+/// produces. It sits above the byte-swap floor of 70, because the map
+/// builds on the byte-swap findings and a program-wide aggregation is
+/// stronger evidence than any single call site. It sits below the
+/// lone-magic floor of 80, the same band as the composed format record.
 const ENDIANNESS_MAP_CONFIDENCE: u8 = 75;
 
 /// Aggregates the byte-swap findings of one scan into one program-wide
@@ -38,21 +41,21 @@ impl EndiannessProfiler {
         EndiannessProfiler
     }
 
-    /// Builds the program-wide endianness map for one scan's findings: the
-    /// byte-swap findings are grouped by swapped width, one map entry per
-    /// width, sorted by width ascending. A width whose swaps include a
+    /// Builds the program-wide endianness map for one scan's findings.
+    /// The byte-swap findings are grouped by swapped width, one map entry
+    /// per width, sorted by width ascending. A width whose swaps include a
     /// network-order name — `ntohl`/`ntohs`/`htons`/`htonl`, the same names
     /// the [`FormatCombiner`](crate::format::FormatCombiner) reads — implies
     /// [`WireEndianness::BigEndian`]: one network-order spelling at a width
-    /// says that width travels big-endian somewhere, and claiming `be` on
-    /// the strength of the family alone is what the composed layout's
-    /// per-field order does too. A width whose swaps are all
+    /// says that width uses big-endian order somewhere on the wire, and
+    /// claiming `be` on the strength of the family alone is also what the
+    /// composed layout's per-field order does. A width whose swaps are all
     /// direction-neutral builtins (`__builtin_bswap*`) gets
-    /// [`WireEndianness::ReversalOnly`], claiming no wire order. Contributing
-    /// functions are deduped and kept in listing order — the order the
-    /// findings appear in the scan. The evidence is each width's first swap
-    /// line, and the suggestion names the widths and what each claims.
-    /// Returns `None` when the scan has no byte-swap findings at all — no
+    /// [`WireEndianness::ReversalOnly`], claiming no wire order.
+    /// Contributing functions are deduped and kept in listing order — the
+    /// order the findings appear in the scan. The evidence is each width's
+    /// first swap line, and the suggestion names the widths and what each
+    /// claims. Returns `None` when the scan has no byte-swap findings: no
     /// swaps observed, nothing to claim.
     pub fn profile(&self, findings: &[SerializeFinding]) -> Option<EndiannessMap> {
         // One accumulator per observed width: whether a network-order name
@@ -119,8 +122,9 @@ struct WidthRecord<'a> {
     evidence: &'a str,
 }
 
-/// The map's suggestion: what each width claims, BE widths first with the
-/// byteorder fix, reversal-only widths named as claiming nothing.
+/// Builds the map's suggestion text: what each width claims. It lists
+/// BE widths first with the byteorder fix, and names reversal-only
+/// widths as claiming nothing.
 fn suggest(widths: &[WidthRecord<'_>]) -> String {
     let list = |widths: &[&WidthRecord<'_>]| -> String {
         widths
@@ -272,7 +276,8 @@ mod tests {
             swap("FUN_18003ab00", "htons", 16),
             swap("FUN_18003e750", "ntohl", 32),
         ]);
-        // One record, every width, sorted ascending, at the fixed confidence.
+        // One record, every width, sorted ascending, at the fixed
+        // evidence confidence.
         assert_eq!(map.confidence, Confidence::new(ENDIANNESS_MAP_CONFIDENCE));
         assert_eq!(ENDIANNESS_MAP_CONFIDENCE, 75);
         assert_eq!(map.function, "");

@@ -1,18 +1,19 @@
 //! Manual bit-packing detection.
 //!
-//! This module provides [`BitPackDetector`], which reads decompiled
-//! bodies for the two shapes a hand-rolled wire format leaves behind:
-//! shift-and-or pack chains — bytes shifted to their offsets and ORed
-//! into a word, the way the decompiler renders a hand-rolled big-endian
-//! read — and shift-then-mask unpack chains — a word shifted right and
-//! masked to pull one field back out.
+//! This module provides [`BitPackDetector`]. It reads decompiled bodies
+//! for the two shapes a hand-rolled wire format leaves behind. The first
+//! is the shift-and-or pack chain: bytes shifted to their offsets and
+//! ORed into a word, the way the decompiler renders a hand-rolled
+//! big-endian read. The second is the shift-then-mask unpack chain: a
+//! word shifted right and then masked to pull one field back out.
 //!
-//! Unlike the call-name detectors there is no name set: the reading is
-//! the expression shape itself. [`BitPackDetector::detect`] reports one
-//! [`BitPackRecord`] per pack expression and per unpack chain, naming
-//! the [`widths`](BitPackRecord::widths) of the fields the shifts and
-//! masks carve out and suggesting the typed Rust stand-in — `bitvec`,
-//! or named-field masking and shifting on a plain integer.
+//! Unlike the call-name detectors, this detector has no name set. The
+//! reading is the expression shape itself.
+//! [`BitPackDetector::detect`] reports one [`BitPackRecord`] per pack
+//! expression and per unpack chain. Each record names the
+//! [`widths`](BitPackRecord::widths) of the fields the shifts and masks
+//! carve out, and suggests the typed Rust stand-in — `bitvec`, or
+//! named-field masking and shifting on a plain integer.
 
 use crate::scan::literal_after_ws;
 use crate::types::{BitPackPattern, BitPackRecord};
@@ -24,13 +25,13 @@ use calxgloss_decomp::DecompiledFunction;
 
 /// Bit-packing pattern detection over decompiled functions.
 ///
-/// The detector owns no name set — the pack and unpack shapes are the
-/// whole configuration — and holds no scan source of its own and
-/// never writes back to the program; one detector serves an entire
-/// scan and can be shared by reference across concurrent per-function
-/// passes. It is swappable whole on the engine through
-/// [`SerializeEngine::with_bitpack`](crate::engine::SerializeEngine::with_bitpack)
-/// for a scan that wants the shape reading off.
+/// The detector has no name set: the pack and unpack shapes are its
+/// whole configuration. It holds no scan source of its own and never
+/// writes back to the program. One detector serves an entire scan and
+/// can be shared by reference across concurrent per-function passes.
+/// The scan can replace it whole through
+/// [`SerializeEngine::with_bitpack`](crate::engine::SerializeEngine::with_bitpack),
+/// for a scan that wants this shape reading turned off.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BitPackDetector {}
 
@@ -40,19 +41,19 @@ impl BitPackDetector {
         Self::default()
     }
 
-    /// The bit-packing shapes one function's body carries.
+    /// Finds the bit-packing shapes in one function's body.
     ///
-    /// The reading walks the body line by line. A line that ORs shifted
-    /// operands together — an unshifted operand counts as the bottom
-    /// field — is one pack expression, and its
-    /// field widths come from the gaps between the shift amounts — a
-    /// field sits where the next-lower shift leaves room for it, and
-    /// the unshifted operand (or the bare last one) closes the word at
+    /// The reading walks the body line by line. A line that ORs
+    /// shifted operands together is one pack expression; an unshifted
+    /// operand counts as the bottom field. The pack expression's field
+    /// widths come from the gaps between the shift amounts: a field
+    /// sits where the next-lower shift leaves room for it, and the
+    /// unshifted operand (or the bare last one) closes the word at
     /// zero. Unpack extractions — a right shift followed by a mask —
-    /// are collected across the body and reported as one chain when
-    /// two or more pull fields from the word, their widths read from
-    /// the masks' set bits. Findings come back in body order, so two
-    /// scans of one body diff cleanly.
+    /// are collected across the body. When two or more of them pull
+    /// fields from the word, they are reported as one chain, and
+    /// their widths come from the masks' set bits. Findings come back
+    /// in body order, so two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<BitPackRecord> {
         let mut records = Vec::new();
         let mut unpack_lines: Vec<String> = Vec::new();
@@ -66,10 +67,10 @@ impl BitPackDetector {
             let chars: Vec<char> = line.chars().collect();
 
             // A pack expression: left shifts joined by `|`, with an
-            // unshifted operand counting as the bottom field — one
+            // unshifted operand counting as the bottom field. One
             // explicit shift plus that field is already a two-field
             // pack. `||` is a boolean or, not a bit join, so a line
-            // carrying one is not a pack chain.
+            // with one is not a pack chain.
             let mut amounts: Vec<u32> = shift_amounts(&chars);
             if !amounts.is_empty() && line.contains('|') && !line.contains("||") {
                 records.push(BitPackRecord {
@@ -111,21 +112,22 @@ impl BitPackDetector {
 // The reading
 // ============================================================
 
-/// Confidence of a bit-packing reading from the expression shape
-/// alone: the shifts and masks are explicit, but the shape is only a
-/// hypothesis about *why* the code moves bits — ordinary arithmetic
-/// shifts wear the same face — so the reading sits below the
-/// call-name detectors, whose names carry the intent outright.
+/// The evidence confidence of a bit-packing reading from the
+/// expression shape alone. The shifts and masks are explicit, but the
+/// shape is only a hypothesis about *why* the code moves bits:
+/// ordinary arithmetic shifts look the same. So this reading sits
+/// below the call-name detectors, whose names state the intent
+/// outright.
 const BITPACK_CONFIDENCE: u8 = 60;
 
 /// The Rust pattern a pack or unpack chain reads as: a typed field
-/// view instead of the hand-rolled shifts, spelled as the two ways to
-/// get one.
+/// view instead of the hand-rolled shifts. The text gives the two
+/// ways to get such a view.
 const BITPACK_SUGGESTION: &str = "bitvec or named-field masking/shifting";
 
 /// The shift amounts of a `<< N` pack expression: every left shift by
-/// a decimal or hex literal, the amount the expression parks each
-/// field at.
+/// a decimal or hex literal. Each amount is the offset the expression
+/// places a field at.
 fn shift_amounts(line: &[char]) -> Vec<u32> {
     let mut amounts = Vec::new();
     let mut i = 0;
@@ -182,11 +184,11 @@ fn unpack_extraction(line: &[char]) -> Option<u64> {
     None
 }
 
-/// The field widths a pack expression carves, from its shift amounts:
-/// sorted high to low with the implicit zero the unshifted operand
-/// sits at, each field as wide as the gap down to the next shift, and
-/// the top field as wide as the widest gap below it — the word's top
-/// edge the decompiler never spells out.
+/// Computes the field widths a pack expression carves, from its shift
+/// amounts. The amounts are sorted high to low, plus the implicit zero
+/// the unshifted operand sits at. Each field is as wide as the gap
+/// down to the next shift. The top field is as wide as the widest gap
+/// below it: the decompiler never writes the word's top edge.
 fn pack_widths(amounts: &mut Vec<u32>) -> Vec<u32> {
     amounts.sort_unstable_by(|a, b| b.cmp(a));
     amounts.dedup();
@@ -261,7 +263,7 @@ mod tests {
 
     #[test]
     fn a_shift_or_or_pack_chain_is_recognized_with_its_widths() {
-        // The classic hand-rolled big-endian read: four bytes parked
+        // The classic hand-rolled big-endian read: four bytes placed
         // at 0x18, 0x10, 8, and implicitly 0 — four 8-bit fields.
         let records = detect(
             "\
@@ -380,9 +382,9 @@ mod tests {
   iVar3 = (uVar2 >> 8) & 0xff;
   uVar4 = (a << 8) | b;",
         );
-        // The unpack chain closes at the end of the body — the pack
-        // line that came earlier still leads, because pack findings
-        // are per line and the chain is per body.
+        // The unpack chain is only reported at the end of the body.
+        // The pack line that came earlier still leads, because pack
+        // findings are per line and the chain is per body.
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].pattern, BitPackPattern::ShiftOrPack);
         assert_eq!(records[1].pattern, BitPackPattern::ShiftMaskUnpack);

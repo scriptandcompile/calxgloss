@@ -1,28 +1,28 @@
 //! Protocol message identification.
 //!
-//! This module provides [`ProtocolMessageCombiner`], the per-function
-//! combination pass that names the protocol message handlers the scan
-//! can corroborate: when one function carries a comparison against a
-//! protocol-table magic **and** at least one independent reading that
+//! This module provides [`ProtocolMessageCombiner`], a combination pass
+//! that runs per function. It identifies the protocol message handlers
+//! the scan can corroborate. When one function has a comparison against
+//! a protocol-table magic **and** at least one independent reading that
 //! fits a message handler — a network-order byte swap or a cross-field
 //! validation — the combiner promotes the pair to a single
 //! [`ProtocolMessage`] finding naming the protocol and listing its
 //! corroborating readings.
 //!
-//! The combiner reads no body of its own: it consumes exactly the
-//! findings the single-pass scan already collected for the function,
-//! so the deepening costs no extra engine reads. It consults the
-//! configured signature table only to tell protocol entries apart from
-//! file-format ones — a protocol magic that is not in the configured
-//! table's protocol section claims nothing.
+//! The combiner reads no body of its own. It uses exactly the findings
+//! the single-pass scan already collected for the function, so this
+//! combining costs no extra reads from the analysis engine. It consults
+//! the configured signature table only to tell protocol entries apart
+//! from file-format ones. A magic that is not in the configured table's
+//! protocol section claims nothing.
 //!
-//! The honesty gates are the point. A protocol magic on its own stays
-//! a plain magic finding — a bare signature check never overclaims a
-//! whole protocol. A file-format magic combined with swaps stays a
-//! magic finding too — a PNG decoder is never mislabeled as a network
-//! protocol handler. And a direction-neutral swap (`__builtin_bswap32`
-//! and friends) corroborates nothing: only the network-order family
-//! (`ntohl`/`ntohs`/`htons`/`htonl`) says the bytes arrive off a wire.
+//! The honesty gates are the point. A protocol magic on its own stays a
+//! plain magic finding: a bare signature check never claims a whole
+//! protocol. A file-format magic combined with swaps stays a magic
+//! finding too: a PNG decoder is never mislabeled as a network protocol
+//! handler. And a direction-neutral swap (`__builtin_bswap32` and
+//! friends) corroborates nothing: only the network-order family
+//! (`ntohl`/`ntohs`/`htons`/`htonl`) says the bytes arrive over a wire.
 //! One function yields at most one protocol message finding, however
 //! many protocol magics its body compares against.
 
@@ -37,14 +37,14 @@ use crate::types::{ByteSwapOperation, CrossFieldValidation, MagicFormat, Protoco
 /// Promotes one function's corroborated protocol sniff to one
 /// protocol message finding.
 ///
-/// The combiner owns no configuration — the signature table it reads
-/// is the scan's, and the honesty rules are fixed — so it carries no
-/// state and serves the whole scan. [`identify`](Self::identify) is
-/// handed the magic, swap, and validation records the scan just made
-/// for one function (and the configured signature table, for the
-/// protocol flag alone) and answers with the identified
-/// [`ProtocolMessage`], or `None` when the function carries no
-/// protocol magic or no corroborating reading.
+/// The combiner owns no configuration: the signature table it reads
+/// is the scan's, and the honesty rules are fixed. So it holds no
+/// state and can serve the whole scan. [`identify`](Self::identify)
+/// takes the magic, swap, and validation records the scan just made
+/// for one function, plus the configured signature table (used for
+/// the protocol flag alone). It returns the identified
+/// [`ProtocolMessage`], or `None` when the function has no protocol
+/// magic or no corroborating reading.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProtocolMessageCombiner;
 
@@ -54,17 +54,18 @@ impl ProtocolMessageCombiner {
         ProtocolMessageCombiner
     }
 
-    /// The protocol message handler one function's findings add up
-    /// to.
+    /// The protocol message handler that one function's findings add
+    /// up to.
     ///
     /// The first magic record whose value matches a
     /// [`protocol`](MagicSignature::protocol)-flagged entry of
-    /// `signatures` names the protocol; the corroborating readings are
-    /// the function's network-order swaps and cross-field validations,
-    /// each listed in the order the scan collected them. With no
-    /// protocol magic, or with a protocol magic nothing corroborates,
-    /// the function claims nothing and answers `None` — the sniff
-    /// stays the plain magic finding the scan already made.
+    /// `signatures` identifies the protocol. The corroborating
+    /// readings are the function's network-order swaps and
+    /// cross-field validations, each listed in the order the scan
+    /// collected them. With no protocol magic, or with a protocol
+    /// magic nothing corroborates, the function claims nothing and
+    /// this returns `None`. The sniff stays the plain magic finding
+    /// the scan already made.
     pub fn identify(
         &self,
         signatures: &[MagicSignature],
@@ -73,28 +74,28 @@ impl ProtocolMessageCombiner {
         validations: &[CrossFieldValidation],
     ) -> Option<ProtocolMessage> {
         // A protocol magic only counts when the configured table
-        // flags it as one: a custom table's entry is a file format
-        // unless it was built through the protocol constructor, and a
-        // value outside the table is just a number.
+        // flags it as one. An entry in a custom table is a file
+        // format unless it was built through the protocol
+        // constructor. A value outside the table is just a number.
         let hit = magic.iter().find(|record| {
             signatures
                 .iter()
                 .any(|signature| signature.protocol && signature.magic == record.magic)
         })?;
 
-        // The hit must be spelled in hex on its evidence line. A
-        // protocol magic is also an ordinary number — IPv4's 0x800 is
-        // 2048, a plausible buffer size — and a decimal comparison to
-        // it is constant territory, not a wire sniff: the same honesty
-        // line the validation detector draws at its own
-        // literal-vs-variable comparisons. Only the hex spelling marks
-        // a handler reading a wire value.
+        // The hit must appear spelled in hex on its evidence line.
+        // A protocol magic is also an ordinary number: IPv4's 0x800
+        // is 2048, a plausible buffer size. A comparison spelled in
+        // decimal is a plain constant, not a wire sniff. This is the
+        // same honesty rule the validation detector applies to its
+        // own literal-vs-variable comparisons. Only the hex spelling
+        // marks a handler reading a wire value.
         if !hit.evidence.contains(&format!("{:#x}", hit.magic)) {
             return None;
         }
 
         // The corroborators are the readings a message handler makes
-        // beside its sniff: network-order swaps move wire bytes, and
+        // beside its sniff. Network-order swaps move wire bytes, and
         // cross-field validations check the message's integrity. A
         // direction-neutral swap reverses bytes for any reason and
         // claims no wire, so it never corroborates.
@@ -111,9 +112,10 @@ impl ProtocolMessageCombiner {
             evidence_lines.push(&validation.evidence);
         }
         if corroborations.is_empty() {
-            // A protocol magic alone is a sniff, not a handler: the
+            // A protocol magic alone is a sniff, not a handler. The
             // promotion needs at least one independent reading beside
-            // it, and until then the magic finding says all there is.
+            // it. Until then, the magic finding says all there is to
+            // say.
             return None;
         }
 
@@ -136,11 +138,11 @@ impl ProtocolMessageCombiner {
 // The reading
 // ============================================================
 
-/// Confidence of an identified protocol message handler: the sniff is
-/// corroborated by at least one independent reading, so it ranks above
-/// the lone-magic floor (80) — a signature check plus a network-order
-/// swap or an integrity check is stronger evidence than either
-/// signal alone.
+/// The evidence confidence of an identified protocol message handler.
+/// The sniff has at least one independent corroborating reading, so
+/// it ranks above the lone-magic floor (80): a signature check plus a
+/// network-order swap or an integrity check is stronger evidence than
+/// either signal alone.
 const PROTOCOL_CONFIDENCE: u8 = 85;
 
 // ============================================================
@@ -235,7 +237,7 @@ mod tests {
     #[test]
     fn a_protocol_magic_alone_claims_nothing() {
         // The bare sniff stays the plain magic finding the scan
-        // already made; nothing promotes on one signal.
+        // already made. Nothing promotes on one signal alone.
         assert!(
             identify(&signatures(), &[magic(0x86DD, "IPv6")], &[], &[]).is_none(),
             "a protocol magic alone never names a handler"
@@ -244,9 +246,9 @@ mod tests {
 
     #[test]
     fn a_file_format_magic_with_swaps_claims_nothing() {
-        // A PNG decoder is never mislabeled: the file-format section
-        // of the table never feeds the promotion, however many swaps
-        // the function carries.
+        // A PNG decoder is never mislabeled. The table's file-format
+        // section never takes part in a promotion, however many
+        // swaps the function has.
         assert!(
             identify(
                 &signatures(),
@@ -261,8 +263,8 @@ mod tests {
 
     #[test]
     fn a_direction_neutral_swap_corroborates_nothing() {
-        // `__builtin_bswap32` reverses bytes for any reason — a
-        // codec, a hash — and claims no wire, so it never stands as
+        // `__builtin_bswap32` reverses bytes for any reason, such as
+        // a codec or a hash. It claims no wire, so it can never be
         // the corroborating reading beside a protocol sniff.
         assert!(
             identify(
@@ -278,9 +280,9 @@ mod tests {
 
     #[test]
     fn a_magic_outside_the_table_corroborates_nothing() {
-        // A hand-built finding set naming a value the configured
-        // table's protocol section does not carry claims no protocol,
-        // even beside a network-order swap.
+        // The hand-built finding set names a value the configured
+        // table's protocol section does not include. Even beside a
+        // network-order swap, it claims no protocol.
         assert!(
             identify(
                 &signatures(),
@@ -295,10 +297,10 @@ mod tests {
 
     #[test]
     fn a_decimal_spelled_hit_never_promotes() {
-        // A protocol magic is also an ordinary number: IPv4's 0x800 is
-        // 2048, a plausible buffer size. A comparison spelled in
-        // decimal is constant territory, not a wire sniff, however
-        // many network-order swaps the function carries beside it.
+        // A protocol magic is also an ordinary number: IPv4's 0x800
+        // is 2048, a plausible buffer size. A comparison spelled in
+        // decimal is a plain constant, not a wire sniff, however many
+        // network-order swaps the function has beside it.
         let sniff = MagicFormat {
             evidence: "if (local_18 == 2048) {".into(),
             ..magic(0x0800, "IPv4")
@@ -322,8 +324,8 @@ mod tests {
     #[test]
     fn one_function_yields_exactly_one_finding_naming_the_first_protocol() {
         // Two protocol magics and two swaps in one function still
-        // compose one handler claim, naming the first magic in scan
-        // order.
+        // compose one handler claim. The claim names the first magic
+        // in scan order.
         let record = identify(
             &[
                 MagicSignature::protocol("IPv4", 0x0800, "ipv4 header decode"),
@@ -370,8 +372,8 @@ mod tests {
 
     #[test]
     fn the_evidence_carries_the_magic_line_and_the_corroborating_lines() {
-        // The identification is auditable: every contributing
-        // finding's own evidence line rides the record.
+        // The identification is auditable: the record includes the
+        // evidence line of every contributing finding.
         let record = identify(
             &signatures(),
             &[magic(0x86DD, "IPv6")],

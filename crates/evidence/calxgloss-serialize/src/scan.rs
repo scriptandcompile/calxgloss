@@ -1,10 +1,11 @@
-//! Tiny hand-written C++ scanners shared by the detectors.
+//! Small hand-written C++ parsers shared by the detectors.
 //!
-//! The decompiler output these detectors read is line-oriented and simple
-//! enough that regexes buy nothing — and the coding standards bar the
-//! `Regex::new(...).expect(...)` idiom in library code (docs/standards.md).
-//! Same reasoning as `byteswap.rs`'s `direct_calls`, extended to integer
-//! literals for the bitpack and magic detectors.
+//! The decompiler output these detectors read is line-based and simple,
+//! so regular expressions add nothing. The coding standards also forbid
+//! the `Regex::new(...).expect(...)` idiom in library code
+//! (docs/standards.md). These use the same approach as `direct_calls`
+//! in `byteswap.rs`, extended to integer literals for the bitpack and
+//! magic detectors.
 
 /// Parse an unsigned integer literal: `0x1F` (hex) or `31` (decimal).
 pub(crate) fn parse_uint(s: &str) -> Option<u64> {
@@ -116,8 +117,9 @@ mod tests {
 
     #[test]
     fn literal_lookups_at_or_past_line_end_are_none() {
-        // Regression: a decompiler line ending in whitespace walked
-        // literal_after_ws to line.len(), and literal_at indexed past it.
+        // Regression: when a decompiler line ended in whitespace,
+        // literal_after_ws advanced to line.len(), and literal_at then
+        // read one index past it.
         let line = chars("uint uVar1,                         ");
         assert_eq!(literal_after_ws(&line, 4), None);
         assert_eq!(literal_at(&line, line.len()), None);
