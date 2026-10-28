@@ -1,40 +1,43 @@
-//! Calling-convention detection off the machine listing: the Microsoft
+//! Calling-convention detection from the machine listing: the Microsoft
 //! x64 shape channels.
 //!
-//! Where [`crate::stack_discipline`] reads the 32-bit stack discipline
-//! an `esp`-spelled listing spells, this detector reads the 64-bit call
-//! shape an `rsp`-spelled one spells. A function whose listing shows
+//! [`crate::stack_discipline`] reads the 32-bit stack discipline an
+//! `esp`-spelled listing spells. This detector reads the 64-bit call
+//! shape an `rsp`-spelled one spells. A function's reading needs all
+//! three of these features in its listing:
 //!
 //! - **shadow-space allocation in its prologue** — Microsoft x64
 //!   reserves a 32-byte home region for the four register arguments, so
-//!   a `sub rsp, N` before the first call with `N` at least
-//!   [`SHADOW_SPACE_BYTES`] states the frame the convention demands;
+//!   a `sub rsp, N` before the first call, with `N` at least
+//!   `SHADOW_SPACE_BYTES`, states the frame the convention demands;
 //! - **register-first arguments** — the listing spells one of the four
-//!   argument registers ([`ARGUMENT_REGISTERS`]), which is what the home
-//!   region exists to home;
+//!   argument registers (`ARGUMENT_REGISTERS`), the values the home
+//!   region stores;
 //! - **no callee or caller stack cleanup** — no `ret N` anywhere, and no
 //!   `add rsp, N` right after a call whose count fails to free the
-//!   prologue's own allocation: the convention leaves the stack to the
-//!   frame, so any real cleanup contradicts the reading;
+//!   prologue's own allocation. The convention frees stack space in the
+//!   frame rather than after calls, so any real cleanup contradicts the
+//!   reading.
 //!
-//! reads [`CallingConvention::MicrosoftX64`] at the shape-only band
-//! ([`X64_SHAPE_CONFIDENCE`]), keyed by the function whose listing it is
-//! and evidenced by the prologue line that allocates the shadow space.
-//! The reading is what stops the translator from inventing stack-cleanup
-//! logic for a 64-bit function.
+//! When all three hold, the function reads
+//! [`CallingConvention::MicrosoftX64`] at the shape-only band
+//! (`X64_SHAPE_CONFIDENCE`). The record is keyed by the function whose
+//! listing it is, and its evidence is the prologue line that allocates
+//! the shadow space. This reading is what stops the translator from
+//! inventing stack-cleanup logic for a 64-bit function.
 //!
 //! A shape is never a spelling: no feature names the convention
 //! outright, so the reading sits below every exact channel and nothing
 //! self-upgrades — the cross-function corroboration pass (issue #249)
-//! is what raises it above this tier. Any feature missing, and any
+//! is what raises it above this band. Any feature missing, and any
 //! contradicted feature, yields no reading rather than a guess about
-//! which convention the function carries.
+//! which convention the function uses.
 //!
 //! The family keys on the stack register spelled in the listing itself,
-//! riding the same machine-class dispatch as the 32-bit family: the
+//! through the same machine-class dispatch as the 32-bit family. The
 //! [`crate::stack_discipline`] entry point routes an `rsp`-spelled
 //! listing here and an `esp`-spelled one to the x86 channels, so the two
-//! families never cross-fire — a 32-bit rule never reads a 64-bit
+//! families never cross-fire: a 32-bit rule never reads a 64-bit
 //! function and this family never reads a 32-bit one.
 
 use crate::convention::convention_record;
@@ -43,13 +46,13 @@ use crate::stack_discipline::{
 };
 use crate::types::{CallingConvention, InferenceMethod, InferredType};
 
-/// Confidence of the shape-only band: the three features corroborate one
-/// another within one body, but a shape is never a spelling — none of
-/// them names the convention outright — so this is the most modest of
-/// the listing-borne readings, sitting below the caller-cleanup band
-/// (70) and every exact channel. Nothing self-upgrades; the
-/// cross-function corroboration pass (issue #249) is what raises a
-/// reading above this tier.
+/// Evidence confidence of the shape-only band. The three features
+/// corroborate one another within one body, but a shape is never a
+/// spelling — none of them names the convention outright — so this is
+/// the most modest of the listing-borne readings, sitting below the
+/// caller-cleanup band (70) and every exact channel. Nothing
+/// self-upgrades; the cross-function corroboration pass (issue #249)
+/// is what raises a reading above this band.
 const X64_SHAPE_CONFIDENCE: u8 = 65;
 
 /// The shadow space Microsoft x64 reserves for the four register
@@ -60,7 +63,7 @@ const X64_SHAPE_CONFIDENCE: u8 = 65;
 /// is at-least, not equal.
 const SHADOW_SPACE_BYTES: u64 = 0x20;
 
-/// The registers Microsoft x64 calls its first four integer arguments
+/// The registers Microsoft x64 passes its first four integer arguments
 /// in. A listing that spells none of them shows no register argument
 /// being homed or used, and the home region alone — a `sub rsp, 0x28`
 /// on a void function with a large frame — is not enough to read the
@@ -68,7 +71,7 @@ const SHADOW_SPACE_BYTES: u64 = 0x20;
 const ARGUMENT_REGISTERS: &[&str] = &["rcx", "rdx", "r8", "r9"];
 
 /// The prologue's shadow-space allocation: the first `sub rsp, N`
-/// before the first call subtracting at least the home region — the
+/// before the first call that subtracts at least the home region — the
 /// frame Microsoft x64 demands. A `sub rsp` after the first call is
 /// mid-body frame bookkeeping, not a prologue. Returns the row itself,
 /// which is the reading's evidence, with the byte count it subtracts.
@@ -99,14 +102,14 @@ pub(crate) fn shadow_space<'a>(rows: &[&'a str]) -> Option<(&'a str, u64)> {
     })
 }
 
-/// Whether the listing spells a cleanup the convention never leaves
-/// behind: a `ret N` with a positive count — the callee popping its own
-/// arguments, a discipline Microsoft x64 never spells — or an
-/// `add rsp, N` in the instruction right after a call whose count does
-/// not free the prologue's own allocation. An add that frees exactly
-/// what the prologue subtracted is the frame teardown the convention
-/// itself emits before a bare `ret`, and an add anywhere else is
-/// bookkeeping; neither contradicts the shape.
+/// Whether the listing spells a cleanup this convention never leaves
+/// behind: either a `ret N` with a positive count, or an `add rsp, N`
+/// in the instruction right after a call whose count does not free the
+/// prologue's own allocation. A `ret N` states the callee popping its
+/// own arguments — a discipline Microsoft x64 never spells. An add that
+/// frees exactly what the prologue subtracted is the frame teardown the
+/// convention itself emits before a bare `ret`; an add anywhere else is
+/// bookkeeping. Neither contradicts the shape.
 fn spells_cleanup(rows: &[&str], prologue_bytes: u64) -> bool {
     for row in rows {
         let (mnemonic, operand_text) = split_instruction(instruction(row));
@@ -147,9 +150,10 @@ fn spells_cleanup(rows: &[&str], prologue_bytes: u64) -> bool {
 ///
 /// The detector is stateless: every reading comes from the listing text
 /// it is handed, so one detector serves an entire scan. It fetches
-/// nothing itself — the engine's single listing read reaches it through
-/// the machine-class dispatch in [`crate::stack_discipline`], which
-/// routes only `rsp`-spelled listings here.
+/// nothing itself. The scan reads each machine listing once, and that
+/// listing reaches this detector through the machine-class dispatch in
+/// [`crate::stack_discipline`], which routes only `rsp`-spelled
+/// listings here.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct X64ShapeDetector;
 
@@ -159,13 +163,14 @@ impl X64ShapeDetector {
         Self
     }
 
-    /// The Microsoft-x64 reading one function's machine listing carries,
-    /// keyed by the function whose listing it is and evidenced by the
-    /// prologue line that allocates the shadow space.
+    /// The Microsoft-x64 reading taken from one function's machine
+    /// listing. The record is keyed by the function whose listing it is,
+    /// and its evidence is the prologue line that allocates the shadow
+    /// space.
     ///
-    /// The reading needs all three shape features — the shadow-space
+    /// The reading needs all three shape features: the shadow-space
     /// prologue, an argument register spelled in the listing, and no
-    /// cleanup anywhere the convention never leaves one — and yields
+    /// cleanup — the convention never leaves one behind. It yields
     /// nothing when any feature is missing or contradicted. An empty
     /// listing yields nothing.
     pub fn from_listing(&self, function: &str, listing: &str) -> Vec<InferredType> {
@@ -214,12 +219,12 @@ mod tests {
         }
     }
 
-    /// A canned `rsp`-spelled x64 function showing the whole shape: the
-    /// prologue subtracts `0x28` — the 32-byte home region rounded to
-    /// the mandatory alignment — the callee homes its register
-    /// arguments into it, and the `add rsp, 0x28` right before the bare
-    /// `ret` frees exactly what the prologue took: the frame teardown
-    /// the convention itself emits, not a cleanup. Rows carry the
+    /// A canned `rsp`-spelled x64 function showing the whole shape. The
+    /// prologue subtracts `0x28`: the 32-byte home region rounded up to
+    /// the mandatory alignment. The callee homes its register arguments
+    /// into it. The `add rsp, 0x28` right before the bare `ret` frees
+    /// exactly what the prologue took — the frame teardown the
+    /// convention itself emits, not a cleanup. The rows use the analysis
     /// engine's own spelling: an address column, then uppercase SLEIGH
     /// mnemonics with `0x` hex operands.
     fn shape_listing() -> String {
@@ -256,7 +261,7 @@ mod tests {
     fn a_shadow_space_prologue_with_register_arguments_reads_microsoft_x64() {
         // All three features hold: the prologue allocates the home
         // region, the listing spells the argument registers, and no
-        // cleanup stands anywhere — the function reads Microsoft x64 at
+        // cleanup stands anywhere. The function reads Microsoft x64 at
         // the shape-only band, with the prologue line as the evidence.
         let readings = X64ShapeDetector::new().from_listing("FUN_18003e750", &shape_listing());
         assert_eq!(readings.len(), 1);
@@ -305,7 +310,7 @@ mod tests {
 
     #[test]
     fn a_sub_rsp_after_the_first_call_is_no_prologue_shape() {
-        // The allocation has to ride the prologue — the region before
+        // The allocation has to be in the prologue — the region before
         // the first call, where a compiler emits the frame setup. A
         // `sub rsp, 0x28` in the middle of the body is dynamic frame
         // bookkeeping, not the convention's home region.
@@ -359,8 +364,8 @@ mod tests {
     fn a_caller_cleanup_after_a_call_contradicts_the_shape() {
         // An `add rsp, 0x20` right after a call frees a different count
         // than the prologue took: that is a caller popping arguments,
-        // the cleanup the convention leaves to the frame — the shape is
-        // contradicted and yields no reading.
+        // the cleanup the convention leaves to the frame instead. The
+        // shape is contradicted and yields no reading.
         let listing = "140001000  SUB RSP, 0x28\n\
                        140001007  MOV RCX, RDX\n\
                        14000100a  CALL FUN_1800412a0\n\

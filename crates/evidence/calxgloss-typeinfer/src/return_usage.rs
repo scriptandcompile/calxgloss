@@ -15,12 +15,12 @@
 //!   says the result is a pointer, though not to what.
 //!
 //! The evidence is the caller's line, so the record is the return kind
-//! the vocabulary gains for exactly this reading — [`InferredReturnType`]
-//! at [`RETURN_USAGE_CONFIDENCE`], keyed by the function whose return it
-//! reads. Every call site contributes its candidate and the scan's
+//! the vocabulary has for exactly this reading — [`InferredReturnType`]
+//! at `RETURN_USAGE_CONFIDENCE`, keyed by the function whose return it
+//! reads. Every call site contributes its candidate, and the scan's
 //! conflict resolution keeps the strongest, first-seen one, so one
 //! function never shows two return types. The detector fetches nothing
-//! itself: the engine hands it the caller bodies the caller→callee pass
+//! itself: the scan hands it the caller bodies the caller→callee pass
 //! already fetched, keeping the scan at one decompile per function.
 //!
 //! [`KnownTypePropagationEngine::match_signature`]: crate::known_type::KnownTypePropagationEngine::match_signature
@@ -38,10 +38,11 @@ use calxgloss_types::{
     skip_string, skip_ws,
 };
 
-/// The scan: plain-identifier callees, member accesses skipped, and C
-/// keywords — `if (x)` — not calls. The same shape the cross-function
-/// pass uses: this pass reads the same direct-call sites, just for the
-/// *use* of the value rather than the value of the arguments.
+/// How the pseudo-C call scan reads: plain-identifier callees, member
+/// accesses skipped, and C keywords — `if (x)` — not calls. The same
+/// shape the cross-function pass uses: this pass reads the same direct
+/// call sites, just for the *use* of the value rather than the value of
+/// the arguments.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>",
@@ -54,27 +55,28 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
 
-/// Confidence of a return reading inferred from caller usage: the usage
-/// is concrete — this call, this expression — but the type is only as
-/// good as the reading behind the usage shape (an inferred local, a
-/// library contract, or the bare fact of a dereference), so it sits at
-/// the bottom of the ladder with the assignment-chain family, below
-/// every inline and known-signature reading.
+/// Evidence confidence of a return reading inferred from caller usage.
+/// The usage is concrete — this call, this expression — but the type is
+/// only as good as the reading behind the usage shape: an inferred
+/// local, a library contract, or the bare fact of a dereference. The
+/// reading therefore sits at the bottom of the confidence ladder, level
+/// with the assignment-chain family, below every inline and
+/// known-signature reading.
 const RETURN_USAGE_CONFIDENCE: u8 = 60;
 
-/// The surviving local readings of a scan, grouped by the function
-/// carrying them and keyed by decompiled name — the types an assignment
-/// of the return value can be read against. A function or a name absent
-/// from the map was never typed and lends nothing.
+/// The surviving local readings of a scan, grouped by the function they
+/// belong to and keyed by decompiled name. These are the types an
+/// assignment of the return value can be read against. A function or a
+/// name absent from the map was never typed and lends nothing.
 pub type LocalReadings<'a> = HashMap<&'a str, HashMap<&'a str, &'a str>>;
 
 /// Return-type inference over one function's callers.
 ///
 /// The detector is stateless: every reading comes from the caller bodies
 /// and the surviving local readings it is handed, so one detector serves
-/// an entire scan. It fetches nothing itself — the engine hands it the
-/// same [`DecompiledFunction`] values the caller→callee pass already
-/// fetched, keeping the scan at one decompile per function.
+/// an entire scan. It fetches nothing itself: the scan hands it the same
+/// [`DecompiledFunction`] values the caller→callee pass already fetched,
+/// keeping the scan at one decompile per function.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReturnUsageDetector {
     known: KnownTypePropagationEngine,
@@ -93,7 +95,7 @@ impl ReturnUsageDetector {
     /// The return records `callers` produce for `callee`, in caller
     /// order and, within one caller, call-site order: one
     /// [`InferredType::Return`] per call site whose use of the value
-    /// carries a reading, keyed by the callee's name with the caller's
+    /// gives a reading, keyed by the callee's name, with the caller's
     /// line as evidence.
     ///
     /// A call site contributes only when the returned value sits in a
@@ -103,8 +105,8 @@ impl ReturnUsageDetector {
     /// pointer, pointee unknown). A bare statement call, a comparison,
     /// an assignment to an untyped or non-local target, a call nested
     /// in a callee the database does not know, and a multiplication say
-    /// nothing, and the callee's own body is never read — a function
-    /// returns what its callers take it to return.
+    /// nothing. The callee's own body is never read: a function returns
+    /// what its callers take it to return.
     ///
     /// Where several callers read the return differently, every reading
     /// is emitted and the scan's conflict resolution keeps the
@@ -139,7 +141,7 @@ impl ReturnUsageDetector {
     /// The caller's own reading of a local the result is assigned to:
     /// `local_8 = FUN_x();` where `local_8` stands typed in this
     /// caller. The assignment must be plain (not `==`, not `+=`), the
-    /// target a bare identifier, and the call the whole source — a cast
+    /// target a bare identifier, and the call the whole source. A cast
     /// around it (`(char *)FUN_x()`) names a type the scan does not
     /// read here, and an untyped or non-local target says nothing.
     fn assigned_local_type(
@@ -156,9 +158,9 @@ impl ReturnUsageDetector {
     /// The contract reading at the position of a known-signature call
     /// the result is passed into: `strlen(FUN_x());` reads the result as
     /// `strlen` reads its first argument. Only the *innermost* enclosing
-    /// call counts — the one the result is a direct argument of — the
+    /// call counts — the one the result is a direct argument of. The
     /// call must be the whole argument (a cast or expression around it
-    /// names no value the contract reads), and an enclosing callee the
+    /// names no value the contract reads). An enclosing callee the
     /// database does not know, or a position the contract does not read,
     /// says nothing.
     fn known_position_type(
@@ -390,8 +392,9 @@ mod tests {
 
     #[test]
     fn a_result_assigned_to_an_untyped_local_types_nothing() {
-        // The name carries no surviving reading in this caller, and a
-        // reading under another function's name never lends across.
+        // The name has no surviving reading in this caller, and a
+        // reading stored under another function's name never applies
+        // to this one.
         let records = returned(
             "  local_8 = FUN_180051c00();\n",
             &local_readings(&[("FUN_18003ab00", "local_10", "char *")]),
