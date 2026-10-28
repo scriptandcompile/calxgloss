@@ -1,36 +1,37 @@
-//! Human review actions wired into Git and Translator operations.
+//! Human review actions, backed by real Git and Translator operations.
 //!
-//! This module provides the backend machinery that turns a reviewer's
-//! accept / send-back / patch action in the web UI into real Git
-//! operations and (for patches) queued retry translations.
+//! This module turns a reviewer's accept / send-back / patch action in
+//! the web UI into real Git operations and, for patch requests, queued
+//! retry translations.
 //!
 //! # Actions
 //!
 //! | Action | Git operation | Translator operation |
 //! |--------|--------------|---------------------|
 //! | Accept | `accept_branch` — merge to main, write `re/accepts/` record | none |
-//! | Send-back | `reject_branch` — write `re/rejections/` record | none (LLM is told via rejection file) |
+//! | Send-back | `reject_branch` — write `re/rejections/` record | none (the LLM learns it from the rejection file) |
 //! | Patch | `next_attempt_branch` — create v{N+1} branch, write `re/patches/` record | enqueue retry translation for the new branch |
 //!
 //! Patch requests are idempotent while a retry is in flight: a second request
 //! for a unit whose next attempt already has a patch request returns the
 //! existing one instead of starting a second retry (issue #84).
 //!
-//! Actions on the same unit never silently disagree with git: each action
-//! captures the unit's persisted action state at start and re-checks it before
-//! writing its own record, so a racing action fails with a conflict error
-//! instead of overwriting a newer record, and send-back/patch on an
-//! already-accepted unit are refused (issue #86).
+//! Actions on the same unit never silently disagree with git. Each action
+//! captures the unit's persisted action state at start and re-checks it
+//! before writing its own record: a racing action fails with a conflict
+//! error instead of overwriting a newer record. Send-back and patch are
+//! refused on an already-accepted unit (issue #86).
 //!
 //! The patch-retry pass is assembled per request through the translator's
-//! assembly seam (issue #327): `serve`/`live` fold their resolved settings
-//! into a [`calxgloss_translator::assembly::PipelineSpec`], the request layers
-//! the unit's binary and patch mode on, and `assemble_patch` builds the whole
-//! pass — LLM client from the description's LLM selection (no environment
-//! reads, no inline fallback chain), engine load under the configured Kuna
-//! budgets, retry config from the description's policy. A server started
-//! without LLM settings fails a patch request with the seam's assembly error,
-//! before any branch or record exists.
+//! assembly seam (issue #327). `serve`/`live` fold their resolved settings
+//! into a [`calxgloss_translator::assembly::PipelineSpec`]; the request adds
+//! this unit's binary and patch mode; `assemble_patch` then builds the whole
+//! pass — its LLM client from the description's LLM selection (no
+//! environment reads, no inline fallback chain), its analysis engine load
+//! under the configured Kuna budgets, its retry config from the
+//! description's policy. A server started without LLM settings fails a
+//! patch request with the seam's assembly error, before any branch or
+//! record exists.
 
 use calxgloss_git::{GitManager, ShimDependencyMap};
 use calxgloss_translator::assembly::{AssembledPass, BinaryTarget, PipelineSpec, assemble_patch};
@@ -61,22 +62,23 @@ pub struct ActionsState {
     /// the Kuna engine from `target_dir/<binary>`. `None` means retries
     /// refuse by name rather than guessing a path.
     target_dir: Option<PathBuf>,
-    /// The server's pass description (issue #327): folded once from the
-    /// resolved settings `serve`/`live` started with, and layered per patch
-    /// request (patch mode, this unit's binary under the target dir, the
-    /// repo as workspace) before `assemble_patch` builds the retry pass.
-    /// LLM selection, Kuna budgets, retry policy and every other knob the
-    /// fold carries arrive through the description — the handler stopped
-    /// reading environment variables and hand-defaulting `RetryConfig` the
-    /// moment the description became the source. A server started without
-    /// LLM settings holds a description with no LLM selection, and its
-    /// patch requests fail with the seam's assembly error at request time.
+    /// The server's pass description (issue #327). `serve`/`live` folded
+    /// it once from the resolved settings they started with. Each patch
+    /// request adds the run-scoped fields (patch mode, this unit's binary
+    /// under the target dir, the repo as workspace) before `assemble_patch`
+    /// builds the retry pass. The LLM selection, Kuna budgets, retry policy
+    /// and everything else the fold composes arrive through this
+    /// description — the description is the source, so the handler reads no
+    /// environment variables and fills in no default `RetryConfig` by hand.
+    /// A server started without LLM settings holds a description with no
+    /// LLM selection, and its patch requests fail with the seam's assembly
+    /// error at request time.
     pass_spec: PipelineSpec,
 }
 
 impl ActionsState {
-    /// Wire an actions backend over `repo_path`, with the pass description
-    /// the server's resolved settings folded into (issue #327) — the same
+    /// Build the actions backend for `repo_path`, with the pass description
+    /// folded from the server's resolved settings (issue #327) — the same
     /// `pipeline_spec` fold the CLI commands run their passes through.
     pub fn new(repo_path: PathBuf, pass_spec: PipelineSpec) -> Self {
         Self {
@@ -88,7 +90,7 @@ impl ActionsState {
     }
 
     /// Set the directory the target binaries live in, so patch retries
-    /// can load the Kuna engine over `target_dir/<binary>`.
+    /// can load the Kuna engine from `target_dir/<binary>`.
     pub fn with_target_dir(mut self, target_dir: impl Into<PathBuf>) -> Self {
         self.target_dir = Some(target_dir.into());
         self
@@ -99,17 +101,18 @@ impl ActionsState {
         &self.repo_path
     }
 
-    /// Where the target binaries live, for engine loads in patch retries.
+    /// Where the target binaries live, for analysis engine loads in
+    /// patch retries.
     pub fn target_dir(&self) -> Option<&Path> {
         self.target_dir.as_deref()
     }
 
     /// The description one patch request runs (issue #327): the server's
-    /// folded description with the run-scoped fields layered on — patch
-    /// mode, this unit's binary resolved under the server's target dir,
-    /// and the repo as the workspace (a patch retry writes into the
-    /// server's repo, whatever the settings record's own workspace says).
-    /// Pure data — the assembly that turns it into a pass is the request's.
+    /// folded description plus the run-scoped fields — patch mode, this
+    /// unit's binary resolved under the server's target dir, and the repo
+    /// as the workspace. A patch retry writes into the server's repo,
+    /// whatever workspace the settings record names. The result is pure
+    /// data; each request does the assembly that turns it into a pass.
     fn patch_pass_spec(&self, binary: &str) -> Result<PipelineSpec, anyhow::Error> {
         // Kuna is the only analysis engine (issue #214): the scan source is
         // loaded in-process from the target file, so a retry needs the target
@@ -163,7 +166,7 @@ pub struct ReviewActionRecord {
 
 /// Path of the persisted action record for a unit.
 ///
-/// `unit_id` carries slashes (`{binary}/{function}/v{attempt}`), so the
+/// `unit_id` includes slashes (`{binary}/{function}/v{attempt}`), so the
 /// joined path nests under the actions dir rather than being one flat file.
 fn action_record_path(repo_path: &Path, unit_id: &str) -> PathBuf {
     repo_path
@@ -359,7 +362,7 @@ pub async fn accept_unit(
 
 /// Send back a unit of work: write rejection record and persist the action.
 ///
-/// Rejected when the unit is already accepted — its code is merged to main
+/// Refused when the unit is already accepted: its code is merged to main
 /// and there is no un-merge path (issue #86). A different action landing
 /// between this action's start and its record write also fails it with a
 /// conflict error naming the current state, instead of letting the last
@@ -409,15 +412,15 @@ pub async fn send_back_unit(
     })
 }
 
-/// Request a patch: create the next-attempt branch, persist action, and
-/// kick off an async retry translation via the translator pipeline.
+/// Request a patch: create the next-attempt branch, persist the action,
+/// and start an async retry translation through the translator pipeline.
 ///
 /// Idempotent while a retry is in flight (issue #84): if the unit's persisted
 /// action record already records a patch request for the next attempt, the
 /// existing request is returned (`action: "patch_already_in_progress"`) —
 /// no second branch, record, or racing retry task is created.
 ///
-/// Rejected when the unit is already accepted — the code is merged to main
+/// Refused when the unit is already accepted: the code is merged to main
 /// and there is no un-merge path (issue #86). As with the other actions, a
 /// different action landing between this request's start and its record
 /// write fails it with a conflict error instead of overwriting the record.
@@ -489,14 +492,15 @@ async fn request_patch_spawning(
     }
 
     // Assemble the retry pass before anything is created (issue #327): the
-    // server's folded description layered with this unit's binary, then the
-    // seam builds the whole pass — LLM client from the description's LLM
-    // selection (no environment reads, no inline fallback chain), engine
-    // load under the description's Kuna budgets, retry config from the
-    // description's policy. An unbuildable pass — a server started without
-    // LLM settings, an unreadable binary — fails the request HERE, at
-    // patch-request time, so the reviewer sees the assembly error and no
-    // half-configured retry exists: no branch, no record, no racing task.
+    // server's folded description plus this unit's binary, then the seam
+    // builds the whole pass — its LLM client from the description's LLM
+    // selection (no environment reads, no inline fallback chain), its
+    // analysis engine load under the description's Kuna budgets, its retry
+    // config from the description's policy. An unbuildable pass — a server
+    // started without LLM settings, or an unreadable binary — fails the
+    // request HERE, at patch-request time, so the reviewer sees the
+    // assembly error and no half-configured retry exists: no branch, no
+    // record, no racing task.
     let spec = state.patch_pass_spec(&unit.binary)?;
     let pass = assemble_patch(&spec).await.map_err(|e| {
         anyhow::anyhow!("patch retry for {unit_id} could not assemble its pass: {e}")
@@ -564,10 +568,10 @@ async fn request_patch_spawning(
     };
     persist_action_state(state.repo_path(), &record)?;
 
-    // Kick off async retry translation in the background.
+    // Start the async retry translation in the background.
     // We can't hold git2 objects across await points (they're not Send),
     // so we pass only the data the closure needs and let it open its own GitManager.
-    // The assembled pass (issue #327) rides into the task: everything the
+    // The assembled pass (issue #327) is handed to the task: everything the
     // retry translates with was already built from the description above.
     let repo_path = state.repo_path().to_path_buf();
     let issue_str = issue.to_string();
@@ -600,10 +604,10 @@ async fn request_patch_spawning(
 
 /// Run a full retry translation for a patch request.
 ///
-/// The pass to retry with was assembled by the request itself, from the
-/// server's pass description (issue #327) — pipeline, verifier, and retry
-/// config all arrive on [`AssembledPass`]. This function only drives the
-/// git branch dance around the retry loop and records the outcome.
+/// The request assembled this retry's pass itself, from the server's pass
+/// description (issue #327): pipeline, verifier, and retry config all
+/// arrive on [`AssembledPass`]. This function only handles the git branch
+/// switching around the retry loop and records the outcome.
 async fn run_patch_retry(
     pass: AssembledPass,
     repo_path: &Path,
@@ -686,7 +690,7 @@ async fn run_patch_retry(
 
         // Determine the source file name (e.g., game_logic.rs for game_logic.dll).
         // Stem derivation is naming, not identity (issue #68): strip whatever
-        // extension the binary carries (.binary, .exe, …).
+        // extension the binary has (.binary, .exe, …).
         let src_file_name = std::path::Path::new(binary)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -833,7 +837,7 @@ mod tests {
         PipelineSpec::default()
     }
 
-    /// A description carrying an LLM selection pointed at a port where
+    /// A description with an LLM selection pointed at a port where
     /// nothing listens: `assemble_patch` builds the client fine, and the
     /// counting spawners below never let the retry run far enough to call it.
     fn spec_with_dead_llm() -> PipelineSpec {
@@ -851,8 +855,9 @@ mod tests {
     }
 
     /// A fresh target dir holding the Kuna-loadable fixture binary renamed
-    /// to `binary`: `assemble_patch` loads the retry's engine from
-    /// `target_dir/<binary>`, and the repo units below name `game_logic.dll`.
+    /// to `binary`: `assemble_patch` loads the retry's analysis engine from
+    /// `target_dir/<binary>`, and the units in the tests below are named
+    /// `game_logic.dll`.
     fn target_dir_with(binary: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("target dir");
         let fixture = calxgloss_testfixtures::fixture_target_path().expect("fixture target path");
@@ -860,9 +865,9 @@ mod tests {
         dir
     }
 
-    /// A repo with one review unit: branch `re/game_logic.dll/DrawSpritev1`,
-    /// carrying one translated commit so accepting the unit really merges
-    /// code to main (issue #86 tests check the persisted status against the
+    /// A repo with one review unit: branch `re/game_logic.dll/DrawSpritev1`
+    /// with one translated commit, so accepting the unit really merges code
+    /// to main (the issue #86 tests check the persisted status against the
     /// actual git outcome).
     fn make_repo_with_unit() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -907,10 +912,10 @@ mod tests {
     async fn double_click_starts_one_branch_and_one_retry() {
         let dir = make_repo_with_unit();
         // Issue #327: the request assembles a real pass before recording
-        // anything, so the state carries a description-backed backend — a
-        // description with an LLM selection and a target dir holding the
-        // unit's binary. The counting spawner still drops the retry task,
-        // so the dead endpoint is never called.
+        // anything, so this test's state uses a description-backed
+        // backend: a description with an LLM selection and a target dir
+        // holding the unit's binary. The counting spawner still drops the
+        // retry task, so the dead endpoint is never called.
         let target = target_dir_with("game_logic.dll");
         let state = ActionsState::new(dir.path().to_path_buf(), spec_with_dead_llm())
             .with_target_dir(target.path().to_path_buf());
@@ -993,7 +998,7 @@ mod tests {
         .expect("first patch request succeeds");
 
         // The retry finishes: the success path rewrites the v2 patch record
-        // without a `patch_request`, landing v2 back in review.
+        // without a `patch_request`, which puts v2 back in review.
         let v2_record = patch_record_path(dir.path(), 2);
         let mut record: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&v2_record).expect("v2 record"))
@@ -1026,11 +1031,12 @@ mod tests {
         );
     }
 
-    /// Issue #86: a fast Accept-then-Send-Back double-click must not leave the
-    /// persisted status silently disagreeing with git. Both actions capture
-    /// the unit's state while the other is still in flight; exactly one wins,
-    /// the loser fails with a changed-underneath conflict, and the final
-    /// persisted status matches the git outcome (merged ⇒ Accepted).
+    /// Issue #86: a fast Accept-then-Send-Back double-click must not leave
+    /// the persisted status silently disagreeing with git. Both actions
+    /// capture the unit's state while the other is still in flight, and
+    /// exactly one wins. The loser fails with a changed-underneath
+    /// conflict, and the final persisted status matches the git outcome
+    /// (merged ⇒ Accepted).
     #[tokio::test]
     async fn accept_and_send_back_race_exactly_one_wins() {
         let dir = make_repo_with_unit();
@@ -1092,7 +1098,7 @@ mod tests {
         assert_eq!(record.action, ReviewStatus::Accepted);
     }
 
-    /// Issue #86: send-back on an already-accepted unit is rejected — the code
+    /// Issue #86: send-back on an already-accepted unit is refused — the code
     /// is merged to main and there is no un-merge path.
     #[tokio::test]
     async fn send_back_on_accepted_unit_is_rejected() {
@@ -1120,7 +1126,7 @@ mod tests {
         assert_eq!(record.action, ReviewStatus::Accepted);
     }
 
-    /// Issue #86: patch on an already-accepted unit is rejected too — no new
+    /// Issue #86: patch on an already-accepted unit is refused too — no new
     /// attempt branch and no retry task.
     #[tokio::test]
     async fn patch_on_accepted_unit_is_rejected() {
@@ -1249,11 +1255,11 @@ mod tests {
         );
     }
 
-    /// Issue #327: the request layers only run-scoped fields onto the
+    /// Issue #327: the request adds only the run-scoped fields to the
     /// server's description — workspace, patch mode, the unit's binary under
-    /// the target dir — and every settings knob the fold carries (LLM
-    /// selection, retry policy, call-graph flags, Kuna budget) rides along
-    /// untouched into the spec the assembly consumes.
+    /// the target dir. Every settings value the fold composes (LLM
+    /// selection, retry policy, call-graph flags, Kuna budget) reaches the
+    /// spec the assembly consumes unchanged.
     #[test]
     fn patch_request_layers_only_run_scoped_fields_onto_the_description() {
         let dir = make_repo_with_unit();
@@ -1277,7 +1283,7 @@ mod tests {
         assert_eq!(binary.name, "game_logic.dll");
         assert_eq!(binary.path, target.path().join("game_logic.dll"));
 
-        // Everything the settings fold carried arrives unchanged:
+        // Everything the fold composed arrives unchanged:
         assert!(
             layered.llm.is_some(),
             "the description's LLM selection rides along"
@@ -1308,14 +1314,14 @@ mod tests {
         assert!(state.pass_spec.target_binary.is_none());
     }
 
-    /// Issue #327 AC2/AC4: the retry that runs is driven by the description —
-    /// its LLM selection (endpoint and model) is what the translation
-    /// actually calls, with no environment fallback behind it. A capture
-    /// server stands where the description's endpoint points; the retry hits
-    /// it, and the captured request carries the description's model name.
-    /// The retry runs to completion: the description's assembled pass — LLM,
-    /// engine under its Kuna budgets, retry config, verifier — drives a
-    /// successful translation end to end.
+    /// Issue #327 AC2/AC4: the description drives the retry that runs. Its
+    /// LLM selection (endpoint and model) is what the translation actually
+    /// calls — there is no environment fallback behind it. A capture server
+    /// listens at the address the description's endpoint names; the retry
+    /// reaches it, and the captured request includes the description's model
+    /// name. The retry runs to completion: the description's assembled pass
+    /// — LLM, analysis engine under its Kuna budgets, retry config,
+    /// verifier — drives a successful translation end to end.
     #[tokio::test]
     async fn patch_retry_runs_the_pass_the_description_describes() {
         let repo = tempfile::tempdir().expect("repo dir");
@@ -1339,9 +1345,8 @@ mod tests {
         )
         .expect("commit translation");
 
-        // Stand a capture server where the description's endpoint points, and
-        // point the description at it with a model name no default chain
-        // could ever produce.
+        // Start a capture server, point the description's endpoint at it,
+        // and give it a model name no default chain could ever produce.
         let base = fake_llm_server().await;
         let spec = PipelineSpec {
             llm: Some(LlmSelection::Description(LlmDescription {
@@ -1359,9 +1364,10 @@ mod tests {
         let state = ActionsState::new(repo.path().to_path_buf(), spec)
             .with_target_dir(target.path().to_path_buf());
 
-        // The same two steps a patch request performs — layer the run-scoped
-        // fields, assemble the pass — then the same retry drive the spawned
-        // task runs, all visible here for the completion assertions.
+        // Run the same two steps a patch request performs — set the
+        // run-scoped fields, then assemble the pass — and drive the same
+        // retry the spawned task would run, all visible here for the
+        // completion assertions.
         let spec = state
             .patch_pass_spec("fixture_target.dll")
             .expect("the request layers its description");

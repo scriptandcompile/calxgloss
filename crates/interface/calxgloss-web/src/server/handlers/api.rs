@@ -332,7 +332,7 @@ fn action_error(e: anyhow::Error) -> ServerError {
 /// Accepts a unit of work: merges its Git branch into `main` and records the acceptance.
 ///
 /// When the `ActionsState` is configured (via `build_router_with_actions`), this
-/// delegates to [`calxgloss_web::server::actions::accept_unit`] which also writes
+/// delegates to [`crate::accept_unit`] which also writes
 /// a persistent action record.  In the basic router (no actions backend) the Git
 /// operation runs directly as before.
 pub async fn api_accept_unit(
@@ -487,7 +487,7 @@ pub(crate) async fn perform_send_back(
 /// Requests a patch for a unit of work, identifying the specific issue.
 ///
 /// This is the real implementation (step 5.7): it delegates to
-/// [`calxgloss_web::server::actions::request_patch`] which:
+/// [`crate::request_patch`] which:
 /// 1. Returns the existing in-progress patch if the unit's next attempt
 ///    already has one (`action: "patch_already_in_progress"`, issue #84).
 /// 2. Creates a new version branch (v{N+1}) via `calxgloss-git`.

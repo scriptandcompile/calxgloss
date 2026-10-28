@@ -1,18 +1,19 @@
 //! Server-side LLM I/O log — the prompts and responses a live run emits,
 //! persisted as append-only JSONL under `re/analysis/llm_io/` (issue #77).
 //!
-//! Until now the LLM I/O log existed only as a capped in-memory array in the
-//! browser, fed by live WebSocket events — history was lost on every page
-//! reload. This module makes the server the source of truth: the live event
-//! consumer appends every `LlmRequest` / `LlmResponse` / `LlmCallFailed`
-//! event as one JSONL line the moment it arrives, and `GET /api/llm-io`
-//! serves the retained window back with its metadata and token counts.
+//! Before this module, the browser held the LLM I/O log only as a capped
+//! in-memory array built from live WebSocket events, and every page reload
+//! lost that history. This module makes the server the source of truth: the
+//! live event consumer appends every `LlmRequest` / `LlmResponse` /
+//! `LlmCallFailed` event as one JSONL line the moment it arrives, and
+//! `GET /api/llm-io` serves the retained window back with its metadata and
+//! token counts.
 //!
-//! Growth is bounded: the log keeps at most [`MAX_LLM_IO_ENTRIES`] newest
-//! entries. Appends past that cap stay cheap (one `write` per event); once
-//! [`TRIM_MARGIN`] entries have piled on top of the cap, the file is
-//! rewritten down to the newest [`MAX_LLM_IO_ENTRIES`] in one atomic
-//! temp-file-and-rename, so readers never see a half-written log.
+//! Growth is bounded: the log keeps at most [`MAX_LLM_IO_ENTRIES`] of the
+//! newest entries. Appends past that cap stay cheap (one `write` per
+//! event). Once [`TRIM_MARGIN`] extra entries accumulate past the cap, the
+//! file is rewritten down to the newest [`MAX_LLM_IO_ENTRIES`] in one
+//! atomic temp-file-and-rename, so readers never see a half-written log.
 
 use calxgloss_types::{PersistError, ProgressEvent, analysis_dir};
 use serde::{Deserialize, Serialize};
@@ -21,15 +22,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tracing::{debug, warn};
 
-/// Entries the log retains at most — the newest window of a live run's LLM
-/// traffic. Prompts and responses are large (tens of KB each), so this cap
-/// is deliberately far tighter than the run-telemetry logs' 10,000.
+/// The most entries the log retains — the newest window of a live run's
+/// LLM traffic. Prompts and responses are large (tens of KB each), so this
+/// cap is deliberately far tighter than the run-telemetry logs' 10,000.
 pub const MAX_LLM_IO_ENTRIES: usize = 500;
 
 /// How far past [`MAX_LLM_IO_ENTRIES`] appends may run before the file is
 /// rewritten down to the cap. Trimming on every append would rewrite the
-/// whole file per event; this margin amortizes the rewrite across many
-/// appends while keeping the on-disk file bounded at
+/// whole file for every event. This margin spreads that rewrite across many
+/// appends and keeps the on-disk file at most
 /// `MAX_LLM_IO_ENTRIES + TRIM_MARGIN` lines.
 const TRIM_MARGIN: usize = 100;
 
@@ -37,7 +38,7 @@ const TRIM_MARGIN: usize = 100;
 /// process, mirroring the `save_json` convention in `calxgloss-types`.
 static ROTATE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Which side of the exchange an entry captured.
+/// Which side of the exchange an entry records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmIoEntryType {
@@ -45,13 +46,13 @@ pub enum LlmIoEntryType {
     Request,
     /// The raw content the LLM returned.
     Response,
-    /// The call failed; `content` carries the error message.
+    /// The call failed; `content` holds the error message.
     Error,
 }
 
-/// One persisted LLM request/response/error, with the metadata the log UI
-/// filters and groups by (issue #80) and the token count when the event
-/// carried one.
+/// One persisted LLM request, response, or error. It includes the metadata
+/// the log UI filters and groups by (issue #80), and the token count when
+/// the event reported one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmIoEntry {
     /// Which side of the exchange this entry is.
@@ -77,10 +78,10 @@ pub struct LlmIoEntry {
 
 /// Append-only JSONL log of a workspace's LLM I/O.
 ///
-/// One writer (the live server's event consumer task) appends; HTTP handlers
-/// read. The retained-entry count backs the rotation check; it is counted
-/// lazily on the first append so a read-only caller (the endpoint) never
-/// pays for it.
+/// One writer (the live server's event consumer task) appends; HTTP
+/// handlers read. The retained-entry count drives the rotation check; it
+/// is counted lazily on the first append, so a read-only caller (the
+/// endpoint) never pays for it.
 pub struct LlmIoLog {
     path: PathBuf,
     /// Entries currently in the file, or [`usize::MAX`] until the first
@@ -99,8 +100,8 @@ impl LlmIoLog {
 
     /// Append the entry for `event` if it is one of the LLM I/O events
     /// (`LlmRequest`, `LlmResponse`, `LlmCallFailed`); other events are
-    /// ignored. A failed write is logged, never propagated — a broken log
-    /// file must not take the live run down with it.
+    /// ignored. A failed write is logged, never propagated: a broken log
+    /// file must not stop the live run.
     pub fn record(&self, event: &ProgressEvent) {
         let entry = match event {
             ProgressEvent::LlmRequest {
@@ -156,8 +157,8 @@ impl LlmIoLog {
         }
     }
 
-    /// One entry stamped now, sharing the unit metadata every LLM I/O event
-    /// carries.
+    /// One entry stamped with the current time, holding the unit metadata
+    /// that every LLM I/O event includes.
     fn make_entry(
         entry_type: LlmIoEntryType,
         binary: &str,
