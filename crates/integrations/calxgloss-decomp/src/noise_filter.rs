@@ -1,60 +1,65 @@
-//! The decompiler-noise pre-filter: compiler theater stripped from the
-//! pseudo-C every consumer sees (issue #232; #271 opened the module with
-//! the named guard calls, #272 added the if-wrapped compare epilogue, and
-//! #273 closes the canary family with the prologue cookie-save and the
-//! cookie declaration its strips leave orphaned).
+//! The decompile noise filter: it removes compiler-generated boilerplate
+//! from the pseudo-C every consumer sees (issue #232). It was built in
+//! three steps: #271 opened the module with the named guard calls, #272
+//! added the if-wrapped compare epilogue, and #273 closed the canary
+//! family with the prologue's cookie-save line and the cookie declaration
+//! those strips leave orphaned.
 //!
-//! Every MSVC-compiled function carries the same piece of theater: the /GS
-//! stack canary's cookie-save prologue, its compare epilogue, and calls into
-//! the guard runtime (`__security_init_cookie`, `__security_check_cookie`,
-//! `__report_gsfailure`). The code is compiler-generated, never fires under
-//! baseline-test inputs, and yet it rode into every prompt, evidence
+//! Every MSVC-compiled function carries the same boilerplate: the /GS
+//! stack canary's cookie-save prologue, its compare epilogue, and calls
+//! into the guard runtime (`__security_init_cookie`, `__security_check_cookie`,
+//! `__report_gsfailure`). The code is compiler-generated and never fires
+//! under baseline-test inputs, yet it appeared in every prompt, evidence
 //! reading, and branch inventory as if it were the function's own logic.
 //!
-//! This module is the single home for stripping it: a pure text filter over
-//! the body a [`DecompiledFunction`] carries, applied at the exit of the
-//! `decompile` read in both analysis sources — the in-process Kuna arm
-//! ([`ScanSource`](crate::ScanSource) over `KunaSource`) and the cached arm
-//! ([`CachedScanSource`](crate::CachedScanSource)) — through the one entry
-//! point [`strip_decompiler_noise`]. The seam trait itself does not change,
-//! and test fakes in other crates are untouched because they never route
-//! through this crate.
+//! This module is the single home for the stripping. The filter is pure
+//! text: it runs over the body a [`DecompiledFunction`] carries, at the
+//! exit of the `decompile` read, through the one entry point
+//! [`strip_decompiler_noise`]. Both analysis sources apply it: the
+//! in-process Kuna arm ([`ScanSource`](crate::ScanSource) over
+//! `KunaSource`) and the cached arm ([`CachedScanSource`](crate::CachedScanSource)).
+//! The seam trait itself does not change, and test fakes in other crates
+//! are untouched because they never route through this crate.
 //!
-//! **Raw stays raw on disk.** The cache's live tier fetches the engine's
-//! unfiltered text and the filter runs *after* the cache read (ADR-0043
-//! unchanged): the documents on disk remain the engine's own text for
-//! debugging, and the whole filter is reversible by deleting the cache.
+//! **Raw stays raw on disk.** The cache's live tier keeps the analysis
+//! engine's unfiltered text, and the filter runs *after* the cache read
+//! (ADR-0043 unchanged). The documents on disk stay the engine's own
+//! text, which keeps them useful for debugging, and deleting the cache
+//! undoes the whole filter.
 //!
-//! **Hygiene, not evidence.** The filter names no findings, persists no
-//! document, and adds no engine reads (ADR-0026's one-decompile-per-function
-//! discipline untouched). Stripping is reported only through a debug-level
-//! log naming the function and the families stripped. It is always on: no
-//! per-binary or per-run toggle, because the filter is deterministic and
-//! part of what the seam means.
+//! **Hygiene, not evidence.** The filter records no findings, stores no
+//! document, and adds no extra reads to the analysis engine —
+//! ADR-0026's one-decompile-per-function discipline is untouched. A strip
+//! is reported only through a debug-level log naming the function and
+//! the families stripped. The filter is always on: there is no
+//! per-binary or per-run toggle, because it is deterministic and part of
+//! what the seam means.
 //!
 //! **Conservative by construction.** Only a complete recognized idiom
-//! strips — never a lone XOR, cookie read, or comparison that might be the
-//! function's own logic (ADR-0038's "a lone reading claims nothing"
-//! precedent). And the never-empties rule: when stripping would leave a
-//! body with no real content — a function that *is* the guard code, a
-//! cookie thunk — nothing is stripped and the body passes through whole.
+//! strips. A lone XOR, cookie read, or comparison never strips on its
+//! own — it might be the function's own logic (ADR-0038's "a lone reading
+//! claims nothing" precedent). Then the never-empties rule: if stripping
+//! would leave a body with no real content — a function that *is* the
+//! guard code, like a cookie thunk — nothing is stripped and the body
+//! passes through whole.
 //!
-//! **Locals survive unless orphaned.** A cookie local's declaration leaves
-//! with the idiom only when the strips leave it unreferenced; any statement
-//! that still names it keeps the declaration byte-for-byte.
+//! **Locals survive unless orphaned.** A cookie local's declaration goes
+//! with the idiom only when the strips leave it unreferenced. If any
+//! surviving statement still names it, the declaration stays
+//! byte-for-byte.
 //!
 //! **How a family joins:** add a recognizer `fn(&str) -> Option<String>`
-//! below that returns the stripped body only when it recognized and removed
-//! a complete idiom, and one line in [`filter_body`] naming its family.
-//! The seam, the trait, and both read exits never move.
+//! below that returns the stripped body only when it recognized and
+//! removed a complete idiom, and add one line in [`filter_body`] naming
+//! that family. The seam, the trait, and both read exits never move.
 
 use crate::model::DecompiledFunction;
 use tracing::debug;
 
-/// The guard runtime's named functions — the first recognized family, the
-/// named guard calls. A /GS build calls these and nothing else in the guard
-/// runtime by name, so a call statement naming one is compiler theater
-/// wherever it sits in a body.
+/// The guard runtime's named functions — the first family the filter
+/// recognizes: the named guard calls. A /GS build calls these and nothing
+/// else in the guard runtime by name, so anywhere in a body a call
+/// statement naming one of them is compiler-generated boilerplate.
 const GUARD_CALL_FUNCTIONS: [&str; 3] = [
     "__security_init_cookie",
     "__security_check_cookie",
@@ -67,14 +72,15 @@ const NAMED_GUARD_CALLS: &str = "named-guard-calls";
 const EPILOGUE_COOKIE_CHECK: &str = "epilogue-cookie-check";
 const PROLOGUE_COOKIE_SAVE: &str = "prologue-cookie-save";
 
-/// The pre-filter's one entry point, applied at the exit of both sources'
-/// `decompile` read: in with the record as the engine rendered it, out with
-/// every recognized noise family stripped from the body.
+/// The filter's one entry point, applied at the exit of both sources'
+/// `decompile` read. The function comes in as the analysis engine
+/// produced it and goes out with every recognized noise family stripped
+/// from the body.
 ///
-/// The name and signature ride through byte-for-byte — signature synthesis
-/// and FFI binding read them, and the filter does not touch them. When
-/// anything was stripped, a debug-level log names the function and the
-/// families, so a run can be audited without re-decompiling anything.
+/// The name and signature fields come through byte-for-byte: signature
+/// synthesis and FFI binding read them, and the filter does not touch
+/// them. When anything was stripped, a debug-level log names the function
+/// and the families, so a run can be audited without re-decompiling.
 pub(crate) fn strip_decompiler_noise(function: DecompiledFunction) -> DecompiledFunction {
     let (body, families) = filter_body(&function.body);
     if !families.is_empty() {
@@ -88,24 +94,29 @@ pub(crate) fn strip_decompiler_noise(function: DecompiledFunction) -> Decompiled
 }
 
 /// Run every family recognizer over one body, collecting the families that
-/// actually stripped something. An unchanged body comes back byte-identical
-/// and reports nothing.
+/// actually stripped something. An unchanged body comes back
+/// byte-identical and reports nothing.
 ///
-/// Recognizers compose: each sees the body as the previous family left it.
-/// The epilogue pass runs first because the complete idiom it recognizes
-/// still carries its failure call inside the `if` — wrapper, comparison,
-/// and call come out together as one shape. The named-guard-call pass then
-/// clears the standalone calls that sit outside any wrapper, and the
-/// comparison wrappers those calls hollow out are deliberately left behind:
-/// a hollowed `if` is a lone comparison, which claims nothing to either
-/// pass. The prologue pass runs last because whether its saved local is
-/// orphaned is only knowable once the other families have had their turn:
-/// the epilogue comparison and a standalone check call are the local's
-/// usual last uses, and its declaration can go only after they are gone.
+/// The recognizers compose: each one sees the body as the previous pass
+/// left it, and the passes run in a fixed order.
+///
+/// The epilogue pass runs first. The complete idiom it recognizes still
+/// holds its failure call inside the `if`, so the wrapper, the comparison,
+/// and the call come out together as one shape.
+///
+/// The named guard call pass runs next. It removes the standalone calls
+/// that sit outside any wrapper. It deliberately leaves behind the
+/// comparison wrappers those calls empty out: a hollowed `if` is a lone
+/// comparison, and it claims nothing to either pass.
+///
+/// The prologue pass runs last. Whether its saved local is orphaned can
+/// only be decided after the other passes have run: the epilogue
+/// comparison and a standalone check call are that local's usual last
+/// uses, and its declaration can go only after they are gone.
 ///
 /// The never-empties rule lives here, over the combined strips: if they
 /// would leave a body with not one word of real content in it — a function
-/// that *is* the guard code — nothing stripped at all, and the original
+/// that *is* the guard code — nothing strips at all, and the original
 /// body comes back whole with no families reported.
 fn filter_body(body: &str) -> (String, Vec<&'static str>) {
     let mut stripped = body.to_string();
@@ -128,20 +139,21 @@ fn filter_body(body: &str) -> (String, Vec<&'static str>) {
     (stripped, families)
 }
 
-/// The named-guard-calls family: a line carrying nothing but a call to one
-/// of [`GUARD_CALL_FUNCTIONS`] — any indentation, any arguments — vanishes
-/// along with its line break.
+/// The family for named guard calls: a line that holds nothing but a call
+/// to one of [`GUARD_CALL_FUNCTIONS`] — at any indentation, with any
+/// arguments — is removed along with its line break.
 ///
 /// Everything else survives byte-for-byte: the call as part of a larger
-/// statement (`x = __security_check_cookie(local_8);`), a call spelled with
-/// a space before the parenthesis, a warning comment that merely names a
-/// guard function, and a line whose call carries a trailing comment. The
-/// whole-line match is the conservative gate: a line that is not exactly
-/// one complete call claims nothing.
+/// statement (`x = __security_check_cookie(local_8);`), a call spelled
+/// with a space before the parenthesis, a warning comment that merely
+/// names a guard function, and a line whose call has a trailing comment.
+/// The whole-line match is the conservative gate: a line that is not
+/// exactly one complete call claims nothing.
 ///
-/// Answers [`None`] when no line matched. A body left with no real content
-/// is caught not here but by the never-empties rule in [`filter_body`],
-/// which passes the whole body through when the strips would empty it.
+/// Returns [`None`] when no line matched. A body left with no real
+/// content is caught not here but by the never-empties rule in
+/// [`filter_body`], which passes the whole body through when the strips
+/// would empty it.
 fn strip_named_guard_calls(body: &str) -> Option<String> {
     let mut stripped = String::with_capacity(body.len());
     let mut removed = false;
@@ -157,9 +169,9 @@ fn strip_named_guard_calls(body: &str) -> Option<String> {
 }
 
 /// Whether `statement` is exactly one call — `name(arguments);` — to a
-/// guard runtime function. The arguments may not cross a statement
-/// boundary (no `;` inside), so a call that runs on into more code on its
-/// line is not a standalone call and claims nothing.
+/// guard runtime function. The arguments may not contain another `;`. If
+/// the call continues into more code on its line, it is not a standalone
+/// call and claims nothing.
 fn is_standalone_guard_call(statement: &str) -> bool {
     let Some((name, rest)) = statement.split_once('(') else {
         return false;
@@ -170,34 +182,39 @@ fn is_standalone_guard_call(statement: &str) -> bool {
             .is_some_and(|arguments| !arguments.contains(';'))
 }
 
-/// The cookie global's recognized spellings — the named MSVC global (the
-/// engine's import-prefixed `___security_cookie` form carries this whole)
-/// and the Ghidra-side alias — and `DAT_`-shaped unnamed globals, the form
-/// the cookie takes when the engine leaves it unnamed.
+/// The cookie global's recognized spellings: the named MSVC global (the
+/// analysis engine's import-prefixed `___security_cookie` form contains
+/// that spelling whole), the Ghidra-side alias, and `DAT_`-shaped unnamed
+/// globals — the form the cookie takes when the engine leaves it unnamed.
 const COOKIE_GLOBAL_SPELLINGS: [&str; 2] = ["__security_cookie", "stack_cookie_guard"];
 
-/// The epilogue-cookie-check family (issue #272): the compare half of the
-/// /GS canary — an `if (saved local compared against the cookie global)`
-/// whose whole block is one standalone guard-runtime call — vanishes as
-/// one shape, wrapper, comparison, and failure call together, from the
-/// `if` line through the closing brace's line break.
+/// The family for the epilogue cookie check (issue #272): the compare
+/// half of the /GS canary. The shape is an `if (saved local compared
+/// against the cookie global)` whose whole block is one standalone
+/// guard-runtime call. It is removed as one shape — wrapper, comparison,
+/// and failure call together — from the `if` line through the closing
+/// brace's line break.
 ///
 /// Every partial shape claims nothing (the conservative gate, ADR-0038's
-/// "a lone reading claims nothing" precedent): a condition without a
-/// cookie-global spelling — that wrapper's call is the named-guard-call
-/// family's business and its own; a block holding anything besides one
-/// complete guard call, comments included; an empty block — the shell the
-/// named-guard pass leaves behind is a lone comparison; an `else` attached
-/// to the wrapper on either side, whose chain the removal would break; and
-/// a paren or brace the scan cannot close, a truncated decompile. SEH/EH
-/// frames, `try`/`catch` shapes, and landing pads never join a match —
-/// only line-initial `if` statements are candidates, and a body's
-/// exception structure survives byte-for-byte around any strip (P15's
-/// findings territory; issue #272).
+/// "a lone reading claims nothing" precedent):
+/// - a condition without a cookie-global spelling — that wrapper's call
+///   is the named guard call family's business and its own;
+/// - a block holding anything besides one complete guard call, comments
+///   included;
+/// - an empty block — the shell the named guard call pass leaves behind
+///   is a lone comparison;
+/// - an `else` attached to the wrapper on either side — removing the
+///   wrapper would break that chain;
+/// - a paren or brace the scan cannot close — a truncated decompile.
 ///
-/// Answers [`None`] when no wrapper matched. A body a strip would empty is
-/// caught by the never-empties rule in [`filter_body`], the same as the
-/// named-guard family's.
+/// SEH/EH frames, `try`/`catch` shapes, and landing pads never join a
+/// match — only `if` statements that open their line are candidates, and
+/// a body's exception structure survives byte-for-byte around any strip
+/// (P15's findings territory; issue #272).
+///
+/// Returns [`None`] when no wrapper matched. A body a strip would empty
+/// is caught by the never-empties rule in [`filter_body`], the same as
+/// the named guard call family's.
 fn strip_epilogue_cookie_check(body: &str) -> Option<String> {
     let mut stripped = String::with_capacity(body.len());
     // `copied` is the body's end already appended; `probe` is where the
@@ -221,12 +238,12 @@ fn strip_epilogue_cookie_check(body: &str) -> Option<String> {
     removed.then_some(stripped)
 }
 
-/// The next candidate `if` at or after `from`: a line whose trimmed content
-/// opens with the `if` keyword and a word boundary, returning its line
-/// start and the keyword. Decompiled statements open at the line start
-/// (modulo indentation), so a line-opening `if` is what the wrapper parser
-/// takes — an `if` reached through `else if` never opens its line and is
-/// never a candidate.
+/// The next candidate `if` at or after `from`. The line's trimmed content
+/// starts with the `if` keyword followed by a word boundary, and the
+/// result gives the line start and the keyword. Decompiled statements
+/// start at the line beginning, apart from indentation, so the wrapper
+/// parser only takes `if`s that open their line. An `if` reached through
+/// `else if` never opens its line and is never a candidate.
 fn find_if_statement(body: &str, from: usize) -> Option<(usize, usize)> {
     let mut offset = 0;
     for line in body.split_inclusive('\n') {
@@ -242,13 +259,13 @@ fn find_if_statement(body: &str, from: usize) -> Option<(usize, usize)> {
 }
 
 /// Parse the candidate `if` keyword at `if_start` as one complete epilogue
-/// idiom. The shape: `if (condition) {` with `condition` passing
-/// [`is_cookie_comparison`], then a block — brace-matched string- and
-/// comment-aware from the opening brace — holding nothing but one complete
-/// standalone guard call, and no `else` attached to the wrapper on either
-/// side. On success, the byte just past the closing brace's line break —
-/// the end of the region the recognizer removes whole; on every other
-/// shape, [`None`].
+/// idiom. The shape is `if (condition) {` where `condition` passes
+/// [`is_cookie_comparison`], followed by a block. The block is
+/// brace-matched from its opening brace, string- and comment-aware, and
+/// holds nothing but one complete standalone guard call. The wrapper has
+/// no `else` attached on either side. On success the result is the byte
+/// just past the closing brace's line break — the end of the region the
+/// recognizer removes whole. Every other shape gives [`None`].
 fn epilogue_wrapper(body: &str, if_start: usize) -> Option<usize> {
     let open_paren = skip_whitespace(body, if_start + "if".len());
     if body.get(open_paren..open_paren + "(".len()) != Some("(") {
@@ -290,13 +307,13 @@ fn epilogue_wrapper(body: &str, if_start: usize) -> Option<usize> {
     )
 }
 
-/// The condition gate: the condition carries a comparison (`==` or `!=`)
-/// and one of the cookie global's spellings. The saved local itself is
-/// not named — chasing data flow is not a text filter's job — what keeps
-/// the shape safe is the anchor the caller has already verified: the
-/// wrapper's whole block is the guard runtime's failure call, which no
-/// function's own logic ever names. A cookie global or comparison standing
-/// without that anchor claims nothing.
+/// The condition gate: the condition must contain a comparison (`==` or
+/// `!=`) and one of the cookie global's spellings. The saved local is
+/// not checked by name — following data flow is not a text filter's
+/// job. What keeps the shape safe is the anchor the caller has already
+/// verified: the wrapper's whole block is the guard runtime's failure
+/// call, and no function's own logic ever names that call. A cookie
+/// global or a comparison without that anchor claims nothing.
 fn is_cookie_comparison(condition: &str) -> bool {
     (condition.contains("==") || condition.contains("!=")) && names_cookie_global(condition)
 }
@@ -309,8 +326,9 @@ fn names_cookie_global(text: &str) -> bool {
         || names_dat_global(text)
 }
 
-/// Whether `text` names an unnamed engine global — `DAT_` followed by hex
-/// digits, whole-word on both sides, so `XDAT_ff` names nothing.
+/// Whether `text` names an unnamed global of the analysis engine —
+/// `DAT_` followed by hex digits, whole-word on both sides, so `XDAT_ff`
+/// names nothing.
 fn names_dat_global(text: &str) -> bool {
     let bytes = text.as_bytes();
     let mut search = 0;
@@ -345,27 +363,29 @@ fn attached_else_after(after_brace: &str) -> bool {
     after.starts_with("else") && !after["else".len()..].starts_with(is_identifier_char)
 }
 
-/// The prologue-cookie-save family (issue #273): the save half of the /GS
-/// canary — a line that is exactly one assignment storing the cookie global
-/// XOR'd with a stack-slot address into a local (`local_8 = DAT_18004a040 ^
-/// (ulonglong)&stack0x00000008;`) — vanishes along with its line break, and
-/// each local the stripped saves wrote loses its bare declaration line once
-/// no surviving statement names it — inside the body's declaration block
-/// only, the run of bare declarations the decompiler opens right after the
-/// body's brace. A local still referenced anywhere — a real statement, a
-/// comment, a declaration beside the idiom — keeps its declaration
-/// byte-for-byte; the sweep only ever follows a strip of the local's own
-/// save.
+/// The family for the prologue cookie-save (issue #273): the save half
+/// of the /GS canary. A line that is exactly one assignment storing the
+/// cookie global XOR'd with a stack-slot address into a local
+/// (`local_8 = DAT_18004a040 ^ (ulonglong)&stack0x00000008;`) is removed
+/// along with its line break.
+///
+/// Each local a stripped save wrote then loses its bare declaration line,
+/// once no surviving statement names it. That cleanup happens only inside
+/// the body's declaration block — the run of bare declarations the
+/// decompiler emits right after the body's brace. A local still referenced
+/// anywhere — a real statement, a comment, a declaration beside the
+/// idiom — keeps its declaration byte-for-byte. The cleanup only ever
+/// follows a strip of the local's own save.
 ///
 /// The assignment shape is itself the anchor (the conservative gate,
-/// ADR-0038's "a lone reading claims nothing" precedent): a lone XOR
-/// (`x = a ^ b` with neither side the cookie or the stack slot), a lone
-/// cookie save without the XOR (`uVar = __security_cookie;`), a cookie
-/// XOR'd with a plain constant instead of a stack-slot address, a store
-/// through a pointer or into a global, and a save sharing its line with
-/// any other text all claim nothing and pass through.
+/// ADR-0038's "a lone reading claims nothing" precedent). These all claim
+/// nothing and pass through: a lone XOR (`x = a ^ b` with neither side
+/// the cookie or the stack slot), a lone cookie save without the XOR
+/// (`uVar = __security_cookie;`), a cookie XOR'd with a plain constant
+/// instead of a stack-slot address, a store through a pointer or into a
+/// global, and a save sharing its line with any other text.
 ///
-/// Answers [`None`] when no save line matched. A body a strip would empty
+/// Returns [`None`] when no save line matched. A body a strip would empty
 /// is caught by the never-empties rule in [`filter_body`], the same as the
 /// other families'.
 fn strip_prologue_cookie_save(body: &str) -> Option<String> {
@@ -383,10 +403,10 @@ fn strip_prologue_cookie_save(body: &str) -> Option<String> {
     if saved.is_empty() {
         return None;
     }
-    // The orphan sweep, line-indexed so removals stay inside the body's
-    // declaration block: Ghidra emits the local declarations as one block
-    // opening right after the body's brace line, and that block — nothing
-    // else — is where a declaration may go.
+    // The orphan cleanup, line-indexed so removals stay inside the body's
+    // declaration block: the decompiler emits the local declarations as
+    // one block opening right after the body's brace line, and that block
+    // — nothing else — is where a declaration may go.
     let lines: Vec<&str> = stripped.split_inclusive('\n').collect();
     let block_end = declaration_block_end(&lines);
     let mut dropped = vec![false; lines.len()];
@@ -414,10 +434,10 @@ fn strip_prologue_cookie_save(body: &str) -> Option<String> {
     )
 }
 
-/// The save-statement gate: the whole trimmed line is one simple
+/// The save-statement gate: the whole trimmed line must be one simple
 /// assignment `local = <cookie global> ^ <stack-slot address>;` — either
 /// operand order — whose target is a plain local name, not a global or a
-/// store through a pointer. Answers the local's name for the complete
+/// store through a pointer. It returns the local's name for the complete
 /// shape, [`None`] for anything else.
 fn cookie_save_local(statement: &str) -> Option<&str> {
     let assignment = statement.strip_suffix(';')?.trim_end();
@@ -442,12 +462,12 @@ fn cookie_save_local(statement: &str) -> Option<&str> {
     is_save.then_some(target)
 }
 
-/// Whether `operand` is a read of a cookie global whole — one of the named
-/// spellings, with only import-prefixed underscores in front, or a bare
-/// `DAT_`-shaped name — behind at most one cast. An expression that merely
-/// mentions a cookie spelling (`__security_cookie - cookie`, a call) names
-/// the global's value being computed on, not a read of the global itself,
-/// and claims nothing.
+/// Whether `operand` is simply reading the cookie global as a whole: one
+/// of the named spellings, with only import-prefixed underscores in
+/// front, or a bare `DAT_`-shaped name — with at most one cast in front.
+/// An expression that merely mentions a cookie spelling
+/// (`__security_cookie - cookie`, a call) names the global's value being
+/// computed on, not a read of the global itself, and claims nothing.
 fn is_cookie_global_read(operand: &str) -> bool {
     let operand = strip_cast(operand).trim();
     COOKIE_GLOBAL_SPELLINGS.iter().any(|spelling| {
@@ -483,13 +503,14 @@ fn strip_cast(operand: &str) -> &str {
     }
 }
 
-/// One past the last line of the body's declaration block: the maximal run
-/// of bare declaration lines opening right after the first line bearing an
-/// opening brace. A body whose brace line never comes, or whose first line
-/// after the brace already says something (a statement, a comment, even a
-/// blank line), has no block at `0`, and no declaration is ever removed
-/// from it — the sweep's removal candidates live only inside the block the
-/// decompiler itself drew.
+/// One past the last line of the body's declaration block. The block is
+/// the maximal run of bare declaration lines opening right after the
+/// first line bearing an opening brace. A body whose brace line never
+/// comes, or whose first line after the brace already says something — a
+/// statement, a comment, even a blank line — has no declaration block,
+/// and no declaration is ever removed from it. This cleanup only removes
+/// lines from inside the declaration block the decompiler itself
+/// produced.
 fn declaration_block_end(lines: &[&str]) -> usize {
     let open = match lines.iter().position(|line| {
         line.trim_end_matches(['\n', '\r'])
@@ -516,14 +537,14 @@ fn is_declaration(content: &str) -> bool {
     declaration_parts(content).is_some()
 }
 
-/// Split the trimmed line content into its declaration shape — non-empty
+/// Split the trimmed line content into its declaration shape: non-empty
 /// declarator text and the identifier declared just before the closing
-/// semicolon — answering [`None`] for everything else: no semicolon, a
-/// line ending on anything but an identifier, an assignment, a bare name
-/// with nothing declaring it, or a line opening on a statement keyword.
+/// semicolon. Everything else answers [`None`]: no semicolon, a line
+/// ending on anything but an identifier, an assignment, a bare name with
+/// nothing declaring it, or a line opening on a statement keyword.
 /// `return local_8;` and `goto local_8;` end in a whole identifier plus a
-/// semicolon exactly like a declaration does; it is the opening word that
-/// tells them apart.
+/// semicolon exactly like a declaration does — it is the opening word
+/// that tells them apart.
 fn declaration_parts(content: &str) -> Option<(&str, &str)> {
     let declared = content.strip_suffix(';')?.trim_end();
     let bytes = declared.as_bytes();
@@ -542,10 +563,10 @@ fn declaration_parts(content: &str) -> Option<(&str, &str)> {
     Some((declarator, name))
 }
 
-/// Whether a would-be declaration's declarator text opens on a C statement
-/// keyword — the tell that a `<keyword> <name>;` line is a statement
-/// wearing a declaration's shape. Types (`unsigned long`, `ulonglong`,
-/// `undefined8`) are no member of the set.
+/// Whether a would-be declaration's declarator text opens on a C
+/// statement keyword. That is the sign a `<keyword> <name>;` line is
+/// really a statement that looks like a declaration. Types
+/// (`unsigned long`, `ulonglong`, `undefined8`) are not in the set.
 fn opens_on_statement_keyword(declarator: &str) -> bool {
     const STATEMENT_KEYWORDS: [&str; 7] = [
         "return", "goto", "break", "continue", "case", "default", "else",
@@ -696,8 +717,8 @@ mod tests {
         }
     }
 
-    /// Strip one body and return what came back, asserting the identity
-    /// fields rode through untouched on every call.
+    /// Strip one body and return what came back. Every call asserts that
+    /// the identity fields came through untouched.
     fn strip(name: &str, body: &str) -> DecompiledFunction {
         let signature = format!("{name}(int param_1)");
         let out = strip_decompiler_noise(function(name, &signature, body));
@@ -1307,9 +1328,9 @@ mod tests {
         );
     }
 
-    /// The module doc's promise: the filter is a pure text pass — the same
-    /// input never strips differently, so deleting the cache really is the
-    /// whole undo.
+    /// The module doc's promise: the filter is a pure text pass, and the
+    /// same input never strips differently. So deleting the cache really
+    /// does undo the whole filter.
     #[test]
     fn filtering_is_idempotent_so_a_double_pass_changes_nothing() {
         let body = "{\n  __report_gsfailure();\n  return;\n}\n";
