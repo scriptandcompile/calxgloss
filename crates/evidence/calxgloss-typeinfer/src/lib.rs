@@ -1,9 +1,9 @@
 //! Type inference and propagation for calxgloss.
 //!
-//! Propagates type information through function analysis — examining
-//! decompiled pseudo-C, disassembly, and known function signatures — to
-//! narrow parameter types from `undefined4` to concrete types like
-//! `Sprite *`, `u32`, `char *`.
+//! The type-inference scan reads decompiled pseudo-C, disassembly, and
+//! known function signatures, and propagates type information across
+//! functions. It narrows parameter types from `undefined4` to concrete
+//! types like `Sprite *`, `u32`, `char *`.
 //!
 //! # Architecture
 //!
@@ -22,17 +22,17 @@
 //!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
-//!   function of a program exactly once, reads it with the inline
-//!   detectors — including the direction readings of the parameter
-//!   direction detector — reads its listing name with the mangling and convention
-//!   detectors, reads its machine listing once with the listing-borne
-//!   convention detectors — the 32-bit stack discipline and the
-//!   Microsoft-x64 shape — reads its import names with the convention
-//!   detector, and propagates the surviving readings across function
-//!   boundaries, and
-//!   assembles everything into one `TypeInferenceResult`;
-//!   the shared `ScanSource` trait abstracts the decompiler reads so tests
-//!   run the orchestration over canned bodies.
+//!   function of a program exactly once. The inline detectors then read
+//!   the body, including the direction readings of the parameter
+//!   direction detector. The mangling and convention detectors read the
+//!   listing name, and the listing-borne convention detectors read the
+//!   machine listing once — the 32-bit stack discipline and the
+//!   Microsoft-x64 shape. The convention detector also reads the import
+//!   detector also reads the import names. The propagators pass the
+//!   surviving readings across function boundaries, and `TypeInferEngine`
+//!   assembles everything into one `TypeInferenceResult`. The shared
+//!   `ScanSource` trait abstracts the decompiler reads so tests run the
+//!   orchestration over canned bodies.
 //! - [`this_ptr`] - C++ this-pointer detection: `ThisPointerDetector`
 //!   parses decompiled output for `vtable[index]` call patterns and
 //!   first-parameter usage, extracts class names from vtable function
@@ -40,15 +40,16 @@
 //! - [`param_size`] - Parameter size detection: `ParameterSizeDetector`
 //!   scans decompiled text for pointer, integer, and string usage patterns
 //!   — string-function calls, integer bit patterns, pointer arithmetic —
-//!   and resolves competing readings by confidence.
+//!   and resolves competing readings by evidence confidence.
 //! - [`known_type`] - Known type propagation: `KnownTypePropagationEngine`
 //!   extracts calls from decompiled text and propagates parameter types
 //!   through a signature database of well-known library functions, with
-//!   A/W-suffix name matching and per-signature confidence scores.
+//!   A/W-suffix name matching and per-signature evidence-confidence scores.
 //! - [`cross_function`] - Cross-function propagation: `CrossFunctionPropagator`
-//!   carries each function's surviving parameter readings to the arguments
-//!   at that callee's call sites — and to the caller's own parameter when
-//!   the argument is one, so types climb the call chain.
+//!   passes each function's surviving parameter readings to the
+//!   arguments at that callee's call sites — and to the caller's own
+//!   parameter when the argument is one, so a type inferred for a callee
+//!   also reaches its callers.
 //! - [`local_chain`] - Local-variable inference via assignment chains:
 //!   `LocalChainDetector` types a stack slot assigned a parameter with a
 //!   surviving reading, a known-signature call's result, or an
@@ -58,16 +59,16 @@
 //!   use the value — assigned to a typed local, passed at a
 //!   known-signature position, or dereferenced — as the return record kind.
 //! - [`param_direction`] - Parameter direction readings: `ParamDirectionDetector`
-//!   reads which way data flows through each pointer parameter off the
-//!   body the scan already keeps — a write through the pointer, direct
-//!   or through a field, index, or cast chain, makes it out; a read
-//!   through it — a dereference, a comparison, a string call — makes it
-//!   in; both together make it inout at the write's band; and no
-//!   deciding shape records nothing — at the ADR-0045 bands (75 above
-//!   70 above 60), as the direction record kind, keyed beside the
-//!   parameter's type record.
+//!   reads which way data flows through each pointer parameter, from
+//!   the body the scan already keeps. A write through the pointer —
+//!   direct, or through a field, index, or cast chain — makes it out.
+//!   A read through it — a dereference, a comparison, a string call —
+//!   makes it in. Both together make it inout, at the write's band. A
+//!   body with no deciding shape records nothing. The readings use the
+//!   ADR-0045 bands (75 above 70 above 60) and are kept as the
+//!   direction record kind, keyed beside the parameter's type record.
 //! - [`mangling`] - C++ mangling analysis: `ManglingDetector` reads the
-//!   contract carried in a name — an MSVC-mangled listing symbol decoded
+//!   contract spelled in a name — an MSVC-mangled listing symbol decoded
 //!   for convention, argument count, and rough argument types, and a
 //!   demangled qualified name with a spelled parameter list — typing the
 //!   parameters (and where the name spells one, the return) it names.
@@ -81,8 +82,8 @@
 //!   an `esp`-spelled disassembly spells — a callee epilogue popping its
 //!   own arguments (`ret N`, stdcall) and a caller popping after a call
 //!   site naming its callee (`add esp, N`, cdecl) — each in its own
-//!   confidence band, and its machine-class pass is the single dispatch
-//!   both listing-borne families ride, keyed on the stack register the
+//!   confidence band. Its machine-class pass is the single dispatch the
+//!   two listing-borne families share, keyed on the stack register the
 //!   listing itself names so the 32-bit and 64-bit families never
 //!   cross-fire.
 //! - [`x64_shape`] - Calling-convention detection off the machine
@@ -94,16 +95,16 @@
 //!   dispatch as the 32-bit family.
 //! - [`corroboration`] - Calling-convention detection across functions:
 //!   `ConventionCorroborator` is the post-inline pass that trusts
-//!   agreement above any single reading — a callee epilogue, clean call
-//!   sites in other listings, and the declared `@N` bytes all agreeing
-//!   raise the reading, and every detected callee convention lands a
-//!   call-site record in each caller whose listing calls it, keyed by
-//!   the caller and naming the callee, over exactly the listings the
-//!   scan already read.
-//! - [`reading`] - Detector-internal accumulator: the single `Reading`
-//!   shape every detector feeds, with highest-confidence-wins resolution
-//!   and shared record assembly.
-//! - [`confidence`] - Shared confidence model: `resolve_conflicts` —
+//!   agreement above any single reading. When a callee epilogue, clean
+//!   call sites in other listings, and the declared `@N` bytes all
+//!   agree, that agreement raises the reading. Every detected callee
+//!   convention also adds a call-site record to each caller whose
+//!   listing calls it, keyed by the caller and naming the callee. The
+//!   pass reads exactly the listings the scan already read.
+//! - `reading` - Detector-internal accumulator: the single `Reading`
+//!   shape every detector feeds, with highest-score-wins resolution and
+//!   shared record assembly.
+//! - [`confidence`] - Shared evidence-confidence model: `resolve_conflicts` —
 //!   highest-confidence-wins resolution when several detectors read one
 //!   parameter, local, call-site argument, return, convention, or
 //!   parameter direction differently.

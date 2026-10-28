@@ -3,26 +3,25 @@
 //! The inline detectors read parameters and call-site arguments; the
 //! decompiler's stack slots — `local_8`, `uVar1` — stay `undefined` even
 //! when the body plainly says what they hold: `local_8 = param_1;` where
-//! `param_1` stands read as `char *`, or `local_10 = malloc(0x10);`
-//! where the allocator's contract hands back a buffer.
+//! `param_1` has a surviving `char *` reading, or `local_10 =
+//! malloc(0x10);` where the allocator's contract returns a buffer.
 //! [`LocalChainDetector`] walks one decompiled body's assignment lines
-//! and types the target of each assignment whose source carries a
-//! reading:
+//! and types the target of each assignment whose source has a reading:
 //!
 //! - a parameter with a *surviving* inline reading takes that reading;
 //! - a call to a known-signature routine takes the contract's return
 //!   type ([`KnownTypePropagationEngine::return_type`]);
 //! - another local already typed by one of those two sources propagates
 //!   **one hop** — a local typed through a hop is never itself a source,
-//!   so longer chains are not chased further.
+//!   so longer chains are not followed further.
 //!
-//! Because the parameter sources are the inline detectors' resolved
-//! survivors, the pass runs after inline conflict resolution, like the
-//! cross-function pass, and reads the bodies the scan already
-//! decompiled. Records are the local kind the vocabulary already
-//! defines — [`InferredLocalType`], keyed by function and decompiled
-//! name, at [`ASSIGNMENT_CONFIDENCE`], with the assignment line as
-//! evidence — so they flow through the scan's final conflict resolution,
+//! The parameter sources are the inline detectors' resolved survivors.
+//! So this pass, like the cross-function pass, runs after inline
+//! conflict resolution, and it reads the bodies the scan already
+//! decompiled. The records are the local kind the vocabulary already
+//! defines: [`InferredLocalType`], keyed by function and decompiled
+//! name, at `ASSIGNMENT_CONFIDENCE`, with the assignment line as
+//! evidence. They flow through the scan's final conflict resolution,
 //! persistence, and prompt rendering unchanged.
 //!
 //! [`KnownTypePropagationEngine::return_type`]: crate::known_type::KnownTypePropagationEngine::return_type
@@ -37,17 +36,18 @@ use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::strip_casts;
 
-/// Confidence of an assignment-chain reading: the assignment itself is
-/// direct body evidence, but the type is only as good as its source —
-/// an inferred parameter reading or a library contract one step
-/// removed — so it sits below every inline parameter family and at the
-/// bottom of the ladder the spec sets for the new methods.
+/// Evidence confidence of an assignment-chain reading: the assignment
+/// itself is direct body evidence, but the type is only as good as its
+/// source — an inferred parameter reading or a library contract one
+/// step removed — so it sits below every inline parameter family and at
+/// the bottom of the confidence ladder the spec sets for the new
+/// methods.
 const ASSIGNMENT_CONFIDENCE: u8 = 60;
 
 /// The surviving parameter readings of one function, by decompiled
 /// parameter name — the sources an assignment can draw a type from.
-/// A parameter the inline detectors never typed, or that carries no
-/// usable name, is absent and lends nothing.
+/// A parameter the inline detectors never typed, or that has no usable
+/// name, is absent, and an absent parameter gives no type.
 type ParamTypes<'a> = HashMap<&'a str, &'a str>;
 
 /// Local-variable inference over one decompiled body.
@@ -55,7 +55,7 @@ type ParamTypes<'a> = HashMap<&'a str, &'a str>;
 /// The detector is stateless: every reading comes from the body it is
 /// handed and the surviving parameter readings it is given, so one
 /// detector serves an entire scan. It fetches nothing itself — the
-/// engine hands it the same [`DecompiledFunction`] the inline detectors
+/// scan hands it the same [`DecompiledFunction`] the inline detectors
 /// already read, keeping the scan at one decompile per function.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalChainDetector {
@@ -76,18 +76,18 @@ impl LocalChainDetector {
     /// source order: one [`InferredLocalType`] per assignment target
     /// that a chain types, keyed by the variable's decompiled name.
     ///
-    /// An assignment types its target only when the source carries a
-    /// reading on its own: a bare identifier naming a parameter with a
+    /// An assignment types its target only when the source has a
+    /// reading of its own: a bare identifier naming a parameter with a
     /// surviving reading, a call to a known-signature routine whose
     /// contract reports a return type, or a bare identifier naming a
     /// local an earlier line already typed directly (one hop, and that
     /// hop never chains further). A cast around the source —
-    /// `(char *)param_1` — still names the value and is stripped.
-    /// Anything else — a literal, an unknown callee, an untyped source —
-    /// says nothing about the target, and an assignment shape that
-    /// names no single variable (`*puVar5 = …`, `local_8[0] = …`, a
-    /// comparison, a compound assignment, a write to a parameter) is
-    /// not an inference about a local at all.
+    /// `(char *)param_1` — still refers to the same value, so it is
+    /// stripped. Anything else — a literal, an unknown callee, an
+    /// untyped source — says nothing about the target. An assignment
+    /// shape that names no single variable (`*puVar5 = …`,
+    /// `local_8[0] = …`, a comparison, a compound assignment, a write
+    /// to a parameter) is not an inference about a local at all.
     ///
     /// Where one name is assigned twice, both candidate records are
     /// emitted and the scan's conflict resolution keeps the strongest,
@@ -167,8 +167,8 @@ impl LocalChainDetector {
 
 /// The target and source text of a plain `target = source;` assignment
 /// line, or nothing when the line is not one. `==` comparisons,
-/// compound assignments (`+=`, `<<=`), and declarations carry no plain
-/// `=`; a line whose first plain `=` sits inside a control header or a
+/// compound assignments (`+=`, `<<=`), and declarations have no plain
+/// `=`. A line whose first plain `=` sits inside a control header or a
 /// string leaves a target that is not a bare identifier, which the
 /// caller rejects.
 fn assignment(line: &str) -> Option<(&str, &str)> {
@@ -269,16 +269,17 @@ mod tests {
 
     #[test]
     fn a_local_assigned_a_known_call_takes_the_contract_return() {
-        // The allocator hands back a buffer, and the cast around the
-        // call names no different a type — the contract's return wins.
+        // The allocator contract returns a buffer, and the cast around
+        // the call does not change the type — the contract's return
+        // type wins.
         let records = detected("  local_8 = (char *)malloc(0x10);\n", &[]);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].variable_name, "local_8");
         assert_eq!(records[0].inferred_type, "void *");
         assert_eq!(records[0].evidence, "local_8 = (char *)malloc(0x10);");
 
-        // A string routine's count, and a routine whose contract
-        // reports no return, at one site each.
+        // `strlen` reports a count, so one record; `CloseHandle`'s
+        // contract reports no return type, so nothing from it.
         let records = detected("  uVar1 = strlen(param_1);\n  CloseHandle(param_1);\n", &[]);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].variable_name, "uVar1");
@@ -287,8 +288,8 @@ mod tests {
 
     #[test]
     fn a_local_assigned_an_untyped_source_gets_nothing() {
-        // No parameter carries a surviving reading, the callee is not
-        // in the database, and the literal says nothing.
+        // No parameter has a surviving reading, the callee is not in
+        // the database, and the literal says nothing.
         let records = detected(
             "  local_8 = param_2;\n\
              \x20 local_10 = FUN_18004b210(param_1);\n\
@@ -317,7 +318,7 @@ mod tests {
             &[&char_star],
         );
 
-        // The direct link and one hop; the second hop is not chased.
+        // The direct link and one hop; the second hop is not followed.
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].variable_name, "local_8");
         assert_eq!(records[1].variable_name, "local_10");
@@ -327,9 +328,9 @@ mod tests {
 
     #[test]
     fn a_hop_before_the_source_is_assigned_gets_nothing() {
-        // The body reads top to bottom: at the hop line `local_8` is
-        // still untyped, and the later direct assignment does not
-        // reach back.
+        // The detector reads the body top to bottom: at the hop line
+        // `local_8` is still untyped, and the later direct assignment
+        // does not reach back.
         let char_star = param_reading("param_1", "char *");
         let records = detected(
             "  local_10 = local_8;\n\

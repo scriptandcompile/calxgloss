@@ -4,50 +4,53 @@
 //! a single instruction:
 //!
 //! - **the convention letter of an MSVC-mangled listing symbol** — the
-//!   property letters carry it (`A` cdecl, `C`/`E`/`G` thiscall, `I`
-//!   stdcall), and the mangling decoder already reads the letter for
-//!   parseability and used to throw it away;
+//!   property letters spell it (`A` cdecl, `C`/`E`/`G` thiscall, `I`
+//!   stdcall); the mangling decoder already reads the letter to parse
+//!   the symbol, and this channel reports that letter;
 //! - **the `@N` decoration on an import name** — `CreateFileA@28` declares
 //!   twenty-eight argument bytes, and only a callee-pops convention can
 //!   leave a fixed byte count to name, so the decoration spells stdcall.
 //!
-//! Each reading lands as a [`InferredType::Convention`] record keyed by
-//! the name as spelled, with the name itself as evidence — one record per
-//! function, the same keying the return record uses. The two channels
-//! carry their own method variants ([`InferenceMethod::MangledConvention`]
-//! and [`InferenceMethod::ImportDecoration`]) and their own confidence
-//! bands: both are near-certain spellings, the letter scoring at
-//! [`MANGLED_LETTER_CONFIDENCE`] and the decoration at
-//! [`IMPORT_DECORATION_CONFIDENCE`]; nothing self-upgrades.
+//! Each reading becomes an [`InferredType::Convention`] record keyed by
+//! the name as spelled, with the name itself as evidence — one record
+//! per function, the same keying the return record uses. The two
+//! channels have their own method variants
+//! ([`InferenceMethod::MangledConvention`] and
+//! [`InferenceMethod::ImportDecoration`]) and their own confidence
+//! bands: both spellings are near-certain, the letter scoring at
+//! `MANGLED_LETTER_CONFIDENCE` and the decoration at
+//! `IMPORT_DECORATION_CONFIDENCE`; neither channel raises its own score.
 //!
-//! A name that spells no convention in the closed set produces nothing:
-//! an undecorated import, a Pascal-spelled `B` letter — outside the set —
-//! and the namespace-noise guard the mangling detector applies to `std::`
-//! and `operator` members all yield no reading rather than a guess. The
-//! body-evidence channels (epilogue `ret N`, caller stack cleanup, x64
-//! shape) read the conventions no name spells; they are separate passes
-//! over the disassembly, in [`crate::stack_discipline`].
+//! A name that spells no convention in the closed set produces nothing.
+//! An undecorated import, a Pascal-spelled `B` letter (outside the set),
+//! and a `std::` or `operator` member — rejected by the mangling
+//! detector's namespace-noise guard — all yield no reading rather than
+//! a guess. The body-evidence channels (epilogue `ret N`, caller stack
+//! cleanup, x64 shape) read the conventions no name spells. They are
+//! separate passes over the disassembly, in [`crate::stack_discipline`].
 
 use crate::mangling::{is_namespace_noise, parse_msvc};
 use crate::types::{CallingConvention, InferenceMethod, InferredConvention, InferredType};
 
-/// Confidence of the reading an MSVC-mangled name's convention letter
-/// carries: the symbol states the convention outright, so it sits at the
-/// top of the scale beside the structural dispatch evidence — above the
-/// name's own type contract (mangling 80), which the same symbol also
-/// carries.
+/// Evidence confidence of the reading an MSVC-mangled name's convention
+/// letter gives: the symbol states the convention outright, so it sits
+/// at the top of the scale beside the structural dispatch evidence —
+/// above the name's own type contract (mangling 80), which the same
+/// symbol also spells.
 const MANGLED_LETTER_CONFIDENCE: u8 = 90;
 
-/// Confidence of the reading an `@N` import decoration carries: the byte
-/// count is stated exactly, but it names the import's decoration rather
-/// than the symbol's own encoding, so it sits a notch below the mangled
-/// letter and beside the vtable/COM dispatch band.
+/// Evidence confidence of the reading an `@N` import decoration gives:
+/// the byte count is stated exactly, but it describes the import's
+/// decoration rather than the symbol's own encoding, so it sits just
+/// below the mangled letter and level with the vtable/COM dispatch
+/// band.
 const IMPORT_DECORATION_CONFIDENCE: u8 = 85;
 
-/// Assemble one convention reading into its record: the channel's method
-/// and confidence, the function keyed by the name or listing evidence,
-/// and the evidence text itself. Shared by the name-borne channels
-/// below and by the listing-borne channels of [`crate::stack_discipline`].
+/// Build one convention reading's record: it holds the channel's method
+/// and evidence confidence, the function keyed by the name or listing
+/// evidence, and the evidence text itself. The name-borne channels below
+/// and the listing-borne channels of [`crate::stack_discipline`] share
+/// this function.
 pub(crate) fn convention_record(
     function: &str,
     convention: CallingConvention,
@@ -65,13 +68,13 @@ pub(crate) fn convention_record(
     })
 }
 
-/// The declared argument bytes an `@N` import decoration spells, when the
-/// name carries one: a non-empty base name, then `@`, then a non-empty
+/// The declared argument bytes an `@N` import decoration spells, when
+/// the name has one: a non-empty base name, then `@`, then a non-empty
 /// run of digits. `CreateFileA@28` spells 28; a plain `CloseHandle`, an
 /// ordinal placeholder, and a mangled name's trailing `@Z` spell nothing
 /// — the digit guard is what keeps decorated imports apart from the
-/// `@`-separated segments of a mangled symbol. Shared with the
-/// cross-function corroboration pass of [`crate::corroboration`].
+/// `@`-separated segments of a mangled symbol. The cross-function
+/// corroboration pass of [`crate::corroboration`] shares this function.
 pub(crate) fn declared_argument_bytes(name: &str) -> Option<&str> {
     let (base, digits) = name.rsplit_once('@')?;
     (!base.is_empty() && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
@@ -86,7 +89,7 @@ pub(crate) fn declared_argument_bytes(name: &str) -> Option<&str> {
 ///
 /// The detector is stateless: every reading comes from the name it is
 /// handed, so one detector serves an entire scan. It fetches nothing
-/// itself — the engine hands it the listing names and the import names,
+/// itself — the scan hands it the listing names and the import names,
 /// the same names the mangling detector reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConventionDetector;
@@ -97,16 +100,16 @@ impl ConventionDetector {
         Self
     }
 
-    /// The convention reading an MSVC-mangled listing symbol carries,
-    /// keyed by the symbol verbatim with the symbol itself as evidence.
+    /// The convention reading an MSVC-mangled listing symbol gives,
+    /// keyed by the symbol verbatim, with the symbol itself as evidence.
     ///
     /// The reading comes from the same decode the mangling detector runs
-    /// for parameter types — the convention letter is part of the
-    /// symbol's property letters — and the same guards apply: a name that
-    /// is not mangled, or whose encoding falls outside the practical
-    /// subset, produces nothing, and a `std::` or `operator` member names
-    /// library plumbing rather than a function of the analyzed program.
-    /// A letter outside the closed set (a Pascal-spelled `B`) decodes for
+    /// for parameter types: the convention letter is part of the
+    /// symbol's property letters. The same guards apply. A name that is
+    /// not mangled, or whose encoding falls outside the practical
+    /// subset, produces nothing. A `std::` or `operator` member is
+    /// library plumbing, not a function of the analyzed program. A
+    /// letter outside the closed set (a Pascal-spelled `B`) decodes for
     /// types but spells no convention.
     pub fn from_listing_name(&self, name: &str) -> Option<InferredType> {
         let signature = parse_msvc(name)?;
@@ -123,9 +126,9 @@ impl ConventionDetector {
         ))
     }
 
-    /// The convention reading an import name's `@N` decoration carries,
-    /// keyed by the name as spelled with the name itself as evidence:
-    /// the declared argument byte count means the callee pops its own
+    /// The convention reading an import name's `@N` decoration gives,
+    /// keyed by the name as spelled, with the name itself as evidence.
+    /// The declared argument byte count means the callee pops its own
     /// arguments, so the import is called stdcall.
     ///
     /// An undecorated import — a plain `CloseHandle` — spells nothing
@@ -268,7 +271,7 @@ mod tests {
     #[test]
     fn a_std_namespace_member_carries_no_reading() {
         // The mangling detector's namespace-noise guard applies here too:
-        // a mangled `std::` member names library plumbing, and its
+        // a mangled `std::` member is library plumbing, and its
         // convention is not a reading about the analyzed program.
         assert!(
             ConventionDetector::new()
@@ -312,7 +315,8 @@ mod tests {
     fn only_a_digit_count_after_the_last_at_is_a_decoration() {
         // The digit guard keeps mangled `@` segments and ordinal
         // placeholders out: `@Z` ends a mangled name, `Ordinal_123` has
-        // no `@` at all, and empty or mixed spellings name no byte count.
+        // no `@` at all, and empty or mixed spellings spell no byte
+        // count.
         let detector = ConventionDetector::new();
         assert!(
             detector

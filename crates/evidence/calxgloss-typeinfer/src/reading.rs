@@ -1,11 +1,11 @@
 //! The detector-internal accumulator shared by the detectors.
 //!
-//! Every detector walks a decompiled body and accumulates one [`Reading`]
-//! per parameter usage it finds, then resolves those readings into one
-//! record per parameter and assembles the [`InferredParamType`] records.
-//! This is plumbing internal to the crate — the persisted contract is the
-//! record, not the accumulator — so the shape lives here once instead of
-//! being restated inside each detector.
+//! Every detector walks a decompiled body and collects one [`Reading`]
+//! per parameter usage it finds. It then resolves those readings down to
+//! one per parameter and assembles the [`InferredParamType`] records.
+//! This accumulator is internal to the crate: the persisted contract is
+//! the record, not the accumulator. The shape lives here once instead of
+//! inside each detector.
 
 use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
 
@@ -14,23 +14,23 @@ use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
 pub(crate) struct Reading {
     /// The parameter the reading is about.
     pub(crate) param_index: usize,
-    /// The evidence family behind the reading; detectors that read one
-    /// parameter through several families key their per-family keeping
-    /// on it.
+    /// The evidence family behind the reading. A detector that reads one
+    /// parameter through several families keys its per-family keeping on
+    /// this field.
     pub(crate) method: InferenceMethod,
     /// The narrowed type text the evidence suggests.
     pub(crate) inferred_type: &'static str,
     /// How strongly the evidence supports the reading, on the detector's
     /// plain `u8` scale.
     pub(crate) confidence: u8,
-    /// The source line carrying the evidence.
+    /// The source line the evidence comes from.
     pub(crate) evidence: String,
 }
 
 impl Reading {
-    /// Resolve readings down to one per parameter: the highest-confidence
-    /// reading wins and the rest are dropped; a tie keeps the reading the
-    /// body showed first.
+    /// Resolve readings down to one per parameter: the reading with the
+    /// highest confidence score wins and the rest are dropped. A tie
+    /// keeps the reading the body showed first.
     pub(crate) fn resolve(readings: Vec<Self>) -> Vec<Self> {
         let mut winners: Vec<Self> = Vec::new();
         for reading in readings {
@@ -47,9 +47,9 @@ impl Reading {
     }
 
     /// Assemble the reading into its record: the type text becomes owned,
-    /// the confidence crosses onto the shared 0–100 scale, and `scope`
-    /// says how far the reading reaches beyond the function it was made
-    /// in.
+    /// the score crosses onto the shared 0–100 evidence-confidence scale,
+    /// and `scope` says how far the reading reaches beyond the function
+    /// it was made in.
     pub(crate) fn into_record(
         self,
         function: String,
