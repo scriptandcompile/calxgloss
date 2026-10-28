@@ -1,29 +1,29 @@
 //! Handle lifecycle detection.
 //!
-//! This module provides [`HandleDetector`], which carries the opener
-//! and closer names a scan reads decompiled bodies against — the
-//! Win32 `CreateFileW` and its ANSI twin `CreateFileA` closed by
-//! `CloseHandle`, and the C stdio `fopen` closed by `fclose` —
-//! pairing each open with its close inside a single function so the
-//! prompt can suggest an RAII guard struct with a `Drop` impl
-//! standing in for the manual close.
+//! This module provides [`HandleDetector`]. The detector holds the
+//! opener and closer names the memory scan matches decompiled bodies
+//! against: the Win32 `CreateFileW` and its ANSI twin `CreateFileA`,
+//! both closed by `CloseHandle`, and the C stdio `fopen`, closed by
+//! `fclose`. It pairs each open with its close inside one function, so
+//! the prompt can suggest an RAII guard struct with a `Drop` impl in
+//! place of the manual close.
 //!
 //! Each recognized name is a [`HandleSignature`]: the callee spelling
-//! as the decompiler writes it and the [`HandleType`] family it stands
-//! for, on the opening side or the closing one. [`default_openers`]
-//! and [`default_closers`] carry the standard name sets, and
-//! [`HandleDetector::with_default_names`] builds a detector that
-//! scans against them.
+//! as the decompiler writes it, and the [`HandleType`] family it
+//! represents on the opening side or the closing side.
+//! [`default_openers`] and [`default_closers`] supply the standard
+//! name sets, and [`HandleDetector::with_default_names`] builds a
+//! detector that scans against them.
 //!
-//! [`HandleDetector::detect_handles`] runs the reading: it walks a
-//! decompiled body's direct calls in source order, binds each
-//! recognized open to the variable the decompiler stores its result
-//! in, and closes that handle when a recognized closer of the same
-//! family names the same variable — one [`HandleLifecycle`] per pair.
-//! The pairing carries the guard pattern that stands in for the
-//! manual close: a whole-scope guard wherever the handle is dead at
-//! its close, a guard scoped to the open-to-close span wherever the
-//! body reads the handle value after the close.
+//! [`HandleDetector::detect_handles`] makes the reading. It walks a
+//! decompiled body's direct calls in source order, records the
+//! variable the decompiler stores each recognized open in, and closes
+//! that handle when a recognized closer of the same family names the
+//! same variable. Each pair becomes one [`HandleLifecycle`]. The pair
+//! also names the guard pattern that replaces the manual close: a
+//! whole-scope guard when the handle is dead at its close, and a
+//! guard scoped to the open-to-close span when the body reads the
+//! handle value after the close.
 
 use crate::types::{HandleLifecycle, HandleType};
 use calxgloss_decomp::DecompiledFunction;
@@ -34,16 +34,17 @@ use calxgloss_types::{
     skip_string, strip_casts,
 };
 
-/// The scan: demangled `.`-joined spellings stay whole, member accesses
-/// through `->` are skipped, and C keywords are not calls.
+/// The call-scan options used on every body: demangled `.`-joined
+/// spellings stay whole, member accesses through `->` are skipped, and
+/// C keywords are not treated as calls.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::DemangledDot,
     reject_preceding: b".>",
     skip_keywords: &NON_CALL_KEYWORDS,
 };
 
-/// Every direct call `name(args)` in the body — the shared pseudo-C
-/// scan configured by [`CALL_SCAN`].
+/// Every direct call `name(args)` in the body, found by the shared
+/// pseudo-C scan configured in [`CALL_SCAN`].
 fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
@@ -53,27 +54,27 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 // ============================================================
 
 /// One handle name the detector recognizes: the callee spelling and
-/// the handle family it stands for, as an opener or as a closer.
+/// the handle family it represents, as an opener or as a closer.
 ///
-/// A signature is a name, not a shape: it only says that a call to
-/// [`name`](Self::name) opens or closes a handle of
+/// A signature is only a name, not a body shape. It says that a call
+/// to [`name`](Self::name) opens or closes a handle of
 /// [`handle_type`](Self::handle_type) — `CreateFileW` a kernel object
-/// handle, `fclose` a stdio stream — while where the call sits in the
-/// function and which open its closer answers is the detector's
-/// reading. The family is what keeps the two sides straight: a closer
-/// only pairs with an open of its own family.
+/// handle, `fclose` a stdio stream. Where the call sits in the
+/// function, and which open a closer belongs to, is left to the
+/// detector's reading. The family keeps the two sides straight: a
+/// closer only pairs with an open of its own family.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleSignature {
     /// The callee spelling as the decompiler writes it, e.g.
     /// `CreateFileW`, `fclose`.
     pub name: String,
-    /// The handle family this spelling stands for.
+    /// The handle family this spelling represents.
     pub handle_type: HandleType,
 }
 
 impl HandleSignature {
     /// A signature recognizing the callee spelling `name` as an open
-    /// or close of a `handle_type` handle.
+    /// or a close of a `handle_type` handle.
     pub fn new(name: impl Into<String>, handle_type: HandleType) -> Self {
         Self {
             name: name.into(),
@@ -88,18 +89,19 @@ impl HandleSignature {
 
 /// Handle open/close pair tracking over decompiled functions.
 ///
-/// The detector owns the name set a scan reads bodies against:
-/// [`HandleSignature`] records for the opening side and for the
-/// closing side. Both sets are configurable — supply them whole
-/// through [`with_names`](Self::with_names) or grow them one name at
-/// a time with [`add_opener`](Self::add_opener) and
-/// [`add_closer`](Self::add_closer) — and [`openers`](Self::openers)
-/// and [`closers`](Self::closers) report them in configuration order,
-/// so two detectors built the same way scan identically and results
-/// diff cleanly. The detector holds no scan source of its own and
-/// never writes back to the program; one detector serves an entire
-/// scan and can be shared by reference across concurrent per-function
-/// passes.
+/// The detector holds the name sets the memory scan matches bodies
+/// against: [`HandleSignature`] records for the opening side and for
+/// the closing side. Both sets are configurable. Supply them whole
+/// with [`with_names`](Self::with_names), or add names one at a time
+/// with [`add_opener`](Self::add_opener) and
+/// [`add_closer`](Self::add_closer). [`openers`](Self::openers) and
+/// [`closers`](Self::closers) report the names in configuration order,
+/// so two detectors built the same way scan identically and their
+/// results diff cleanly.
+///
+/// The detector holds no scan source of its own and never writes back
+/// to the program. One detector serves a whole scan, and it can be
+/// shared by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandleDetector {
     openers: Vec<HandleSignature>,
@@ -107,24 +109,24 @@ pub struct HandleDetector {
 }
 
 impl HandleDetector {
-    /// A detector with no names configured: every body it is handed
-    /// pairs nothing until the standard sets arrive through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_opener`](Self::add_opener) and
+    /// A detector with no names configured. It pairs nothing in any
+    /// body until the standard sets are added by
+    /// [`with_default_names`](Self::with_default_names), or names are
+    /// added one at a time by [`add_opener`](Self::add_opener) and
     /// [`add_closer`](Self::add_closer).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A detector that scans against the standard name sets —
-    /// [`default_openers`] and [`default_closers`] — in their
+    /// A detector that scans against the standard name sets from
+    /// [`default_openers`] and [`default_closers`], kept in their
     /// configuration order.
     pub fn with_default_names() -> Self {
         Self::with_names(default_openers(), default_closers())
     }
 
     /// A detector that scans against exactly `openers` and `closers`,
-    /// each kept in the order it is given.
+    /// keeping each name in the order it is given.
     pub fn with_names(
         openers: impl IntoIterator<Item = HandleSignature>,
         closers: impl IntoIterator<Item = HandleSignature>,
@@ -157,42 +159,44 @@ impl HandleDetector {
         &self.closers
     }
 
-    /// The open/close pairs one function's body carries.
+    /// The open/close pairs found in one function's body.
     ///
     /// The reading walks the body's direct calls in source order —
     /// outside string literals, whole names only — and classifies each
-    /// against the configured sets. An open counts only where its
+    /// call against the configured sets. An open counts only where its
     /// result is stored into a plain variable, the spelling the
-    /// decompiler writes on the assignment (`hFile =
-    /// CreateFileW(...);`); a close counts only where its first
+    /// decompiler writes on an assignment (`hFile =
+    /// CreateFileW(...);`). A close counts only where its first
     /// argument, seen through any cast, names one plain variable
-    /// (`CloseHandle(hFile);`). A closer answers the most recent
-    /// still-open handle of the variable it names *and its own
-    /// family* — so where a variable is opened twice before one
-    /// close, the close pairs with the second handle and the first
-    /// stands unpaired, and a closer of another family (`fclose` on a
-    /// kernel object handle) pairs with nothing — and an open with no
-    /// close naming its variable in this function is reported by
-    /// nothing: whether the handle escapes or leaks is a cross-function
-    /// question, outside this pairing.
+    /// (`CloseHandle(hFile);`). A close pairs with the most recent
+    /// still-open handle of the variable it names *and of its own
+    /// family*. So where a variable is opened twice before one close,
+    /// the close pairs with the second handle and the first stands
+    /// unpaired, and a closer of another family (`fclose` on a kernel
+    /// object handle) pairs with nothing. An open with no close naming
+    /// its variable in this function is reported by nothing: whether
+    /// the handle escapes or leaks is a cross-function question,
+    /// outside this pairing.
     ///
-    /// Each pair becomes one [`HandleLifecycle`] naming the family,
-    /// the two recognized spellings that opened and closed the
-    /// handle, and the guard pattern standing in for the manual
-    /// close — [`GUARD_SUGGESTION`] at [`HANDLE_PAIR_CONFIDENCE`],
-    /// narrowed to [`SCOPED_GUARD_SUGGESTION`] at
-    /// [`SCOPED_GUARD_CONFIDENCE`] where the body reads the handle
-    /// value after the close — with the open line and the close line
-    /// joined as the evidence. Records come back in open order, so
-    /// two scans of one body diff cleanly.
+    /// Each pair becomes one [`HandleLifecycle`]. The record names the
+    /// family, the two recognized spellings that opened and closed the
+    /// handle, and the guard pattern that replaces the manual close.
+    /// That pattern is [`GUARD_SUGGESTION`] at
+    /// [`HANDLE_PAIR_CONFIDENCE`] evidence confidence. Where the body
+    /// reads the handle value after the close, it narrows to
+    /// [`SCOPED_GUARD_SUGGESTION`] at [`SCOPED_GUARD_CONFIDENCE`]. The
+    /// evidence is the open line and the close line joined together.
+    /// Records come back in open order, so two scans of one body diff
+    /// cleanly.
     pub fn detect_handles(&self, func: &DecompiledFunction) -> Vec<HandleLifecycle> {
         let calls = direct_calls(&func.body);
         let mut open: Vec<OpenHandle> = Vec::new();
         let mut pairs: Vec<(usize, HandleLifecycle)> = Vec::new();
         for call in &calls {
             if let Some(signature) = self.openers.iter().find(|o| o.name == call.callee) {
-                // An open the body stores nowhere the pairing can key
-                // on names no handle this function closes.
+                // When the body stores an open nowhere the pairing can
+                // follow by name, that call names no handle this
+                // function closes.
                 if let Some(variable) = assigned_variable(&func.body, call.offset) {
                     open.push(OpenHandle {
                         variable: variable.to_string(),
@@ -243,16 +247,19 @@ impl HandleDetector {
         pairs.into_iter().map(|(_, record)| record).collect()
     }
 
-    /// The handles one function's body opens and never closes.
+    /// The handles one function's body leaves open: the handles held
+    /// in a plain variable that no recognized closer in this body
+    /// releases.
     ///
-    /// Runs the same walk as [`detect_handles`] — same configured
-    /// sets, same variable binding, same most-recent-still-open
-    /// handle of the closer's own family closing rule — and returns
-    /// what it leaves standing: opens no recognized closer names.
-    /// Whether such a handle escapes the function or leaks is a
-    /// cross-function question, answered by that pass from this
-    /// list, exactly as the allocator's open list feeds it for
-    /// blocks.
+    /// This runs the same walk as [`detect_handles`] — the same
+    /// configured sets, the same variable binding, and the same rule
+    /// that a close pairs with the most recent still-open handle of
+    /// the closer's own family — but where the pairing reports the
+    /// closed pairs and says nothing about the rest, this returns what
+    /// the walk leaves open. Whether such a handle escapes the function
+    /// or leaks is a cross-function question, so the cross-function
+    /// pass starts from exactly this list, as it does from the
+    /// allocator's open list for blocks.
     pub(crate) fn open_handles(&self, func: &DecompiledFunction) -> Vec<OpenHandle> {
         let mut open: Vec<OpenHandle> = Vec::new();
         for call in direct_calls(&func.body) {
@@ -281,16 +288,17 @@ impl HandleDetector {
     }
 
     /// Whether the body reads a closed handle's variable after the
-    /// close that released it: a whole-word occurrence of the name
-    /// outside string literals, past the closing `)` at `closed_at`,
-    /// that is neither the first argument of a later recognized open
-    /// or close — where the name belongs to another handle's
-    /// lifecycle, the decompiler reusing the variable being idiomatic
-    /// — nor the target of a plain assignment, the decompiler
-    /// rebinding the name to a new handle or clearing it. A
-    /// comparison, a return, or an argument to any other call reads
-    /// the closed handle's value, and a value read after its close
-    /// outlives any guard that would own it.
+    /// close that released it. The reading looks for a whole-word
+    /// occurrence of the name, outside string literals, past the
+    /// closing `)` at `closed_at`. Two kinds of occurrence are not a
+    /// read: the name as the first argument of a later recognized open
+    /// or close, where it belongs to another handle's lifecycle and
+    /// the decompiler is reusing the variable, which is idiomatic; and
+    /// the name as the target of a plain assignment, where the
+    /// decompiler rebinds it to a new handle or clears it. A
+    /// comparison, a return, or an argument to any other call does
+    /// read the closed handle's value. A value read after its close
+    /// outlives any guard that could own it.
     fn read_after_close(
         &self,
         body: &str,
@@ -330,9 +338,9 @@ impl HandleDetector {
     }
 
     /// Whether the occurrence at `at` sits inside a call to one of
-    /// this detector's recognized opener or closer names — a mention
-    /// belonging to another handle's open or close rather than a
-    /// read of the closed one.
+    /// this detector's recognized opener or closer names. Such a
+    /// mention belongs to another handle's open or close, so it is not
+    /// a read of the closed handle.
     fn inside_recognized_call(&self, calls: &[CallSite<'_>], at: usize) -> bool {
         calls.iter().any(|call| {
             (self.openers.iter().any(|o| o.name == call.callee)
@@ -347,40 +355,41 @@ impl HandleDetector {
 // The pairing reading
 // ============================================================
 
-/// Confidence of a pairing read from an open and a close of the same
-/// variable in one body: both sides are explicit calls to recognized
-/// names, and the variable the decompiler stored the opener's result
-/// into is the variable the closer names — but the tie between them
-/// is the decompiler's naming, not resolved data flow, and a branch
-/// could leave either side unreached. The failure check every handle
-/// opener invites (`if (hFile == INVALID_HANDLE_VALUE)`) sits between
-/// the two sides without strengthening or weakening either.
+/// The evidence confidence for a pairing read from an open and a close
+/// of the same variable in one body. Both sides are explicit calls to
+/// recognized names, and the variable the decompiler stored the
+/// opener's result into is the variable the closer names. But the link
+/// between them is the decompiler's naming, not resolved data flow,
+/// and a branch could leave either side unreached. The failure check
+/// that every handle opener invites sits between the two sides and
+/// strengthens or weakens neither
+/// (`if (hFile == INVALID_HANDLE_VALUE)`).
 const HANDLE_PAIR_CONFIDENCE: u8 = 70;
 
-/// The Rust pattern an open/close pairing stands in for: a guard
-/// struct that owns the handle and calls the closer in its `Drop`, so
-/// the manual close disappears and every exit path — including the
-/// early returns a failure check invites — still releases the handle.
+/// The Rust pattern an open/close pairing suggests in place of the
+/// manual close: a guard struct that owns the handle and calls the
+/// closer in its `Drop`. The manual close disappears, and every exit
+/// path still releases the handle, including the early returns a
+/// failure check invites.
 pub(crate) const GUARD_SUGGESTION: &str = "RAII guard struct with Drop impl";
 
-/// The pattern a pairing reads as where the body reads the handle
-/// value after the close: the value outlives the close, so a guard
-/// cannot own the handle for the whole enclosing scope — it owns the
+/// The pattern a pairing reads as when the body reads the handle value
+/// after the close. The value outlives the close, so a guard cannot
+/// own the handle for the whole enclosing scope. It owns the
 /// open-to-close span, and the rest of the body keeps the bare value.
 const SCOPED_GUARD_SUGGESTION: &str = "scoped RAII guard struct with Drop impl";
 
-/// Confidence of the scoped narrowing: the pairing evidence is
-/// [`HANDLE_PAIR_CONFIDENCE`]'s, but the narrowing rests on reading
-/// what each later naming of the variable is — a read of the closed
-/// handle rather than the decompiler rebinding the name to a new
-/// handle or clearing it — and a misread there scopes a guard that
-/// did not need scoping.
+/// The evidence confidence for the scoped narrowing. Its pairing
+/// evidence is [`HANDLE_PAIR_CONFIDENCE`]'s, but the narrowing rests
+/// on reading what each later naming of the variable is: a read of the
+/// closed handle, or the decompiler rebinding the name to a new handle
+/// or clearing it. A misread there puts a guard into a scope that did
+/// not need one.
 const SCOPED_GUARD_CONFIDENCE: u8 = 65;
 
-/// A handle still waiting for its close while the body is walked: the
-/// variable holding it, the family behind it, the recognized opener
-/// spelling that obtained it, and where and on which line the open
-/// sits.
+/// An open handle the walk has found but not yet closed: the variable
+/// holding it, the family behind it, the recognized opener spelling
+/// that obtained it, and where and on which line the open sits.
 pub(crate) struct OpenHandle {
     pub(crate) variable: String,
     pub(crate) handle_type: HandleType,
@@ -389,12 +398,12 @@ pub(crate) struct OpenHandle {
     pub(crate) line: String,
 }
 /// The variable a call's result is stored into, read from the call's
-/// own line: walking left from the callee to the `=` that assigns,
-/// the plain identifier sitting left of that `=`. A `=` that is part
-/// of a comparison (`==`, `!=`, `<=`, `>=`) or a compound assignment
-/// (`+=` and friends) assigns no result, and a target that is not a
-/// plain variable — a dereference, an indexed element, a field —
-/// stores the handle somewhere the pairing cannot key on, so neither
+/// own line: walking left from the callee to the `=` that assigns, the
+/// plain identifier sitting left of that `=`. A `=` that is part of a
+/// comparison (`==`, `!=`, `<=`, `>=`) or a compound assignment (`+=`
+/// and friends) assigns no result. A target that is not a plain
+/// variable — a dereference, an indexed element, a field — stores the
+/// handle somewhere the pairing cannot follow by name. Neither case
 /// binds anything.
 fn assigned_variable(body: &str, callee_offset: usize) -> Option<&str> {
     let line_start = body[..callee_offset]
@@ -455,13 +464,13 @@ fn assigned_variable(body: &str, callee_offset: usize) -> Option<&str> {
 
 /// The named type the body declares for `variable`, when it declares
 /// one: a binding the decompiler spelled `<Type> <variable>;` or
-/// `<Type> <variable> = ...` — the type carried on the handle's own
-/// declaration, or on the opener's result binding where the
+/// `<Type> <variable> = ...`. The type comes from the handle's own
+/// declaration, or from the opener's result binding where the
 /// decompiler declared and assigned in one statement. A primitive or
 /// `undefined`-family type names nothing worth putting a `Drop` impl
-/// on, a bare assignment without a type declares nothing, and the
-/// reading is blind inside string literals and to longer names that
-/// merely end where the variable's does.
+/// on, and a bare assignment without a type declares nothing. The
+/// reading does not look inside string literals, and it does not match
+/// a longer name that merely ends where the variable's name ends.
 fn declared_type(body: &str, variable: &str) -> Option<String> {
     let bytes = body.as_bytes();
     let name = variable.as_bytes();
@@ -497,12 +506,12 @@ fn declared_type(body: &str, variable: &str) -> Option<String> {
     None
 }
 
-/// Whether the whole-word occurrence of a variable spanning
-/// `name_start..name_end` is a declared binding — the name followed
-/// by `;` or `=` and preceded, past any `*`, by a spelled type — and
-/// the named type it declares, or `None` when the occurrence is a
-/// use, an untyped assignment, or a binding to a primitive or a
-/// keyword.
+/// The named type declared by the whole-word occurrence of a variable
+/// that spans `name_start..name_end`, or `None`. The occurrence is a
+/// declared binding when the name is followed by `;` or `=` and
+/// preceded, past any `*`, by a spelled type. It names nothing when
+/// the occurrence is a use, an untyped assignment, or a binding to a
+/// primitive or a keyword.
 fn declaration_type(body: &str, name_start: usize, name_end: usize) -> Option<String> {
     let bytes = body.as_bytes();
     // After the name a declaration binds: `;` or a plain `=`, never
@@ -538,10 +547,11 @@ fn declaration_type(body: &str, name_start: usize, name_end: usize) -> Option<St
     named_type(body[line_start..before].trim())
 }
 
-/// Whether a declaration's spelled type names something worth
-/// putting a `Drop` impl on: plain identifier words, none of them a
-/// statement keyword, and at least one outside the primitive and
-/// `undefined` family the decompiler writes on untyped slots.
+/// Whether a declaration's spelled type names something worth putting
+/// a `Drop` impl on. The type must be plain identifier words, none of
+/// them a statement keyword, and at least one of them outside the
+/// primitive and `undefined` family the decompiler writes on untyped
+/// slots.
 fn named_type(ty: &str) -> Option<String> {
     let words: Vec<&str> = ty.split_whitespace().collect();
     let named = !words.is_empty()
@@ -565,12 +575,12 @@ fn named_type(ty: &str) -> Option<String> {
             .all(|word| crate::allocator::is_type_word(word));
     named.then(|| ty.to_string())
 }
-/// The type words a decompiler cast may spell, the decompiler's
-/// vocabulary the other detectors' scans strip plus the handle
-/// typedefs this detector's casts carry: win32 analysis types a
+/// The type words a decompiler cast may spell: the decompiler
+/// vocabulary the other detectors' scans strip, plus the handle
+/// typedefs this detector's casts add. Win32 analysis recognizes a
 /// `CreateFile` result as `HANDLE` and a `fopen` result as `FILE *`,
-/// and the decompiler writes those names on a cast when the applied
-/// type differs from the callee's parameter.
+/// so the decompiler may write those names in a cast when the applied
+/// type differs from the callee's parameter type.
 fn is_type_word(word: &str) -> bool {
     matches!(
         word,
@@ -609,10 +619,10 @@ fn is_type_word(word: &str) -> bool {
     )
 }
 
-/// The argument text when it is one plain variable name — the spelling
-/// a close names the handle it closes by. Anything else — an offset
-/// into the handle table, a dereferenced pointer, a literal — names no
-/// variable the pairing can key on.
+/// The argument text when it is one plain variable name. This is how a
+/// close names the handle it closes. Anything else — an offset into
+/// the handle table, a dereferenced pointer, a literal — names no
+/// variable the pairing can follow by name.
 fn plain_variable(arg: &str) -> Option<&str> {
     let trimmed = arg.trim();
     let mut bytes = trimmed.bytes();
@@ -623,11 +633,11 @@ fn plain_variable(arg: &str) -> Option<&str> {
     Some(trimmed)
 }
 
-/// Whether the variable occurrence ending at `name_end` opens a plain
+/// Whether the variable occurrence ending at `name_end` starts a plain
 /// assignment — the decompiler rebinding the name to a new handle or
 /// clearing it — rather than reading the value it held. A comparison
 /// (`==`, `!=`, `<=`, `>=`) or a compound assignment (`+=` and
-/// friends) reads the value, so it is no rebinding.
+/// friends) reads the value, so it is not a rebinding.
 fn rebinds_variable(body: &str, name_end: usize) -> bool {
     let rest = body[name_end..].trim_start();
     let Some(rest) = rest.strip_prefix('=') else {
@@ -640,12 +650,12 @@ fn rebinds_variable(body: &str, name_end: usize) -> bool {
 // The standard name sets
 // ============================================================
 
-/// The standard opener names: the spellings a scan recognizes as
-/// handle opens out of the box — the Win32 `CreateFileW` and its ANSI
-/// twin `CreateFileA`, each standing for a kernel object handle, and
-/// the C stdio `fopen`, standing for a stream. Each name carries the
-/// family it stands for, so a recognized closer knows which opens it
-/// could answer.
+/// The standard opener names: the spellings the memory scan recognizes
+/// as handle opens by default — the Win32 `CreateFileW` and its ANSI
+/// twin `CreateFileA`, both standing for a kernel object handle, and
+/// the C stdio `fopen`, standing for a stream. Each name records the
+/// family it represents, so a recognized closer knows which opens it
+/// may close.
 pub fn default_openers() -> Vec<HandleSignature> {
     vec![
         HandleSignature::new("CreateFileW", HandleType::KernelObject),
@@ -654,11 +664,11 @@ pub fn default_openers() -> Vec<HandleSignature> {
     ]
 }
 
-/// The standard closer names: the spellings a scan recognizes as
-/// handle releases — `CloseHandle`, which closes any kernel object
-/// handle however it was obtained, and `fclose`, which closes a stdio
-/// stream. Each carries the family it closes, so a closer of one
-/// family never answers an open of another.
+/// The standard closer names: the spellings the memory scan recognizes
+/// as handle releases. `CloseHandle` closes any kernel object handle
+/// however it was obtained, and `fclose` closes a stdio stream. Each
+/// name records the family it closes, so a closer of one family never
+/// closes an open of another family.
 pub fn default_closers() -> Vec<HandleSignature> {
     vec![
         HandleSignature::new("CloseHandle", HandleType::KernelObject),
@@ -676,8 +686,8 @@ mod tests {
 
     #[test]
     fn a_new_detector_starts_with_no_names() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Building a detector is free: it starts empty, compares equal
+        // however it is made, and a clone behaves the same.
         let detector = HandleDetector::new();
         assert!(detector.openers().is_empty());
         assert!(detector.closers().is_empty());
@@ -823,15 +833,15 @@ undefined FUN_18003ab00(void) {
         assert_eq!(records[0].function, "FUN_18003ab00");
         assert_eq!(records[0].handle_type, HandleType::KernelObject);
         // The record names the two recognized spellings the pairing
-        // read, so a prompt sees which opener obtained the handle.
+        // found, so a prompt can see which opener obtained the handle.
         assert_eq!(records[0].opener, "CreateFileW");
         assert_eq!(records[0].closer, "CloseHandle");
-        // The reads between the sides sit inside the handle's life,
-        // and nothing names the handle after the close: the guard can
-        // own it for the whole scope.
+        // The reads between the two sides happen while the handle is
+        // alive, and nothing names the handle after the close. So the
+        // guard can own it for the whole scope.
         assert_eq!(records[0].suggestion, "RAII guard struct with Drop impl");
         assert_eq!(records[0].confidence, HANDLE_PAIR_CONFIDENCE);
-        // The evidence carries both sides of the pairing.
+        // The evidence shows both sides of the pairing.
         assert_eq!(
             records[0].evidence,
             "hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0); CloseHandle(hFile);"
@@ -888,8 +898,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_failure_check_between_the_sides_does_not_disturb_the_pair() {
-        // The invalid-handle guard every `CreateFile` invites names
-        // the variable without opening or closing anything.
+        // The invalid-handle check that every `CreateFile` invites
+        // names the variable without opening or closing anything.
         let records = pairs(
             "\
   hFile = CreateFileW(&DAT_3801a2b0,0x80000000,0,(LPSECURITY_ATTRIBUTES)0x0,2,0x80,0);
@@ -907,7 +917,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn an_open_stored_in_no_variable_pairs_nothing() {
         // `CloseHandle(CreateFileW(...))` names no variable on either
-        // side for the pairing to key on.
+        // side that the pairing can follow by name.
         assert!(
             pairs(
                 "  CloseHandle(CreateFileW(&DAT_3801a2b0,0x80000000,0,(LPSECURITY_ATTRIBUTES)0x0,2,0x80,0));"
@@ -919,7 +929,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn an_open_never_closed_is_not_reported() {
         // Whether the handle escapes or leaks is a cross-function
-        // question; this pairing stays quiet on it.
+        // question, and this pairing says nothing about it.
         assert!(
             pairs(
                 "\
@@ -932,7 +942,7 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_close_before_the_open_pairs_nothing() {
-        // The close answers an earlier handle, not the one the body
+        // The close pairs with an earlier handle, not the one the body
         // opens after it.
         assert!(
             pairs(
@@ -946,9 +956,9 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_closer_of_another_family_pairs_nothing() {
-        // The families keep the sides straight: `fclose` answers a
-        // stream, `CloseHandle` a kernel object handle, and neither
-        // spelling pairs an open of the other family.
+        // The families keep the two sides straight: `fclose` closes a
+        // stream, `CloseHandle` closes a kernel object handle, and
+        // neither spelling pairs with an open of the other family.
         assert!(
             pairs(
                 "\
@@ -969,8 +979,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn the_latest_open_of_a_variable_pairs_with_the_close() {
-        // Two handles stored under one name, one close: the close
-        // answers the second, and the first stands unpaired.
+        // Two handles stored under one name and one close: the close
+        // pairs with the second, and the first stays unpaired.
         let records = pairs(
             "\
   local_10 = fopen(&DAT_3801a2b0,\"rb\");
@@ -998,8 +1008,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn independent_variables_each_pair_in_open_order() {
-        // Closes answer out of nesting order, but the records come
-        // back in open order so two scans diff cleanly.
+        // Closes pair out of nesting order, but the records come back
+        // in open order so two scans diff cleanly.
         let records = pairs(
             "\
   local_10 = fopen(&DAT_3801a2b0,\"rb\");
@@ -1038,7 +1048,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_longer_or_qualified_name_matches_no_configured_name() {
         // Whole names only: a longer spelling is a different callee,
-        // and a member access through an object is no plain call.
+        // and a member access through an object is not a plain call.
         assert!(
             pairs(
                 "\
@@ -1054,7 +1064,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_close_naming_something_other_than_a_variable_pairs_nothing() {
         // A dereferenced pointer names no variable the pairing can
-        // key on.
+        // follow by name.
         assert!(
             pairs(
                 "\
@@ -1068,7 +1078,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_comparison_is_not_an_assignment() {
         // The `==` assigns nothing, so the recognized open stores its
-        // result nowhere the pairing keys on.
+        // result where the pairing cannot follow it.
         assert!(pairs("  if (local_10 == fopen(&DAT_3801a2b0,\"rb\")) { iVar1 = 1; }").is_empty());
     }
 
@@ -1094,9 +1104,9 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_comparison_after_the_close_scopes_the_guard() {
-        // Reading the closed handle's value against null keeps it
-        // alive past the close, so the guard can only own the
-        // open-to-close span.
+        // Comparing the closed handle's value against null reads it
+        // after the close, so a guard may only own the open-to-close
+        // span.
         let records = pairs(
             "\
   hFile = CreateFileW(&DAT_3801a2b0,0x80000000,0,(LPSECURITY_ATTRIBUTES)0x0,2,0x80,0);
@@ -1113,8 +1123,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_call_on_the_handle_after_the_close_scopes_the_guard() {
-        // An unrecognized call naming the closed handle reads its
-        // value after the release.
+        // An unrecognized call that names the closed handle reads its
+        // value after the close.
         let records = pairs(
             "\
   hFile = CreateFileW(&DAT_3801a2b0,0x80000000,0,(LPSECURITY_ATTRIBUTES)0x0,2,0x80,0);
@@ -1130,7 +1140,7 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_return_of_the_closed_handle_scopes_the_guard() {
-        // The value leaves the function after its close; no guard
+        // The value leaves the function after the close, so no guard
         // could own it for the whole scope.
         let records = pairs(
             "\
@@ -1147,9 +1157,9 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_reopen_of_the_variable_after_the_close_keeps_the_plain_guard() {
-        // The decompiler reuses the variable for a second handle: the
-        // rebinding and the second close name that handle, not the
-        // first one, and each pair gets its own whole-scope guard.
+        // The decompiler reuses the variable for a second handle. The
+        // rebinding and the second close name that second handle, not
+        // the first one, and each pair gets its own whole-scope guard.
         let records = pairs(
             "\
   local_10 = fopen(&DAT_3801a2b0,\"rb\");
@@ -1166,9 +1176,9 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn clearing_a_closed_handle_is_not_a_read() {
-        // The decompiler's habit of nulling a closed handle names the
-        // variable after the close without reading the handle; the
-        // guard still owns the whole scope.
+        // The decompiler often sets a closed handle to null. This
+        // names the variable after the close without reading the
+        // handle, so the guard still owns the whole scope.
         let records = pairs(
             "\
   hFile = CreateFileW(&DAT_3801a2b0,0x80000000,0,(LPSECURITY_ATTRIBUTES)0x0,2,0x80,0);
@@ -1182,8 +1192,8 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_string_or_a_longer_name_after_the_close_is_not_a_read() {
         // Whole words outside string literals only: the handle's
-        // letters inside a format string or inside a longer name name
-        // no read of the closed handle.
+        // letters inside a format string, or inside a longer name, are
+        // not a read of the closed handle.
         let records = pairs(
             "\
   hFile = CreateFileW(&DAT_3801a2b0,0x80000000,0,(LPSECURITY_ATTRIBUTES)0x0,2,0x80,0);
@@ -1197,8 +1207,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_pair_inside_a_loop_keeps_its_guard_suggestion() {
-        // The close sits inside the loop that opens; the handle is
-        // dead at every iteration's close either way.
+        // The close sits inside the loop that opens the handle, so the
+        // handle is dead at each iteration's close either way.
         let records = pairs(
             "\
   while (iVar1 != 0) {
@@ -1243,8 +1253,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_named_type_upgrades_the_suggestion_to_a_drop_impl() {
-        // The body spells the handle's own type, so the guard has a
-        // name to hang a Drop impl on.
+        // The body names the handle's own type, so the guard has a
+        // type name to attach the Drop impl to.
         let records = pairs(
             "\
   HANDLE hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
@@ -1258,8 +1268,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_separate_declaration_names_the_type() {
-        // The decompiler often hoists the declaration away from the
-        // opener's assignment; either spelling carries the type.
+        // The decompiler often moves the declaration away from the
+        // opener's assignment. Either spelling records the type.
         let records = pairs(
             "\
   HANDLE hFile;
@@ -1300,8 +1310,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_primitive_declaration_names_nothing() {
-        // `undefined8` is the decompiler writing no type at all; there
-        // is nothing named to put a Drop impl on.
+        // `undefined8` is the decompiler writing no type at all, so
+        // there is no named type to put a Drop impl on.
         let records = pairs(
             "\
   undefined8 local_10 = fopen(&DAT_3801a2b0,\"rb\");
@@ -1327,8 +1337,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_longer_name_ending_the_same_way_is_not_the_declaration() {
-        // The `HANDLE` belongs to `hFile2`; the reading must not let
-        // it name `hFile`'s type.
+        // The `HANDLE` belongs to `hFile2`, and the reading must not
+        // let it name `hFile`'s type.
         let records = pairs(
             "\
   HANDLE hFile2;
@@ -1354,8 +1364,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_named_type_does_not_outrank_the_scoped_narrowing() {
-        // The handle is read after its close, so only a scoped guard
-        // is safe whatever its type is called.
+        // The handle is read after the close, so only a scoped guard
+        // is safe whatever the type is called.
         let records = pairs(
             "\
   HANDLE hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
@@ -1394,8 +1404,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_closed_handle_stands_no_open() {
-        // The pairing already owns this lifecycle; the open list is
-        // what it leaves over, exactly as for allocations.
+        // The pairing already reports this lifecycle, and the open
+        // list is what it leaves over, as it does for allocations.
         assert!(
             opens(
                 "\
@@ -1408,10 +1418,10 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn the_open_list_answers_the_same_walk_as_the_pairing() {
-        // Two opens, one close: the close answers the most recent
-        // still-open handle of its family, and the first stands —
-        // the same rule the pairing applies, so the two readings
-        // cannot disagree about what stands open.
+        // Two opens and one close: the close pairs with the most
+        // recent still-open handle of its family, and the first one
+        // stays open. This is the same rule the pairing applies, so
+        // the two readings cannot disagree about what stands open.
         let handles = opens(
             "\
   hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
