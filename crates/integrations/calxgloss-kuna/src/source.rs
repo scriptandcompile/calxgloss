@@ -1,27 +1,29 @@
-//! `KunaSource` — the loaded program behind every scan seam read (issues
-//! #206 and #207).
+//! `KunaSource` — the loaded program behind every read at the scan seam
+//! (issues #206 and #207).
 //!
 //! Kuna's `ConsoleProgram` is full of `Rc`/`RefCell`: it is neither `Send`
-//! nor `Sync`, so it can neither move to a task thread nor be shared across
-//! one. `KunaSource` is therefore an actor: a dedicated engine thread owns
-//! the program outright, requests arrive over an unbounded channel (whose
-//! sender is `Send + Sync`, so the seam's `&self` futures stay `Send`), and
-//! each answer rides a oneshot back. One handle loads exactly one target
-//! binary, on that one thread — a wrong-program mix-up is structurally
-//! impossible here.
+//! nor `Sync`, so it cannot move to a task thread and one thread cannot
+//! share it with another. `KunaSource` is therefore an actor: a dedicated
+//! engine thread owns the program outright. Requests arrive over an
+//! unbounded channel — its sender is `Send + Sync`, so the seam's `&self`
+//! futures stay `Send` — and each answer returns to the caller over a
+//! oneshot channel. One handle loads exactly one target binary, on that
+//! one thread, so mixing up two programs is impossible by construction.
 //!
-//! Every engine call runs inside `catch_unwind` on the engine thread: an
-//! upstream panic costs one named [`KunaError::EngineFault`], never a process
-//! abort. The import, export, and image-base reads answer through the
-//! `object` crate from the file bytes captured beside the load itself — the
-//! container tables the in-process program does not expose — so no read can
-//! answer from bytes that drifted after the program loaded, and every read
-//! of one source serializes against one program. The string inventory and
-//! the xref walk read the same snapshot through the engine's own analysis
-//! tier; the type-library, struct-layout, enum-values, data-item, and
-//! memory reads answer from the program itself (issue #207). The xref index
-//! is built once, lazily, on the first xref-shaped read and cached on the
-//! thread, so every later read pays only the query.
+//! Every Kuna call runs inside `catch_unwind` on the engine thread: an
+//! upstream panic costs one named [`KunaError::EngineFault`] and never a
+//! process abort — this is how the source isolates panics at the seam. The
+//! import, export, and image-base reads parse the file bytes captured
+//! beside the load itself with the `object` crate, because the in-process
+//! program does not expose those container tables. Those bytes are the
+//! snapshot taken at load, so no read can answer from file bytes that
+//! changed after the program loaded, and all reads of one handle pass
+//! through the one program, one at a time. The string inventory and the xref walk read that same
+//! snapshot through Kuna's own analysis tier; the type-library,
+//! struct-layout, enum-values, data-item, and memory reads answer from the
+//! loaded program itself (issue #207). The xref index is built once,
+//! lazily, on the first read that asks for xrefs, and cached on the
+//! thread — so every later xref read pays only for the query.
 //!
 //! The seam itself (`impl ScanSource for KunaSource`, and the
 //! `PipelineSource::Kuna` arm) lives in `calxgloss-decomp`, beside every
@@ -31,25 +33,26 @@
 //!
 //! The write-back plane (issue #209): Kuna never writes back into the
 //! image, so a type write compiles to a directive in the
-//! [`DirectivePlane`] the engine thread owns, persists to the record of
-//! effort, and replays through the engine's assertion plane on every load.
-//! A program-scoped write is applied live and reported by the engine's own
-//! per-directive outcome; a local-type write is installed for the decompile
-//! loop to apply; a struct-field addition regenerates the owning record,
-//! which takes effect on the next load — Kuna refuses to re-body a
-//! completed record.
+//! [`DirectivePlane`] the engine thread owns. The plane persists to the
+//! record of effort, and every load replays it through Kuna's assertion
+//! plane. A program-scoped write is applied live, and Kuna's own
+//! per-directive outcome report states how it went. A local-type write is
+//! installed for Kuna's decompile loop to apply at that function's next
+//! decompile. A struct-field addition regenerates the record that defines
+//! the struct, and that record takes effect on the next load — Kuna
+//! refuses to rewrite the body of a record it has already applied.
 //!
 //! The pass heartbeat and the decompile budgets (issue #211): a scan phase
 //! arms the source once around its whole group with
-//! [`begin_pass`](KunaSource::begin_pass), and while armed every *unique*
-//! function the phase consumes beats a throttled
-//! [`ProgressEvent::BatchProgress`] in a shape the web UI and logs already
-//! render — a body pulled cold from the engine and replayed warm by the
-//! read cache counts once, so the phase's "n of m" row never outruns the
+//! [`begin_pass`](KunaSource::begin_pass). While armed, every *unique*
+//! function the phase consumes sends one throttled
+//! [`ProgressEvent::BatchProgress`], in a shape the web UI and logs already
+//! render. A body pulled cold from Kuna and replayed warm by the read
+//! cache counts once, so the phase's "n of m" row never outruns the
 //! listing (issue #239). Per-function instruction/time/memory budgets
-//! ([`KunaBudget`]) are armed at load; a function that trips one fails with
-//! the named [`KunaError::DecompileBudgetExceeded`] instead of hanging or
-//! exhausting the box.
+//! ([`KunaBudget`]) are armed at load. A function that trips one fails
+//! with the named [`KunaError::DecompileBudgetExceeded`] instead of
+//! hanging or using up the whole machine.
 
 use object::read::Object;
 use std::collections::{BTreeMap, HashSet};
@@ -95,15 +98,15 @@ pub struct KunaSymbol {
     /// The symbol name.
     pub name: String,
     /// The symbol's address: the export's virtual address, or `0` for an
-    /// import — the container read reports the import's name and library,
-    /// and no seam consumer reads an import address (the engine's own IAT
+    /// import. The container read reports the import's name and library,
+    /// and no consumer at the seam reads an import address (Kuna's own IAT
     /// slot walk can supply it when a consumer needs one).
     pub address: u64,
     /// Whether this symbol resolves outside the image.
     pub imported: bool,
 }
 
-/// One string literal, as the engine's own string inventory found it.
+/// One string literal, as Kuna's own string inventory found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KunaString {
     /// VMA of the first character byte.
@@ -112,29 +115,30 @@ pub struct KunaString {
     pub value: String,
 }
 
-/// One reference into an address, as the engine's xref walk indexed it.
+/// One reference into an address, as Kuna's xref walk recorded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KunaXref {
     /// VMA of the referencing instruction.
     pub address: u64,
-    /// The function holding the reference, when the walk owned the site by
-    /// a function the listing names.
+    /// The function holding the reference, when the walk found the site
+    /// inside a function the listing names.
     pub function: Option<String>,
-    /// The engine's own kind word: `call`, `jump`, `data`, `read`, `write`.
+    /// Kuna's own kind word: `call`, `jump`, `data`, `read`, `write`.
     pub kind: Option<String>,
 }
 
-/// A named type in the engine's interned type factory.
+/// A named type in Kuna's interned type factory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KunaDataType {
     /// The type name.
     pub name: String,
-    /// The kind-derived category the listing synthesizes: `struct`, `union`,
-    /// `enum`, `typedef`, `pointer`, `array`, `builtin`, or `other`.
+    /// The category the listing derives from the type's kind: `struct`,
+    /// `union`, `enum`, `typedef`, `pointer`, `array`, `builtin`, or
+    /// `other`.
     pub category: String,
     /// Size in bytes.
     pub size: Option<u64>,
-    /// Synthetic manager path, `/{category}/{name}`.
+    /// A synthetic manager path: `/{category}/{name}`.
     pub path: String,
 }
 
@@ -164,8 +168,8 @@ pub struct KunaStructLayout {
     pub fields: Vec<KunaStructField>,
 }
 
-/// One member of an enumeration, valued as the engine's own C rendering
-/// spells it (signed enums carry negative members).
+/// One member of an enumeration, valued the way Kuna's own C rendering
+/// spells it (a signed enum carries negative members).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KunaEnumMember {
     /// Member name.
@@ -181,11 +185,11 @@ pub struct KunaEnumDefinition {
     pub name: String,
     /// Storage size in bytes.
     pub size: u64,
-    /// The members, in the engine's value order.
+    /// The members, in Kuna's value order.
     pub members: Vec<KunaEnumMember>,
 }
 
-/// A labeled, typed global in the engine's symbol table.
+/// A labeled, typed global in Kuna's symbol table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KunaDataItem {
     /// The symbol's label.
@@ -199,7 +203,8 @@ pub struct KunaDataItem {
 }
 
 /// What the engine thread reports back once the program is loaded and
-/// scan-ready; the handle keeps these for its `Debug` and identity reads.
+/// ready for scans. The handle keeps these values for its `Debug` output
+/// and identity reads.
 struct Handshake {
     identity: String,
     entry: Option<u64>,
@@ -297,34 +302,34 @@ struct SourceInner {
     identity: String,
     entry: Option<u64>,
     num_symbols: usize,
-    /// Armed by `begin_pass` while an analysis pass walks the program;
-    /// clones share it so every handle to one source beats as one
-    /// (issue #211).
+    /// Set by `begin_pass` while an analysis pass walks the program;
+    /// clones share it, so every handle to one source drives one
+    /// heartbeat (issue #211).
     heartbeat: Mutex<Option<Arc<Heartbeat>>>,
     /// The names of every decompile round trip the engine thread has
-    /// answered, in call order — the engine-call accounting that proves
-    /// the read cache collapses concurrent scans of one body into one
-    /// engine request (issue #240). One entry per completed round trip,
-    /// repeats included: collapsing repeats is the read cache's job, not
-    /// the source's.
+    /// answered, in call order. This is the engine-call accounting: it
+    /// proves that concurrent scans of one body produce one request to
+    /// Kuna through the read cache (issue #240). One entry per completed
+    /// round trip, repeats included — collapsing repeats is the read
+    /// cache's job, not the source's.
     decompile_calls: Mutex<Vec<String>>,
 }
 
-/// Minimum gap between heartbeat beats for one pass — a 20k-function scan
+/// Minimum gap between heartbeat beats for one pass: a 20k-function scan
 /// must not flood the event channel.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Shared state for one analysis pass's progress heartbeat.
 ///
-/// A pass (`begin_pass`) arms the source: while armed, every *unique*
-/// function the pass consumes counts as one work item and beats a
-/// `BatchProgress` event, throttled to [`HEARTBEAT_INTERVAL`] — a body
-/// pulled cold from the engine and replayed warm by the read cache
-/// counts once, so the index never exceeds the listing size (issue
-/// #239). `list_functions` during the pass records the work list — the
-/// first listing the pass sees is the total. Kuna decompiles by name,
-/// so the beat names the function the caller asked for directly —
-/// no address-to-name resolution is needed.
+/// `begin_pass` arms the source for a pass. While armed, every *unique*
+/// function the pass consumes counts as one work item and sends one
+/// `BatchProgress` event, at most once per [`HEARTBEAT_INTERVAL`]. A
+/// body pulled cold from Kuna and replayed warm by the read cache counts
+/// once, so the pass's running count never exceeds the listing size
+/// (issue #239). When `list_functions` runs during an armed pass it
+/// records the work list: the first listing the pass sees is the total.
+/// Kuna decompiles by name, so each beat names the function the caller
+/// asked for directly — no address-to-name resolution is needed.
 #[derive(Debug)]
 struct Heartbeat {
     binary: BinaryIdentity,
@@ -333,8 +338,8 @@ struct Heartbeat {
     total: AtomicUsize,
     index: AtomicUsize,
     last_beat: Mutex<Option<Instant>>,
-    /// Functions already counted this pass — the dedup set behind the
-    /// cold-and-warm count-once rule (issue #239).
+    /// Functions already counted this pass: the dedup set behind the
+    /// count-once rule for cold and warm reads (issue #239).
     seen: Mutex<HashSet<String>>,
 }
 
@@ -363,9 +368,9 @@ impl std::fmt::Debug for KunaSource {
 impl KunaSource {
     /// Load `path` and hand back the source that answers from it.
     ///
-    /// The load runs on the new engine thread (the program cannot be built
-    /// here and moved there), so this call blocks on the handshake — call it
-    /// from a plain thread, before any scan task starts, the way
+    /// The load runs on the new engine thread, because the program cannot
+    /// be built here and moved there. So this call blocks on the handshake:
+    /// call it from a plain thread, before any scan task starts, the way
     /// [`engine::load`] is called. A load failure is the same named
     /// [`KunaError::LoadFailed`] the plain loader reports, and the engine
     /// thread exits with it.
@@ -375,11 +380,11 @@ impl KunaSource {
 
     /// Load `path` with its write-back directive plane at `directive_file`.
     ///
-    /// The plane file is Kuna's own `--assert` line syntax (see
-    /// [`crate::directives`]): a missing file is an empty plane that the
-    /// first write creates, and an existing file replays through the
-    /// engine's assertion plane before the handshake — directives the
-    /// engine refuses are not fatal to the load, and [`directive_fates`](Self::directive_fates)
+    /// The plane file uses Kuna's own `--assert` line syntax (see
+    /// [`crate::directives`]). A missing file means an empty plane, and
+    /// the first write creates it. An existing file replays through Kuna's
+    /// assertion plane before the handshake. Directives Kuna refuses are
+    /// not fatal to the load, and [`directive_fates`](Self::directive_fates)
     /// reports them by name. A file the directive grammar cannot parse is a
     /// named [`KunaError::DirectiveFileInvalid`] load failure: a
     /// half-understood plane must never replay as a quiet partial.
@@ -392,8 +397,8 @@ impl KunaSource {
     /// budgets armed (issue #211).
     ///
     /// The budgets are armed on the engine thread before the handshake, so
-    /// the first decompile the caller sees is already bounded; an unset
-    /// knob leaves Kuna's own default in force. A memory limit on a
+    /// the first decompile the caller sees is already bounded. A knob left
+    /// unset keeps Kuna's own default in force. A memory limit on a
     /// platform that cannot read the process's resident set is refused by
     /// name before anything spawns — [`KunaError::BudgetUnsupported`] —
     /// because a watchdog that can never fire is a silent no-op.
@@ -404,7 +409,7 @@ impl KunaSource {
     ) -> Result<Self> {
         budget.validate()?;
         let (tx, rx) = mpsc::unbounded_channel();
-        // The handshake rides a plain std channel: its wait blocks the
+        // The handshake uses a plain std channel: waiting on it blocks the
         // calling thread wherever it is called, tokio runtime or not.
         let (handshake_tx, handshake_rx) = std::sync::mpsc::channel();
         let engine_path = path.to_path_buf();
@@ -430,7 +435,7 @@ impl KunaSource {
         })
     }
 
-    /// The engine's identity line for the loaded program.
+    /// Kuna's identity line for the loaded program.
     pub fn identity(&self) -> &str {
         &self.inner.identity
     }
@@ -440,7 +445,8 @@ impl KunaSource {
         self.inner.entry
     }
 
-    /// The target this source answers from — the one binary the thread loaded.
+    /// The target this source answers from: the one binary the engine
+    /// thread loaded.
     pub fn path(&self) -> &Path {
         &self.inner.path
     }
@@ -451,14 +457,14 @@ impl KunaSource {
 
     /// Arm the heartbeat for one analysis pass over the loaded program.
     ///
-    /// While armed, every unique function the pass consumes beats a
+    /// While armed, every unique function the pass consumes sends one
     /// [`ProgressEvent::BatchProgress`] naming the pass and the function it
     /// just pulled, in a shape the web UI and logs
-    /// already render — progress semantics are identical whichever scan
+    /// already render. The progress semantics are the same whichever scan
     /// runs. The pre-batch scan phase arms once around its whole group
     /// under the phase name, not once per scan (issue #239).
-    /// One pass at a time: a new `begin_pass` replaces any pass left armed
-    /// by an error path that skipped [`end_pass`](Self::end_pass).
+    /// One pass runs at a time: a new `begin_pass` replaces any pass left
+    /// armed by an error path that skipped [`end_pass`](Self::end_pass).
     pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
         *self.inner.heartbeat.lock().expect("heartbeat lock") = Some(Arc::new(Heartbeat {
             binary: binary.into(),
@@ -471,17 +477,18 @@ impl KunaSource {
         }));
     }
 
-    /// Disarm the heartbeat — the pass is done, later reads are ordinary.
+    /// Disarm the heartbeat: the pass is done, and later reads are
+    /// ordinary.
     pub fn end_pass(&self) {
         *self.inner.heartbeat.lock().expect("heartbeat lock") = None;
     }
 
     /// Record the pass's work list: its size is the total the beats count
-    /// against. The first listing the pass sees sets it — later scans
-    /// re-list the same program and must not move the denominator (issue
-    /// #239). `list_functions` notes it automatically during an armed
-    /// pass; the read cache also notes the listing it served warm, so a
-    /// cached run's "n of m" keeps moving (issue #121).
+    /// against. The first listing the pass sees sets that total. Later
+    /// scans re-list the same program and must not move the denominator
+    /// (issue #239). `list_functions` notes it automatically during an
+    /// armed pass, and the read cache also notes the listing it served
+    /// warm, so a cached run's "n of m" keeps moving (issue #121).
     pub fn note_worklist(&self, total: usize) {
         if let Some(hb) = self.active_heartbeat() {
             let _ = hb
@@ -490,16 +497,16 @@ impl KunaSource {
         }
     }
 
-    /// Count one unique function consumed by the pass and beat if due:
-    /// always for the first and last item, otherwise at most once per
-    /// [`HEARTBEAT_INTERVAL`].
+    /// Count one unique function consumed by the pass, and send a beat
+    /// when one is due: always for the first and last item, otherwise at
+    /// most once per `HEARTBEAT_INTERVAL`.
     ///
-    /// `decompile_function` ticks itself; the read cache calls this for a
-    /// body served warm, which never reaches the engine but is still a work
-    /// item the pass consumed (issue #121). A name already counted this
-    /// pass — cold first and replayed warm, or the other way round —
-    /// counts once, so the index never exceeds the listing size (issue
-    /// #239).
+    /// `decompile_function` calls this itself. The read cache calls it for
+    /// a body served warm: such a body never reaches Kuna, but it is still
+    /// a work item the pass consumed (issue #121). A name already counted
+    /// this pass — cold first and replayed warm, or the other way round —
+    /// counts once, so the pass's running count never exceeds the listing
+    /// size (issue #239).
     pub fn tick(&self, name: &str) {
         let Some(hb) = self.active_heartbeat() else {
             return;
@@ -552,14 +559,15 @@ impl KunaSource {
             reply,
         })?;
         let outcome = answer.await.map_err(|_| KunaError::EngineUnavailable)?;
-        // The round trip completed — one work item of any armed pass done,
-        // whether or not the engine answered with a body: a function that
-        // tripped a budget or refused still consumed its slot, so the
-        // pass's progress must move (issue #211).
+        // The round trip completed: one work item of any armed pass is
+        // done, whether or not Kuna answered with a body. A function that
+        // tripped a budget or that Kuna refused still used its slot, so
+        // the pass's progress must move (issue #211).
         self.tick(name);
         // Engine-call accounting (issue #240): one entry per completed
-        // round trip, same rule as the tick — a function that tripped a
-        // budget still paid the engine and still shows in the log.
+        // round trip, same rule as the beat. A function that tripped a
+        // budget still cost a round trip to Kuna, so it still shows in
+        // the log.
         self.inner
             .decompile_calls
             .lock()
@@ -571,11 +579,11 @@ impl KunaSource {
     /// The names of every decompile round trip this source has answered,
     /// in call order (issue #240).
     ///
-    /// The Kuna engine is the scan phase's serial resource, and the read
-    /// cache's per-key cell guarantees concurrent readers of one body
-    /// produce exactly one entry here per function; a repeat in the log
-    /// means a reader reached the engine twice for one name. Clones share
-    /// the log — it belongs to the engine thread, not the handle.
+    /// Kuna answers one request at a time during the scan phase, and the
+    /// read cache's per-key cell guarantees concurrent readers of one
+    /// body produce exactly one entry here per function. A repeat in the
+    /// log means one reader reached Kuna twice for the same name. Clones
+    /// share the log: it belongs to the engine thread, not the handle.
     pub fn decompile_calls(&self) -> Vec<String> {
         self.inner
             .decompile_calls
@@ -587,9 +595,10 @@ impl KunaSource {
     /// The machine-instruction listing for one function, by name, as text
     /// (issue #245).
     ///
-    /// One row per instruction in address order, spelled by the engine's
-    /// own walker — uppercase SLEIGH mnemonics, `0x` hex operands. A name
-    /// the engine does not settle on is the same named
+    /// One row per instruction in address order, spelled by Kuna's own
+    /// walker: uppercase SLEIGH mnemonics, `0x` hex operands. If Kuna's
+    /// name lookup will not settle on one entry for a name, the read
+    /// answers with the same named
     /// [`KunaError::FunctionNotFound`] a decompile of it answers with.
     /// The read is pure disassembly: no decompilation runs, and the
     /// program's recovered state never moves.
@@ -623,23 +632,23 @@ impl KunaSource {
         answer.await.map_err(|_| KunaError::EngineUnavailable)?
     }
 
-    /// Every string literal the engine's own inventory finds in the image.
+    /// Every string literal Kuna's own inventory finds in the image.
     pub async fn strings(&self) -> Result<Vec<KunaString>> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Strings(reply))?;
         answer.await.map_err(|_| KunaError::EngineUnavailable)?
     }
 
-    /// Every reference into `address`, from the engine's xref walk.
+    /// Every reference into `address`, from Kuna's xref walk.
     pub async fn xrefs_to(&self, address: u64) -> Result<Vec<KunaXref>> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::XrefsTo { address, reply })?;
         answer.await.map_err(|_| KunaError::EngineUnavailable)?
     }
 
-    /// Every named type the engine's type factory interns; `category`
-    /// filters as the retired Ghidra bridge's did, a case-insensitive substring of
-    /// the synthesized category.
+    /// Every named type Kuna's type factory interns. `category` filters
+    /// the way the retired Ghidra path's filter did: a case-insensitive
+    /// substring of the derived category.
     pub async fn data_types(&self, category: Option<&str>) -> Result<Vec<KunaDataType>> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::DataTypes {
@@ -669,7 +678,7 @@ impl KunaSource {
         answer.await.map_err(|_| KunaError::EngineUnavailable)?
     }
 
-    /// Every labeled, typed global in the engine's symbol table.
+    /// Every labeled, typed global in Kuna's symbol table.
     pub async fn data_items(&self) -> Result<Vec<KunaDataItem>> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::DataItems(reply))?;
@@ -690,10 +699,10 @@ impl KunaSource {
     /// Set the prototype of the function at `address`, compiling it to a
     /// `prototype 0x<addr> <declaration>` directive.
     ///
-    /// The function must exist in the listing — a miss is a named
-    /// [`KunaError::FunctionNotFound`] before the plane is touched — and a
-    /// declaration the engine's own grammar refuses is a named
-    /// [`KunaError::DirectiveRejected`] that leaves the plane untouched. An
+    /// The function must exist in the listing. A miss there is a named
+    /// [`KunaError::FunctionNotFound`] raised before the plane is touched.
+    /// A declaration that Kuna's own grammar refuses is a named
+    /// [`KunaError::DirectiveRejected`], and the plane stays untouched. An
     /// accepted prototype takes effect live and persists to the directive
     /// file.
     pub async fn set_function_prototype(&self, address: u64, prototype: &str) -> Result<()> {
@@ -709,9 +718,9 @@ impl KunaSource {
     /// Set the type of `variable` in the function at `address`, compiling
     /// it to a `type <func>::<var> <C type>` directive.
     ///
-    /// The engine applies the directive on the next decompile of that
-    /// function — the decompile loop's own symbol-scoped pass — so the new
-    /// type shows in the re-decompiled signature and body.
+    /// Kuna applies the directive the next time it decompiles that
+    /// function, through its decompile loop's own symbol-scoped pass, so
+    /// the new type shows in the re-decompiled signature and body.
     pub async fn set_local_variable_type(
         &self,
         address: u64,
@@ -729,11 +738,11 @@ impl KunaSource {
     }
 
     /// Create the structure `name` with `fields`, compiling it to a
-    /// `typedef struct` declaration the engine interns live.
+    /// `typedef struct` declaration that Kuna interns live.
     ///
-    /// Kuna's C grammar refuses an empty struct body, so a fieldless
-    /// create is a named refusal; a field naming an explicit offset is
-    /// refused too — the directive plane lays fields out in order.
+    /// Kuna's C grammar refuses an empty struct body, so a create with no
+    /// fields is a named refusal. A field that names an explicit offset is
+    /// refused too, because the directive plane lays fields out in order.
     pub async fn create_struct(&self, name: &str, fields: &[KunaNewField<'_>]) -> Result<()> {
         if let Some(field) = fields.iter().find(|field| field.offset.is_some()) {
             return Err(KunaError::DirectiveRejected {
@@ -783,11 +792,12 @@ impl KunaSource {
     /// Add one field to the structure `struct_name` by regenerating its
     /// owning `typedef struct` record in the plane.
     ///
-    /// Kuna refuses to re-body a completed record, so the regenerated
-    /// record takes effect on the next load; the live session keeps the
-    /// old body until then. A struct the plane holds no record for is a
-    /// named [`KunaError::DirectiveRegenerationFailed`], and so is a record
-    /// whose text carries a shape the regeneration cannot re-render.
+    /// Kuna refuses to change the body of a record it has already applied,
+    /// so the regenerated record takes effect on the next load; the live
+    /// session keeps the old body until then. A struct the plane holds no
+    /// record for is a named
+    /// [`KunaError::DirectiveRegenerationFailed`], and so is a record
+    /// whose text carries a form the regeneration cannot re-render.
     pub async fn add_struct_field(
         &self,
         struct_name: &str,
@@ -806,12 +816,12 @@ impl KunaSource {
         answer.await.map_err(|_| KunaError::EngineUnavailable)?
     }
 
-    /// What became of each directive the source carries — the engine's own
-    /// per-directive report: `applied` or `rejected`, where a directive not
-    /// yet reached reports as rejected with the detail
-    /// `not reached by this run` (a local-type directive waits on the
+    /// What became of each directive the source carries, from Kuna's own
+    /// per-directive report: `applied` or `rejected`. A directive not yet
+    /// reached reports as rejected with the detail
+    /// `not reached by this run`: a local-type directive waits on the
     /// decompile of its function, and a regenerated struct record waits
-    /// for the next load).
+    /// for the next load.
     pub async fn directive_fates(&self) -> Result<Vec<DirectiveOutcome>> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::DirectiveFates(reply))?;
@@ -850,9 +860,10 @@ fn engine_thread(
     // caller sees is already bounded (issue #211).
     budget.apply(&mut program);
     // The write-back plane opens with the program: an existing file
-    // replays through the engine's assertion plane before the handshake,
-    // so the session the caller sees already carries its recorded writes.
-    // Refusals during that replay are not fatal — the fates report them.
+    // replays through Kuna's assertion plane before the handshake, so the
+    // session the caller sees already carries its recorded writes. A
+    // directive refused during that replay is not fatal — the fates
+    // report it.
     let mut plane = match directive_file.as_deref() {
         Some(file) => match DirectivePlane::open(file) {
             Ok(plane) => plane,
@@ -872,9 +883,9 @@ fn engine_thread(
         entry: program.entry(),
         num_symbols: program.num_symbols(),
     };
-    // The container-table reads answer from the bytes captured here, beside
-    // the load itself: one file, one snapshot, so no read can ever answer
-    // from bytes that drifted after the program was loaded.
+    // The container-table reads answer from the bytes captured here,
+    // beside the load itself: one file, one snapshot. No read can ever
+    // answer from bytes that changed after the program was loaded.
     let container_bytes = match guard("container", || read_file(&path)).flatten() {
         Ok(bytes) => bytes,
         Err(fault) => {
@@ -885,8 +896,9 @@ fn engine_thread(
     if handshake.send(Ok(info)).is_err() {
         return;
     }
-    // The xref walk is the expensive read; build its index once, lazily, on
-    // the first xref-shaped request and keep it for the thread's life.
+    // The xref walk is the expensive read. Its index is built once,
+    // lazily, on the first request that asks for xrefs, and kept for the
+    // life of the thread.
     let mut xref_index: Option<kuna_analysis::listing::xrefs::XrefIndex> = None;
     while let Some(command) = rx.blocking_recv() {
         match command {
@@ -1050,7 +1062,7 @@ fn engine_thread(
     }
 }
 
-/// Run one engine call inside a panic guard: an upstream panic becomes a
+/// Run one Kuna call inside a panic guard: an upstream panic becomes a
 /// named [`KunaError::EngineFault`], and the engine thread lives to answer
 /// the next request.
 fn guard<T>(call: &str, work: impl FnOnce() -> T) -> Result<T> {
@@ -1072,10 +1084,10 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// The function listing, from the engine's own canonical entries.
+/// The function listing, from Kuna's own canonical entries.
 ///
-/// Three kinds of entry are excluded, because none of them has a body the
-/// engine can render under the name the listing would report:
+/// Three kinds of entry are excluded, because none of them has a body
+/// Kuna can render under the name the listing would report:
 ///
 /// * Kuna's synthetic import placeholders — addresses invented for call
 ///   naming on a relocatable load, reported as `UndefinedExternal`.
@@ -1090,7 +1102,7 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
 ///   listed names a `decompile` would fail on. A MinGW thunk veneer
 ///   (`jmp [__imp_puts]`) shares its import's name and stays listed: it is
 ///   code in `.text`, and it decompiles.
-/// * Entries whose name the engine's own name lookup will not settle on.
+/// * Entries whose name Kuna's own name lookup will not settle on.
 ///   `decompile` reaches a body through
 ///   [`kuna_console::engine::ConsoleProgram::find_entry_by_name`], which
 ///   answers `None` rather than pick when several entries share a name and
@@ -1137,14 +1149,14 @@ fn list_functions(program: &KunaProgram) -> Result<Vec<KunaFunction>> {
 
 /// Which candidate entries a name-keyed read can actually reach.
 ///
-/// `spelled` is every name the engine's canonical enumeration reports,
+/// `spelled` is every name Kuna's canonical enumeration reports,
 /// including the entries the listing has already dropped — they are still
-/// candidates the engine's lookup weighs. `candidates` are the entries the
+/// candidates Kuna's lookup weighs. `candidates` are the entries the
 /// listing would otherwise keep, as `(name, offset)` pairs.
 ///
 /// A name spelled once resolves to its one entry, so that candidate stays
-/// without asking the engine — which matters, because each lookup rebuilds
-/// the whole enumeration and a large image spells its 20 000 names once.
+/// without asking Kuna — which matters, because each lookup rebuilds the
+/// whole enumeration and a large image spells its 20 000 names once.
 /// A name spelled more than once is a name the lookup can refuse to
 /// settle, so the candidate stays only when the lookup lands on this very
 /// entry; the answer is memoised per name.
@@ -1206,10 +1218,9 @@ fn decompile(program: &mut KunaProgram, name: &str) -> Result<KunaDecompiled> {
         let reason = result
             .error
             .unwrap_or_else(|| "the engine produced no output".to_string());
-        // A budget trip is Kuna's watchdog stopping one function, not the
-        // engine failing on it: name the budget so the run degrades per
-        // function instead of treating it as an ordinary refusal
-        // (issue #211).
+        // A budget trip is Kuna's watchdog stopping one function, not Kuna
+        // failing on it. Name the budget so the run degrades per function
+        // instead of treating it as an ordinary refusal (issue #211).
         return Err(match budget_trip(&reason) {
             Some(budget) => KunaError::DecompileBudgetExceeded {
                 name: name.to_string(),
@@ -1234,20 +1245,21 @@ fn decompile(program: &mut KunaProgram, name: &str) -> Result<KunaDecompiled> {
 }
 
 /// The machine-instruction listing for one function body, as text: one
-/// `<vma>  <MNEMONIC operands>` row per instruction — the spelling the
-/// engine's own `kuna disassemble` prints for a function body, produced
+/// `<vma>  <MNEMONIC operands>` row per instruction — the spelling Kuna's
+/// own `kuna disassemble` prints for a function body, produced
 /// by the same walker (`kuna_console::disasm::walk`), so the mnemonics
 /// are the lifter's uppercase SLEIGH spellings and constants carry their
 /// `0x` hex (issue #245).
 ///
 /// The extent walked is the entry's inventory extent — the same clip
 /// `kuna functions` reports as `size` — so the listing covers the body
-/// without the caller naming both ends, and an extent wider than the
+/// without the caller naming both ends. An extent wider than the
 /// walker's derived cap lists up to that cap, as the CLI's function
 /// listing does. Bytes the translator will not decode are `.byte` rows
-/// in place, not the end of the listing. A name the engine does not
-/// settle on is the same [`KunaError::FunctionNotFound`] a decompile of
-/// it answers with; an entry with no measurable extent honestly lists
+/// in place, not the end of the listing. If Kuna's name lookup will not
+/// settle on one entry for a name, the read answers with the same
+/// [`KunaError::FunctionNotFound`] a decompile of it answers with; an
+/// entry with no measurable extent honestly lists
 /// nothing.
 fn disassemble_listing(program: &KunaProgram, name: &str) -> Result<String> {
     let Some(entry) = program.program.find_entry_by_name(name) else {
@@ -1281,7 +1293,7 @@ fn disassemble_listing(program: &KunaProgram, name: &str) -> Result<String> {
 /// Which per-function budget a Kuna refusal names, if it is a watchdog
 /// trip (issue #211).
 ///
-/// Kuna's budget failures carry fixed explain strings from the engine's
+/// Kuna's budget failures carry fixed explain strings from Kuna's own
 /// watchdogs — the flow's instruction bound, the `kuna_fn_budget` deadline,
 /// and the `kuna_fnmemory` resident-set limit. Matching them turns a
 /// capped function into a named budget failure the run can degrade past,
@@ -1298,7 +1310,7 @@ fn budget_trip(error: &str) -> Option<&'static str> {
     }
 }
 
-/// Parse the same file the engine loaded, for the container-table reads.
+/// Parse the same file Kuna loaded, for the container-table reads.
 fn parse_container<'data>(data: &'data [u8], path: &Path) -> Result<object::read::File<'data>> {
     object::read::File::parse(data).map_err(|error| KunaError::TablesUnreadable {
         path: path.display().to_string(),
@@ -1338,9 +1350,10 @@ fn container_symbols(path: &Path, data: &[u8], imported: bool) -> Result<Vec<Kun
 /// load time.
 ///
 /// PE is the only container reported today: it is the container the pinned
-/// engine's x86 specs actually scan, and the other formats' bases (ELF's
-/// first `PT_LOAD`, Mach-O's first non-zero segment) arrive with their
-/// languages. A non-PE target fails by name rather than answering a guess.
+/// Kuna release's x86 specs actually scan, and the other formats' bases
+/// (ELF's first `PT_LOAD`, Mach-O's first non-zero segment) arrive with
+/// their languages. A non-PE target fails by name rather than answering a
+/// guess.
 fn container_image_base(path: &Path, data: &[u8]) -> Result<u64> {
     use object::read::pe::{ImageNtHeaders, ImageOptionalHeader};
     let file = parse_container(data, path)?;
@@ -1365,10 +1378,10 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// The string inventory, over the container bytes captured at load time:
-/// the engine's own matcher (`kuna strings`' inventory query) with the
+/// Kuna's own matcher (`kuna strings`' inventory query) with the
 /// `StringLiteralPass`'s own policy — minimum length 5, the 1-byte ASCII
 /// and 2-byte UTF-16LE widths, NUL-terminated runs — so every row is also
-/// a literal the engine marked up at load.
+/// a literal Kuna marked up at load.
 fn string_inventory(path: &Path, data: &[u8]) -> Result<Vec<KunaString>> {
     use kuna_analysis::analyzers::strings::kuna_stringinv::{self, Query, Termination};
     let file = parse_container(data, path)?;
@@ -1390,11 +1403,11 @@ fn string_inventory(path: &Path, data: &[u8]) -> Result<Vec<KunaString>> {
         .collect())
 }
 
-/// Every reference into `address`, from the engine's xref walk
+/// Every reference into `address`, from Kuna's xref walk
 /// (`kuna xrefs`): the index is built once from the program's own function
 /// inventory over the load-time bytes and cached on the engine thread, and
 /// a callable answers across its whole alias class — the veneer and the
-/// slot it jumps through — exactly as the engine's own xref query does.
+/// slot it jumps through — exactly as Kuna's own xref query does.
 fn xrefs_to(
     program: &KunaProgram,
     path: &Path,
@@ -1445,11 +1458,11 @@ fn xrefs_to(
         .collect())
 }
 
-/// Every named type the engine's type factory interns, in
-/// definition-before-use order. The engine has no Type Manager categories,
-/// so the category is synthesized from the type's kind and the path from
-/// the category; `category` filters the way the retired Ghidra bridge's did, a
-/// case-insensitive substring of the category.
+/// Every named type Kuna's type factory interns, in
+/// definition-before-use order. Kuna has no Type Manager categories, so
+/// the category is derived from the type's kind and the path from the
+/// category. `category` filters the way the retired Ghidra path's filter
+/// did: a case-insensitive substring of the category.
 fn data_types(program: &KunaProgram, category: Option<&str>) -> Result<Vec<KunaDataType>> {
     let mut listing: Vec<KunaDataType> = Vec::new();
     for ct in interned_types(program) {
@@ -1478,11 +1491,11 @@ fn interned_types(program: &KunaProgram) -> Vec<Rc<kuna_decomp::dtype::Datatype>
     program.program.arch().types_impl().dependent_order()
 }
 
-/// The category a kind synthesizes for the listing. Core types are
+/// The category that a kind derives for the listing. Core types are
 /// vocabulary rather than recovered information, and answer as `builtin`
-/// so the recovery scanner skips them like Ghidra's builtins; a typedef
-/// answers as `typedef` whatever the type it names, like the bridge's
-/// classification.
+/// so the recovery scanner skips them like Ghidra's builtins. A typedef
+/// answers as `typedef` whatever the type it names, matching the retired
+/// Ghidra path's classification.
 fn type_category(ct: &kuna_decomp::dtype::Datatype) -> &'static str {
     use kuna_decomp::dtype::{DatatypeKind, flags};
     if ct.flags & flags::coretype != 0 {
@@ -1553,8 +1566,8 @@ fn struct_layout(program: &KunaProgram, name: &str) -> Result<KunaStructLayout> 
     })
 }
 
-/// The members of one named enumeration, valued exactly as the engine's
-/// own C rendering of the type spells them (the `.h` of a project
+/// The members of one named enumeration, valued exactly as Kuna's own
+/// C rendering of the type spells them (the `.h` of a project
 /// decompile): a signed enum's members arrive sign-extended, an unsigned
 /// enum's as their raw value.
 fn enum_values(program: &KunaProgram, name: &str) -> Result<KunaEnumDefinition> {
@@ -1588,9 +1601,9 @@ fn enum_values(program: &KunaProgram, name: &str) -> Result<KunaEnumDefinition> 
     })
 }
 
-/// Every labeled, typed global in the engine's symbol table: the same
-/// scoped walk the console's own data-symbol read makes, keeping the
-/// applied type's name for the seam's `type_name` and dropping code-typed
+/// Every labeled, typed global in Kuna's symbol table. This is the same
+/// scoped walk the Kuna console's own data-symbol read makes: it keeps the
+/// applied type's name for the seam's `type_name` and drops code-typed
 /// placeholders the way that read does.
 fn data_items(program: &KunaProgram) -> Result<Vec<KunaDataItem>> {
     use kuna_decomp::dtype::type_metatype;
@@ -1643,8 +1656,8 @@ fn entry_at(program: &KunaProgram, address: u64) -> Result<kuna_console::engine:
         })
 }
 
-/// The data organization the C grammar reads — the same split the
-/// engine's own assertion apply uses.
+/// The data organization the C grammar reads — the same split Kuna's own
+/// assertion apply uses.
 fn grammar_org(program: &KunaProgram) -> kuna_console::grammar::DataOrg {
     let (addr_size, word_size) = program.program.arch().data_org();
     kuna_console::grammar::DataOrg {
@@ -1653,7 +1666,7 @@ fn grammar_org(program: &KunaProgram) -> kuna_console::grammar::DataOrg {
     }
 }
 
-/// A type text the engine's own C type grammar refuses, named as the
+/// A type text that Kuna's own C type grammar refuses, named as the
 /// declaration the caller handed the seam.
 fn reject_type_text(type_name: &str, error: &kuna_base::error::KunaError) -> KunaError {
     KunaError::DirectiveRejected {
@@ -1662,7 +1675,7 @@ fn reject_type_text(type_name: &str, error: &kuna_base::error::KunaError) -> Kun
     }
 }
 
-/// Snapshot of the engine's installed directive set and its per-directive
+/// Snapshot of the directive set Kuna has installed and its per-directive
 /// report, so a re-install can carry the fates across.
 type FateSnapshot = (
     Vec<kuna_console::assertions::Directive>,
@@ -1677,9 +1690,9 @@ fn snapshot_fates(program: &KunaProgram) -> FateSnapshot {
 }
 
 /// `set_assertions` replaces the whole set and resets every outcome slot,
-/// but a directive's effect outlives the write that installed it — so
-/// carry each unchanged directive's real fate onto its new slot. Only a
-/// directive that changed (or is new) waits unclaimed; the engine's own
+/// but a directive's effect outlives the write that installed it. So carry
+/// each unchanged directive's real fate onto its new slot. Only a
+/// directive that changed (or is new) waits unclaimed; Kuna's own
 /// placeholder reports the wait as `rejected: not reached by this run`.
 fn carry_fates(program: &mut KunaProgram, snapshot: &FateSnapshot) {
     use kuna_console::assertions::unclaimed;
@@ -1700,7 +1713,7 @@ fn carry_fates(program: &mut KunaProgram, snapshot: &FateSnapshot) {
     }
 }
 
-/// Install the plane's current set on the engine, keeping the fates of the
+/// Install the plane's current set on Kuna, keeping the fates of the
 /// directives that did not change.
 fn install_plane(program: &mut KunaProgram, plane: &DirectivePlane) {
     let snapshot = snapshot_fates(program);
@@ -1708,11 +1721,12 @@ fn install_plane(program: &mut KunaProgram, plane: &DirectivePlane) {
     carry_fates(program, &snapshot);
 }
 
-/// Apply the directive at `index` — and only it — through the engine's own
+/// Apply the directive at `index` — and only it — through Kuna's own
 /// program-scoped pass, then install the full plane set with the fates
-/// carried: applied persists to the directive file, rejected rolls the
-/// plane back and arrives as a named [`KunaError::DirectiveRejected`] —
-/// the engine's reason, not calxgloss's guess at one.
+/// carried. If Kuna applied it, the directive persists to the directive
+/// file. If Kuna rejected it, the plane rolls back and the caller gets a
+/// named [`KunaError::DirectiveRejected`] carrying Kuna's reason, not a
+/// calxgloss guess at one.
 fn apply_and_report(
     program: &mut KunaProgram,
     plane: &mut DirectivePlane,
@@ -1761,8 +1775,8 @@ fn write_prototype(
 }
 
 /// `set_local_variable_type` → validate, push, install for the decompile
-/// loop. The engine applies a `type` directive when it next decompiles
-/// the named function, so there is nothing to apply here — installing it
+/// loop. Kuna applies a `type` directive when it next decompiles the
+/// named function, so there is nothing to apply here — installing it
 /// is the whole live effect, and until that decompile the fates report the
 /// wait as `rejected: not reached by this run`.
 fn write_local_type(
@@ -1840,13 +1854,14 @@ fn write_create_typedef(
 
 /// `add_struct_field` → regenerate the owning record in place.
 ///
-/// Kuna refuses to re-body a completed record, so the regenerated record
-/// is not applied to the live session — it takes effect on the next load,
-/// which is exactly where the replayed plane re-creates the struct whole.
-/// A struct the plane holds no record for cannot be re-bodied honestly:
-/// appending a second record would collide with the first on replay, so
+/// Kuna refuses to change the body of a record it has already applied, so
+/// the regenerated record is not applied to the live session — it takes
+/// effect on the next load, which is exactly where the replayed plane
+/// re-creates the struct whole. A struct the plane holds no record for
+/// cannot be re-bodied honestly: appending a second record would collide
+/// with the first on replay, so
 /// that is a named [`KunaError::DirectiveRegenerationFailed`], and so is a
-/// record whose text carries a shape the regeneration cannot re-render.
+/// record whose text carries a form the regeneration cannot re-render.
 fn write_add_struct_field(
     program: &mut KunaProgram,
     plane: &mut DirectivePlane,
@@ -1905,7 +1920,7 @@ fn write_add_struct_field(
     Ok(())
 }
 
-/// The engine's per-directive report, lifted to plain records.
+/// Kuna's per-directive report, lifted to plain records.
 fn directive_fates(program: &KunaProgram) -> Vec<DirectiveOutcome> {
     program
         .program
@@ -1951,7 +1966,7 @@ mod tests {
             other => panic!("expected an EngineFault, got {other:?}"),
         }
         // The message says the panic was caught at the seam, so the
-        // process survives the engine's own bug.
+        // process survives Kuna's own bug.
         assert!(fault.to_string().contains("caught at the engine seam"));
     }
 
@@ -1965,9 +1980,9 @@ mod tests {
         );
     }
 
-    // The reads the seam maps, answered over the fixture. The engine-native
+    // The reads the seam maps, answered over the fixture. The Kuna-native
     // actor path is exercised end to end in the two `kuna_scan.rs` test
-    // files; these tests drive the handlers directly so a wrong answer is
+    // files. These tests drive the handlers directly, so a wrong answer is
     // named at the function that produced it.
 
     /// The fixture program, loaded for handler-level reads.
@@ -1988,9 +2003,9 @@ mod tests {
         )
     }
 
-    /// Intern C declarations through the engine's own assertion plane —
-    /// the same `typedef` directive the console applies before decompile —
-    /// so the type reads have structures, enums, and typedefs to answer.
+    /// Intern C declarations through Kuna's own assertion plane, the same
+    /// `typedef` directive the Kuna console applies before decompile, so
+    /// the type reads have structures, enums, and typedefs to answer.
     fn declare(program: &mut KunaProgram, declarations: &[&str]) {
         use kuna_console::assertions::{Body, Directive};
         program.program.set_assertions(
@@ -2028,7 +2043,7 @@ mod tests {
 
         let find = |name: &str| types.iter().find(|entry| entry.name == name);
         // Core vocabulary is skipped as builtin, like Ghidra's builtins —
-        // and the engine names them Ghidra's way (`int4`, not `int`).
+        // and Kuna names them Ghidra's way (`int4`, not `int`).
         assert_eq!(find("int4").map(|e| e.category.as_str()), Some("builtin"));
         assert_eq!(
             find("tagPOINT").map(|e| e.category.as_str()),
@@ -2037,7 +2052,7 @@ mod tests {
         assert_eq!(find("COLOR").map(|e| e.category.as_str()), Some("enum"));
         assert_eq!(find("BITS").map(|e| e.category.as_str()), Some("struct"));
         assert_eq!(find("ULONG").map(|e| e.category.as_str()), Some("typedef"));
-        // The path is synthesized from the category, and no entry is anonymous.
+        // The path is derived from the category, and no entry is anonymous.
         for entry in &types {
             assert!(
                 !entry.name.is_empty(),
@@ -2046,8 +2061,8 @@ mod tests {
             assert_eq!(entry.path, format!("/{}/{}", entry.category, entry.name));
         }
 
-        // The category filter answers like the bridge's: a case-insensitive
-        // substring of the category.
+        // The category filter answers like the retired Ghidra path's: a
+        // case-insensitive substring of the category.
         let structs = data_types(&program, Some("Struct")).expect("the filtered listing answers");
         assert!(structs.iter().any(|entry| entry.name == "tagPOINT"));
         assert!(
@@ -2252,18 +2267,19 @@ mod tests {
     #[test]
     fn the_listing_drops_pe_import_pointer_slots_and_keeps_their_thunks() {
         // The PE loader names each IAT slot with its import name so a call
-        // through the slot binds to the import, and names the MinGW thunk
-        // veneer that jumps through it. Only the veneer has a body: the slot
-        // holds a pointer the run-time loader writes, which is why Kuna's
-        // decompile refuses one. A listing that carried the slot handed every
-        // consumer a read that cannot succeed — the call-graph build warned
-        // once per import over a 32-bit MSVC PE, whose imports carry no veneer
-        // at all, so the slot is the only entry the import name has.
+        // through the slot binds to the import, and it names the MinGW
+        // thunk veneer that jumps through the slot. Only the veneer has a
+        // body: the slot holds a pointer the run-time loader writes, which
+        // is why Kuna's decompile refuses one. A listing that carried the
+        // slot handed every consumer a read that cannot succeed. On a
+        // 32-bit MSVC PE the imports carry no veneer at all, so the slot
+        // is the only entry the import name has, and there the call-graph
+        // build warned once per import.
         let program = fixture_program();
         let listed = list_functions(&program).expect("the fixture listing");
         let canonical = program.program.function_entries_canonical();
 
-        // The fixture calls through the IAT, so the engine does name its
+        // The fixture calls through the IAT, so Kuna does name its
         // slots and the filter has work to do.
         let slots: Vec<_> = canonical
             .iter()
@@ -2283,7 +2299,7 @@ mod tests {
         }
 
         // And nothing else is dropped: the listing is exactly the canonical
-        // entries the engine will lift a body from.
+        // entries Kuna will lift a body from.
         let bodies = canonical.iter().filter(|entry| {
             entry.provenance != kuna_console::engine::EntryProvenance::UndefinedExternal
                 && program.program.is_body_entry(entry.addr.get_offset())
@@ -2297,14 +2313,15 @@ mod tests {
 
     #[test]
     fn an_ambiguous_entry_name_is_listed_only_when_the_engine_settles_on_it() {
-        // The listing's keep-rule, without an engine. An MSVC link can emit
-        // two thunk veneers for one import, Kuna's canonical enumeration then
-        // reports both under the import name, and its name lookup refuses to
-        // pick between two executable candidates — so neither is a name
+        // The listing's keep-rule, tested without a loaded program. An
+        // MSVC link can emit two thunk veneers for one import, Kuna's
+        // canonical enumeration then reports both under the import name,
+        // and Kuna's name lookup refuses to pick between two executable
+        // candidates — so neither is a name
         // `decompile` can answer, and neither belongs in the listing. The
         // MinGW pair shows the other half: the veneer and the IAT slot share
         // a name, the lookup settles on the veneer, and only the veneer is
-        // listed. A name spelled once needs no lookup at all — each lookup
+        // listed. A name spelled once needs no lookup at all: each lookup
         // rebuilds the whole enumeration, and a large image spells its
         // 20 000 names once.
         let candidates = [
@@ -2319,7 +2336,7 @@ mod tests {
                 "ReleaseCapture",
                 "ReleaseCapture",
                 // The slot is not a candidate — the listing dropped it for
-                // having no body — but it is still a spelling the engine
+                // having no body — but it is still a spelling Kuna's lookup
                 // weighs, which is why this name is asked about.
                 "SetCursor",
                 "SetCursor",
@@ -2347,7 +2364,7 @@ mod tests {
     #[test]
     fn every_listed_name_is_one_the_engine_settles_on_that_very_entry() {
         // The listing's contract as a property over the fixture: `decompile`
-        // reaches a body through the engine's name lookup, so every listed
+        // reaches a body through Kuna's name lookup, so every listed
         // name must be one that lookup answers with the listed entry. The
         // fixture exercises the ambiguous path — each import name is spelled
         // by both its thunk veneer and its IAT slot.
@@ -2379,10 +2396,10 @@ mod tests {
     // The pass heartbeat and the decompile budgets (issue #211).
 
     /// The scan-phase heartbeat counts unique functions consumed, cold
-    /// and warm (issue #239): a body pulled from the engine beats once,
-    /// the same body replayed warm — what the read cache ticks — counts
-    /// nothing new, the first listing the phase sees sets the total, and
-    /// nothing beats outside the phase.
+    /// and warm (issue #239). A body pulled from Kuna beats once. The same
+    /// body replayed warm — what the read cache ticks — counts nothing
+    /// new. The first listing the phase sees sets the total, and nothing
+    /// beats outside the phase.
     #[tokio::test]
     async fn the_phase_heartbeat_beats_once_per_unique_function_cold_and_warm() {
         let (path, _) = fixture_bytes();
@@ -2400,7 +2417,8 @@ mod tests {
             .await
             .expect("the first fixture export decompiles");
         // The read cache replays the same body warm — the phase must not
-        // count it twice (issue #121's warm beat dedups into the cold one).
+        // count it twice (issue #121: the warm read shares the cold read's
+        // single count).
         source.tick(names[0]);
         source
             .decompile_function(names[1])
@@ -2454,7 +2472,7 @@ mod tests {
 
     /// The engine-call accounting (issue #240): the log carries one entry
     /// per completed decompile round trip, in call order, repeats
-    /// included — collapsing repeats is the read cache's job, not the
+    /// included. Collapsing repeats is the read cache's job, not the
     /// source's, and the scan phase's exactly-once proof reads the log
     /// through the cache.
     #[tokio::test]
@@ -2494,8 +2512,8 @@ mod tests {
     #[tokio::test]
     async fn a_budget_capped_function_fails_with_a_named_budget_error() {
         // One instruction of flow budget cannot cover any real fixture
-        // body: the function fails by name, the run survives, and the
-        // error names the knob to raise and the engine to fall back to.
+        // body. The function fails by name, the run survives, and the
+        // error names the knob to raise and the Kuna engine that stopped.
         let (path, _) = fixture_bytes();
         let source = KunaSource::load_with_budget(
             &path,
@@ -2522,7 +2540,7 @@ mod tests {
             message.contains("[analysis]") && message.contains("raise the budget"),
             "the message names the knob to raise: {message}"
         );
-        // The rest of the run degrades past it, not into a hang: an
+        // The rest of the run degrades past it instead of hanging: an
         // unbudgeted read still answers over the same source.
         source
             .image_base()
@@ -2533,7 +2551,7 @@ mod tests {
     #[test]
     fn a_time_budget_trip_is_named_as_a_time_budget() {
         // The wall-clock watchdog is armed on the architecture and checked
-        // cooperatively at the drive's loop boundaries; a spent deadline
+        // cooperatively at the drive's loop boundaries. A spent deadline
         // fails the function with Kuna's own budget message, which the
         // seam names as the time budget.
         let mut program = fixture_program();
@@ -2559,7 +2577,7 @@ mod tests {
 
     #[test]
     fn budget_trips_are_named_and_ordinary_refusals_are_not() {
-        // The three watchdogs Kuna's engine reports, and one refusal that
+        // The three watchdog trips Kuna reports, and one refusal that
         // is not a trip at all.
         assert_eq!(
             budget_trip("Flow exceeded maximum allowable instructions"),
