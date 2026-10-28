@@ -1,7 +1,7 @@
 //! Core data types for string and configuration context.
 //!
 //! This module holds the serialized shape of everything the string-context
-//! engines produce:
+//! scan produces:
 //!
 //! - `StringClassification`: the nine-category role a program string plays —
 //!   format string, file path, resource name, error message, network, debug
@@ -16,14 +16,14 @@
 //!   reading — the signal kinds and strings one function's mapped strings
 //!   carry.
 //! - `CrossFunctionFlow`: the cross-function reading — a string one
-//!   program function hands into another across a call boundary.
+//!   program function passes to another across a call boundary.
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
-// `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
-// the shared 0–100 evidence score; both are re-exported so consumers name
-// them through this crate, matching the typesdb, typeinfer, algorithm,
-// memory, and sync convention.
+// `ScanMetadata` is the shared per-binary scan provenance. `Confidence` is
+// the shared 0–100 evidence confidence score. This crate re-exports both so
+// consumers can name them through this crate, the same way the typesdb,
+// typeinfer, algorithm, memory, and sync crates do.
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -38,15 +38,16 @@ use crate::localization::LOCALIZATION_SUGGESTION;
 /// The role a program string plays, out of nine categories.
 ///
 /// The category says what the string is *for* — a `sprintf` format string,
-/// a config-file path, an error message shown to the user — so the
-/// translation prompt can name the string's intent instead of guessing it
-/// from an opaque `DAT_xxxxxxxx` reference. [`classify`](crate::classify::StringClassifyEngine::classify)
-/// assigns the category by priority-ordered pattern matching; a string that
-/// matches several pattern sets lands in the most informative bucket.
+/// a config-file path, or an error message shown to the user. The
+/// translation prompt can then state the string's intent instead of
+/// guessing it from an opaque `DAT_xxxxxxxx` reference.
+/// [`classify`](crate::classify::StringClassifyEngine::classify) matches
+/// patterns in priority order. If a string matches several pattern sets,
+/// it gets the most informative category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StringClassification {
-    /// A `printf`-style format string carrying `%` specifiers.
+    /// A `printf`-style format string that contains `%` specifiers.
     FormatString,
     /// A file or registry path, e.g. `Journal.txt` or `C:\game\cfg.ini`.
     FilePath,
@@ -85,11 +86,12 @@ calxgloss_types::display_serde_label!(StringClassification {
 /// How a string was tied to the function that uses it.
 ///
 /// A body-parsed string was read directly out of the function's pseudo-C —
-/// a literal, a resolved `DAT_` reference, or a format-function call — while
-/// an xref-only string was found by asking the engine which functions reference
-/// it, the fallback for functions whose body parse found nothing. The
-/// provenance is kept so a reviewer (or a confidence score) can weigh
-/// body-parsed evidence above xref-only evidence.
+/// a literal, a resolved `DAT_` reference, or a format-function call. An
+/// xref-only string was found by asking the analysis engine which
+/// functions reference it; this is the fallback when the body parse found
+/// nothing. The record keeps the provenance so a reviewer (or an evidence
+/// confidence score) can rate body-parsed evidence above xref-only
+/// evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StringSource {
@@ -105,13 +107,13 @@ pub enum StringSource {
 
 /// One format specifier's inferred Rust argument type.
 ///
-/// A hint says the format string carries the specifier
+/// A hint says the format string contains the specifier
 /// [`specifier`](Self::specifier) — e.g. `%s` or `%.2f` — as its
-/// [`position`](Self::position)th argument (0-based, `%%` taking no
-/// argument slot), and that the original call passed an argument of
+/// [`position`](Self::position)th argument (0-based; `%%` takes no
+/// argument slot). It also says the original call passed an argument of
 /// [`rust_type`](Self::rust_type) — `*const i8` for `%s`, `f32` for
-/// `%.2f`. The list of hints is what the prompt shows in place of the
-/// argument types the format string implies.
+/// `%.2f`. A prompt shows this list of hints in place of the argument
+/// types the format string implies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatHint {
     /// The specifier as written in the format string, e.g. `%.2f`.
@@ -128,14 +130,14 @@ pub struct FormatHint {
 
 /// One string a function uses, with what it says and how it was found.
 ///
-/// A record says the function references the string at
-/// [`string_address`](Self::string_address) whose value is
-/// [`string_value`](Self::string_value); the classifier read it as
-/// [`classification`](Self::classification) — carrying the one-line
-/// [`purpose`](Self::purpose) that category implies — and the tie to the
-/// function came through [`source`](Self::source). The decompiled line or
-/// xref that shows the use is kept as [`evidence`](Self::evidence) so a
-/// reviewer (or a translation prompt) can check the reasoning.
+/// The record says the function references the string at
+/// [`string_address`](Self::string_address), whose value is
+/// [`string_value`](Self::string_value). The classifier read it as
+/// [`classification`](Self::classification), which implies a one-line
+/// [`purpose`](Self::purpose). The link to the function came through
+/// [`source`](Self::source). The record also keeps the decompiled line or
+/// xref that shows the use, as [`evidence`](Self::evidence), so a reviewer
+/// (or a translation prompt) can check the reasoning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClassifiedString {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -151,7 +153,7 @@ pub struct ClassifiedString {
     pub purpose: String,
     /// Whether the use was read from the body or found by xref.
     pub source: StringSource,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
     /// The decompiled line or xref that shows the use, kept so a reviewer
     /// (or a translation prompt) can check the reasoning.
@@ -161,15 +163,15 @@ pub struct ClassifiedString {
 /// One format-string call a function makes, with the argument types the
 /// format string implies.
 ///
-/// A record says the function calls a recognized format function —
-/// `sprintf`, `snprintf`, `wsprintf` — passing the format string at
-/// [`string_address`](Self::string_address) whose value is
-/// [`format_string`](Self::format_string); the [`call_site`](Self::call_site)
+/// The record says the function calls a recognized format function —
+/// `sprintf`, `snprintf`, `wsprintf` — with the format string at
+/// [`string_address`](Self::string_address), whose value is
+/// [`format_string`](Self::format_string). The [`call_site`](Self::call_site)
 /// line is the decompiled call itself, and [`arg_types`](Self::arg_types)
-/// are the [`FormatHint`]s the specifiers imply, in argument order. The
-/// translator sees the argument types the original call carried — the
-/// `*const i8` and `i32` behind `"%s: %d hits"` — instead of transliterating
-/// the call blind.
+/// holds the [`FormatHint`]s the specifiers imply, in argument order. The
+/// translator therefore sees the argument types the original call passed —
+/// the `*const i8` and `i32` behind `"%s: %d hits"` — instead of rewriting
+/// the call without them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatStringUse {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -182,7 +184,7 @@ pub struct FormatStringUse {
     pub call_site: String,
     /// The inferred argument types, in argument order.
     pub arg_types: Vec<FormatHint>,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
 }
 
@@ -193,10 +195,10 @@ pub struct FormatStringUse {
 /// The kinds of localization signal the detector reads in a function's
 /// strings.
 ///
-/// Each kind is one shape the language machinery leaves in the string
-/// listing — see
+/// Each kind is one shape that language machinery leaves in the string
+/// listing. See
 /// [`localization`](crate::localization::LocalizationDetector::detect)
-/// for the gates that claim each.
+/// for the checks that decide when each kind applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalizationSignalKind {
@@ -205,24 +207,25 @@ pub enum LocalizationSignalKind {
     /// The whole value matches the `xx-YY`/`xx_YY` locale shape, e.g.
     /// `en-US` or `fr_FR`.
     LocaleCode,
-    /// A user-facing value carrying non-ASCII characters — accented
-    /// Latin, CJK — read off the decoded program string listing.
+    /// A user-facing value that contains non-ASCII characters —
+    /// accented Latin, CJK — read from the decoded program string
+    /// listing.
     NonAsciiText,
 }
 
 /// One function's localization signals — the language machinery its
 /// mapped strings reveal.
 ///
-/// A record says the function uses strings carrying the signal kinds in
-/// [`signal_kinds`](Self::signal_kinds) — the kinds seen, in the order
-/// the scan first saw each — and names the signal strings themselves in
-/// [`signals`](Self::signals), in scan order, each value once however
-/// often the function uses it. The lines that showed the signals are
-/// joined into [`evidence`](Self::evidence) so a reviewer can check the
-/// reading against the body. The confidence sits visibly below a directly
-/// classified record's: the claim is a pattern inference over string
-/// shapes, and it rides **beside** the classified records — nothing here
-/// reclassifies them.
+/// The record says the function uses strings with the signal kinds listed
+/// in [`signal_kinds`](Self::signal_kinds), in the order the scan first
+/// saw each kind. It names the signal strings themselves in
+/// [`signals`](Self::signals), in scan order; each value appears once,
+/// however often the function uses it. The lines that showed the signals
+/// are joined into [`evidence`](Self::evidence), so a reviewer can check
+/// the reading against the body. The evidence confidence sits visibly
+/// below a directly classified record's: the claim is a pattern inference
+/// over string shapes, and it is reported **beside** the classified
+/// records — nothing here reclassifies them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalizationSignals {
     /// The function the record is about, e.g. `FUN_18003ab00`.
@@ -233,7 +236,7 @@ pub struct LocalizationSignals {
     pub signals: Vec<String>,
     /// The lines showing the signals, one per signal, joined.
     pub evidence: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
 }
 
@@ -241,26 +244,26 @@ pub struct LocalizationSignals {
 // Cross-function string flow
 // ============================================================
 
-/// A string one program function hands into another across a call
-/// boundary — the correlation the cross-function pass reads over the
-/// bodies the scan keeps.
+/// A string one program function passes to another across a call
+/// boundary, recorded by the cross-function pass from the bodies the scan
+/// keeps.
 ///
 /// The record says [`passing_function`](Self::passing_function) calls
 /// [`receiving_function`](Self::receiving_function) with
-/// [`string_value`](Self::string_value) as a readable argument — a
-/// direct literal or a `DAT_` the string table resolves. It attaches to
-/// whichever of the two functions comes earlier in the function listing
-/// (the callback-chain precedent), so one flow reads the same however
-/// the listing orders the pair, and the passing call's own line is the
-/// evidence. The confidence sits level with an in-body call claim: the
-/// edge is an explicit call in a body the scan holds. One record per
-/// (passing, receiving, string) triple, the first matching call site
-/// winning; a string handed to an import, or held in a variable the
-/// mapper cannot resolve, claims nothing.
+/// [`string_value`](Self::string_value) as an argument it can read — a
+/// direct literal, or a `DAT_` that the string table resolves. The record
+/// attaches to whichever of the two functions comes earlier in the
+/// function listing (the callback-chain precedent), so one flow reads the
+/// same however the listing orders the pair. The evidence is the passing
+/// call's own line. The evidence confidence is the same as an in-body
+/// call claim's: the call is explicit in a body the scan holds. There is
+/// one record per (passing, receiving, string) triple, and the first
+/// matching call site wins. A string passed to an import, or held in a
+/// variable the mapper cannot resolve, produces no record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CrossFunctionFlow {
-    /// The function the record is attached to — the earlier of the two
-    /// ends in listing order.
+    /// The function the record is attached to: the earlier of the two
+    /// functions in listing order.
     pub function: String,
     /// The function that passes the string.
     pub passing_function: String,
@@ -268,13 +271,13 @@ pub struct CrossFunctionFlow {
     pub receiving_function: String,
     /// The string that flows across the call boundary.
     pub string_value: String,
-    /// The string's address in the program's string listing — 0 when
-    /// the body spelled a direct literal the table names no address
-    /// for, mirroring the classified records' convention.
+    /// The string's address in the program's string listing. It is 0
+    /// when the body showed a direct literal that the listing gives no
+    /// address for — the same convention the classified records use.
     pub string_address: u64,
     /// The passing call's own line.
     pub evidence: String,
-    /// Confidence that the record is right, 0–100.
+    /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
 }
 
@@ -282,13 +285,14 @@ pub struct CrossFunctionFlow {
 // Finding union
 // ============================================================
 
-/// One string-context finding, whichever engine made it.
+/// One string-context finding, whichever part of the scan made it.
 ///
-/// The engines emit the concrete records; the union is what the persisted
-/// result carries, so one list can hold every finding for a binary and a
-/// consumer reads the shared shape — function, suggestion, confidence,
-/// evidence — without naming which engine produced it. The serde `kind`
-/// tag names the record shape in the persisted JSON.
+/// Each part of the scan emits its own concrete records. The union is
+/// what the persisted result carries, so one list can hold every finding
+/// for a binary and a consumer reads the shared shape — function,
+/// suggestion, evidence confidence, and evidence — without naming which
+/// part produced it. The serde `kind` tag names the record shape in the
+/// persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StringFinding {
@@ -299,7 +303,7 @@ pub enum StringFinding {
     /// A function whose mapped strings carry localization signals —
     /// language names, locale codes, non-ASCII user-facing text.
     Localization(LocalizationSignals),
-    /// A string one program function hands into another across a call
+    /// A string one program function passes to another across a call
     /// boundary — the cross-function correlation.
     CrossFunction(CrossFunctionFlow),
 }
@@ -328,7 +332,7 @@ impl StringFinding {
         }
     }
 
-    /// Confidence that the finding is right.
+    /// Evidence confidence that the finding is right.
     pub fn confidence(&self) -> Confidence {
         match self {
             StringFinding::Classified(record) => record.confidence,
@@ -349,8 +353,8 @@ impl StringFinding {
     }
 
     /// The serde `kind` tag — `classified`, `format_string`,
-    /// `localization`, or `cross_function` — naming the engine behind
-    /// the finding.
+    /// `localization`, or `cross_function` — naming the part of the
+    /// scan behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             StringFinding::Classified(_) => "classified",
@@ -360,10 +364,10 @@ impl StringFinding {
         }
     }
 
-    /// What the finding names, spelled for a report row: the string value
-    /// itself, the format string behind the call, the signal strings
-    /// the localization reading saw, or the two functions and the string
-    /// the cross-function reading ties.
+    /// What the finding names, spelled out for a report row: the string
+    /// value itself, the format string behind the call, the signal
+    /// strings the localization record saw, or the two functions and the
+    /// string between them for the cross-function record.
     pub fn target(&self) -> String {
         match self {
             StringFinding::Classified(record) => record.string_value.clone(),
@@ -381,12 +385,12 @@ impl StringFinding {
 // Prompt conversions
 // ============================================================
 
-/// Render a finding as prompt data: the function it is about, the role
-/// the string plays — its classification category, or `format_string` —
-/// the Rust reading the finding suggests, and the confidence and
-/// evidence behind the claim, so the escalate prompt shows the
-/// hypothesis and how strongly it was made, whichever engine produced
-/// it.
+/// Render a finding as prompt data. The prompt gets the function the
+/// finding is about, the role the string plays — its classification
+/// category, or `format_string` — the Rust reading the finding suggests,
+/// and the evidence confidence and evidence behind the claim. Whichever
+/// part of the scan produced the finding, the escalate prompt shows the
+/// hypothesis and how strongly it was made.
 impl From<&StringFinding> for calxgloss_prompts::StringContextInfo {
     fn from(finding: &StringFinding) -> Self {
         Self {
@@ -411,11 +415,12 @@ impl From<&StringFinding> for calxgloss_prompts::StringContextInfo {
 /// The string-context result for one binary — the document persisted to
 /// `re/analysis/stringctx/{dll}.json`.
 ///
-/// The findings are the scan's outputs in scan order: function by
-/// function, and within one function the classified strings first, then
-/// the format-string calls, then the localization reading — and after
-/// every function, the cross-function string flows in listing order.
-/// The stable order means two scans of the same program diff cleanly.
+/// The findings are the scan's output, in scan order: function by
+/// function. Within one function, the classified strings come first,
+/// then the format-string calls, then the localization reading. After
+/// every function come the cross-function string flows, in listing
+/// order. This stable order lets two scans of the same program diff
+/// cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StringContextResult {
     /// Provenance of the scan that produced these findings.
@@ -496,9 +501,9 @@ mod tests {
             evidence: "lFile = CreateFileA(\"Journal.txt\",...);".into(),
         };
         let json = serde_json::to_string(&record).unwrap();
-        // The category and provenance serialize snake_case and the
-        // confidence as a plain number, matching the workspace's serde
-        // convention.
+        // The category and provenance serialize snake_case, and the
+        // evidence confidence is a plain number, matching the
+        // workspace's serde convention.
         assert!(json.contains("\"classification\":\"file_path\""));
         assert!(json.contains("\"source\":\"body_parse\""));
         assert!(json.contains("\"confidence\":70"));
@@ -743,8 +748,8 @@ mod tests {
 
     #[test]
     fn a_result_without_findings_omits_them_and_reads_back_empty() {
-        // Documents persisted before a finding landed still load, and an
-        // empty scan stays small on disk.
+        // Documents saved before a finding kind existed still load, and
+        // an empty scan stays small on disk.
         let result = StringContextResult::new(ScanMetadata::new("eqmain.dll"));
         let json =
             serde_json::to_string(&result).expect("empty string context result should serialize");

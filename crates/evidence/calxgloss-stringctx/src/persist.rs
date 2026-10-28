@@ -8,10 +8,10 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is the
-//! check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and every
-//! finding — for the translation pipeline to query.
+//! A saved result also acts as a cache. Before deciding whether to run a
+//! scan, a caller checks [`exists`](Self::exists). [`load`](Self::load)
+//! then reads the whole document back — metadata and every finding — for
+//! the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -34,8 +34,8 @@ use crate::types::StringContextResult;
 /// ```
 ///
 /// The default cache directory is `{workspace}/re/analysis/stringctx/`,
-/// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir)
-/// points the persistor at an explicit directory instead.
+/// set by [`new`](Self::new). [`with_cache_dir`](Self::with_cache_dir)
+/// uses an explicit directory instead.
 ///
 /// # Example
 ///
@@ -57,7 +57,8 @@ pub struct StringContextPersistor {
 }
 
 impl StringContextPersistor {
-    /// Creates a new persistor rooted at the given workspace directory.
+    /// Creates a persistor that stores its results under the given
+    /// workspace directory.
     ///
     /// Results are stored in `<workspace>/re/analysis/stringctx/`.
     pub fn new(workspace: impl AsRef<Path>) -> Self {
@@ -82,19 +83,19 @@ impl StringContextPersistor {
 
     /// Whether a persisted result exists for `binary`.
     ///
-    /// This is the cache check: a caller that wants string context without
-    /// re-running the scan asks here first and only drives the scan when
-    /// the answer is `false`.
+    /// This is the cache check. A caller that wants string context
+    /// without re-running the scan asks here first, and runs the scan
+    /// only when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
 
-    /// Saves a string-context result to JSON, keyed on its metadata's
-    /// binary name.
+    /// Saves a string-context result as JSON. The document is keyed on
+    /// the binary name carried in its metadata.
     ///
-    /// Creates the cache directory hierarchy if it does not exist,
-    /// serializes the result, and writes it to disk — a rescan replaces
-    /// the previous document for the same binary.
+    /// Creates the cache directory if it does not exist, serializes the
+    /// result, and writes it to disk. A rescan replaces the previous
+    /// document for the same binary.
     ///
     /// # Errors
     ///
@@ -363,9 +364,9 @@ mod tests {
 
     #[test]
     fn a_document_saved_before_localization_detection_loads_unchanged() {
-        // The localization kind arrived with p8.5-1; documents saved by
-        // earlier builds simply never carry one, and they must still read
-        // back whole.
+        // The localization kind was added in p8.5-1. Documents saved by
+        // earlier builds never contain one, and they must still load
+        // whole.
         let json = r#"{
             "metadata": {"binary": "eqmain.dll", "scanned_at": 1759488000, "duration_secs": 12},
             "findings": [
@@ -438,9 +439,9 @@ mod tests {
 
     #[test]
     fn a_document_saved_before_cross_function_correlation_loads_unchanged() {
-        // The cross-function kind arrived with p8.5-2; documents saved by
-        // earlier builds simply never carry one, and they must still read
-        // back whole — including the localization kind p8.5-1 added.
+        // The cross-function kind was added in p8.5-2. Documents saved by
+        // earlier builds never contain one, and they must still load
+        // whole — including the localization kind added in p8.5-1.
         let json = r#"{
             "metadata": {"binary": "eqmain.dll", "scanned_at": 1759488000, "duration_secs": 12},
             "findings": [
@@ -483,10 +484,10 @@ mod tests {
 
     #[test]
     fn the_stamped_document_round_trips_coverage_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #351).
+        // Everything the scan stamped passes through the persistor
+        // untouched: statuses, ids, order, and limitation lines. This is
+        // exactly what a later reader sees — the projection seam, the
+        // report, or a `--show` months later (issue #351).
         let dir = tempfile::tempdir().unwrap();
         let persistor = StringContextPersistor::new(dir.path());
         let mut saved = sample_result("eqmain.dll");
