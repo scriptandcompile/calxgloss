@@ -1,10 +1,10 @@
-//! The Kuna engine load path over the checked-in fixture target (issue #205).
+//! Kuna's load path over the checked-in fixture target (issue #205).
 //!
-//! The fixture DLL is the shape contract the whole epic asserts against;
-//! these tests pin that the pinned Kuna build can open it in-process, that
-//! the identity the later scan tickets will key on is reported, and that an
-//! unloadable target fails by name, naming the path and Kuna's own reason,
-//! rather than as an upstream backtrace.
+//! The fixture DLL is the shape the whole epic checks against. These tests
+//! prove that the pinned Kuna build can open the fixture in-process, that
+//! the identity later scan tickets will key on is reported, and that an
+//! unloadable target fails with a named error naming the path and Kuna's
+//! own reason, not an upstream backtrace.
 
 use calxgloss_kuna::KunaError;
 

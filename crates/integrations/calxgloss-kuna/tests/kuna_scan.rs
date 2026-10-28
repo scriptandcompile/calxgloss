@@ -1,9 +1,10 @@
-//! The Kuna source's core scan reads over the checked-in fixture target
-//! (issue #206, part of epic #203).
+//! The core scan reads through `KunaSource` over the checked-in fixture
+//! target (issue #206, part of epic #203).
 //!
-//! These tests drive `KunaSource`'s inherent API — the Kuna-native answers
-//! the seam maps — over the fixture DLL: the function listing, decompile by
-//! name, the import and export tables, and the image base. The seam itself
+//! These tests call `KunaSource`'s own methods over the fixture DLL — the
+//! Kuna-native answers the seam maps — covering the function listing,
+//! decompile by name, the import and export tables, and the image base.
+//! The seam itself
 //! (`impl ScanSource for KunaSource`) is exercised in
 //! `calxgloss-decomp/tests/kuna_scan.rs`, beside every other seam test.
 
@@ -11,15 +12,15 @@ use calxgloss_kuna::KunaError;
 use calxgloss_kuna::source::KunaSource;
 use calxgloss_testfixtures::{EXPORT_NAMES, IMPORT_FUNCTIONS, TARGET_FILE_NAME};
 
-/// The loader's spelling of a fixture name: MinGW COFF symbols carry a
-/// leading underscore, so the listing may report `_fixture_init` where the
-/// export table says `fixture_init`.
+/// Strip the leading underscore that MinGW COFF symbols put in front of
+/// fixture names, so `_fixture_init` from the listing matches
+/// `fixture_init` from the export table.
 fn loader_name(raw: &str) -> String {
     raw.trim_start_matches('_').to_string()
 }
 
-/// The listing's entry whose loader name matches `want`, for a readable
-/// failure that shows what the listing actually answered.
+/// The listing entry whose name matches `want` once the loader's leading
+/// underscore is stripped, so a failure can show what the listing answered.
 fn listed<'a>(
     listing: &'a [calxgloss_kuna::KunaFunction],
     want: &str,
@@ -49,10 +50,11 @@ async fn the_function_listing_answers_with_the_fixture_functions() {
     }
     // Kuna's synthetic import placeholders (addresses invented for call
     // naming) are filtered out of the listing. What does legitimately
-    // appear is a named import *thunk* — MinGW emits real `jmp [__imp_x]`
-    // veneers in `.text`, and the engine names them for what they are:
-    // defined code in the image, the same functions Ghidra lists as thunks.
-    // Addresses are in-image virtual addresses, not synthetic slots.
+    // appear is a named import thunk: MinGW emits real `jmp [__imp_x]`
+    // veneers in `.text`, and Kuna names them for what they are — defined
+    // code in the image, the same functions the retired Ghidra path listed
+    // as thunks. The addresses are real in-image virtual addresses, not
+    // synthetic slots.
     for function in &functions {
         assert!(
             function.address > 0,
@@ -111,10 +113,10 @@ async fn an_unknown_function_name_fails_by_name() {
 
 #[tokio::test]
 async fn the_disassembly_listing_answers_real_listing_text_for_a_fixture_function() {
-    // Issue #245: the engine-native disassembly read over the fixture DLL.
-    // The rows are the engine's own listing — an address column, then the
-    // lifter's uppercase SLEIGH mnemonics with `0x` hex operands — and a
-    // miss is the same named failure a decompile answers with.
+    // Issue #245: Kuna's own disassembly read over the fixture DLL. The
+    // rows are Kuna's listing: an address column, then the lifter's
+    // uppercase SLEIGH mnemonics with `0x` hex operands. A miss fails with
+    // the same named error a decompile miss does.
     let source = fixture_source();
     let functions = source.list_functions().await.expect("functions read");
     let tick = listed(&functions, "fixture_tick").expect("fixture_tick is listed");
@@ -208,9 +210,8 @@ async fn the_import_and_export_tables_and_the_image_base_answer_from_the_fixture
 
 #[tokio::test]
 async fn one_source_answers_from_exactly_one_target_binary() {
-    // One handle loaded one path, and every read answers
-    // from that one program — a wrong-program mix-up is structurally
-    // impossible.
+    // One handle loaded one path, and every read answers from that one
+    // program. A wrong-program mix-up cannot happen by construction.
     let fixture = calxgloss_testfixtures::load_target()
         .expect("fixture target should build and validate from the integration tests");
     let source = fixture_source();
@@ -221,7 +222,7 @@ async fn one_source_answers_from_exactly_one_target_binary() {
         source.identity(),
     );
 
-    // A clone shares the same program — not a second load of anything.
+    // A clone shares the same loaded program; cloning is not a second load.
     let clone = source.clone();
     assert_eq!(clone.path(), source.path());
     assert_eq!(clone.identity(), source.identity());
@@ -231,11 +232,11 @@ async fn one_source_answers_from_exactly_one_target_binary() {
 
 #[tokio::test]
 async fn a_source_that_cannot_load_hands_back_no_handle() {
-    // The engine thread exits with the load failure and no handle exists to
-    // read through — the only way to ask a question is through a handle, so
-    // a dead program is unreachable by construction. What is observable is
-    // the failure itself: the same named load failure the plain loader
-    // reports, naming the path and Kuna's own reason.
+    // If the load fails, the engine thread exits with the failure and no
+    // handle exists to read through. The only way to ask a question is
+    // through a handle, so a dead program is unreachable by construction.
+    // What is observable is the failure itself: the same named load failure
+    // `calxgloss_kuna::load` reports, naming the path and Kuna's own reason.
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("not-a-binary.dll");
     std::fs::write(&path, b"just text, not a PE").expect("write the junk file");
