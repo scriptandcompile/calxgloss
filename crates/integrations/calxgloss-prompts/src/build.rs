@@ -5,11 +5,15 @@
 //!
 //! - [`build_translate_prompt`] — standard translation prompt
 //! - [`build_escalate_prompt`] — escalate with additional context
+//! - [`build_escalate_prompt_with_context`] — escalate with additional
+//!   context and enriched call graph data
 //! - [`build_edge_case_prompt`] — fix boundary-value failures
 //! - [`build_signature_prompt`] — Tier 0 signature-prompt generation
 //! - [`build_disassembly_prompt`] — Tier 1 disassembly-only prompt
 //! - [`build_with_tests_prompt`] — Tier 2 full context with tests
 //! - [`build_module_context_prompt`] — Tier 3 module context with neighbors
+//! - [`build_full_module_prompt`] — Tier 4 full module with shim code and
+//!   PAL trait definitions
 //! - [`build_complexity_prompt`] — complexity-aware prompt selection
 //! - [`extract_signature_from_decompiler`] — extract function signature
 
@@ -31,7 +35,7 @@ use super::templates::{
 // ============================================================
 
 /// Renders a template and normalizes the blank lines its block tags leave
-/// behind, so sections always sit exactly one blank line apart and an
+/// behind. Sections always end up exactly one blank line apart, and an
 /// omitted conditional section leaves no trace.
 fn render_prompt<T: Template>(template: &T) -> Result<String, PromptError> {
     let rendered = template
@@ -67,12 +71,13 @@ fn collapse_blank_lines(rendered: &str) -> String {
 
 /// Builds a standard translation prompt from a [`TranslationRequest`].
 ///
-/// This is the most common path — it renders the [`TranslateTemplate`]
+/// This is the most common path. It renders the [`TranslateTemplate`]
 /// with the request's disassembly, decompiler output, Windows API calls,
 /// and baseline tests.
 ///
-/// When API-aware augmentation is enabled (default), the prompt includes
-/// full mapping table rows for each API category the function touches.
+/// API-aware augmentation is on by default. When it is on, the prompt
+/// includes full mapping table rows for each API category the function
+/// touches.
 ///
 /// TODO: Add `call_graph_context` enrichment when a call graph is available.
 /// Use `WithTestsPromptData::from_request_with_call_graph` or construct
@@ -104,9 +109,10 @@ pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, Prompt
 
 /// Builds an escalation prompt with additional decompiler context.
 ///
-/// Used when previous attempts failed with compile_fix or test_fix strategies.
-/// The decompiler-derived finding lists ride in as an [`EvidenceBundle`];
-/// the function identity and failure history stay as separate parameters.
+/// Used when previous attempts failed with compile_fix or test_fix
+/// strategies. The decompiler-derived finding lists arrive as one
+/// [`EvidenceBundle`]. The function identity and the failure history
+/// stay as separate parameters.
 pub fn build_escalate_prompt(
     function_name: String,
     dll_name: String,
@@ -129,14 +135,15 @@ pub fn build_escalate_prompt(
 /// call graph data.
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
-/// The bundle carries call graph neighbors, neighboring functions, data
+///
+/// The bundle contains call graph neighbors, neighboring functions, data
 /// structures, type information, recognized algorithms, memory lifecycle
 /// findings, concurrency findings, callback findings, control-flow findings,
-/// calling-convention readings, global-state access records, string
-/// context findings, library/API findings, constant/enum findings,
-/// serialization findings, and enriched call graph context (caller/callee
-/// details and leaf API suggestions) to help the LLM understand the
-/// broader context.
+/// calling-convention readings, global-state access records, string context
+/// findings, library/API findings, constant/enum findings, serialization
+/// findings, and enriched call graph context (caller/callee details and leaf
+/// API suggestions). That context helps the LLM understand the broader
+/// picture.
 pub fn build_escalate_prompt_with_context(
     function_name: String,
     dll_name: String,
@@ -163,8 +170,9 @@ pub fn build_escalate_prompt_with_context(
 
 /// Builds an edge case fix prompt for boundary-value test failures.
 ///
-/// Includes failing test details, disassembly hints, and boundary
-/// value analysis to help the LLM fix off-by-one and boundary conditions.
+/// The prompt includes failing test details, disassembly hints, and
+/// boundary value analysis. This helps the LLM fix off-by-one and
+/// boundary condition mistakes.
 pub fn build_edge_case_prompt(
     function_name: String,
     dll_name: String,
@@ -191,9 +199,9 @@ pub fn build_edge_case_prompt(
 
 /// Builds a Tier 0 signature prompt (name, signature, call graph neighbors).
 ///
-/// Contains only the function name, signature, and call graph neighbors.
-/// Used when the function's disassembly is too large or irrelevant
-/// for the initial signature-only phase.
+/// The prompt contains only the function name, signature, and call graph
+/// neighbors. It is used in the initial signature-only phase, when the
+/// function's disassembly is too large or irrelevant.
 pub fn build_signature_prompt(data: &SignaturePromptData) -> Result<String, PromptError> {
     let template = SignatureTemplate::from_data(data);
 
@@ -245,16 +253,17 @@ pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, Pro
 /// Builds a Tier 3 module context prompt with neighboring function code
 /// and shared data structures.
 ///
-/// Contains full disassembly, decompiler output, tagged Windows API calls,
-/// baseline test results with pass/fail status, and — through the one
-/// [`EvidenceBundle`] the gathered finding lists ride in as (issue #320) —
-/// full context from neighboring functions (disassembly + decompiler
+/// The prompt contains full disassembly, decompiler output, tagged Windows
+/// API calls, and baseline test results with pass/fail status. It also
+/// shows full context from neighboring functions (disassembly + decompiler
 /// output), any data structures referenced near the target function, and
-/// the shared evidence sections the template includes. Callers with no
-/// gathered context pass [`EvidenceBundle::default()`].
+/// the shared evidence sections the template includes. All of that gathered
+/// context arrives as the one [`EvidenceBundle`] holding the finding lists
+/// (issue #320). Callers with no gathered context pass
+/// [`EvidenceBundle::default()`].
 ///
-/// This tier is used for complex functions whose translation requires
-/// understanding shared calling conventions, data layouts, or helper
+/// This tier is for complex functions. Translating them needs an
+/// understanding of shared calling conventions, data layouts, or helper
 /// patterns from adjacent functions in the same module.
 pub fn build_module_context_prompt(
     req: &TranslationRequest,
@@ -269,20 +278,20 @@ pub fn build_module_context_prompt(
 // Full module prompt builder (Tier 4)
 // ============================================================
 
-/// Builds a Tier 4 full module prompt with shim layer code and PAL trait
-/// definitions on top of module context.
+/// Builds a Tier 4 full module prompt: module context plus shim layer code
+/// and PAL trait definitions.
 ///
-/// Contains full disassembly, decompiler output, tagged Windows API calls,
-/// baseline test results with pass/fail status, generated shim layer code
-/// for crate-replacement DLLs, and PAL trait definitions — plus the full
-/// gathered context, which rides in as one [`EvidenceBundle`] exactly as
-/// the module-context builder takes it (issue #320). Callers with no
-/// gathered context pass [`EvidenceBundle::default()`].
+/// The prompt contains full disassembly, decompiler output, tagged Windows
+/// API calls, baseline test results with pass/fail status, generated shim
+/// layer code for crate-replacement DLLs, and PAL trait definitions. The
+/// full gathered context arrives as one [`EvidenceBundle`], exactly as the
+/// module-context builder takes it (issue #320). Callers with no gathered
+/// context pass [`EvidenceBundle::default()`].
 ///
 /// This tier is used when translating functions that call through shim
-/// layers (e.g., DirectX → wgpu) and need the full translation-layer
-/// context — including the shim source code and PAL trait interfaces —
-/// to map correctly to the cross-platform Rust equivalents.
+/// layers (e.g., DirectX → wgpu). Those functions need the full
+/// translation-layer context — the shim source code and the PAL trait
+/// interfaces — to map correctly to the cross-platform Rust equivalents.
 pub fn build_full_module_prompt(
     req: &TranslationRequest,
     evidence: EvidenceBundle,
@@ -298,14 +307,14 @@ pub fn build_full_module_prompt(
 // Complexity-aware prompt builder (Tier 3+)
 // ============================================================
 
-/// Builds a complexity-aware prompt, selecting the appropriate template
-/// based on the function's [`FunctionComplexity`].
+/// Builds a complexity-aware prompt. It picks the template that matches the
+/// function's [`FunctionComplexity`].
 ///
-/// Complexity tiers and their templates:
+/// The complexity level and its template:
 ///
 /// | Complexity | Template | Context |
 /// |------------|----------|---------|
-/// | `Minimal` (≤30 instructions) | `TranslateTemplate` | Disassembly + decompiler + API mappings + tests |
+/// | `Minimal` (≤30 instructions) | `MinimalTemplate` | Disassembly + decompiler + API mappings + tests |
 /// | `Standard` (31–100 instructions) | `TranslateTemplate` | Disassembly + decompiler + API mappings + tests |
 /// | `Rich` (101–300 instructions) | `RichTemplate` | Standard + API category context + advanced guidelines |
 /// | `Detailed` (>300 instructions) | `DetailedTemplate` | Rich + call graph + neighbors + data structures + type info |
@@ -313,7 +322,7 @@ pub fn build_complexity_prompt(
     complexity: &FunctionComplexity,
     data: &ComplexityPromptData,
 ) -> Result<String, PromptError> {
-    // API-aware prompt augmentation — populate
+    // API-aware prompt augmentation — fill in
     // api_category_mappings from the function's tagged Windows APIs.
     let categories = data.api_categories();
     let api_mappings = calxgloss_pal::ApiMappings::default();
@@ -355,15 +364,15 @@ pub fn build_complexity_prompt(
                 template.api_category_mappings = api_category_mappings;
             }
             // Type-info rows (issue #276): the persisted type-inference
-            // artifact's readings, direction records included, ride the
-            // template's existing type-info section — no new section.
+            // artifact's readings, direction records included, go into
+            // the template's existing type-info section — no new section.
             template.type_info = data.type_info.clone();
             template.control_flow_findings = data.control_flow_findings.clone();
             // Coverage fan-out (issue #351): the type-inference engine's one
-            // record qualifies this tier's type-information section too.
+            // record also qualifies this tier's type-information section.
             template.type_inference_coverage = data.type_inference_coverage.clone();
             // Capability fan-out (issue #357): the seam's admissions for
-            // the families feeding this tier's two includes ride beside
+            // the families that feed this tier's two includes go beside
             // the coverage lines, exactly as on the bundle-fed surfaces.
             template.decompilation_cap_line = data.decompilation_cap_line.clone();
             template.disassembly_cap_line = data.disassembly_cap_line.clone();
@@ -377,9 +386,9 @@ pub fn build_complexity_prompt(
             if !api_category_mappings.is_empty() {
                 template.api_category_mappings = api_category_mappings;
             }
-            // Type-info rows (issue #276): same riding as the rich arm —
-            // the artifact's readings render through the existing
-            // type-info section, no new section.
+            // Type-info rows (issue #276): same as the rich arm — the
+            // artifact's readings render through the existing type-info
+            // section, with no new section.
             template.type_info = data.type_info.clone();
             template.control_flow_findings = data.control_flow_findings.clone();
             // Coverage fan-out (issue #351): the type-inference engine's one
@@ -387,7 +396,7 @@ pub fn build_complexity_prompt(
             // its parameter-direction section.
             template.type_inference_coverage = data.type_inference_coverage.clone();
             // Capability fan-out (issue #357): the seam's admissions for
-            // the families feeding this tier's two includes ride beside
+            // the families that feed this tier's two includes go beside
             // the coverage lines, exactly as on the bundle-fed surfaces.
             template.decompilation_cap_line = data.decompilation_cap_line.clone();
             template.disassembly_cap_line = data.disassembly_cap_line.clone();
@@ -433,9 +442,9 @@ fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
 
 /// Extracts the function signature from the decompiler output.
 ///
-/// The decompiler's first line is a real signature carrying real parameter
-/// types, so it is preferred. Returns an empty string if the output is
-/// empty or contains no recognizable signature pattern.
+/// The decompiler's first line is a real signature with real parameter
+/// types, so the function prefers it. Returns an empty string if the
+/// output is empty or contains no recognizable signature pattern.
 ///
 /// Recognized patterns:
 /// - `int __stdcall FuncName(int x, int y)` — standard signature

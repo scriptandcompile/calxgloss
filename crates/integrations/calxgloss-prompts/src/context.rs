@@ -1,8 +1,7 @@
 //! Prompt data structures — input types for the prompt builder functions.
 //!
-//! This module defines the data structs used as input to the prompt build
-//! functions (`build_*`). Each struct corresponds to a specific translation
-//! tier:
+//! This module defines the data structs the prompt build functions
+//! (`build_*`) take as input. Each struct matches one translation tier:
 //!
 //! - [`SignaturePromptData`] — Tier 0: name and signature only (plus call graph)
 //! - [`DisassemblyPromptData`] — Tier 1: disassembly + decompiler output
@@ -10,9 +9,8 @@
 //! - [`ComplexityPromptData`] — Tier 3+: complexity-aware rich context
 //!
 //! Tier 3 (module context) and Tier 4 (full module) have no prompt-data
-//! struct: their builders take the request and the gathered
-//! [`EvidenceBundle`] directly and construct the template internally
-//! (issue #320).
+//! struct. Their builders take the request and the gathered
+//! [`EvidenceBundle`] and build the template themselves (issue #320).
 
 use super::templates::{CallGraphNeighbor, ControlFlowInfo, FormattedTestResult};
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
@@ -103,8 +101,8 @@ pub struct WithTestsPromptData {
     pub test_results: Vec<FormattedTestResult>,
     /// Enriched call graph context from [`calxgloss_callgraph::ContextEnricher`].
     ///
-    /// When present, the prompt includes caller/callee details and leaf API
-    /// suggestions alongside the simpler neighbor list.
+    /// When this list is not empty, the prompt shows caller/callee details
+    /// and leaf API suggestions alongside the simpler neighbor list.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
@@ -171,26 +169,26 @@ pub struct ComplexityPromptData {
     /// Control-flow findings about the target function made by the
     /// `calxgloss-controlflow` detectors.
     pub control_flow_findings: Vec<ControlFlowInfo>,
-    /// What the type-inference scan's own document admits — carried to
-    /// the rich and detailed tier templates, whose type information
-    /// surface is the third surface this record qualifies (issue #351).
-    /// Default-empty: no tier path files a scan document.
+    /// What the type-inference scan's own document admits (issue #351).
+    /// The rich and detailed tier templates show this line: their type
+    /// information surface is the third surface this record qualifies.
+    /// Default-empty, because no tier path submits a scan document.
     #[serde(default)]
     pub type_inference_coverage: super::templates::CoverageInfo,
-    /// The seam's admission for the `decompilation` family (#357),
-    /// carried to the rich and detailed tier templates exactly like the
-    /// coverage field above. Default-empty: the tier path builds from a
-    /// bare request, which carries no capability report.
+    /// The seam's admission for the `decompilation` family (#357). The
+    /// rich and detailed tier templates show it exactly like the coverage
+    /// field above. Default-empty: the tier path builds from a bare
+    /// request, and a bare request holds no capability report.
     #[serde(default)]
     pub decompilation_cap_line: String,
-    /// The seam's admission for the `disassembly` family (#357), riding
-    /// the tier templates' type-information surface. Default-empty like
-    /// `decompilation_cap_line`.
+    /// The seam's admission for the `disassembly` family (#357). The tier
+    /// templates show it on their type-information surface. Default-empty,
+    /// like `decompilation_cap_line`.
     #[serde(default)]
     pub disassembly_cap_line: String,
-    /// The seam's admission for the `caller-edges` family (#357), riding
-    /// the tier templates' type-information surface. Default-empty like
-    /// `decompilation_cap_line`.
+    /// The seam's admission for the `caller-edges` family (#357). The tier
+    /// templates show it on their type-information surface. Default-empty,
+    /// like `decompilation_cap_line`.
     #[serde(default)]
     pub caller_edges_cap_line: String,
 }
@@ -240,7 +238,8 @@ impl ComplexityPromptData {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        // ApiCategory doesn't implement Ord, so sort by display name
+        // ApiCategory doesn't implement Ord, so sort by each variant's
+        // Debug-formatted name (the {:?} text), not its Display name
         categories.sort_by_key(|c| format!("{:?}", c));
         categories
     }
