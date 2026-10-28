@@ -1,31 +1,31 @@
 //! Serialization scan orchestration.
 //!
-//! [`SerializeEngine`] runs the serialization detectors — byte-swap
-//! call matching, bit-pack shape reading, magic-byte comparison
-//! matching, cross-field validation reading, the format combiner's
-//! composition of the swap and pack readings, and the protocol
-//! combiner's promotion of a corroborated protocol sniff — over every
-//! function of one loaded program and assembles their findings
-//! into a single [`SerializeResult`] with its scan provenance.
+//! [`SerializeEngine`] runs the serialization detectors over every
+//! function of one loaded program and assembles their findings into a
+//! single [`SerializeResult`] with its scan provenance. The detectors
+//! are: byte-swap call matching, bit-pack shape reading, magic-byte
+//! comparison matching, cross-field validation reading, the format
+//! combiner's composition of the swap and pack readings, and the
+//! protocol combiner's promotion of a corroborated protocol sniff.
 //!
-//! The format and protocol-message compositions ride at the end of
-//! each function's findings: they read the records the pass already
-//! made, so they cost no extra body pass and no extra decompiler round
-//! trips. The endianness profile is the one binary-level finding: the
+//! The format and protocol-message findings come last within each
+//! function's findings. They read the records the pass already made,
+//! so they cost no extra body pass and no extra decompiler round
+//! trips. The endianness profile is the one binary-level finding. The
 //! profiler aggregates the whole scan's byte-swap findings by width
 //! after the loop, so the map appends after every per-function finding.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
-//! the engine fetches each function's pseudo-C exactly once and reads
-//! it with all of them, rather than having each detector pull its own
-//! copy. The scan is then one sequential pass over the function
-//! listing: there is nothing to resolve between the detectors — they
-//! read disjoint body shapes — and keeping the pass sequential keeps
-//! the persisted finding list in a stable, diffable order. The one
-//! cross-detector gate is honesty, not ranking: the validation
-//! reading is handed the magic findings already made for the same
-//! body, so a signature comparison never double-lands as a
-//! validation check.
+//! the scan fetches each function's pseudo-C exactly once and reads
+//! it with all of them, instead of each detector pulling its own
+//! copy. The scan is one sequential pass over the function listing.
+//! There is nothing to resolve between the detectors — they read
+//! disjoint body shapes — and keeping the pass sequential keeps the
+//! persisted finding list in a stable, diffable order. The one gate
+//! between detectors is honesty, not ranking: the validation reading
+//! sees the magic findings already made for the same body, so a
+//! signature comparison never lands twice — once as magic and once as
+//! a validation check.
 
 use crate::bitpack::BitPackDetector;
 use crate::byteswap::ByteSwapDetector;
@@ -44,21 +44,21 @@ use tracing::{info, warn};
 /// The decompiler a serialization scan reads.
 ///
 /// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
+/// so this crate's serialization scan names it directly;
+/// [`KunaSource`] implements it over the analysis engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump (the P19-7 admitted-semantics track).
+/// How many unreached functions one coverage limitation line names
+/// before the rest becomes a count. The line stays bounded prose
+/// beside the counts, not a dump (the P19-7 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
-/// The facets a serialization scan declares, in order — the roster
-/// the record must name exactly once each. The serialization scan
-/// reads one facet: the decompiled bodies every detector reads.
+/// The facets a serialization scan declares, in order. Every record
+/// names each of them exactly once. The serialization scan reads one
+/// facet: the decompiled bodies every detector reads.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
 
 /// The coverage record every serialization scan stamps about itself
@@ -66,19 +66,21 @@ pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
 ///
 /// The serialization scan has one facet: `function-bodies`, the
 /// decompiled bodies every detector reads. The function listing is
-/// always read end to end — a failed listing aborts the run, and more
-/// than half failing to decompile trips the skip-rate breaker above —
-/// so what a finished scan can not have read is exactly the bodies it
-/// skipped along the way: a nameless listing entry, or a decompile that
-/// failed. The endianness profile aggregates the byte-swap findings the
-/// body pass already made, so it adds no coverage border of its own.
+/// always read end to end. A failed listing aborts the run, and more
+/// than half failing to decompile trips the skip-rate breaker in the
+/// scan below. So what a finished scan cannot have read is exactly the
+/// bodies it skipped along the way: a nameless listing entry, or a
+/// decompile that failed. The endianness profile aggregates the
+/// byte-swap findings the body pass already made, so it adds no
+/// coverage border of its own.
+///
 /// With nothing skipped, the facet is `complete`, and that is the
 /// admission's point: a function no finding mentions was examined and
-/// clean, never silently unchecked. With any, the facet is `partial`
-/// and the limitation line names the unreached bodies (bounded at
-/// [`MAX_NAMED_UNREACHED`]), so silence and never-reaching are
-/// distinguishable in the filed record itself. The whole picture
-/// mirrors the single facet — there is nothing else this engine
+/// clean, never silently unchecked. With any skips, the facet is
+/// `partial` and the limitation line names the unreached bodies
+/// (bounded at [`MAX_NAMED_UNREACHED`]), so silence and never-reaching
+/// are distinguishable in the filed record itself. The whole picture
+/// mirrors the single facet — there is nothing else this scan
 /// examines.
 fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
     let total = unreached.len() + nameless;
@@ -117,9 +119,9 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
 
 /// Orchestrates the serialization detectors into one [`SerializeResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
+/// The scan is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a loaded [`KunaSource`]. Each detector carries no state and
+/// one over a loaded [`KunaSource`]. Each detector holds no state and
 /// starts configured with its standard name sets —
 /// [`with_byteswap`](Self::with_byteswap) swaps a detector whole — so
 /// one instance of each serves the whole scan.
@@ -136,7 +138,7 @@ pub struct SerializeEngine<S = KunaSource> {
 }
 
 impl SerializeEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the
+    /// A serialization scan over a loaded Kuna program, using the
     /// detectors' standard name sets.
     pub fn new(source: &KunaSource) -> SerializeEngine<KunaSource> {
         Self::with_source(source.clone())
@@ -144,7 +146,7 @@ impl SerializeEngine<KunaSource> {
 }
 
 impl<S> SerializeEngine<S> {
-    /// An engine whose decompiles come from `source`, scanning with
+    /// A serialization scan whose decompiles come from `source`, using
     /// the detectors' standard name sets.
     pub fn with_source(source: S) -> Self {
         SerializeEngine {
@@ -192,27 +194,29 @@ impl<S> SerializeEngine<S> {
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
-    /// findings follow the function listing — function by function,
-    /// and within one function the byte swaps, then the bit packs,
-    /// then the magic-byte comparisons, then the cross-field
-    /// validation checks, then the composed format layout, then the
-    /// protocol-message identification; the binary-level endianness
-    /// map appends after every per-function finding — so two
-    /// scans of the same program diff cleanly.
+    /// findings follow the function listing: function by function.
+    /// Within one function the order is byte swaps, then bit packs,
+    /// then magic-byte comparisons, then the cross-field validation
+    /// checks, then the composed format layout, then the
+    /// protocol-message identification. The binary-level endianness
+    /// map appends after every per-function finding. Two scans of the
+    /// same program therefore diff cleanly.
     ///
-    /// A function whose body the decompiler cannot produce (a thunk, a bad
-    /// entry point) is skipped with a warning; only a failure of the
-    /// listing itself — the server being down — aborts the run, since
-    /// then nothing was scanned.
+    /// A function whose body the decompiler cannot produce (a thunk, a
+    /// bad entry point) is skipped with a warning. Only a failure of
+    /// the listing itself — the server being down — aborts the run,
+    /// since then nothing was scanned.
+    ///
     /// But when more than half the listing fails to decompile, the
     /// skip-rate breaker aborts the run too: that is the signature of
-    /// the bridge answering from the wrong program, and skipping on
-    /// would persist a phantom-clean record (issue #71).
-    /// The detectors read disjoint body
-    /// shapes, so a function can carry findings of every kind at once
-    /// and nothing is resolved between them — except that the
-    /// validation reading stays silent on the comparisons the magic
-    /// reading already reported for the same body.
+    /// the seam answering about the wrong program, and skipping on
+    /// would persist a record that looks clean but is not (issue #71).
+    ///
+    /// The detectors read disjoint body shapes, so one function can
+    /// have findings of every kind at once and nothing is resolved
+    /// between them. The one exception: the validation reading stays
+    /// silent about the comparisons the magic reading already reported
+    /// for the same body.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<SerializeResult>
     where
         S: ScanSource,
@@ -223,15 +227,16 @@ impl<S> SerializeEngine<S> {
         let mut findings = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // The regions this walk never reached, named as it goes, so the
-        // coverage record below can admit them (issue #351).
+        // The function bodies this walk never reached, named as the
+        // scan goes, so the coverage record below can admit them
+        // (issue #351).
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // A nameless listing entry would send the by-name lookup
+                // into some other function's body; nothing can be said
+                // about it, so the entry is skipped with no finding.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -251,11 +256,11 @@ impl<S> SerializeEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
+                    // Skip-rate breaker: once more than half the listing
+                    // has failed to decompile, the scan is reading a
+                    // program the analysis engine cannot analyze, and an
+                    // empty result would persist as a record that looks
+                    // clean but is not. Abort with the counts instead of
                     // skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::SerializeError::DecompileBreaker {
@@ -276,18 +281,18 @@ impl<S> SerializeEngine<S> {
             // finding on top.
             let validation_records = self.validation.detect(&decompiled, &magic_records);
             // The format stage composes the swap and pack readings just
-            // made into one end-to-end layout when the function carries
-            // two or more of them (P11.5-2); it reads only those
-            // records, so it costs no extra body pass.
+            // made into one end-to-end layout when the function has two
+            // or more of them (P11.5-2). It reads only those records, so
+            // it costs no extra body pass.
             let format_record = self
                 .format
                 .combine(&decompiled, &swap_records, &pack_records);
             // The protocol stage promotes the function to one message
             // handler when a protocol-table magic hit is corroborated
             // by a network-order swap or a cross-field validation
-            // (P11.5-3); it reads only the records the pass already
+            // (P11.5-3). It reads only the records the pass already
             // made and the configured table's protocol flags, so it
-            // costs no extra body pass either.
+            // too costs no extra body pass.
             let protocol_record = self.protocol.identify(
                 self.magic.signatures(),
                 &magic_records,
@@ -306,21 +311,22 @@ impl<S> SerializeEngine<S> {
             findings.extend(protocol_record.map(SerializeFinding::ProtocolMessage));
         }
 
-        // The endianness profile is the one binary-level finding: it
+        // The endianness profile is the one binary-level finding. It
         // aggregates the whole scan's byte-swap findings by width, so
-        // it can only be made after the loop, and it appends after
-        // every per-function finding (P11.5-4).
+        // it can only be made after the loop. It appends after every
+        // per-function finding (P11.5-4).
         if let Some(record) = self.endianness.profile(&findings) {
             findings.push(SerializeFinding::EndiannessMap(record));
         }
 
         let mut metadata = ScanMetadata::new(binary);
-        // The engine admits its own coverage inside its own scan, where
-        // the skips happened, so the filed record says what the walk
-        // never read (issue #351) — and a complete record lets an
-        // unmentioned function read as examined and clean.
+        // The scan admits its own coverage, where the skips happened,
+        // so the filed record says what the walk never read (issue
+        // #351). A complete record lets a function no finding mentions
+        // read as examined and clean.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless));
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names the analysis engine and its pin under `kuna`
+        // (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -366,7 +372,7 @@ mod tests {
     }
 
     /// State shared by every clone of a [`FakeProgram`], so a test can
-    /// read what the scan did after the engine has consumed its
+    /// read what the scan did even after the scan has consumed its
     /// source.
     #[derive(Debug, Default)]
     struct Stats {
@@ -427,7 +433,7 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads: this engine never makes
+        // The rest of the shared trait's reads: this scan never makes
         // them, so they answer with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
@@ -489,7 +495,7 @@ mod tests {
         }
     }
 
-    /// A body carrying two `ntohl` calls — the byte-swap shape — in
+    /// A body with two `ntohl` calls — the byte-swap shape — in
     /// one function.
     const SWAP_SHAPE_BODY: &str = "\
   uVar1 = ntohl(local_18);
@@ -497,7 +503,7 @@ mod tests {
   uVar3 = ntohl(local_20);
 ";
 
-    /// The canned program: one function whose body carries the swap
+    /// The canned program: one function whose body has the swap
     /// shape, and one plain function that finds nothing.
     fn program() -> FakeProgram {
         let mut program = FakeProgram::empty();
@@ -572,8 +578,8 @@ mod tests {
 
     #[tokio::test]
     async fn one_scan_interleaves_all_kinds_in_scan_order() {
-        // A function whose body carries a swap call, a pack chain, and
-        // a signature comparison: the findings come back in detector
+        // A function whose body has a swap call, a pack chain, and a
+        // signature comparison: the findings come back in detector
         // order — swap, pack, magic, then the composed format — and
         // the plain function stays empty.
         let mut program = FakeProgram::empty();
@@ -679,12 +685,12 @@ mod tests {
 
     #[tokio::test]
     async fn scan_order_places_validation_after_the_magic_comparisons() {
-        // A body carrying every shape: the per-function finding order
-        // is byte swaps, bit packs, magic comparisons, then
-        // validation, then the composed format — the existing prefix
-        // unchanged, the new kinds slotted after it — with the magic
-        // line claimed exactly once and still one decompile for the
-        // function.
+        // A body with every shape: the per-function finding order is
+        // byte swaps, bit packs, magic comparisons, then validation,
+        // then the composed format. The order of the kinds already
+        // listed does not change; the new kinds slot in after it. The
+        // magic line is claimed exactly once, and the function is
+        // still decompiled once.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -772,8 +778,8 @@ mod tests {
     #[tokio::test]
     async fn two_network_reads_and_a_pack_chain_compose_one_format_finding() {
         // The end-to-end claim: a body with two network-order reads and
-        // a pack chain lands exactly one format finding carrying all
-        // six fields in body order, a reader direction, and the
+        // a pack chain lands exactly one format finding. That finding
+        // has all six fields in body order, a reader direction, and the
         // sequence's own body lines as evidence.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
@@ -842,7 +848,7 @@ mod tests {
     #[tokio::test]
     async fn a_single_reading_composes_no_format_finding() {
         // One swap call next to a magic comparison is one serialization
-        // reading: no layout is claimed, honesty over volume.
+        // reading: no layout is claimed — honesty beats volume.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -879,7 +885,7 @@ mod tests {
         // The promotion end to end: a protocol-table magic comparison
         // and an `ntohl` in one body land the magic and byte-swap
         // findings as always, plus exactly one protocol message
-        // finding naming the protocol and its corroborating reading.
+        // finding. It names the protocol and its corroborating reading.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -959,11 +965,11 @@ mod tests {
 
     #[tokio::test]
     async fn scan_order_places_the_protocol_message_after_the_format_record() {
-        // A body carrying every shape: the per-function finding order
-        // is byte swaps, bit packs, magic comparisons, validation,
-        // the composed format, then the protocol message — the
-        // existing prefix unchanged, the new kind slotted last — with
-        // still one decompile for the function.
+        // A body with every shape: the per-function finding order is
+        // byte swaps, bit packs, magic comparisons, validation, the
+        // composed format, then the protocol message. The order of the
+        // kinds already listed does not change; the new kind slots in
+        // last. The function is still decompiled once.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -1016,8 +1022,8 @@ mod tests {
     #[tokio::test]
     async fn swaps_across_functions_land_exactly_one_map_finding_last() {
         // The program-wide claim: 32-bit and 16-bit swaps in two
-        // functions land one endianness map — appended after every
-        // per-function finding, owned by no function — and the
+        // functions land one endianness map, appended after every
+        // per-function finding and owned by no function. The
         // per-function lookups answer the map to each contributor.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
@@ -1125,8 +1131,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_is_skipped() {
-        // The decompiler cannot produce a body for every function; one bad
-        // entry point must not cost the whole program its scan.
+        // The decompiler cannot produce a body for every function. One
+        // bad entry point must not stop the whole program from being
+        // scanned.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into()];
         let result = scan(program.clone()).await;
@@ -1140,11 +1147,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_where_every_decompile_fails_aborts() {
-        // The 2026-10-08 incident: the bridge answered the listing from
+        // The 2026-10-08 incident: the seam answered the listing from
         // one program and the decompiles from another, every decompile
-        // failed, and the scan nearly persisted a phantom-clean record
-        // under the target's name. The skip-rate breaker aborts with
-        // the counts instead, so nothing is persisted.
+        // failed, and the scan nearly filed a record that looks clean
+        // but is not under the target's name. The skip-rate breaker
+        // aborts with the counts instead, so nothing is persisted.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         let result = SerializeEngine::with_source(program)
@@ -1161,9 +1168,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
-        // The breaker is a circuit breaker, not a post-mortem: once
-        // most of the listing has failed, the remaining decompiles are
-        // wasted round-trips against the wrong program.
+        // The skip-rate breaker is a fuse, not a post-mortem: once more
+        // than half the listing has failed to decompile, the remaining
+        // decompiles would be wasted round-trips against the wrong
+        // program.
         let mut program = program();
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
@@ -1196,7 +1204,7 @@ mod tests {
     #[tokio::test]
     async fn a_nameless_listing_entry_is_skipped() {
         // An empty name would send the by-name lookup into an
-        // arbitrary function's body, so the entry passes without a
+        // arbitrary function's body, so the entry is skipped with no
         // decompile.
         let mut program = program();
         program.listing.insert(0, summary(""));
@@ -1208,9 +1216,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_listing_fails_the_whole_run() {
-        // With the listing gone nothing was scanned, so the run aborts
-        // rather than returning a result that looks empty by
-        // detection.
+        // When the listing itself is gone, nothing was scanned, so the
+        // run aborts rather than returning a result that looks empty
+        // because nothing was found.
         let mut program = program();
         program.fail_listing = true;
         let result = SerializeEngine::with_source(program)
@@ -1224,9 +1232,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_custom_detector_reaches_the_scan() {
-        // Swapping the detector whole reaches the scan: the
-        // configured custom spelling reads in the body, and the
-        // standard names the swap replaced read nothing.
+        // Swapping the detector whole reaches the scan: the configured
+        // custom spelling reads in the body, and the standard names
+        // the swap removed read nothing.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0")];
         program.bodies.insert(
@@ -1263,7 +1271,7 @@ mod tests {
     async fn a_custom_signature_table_reaches_the_scan() {
         // Swapping the signature table whole reaches the scan: the
         // configured custom magic reads in the body, and the standard
-        // signatures the table replaced read nothing.
+        // signatures the swap removed read nothing.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0")];
         program.bodies.insert(
@@ -1295,9 +1303,9 @@ mod tests {
     #[tokio::test]
     async fn a_custom_magic_hit_claims_no_validation_finding() {
         // The magic-hit gate runs on the findings the scan just made,
-        // not the built-in table: a comparison carrying the configured
-        // custom signature in a computed shape lands once — as magic —
-        // and claims no validation finding on top.
+        // not the built-in table: a comparison with the configured
+        // custom signature inside a computed shape lands once — as
+        // magic — and claims no validation finding on top.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0")];
         program.bodies.insert(
@@ -1326,16 +1334,15 @@ mod tests {
 
     #[tokio::test]
     async fn scan_stamps_the_scan_provenance() {
-        // The metadata names the binary, carries a finish time, and
-        // the duration is stamped from the wall clock — a canned scan
-        // is instant, so it reads as zero seconds rather than never
-        // set.
+        // The metadata names the binary, records a finish time, and
+        // stamps the duration from the wall clock. A canned scan is
+        // instant, so it reads as zero seconds rather than never set.
         let result = scan(program()).await;
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
-        // Story 9 (#203): the record also names the engine that produced it —
-        // scan() copies the source's provenance through (#208).
+        // Story 9 (#203): the record also names the analysis engine that
+        // produced it — scan() copies the source's provenance through (#208).
         let engine = result
             .metadata
             .engine
@@ -1357,20 +1364,20 @@ mod tests {
     // Admitted scan coverage (issue #351)
     // ============================================================
 
-    /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
-    /// drift.
+    /// What the roster pin checks at data level: an empty fault list
+    /// means the record names every declared facet exactly once, and
+    /// each fault reports one drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
-        // force-rescan file the same admission through this one
-        // definition. Every body was read here, so the record is
-        // complete and says nothing needs admitting.
+        // The coverage stamp comes from the serialization scan itself,
+        // not the registry row and not the CLI — the batch scan phase
+        // and the CLI's force-rescan file the same admission through
+        // this one definition. Every body was read here, so the record
+        // is complete and admits nothing.
         let result = scan(program()).await;
         let coverage = result
             .metadata
@@ -1431,9 +1438,9 @@ mod tests {
     #[tokio::test]
     async fn functions_beyond_the_listing_cap_are_not_scanned_and_the_admission_says_so() {
         // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
-        // slot.
+        // five inline and the sixth becomes a count, and a nameless
+        // listing entry counts toward the total without taking one of
+        // the five name slots.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::empty();
         for (index, name) in names.iter().enumerate() {
