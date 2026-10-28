@@ -1,9 +1,9 @@
 //! The fixture target binary must be reachable from the web e2e harness.
 //!
-//! The spawn-server tests gain a scan run with `engine = kuna` against this
-//! fixture, so the fixture's dev-dependency wiring into this crate is
-//! pinned here: the built DLL and its validated shape must be reachable
-//! from the web harness's own test binary.
+//! The spawn-server tests run one scan with `engine = kuna` against this
+//! fixture, so this file checks the dev-dependency that brings the fixture
+//! in: the built DLL and its validated shape must be reachable from the
+//! web harness's own test binary.
 
 #[test]
 fn fixture_target_is_reachable_from_the_web_harness() {

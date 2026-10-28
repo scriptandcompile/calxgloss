@@ -8363,11 +8363,11 @@ fn write_pal_tracker_fixtures(fixture: &TestFixture) {
         .unwrap(),
     )
     .expect("Present artifact written");
-    // A corrupt function artifact is no artifact — it names no category.
+    // A corrupt function artifact is no artifact: it gives no category.
     std::fs::write(analysis.join("broken.json"), "{ not json").expect("corrupt artifact written");
 
-    // The generated shared PAL crate the verifier writes under
-    // `scratch/pal/`: defines GraphicsDevice (and AudioDevice) but not
+    // The generated shared PAL crate that the verifier writes under
+    // `scratch/pal/`: it defines GraphicsDevice (and AudioDevice) but not
     // PlatformCore.
     let pal_src = fixture.repo_path().join("scratch").join("pal").join("src");
     std::fs::create_dir_all(&pal_src).expect("scratch pal src dir");
@@ -8391,10 +8391,10 @@ fn write_pal_tracker_fixtures(fixture: &TestFixture) {
     .expect("shim source written");
 }
 
-/// Issue #134 router contract: `/api/binaries/{name}/pal-status` is
-/// registered in the shared routes — it derives on demand from persisted
-/// artifacts, never live pipeline state — so both the plain and the live
-/// router answer it with the tracker payload.
+/// Issue #134 router contract: `/api/binaries/{name}/pal-status` is in the
+/// shared routes, so both the plain `serve` router and the live router
+/// answer it. The payload is computed on request from saved artifacts,
+/// never from live pipeline state.
 #[tokio::test]
 async fn test_binaries_pal_status_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
@@ -8427,16 +8427,16 @@ async fn test_binaries_pal_status_registered_in_plain_and_live_routers() {
     }
 }
 
-/// Issue #134 exact-JSON contract: needed traits come only from the
-/// persisted per-function analysis artifacts' API-call categories, mapped
-/// category→trait with the translator's Tier-4 shape — DirectX and
-/// DirectX11 group into one GraphicsDevice, Win32Core into PlatformCore
-/// — sorted by trait name with verbatim sorted categories. Existence is
-/// detected from the workspace's generated PAL/shim source artifacts:
-/// GraphicsDevice exists (the scratch PAL crate defines it),
-/// PlatformCore is missing. A binary with no API-call artifacts honestly
-/// answers an empty trait list; the lookup is case-insensitive; unknown
-/// and corrupt-record names honestly 404.
+/// Issue #134 exact-JSON contract. The needed traits come only from the
+/// API-call categories in the saved per-function analysis artifacts. Each
+/// category maps to a trait with the translator's Tier-4 shape: DirectX and
+/// DirectX11 group into one GraphicsDevice, Win32Core into PlatformCore.
+/// Traits are sorted by name, and each one lists its categories verbatim,
+/// sorted. Whether a trait exists is read from the workspace's generated
+/// PAL and shim source: GraphicsDevice exists (the scratch PAL crate
+/// defines it) and PlatformCore is missing. A binary with no API-call
+/// artifacts honestly answers an empty trait list, the name lookup ignores
+/// case, and unknown or corrupt-record names honestly 404.
 #[tokio::test]
 async fn test_binaries_pal_status_api_exact_json_from_fixture() {
     let fixture = TestFixture::new();
@@ -8450,8 +8450,8 @@ async fn test_binaries_pal_status_api_exact_json_from_fixture() {
 
     let base = format!("http://127.0.0.1:{}", fixture.port());
 
-    // The binary with API-call artifacts and a generated PAL source:
-    // every fact derives from persisted artifacts only.
+    // The binary that has API-call artifacts and a generated PAL source:
+    // every fact in the payload comes only from saved artifacts.
     let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
     assert_eq!(status, 200);
     assert_eq!(
@@ -8489,9 +8489,9 @@ async fn test_binaries_pal_status_api_exact_json_from_fixture() {
          fabricated list"
     );
 
-    // A differently-spelled name finds the same binary — the
-    // case-insensitive join every other server comparison makes — and
-    // the response carries the record's verbatim identity.
+    // A differently-spelled name finds the same binary — the server
+    // compares names ignoring case, as it does everywhere — and the
+    // response reports the record's identity exactly as it is stored.
     let (status, body) = get_json(&format!("{base}/api/binaries/D3D9.DLL/pal-status")).await;
     assert_eq!(status, 200, "the lookup is case-insensitive");
     assert_eq!(
@@ -8512,11 +8512,11 @@ async fn test_binaries_pal_status_api_exact_json_from_fixture() {
     }
 }
 
-/// Issue #134 honest-degradation contract: a corrupt function artifact
-/// names no category while the readable ones still derive traits; with
-/// no generated PAL/shim source anywhere every needed trait is honestly
-/// missing; with no readable API-call artifacts at all the payload is
-/// the honest empty list.
+/// Issue #134 honest-degradation contract. A corrupt function artifact
+/// gives no category, while the readable ones still yield traits. With no
+/// generated PAL or shim source anywhere, every needed trait honestly
+/// reads as missing. With no readable API-call artifacts at all, the
+/// payload is the honest empty list.
 #[tokio::test]
 async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
     let fixture = TestFixture::new();
@@ -8537,8 +8537,8 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
     )
     .expect("shim source removed");
 
-    // A second binary whose only readable artifact carries an Audio
-    // category — its other artifact is corrupt and names nothing.
+    // A second binary whose only readable artifact records an Audio
+    // category — its other artifact is corrupt and gives nothing.
     let classify = fixture.repo_path().join("re").join("classify");
     std::fs::write(
         classify.join("ogg.dll.json"),
@@ -8607,9 +8607,9 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
 
     let base = format!("http://127.0.0.1:{}", fixture.port());
 
-    // Needed traits still derive (the corrupt d3d9 artifact named
-    // nothing); with no generated PAL/shim source every trait is
-    // honestly missing.
+    // The needed traits still appear (the corrupt d3d9 artifact gave
+    // nothing); with no generated PAL or shim source every trait honestly
+    // reads as missing.
     let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
     assert_eq!(status, 200);
     assert_eq!(
@@ -8625,7 +8625,7 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
          honestly missing"
     );
 
-    // The corrupt artifact is skipped; the readable one still derives.
+    // The corrupt artifact is skipped; the readable one still counts.
     let (status, body) = get_json(&format!("{base}/api/binaries/ogg.dll/pal-status")).await;
     assert_eq!(status, 200);
     assert_eq!(
@@ -8654,12 +8654,12 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
 
 // ── Unit attempts API (issue #131, W4.5) ───────────────────────────────
 
-/// Issue #131 router contract: `/api/units/{id}/attempts` is registered in
-/// the shared routes — it reads only persisted history, never live
-/// pipeline state — so both the plain and the live router answer it. The
-/// fixture's two DrawPrimitive branches and two patch records form the
-/// attempt set; with no token or fault log seeded, the metadata fields
-/// honestly stay absent rather than zeroed.
+/// Issue #131 router contract: `/api/units/{id}/attempts` is in the shared
+/// routes, so both the plain `serve` router and the live router answer it.
+/// It reads only saved history, never live pipeline state. The fixture's
+/// two DrawPrimitive branches and two patch records make up the attempt
+/// set; with no token or fault log written, the metadata fields honestly
+/// stay absent rather than showing zero.
 #[tokio::test]
 async fn test_unit_attempts_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
@@ -8706,18 +8706,18 @@ async fn test_unit_attempts_registered_in_plain_and_live_routers() {
     }
 }
 
-/// The exact-JSON pin for the attempt join: the union of the fixture's
-/// branches and patch records, a branch-only v3 created in-test, the
-/// case-insensitive token-log join ("GAME_LOGIC.DLL"), the fault log as
-/// the strategy fallback for the attempt the token log never recorded,
-/// and the token log winning over the fault log where both name an
-/// attempt. Absent metadata stays off the wire entirely.
+/// The exact-JSON pin for the attempt join. The result is the union of the
+/// fixture's branches and patch records, including a v3 branch made in the
+/// test that has no patch record. The token-log lookup ignores case
+/// ("GAME_LOGIC.DLL"). For the attempt the token log never recorded, the
+/// fault log supplies the strategy. Where both logs name an attempt, the
+/// token log wins. Metadata that is absent is left out of the response.
 #[tokio::test]
 async fn test_unit_attempts_api_exact_json_from_fixture() {
     let fixture = TestFixture::new();
 
     // A third attempt that exists only as a branch — no patch record, no
-    // token entry — so the union's "nothing dropped" half is pinned.
+    // token entry — so this pins the other half of the union: none dropped.
     let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
     git.create_branch("game_logic.dll", "DrawPrimitive", 3, None)
         .expect("v3 branch");
@@ -8735,7 +8735,7 @@ async fn test_unit_attempts_api_exact_json_from_fixture() {
                 "stub",
                 1759053600,
             ),
-            // The differently-spelled binary must join case-insensitively.
+            // The differently-spelled binary must still match, ignoring case.
             token_usage_entry(
                 "GAME_LOGIC.DLL",
                 "DrawPrimitive",
@@ -8746,7 +8746,7 @@ async fn test_unit_attempts_api_exact_json_from_fixture() {
                 "with_tests",
                 1759059000,
             ),
-            // Same attempt number, different function — must not join.
+            // Same attempt number, different function — must not match.
             token_usage_entry(
                 "game_logic.dll",
                 "UpdateScene",
@@ -8762,7 +8762,7 @@ async fn test_unit_attempts_api_exact_json_from_fixture() {
     write_fault_log_fixture(
         &fixture.repo_path(),
         &[
-            // Names attempt 1 too — the token log wins where both speak.
+            // Also names attempt 1 — where both logs have it, the token log wins.
             fault_entry(
                 "game_logic.dll",
                 "DrawPrimitive",
@@ -8772,7 +8772,7 @@ async fn test_unit_attempts_api_exact_json_from_fixture() {
                 "critical",
                 1759053700,
             ),
-            // The only source naming attempt 3's strategy.
+            // The only source that gives attempt 3's strategy.
             fault_entry(
                 "game_logic.dll",
                 "DrawPrimitive",
@@ -8842,9 +8842,9 @@ async fn test_unit_attempts_api_exact_json_from_fixture() {
     );
 }
 
-/// A single-attempt unit honestly answers one attempt with
-/// `comparable: false` — the detail panel's "nothing to compare" state —
-/// and an unknown unit is a 404, the same contract the other
+/// A unit with one attempt honestly answers with that one attempt and
+/// `comparable: false` — the detail panel's "nothing to compare" state. An
+/// unknown unit id gets a 404, the same contract the other
 /// `/api/units/{id}/…` reads keep.
 #[tokio::test]
 async fn test_unit_attempts_single_attempt_and_unknown_unit() {
@@ -8872,8 +8872,8 @@ async fn test_unit_attempts_single_attempt_and_unknown_unit() {
 }
 
 /// Corrupt logs are no logs at all: strategy, tier, tokens, and success
-/// stay absent while the patch-record fields survive untouched — the
-/// join degrades honestly instead of failing or zeroing.
+/// stay absent while the patch-record fields are untouched. The lookup
+/// degrades honestly instead of failing the request or showing zero.
 #[tokio::test]
 async fn test_unit_attempts_corrupt_logs_degrade_honestly() {
     let fixture = TestFixture::new();
@@ -8914,11 +8914,11 @@ async fn test_unit_attempts_corrupt_logs_degrade_honestly() {
 
 // ── Unit attempt diff API (issue #135, W4.6) ───────────────────────────
 
-/// Issue #135 router contract: `/api/units/{id}/attempts/diff` is
-/// registered in the shared routes — it reads only persisted branches —
-/// so both the plain and the live router answer it. The fixture's
-/// DrawPrimitive v1 and v2 branches carry distinct commits, so the diff
-/// is real text, not an empty shell.
+/// Issue #135 router contract: `/api/units/{id}/attempts/diff` is in the
+/// shared routes, so both the plain `serve` router and the live router
+/// answer it. It reads only saved branches. The fixture's DrawPrimitive v1
+/// and v2 branches have distinct commits, so the diff is real text, not an
+/// empty placeholder.
 #[tokio::test]
 async fn test_unit_attempt_diff_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
@@ -8954,9 +8954,9 @@ async fn test_unit_attempt_diff_registered_in_plain_and_live_routers() {
     }
 }
 
-/// The exact-JSON pin against fixture branches with distinct commits:
-/// v1's tree lacks the v2 attempt's file, so the tree-to-tree diff is
-/// exactly that one added file — verbatim unified text plus its stats.
+/// The exact-JSON pin against fixture branches with distinct commits: v1's
+/// tree does not have the file the v2 attempt added, so the tree-to-tree
+/// diff is exactly that one file — verbatim unified text plus its stats.
 #[tokio::test]
 async fn test_unit_attempt_diff_api_exact_json_from_fixture() {
     let fixture = TestFixture::new();
@@ -8999,9 +8999,9 @@ async fn test_unit_attempt_diff_api_exact_json_from_fixture() {
     );
 }
 
-/// A missing branch on either side answers an honest error payload —
-/// never an empty fabricated diff — and a non-numeric attempt number is
-/// a 400 naming the accepted shape.
+/// A missing branch on either side answers with an honest error payload,
+/// never an invented empty diff. A non-numeric attempt number gets a 400
+/// that names the accepted shape.
 #[tokio::test]
 async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
     let fixture = TestFixture::new();
@@ -9013,7 +9013,7 @@ async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
 
     let base = format!("http://127.0.0.1:{}", fixture.port());
 
-    // Attempt 3 never left a branch or record in the fixture.
+    // Attempt 3 has no branch and no record in the fixture.
     let (status, body) = get_json(&format!(
         "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=1&to=3"
     ))
@@ -9029,7 +9029,7 @@ async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
         "the error payload never carries a fabricated diff"
     );
 
-    // The `to` side missing is just as honest as the `from` side.
+    // A missing `to` branch is answered just as honestly as a missing `from`.
     let (status, body) = get_json(&format!(
         "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=9&to=2"
     ))
@@ -9040,9 +9040,9 @@ async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
         "the from side is named too, got: {body}"
     );
 
-    // An attempt the join *does* find — a patch record naming a branch
-    // the repository no longer holds — is the same honest 404, never a
-    // 500 and never an empty diff.
+    // An attempt the lookup *does* find — a patch record that points at a
+    // branch the repository no longer has — gets the same honest 404, never
+    // a 500 and never an empty diff.
     let patch_dir = fixture
         .repo_path()
         .join("re")
@@ -9078,7 +9078,7 @@ async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
         "the error names the attempt whose branch is gone, got: {body}"
     );
 
-    // A non-numeric attempt number answers 400 naming the accepted shape.
+    // A non-numeric attempt number gets a 400 that names the accepted shape.
     let (status, body) = get_json(&format!(
         "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=one&to=2"
     ))
@@ -9095,9 +9095,9 @@ async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
 
 // ── Headless browser test: Faults view (issue #125) ────────────────────
 
-/// The Faults tab renders the fixture log honestly: summary cards,
-/// per-binary bars, a trend line, the table — and the category filter
-/// narrows everything. The CSV builder (exposed as
+/// The Faults tab shows the fixture log honestly: summary cards, per-binary
+/// bars, a trend line, and the table. The category filter narrows all of
+/// them. The CSV builder (exposed as
 /// `window.calxglossFaultsCsv`) is pinned against the same fixture.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -9172,7 +9172,7 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
     );
 
     // The CSV builder (the export button's data source) is pinned against
-    // the fixture: header + 6 rows, with the recovery verbatim.
+    // the fixture: header + 6 rows, with the recovery text verbatim.
     let csv = eval_text(&tab, "window.calxglossFaultsCsv()");
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(
@@ -9277,11 +9277,11 @@ async fn test_headless_faults_view_honest_empty_state() {
 
 // ── Headless browser tests: Token Usage view (issue #126) ──────────────
 
-/// The Token Usage tab renders the fixture log honestly: summary split
-/// cards, per-binary bars with shares, per-tier bars, the per-strategy
-/// table with success rates — and the time-range selector re-renders in
-/// place. The cost panel computes from the operator-typed price, persists
-/// it in localStorage, and survives a reload.
+/// The Token Usage tab shows the fixture log honestly: the summary split
+/// cards, per-binary bars with shares, per-tier bars, and the per-strategy
+/// table with success rates. The time-range selector re-renders the tab in
+/// place. The cost panel works out the estimate from the price the operator
+/// types, saves it in localStorage, and survives a page reload.
 ///
 /// The fixture timestamps are relative to now so the 7-day window keeps
 /// holding exactly one attempt whenever the test runs.
@@ -9543,10 +9543,10 @@ async fn test_headless_token_usage_view_honest_empty_state() {
 
 // ── Headless browser test: Strategy Analytics view (issue #127) ─────────
 
-/// The Strategy Analytics tab renders the fixture log honestly: the
+/// The Strategy Analytics tab shows the fixture log honestly: the
 /// per-strategy table with attempts, successes, failures, and pass rate,
-/// and the per-category pass-rate bars — and the time-range selector
-/// re-renders in place. The CSV builder (exposed as
+/// plus the per-category pass-rate bars. The time-range selector
+/// re-renders the tab in place. The CSV builder (exposed as
 /// `window.calxglossStrategyCsv`) is pinned against the same fixture.
 ///
 /// The fixture timestamps are relative to now so the 7-day window keeps
@@ -9639,9 +9639,9 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
         "per-category bars should carry pass rates"
     );
 
-    // The CSV export: exact rows from the fetched JSON — the per-strategy
-    // breakdown (all three strategies tie at one attempt, so they sort
-    // alphabetically), then the per-category breakdown.
+    // The CSV export: exact rows built from the fetched JSON — first the
+    // per-strategy breakdown (all three strategies have one attempt each,
+    // so they sort alphabetically), then the per-category breakdown.
     let csv = eval_text(&tab, "window.calxglossStrategyCsv()");
     assert_eq!(
         csv,
@@ -9760,10 +9760,10 @@ async fn test_headless_strategy_analytics_view_honest_empty_state() {
     }
 }
 
-/// The LLM Metrics tab renders the fixture logs honestly: percentile
-/// cards labeled as attempt wall-clock, the timeout trend, and the
-/// per-tier table — with an unmeasured tier rendering an em dash, never
-/// a fabricated number. The time-range filter re-renders in place.
+/// The LLM Metrics tab shows the fixture logs honestly: percentile cards
+/// labeled as attempt wall-clock, the timeout trend, and the per-tier
+/// table. A tier with no measurement renders an em dash, never an invented
+/// number. The time-range filter re-renders the tab in place.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
@@ -9872,8 +9872,8 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
         )
     );
 
-    // All-time percentiles over the measured durations 10/30/90:
-    // nearest-rank P50 is 30 — the unmeasured attempt never joins the math.
+    // All-time percentiles over the measured durations 10/30/90: the
+    // nearest-rank P50 is 30 — the unmeasured attempt is not in the math.
     assert_eq!(
         eval_text(
             &tab,
@@ -9883,8 +9883,8 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
         "the P50 card should pin the nearest-rank percentile of the measured durations"
     );
 
-    // Honest labeling: the note spells out that durations are attempt
-    // wall-clock (compile and tests included), never per-call latency.
+    // Honest labeling: the note says plainly that the durations are attempt
+    // wall-clock (compile and tests included), never the latency of a call.
     assert!(
         eval_text(&tab, "document.querySelector('#view-llm-metrics .llm-metrics-note:last-of-type')?.textContent || ''")
             .contains("compile and tests included"),
@@ -9902,7 +9902,7 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     );
 
     // The per-tier table: stub (2), stale_tier (1), unmeasured_tier (1) —
-    // and the unmeasured tier's percentiles are em dashes, never numbers.
+    // and the unmeasured tier's percentiles show em dashes, never numbers.
     let mut tiers_rendered = false;
     for _ in 0..25 {
         if eval_count(
@@ -10029,9 +10029,9 @@ async fn test_headless_llm_metrics_view_honest_empty_state() {
     }
 }
 
-/// The Binaries tab renders the fixture's classified binaries as rows:
-/// the override chip on the overridden row, the function counts, and the
-/// token totals — all read straight from the persisted history.
+/// The Binaries tab shows the fixture's classified binaries as rows: the
+/// override chip on the overridden row, the function counts, and the token
+/// totals — all read straight from the saved history.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_binaries_view_renders_rows() {
@@ -10073,7 +10073,7 @@ async fn test_headless_binaries_view_renders_rows() {
         "both classified binaries should render as rows"
     );
 
-    // Alphabetical: d3d9.dll first, carrying the override chip.
+    // Alphabetical: d3d9.dll first, with the override chip on it.
     assert_eq!(
         eval_text(
             &tab,
@@ -10091,7 +10091,7 @@ async fn test_headless_binaries_view_renders_rows() {
     );
 
     // The token total renders with its thousands separator, and the
-    // function counts land in the game_logic.dll row.
+    // function counts appear in the game_logic.dll row.
     assert!(
         eval_bool(
             &tab,
@@ -10102,7 +10102,7 @@ async fn test_headless_binaries_view_renders_rows() {
 }
 
 /// With no readable classification records — the fixture's own minimal
-/// ones carry no `binary` field — the Binaries tab says so plainly: no
+/// ones have no `binary` field — the Binaries tab says so plainly: no
 /// empty table shell, no wall of zeros, no error.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10151,11 +10151,11 @@ async fn test_headless_binaries_view_honest_empty_state() {
     );
 }
 
-/// Issue #132: clicking a fixture row expands the detail panel beneath it
-/// — the classification decision in force (override applied) with its
-/// reasoning and symbol counts, the per-function list with each
-/// unit's review status, and the shortcut to the existing
-/// classification-override flow.
+/// Issue #132: clicking a fixture row opens the detail panel below it. It
+/// shows the classification decision in force (override applied) with its
+/// reasoning and symbol counts, the per-function list with each unit's
+/// review status, and the shortcut to the existing classification-override
+/// flow.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_binaries_detail_panel_expands() {
@@ -10237,7 +10237,7 @@ async fn test_headless_binaries_detail_panel_expands() {
         );
     }
 
-    // Exactly one function row, carrying its review status.
+    // Exactly one function row, with its review status.
     assert_eq!(
         eval_count(
             &tab,
@@ -10247,10 +10247,10 @@ async fn test_headless_binaries_detail_panel_expands() {
         "d3d9.dll's one dashboard unit appears in the function list"
     );
 
-    // The shortcut opens the existing classification-override panel —
-    // anchored inside this view. Its endpoints are live-only, so under
-    // plain `serve` it honestly reports itself unavailable rather than
-    // rendering a blank or a fake form.
+    // The shortcut opens the existing classification-override panel, placed
+    // inside this view. Its endpoints exist only in live mode, so under
+    // plain `serve` it honestly reports itself unavailable instead of
+    // showing a blank panel or a fake form.
     tab.evaluate(
         "document.querySelector('#binaries-table-body .binaries-detail-override')?.click() === undefined",
         false,
@@ -10426,7 +10426,7 @@ async fn test_headless_binaries_detail_shim_tracker_honest_states() {
     );
 
     // The crate-replacement binary whose shim was generated but whose
-    // branch the reviewer sent back: both answers show side by side.
+    // branch the reviewer sent back: both answers appear side by side.
     tab.evaluate(
         "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"fmod.dll\"]').click() === undefined",
         false,
@@ -10632,19 +10632,19 @@ async fn test_headless_binaries_detail_pal_tracker_honest_empty_state() {
     );
 }
 
-/// Issue #327 AC1/AC5: with the settings-backed actions backend wired in,
-/// `POST /api/units/{id}/patch` drives the real assembled request — the
-/// review UI's double-click creates the next-attempt branch and patch record
-/// for real, and the retry task is assembled from the description (its LLM
-/// endpoint here is a dead port, so the background retry fails on its own;
-/// the response and the on-disk artifacts prove the request ran the real
-/// path, not the retired canned response).
+/// Issue #327 AC1/AC5: with the settings-backed actions backend attached,
+/// `POST /api/units/{id}/patch` drives the real assembled request. It
+/// creates the next-attempt branch and the patch record for real, and the
+/// retry task is assembled from the pass description. The LLM endpoint here
+/// points at a dead port, so the background retry fails on its own; the
+/// response and the on-disk artifacts show the request ran the real path,
+/// not the canned reply that issue #327 removed.
 #[tokio::test]
 async fn test_patch_request_with_actions_backend_creates_branch_and_record() {
     let fixture = TestFixture::new();
 
     // A target dir holding the Kuna-loadable fixture binary under the unit's
-    // name, so the request's engine load succeeds.
+    // name, so the pass's analysis engine load succeeds.
     let target = tempfile::tempdir().expect("target dir");
     let fixture_bin = calxgloss_testfixtures::fixture_target_path().expect("fixture target path");
     std::fs::copy(fixture_bin, target.path().join("game_logic.dll"))
@@ -10692,8 +10692,8 @@ async fn test_patch_request_with_actions_backend_creates_branch_and_record() {
         "the next-attempt branch is named in the response"
     );
 
-    // The branch really exists and the patch record really landed — the
-    // request walked the real create-and-record path.
+    // The branch really exists and the patch record really landed: the
+    // request took the real create-and-record path.
     let repo_path = fixture.repo_path();
     let git = GitManager::open(&repo_path).expect("open git");
     let branches = git.list_translation_branches().expect("list branches");
@@ -10715,8 +10715,8 @@ async fn test_patch_request_with_actions_backend_creates_branch_and_record() {
 }
 
 /// Issue #327 AC1: the canned "patch requested" response is gone. A router
-/// built without the settings-backed actions backend honestly refuses a patch
-/// request instead of pretending a retry started.
+/// built without the settings-backed actions backend honestly refuses a
+/// patch request instead of pretending that a retry started.
 #[tokio::test]
 async fn test_patch_without_actions_backend_refuses_instead_of_fabricating() {
     let fixture = TestFixture::new();
@@ -10750,16 +10750,16 @@ async fn test_patch_without_actions_backend_refuses_instead_of_fabricating() {
     );
 }
 
-/// Issue #327 AC6: a server started with no LLM settings carries an
-/// actions backend whose description has no LLM selection, so a patch
-/// request fails with the assembly seam's clear error at request time —
-/// not a canned success and not a half-configured retry.
+/// Issue #327 AC6: a server started with no LLM settings gets an actions
+/// backend whose description has no LLM selection. So a patch request fails
+/// at request time with the assembly seam's clear error — not a canned
+/// success, and not a half-configured retry.
 #[tokio::test]
 async fn test_patch_without_llm_settings_reports_assembly_error() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
-    // Target dir configured, so the failing knob is specifically the missing
-    // LLM selection: the seam builds the LLM before it ever touches a binary.
+    // Target dir configured, so the one thing missing is the LLM selection:
+    // the seam builds the LLM before it ever reads a binary.
     let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default())
         .with_target_dir(fixture.repo_path());
     let router = build_router_with_actions(state, actions);
@@ -10806,8 +10806,8 @@ async fn test_patch_without_llm_settings_reports_assembly_error() {
     );
 }
 
-/// Integration test verifying that the full router with actions
-/// can serve the dashboard.
+/// Checks that the full router, with the actions backend attached, can
+/// still serve the dashboard.
 #[tokio::test]
 async fn test_actions_router_dashboard() {
     let fixture = TestFixture::new();
@@ -10826,7 +10826,7 @@ async fn test_actions_router_dashboard() {
     let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
     assert_eq!(body["success"], true);
 
-    // Server management endpoints register in all three routers — the
+    // The server management endpoints are in all three routers: the
     // actions router must serve the status endpoint too.
     let status_resp = reqwest::get(format!(
         "http://127.0.0.1:{}/api/server/status",
@@ -10838,7 +10838,7 @@ async fn test_actions_router_dashboard() {
     let status_body: serde_json::Value = status_resp.json().await.expect("status is JSON");
     assert_eq!(status_body["pipeline_status"], "unavailable");
 
-    // The enhanced /health also registers here (issue #59: all three routers).
+    // The enhanced /health is routed here too (issue #59: all three routers).
     let health_resp = reqwest::get(format!("http://127.0.0.1:{}/health", fixture.port()))
         .await
         .expect("health request succeeds");
@@ -10849,11 +10849,11 @@ async fn test_actions_router_dashboard() {
     assert_eq!(health_body["version"], env!("CARGO_PKG_VERSION"));
 }
 
-/// Verify that a send-back verdict survives a dashboard rebuild (issue #9):
-/// POST /send-back writes a send-back record, and a dashboard rebuilt from
-/// disk reports the unit as `send_back` — not `queued`/`pending_review` —
-/// so the review state machine (SendBack → Blocked cascade → re-review)
-/// has a failing root to cascade from.
+/// A send-back verdict survives a dashboard rebuild (issue #9). POST
+/// /send-back writes a send-back record, and a dashboard rebuilt from disk
+/// reports the unit as `send_back` — not `queued`/`pending_review`. That
+/// gives the review state machine (SendBack → Blocked cascade → re-review)
+/// a failed root unit to cascade from.
 #[tokio::test]
 async fn test_send_back_verdict_survives_rebuild() {
     let fixture = TestFixture::new();
@@ -10935,8 +10935,8 @@ async fn test_static_files_served() {
         "JS content-type, got: {js_type}"
     );
 
-    // ES module files under js/ must be served too — the page loads
-    // them natively via `import`, so nested paths must resolve.
+    // Files under js/ must be served too: the page loads them natively
+    // through `import`, so nested paths have to resolve.
     let module_resp = reqwest::get(format!(
         "http://127.0.0.1:{}/js/dashboard.js",
         fixture.port()
@@ -10966,8 +10966,8 @@ async fn test_static_files_served() {
     assert_eq!(notfound_resp.status(), 404);
 }
 
-/// Test the WebSocket upgrade endpoint exists (basic sanity).
-/// Full WebSocket E2E would require a WS client — this just checks the route works.
+/// Checks that the WebSocket upgrade route exists (basic sanity). A full
+/// WebSocket test would need a WS client; this only checks the route works.
 #[tokio::test]
 async fn test_websocket_upgrade_exists() {
     let fixture = TestFixture::new();
@@ -10987,7 +10987,7 @@ async fn test_websocket_upgrade_exists() {
     .await
     .expect("upgrade endpoint exists");
 
-    // Should NOT be 404 — WS upgrade will fail differently.
+    // Not 404 — the WS upgrade fails here in a different way.
     assert_ne!(
         resp.status(),
         404,
@@ -11024,8 +11024,8 @@ async fn test_unit_diff_endpoint() {
     assert_eq!(body["success"], true);
 
     let files = body["diff"].as_array().expect("diff is array");
-    // Allow empty diff (the diff between main and v2 might be empty
-    // depending on the fixture setup).
+    // An empty diff is allowed here (the diff between main and v2 can be
+    // empty depending on how the fixture is set up).
     // Each file should have a path and hunks
     for file in files {
         assert!(file["path"].as_str().is_some());
@@ -11033,8 +11033,8 @@ async fn test_unit_diff_endpoint() {
     }
 }
 
-/// Test the decompiler context endpoint returns not-found for units without analysis artifacts.
-/// (Our fixture doesn't create engine data, so this should return not-found gracefully.)
+/// The decompiler context endpoint answers honestly when a unit has no analysis artifact.
+/// (This fixture writes none, so the answer is the honest payload: HTTP 200, no context.)
 #[tokio::test]
 async fn test_unit_decomp_missing_artifacts() {
     let fixture = TestFixture::new();
@@ -11054,7 +11054,7 @@ async fn test_unit_decomp_missing_artifacts() {
     .await
     .expect("decomp request succeeds");
 
-    // Returns success:true with an empty context when no analysis artifacts exist.
+    // Answers success:true with no context when the analysis artifact is missing.
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.expect("decomp body is JSON");
     assert_eq!(body["success"], true);
@@ -11065,7 +11065,7 @@ async fn test_unit_decomp_missing_artifacts() {
 
 /// Writes canned run-telemetry artifacts for game_logic.dll/DrawPrimitive:
 /// a token-usage log (2 attempts, escalated tiers), a fault log (2 faults),
-/// and an analysis artifact (for the tier rationale).
+/// and an analysis artifact (its tier rationale is read from there).
 fn write_canned_run_telemetry(fixture: &TestFixture) {
     let analysis_dir = fixture.repo_path().join("re").join("analysis");
     std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
@@ -11174,7 +11174,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
     .expect("write DrawPrimitive.json");
 }
 
-/// Fetches the unit detail body for `unit_id` from a plain serve router.
+/// Fetches the unit detail body for `unit_id` from a plain `serve` router.
 async fn fetch_unit_detail(fixture: &TestFixture, unit_id: &str) -> serde_json::Value {
     let state = ServerState::new(fixture.repo_path());
     let router = build_router(state);
@@ -11205,7 +11205,7 @@ async fn test_unit_process_sections_from_canned_artifacts() {
         .as_object()
         .expect("unit detail should include a process object");
 
-    // --- Tier section: derived from the last token-usage attempt ---
+    // --- Tier section: read from the last attempt in the token-usage log ---
     let tier = &process["tier"];
     assert_eq!(tier["tier"], 2, "tier number should be 2 (with_tests)");
     assert_eq!(tier["label"], "with_tests");
@@ -11215,7 +11215,7 @@ async fn test_unit_process_sections_from_canned_artifacts() {
         "tier should be flagged as escalated"
     );
 
-    // Rationale: recomputed from the analysis artifact.
+    // Rationale: computed again from the analysis artifact.
     let rationale = &tier["rationale"];
     assert_eq!(
         rationale["api_call_count"], 2,
@@ -11281,8 +11281,8 @@ async fn test_unit_process_degrades_to_empty_sections() {
     let fixture = TestFixture::new();
     let body = fetch_unit_detail(&fixture, "game_logic.dll/UpdateScene/v1").await;
 
-    // No telemetry artifacts exist for this unit — every section must be
-    // present but empty, and the response must still be a success.
+    // This unit has no telemetry artifacts: every section must be present
+    // but empty, and the response must still report success.
     assert_eq!(body["success"], true);
     let process = body["unit"]["process"]
         .as_object()
@@ -11337,10 +11337,10 @@ async fn test_unit_process_corrupt_artifacts_degrade() {
 // ─────────────────────────────────────────────────────────────
 
 /// Writes canned analysis artifacts for game_logic.dll/DrawPrimitive: a
-/// function analysis artifact with two identified Windows APIs, and a
-/// per-binary call-graph record where DrawPrimitive is called by GameLoop
-/// (caller stored as an address) and calls BlitSurface (named edge) and
-/// InternalFlush (edge with no recorded name, resolved via target address).
+/// function analysis artifact naming two Windows APIs, and a per-binary
+/// call-graph record. In that record DrawPrimitive is called by GameLoop
+/// (the caller is stored as an address) and calls BlitSurface (an edge with
+/// a name) and InternalFlush (an edge with no name, matched by address).
 fn write_canned_analysis_context(fixture: &TestFixture) {
     let analysis_dir = fixture.repo_path().join("re").join("analysis");
     std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
@@ -11413,8 +11413,8 @@ async fn test_unit_detail_analysis_from_canned_artifacts() {
     assert_eq!(api_mappings[1]["category"], "Win32Core");
     assert_eq!(api_mappings[1]["pal_mapping"], "std::fs::File::open");
 
-    // Call graph context: caller addresses resolve to names; unnamed callee
-    // edges resolve through the graph's function list.
+    // Call graph context: caller addresses are matched to names, and callee
+    // edges with no recorded name are matched through the function list.
     let call_graph = &analysis["call_graph"];
     let callers = call_graph["callers"].as_array().expect("callers array");
     assert_eq!(callers.len(), 1);
@@ -11436,8 +11436,8 @@ async fn test_unit_detail_analysis_degrades_to_empty() {
     let fixture = TestFixture::new();
     let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
 
-    // No analysis artifacts exist — both sections must be present but empty,
-    // and the response must still be a success.
+    // No analysis artifacts here: both sections must be present but empty,
+    // and the response must still report success.
     assert_eq!(body["success"], true);
     let analysis = body["unit"]["analysis"]
         .as_object()
@@ -11502,7 +11502,7 @@ async fn test_unit_detail_analysis_corrupt_artifacts_degrade() {
     );
 }
 
-/// Test that build_dashboard API (exposed at crate root) builds correctly from the fixture.
+/// Checks that the build_dashboard API (exposed at the crate root) builds correctly from the fixture.
 #[tokio::test]
 async fn test_build_dashboard_api() {
     let fixture = TestFixture::new();
@@ -11513,7 +11513,7 @@ async fn test_build_dashboard_api() {
         "dashboard should have units"
     );
 
-    // Verify we can find the expected units
+    // The expected units are all found by id.
     let unit_ids: Vec<&str> = dashboard
         .review_queue
         .iter()
@@ -11527,7 +11527,7 @@ async fn test_build_dashboard_api() {
         unit_ids
     );
 
-    // Check all units across review_queue and recent_activity
+    // Collect every unit id from review_queue and recent_activity.
     let all_ids: Vec<&str> = dashboard
         .review_queue
         .iter()
@@ -11549,7 +11549,7 @@ async fn test_build_dashboard_api() {
         all_ids
     );
 
-    // Verify status counts
+    // Check the status counts.
     let counts = &dashboard.status_counts;
     assert!(counts.accepted >= 1); // UpdateScene is merged
     assert!(counts.total() >= 3); // classify + 2 func translations
@@ -11559,16 +11559,16 @@ async fn test_build_dashboard_api() {
 // Headless browser test (requires Chromium/Chrome installed)
 // ─────────────────────────────────────────────────────────────
 
-/// Launch headless Chrome with the flags that work inside containers/CI, or
-/// return `None` — printing a skip note — when no browser is installed.
-/// `default_executable` checks `$CHROME`, then `google-chrome-stable`,
-/// `chromium`, and friends on PATH, so the browser tests run by default
-/// wherever a browser exists and pass trivially (loudly) where none does.
+/// Launch headless Chrome with the flags that work inside containers and CI,
+/// or return `None` — printing a skip note — when no browser is installed.
+/// `default_executable` looks at `$CHROME`, then `google-chrome-stable`,
+/// `chromium`, and the other standard names on PATH, so the browser tests run
+/// wherever a browser exists and are skipped with a printed note where none is.
 ///
 /// Chrome's CDP calls are **blocking**, so every browser test must run on a
-/// multi-thread runtime (`#[tokio::test(flavor = "multi_thread")]`): on the
+/// multi-thread runtime (`#[tokio::test(flavor = "multi_thread")]`). On the
 /// default current-thread runtime the blocking calls starve the axum server
-/// task spawned by the same test, the page is never served, and navigation
+/// task that the same test spawns, so the page is never served and navigation
 /// times out with "The event waited for never came".
 fn launch_headless_browser() -> Option<headless_chrome::Browser> {
     use headless_chrome::{Browser, LaunchOptionsBuilder};
@@ -11585,9 +11585,9 @@ fn launch_headless_browser() -> Option<headless_chrome::Browser> {
                     std::ffi::OsStr::new("--no-sandbox"),
                     std::ffi::OsStr::new("--disable-gpu"),
                     std::ffi::OsStr::new("--disable-dev-shm-usage"),
-                    // Wide viewport: narrow windows clamp the pipeline row's
-                    // head track to its minimum and mask column-alignment
-                    // bugs that only appear once tracks grow with content.
+                    // Wide viewport: a narrow window pins the pipeline row's
+                    // head track to its minimum size and hides column-alignment
+                    // bugs that only show up once the tracks grow with content.
                     std::ffi::OsStr::new("--window-size=1400,900"),
                 ])
                 .build()
@@ -11600,8 +11600,8 @@ fn launch_headless_browser() -> Option<headless_chrome::Browser> {
 /// Open a tab on the fixture's server and wait for the page to load.
 ///
 /// `navigate_to` waits for Chrome's `networkAlmostIdle` lifecycle event, which
-/// only arrives once the dashboard's own fetches settle — generous by design so
-/// a slow machine still passes.
+/// only arrives after the dashboard's own fetches finish. That is generous on
+/// purpose, so a slow machine still passes.
 fn open_dashboard_tab(
     browser: &headless_chrome::Browser,
     port: u16,
@@ -11615,10 +11615,10 @@ fn open_dashboard_tab(
 }
 
 /// Evaluate a JS expression on the dashboard tab and read the result as a
-/// boolean, shared by every headless test so none redefines the coercion.
+/// boolean. Every headless test uses this, so none repeats the conversion.
 ///
-/// An evaluation error or a non-boolean result reads as `false`, which keeps
-/// render-polling loops honest until the dashboard actually shows the thing.
+/// An evaluation error or a non-boolean result reads as `false`. That keeps
+/// the render-polling loops honest until the dashboard really shows the thing.
 fn eval_bool(tab: &headless_chrome::Tab, expr: &str) -> bool {
     tab.evaluate(expr, false)
         .ok()
@@ -11637,8 +11637,8 @@ fn eval_text(tab: &headless_chrome::Tab, expr: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Like [`eval_bool`], but reads the result as a whole number; errors and
-/// non-number results read as `-1`, a count no real element set can match.
+/// Like [`eval_bool`], but reads the result as a whole number. Errors and
+/// non-number results read as `-1`, a number no real element count can be.
 fn eval_count(tab: &headless_chrome::Tab, expr: &str) -> i64 {
     tab.evaluate(expr, false)
         .ok()
@@ -11647,11 +11647,11 @@ fn eval_count(tab: &headless_chrome::Tab, expr: &str) -> i64 {
         .unwrap_or(-1)
 }
 
-/// Test that a headless browser can navigate to the server and
-/// verify the HTML page loads without JavaScript errors.
+/// Checks that a headless browser can open the server and that the HTML
+/// page loads without JavaScript errors.
 ///
-/// The actual data rendering is verified by the API-level tests above,
-/// which are faster and don't require a browser installation.
+/// The data rendering itself is checked by the API-level tests above, which
+/// are faster and need no browser installed.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_browser_page_loads() {
@@ -11689,7 +11689,7 @@ async fn test_headless_browser_page_loads() {
         "Page should contain frontend references or title"
     );
 
-    // Verify the dependency graph endpoint is reachable via fetch.
+    // The dependency graph endpoint is reachable through fetch.
     // `awaitPromise` must be true here — the expression evaluates to a
     // Promise, and without awaiting it the value is the promise object itself.
     let graph_result = tab
@@ -11707,7 +11707,7 @@ async fn test_headless_browser_page_loads() {
         "Dependency graph API should be reachable from browser"
     );
 
-    // Verify the dashboard endpoint is reachable via fetch.
+    // The dashboard endpoint is reachable through fetch.
     let dashboard_result = tab
         .evaluate(
             "fetch('/api/dashboard').then(r => r.ok).catch(() => false)",
@@ -11727,9 +11727,9 @@ async fn test_headless_browser_page_loads() {
     drop(browser);
 }
 
-/// Headless-browser test for the dashboard server status card (issue #59):
-/// the card must render the values served by `GET /api/server/status` —
-/// version, uptime, and the pipeline state.
+/// Headless-browser test for the dashboard server status card (issue #59).
+/// The card must show the values from `GET /api/server/status`: version,
+/// uptime, and the pipeline state.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_server_status_card() {
@@ -11786,7 +11786,7 @@ async fn test_headless_server_status_card() {
         "status card should show a non-empty uptime, got: {uptime_text}"
     );
 
-    // Plain serve has no live pipeline — the card must say so honestly.
+    // Plain `serve` has no live pipeline: the card must say so honestly.
     assert_eq!(
         text_of("server-status-pipeline"),
         "no pipeline",
@@ -11797,9 +11797,9 @@ async fn test_headless_server_status_card() {
     drop(browser);
 }
 
-/// Headless-browser test for the dashboard server control panel (issue #60):
-/// the panel must render with shutdown/restart buttons and a log-level
-/// selector populated with the levels the server accepts.
+/// Headless-browser test for the dashboard server control panel (issue #60).
+/// The panel must show shutdown and restart buttons and a log-level selector
+/// listing every level the server accepts.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_server_control_panel() {
@@ -11852,7 +11852,7 @@ async fn test_headless_server_control_panel() {
         ),
         "log-level select should offer off/error/warn/info/debug/trace"
     );
-    // And pre-select the level the server reports.
+    // It also pre-selects the level the server reports.
     assert!(
         eval_bool(
             &tab,
@@ -11866,10 +11866,10 @@ async fn test_headless_server_control_panel() {
     drop(browser);
 }
 
-/// Headless-browser test for the dashboard pipeline phase bar (issue #61):
-/// in live mode the bar must render one segment per master-plan phase —
-/// 8 total, including Phase 2.5 (PAL Design) — and Restitching and
-/// Documentation must render as no-data-source, never as zero progress.
+/// Headless-browser test for the dashboard pipeline phase bar (issue #61).
+/// In live mode the bar must show one segment per master-plan phase: 8 in
+/// total, including Phase 2.5 (PAL Design). Restitching and Documentation
+/// must read as no data source, never as zero progress.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_pipeline_phase_bar_live() {
@@ -11950,7 +11950,7 @@ async fn test_headless_pipeline_phase_bar_live() {
         "PAL Design must be its own segment"
     );
 
-    // Restitching & Documentation render honestly as no-data-source.
+    // Restitching and Documentation honestly read as no data source.
     for phase in ["restitching", "documentation"] {
         assert!(
             eval_bool(
@@ -11968,15 +11968,15 @@ async fn test_headless_pipeline_phase_bar_live() {
     drop(browser);
 }
 
-/// Headless-browser test for the per-binary progress panel (issue #63):
-/// in live mode the pipeline panel must render one row per target binary
-/// with its classification strategy, function counts (total, translated,
-/// in-progress, queued, failed), token consumption, and success rate —
-/// unknown values as em-dashes, never fabricated zeros. The quick-action
-/// buttons are real controls (issue #94): each row carries one translation
-/// toggle (issue #285) plus Configure and Classify, clicking the toggle
-/// drives its per-binary endpoint, and on a router with no scope handle
-/// attached the server's honest 503 reason surfaces as an error toast.
+/// Headless-browser test for the per-binary progress panel (issue #63). In
+/// live mode the pipeline panel must show one row per target binary with its
+/// classification strategy, function counts (total, translated, in-progress,
+/// queued, failed), token use, and success rate. Values it does not know
+/// render as em-dashes, never as invented zeros. The quick-action buttons are
+/// real controls (issue #94): each row has one translation toggle (issue
+/// #285) plus Configure and Classify. Pressing the toggle calls its
+/// per-binary endpoint, and on a router with no scope handle attached the
+/// server's own honest 503 reason shows up as an error toast.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_pipeline_binary_rows() {
@@ -11991,11 +11991,11 @@ async fn test_headless_pipeline_binary_rows() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Four binaries, one per classification strategy plus an unclassified one:
-    // d3d9 via PAL mapping (classified only), dinput8 via crate replacement
-    // with one unit in flight, engine via full RE (classified only), and
-    // game_logic discovered unclassified with a batch summary as the
-    // authoritative count source: 2 of 5 translated, 1 failed, 5000 tokens
-    // → 2 queued, 67% success rate.
+    // d3d9.dll through PAL mapping (classified only), dinput8.dll through
+    // crate replacement with one unit in flight, engine.dll through full RE
+    // (classified only), and game_logic.dll discovered unclassified. Its batch
+    // summary is the count source of record: 2 of 5 translated, 1 failed,
+    // 5000 tokens → 2 queued, 67% success rate.
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
@@ -12024,8 +12024,8 @@ async fn test_headless_pipeline_binary_rows() {
         exported_symbols: 40,
         imported_symbols: 12,
     });
-    // engine.dll's batch pass is in flight — the row must show it working
-    // even though no unit event exists yet.
+    // engine.dll's batch pass is in flight: the row must show it working even
+    // though no unit event exists yet.
     events.emit(ProgressEvent::BatchStarted {
         binary: "engine.dll".into(),
     });
@@ -12119,7 +12119,7 @@ async fn test_headless_pipeline_binary_rows() {
         cell_text("game_logic.dll", "[data-metric=\"success-rate\"]")
     );
 
-    // ── Status badge lives in the Success column, not beside the name ──
+    // ── The status badge sits in the Success column, not beside the name ──
     assert!(
         eval_bool(
             &tab,
@@ -12127,8 +12127,8 @@ async fn test_headless_pipeline_binary_rows() {
         ),
         "no status badge next to the binary name"
     );
-    // d3d9 is PAL-mapped — its compact row (issue #244) suppresses the
-    // tokens/success cell and the translation counts entirely.
+    // d3d9.dll is PAL-mapped: its compact row (issue #244) leaves out the
+    // tokens/success cell and the translation counts completely.
     assert!(
         eval_bool(
             &tab,
@@ -12196,8 +12196,8 @@ async fn test_headless_pipeline_binary_rows() {
         ),
         "the redundant strategy column is gone"
     );
-    // Switch to the Pipeline view so the rows have real layout boxes —
-    // hidden elements report zero rects and would pass vacuously.
+    // Switch to the Pipeline view so the rows have real layout boxes: a
+    // hidden element reports a zero rect and would pass without checking.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click()",
         false,
@@ -12234,9 +12234,9 @@ async fn test_headless_pipeline_binary_rows() {
     );
 
     // ── Honesty: unknown totals and tokens are em-dashes ──────────────
-    // (engine.dll: classified and working, but no batch summary has landed.
-    // success-rate is absent here too: with no terminal outcomes the cell
-    // shows the status placeholder instead of a rate, never a zero)
+    // (engine.dll is classified and working, but no batch summary has
+    // arrived yet. Its success rate is absent too: with no finished
+    // outcomes the cell shows the status placeholder, never a zero.)
     for (binary, selector) in [
         ("engine.dll", "[data-metric=\"tokens\"]"),
         ("engine.dll", "[data-count=\"total\"]"),
@@ -12257,9 +12257,9 @@ async fn test_headless_pipeline_binary_rows() {
         ),
         "each row should offer its translation toggle, Configure, and Classify"
     );
-    // The toggle's state follows the row honestly (issue #285): engine.dll's
-    // batch pass is in flight — its button reads Pause; game_logic.dll's
-    // pass has finished — its button reads Start Translation.
+    // The toggle shows the row's state honestly (issue #285): engine.dll's
+    // batch pass is in flight, so its button reads Pause; game_logic.dll's
+    // pass has finished, so its button reads Start Translation.
     assert_eq!(
         eval_text(
             &tab,
@@ -12286,7 +12286,7 @@ async fn test_headless_pipeline_binary_rows() {
         "one translation button per row — never Pause and Start together, and no row-level Resume"
     );
 
-    // Instrument fetch so any state-changing request becomes observable.
+    // Replace fetch so any request that changes state can be counted.
     tab.evaluate(
         "window.__nonGetFetches = 0; const origFetch = window.fetch.bind(window); \
              window.fetch = (...args) => { \
@@ -12304,7 +12304,7 @@ async fn test_headless_pipeline_binary_rows() {
     )
     .expect("click the start-translation quick action");
 
-    // The click is a real control: it fires a POST to the row's per-binary
+    // The click is a real control: it sends a POST to the row's per-binary
     // start endpoint…
     let mut fired = false;
     for _ in 0..25 {
@@ -12319,10 +12319,10 @@ async fn test_headless_pipeline_binary_rows() {
         "the quick action must drive POST /api/pipeline/binaries/{{name}}/start, not just announce"
     );
 
-    // …and this plain router has no scope handle attached — the swap steers
-    // through the handle, so the server's own honest 503 reason surfaces as
-    // an error toast — never a silent no-op, never a locally-faked state
-    // change.
+    // …and this plain router has no scope handle attached. The swap works
+    // through that handle, so the server's own honest 503 reason shows up as
+    // an error toast — not a silent no-op, and not a state change faked in
+    // the page.
     let mut surfaced = false;
     for _ in 0..25 {
         if eval_bool(
@@ -12347,23 +12347,23 @@ async fn test_headless_pipeline_binary_rows() {
     drop(browser);
 }
 
-/// Headless-browser test for the compact PAL row (issue #244, part of #223):
-/// a PAL-classified binary renders the compact variant — trait names with
+/// Headless-browser test for the compact PAL row (issue #244, part of #223).
+/// A PAL-classified binary gets the compact row: trait names with
 /// defined/missing markers in the state cell, an "N/M defined" readiness
-/// count in the counts area, an empty cost placeholder keeping the grid
-/// aligned, and Classify alone in the actions cell. A PAL row whose poll
-/// carried no summary shows an em-dash, never a fabricated 0/0. A non-PAL
-/// neighbour keeps its counts, its success-column placeholder, and its three
-/// buttons. A live reclassification to a translation strategy restores the
-/// full row and moves it up into table order on the next refresh.
+/// count in the counts area, an empty cost placeholder that keeps the grid
+/// aligned, and Classify alone in the actions cell. If the poll brought no
+/// summary for a PAL row, it shows an em-dash, never an invented 0/0. A
+/// non-PAL neighbour keeps its counts, its success-column placeholder, and
+/// its three buttons. Reclassifying live to a translation strategy brings
+/// the full row back and puts the binary in table order on the next refresh.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_pipeline_pal_rows_compact() {
     let fixture = TestFixture::new();
-    // d3d9.dll: classified PalMapping on disk, with function artifacts
-    // recording DirectX/Win32Core API-call categories and a generated PAL
-    // crate defining GraphicsDevice but not PlatformCore. game_logic.dll:
-    // ReverseEngineer — the full-row neighbour.
+    // d3d9.dll is classified PalMapping on disk, with function artifacts
+    // recording the DirectX/Win32Core API-call categories and a generated PAL
+    // crate that defines GraphicsDevice but not PlatformCore. game_logic.dll
+    // is ReverseEngineer: the full-row neighbour.
     write_pipeline_pal_readiness_fixtures(&fixture);
 
     let state = ServerState::new(fixture.repo_path());
@@ -12375,8 +12375,8 @@ async fn test_headless_pipeline_pal_rows_compact() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // A second PAL binary classified live with no analysis artifacts — the
-    // poll carries no summary for it, and the row must answer honestly.
+    // A second PAL binary classified live with no analysis artifacts: the
+    // poll has no summary for it, and the row must answer honestly.
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "audio.dll".into(),
         category: "WindowsOs".into(),
@@ -12392,8 +12392,8 @@ async fn test_headless_pipeline_pal_rows_compact() {
     };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    // game_logic.dll (full row) plus audio.dll and d3d9.dll (compact —
-    // PAL rows sort last, issue #242); poll until all three appear.
+    // game_logic.dll (full row) plus audio.dll and d3d9.dll (compact: PAL
+    // rows sort last, issue #242); poll until all three show up.
     let mut rendered = false;
     for _ in 0..25 {
         if eval_count(
@@ -12508,8 +12508,8 @@ async fn test_headless_pipeline_pal_rows_compact() {
         cell_text("game_logic.dll", "[data-metric=\"success-rate\"]")
     );
 
-    // Switch to the Pipeline view so the cells have real layout boxes —
-    // hidden elements report zero rects and would pass vacuously.
+    // Switch to the Pipeline view so the cells have real layout boxes: a
+    // hidden element reports a zero rect and would pass without checking.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click()",
         false,
@@ -12535,9 +12535,9 @@ async fn test_headless_pipeline_pal_rows_compact() {
     );
 
     // ── Overriding to a translation strategy restores the full row ───────
-    // The classification-override panel's live event is what re-renders
-    // rows (app.js reloads the pipeline on classification_complete) —
-    // emitting it here is the same path the panel's success takes.
+    // The classification-override panel's live event is what redraws the
+    // rows (app.js reloads the pipeline on classification_complete), so
+    // sending that event here is the same path the panel takes on success.
     events.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "ProjectSpecific".into(),
@@ -12582,11 +12582,11 @@ async fn test_headless_pipeline_pal_rows_compact() {
     drop(browser);
 }
 
-/// Headless-browser test for the controls header (issue #94, W2.4): the
-/// state badge follows the pipeline's state machine — first from the
-/// server-status snapshot, then over the WebSocket as *another* client
-/// drives the lifecycle endpoints — and the buttons gate by the server's
-/// own transition table at every step.
+/// Headless-browser test for the controls header (issue #94, W2.4). The
+/// state badge follows the pipeline's state machine: first from the
+/// server-status snapshot, then over the WebSocket while *another* client
+/// calls the lifecycle endpoints. The buttons are gated by the server's own
+/// transition table at every step.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_controls_header_tracks_live_state() {
@@ -12631,8 +12631,8 @@ async fn test_headless_controls_header_tracks_live_state() {
         false
     };
 
-    // The first server-status snapshot points the header at the machine's
-    // real state — idle, with only Start (and Shut Down Server) available.
+    // The first server-status snapshot puts the header on the machine's real
+    // state: idle, with only Start (and Shut Down Server) available.
     assert!(
         wait_for_state("idle").await,
         "the header must follow the server-status snapshot to idle, got: {}",
@@ -12653,8 +12653,8 @@ async fn test_headless_controls_header_tracks_live_state() {
         "Shut Down Server is always available"
     );
 
-    // Another client (the reqwest "other tab") drives the lifecycle — the
-    // header follows over the WebSocket with no interaction in this tab.
+    // Another client (the reqwest "other tab") runs the lifecycle: the header
+    // follows over the WebSocket, with no interaction in this tab.
     let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/start").await;
     assert_eq!(status, 200, "start from idle should succeed");
     assert!(
@@ -12675,10 +12675,10 @@ async fn test_headless_controls_header_tracks_live_state() {
         "Cancel current is available while running"
     );
 
-    // A stale button — force one enabled, as another tab's earlier state
-    // would have left it — issuing an operation the machine forbids: the
-    // server's own 409 reason surfaces as an error toast, and the header
-    // stays truthful rather than corrupting itself.
+    // A stale button — force one enabled, the way an earlier state in another
+    // tab would have left it — then use it for an operation the machine
+    // forbids: the server's own 409 reason shows up as an error toast, and the
+    // header keeps telling the truth instead of corrupting its own state.
     tab.evaluate(
         "document.getElementById('ctl-start').disabled = false; \
              document.getElementById('ctl-start').click() === undefined",
@@ -12745,8 +12745,8 @@ async fn test_headless_controls_header_tracks_live_state() {
         assert!(btn_disabled(id), "{id} must be disabled while stopping");
     }
 
-    // The run finishes (the live loop would do this) — Restart becomes the
-    // only lifecycle operation available.
+    // The run finishes, which the live loop would normally do: Restart is
+    // now the only lifecycle operation available.
     control.complete().expect("stopping -> complete");
     assert!(
         wait_for_state("complete").await,
@@ -12761,11 +12761,11 @@ async fn test_headless_controls_header_tracks_live_state() {
     drop(browser);
 }
 
-/// Headless-browser test for the restart dialog (issue #94, W2.4): from a
-/// complete run the Restart button opens a dialog with phase / target /
-/// scope selectors and a safety explanation; confirming drives
-/// POST /api/pipeline/restart with the chosen selectors — the header moves
-/// back to running and the live loop's request slot carries the choices.
+/// Headless-browser test for the restart dialog (issue #94, W2.4). From a
+/// finished run the Restart button opens a dialog with phase / target / scope
+/// selectors and a safety explanation. Confirming sends those selectors to
+/// POST /api/pipeline/restart: the header moves back to running, and the live
+/// loop's request slot holds the choices that were made.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_restart_dialog_drives_endpoint() {
@@ -12793,7 +12793,7 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     };
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    // The header settles on complete, which unlocks Restart.
+    // The header settles on complete, which makes Restart available.
     let mut settled = false;
     for _ in 0..25 {
         if eval_bool(
@@ -12891,7 +12891,7 @@ async fn test_headless_restart_dialog_drives_endpoint() {
         "confirming the dialog must drive POST /api/pipeline/restart and move the header to running"
     );
 
-    // …and the live loop's request slot carries the chosen selectors.
+    // …and the live loop's request slot holds the chosen selectors.
     run_rx
         .changed()
         .await
@@ -12914,7 +12914,7 @@ async fn test_headless_restart_dialog_drives_endpoint() {
         "the default target is all binaries"
     );
 
-    // The success toast names the selectors it sent.
+    // The success toast lists the selectors that were sent.
     assert!(
         eval_bool(
             &tab,
@@ -12932,15 +12932,15 @@ async fn test_headless_restart_dialog_drives_endpoint() {
 }
 
 /// Headless-browser test for a pipeline row's single translation toggle
-/// (issue #285): while the pipeline works a binary its one button reads
-/// Pause — clicking it drives the per-binary pause endpoint, not the
-/// run-wide POST /api/pipeline/pause, and the WS binary_pause_changed
-/// event re-renders the row as Paused (the paused flag wins over working)
-/// with the same button slot relabeled Start Translation. Pressing that
-/// drives the per-binary start endpoint — which resumes the held binary
-/// and focuses it — and the row re-renders Working with Pause back in the
-/// slot. The run-level machine never moves in either direction. Mirrors
-/// the restart-dialog endpoint test.
+/// (issue #285). While the pipeline works a binary, that row's one button
+/// reads Pause. Clicking it calls the per-binary pause endpoint, not the
+/// run-wide POST /api/pipeline/pause. The WS binary_pause_changed event
+/// redraws the row as Paused — the paused flag wins over the working flag —
+/// and the same button slot becomes Start Translation. Pressing that calls
+/// the per-binary start endpoint, which resumes the held binary and moves it
+/// to the front of the run, and the row shows Working again with Pause in
+/// its slot. Either way the run-level machine never moves. Same shape as the
+/// restart-dialog endpoint test.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_binary_translation_toggle_matrix() {
@@ -12948,8 +12948,8 @@ async fn test_headless_binary_translation_toggle_matrix() {
     let events = TranslationEvents::new(128);
     let scope =
         calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    // A running run: if the row's button drove the run-wide endpoints,
-    // the machine would move — it must stay running throughout.
+    // A running run: if the row's button called the run-wide endpoints, the
+    // machine would move — it has to stay running the whole time.
     let control = PipelineControl::new().with_events(events.clone());
     control.start().expect("idle -> running");
     let run_requests = RunRequestSignal::new();
@@ -12964,8 +12964,8 @@ async fn test_headless_binary_translation_toggle_matrix() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // One planned binary whose batch pass is in flight — the honest
-    // Pause state of the toggle.
+    // One planned binary whose batch pass is in flight: the honest Pause
+    // state of the toggle.
     events.emit(ProgressEvent::QueuePlanned {
         binaries: vec!["game_logic.dll".to_string()],
     });
@@ -13009,10 +13009,10 @@ async fn test_headless_binary_translation_toggle_matrix() {
     )
     .expect("click the row's Pause button");
 
-    // The row re-renders as Paused — over the WS binary_pause_changed
-    // event, with no reload — and its single button slot relabels to
-    // Start Translation: the paused flag wins over the working flag, so
-    // the held-out row never still reads Pause.
+    // The row redraws as Paused through the WS binary_pause_changed event,
+    // with no reload, and its single button slot becomes Start Translation.
+    // The paused flag wins over the working flag, so a row that is held out
+    // never keeps reading Pause.
     let mut paused = false;
     for _ in 0..25 {
         if eval_bool(
@@ -13034,7 +13034,7 @@ async fn test_headless_binary_translation_toggle_matrix() {
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.outerHTML || ''"
         )
     );
-    // The badge reads Paused ahead of Working, the single honest state.
+    // The badge reads Paused rather than Working: one honest state.
     assert!(
         eval_text(
             &tab,
@@ -13044,7 +13044,7 @@ async fn test_headless_binary_translation_toggle_matrix() {
         "the paused row's status badge reads Paused"
     );
 
-    // The success toast carries the server's own reason.
+    // The success toast shows the server's own reason.
     assert!(
         eval_bool(
             &tab,
@@ -13057,9 +13057,9 @@ async fn test_headless_binary_translation_toggle_matrix() {
         )
     );
 
-    // The per-binary endpoint was driven, not the run-wide one: the
-    // lifecycle machine never moved, in the server's truth and in the
-    // header's badge.
+    // The per-binary endpoint was called, not the run-wide one: the
+    // lifecycle machine never moved, neither in the server's state nor in
+    // the header's badge.
     assert_eq!(
         control.state(),
         PipelineState::Running,
@@ -13073,16 +13073,16 @@ async fn test_headless_binary_translation_toggle_matrix() {
         "running",
         "the header badge never moved"
     );
-    // The click reached the endpoint — the pause rode the persisted scope
-    // record, matched on the #107 case-insensitive rule.
+    // The click reached the endpoint: the pause was saved in the persisted
+    // scope record, matched by the case-insensitive rule from issue #107.
     assert!(
         calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("GAME_LOGIC.DLL"),
         "the click drove POST /api/pipeline/binaries/game_logic.dll/pause"
     );
 
-    // Press Start Translation in the same slot — the swap press on the
-    // still-in-flight binary resumes it and focuses it, and the row falls
-    // back to its Working state with Pause in the slot.
+    // Press Start Translation in the same slot. Pressing it swaps the run:
+    // the still-in-flight binary is resumed and moved to the front, and the
+    // row goes back to its Working state with Pause in the slot.
     tab.evaluate(
         "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
         false,
@@ -13117,7 +13117,7 @@ async fn test_headless_binary_translation_toggle_matrix() {
         calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("game_logic.dll"),
         "the start click also parked the binary in the focus slot"
     );
-    // The swap toast names what the server actually did.
+    // The swap toast says what the server actually did.
     assert!(
         eval_bool(
             &tab,
@@ -13139,13 +13139,13 @@ async fn test_headless_binary_translation_toggle_matrix() {
     drop(browser);
 }
 
-/// Headless-browser test for the "translate this next" focus end to end
-/// (issue #284): with a plan of three rows rendered, an operator focus on
-/// the last binary — the bare endpoint, not the row's Start Translation
-/// button, which composes the swap on top of this focus (issue #285,
-/// tested just below) — makes the re-served pipeline state put that binary
-/// at the front of the plan order. Entering the Pipeline view refetches
-/// the rows, and the fetched order already honors the pending focus: the
+/// Headless-browser test for the "translate this next" focus, end to end
+/// (issue #284). Three plan rows are rendered. The operator puts the last
+/// binary first by calling the bare endpoint — not the row's Start
+/// Translation button, which adds the swap on top of this focus (issue #285,
+/// tested just below). The pipeline state served afterwards puts that binary
+/// at the front of the plan order. Opening the Pipeline view fetches the rows
+/// again, and the order already honors the focus that is waiting: the
 /// dashboard shows what the live run will do at its next binary boundary.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -13162,7 +13162,7 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // The run's plan renders three rows in plan order before anything starts.
+    // The run's plan shows three rows in plan order before anything starts.
     events.emit(ProgressEvent::QueuePlanned {
         binaries: vec![
             "a.dll".to_string(),
@@ -13200,12 +13200,12 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
         row_order()
     );
 
-    // The operator focuses c.dll — the endpoint's 200, not a row button.
+    // The operator puts c.dll first — the endpoint's 200, not a row button.
     let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/focus").await;
     assert_eq!(status, 200, "the focus call should succeed, got: {body}");
 
-    // Entering the Pipeline view refetches the rows; the re-served state
-    // puts the focused binary at the front of the plan.
+    // Opening the Pipeline view fetches the rows again; the state served now
+    // puts that binary at the front of the plan.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click() === undefined",
         false,
@@ -13226,8 +13226,8 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
         row_order()
     );
 
-    // The focus rode the persisted scope record — the same slot the live
-    // worklist will consume at the next boundary.
+    // The focus was saved in the persisted scope record — the same slot the
+    // live worklist reads at the next binary boundary.
     assert!(
         calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("C.DLL"),
         "the focus is in the persisted scope record"
@@ -13237,13 +13237,13 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
     drop(browser);
 }
 
-/// Headless-browser test for the row's Start Translation press driving the
-/// per-binary start swap (issue #285): with a three-binary plan rendered
-/// and a.dll in flight, one click on c.dll's button swaps the run — the
-/// WS binary_pause_changed events re-render the dashboard with no reload,
-/// the served plan now leads with c.dll, the previous leader re-renders
-/// Paused, and the success toast names both halves of the swap. The
-/// run-level machine never moves: the row button steers, never walks.
+/// Headless-browser test for pressing a row's Start Translation button,
+/// which calls the per-binary start swap (issue #285). A three-binary plan is
+/// rendered with a.dll in flight. One click on c.dll's button swaps the
+/// run: the WS binary_pause_changed events redraw the dashboard with no
+/// reload, the plan served now leads with c.dll, the previous leader shows
+/// Paused, and the success toast names both halves of the swap. The run-level
+/// machine never moves: the row button only chooses which binary runs next.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_binary_start_swaps_the_rows() {
@@ -13291,8 +13291,8 @@ async fn test_headless_binary_start_swaps_the_rows() {
         )
     };
 
-    // Poll until the rows render in plan order and c.dll's row carries its
-    // Start Translation button (up to ~5 seconds).
+    // Poll until the rows show in plan order and c.dll's row has its Start
+    // Translation button (up to ~5 seconds).
     let mut rendered = false;
     for _ in 0..25 {
         if row_order() == "a.dll,b.dll,c.dll"
@@ -13319,9 +13319,9 @@ async fn test_headless_binary_start_swaps_the_rows() {
     )
     .expect("click c.dll's Start Translation button");
 
-    // The WS pause events drive the dashboard to show both halves of the
-    // swap with no reload: the served plan leads with the target now, and
-    // the previous leader re-renders Paused — held out to make way.
+    // The WS pause events make the dashboard show both halves of the swap
+    // with no reload: the plan served now leads with the target binary, and
+    // the previous leader shows Paused — held out to make way for it.
     let mut swapped = false;
     for _ in 0..25 {
         if row_order() == "c.dll,a.dll,b.dll"
@@ -13341,7 +13341,7 @@ async fn test_headless_binary_start_swaps_the_rows() {
         row_order()
     );
 
-    // The toast is honest about the side effect: it names both binaries.
+    // The toast is honest about the side effect: it mentions both binaries.
     assert!(
         eval_bool(
             &tab,
@@ -13354,8 +13354,8 @@ async fn test_headless_binary_start_swaps_the_rows() {
         )
     );
 
-    // The server's truth behind the re-render: the swap rode the persisted
-    // scope record, and the run-level machine and header badge never moved.
+    // The server's state behind the redraw: the swap was saved in the
+    // persisted scope record, and the run machine and header badge never moved.
     let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
     assert!(reopened.is_paused("A.DLL"), "the previous leader is paused");
     assert!(
@@ -13381,10 +13381,10 @@ async fn test_headless_binary_start_swaps_the_rows() {
     drop(browser);
 }
 
-/// Headless-browser test for the shutdown dialog (issue #94, W2.4): Shut
-/// Down Server opens a confirmation listing exactly what it does — honest
-/// to the live mode — and confirming drives the existing
-/// POST /api/server/shutdown, taking the accept loop down.
+/// Headless-browser test for the shutdown dialog (issue #94, W2.4). Shut
+/// Down Server opens a confirmation that lists exactly what happens, honest
+/// about live mode. Confirming sends the existing
+/// POST /api/server/shutdown, which stops the accept loop.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_shutdown_dialog_drives_endpoint() {
@@ -13395,7 +13395,7 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
     let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    // The accept loop watches the state's shutdown flag — the production
+    // The accept loop watches the state's shutdown flag: that is the real
     // graceful-shutdown path, so the dialog visibly stops the server.
     let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
 
@@ -13439,8 +13439,8 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
     }
     assert!(opened, "Shut Down Server must open the confirmation dialog");
 
-    // The dialog lists exactly what the shutdown does — honest to the live
-    // router: unit boundary, the in-flight unit is saved, then the process stops.
+    // The dialog lists exactly what the shutdown does, honest about the live
+    // router: the unit boundary, saving the in-flight unit, then the stop.
     let listed = eval_text(
         &tab,
         "document.querySelector('#shutdown-dialog .dialog-list')?.textContent || ''",
@@ -13458,7 +13458,7 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
     )
     .expect("confirm shutdown");
 
-    // The accept loop exits gracefully — the production shutdown path ran.
+    // The accept loop exits in order: the real shutdown path ran.
     server
         .await
         .expect("the dialog's POST takes the server down");
@@ -13478,7 +13478,7 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
 /// Headless-browser test for the translation scope controls panel
 /// (issue #95, W2.6): the panel renders the current scope and constraints
 /// from the status endpoint on load, and every control — category
-/// checkboxes, priority add/remove, constraint inputs — drives its scope
+/// checkboxes, priority add/remove, constraint inputs — posts to its scope
 /// endpoint end to end, with the rendered state following the server's
 /// answer rather than a local guess.
 ///
@@ -13508,7 +13508,7 @@ async fn test_headless_scope_controls_panel() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // One binary per category the checkboxes speak about, so each checkbox
+    // One binary per category the checkboxes control, so each checkbox
     // has a real category to read.
     for (binary, category) in [
         ("engine.dll", "ProjectSpecific"),
@@ -13607,7 +13607,7 @@ async fn test_headless_scope_controls_panel() {
     );
 
     // Constraints render from the status endpoint, and the token display
-    // carries the budget minus the run's spend.
+    // shows the budget minus the run's spend.
     assert_eq!(
         eval_text(
             &tab,
@@ -13649,7 +13649,7 @@ async fn test_headless_scope_controls_panel() {
         "the remaining-budget display follows the server's spend"
     );
 
-    // Toggling "skip runtime functions" drives POST /api/scope/binaries —
+    // Toggling "skip runtime functions" sends POST /api/scope/binaries —
     // the exclusion lands server-side, and the panel keeps the box checked
     // because it re-rendered from the server's answer.
     tab.evaluate(
@@ -13682,8 +13682,8 @@ async fn test_headless_scope_controls_panel() {
     );
 
     // Unchecking a translate-mode checkbox excludes that category: zlib's
-    // box off drops it from the allow-list, while the WindowsOs binary no
-    // checkbox speaks for keeps its place from the server's current list.
+    // box off drops it from the allow-list, while WindowsOs — which no
+    // checkbox excludes — keeps its place in the server's current list.
     tab.evaluate(
         "document.getElementById('scope-translate-known-third-party').click() === undefined",
         false,
@@ -13738,7 +13738,7 @@ async fn test_headless_scope_controls_panel() {
         "after the round-trip the checkboxes render the unsteered state honestly"
     );
 
-    // Adding a priority function through the form drives the priority
+    // Adding a priority function through the form sends the priority
     // endpoint; the chip appears and the server agrees.
     tab.evaluate(
         "document.getElementById('scope-priority-binary').value = 'zlib.dll'; \
@@ -13762,7 +13762,7 @@ async fn test_headless_scope_controls_panel() {
         "the added priority reached the server"
     );
 
-    // Removing it drives the removal endpoint; the chip disappears and the
+    // Removing it sends the removal request; the chip disappears and the
     // server's list shrinks.
     tab.evaluate(
         "document.querySelector('#scope-priority-list .scope-priority-chip[data-function=\"InitZlib\"] .scope-priority-remove').click() === undefined",
@@ -14307,7 +14307,7 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
 /// (issue #96, W2.7): the tab renders the override seeded on the shared
 /// handle — summary rows, pre-filled form controls, and reviewer notes
 /// injected into the overview — and toggling skip and clicking Apply
-/// drives the endpoint end to end, with the rendered state following the
+/// runs the endpoint end to end, with the rendered state following the
 /// record the server echoes back.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -14438,7 +14438,7 @@ async fn test_headless_unit_overrides_tab() {
         "the overview should show the reviewer notes, got: {notes_text}"
     );
 
-    // Toggling skip and clicking Apply drives the endpoint; the summary
+    // Toggling skip and clicking Apply sends the save request; the summary
     // follows the record the server echoes back.
     tab.evaluate(
         "document.getElementById('override-skip')?.click() === undefined",
@@ -14490,7 +14490,7 @@ async fn test_headless_unit_overrides_tab() {
 /// Headless-browser test for the binary classification override panel
 /// (issue #97, W2.8): clicking Classify on a pipeline row renders the
 /// recorded classification with its reasoning, and choosing a category and
-/// crate and clicking Apply drives the endpoint end to end — the panel
+/// crate and clicking Apply runs the endpoint end to end — the panel
 /// adopts the override the server echoes back, and the record persists in
 /// the workspace for the next run.
 ///
@@ -14609,7 +14609,7 @@ async fn test_headless_classification_override_panel() {
         )
     );
 
-    // The record landed in the workspace — a restarted run honors it.
+    // The record landed in the workspace — a restarted run will use it.
     let reopened = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
     let record = reopened
         .get("fmod.dll")
@@ -15176,7 +15176,7 @@ async fn test_headless_queue_skip_checkbox() {
     drop(browser);
 }
 
-/// Headless-browser test for issue #78: queue rows carry a multi-select
+/// Headless-browser test for issue #78: queue rows have a multi-select
 /// checkbox, the list header has a select-all that marks every visible row,
 /// and the batch dropdown applies the chosen action (Skip All here) to all
 /// selected units — persisted through the per-unit skip logic, after which
@@ -15533,7 +15533,7 @@ async fn test_headless_graph_filters_and_encoding() {
 }
 
 /// Headless-browser test for graph export + shareable URLs (issue #79):
-/// `toSVG()` serializes the filtered view (visible nodes only, each carrying
+/// `toSVG()` serializes the filtered view (visible nodes only, each including
 /// its unit id), the PNG export runs the same SVG through rasterization, the
 /// share URL encodes the active filters and the zoom/pan camera, and opening
 /// that URL in a fresh tab restores the same filters and viewport.
@@ -15599,7 +15599,7 @@ async fn test_headless_graph_export_and_share_url() {
         "binary filter should leave the two d3d9.dll nodes"
     );
 
-    // SVG export mirrors the filtered view: the d3d9 nodes are in (their
+    // SVG export matches the filtered view: the d3d9 nodes are in (their
     // unit ids appear as data-id attributes), game_logic nodes are out.
     let svg = eval_str("window.calxglossGraph.toSVG()").unwrap_or_default();
     assert!(
@@ -15763,7 +15763,7 @@ async fn test_headless_llm_log_browser() {
     }
     assert!(loaded, "log view should load the persisted history");
 
-    // Token count per entry: the response carries its count, the request
+    // Token count per entry: the response reports its count, the request
     // shows an honest em dash rather than a fabricated zero.
     let response_meta = eval_text(
         &tab,
@@ -15803,7 +15803,7 @@ async fn test_headless_llm_log_browser() {
         "header click should expand the entry"
     );
 
-    // One-click copy: every entry carries a copy button.
+    // One-click copy: every entry has a copy button.
     assert!(
         eval_bool(
             &tab,
@@ -15994,7 +15994,7 @@ async fn test_headless_live_view_renders_and_updates() {
         )
     );
 
-    // The row carries the phase label and the evidence the stream reported.
+    // The row shows the phase label and the evidence the stream reported.
     let row = "#live-units .live-unit[data-function=\"DrawPrimitive\"]";
     let row_text = |suffix: &str| -> String {
         eval_text(
@@ -16078,8 +16078,8 @@ async fn test_headless_live_view_renders_and_updates() {
         "confidence appears once an attempt verifies, got: {meta}"
     );
 
-    // The pushed records carry the phase history — the phase chip's tooltip
-    // shows the path the unit walked, escalations and retries included.
+    // The pushed records include the phase history — the phase chip's tooltip
+    // shows the path the unit took, escalations and retries included.
     let history = row_text(".querySelector('.live-phase')?.getAttribute('title') || ''");
     assert!(
         history.contains("Scan Fetch")

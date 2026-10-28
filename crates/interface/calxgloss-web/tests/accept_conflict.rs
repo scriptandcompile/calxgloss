@@ -1,7 +1,7 @@
 //! Accept-path merge-conflict tests (issue #83).
 //!
 //! Accepting a unit whose branch can no longer merge cleanly onto main must
-//! fail loudly: the error names the conflicting files, no `Accepted` action
+//! fail with an error that names the conflicting files: no `Accepted` action
 //! record is persisted, and the unit keeps its pre-accept dashboard status.
 //!
 //! Run with: `cargo test --features server --test accept_conflict`
@@ -47,8 +47,8 @@ fn make_conflicting_repo() -> tempfile::TempDir {
 #[tokio::test]
 async fn accepting_conflicting_unit_fails_without_marking_accepted() {
     let dir = make_conflicting_repo();
-    // Issue #327: the actions backend now carries a pass description; the
-    // accept path never assembles one, so the default is enough here.
+    // Issue #327: the actions backend takes a pass description; the accept
+    // path never builds one, so the default description is enough here.
     let state = ActionsState::new(dir.path().to_path_buf(), PipelineSpec::default());
 
     let result = accept_unit(&state, "game_logic.dll/DrawSprite/v2").await;
@@ -87,7 +87,7 @@ async fn accepting_conflicting_unit_fails_without_marking_accepted() {
         "conflicted unit must not show as accepted"
     );
 
-    // main still carries only v1's content — nothing from v2 landed.
+    // main still has only v1's content — nothing from v2 landed.
     let main_content = std::fs::read_to_string(dir.path().join("shared.rs")).expect("main file");
     assert_eq!(main_content, "// version 1");
 }
@@ -117,7 +117,7 @@ async fn legacy_api_accept_of_conflicting_unit_reports_conflict() {
         "error should name the conflicting file, got: {err}"
     );
 
-    // Nothing was merged: main still carries only v1's content.
+    // Nothing was merged: main still has only v1's content.
     let main_content = std::fs::read_to_string(dir.path().join("shared.rs")).expect("main file");
     assert_eq!(main_content, "// version 1");
 }

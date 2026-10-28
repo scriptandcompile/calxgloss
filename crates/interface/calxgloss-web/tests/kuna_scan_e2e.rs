@@ -1,15 +1,15 @@
 //! The web harness's end-to-end scan under `engine = kuna` (issue #212,
-//! part of epic #203): the spawn-server harness gains one scan run against
-//! the checked-in fixture target, built exactly the way an
-//! `analysis.engine = kuna` run builds its engine — the `PipelineSource::Kuna`
-//! arm, loaded in-process with no Ghidra anywhere — and the scan record it
-//! persists into the record-of-effort layout names its engine provenance.
+//! part of epic #203). The spawn-server harness gets one scan run against
+//! the checked-in fixture target. Its analysis engine is built the way an
+//! `analysis.engine = kuna` run builds it — the `PipelineSource::Kuna`
+//! arm, loaded in this process, with no Ghidra process behind it. The scan
+//! record saved in the record-of-effort layout names its analysis engine.
 //!
-//! The seam itself is pinned in `calxgloss-decomp/tests/kuna_scan.rs`; this
-//! test pins the contract the web's pipeline consumes: one scan run through
-//! the seam, one persisted record, and the record naming the engine, its
-//! pinned release, and its pinned source fingerprint (issue #208's
-//! provenance) all the way to disk and back.
+//! The seam itself is pinned in `calxgloss-decomp/tests/kuna_scan.rs`. This
+//! test pins the contract the web's pipeline reads: one scan run through
+//! the seam, one saved record, and the record naming the Kuna engine, the
+//! release it is pinned to, and the pinned source fingerprint (issue #208's
+//! provenance) — written to disk and read back.
 
 use calxgloss_decomp::PipelineSource;
 use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
@@ -17,9 +17,9 @@ use calxgloss_testfixtures::TARGET_FILE_NAME;
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
 
-/// The engine an `analysis.engine = kuna` run selects: the seam's Kuna arm
-/// over the fixture target, loaded in-process — no server, no JVM, no
-/// auto-analysis.
+/// The analysis engine an `analysis.engine = kuna` run selects: the seam's
+/// Kuna arm over the fixture target, loaded in this process — no server, no
+/// JVM, no auto-analysis.
 fn kuna_pipeline_source() -> PipelineSource {
     let fixture = calxgloss_testfixtures::load_target()
         .expect("fixture target should build and validate from the web harness");
@@ -33,20 +33,20 @@ async fn a_kuna_scan_run_persists_a_record_naming_its_engine_provenance() {
     let source = kuna_pipeline_source();
     let workspace = tempfile::tempdir().expect("web workspace");
 
-    // One scan run: the same type-database recovery the live pipeline runs
-    // before its first batch, over the seam. The Kuna arm refuses the
-    // vtable-method tag write (issue #209's directive plane carries type
-    // writes, not Ghidra-era program tags), and the scan tolerates that — tagging is
+    // One scan run through the seam: the same type-database recovery the
+    // live pipeline runs before its first batch. The Kuna arm refuses the
+    // vtable-method tag write (issue #209's directive plane writes types,
+    // not Ghidra-era program tags), and the scan tolerates that — tagging is
     // enrichment, not detection — so the run completes on seam reads alone.
     let db = TypesDBEngine::with_source(source)
         .scan(TARGET_FILE_NAME)
         .await
         .expect("the scan runs under engine = kuna");
 
-    // The scan really read through the Kuna engine: the fixture's imports
-    // imply named structures, and the recovery pass probes them into the
-    // database — an empty database would pass the provenance asserts while
-    // proving nothing about the seam.
+    // The scan really did read through the Kuna engine: the fixture's
+    // imports imply named structures, and the recovery pass adds them to
+    // the database. An empty database would pass the provenance asserts
+    // below while proving nothing about the seam.
     assert!(
         db.named_types.iter().any(|t| t.name == "_iobuf"),
         "the scan recovered the types the fixture implies, got {:?}",
@@ -58,9 +58,9 @@ async fn a_kuna_scan_run_persists_a_record_naming_its_engine_provenance() {
     let persistor = TypeDatabasePersistor::new(workspace.path());
     persistor.save(&db).expect("the scan record persists");
 
-    // The acceptance line, read off disk as raw JSON: the persisted scan
-    // record names the engine, the release it is pinned to, and the pinned
-    // source fingerprint — the provenance issue #208 stamps.
+    // The acceptance check, read off disk as raw JSON: the saved scan
+    // record names the analysis engine, the release it is pinned to, and
+    // the pinned source fingerprint — the provenance issue #208 stamps.
     let raw = std::fs::read_to_string(persistor.path_for(TARGET_FILE_NAME))
         .expect("the scan record is on disk");
     let json: serde_json::Value = serde_json::from_str(&raw).expect("the scan record is JSON");
