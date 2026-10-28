@@ -9,13 +9,15 @@ use tracing::{debug, info, warn};
 
 /// One message on the WebSocket wire.
 ///
-/// `Event` forwards a raw pipeline event verbatim; `UnitPhase` carries the
+/// `Event` forwards a raw pipeline event verbatim. `UnitPhase` contains the
 /// unit's full live record (phase, phase history, tier, evidence) after the
 /// server has applied the event, so the live view updates rows from the
-/// pushed record instead of refetching `/api/progress/enhanced`. Untagged so
-/// both variants serialize exactly as their inner type — pipeline events keep
-/// their `event` tag, and the record envelope carries its own `"unit_phase"`
-/// tag on the same field, which is how clients tell them apart.
+/// pushed record instead of refetching `/api/progress/enhanced`.
+///
+/// The enum is untagged, so both variants serialize exactly as their inner
+/// type. Pipeline events keep their `event` tag, and the record envelope
+/// puts its own `"unit_phase"` tag on the same field — that is how clients
+/// tell the two apart.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum WsMessage {
@@ -57,11 +59,12 @@ pub struct SessionManager {
 
 enum WsCommand {
     Register(mpsc::Sender<WsMessage>),
-    /// Inject a *server-derived* message (e.g. a `unit_phase` record) into the
+    /// Add a *server-derived* message (e.g. a `unit_phase` record) to the
     /// broadcast, alongside the forwarded pipeline events. This is not a
-    /// client→server command channel — clients still only send keep-alives;
-    /// the spec's control path stays REST. Boxed: a record is far larger
-    /// than a sender, and the command enum shouldn't pay for it.
+    /// client→server command channel — clients still only send keep-alives,
+    /// and the spec keeps reviewer control on REST. The message is boxed
+    /// because a record is far larger than a sender, and the command enum
+    /// should not make every variant as large as a record.
     Send(Box<WsMessage>),
 }
 
@@ -96,8 +99,8 @@ impl SessionManager {
     /// Create a session manager that drives the broadcast loop from an
     /// existing broadcast receiver (e.g., from `TranslationEvents`).
     ///
-    /// This lets the translation pipeline's broadcast channel feed directly
-    /// into the WebSocket server without an intermediate mpsc bridge.
+    /// This lets the translation pipeline's broadcast channel deliver events
+    /// straight to the WebSocket server, with no mpsc channel bridging them.
     pub fn new_with_broadcast(receiver: broadcast::Receiver<ProgressEvent>) -> Self {
         let clients = std::sync::Arc::new(Mutex::new(Vec::new()));
         let (cmd_tx, cmd_rx) = mpsc::channel::<WsCommand>(64);
@@ -118,10 +121,10 @@ impl SessionManager {
     }
 
     /// Register a new WebSocket session and return its handler. The manager
-    /// keeps the *only* sender for the session: pruning the client from the
-    /// broadcast list is what closes its connection (see
-    /// [`forward_to_clients`]), so the sender is deliberately not handed back
-    /// to the caller — a stray clone would keep a pruned session half-open.
+    /// deliberately keeps the only sender for the session instead of handing
+    /// it back to the caller: removing a client from the broadcast list is
+    /// what closes its connection (see `forward_to_clients`), and a stray
+    /// clone would keep a removed session half-open.
     pub async fn register_client(&self) -> WebSocketHandler {
         let (tx, rx) = mpsc::channel::<WsMessage>(128);
         let _ = self.commands.send(WsCommand::Register(tx)).await;
@@ -132,9 +135,9 @@ impl SessionManager {
         WebSocketHandler::new(rx)
     }
 
-    /// Inject a server-derived message (e.g. a `unit_phase` record) to every
-    /// connected client, ordered with the forwarded pipeline events because
-    /// both flow through the same broadcast loop.
+    /// Send a server-derived message (e.g. a `unit_phase` record) to every
+    /// connected client. Its order relative to the forwarded pipeline events
+    /// is kept because both go through the same broadcast loop.
     pub async fn push(&self, msg: WsMessage) {
         if self
             .commands
@@ -162,15 +165,16 @@ impl SessionManager {
     }
 }
 
-/// Prune dead clients and hand a clone of `msg` to every live client's
+/// Remove dead clients and put a clone of `msg` into every live client's
 /// buffer **without ever waiting on one**. A hidden or background-throttled
-/// tab stops draining its socket; an awaited send into its full buffer would
-/// stall the loop for every other client — and for the server's own progress
-/// state, which flows through the same loop — eventually overflowing the
-/// upstream event channel. So delivery is non-blocking: a client whose buffer
-/// is full is pruned instead. Dropping its sender closes the channel, its
-/// handler's send loop ends, and the connection closes; the browser then
-/// reconnects and resyncs from a fresh snapshot like after any other drop.
+/// browser tab can stop draining its socket. If the loop awaited a send into
+/// that client's full buffer, it would stall every other client — and the
+/// server's own progress state, which goes through the same loop — until the
+/// upstream event channel overflowed. So delivery is non-blocking: a client
+/// whose buffer is full is removed instead. Dropping its sender closes the
+/// channel, its handler's send loop ends, and the connection closes. The
+/// browser then reconnects and resyncs from a fresh snapshot, as after any
+/// other drop.
 async fn forward_to_clients(
     clients: &std::sync::Arc<Mutex<Vec<mpsc::Sender<WsMessage>>>>,
     msg: WsMessage,
@@ -179,7 +183,7 @@ async fn forward_to_clients(
     let mut evicted = 0usize;
     clients.retain(|tx| match tx.try_send(msg.clone()) {
         Ok(()) => true,
-        // Handler already gone — prune silently, as before.
+        // Handler already gone — remove it silently, as before.
         Err(mpsc::error::TrySendError::Closed(_)) => false,
         Err(mpsc::error::TrySendError::Full(_)) => {
             evicted += 1;
@@ -303,10 +307,10 @@ impl WebSocketHandler {
             _ = &mut events_task => {},
             _ = &mut keepalive_task => {},
         }
-        // Whichever task is still running holds a half of the split socket,
-        // keeping the TCP connection half-open — abort both so dropping the
-        // handler actually closes the connection (e.g. after the broadcast
-        // loop pruned this client for a full send buffer).
+        // Whichever task is still running holds half of the split socket, so
+        // the TCP connection stays half-open. Abort both tasks so dropping
+        // the handler actually closes the connection (e.g. after the
+        // broadcast loop removed this client for a full send buffer).
         events_task.abort();
         keepalive_task.abort();
 

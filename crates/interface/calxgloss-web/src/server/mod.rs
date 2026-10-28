@@ -314,7 +314,8 @@ pub struct CombinedState {
     pub server: ServerState,
     pub manager: Option<SessionManager>,
     pub bridge: Option<EventsBridge>,
-    /// Review action backend — wires accept/send-back/patch into Git + Translator.
+    /// Review action backend — runs accept, send-back, and patch against
+    /// Git and the Translator.
     pub actions: Option<ActionsState>,
     /// Live translation progress — tracks units currently being translated.
     pub progress: Option<Arc<RwLock<ProgressState>>>,
@@ -391,7 +392,7 @@ pub struct ProgressState {
     /// `BatchStarted` replaces the old value if a pass ended without a
     /// summary (an error path).
     processing: Arc<RwLock<Option<BinaryIdentity>>>,
-    /// The run's ordered plan — `QueuePlanned` names the binaries the
+    /// The run's ordered plan — `QueuePlanned` records the binaries the
     /// live loop will process, in that order. Empty until a plan lands;
     /// a later plan replaces the earlier one.
     queue: Arc<RwLock<Vec<String>>>,
@@ -400,16 +401,16 @@ pub struct ProgressState {
     /// pass or that DLL's `BatchSummary` lands.
     activity: Arc<RwLock<Option<(BinaryIdentity, BinaryActivity)>>>,
     /// Startup ingestion state (issue #124). The Ghidra preflight events
-    /// that used to set it are retired with the engine (issue #214), so
-    /// this stays empty and the pipeline view derives `project_ingestion`
-    /// from classification counts alone.
+    /// that used to set it were retired along with the Ghidra analysis
+    /// engine (issue #214), so this stays empty and the pipeline view
+    /// derives `project_ingestion` from classification counts alone.
     ingestion: Arc<RwLock<IngestionState>>,
 }
 
 /// Startup ingestion state (issue #124): whether startup ingestion has
-/// begun and which binaries' analysis has landed. Retired producers
-/// (issue #214) leave it empty; the pipeline view still folds
-/// classification counts into the phase.
+/// begun and which binaries' analysis has landed. Its producers were
+/// retired (issue #214), so it stays empty; the pipeline view still
+/// derives this phase from classification counts.
 #[derive(Debug, Default, Clone)]
 pub struct IngestionState {
     pub started: bool,
@@ -425,8 +426,8 @@ pub struct ProgressEntry {
     /// never a batch outcome (issue #363). See [`outcome`](Self::outcome).
     pub retry_strategy: String,
     /// The outcome the batch recorded for this finished unit — `"batch_ok"`,
-    /// `"batch_failed"` or `"cancelled"` — its own leg, kept apart from the
-    /// retry strategy so neither name borrows the other's meaning.
+    /// `"batch_failed"` or `"cancelled"`. It is a separate field from the
+    /// retry strategy, so the two names never take on each other's meaning.
     pub outcome: Option<String>,
     pub started_at: std::time::Instant,
     /// The pipeline step this unit is currently in, derived from the latest
@@ -444,7 +445,7 @@ pub struct ProgressEntry {
     /// `FunctionCompleted`) says so, so an unfinished unit never looks failed.
     pub succeeded: Option<bool>,
     /// Context tier the current attempt runs at — `None` until a
-    /// `ContextTierSelected` event names one (re-emitted on tier escalation).
+    /// `ContextTierSelected` event records one (re-emitted on tier escalation).
     pub context_tier: Option<String>,
     /// Human-readable tier label from the same event.
     pub tier_label: Option<String>,
@@ -543,8 +544,9 @@ impl ProgressState {
                 index,
                 total,
             } => {
-                // Latest beat wins — the heartbeat is a live position,
-                // not a log. Unknown position fields stay `None`.
+                // The latest heartbeat wins: it records the live position,
+                // not a history log. Position fields that are not known
+                // stay `None`.
                 let activity = BinaryActivity {
                     pass: pass.clone(),
                     function: (!function.is_empty()).then(|| function.clone()),
@@ -588,14 +590,15 @@ impl ProgressState {
                 // tracks per-unit and per-binary state, not the run's own
                 // state — the control handle is the source of truth, read
                 // by `/api/server/status` and echoed to WS clients by the
-                // broadcast. Nothing to fold into the per-unit view.
+                // broadcast. There is nothing to add to the per-unit view.
             }
             ProgressEvent::BinaryPauseChanged { .. } => {
                 // Per-binary pause (issue #221). ProgressState does not
                 // mirror the paused set — the scope handle is the source of
                 // truth, and `GET /api/pipeline` fills each row's `paused`
-                // flag from it. WS clients take the raw event off the
-                // broadcast and re-render the row. Nothing to fold in.
+                // flag from it. WS clients get the raw event from the
+                // broadcast and re-render the row. There is nothing to add
+                // here.
             }
         }
     }
@@ -604,20 +607,21 @@ impl ProgressState {
     async fn on_translation_event(&self, event: &ProgressEvent) {
         let mut entries = self.entries.write().await;
 
-        // Unit-scoped events carry the binary/function pair identifying the unit;
-        // batch-level events (ClassificationComplete, BatchSummary) are handled
-        // in `on_event` and never reach here.
+        // Unit-scoped events include the binary/function pair that identifies
+        // the unit; batch-level events (ClassificationComplete, BatchSummary)
+        // are handled in `on_event` and never reach here.
         let Some(unit) = event.unit_key() else {
             return;
         };
         let key = unit.to_string();
 
-        // The unit's record begins with the first event that names it. That is
-        // normally `TranslationStarted`, but the event callback spawns one task
-        // per event and they race for the write lock, so any unit-scoped event
-        // may legitimately arrive first — dropping it (as `get_mut` did) loses
-        // real evidence, so create the record instead. `TranslationStarted`
-        // then finds the record already there and never clobbers it.
+        // The unit's record begins with the first event that identifies it.
+        // That is normally `TranslationStarted`, but the event callback
+        // spawns one task per event and they race for the write lock, so any
+        // unit-scoped event may legitimately arrive first. Dropping that
+        // first event (as `get_mut` did) loses real evidence, so create the
+        // record instead. `TranslationStarted` then finds the record already
+        // there and never overwrites it.
         let entry = entries.entry(key).or_insert_with(|| {
             // A started unit begins in the phase its first event derives.
             // `TranslationStarted` always derives ScanFetch (unit-tested);
@@ -721,10 +725,10 @@ impl ProgressState {
                     entry.succeeded = Some(false);
                 }
                 ProgressEvent::FunctionCompleted { success, .. } => {
-                    // Batch-level completion marks the unit as done; the
-                    // outcome leg names the result for the dashboard while
-                    // retry_strategy keeps naming the last attempt that ran
-                    // (issue #363).
+                    // Batch-level completion marks the unit as done. The
+                    // outcome field records the result for the dashboard,
+                    // while retry_strategy still records the last attempt
+                    // that ran (issue #363).
                     entry.finished = true;
                     entry.succeeded = Some(*success);
                     entry.outcome = Some(if *success {
@@ -736,8 +740,8 @@ impl ProgressState {
                 ProgressEvent::UnitCancelled { .. } => {
                     // The operator cancelled the in-flight unit (issue #91):
                     // terminal and failed like any other unfinished attempt,
-                    // but the outcome leg names why — the dashboard can tell a
-                    // cancelled unit from one that simply failed.
+                    // but the outcome field records why — the dashboard can
+                    // tell a cancelled unit from one that simply failed.
                     entry.finished = true;
                     entry.succeeded = Some(false);
                     entry.outcome = Some("cancelled".to_string());
@@ -789,7 +793,7 @@ impl ProgressState {
     }
 
     /// The binary whose batch pass is currently in flight, if any —
-    /// `BatchStarted` names it, that binary's `BatchSummary` clears it.
+    /// `BatchStarted` records it, and that binary's `BatchSummary` clears it.
     pub async fn processing_binary(&self) -> Option<BinaryIdentity> {
         self.processing.read().await.clone()
     }
@@ -869,8 +873,8 @@ fn shared_routes() -> Router<CombinedState> {
             "/api/units/{id}/attempts",
             get(handlers::api_get_unit_attempts),
         )
-        // Attempt side-by-side diff (issue #135, W4.6): the same
-        // persisted-history join, so it rides the shared routes too.
+        // Attempt side-by-side diff (issue #135, W4.6): the same read of
+        // persisted history, so it is on the shared routes too.
         .route(
             "/api/units/{id}/attempts/diff",
             get(handlers::api_get_unit_attempts_diff),
@@ -885,8 +889,8 @@ fn shared_routes() -> Router<CombinedState> {
         // Batch review actions (issue #78): apply the per-unit accept/
         // send-back/skip logic to a set of units, reporting per-item
         // results. Registered in every router, like the per-unit actions.
-        // The id list grows with the queue, so these routes lift the
-        // global 16 KB body limit the way the overlay PUT does.
+        // The id list grows with the queue, so these routes raise the
+        // global 16 KB body limit, as the queue overlay PUT does.
         .route(
             "/api/batch/accept",
             post(handlers::api_batch_accept).layer(DefaultBodyLimit::max(256 * 1024)),
@@ -907,9 +911,9 @@ fn shared_routes() -> Router<CombinedState> {
         .route("/api/queue/next", get(handlers::api_get_next_unit))
         // Queue overlay (issue #74): persisted manual order + priority,
         // available in every mode — it reads/writes
-        // `re/review/queue_overlay.json`, never live pipeline state. The PUT
-        // body carries the full manual order, which grows with the queue, so
-        // this route lifts the global 16 KB body limit.
+        // `re/review/queue_overlay.json`, never live pipeline state. The
+        // PUT body contains the full manual order, which grows with the
+        // queue, so this route raises the global 16 KB body limit.
         .route(
             "/api/queue/overlay",
             get(handlers::api_get_queue_overlay)
@@ -1047,17 +1051,17 @@ fn live_only_routes() -> Router<CombinedState> {
         .route("/api/pipeline/pause", post(handlers::api_pause_pipeline))
         .route("/api/pipeline/resume", post(handlers::api_resume_pipeline))
         .route("/api/pipeline/stop", post(handlers::api_stop_pipeline))
-        // Cancel the unit in flight (issue #91, W2.2): aborts the runaway
-        // unit at the earliest safe point while the run continues. Live-only
-        // for the same reason as the other lifecycle endpoints.
+        // Cancel the unit in flight (issue #91, W2.2): aborts that unit at
+        // the earliest safe point while the run continues. Live-only for
+        // the same reason as the other lifecycle endpoints.
         .route(
             "/api/pipeline/cancel-current",
             post(handlers::api_cancel_current_unit),
         )
         // Per-binary pause (issue #221, X6): hold one target binary out of
-        // the run's queue without touching the run-level machine. Live-only
-        // — a plain `serve` router has no run whose queue to hold a binary
-        // out of.
+        // the run's queue without touching the run-level state machine.
+        // Live-only — a plain `serve` router has no run queue to hold a
+        // binary out of.
         .route(
             "/api/pipeline/binaries/{binary}/pause",
             post(handlers::api_pause_binary),
@@ -1066,18 +1070,18 @@ fn live_only_routes() -> Router<CombinedState> {
             "/api/pipeline/binaries/{binary}/resume",
             post(handlers::api_resume_binary),
         )
-        // Per-binary start (issue #285): one press composes the swap — the
-        // in-flight binary is paused, the pressed one resumed and focused
+        // Per-binary start (issue #285): one press performs the swap — it
+        // pauses the in-flight binary, resumes the pressed one, and puts it
         // at the front of the queue plan. Live-only like the pause/focus
-        // pair — there is no run to swap onto without a live loop.
+        // pair — without a live loop there is no run to swap onto.
         .route(
             "/api/pipeline/binaries/{binary}/start",
             post(handlers::api_start_binary),
         )
-        // Per-binary focus (issue #284): park one discovered binary in the
-        // scope record's single focus slot; the running worklist hoists it
-        // at the next boundary and consumes the slot. Live-only — there is
-        // no queue to steer without a live run loop.
+        // Per-binary focus (issue #284): put one discovered binary in the
+        // scope record's single focus slot. The running worklist moves it
+        // to the front at the next boundary and clears the slot. Live-only
+        // — there is no queue to steer without a live run loop.
         .route(
             "/api/pipeline/binaries/{binary}/focus",
             post(handlers::api_focus_binary),
@@ -1142,9 +1146,9 @@ fn with_common_layers(router: Router) -> Router {
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
 
-/// Assemble a router from the shared route table, wired to the given
+/// Assemble a router from the shared route table, attached to the given
 /// combined state. The live-only table is registered exactly when the state
-/// carries a [`SessionManager`] — the same dependency the live handlers
+/// includes a [`SessionManager`] — the same dependency the live handlers
 /// read — so a live route can never be registered on a router that lacks
 /// the live state it needs.
 fn assemble(state: CombinedState) -> Router {
@@ -1168,7 +1172,7 @@ pub fn build_router(state: ServerState) -> Router {
 }
 
 /// Build the router for `calxgloss serve` with the review-actions backend
-/// wired in — still no live-pipeline endpoints.
+/// attached — still no live-pipeline endpoints.
 pub fn build_router_with_actions(state: ServerState, actions: ActionsState) -> Router {
     assemble(CombinedState {
         server: state,
@@ -1181,7 +1185,7 @@ pub fn build_router_with_actions(state: ServerState, actions: ActionsState) -> R
 
 /// Build the router for `calxgloss live`: the shared surface plus the
 /// live-only pipeline-progress and WebSocket endpoints, with the settings-
-/// backed review-actions backend wired in (issue #327) so the review UI's
+/// backed review-actions backend attached (issue #327), so the review UI's
 /// patch retry runs a real assembled pass in live mode too.
 pub fn build_router_with_ws(
     state: ServerState,
@@ -1250,9 +1254,9 @@ async fn api_events_upgrade_ws(
 }
 
 /// Start the review UI API server on the given address, with the
-/// settings-backed review-actions backend wired into the router (issue
-/// #327): accept, send-back, and patch all run for real, the patch retry
-/// assembled per request from the backend's pass description.
+/// settings-backed review-actions backend built into the router (issue
+/// #327): accept, send-back, and patch all run for real. Each patch retry
+/// is assembled per request from the backend's pass description.
 ///
 /// If `ready` is provided, its sender is notified (with the local address)
 /// immediately after the TCP listener is bound, before any requests are

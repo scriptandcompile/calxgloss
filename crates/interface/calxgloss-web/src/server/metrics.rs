@@ -1,9 +1,9 @@
 //! Cross-platform process metrics for the server status endpoint.
 //!
-//! Gathers memory, CPU, and open-file-handle counts for the server process
+//! Reads memory, CPU, and open-file-handle counts for the server process
 //! through `sysinfo`'s per-OS backends (procfs on Linux, sysctl/libproc on
-//! macOS, API calls on Windows) — never `/proc`-only reads, since the project
-//! targets Windows/macOS/Linux.
+//! macOS, API calls on Windows). It never uses `/proc`-only reads, because
+//! the project targets Windows/macOS/Linux.
 
 use std::sync::Mutex;
 
@@ -20,10 +20,11 @@ pub(crate) struct ProcessSample {
 
 /// Gathers process metrics for the current process.
 ///
-/// Keeps a persistent [`sysinfo::System`] so CPU usage is computed as a diff
-/// between successive samples — the first sample reports 0.0, and each status
-/// poll refreshes the reading for the next one (sysinfo requires two
-/// refreshes before CPU usage is meaningful).
+/// Keeps a persistent [`sysinfo::System`] so CPU usage is a difference
+/// between two successive samples. The first sample therefore reports 0.0,
+/// and each status poll takes the reading that the next poll compares
+/// against (sysinfo needs two refreshes before a CPU usage number means
+/// anything).
 pub(crate) struct ProcessMetrics {
     pid: sysinfo::Pid,
     system: Mutex<sysinfo::System>,
@@ -33,8 +34,9 @@ impl ProcessMetrics {
     /// Start tracking the current process.
     pub(crate) fn for_current_process() -> Self {
         Self {
-            // Falls back to PID 0 only if the OS refuses to name our own
-            // process; samples then degrade to zeros instead of failing.
+            // Falls back to PID 0 only if the OS cannot report our own
+            // process's PID; samples then fall back to zeros instead of
+            // failing.
             pid: sysinfo::get_current_pid().unwrap_or_else(|_| sysinfo::Pid::from(0usize)),
             system: Mutex::new(sysinfo::System::new()),
         }
