@@ -1,28 +1,30 @@
 //! Hallucination detector for LLM-generated Rust code.
 //!
-//! This module provides [`HallucinationDetector`] which scans the LLM's
-//! generated Rust source code for function and API calls that are not present
-//! in the engine's symbol table or the known Windows API catalogue.  When a
-//! hallucination is detected the caller is notified so it can branch from the
-//! last known good commit and prompt the LLM with the engine's actual symbols as
-//! ground truth.
+//! This module provides [`HallucinationDetector`]. It scans the Rust source
+//! code the local LLM generated and reports every function or API call that
+//! is missing from the analysis engine's symbol table and from the known
+//! Windows API catalogue.  When it reports a hallucination, the caller can
+//! start again from the last known good commit and ask the local LLM once
+//! more, this time with the analysis engine's real symbol names as ground
+//! truth.
 //!
 //! # How it works
 //!
 //! The detector maintains a set of *known-good* symbols, built from three
 //! sources:
 //!
-//! 1. **engine function names** — every function the engine has catalogued in the
-//!    open program.
-//! 2. **engine imports** — every symbol the program imports from external DLLs.
+//! 1. **Analysis engine function names** — every function the analysis engine
+//!    has catalogued in the loaded program.
+//! 2. **Analysis engine imports** — every symbol the loaded program imports
+//!    from external DLLs.
 //! 3. **Windows API catalogue** — the full PAL mapping table (every Windows API
 //!    the harness knows about).
 //!
 //! When the LLM returns generated Rust code, the detector extracts every
 //! identifier that looks like a function call (a word followed immediately by
-//! `(`) and checks each candidate against the known-good set.  Names that are
-//! not found are reported as hallucinations, along with the closest valid
-//! match from the catalogue when available.
+//! `(`) and checks each candidate against the known-good set.  It reports
+//! every name it cannot find as a hallucination, together with the closest
+//! valid match from the catalogue when one exists.
 //!
 //! # Example
 //!
@@ -74,9 +76,9 @@ pub struct HallucinatedCall {
 /// A detector that identifies non-existent API references and hallucinated
 /// function calls in LLM-generated Rust code.
 ///
-/// The detector is created with a list of known-good symbols (engine function
-/// names, imports, and Windows APIs).  When [`Self::detect`] is called with
-/// the LLM's generated code, it returns a list of hallucinated calls.
+/// Build it from a list of known-good symbols (analysis engine function
+/// names, imports, and Windows APIs).  Call [`Self::detect`] with the LLM's
+/// generated code and it returns a list of hallucinated calls.
 ///
 /// # Construction
 ///
@@ -91,10 +93,10 @@ pub struct HallucinatedCall {
 /// ```
 #[derive(Debug, Clone)]
 pub struct HallucinationDetector {
-    /// Function names from the engine (exports, user-defined functions).
+    /// Function names from the analysis engine (exports, user-defined functions).
     functions: HashSet<String>,
 
-    /// Import names from the engine (DLL imports).
+    /// Import names from the analysis engine (DLL imports).
     /// Stored separately for potential close-match filtering by category.
     #[allow(dead_code)]
     imports: HashSet<String>,
@@ -112,13 +114,13 @@ impl HallucinationDetector {
     ///
     /// # Arguments
     ///
-    /// * `functions` — engine function names (exports, user-defined functions
-    ///   like `DrawSprite` or `FUN_18008ed50`).
-    /// * `imports` — Import names from the engine (DLL imports like
+    /// * `functions` — analysis engine function names (exports, user-defined
+    ///   functions like `DrawSprite` or `FUN_18008ed50`).
+    /// * `imports` — import names from the analysis engine (DLL imports like
     ///   `CreateFileA`, `WriteFile`).
     ///
-    /// The detector builds a combined set of valid symbols and also uses the
-    /// import set to provide close-match suggestions.
+    /// The detector combines both lists into one set of valid symbols, and
+    /// suggests the closest match from that combined set when it reports one.
     pub fn new(functions: Vec<String>, imports: Vec<String>) -> Self {
         let all_valid: HashSet<String> = functions.iter().chain(imports.iter()).cloned().collect();
 
@@ -132,7 +134,8 @@ impl HallucinationDetector {
     /// Create a new detector that accepts *only* the given symbols.
     ///
     /// Use this when you have a pre-built set of valid symbols (e.g., from a
-    /// catalogued Windows API list) rather than engine symbol tables.
+    /// catalogued Windows API list) rather than the analysis engine's symbol
+    /// tables.
     pub fn from_symbols(symbols: Vec<String>) -> Self {
         let all_valid: HashSet<String> = symbols.clone().into_iter().collect();
         Self {
@@ -229,10 +232,11 @@ impl HallucinationDetector {
     /// Find the closest known-good match for a name using case-insensitive
     /// prefix matching.
     ///
-    /// The algorithm iterates through all known-good symbols and finds the one
-    /// with the longest shared prefix (case-insensitive) with the given name.
-    /// If no shared prefix exists, the first known-good function name is
-    /// returned as a fallback.
+    /// It checks every known-good symbol and returns the one that shares the
+    /// longest prefix with the given name (case-insensitive).  A candidate
+    /// only counts if it shares at least 4 characters of prefix.  If no
+    /// candidate qualifies, it returns the first known-good function name as
+    /// a fallback, so the reviewer still sees what valid names look like.
     pub fn find_closest_match(&self, name: &str) -> Option<String> {
         let name_lower = name.to_lowercase();
         let mut best_match: Option<(usize, String)> = None;

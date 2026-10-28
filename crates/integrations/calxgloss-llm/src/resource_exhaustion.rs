@@ -1,9 +1,10 @@
 //! Resource-exhaustion detection for the LLM client.
 //!
-//! This module provides [`ResourceExhaustionDetector`] which monitors the local
-//! LLM server for overload conditions (OOM, swap thrash, too many concurrent
-//! requests) and request timeouts. The detector tracks consecutive failures and
-//! can signal when work should be queued or retried with a smaller model.
+//! This module provides [`ResourceExhaustionDetector`]. It watches the
+//! local LLM server's call outcomes for overload conditions (out of memory,
+//! swap thrashing, too many simultaneous requests) and for request
+//! timeouts.  The detector counts consecutive failures and can report that
+//! work should be queued for later, or retried with a smaller model.
 //!
 //! # Example
 //!
@@ -25,8 +26,8 @@
 use calxgloss_types::ResourceExhaustionKind;
 use parking_lot::RwLock;
 
-/// A signal that the LLM server is temporarily unavailable due to resource
-/// exhaustion.
+/// A signal that the local LLM server ran out of resources and is
+/// temporarily unavailable.
 ///
 /// When this signal is returned the translation pipeline should:
 /// 1. Queue the affected unit of work for later processing.
@@ -73,14 +74,16 @@ impl ExhaustionSignal {
     }
 }
 
-/// Monitors LLM call outcomes for resource-exhaustion patterns.
+/// Watches the outcomes of LLM calls for resource-exhaustion patterns.
 ///
-/// Tracks consecutive failure streaks, request durations, and the ratio of
-/// successful calls to detect when the local model is overloaded.
+/// It counts consecutive failure streaks, keeps request durations, and
+/// tracks the success rate, to tell when the local model is overloaded.
 ///
-/// The detector uses a sliding window to avoid penalizing transient hiccups.
-/// After [`Self::with_streak_threshold`] (default: 2) consecutive exhaustion
-/// failures, the detector signals that the model is overloaded.
+/// Call outcomes sit in a sliding window, so old one-off failures drop out
+/// and transient hiccups are not held against the model.  Once exhaustion
+/// failures reach the streak threshold in a row (2 by default; change it
+/// with [`Self::with_streak_threshold`]), [`Self::check_overload`] returns
+/// a signal.
 ///
 /// Uses interior mutability via `RwLock` so it can be shared across threads
 /// (e.g., in the retry loop where the detector is borrowed immutably).
@@ -213,8 +216,8 @@ impl ResourceExhaustionDetector {
 
     /// Set the streak threshold for overload detection.
     ///
-    /// After this many consecutive exhaustion failures, [`check_overload`]
-    /// will return `Some`. Default: 2.
+    /// After this many consecutive exhaustion failures,
+    /// [`Self::check_overload`] will return `Some`. Default: 2.
     pub fn with_streak_threshold(self, threshold: usize) -> Self {
         {
             let mut state = self.state.write();
@@ -274,7 +277,8 @@ impl ResourceExhaustionDetector {
         state.record_failure_with_kind(kind, elapsed_secs);
     }
 
-    /// Check whether the LLM server appears overloaded.
+    /// Check whether the local LLM server appears overloaded.  Returns a
+    /// signal when the failure streak has reached the threshold.
     pub fn check_overload(&self) -> Option<ExhaustionSignal> {
         let state = self.state.read();
         state.check_overload()

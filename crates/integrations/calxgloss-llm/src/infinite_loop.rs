@@ -1,10 +1,11 @@
 //! Infinite-loop detector for the retry loop.
 //!
-//! This module provides [`InfiniteLoopDetector`] which tracks prompt → output
-//! hash pairs across retry attempts.  When the same bad output repeats three
-//! or more times in a row, the detector signals that the LLM is stuck in a
-//! loop and escalation to manual intervention or a radically different
-//! strategy is warranted.
+//! This module provides [`InfiniteLoopDetector`]. It records the hash of
+//! each retry attempt's prompt together with the hash of that attempt's
+//! output.  When the same bad output repeats three or more times in a row,
+//! the detector reports that the local LLM is stuck repeating the same
+//! output, and escalation is warranted: manual intervention, or a
+//! radically different strategy.
 //!
 //! # How it works
 //!
@@ -13,9 +14,10 @@
 //! 1. **The prompt** — the full text sent to the LLM.
 //! 2. **The generated code** — the Rust source returned by the LLM.
 //!
-//! A consecutive-streak counter tracks how many times the *same* hash pair has
-//! appeared in a row.  When the streak reaches the configured threshold (3 by
-//! default) and the last attempt was unsuccessful, [`Self::detect`] returns an
+//! A consecutive-streak counter tracks how many attempts in a row produced
+//! the *same* output hash; the prompts may differ.  When the streak reaches
+//! the configured threshold (3 by default) and the most recent attempt
+//! failed, [`InfiniteLoopDetector::detect`] returns an
 //! [`InfiniteLoopSignal`] with enough information to stop retrying this
 //! function and flag it for manual review.
 //!
@@ -58,19 +60,25 @@ pub struct InfiniteLoopSignal {
     /// The hash shared by all attempts in the streak.
     pub output_hash: u64,
 
-    /// The prompt hash for the most recent repeated attempt.
+    /// A prompt hash from the streak: the oldest attempt the backward walk
+    /// matched.
     pub prompt_hash: u64,
 
-    /// The identical code produced across all streak attempts.
+    /// The repeated output's code text.  The detector stores only hashes,
+    /// so the signal carries the strategy label here as a placeholder
+    /// instead of code.
     pub repeated_code: String,
 
-    /// The strategy used for all streak attempts.
+    /// A retry strategy label from the streak: the oldest attempt the
+    /// backward walk matched.
     pub strategy: String,
 
-    /// The DLL that is stuck.
+    /// The DLL that is stuck.  Left empty in the signal; the caller fills
+    /// it in.
     pub binary: String,
 
-    /// The function that is stuck.
+    /// The function that is stuck.  Left empty in the signal; the caller
+    /// fills it in.
     pub function: String,
 
     /// The first attempt number in the streak (1-based).
@@ -82,14 +90,14 @@ pub struct InfiniteLoopSignal {
 
 /// Detects when the retry loop is producing the same bad output repeatedly.
 ///
-/// The detector keeps a window of the last N attempts (default: the last 10,
-/// which is plenty because the threshold is 3).  Each recorded attempt
-/// contributes a `(prompt_hash, output_hash)` pair and a boolean indicating
-/// whether it succeeded.
+/// The detector keeps a window of the most recent attempts (default: the
+/// last 20 — more than enough, because the streak threshold is 3).  Each
+/// recorded attempt contributes a `(prompt_hash, output_hash)` pair and a
+/// boolean marking whether it succeeded.
 ///
-/// When [`Self::detect`] is called, it walks the window backwards from the
-/// most recent attempt and checks whether the last several attempts share the
-/// same output hash while all failing.  If so, it returns a
+/// [`Self::detect`] walks the window backwards from the most recent attempt
+/// and counts how many attempts in a row failed with that attempt's output
+/// hash.  If that count reaches the threshold, it returns an
 /// [`InfiniteLoopSignal`].
 #[derive(Debug, Clone)]
 pub struct InfiniteLoopDetector {
@@ -188,12 +196,14 @@ impl InfiniteLoopDetector {
 
     /// Check whether an infinite loop has been detected.
     ///
-    /// Walks the most recent history backwards and checks whether the last N
-    /// attempts (where N ≥ `threshold`) all share the same output hash and
-    /// all failed.  Returns [`None`] when no loop is detected.
+    /// The most recent attempt must be a failure.  It walks the history
+    /// backwards from that attempt, counting attempts that failed with the
+    /// same output hash, and stops at a different hash or at a success.  If
+    /// the count reaches `threshold`, it returns a signal; otherwise it
+    /// returns [`None`].
     ///
-    /// The caller should pass the current function context via the result
-    /// signal's fields.
+    /// The signal's `binary` and `function` fields are empty; the caller
+    /// fills them in with the function being retried.
     pub fn detect(&self) -> Option<InfiniteLoopSignal> {
         if self.history.len() < self.threshold {
             return None;
