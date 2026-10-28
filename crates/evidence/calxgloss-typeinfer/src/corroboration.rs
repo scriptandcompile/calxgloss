@@ -1,13 +1,13 @@
 //! Calling-convention detection across functions: corroboration and
 //! call-site conventions.
 //!
-//! Every other convention channel reads one body's word — an epilogue,
-//! a cleanup, a name. [`ConventionCorroborator`] is the post-inline
-//! pass that trusts *agreement* above any single reading (the
-//! flag-family precedent, issue #249), over exactly what the scan
-//! already holds: the surviving per-function convention records and
-//! the disassembly listings read during the walk. It fetches nothing —
-//! no extra decompiles, no extra listing reads.
+//! Every other convention channel reads one body's own evidence: an
+//! epilogue, a cleanup, or a name. [`ConventionCorroborator`] is the
+//! post-inline pass that trusts *agreement* above any single reading
+//! (the flag-family precedent, issue #249). It reads exactly what the
+//! scan already holds: the surviving per-function convention records
+//! and the disassembly listings read during the walk. It fetches
+//! nothing itself — no extra decompiles, no extra listing reads.
 //!
 //! Two families corroborate:
 //!
@@ -15,24 +15,23 @@
 //!   absence of caller-side cleanup at every call site naming that
 //!   callee in the kept listings, and the declared argument bytes (the
 //!   `@N` decoration on the callee's name) all agreeing on stdcall
-//!   raises the reading to [`CORROBORATED_EPILOGUE_CONFIDENCE`] —
-//!   above every single reading, since three independent spellings
-//!   agree;
-//! - **the x64 family**: a callee's shape reading corroborated by
+//!   raises the reading to `CORROBORATED_EPILOGUE_CONFIDENCE`, above
+//!   every single reading: three independent spellings agree;
+//! - **the x64 family**: a callee's shape reading, corroborated by
 //!   call sites in `rsp`-spelled caller listings that show no cleanup
 //!   after the call — the discipline Microsoft x64 never breaks —
-//!   raises it to [`CORROBORATED_X64_CONFIDENCE`], above the
-//!   shape-only tier but still below every exact spelling.
+//!   raises it to `CORROBORATED_X64_CONFIDENCE`, above the shape-only
+//!   band but still below every exact spelling.
 //!
 //! A contradicted family never bumps: one caller popping after a call
 //! to an epilogue-read callee means the readings disagree, and the
-//! resolution rule leaves the higher-confidence reading standing.
+//! resolution rule keeps the higher-confidence reading.
 //!
-//! On top of the bumps, every detected callee convention lands a
-//! **call-site record** in each caller whose listing calls it: the
-//! record is keyed by the caller and names the callee — one view per
-//! caller and callee, at the first site naming it — so the caller's
-//! view of its callee matches the callee's own record: the same
+//! On top of the bumps, every detected callee convention also lands a
+//! **call-site record** in each caller whose listing calls it. The
+//! record is keyed by the caller and names the callee: one view per
+//! caller and callee, at the first site naming it. The caller's view
+//! of its callee therefore matches the callee's own record — the same
 //! convention, the callee's own confidence. A caller's extern spelling
 //! for the callee can then be checked against it. Records are emitted
 //! in listing order, so two scans of one program diff cleanly.
@@ -49,16 +48,16 @@ use crate::x64_shape::shadow_space;
 /// Confidence of a corroborated callee-pops reading: the epilogue, the
 /// absence of caller-side cleanup at its sites, and the declared
 /// argument bytes agree across functions, so the agreement outranks
-/// every single reading — above the mangled letter (90) and the `@N`
-/// decoration (85), the flag-family precedent taken to the top of the
-/// scale.
+/// every single reading. It sits above the mangled letter (90) and the
+/// `@N` decoration (85) — the flag-family precedent, placed above
+/// every single-reading band this scan reaches.
 const CORROBORATED_EPILOGUE_CONFIDENCE: u8 = 92;
 
 /// Confidence of a corroborated x64 shape reading: the shape plus
 /// clean call sites in 64-bit callers is agreement across functions,
-/// so it sits above the shape-only tier (65) — the flag family's
-/// +10 — but a shape is still never a spelling, so it stays below
-/// every exact channel.
+/// so it sits above the shape-only band (65) — the flag family's
+/// +10. A shape is still not an exact spelling, so the reading stays
+/// below every exact channel.
 const CORROBORATED_X64_CONFIDENCE: u8 = 75;
 
 /// One direct call site naming `callee` in a listing: the call row
@@ -84,12 +83,12 @@ fn rows(listing: &str) -> Vec<&str> {
 /// Every call site in every kept listing, grouped per listing by the
 /// callee name the call row names, sites in row order. The corroboration
 /// pass asks "does this listing call that callee, and what follows the
-/// call" once per (listing, record) pair; answering each question by
+/// call" once per (listing, record) pair. Answering each question by
 /// re-splitting and re-parsing the whole listing is quadratic in the
-/// function count and hung the scan on a 7,267-function 32-bit image
-/// (the 2026-10-20 LaunchPad.exe incident — thousands of `ret N`
-/// epilogue records × thousands of listings). Reading each listing once
-/// here makes the whole pass linear in the disassembly text.
+/// function count, and that made the scan look hung on a 7,267-function
+/// 32-bit image (the 2026-10-20 LaunchPad.exe incident — thousands of
+/// `ret N` epilogue records × thousands of listings). Reading each
+/// listing once here makes the whole pass linear in the disassembly text.
 fn call_index<'a>(listings: &[(&'a str, &'a str)]) -> Vec<CallSitesByCallee<'a>> {
     listings
         .iter()
@@ -116,9 +115,9 @@ fn call_index<'a>(listings: &[(&'a str, &'a str)]) -> Vec<CallSitesByCallee<'a>>
 /// `add esp, N` / `add rsp, N` with a positive count — for the stack
 /// register the caller's own listing spells. In a 64-bit caller an add
 /// freeing exactly the prologue's own allocation (`frame_bytes`) is the
-/// frame teardown the convention itself emits, not a cleanup; the
-/// 32-bit family passes `None`, where every post-call add pops for the
-/// callee.
+/// frame teardown the convention itself emits, not a cleanup. The
+/// 32-bit family passes `None`: there, any add after the call counts
+/// as a caller-side cleanup.
 fn cleans_up(next: Option<&str>, register: &str, frame_bytes: Option<u64>) -> bool {
     let Some(row) = next else { return false };
     let (mnemonic, operand_text) = split_instruction(instruction(row));
@@ -147,7 +146,7 @@ fn epilogue_bytes(record: &InferredConvention) -> Option<u64> {
 ///
 /// The pass is stateless: every record comes from the readings and
 /// listings it is handed, so one corroborator serves an entire scan.
-/// It fetches nothing itself — the engine hands it the resolved
+/// It fetches nothing itself — the scan hands it the resolved
 /// per-function convention records and the disassembly text it
 /// already read, keeping the scan at one listing read per function.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -173,8 +172,8 @@ impl ConventionCorroborator {
     /// listing order — caller by caller, one view per callee, evidenced
     /// by the first site naming it — so two scans of one program diff
     /// cleanly. Where a bump lands, the callee's call-site records
-    /// carry the bumped convention and confidence, matching the callee's
-    /// own surviving record.
+    /// include the bumped convention and confidence, matching the
+    /// callee's own surviving record.
     pub fn corroborate(
         &self,
         conventions: &[InferredType],
@@ -235,11 +234,11 @@ impl ConventionCorroborator {
         }
 
         // The call-site records: each kept listing is a caller's view
-        // of every detected callee it calls directly, carrying the
-        // callee's final convention and confidence. One view per
-        // (caller, callee) pair — the pair is the record's target, so
-        // a second site naming the same callee adds nothing — evidenced
-        // by the first site that names it.
+        // of every detected callee it calls directly, with the callee's
+        // final convention and confidence. One view per (caller,
+        // callee) pair — the pair is the record's target, so a second
+        // site naming the same callee adds nothing — evidenced by the
+        // first site that names it.
         //
         // The naive shape probes every record against every listing;
         // instead each listing contributes exactly the records its own
@@ -305,9 +304,9 @@ impl ConventionCorroborator {
         bumps
     }
 
-    /// The callee-pops family: the epilogue's `ret N`, the `@N`
-    /// decoration's declared bytes, and clean call sites in other
-    /// functions' listings all agreeing on stdcall.
+    /// The callee-pops family check: do the epilogue's `ret N`, the
+    /// `@N` decoration's declared bytes, and clean call sites in other
+    /// functions' listings all agree on stdcall?
     fn epilogue_agrees(
         &self,
         record: &InferredConvention,
@@ -350,12 +349,12 @@ impl ConventionCorroborator {
         ))
     }
 
-    /// The x64 family: the shape reading corroborated by call sites in
-    /// `rsp`-spelled caller listings that show no cleanup after the
-    /// call. An `esp`-spelled caller contradicts — its discipline is
-    /// the 32-bit one the x64 convention never spells — and so does a
-    /// cleanup at any site; an add freeing the caller's own prologue
-    /// allocation is frame teardown, the same exception the shape
+    /// The x64 family check: is the shape reading corroborated by call
+    /// sites in `rsp`-spelled caller listings that show no cleanup after
+    /// the call? An `esp`-spelled caller contradicts — its discipline is
+    /// the 32-bit one the x64 convention never spells. A cleanup at any
+    /// site contradicts too. An add freeing the caller's own prologue
+    /// allocation is frame teardown — the same exception the shape
     /// detector itself honours.
     fn x64_agrees(
         &self,
@@ -542,7 +541,7 @@ mod tests {
     fn one_cleaning_caller_contradicts_the_whole_family() {
         // Two callers, one pops after the call: the readings disagree
         // across functions, and the pass bumps nothing — resolution
-        // leaves the higher-confidence single reading standing.
+        // keeps the higher-confidence single reading.
         let readings = vec![epilogue_reading("paint@12")];
         let clean = clean_caller_listing("paint@12");
         let cleaning = cleaning_caller_listing("paint@12");
@@ -562,8 +561,8 @@ mod tests {
 
     #[test]
     fn a_callee_with_no_caller_sites_never_bumps() {
-        // Agreement needs another function's word: an epilogue read in
-        // a function no kept listing calls stands at its own band.
+        // Agreement needs another function's evidence: an epilogue read
+        // in a function no kept listing calls stays at its own band.
         let readings = vec![epilogue_reading("paint@12")];
         let listings = [("paint@12", "00401007  RET 0xC")];
         let records = ConventionCorroborator::new().corroborate(&readings, &listings);
@@ -577,8 +576,8 @@ mod tests {
     fn x64_shape_with_clean_64_bit_sites_bumps_above_the_shape_tier() {
         // The callee's shape reading plus a call site in an
         // rsp-spelled caller that pops nothing: the discipline holds
-        // across the boundary, so the reading climbs above its
-        // shape-only tier — but stays below every exact spelling.
+        // across the boundary, so the reading rises above its
+        // shape-only band — but stays below every exact spelling.
         let readings = vec![reading(
             "FUN_18003e750",
             CallingConvention::MicrosoftX64,
@@ -607,8 +606,9 @@ mod tests {
     #[test]
     fn an_esp_spelled_caller_contradicts_the_x64_family() {
         // A 32-bit-spelled caller means the two families crossed: the
-        // x64 reading is not corroborated, and the families'
-        // non-cross-firing rule stands on the caller side too.
+        // x64 reading is not corroborated, and the rule that the two
+        // families never read each other's class applies on the caller
+        // side too.
         let readings = vec![reading(
             "FUN_18003e750",
             CallingConvention::MicrosoftX64,
@@ -632,9 +632,9 @@ mod tests {
 
     #[test]
     fn a_detected_convention_lands_a_record_at_each_caller_s_site() {
-        // The callee's stdcall reading projects into both callers:
-        // each record is keyed by the caller, names the callee, and
-        // carries the callee's own convention and confidence.
+        // The callee's stdcall reading lands in both callers as a
+        // view: each record is keyed by the caller, names the callee,
+        // and has the callee's own convention and confidence.
         let readings = vec![reading(
             "FUN_1800412a0",
             CallingConvention::Stdcall,
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn a_bumped_callee_s_call_sites_carry_the_bumped_reading() {
         // The caller's view matches the callee's *surviving* record:
-        // once the family corroborates, the sites carry the bumped
+        // once the family corroborates, the sites show the bumped
         // convention and confidence too.
         let readings = vec![epilogue_reading("paint@12")];
         let caller = clean_caller_listing("paint@12");
@@ -706,9 +706,9 @@ mod tests {
 
     #[test]
     fn address_and_indirect_call_sites_name_no_callee_and_land_nothing() {
-        // The engine's own rows call through an address; an indirect
-        // call runs through a register. Neither names the detected
-        // callee, so no view lands.
+        // The analysis engine's own rows call through an address; an
+        // indirect call runs through a register. Neither names the
+        // detected callee, so no view lands.
         let readings = vec![reading(
             "FUN_1800412a0",
             CallingConvention::Stdcall,
@@ -780,7 +780,8 @@ mod tests {
     #[test]
     fn call_site_views_never_seed_the_pass() {
         // A caller's view of its callee is not the callee's own
-        // reading: it neither bumps nor projects further.
+        // reading: it neither bumps a reading nor seeds a view of its
+        // own.
         let view = InferredType::Convention(InferredConvention {
             function: "FUN_18003ab00".into(),
             callee: Some("FUN_1800412a0".into()),
@@ -804,9 +805,10 @@ mod tests {
         // against every listing, re-splitting and re-parsing each
         // listing per probe — billions of row parses, tens of minutes
         // at 100% CPU, the scan looked hung. The pass reads each
-        // listing once now, so a program-sized input finishes in
-        // program time; the bound is generous (the fixed pass runs in
-        // hundredths of a second here, the quadratic one took minutes).
+        // listing once now, so a program-sized input finishes in time
+        // that tracks the program's size; the bound is generous (the
+        // fixed pass runs in hundredths of a second here, the
+        // quadratic one took minutes).
         const FUNCTIONS: usize = 2_000;
         const PAD_ROWS: usize = 200;
         let names: Vec<String> = (0..FUNCTIONS).map(|i| format!("sub_{i:06x}")).collect();

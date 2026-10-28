@@ -2,26 +2,26 @@
 //!
 //! The inline detectors read one body at a time, so a type recovered
 //! inside a helper stops at its closing brace. [`CrossFunctionPropagator`]
-//! carries those readings across the boundary in two directions:
+//! passes those readings across that boundary, in two directions:
 //!
 //! - **callee → caller** ([`propagate`](CrossFunctionPropagator::propagate)):
 //!   when a function's *surviving* parameter readings describe a
 //!   user-defined callee, the readings type the arguments sitting at that
 //!   callee's call sites — emitted as the call-site record kind the
-//!   vocabulary already defines — and when a typed argument is one of the
+//!   vocabulary already defines. When a typed argument is one of the
 //!   caller's own parameters, that parameter gets a reading too, so the
-//!   type climbs the call chain.
+//!   type moves one step up the call chain.
 //! - **caller → callee** ([`propagate_to_callee`](CrossFunctionPropagator::propagate_to_callee)):
 //!   what a function's callers actually pass at their call sites types
-//!   that function's own parameters, so a helper whose body shows no
+//!   that function's own parameters. A helper whose body shows no
 //!   interesting usage still gets typed from the contract its callers
 //!   reveal.
 //!
 //! Unlike [`KnownSignature`] propagation, there is no database to look
-//! the contract up in: it is what this very scan inferred, which is why
-//! both passes run after the inline detectors and read only their
-//! resolved survivors. A callee the scan never typed — or a library
-//! routine it never decompiles — carries no readings and propagates
+//! the contract up in: the contract is what this very scan inferred.
+//! That is why both passes run after the inline detectors and read only
+//! their resolved survivors. A callee the scan never typed — or a library
+//! routine it never decompiles — has no readings and propagates
 //! nothing.
 //!
 //! [`KnownSignature`]: crate::types::InferenceMethod::KnownSignature
@@ -40,7 +40,7 @@ use calxgloss_types::{
 
 /// The scan: plain-identifier callees, member accesses skipped, and C
 /// keywords — `if (x)` — not calls. The same shape the known-signature
-/// engine uses: this pass reads the same direct-call sites, just against
+/// detector uses: this pass reads the same direct-call sites, just against
 /// a different contract source.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
@@ -54,36 +54,36 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
 
-/// Confidence of a reading propagated to a call-site argument: the
+/// Confidence of a reading propagated to a call-site argument. The
 /// callee's contract is this scan's own inference, one step removed from
-/// the direct body evidence the inline detectors carry, but the site is
+/// the direct body evidence the inline detectors read, but the site is
 /// concrete — this call, this argument — so the reading sits at the top
 /// of the cross-function band, level with the C library's contracts.
 const CALLSITE_CONFIDENCE: u8 = 70;
 
-/// Confidence of the caller-parameter reading that rides along when the
-/// typed argument is the caller's own parameter: one step further out
-/// than the site itself — the parameter's type is only as good as the
-/// assumption that the caller passes the same kind of value at every
-/// site — so it sits at the bottom of the band, where it loses any tie
-/// against a direct inline reading of the same parameter.
+/// Confidence of the caller-parameter reading recorded at the same time
+/// when the typed argument is the caller's own parameter: one step
+/// further out than the site itself. The parameter's type is only as
+/// good as the assumption that the caller passes the same kind of value
+/// at every site, so it sits at the bottom of the band. There it loses
+/// any tie against a direct inline reading of the same parameter.
 const PARAM_CONFIDENCE: u8 = 65;
 
 /// Confidence of a reading propagated from a caller's argument back to
-/// the callee's own parameter: the callee's type is inferred from what
-/// its callers pass, one step removed from the callee's direct body
-/// evidence and aggregated across call sites, so it sits at the bottom
-/// of the cross-function band — level with the caller-parameter climb —
-/// where it loses any tie against the callee's own inline reading and
-/// every stronger inline reading outright.
+/// the callee's own parameter. The callee's type is inferred from what
+/// its callers pass — one step removed from the callee's direct body
+/// evidence, and aggregated across call sites — so it sits at the bottom
+/// of the cross-function band, level with the caller-parameter reading.
+/// There it loses any tie against the callee's own inline reading, and
+/// every stronger inline reading beats it outright.
 const CALLER_PARAM_CONFIDENCE: u8 = 65;
 
 /// The surviving parameter readings a scan propagates from, grouped by
-/// the function that carries them: a callee name maps to its resolved
-/// parameter records, one per typed position. The engine builds the map
+/// the function each one belongs to: a callee name maps to its resolved
+/// parameter records, one per typed position. The scan builds the map
 /// from its resolved inline records; a callee absent from it — a library
 /// routine, a thunk that never decompiled, a function no detector read —
-/// carries no contract to propagate.
+/// has no contract to propagate.
 pub type CalleeParams<'a> = HashMap<&'a str, Vec<&'a InferredParamType>>;
 
 /// Callee-to-caller propagation over one decompiled body.
@@ -91,7 +91,7 @@ pub type CalleeParams<'a> = HashMap<&'a str, Vec<&'a InferredParamType>>;
 /// The detector is stateless: every reading comes from the body it is
 /// handed and the surviving-reading map it is given, so one detector
 /// serves an entire scan and can be shared across concurrent per-function
-/// passes. It fetches nothing itself — the engine hands it the same
+/// passes. It fetches nothing itself — the scan hands it the same
 /// [`DecompiledFunction`] the inline detectors already read, keeping the
 /// scan at one decompile per function.
 ///
@@ -113,12 +113,12 @@ impl CrossFunctionPropagator {
     ///
     /// A call whose callee carries a surviving reading at position *i*
     /// reads the argument sitting at *i* as the callee's parameter type,
-    /// at [`CALLSITE_CONFIDENCE`], with the call's own line as evidence
+    /// at `CALLSITE_CONFIDENCE`, with the call's own line as evidence
     /// and [`InferenceScope::Function`] — the reading is about this site,
-    /// not every site carrying the value. When the argument is a bare
+    /// not every site using the value. When the argument is a bare
     /// identifier that names one of the enclosing function's parameters,
-    /// that parameter also gets a record at [`PARAM_CONFIDENCE`], so the
-    /// type climbs one step up the call chain. An argument that is a
+    /// that parameter also gets a record at `PARAM_CONFIDENCE`, so the
+    /// type moves one step up the call chain. An argument that is a
     /// literal, a cast, or a nested call names no value to read and
     /// produces nothing, and a callee with no surviving reading at a
     /// position types nothing sitting there.
@@ -157,7 +157,7 @@ impl CrossFunctionPropagator {
                     evidence: evidence.clone(),
                 }));
                 // The argument is the caller's own parameter: the
-                // reading climbs one step up the call chain.
+                // reading moves one step up the call chain.
                 if let Some(index) = params.iter().position(|p| p == text) {
                     records.push(InferredType::Param(InferredParamType {
                         function: func.name.clone(),
@@ -178,11 +178,11 @@ impl CrossFunctionPropagator {
     /// Read what `callers` pass at their call sites of `callee`, and type
     /// `callee`'s own parameters with it.
     ///
-    /// This is the reverse direction of [`propagate`](Self::propagate):
-    /// instead of a helper's contract reaching out to its callers, the
-    /// values callers actually hand in reach back to the helper's
-    /// parameters — so a function whose own body shows no interesting
-    /// usage still gets typed from the contract its callers reveal.
+    /// This is the reverse direction of [`propagate`](Self::propagate).
+    /// Instead of a helper's contract reaching out to its callers, the
+    /// values callers actually pass reach back to the helper's own
+    /// parameters. A function whose own body shows no interesting usage
+    /// still gets typed from the contract its callers reveal.
     ///
     /// An argument types a parameter only when it carries a recognizable
     /// type on its own, without needing the callee's body to say so:
@@ -200,11 +200,12 @@ impl CrossFunctionPropagator {
     /// operand, an identifier the scan never typed — says nothing about
     /// the parameter, and the position gets no reading. The call site
     /// itself may still be typed by the callee→caller pass when the
-    /// callee's own contract says something; that is not this pass's
-    /// business, and typing the callee's parameter from a bare literal
-    /// would be.
+    /// callee's own contract says something there; typing call sites is
+    /// that pass's job, not this pass's. Typing the callee's parameter
+    /// from the argument text is this pass's job — and from these
+    /// arguments it types nothing, because they say nothing.
     ///
-    /// Readings land at [`CALLER_PARAM_CONFIDENCE`], the bottom of the
+    /// Readings land at `CALLER_PARAM_CONFIDENCE`, the bottom of the
     /// cross-function band, so the callee's own inline evidence — a vtable
     /// call at 85, or any inline reading on a tie — still wins. A position
     /// only gets a record when the callee's signature actually has a
@@ -267,7 +268,7 @@ impl CrossFunctionPropagator {
             // parameters: whatever the inline detectors settled on for
             // that parameter is what the callee receives. A parameter
             // the scan never typed, or a local or global the scan has no
-            // reading for, carries nothing.
+            // reading for, yields nothing.
             let index = caller.parameter_names().iter().position(|p| p == arg)?;
             let readings = caller_readings.get(caller.name.as_str())?;
             readings
@@ -277,8 +278,8 @@ impl CrossFunctionPropagator {
         } else if let Some(text) = string_literal_type(arg) {
             Some(text.to_string())
         } else if let Some(callee) = call_callee(arg) {
-            // A known routine's result: the signature database knows what
-            // the call hands back.
+            // A known routine's result: the known-signature database
+            // records what the call returns.
             known.return_type(callee).map(str::to_string)
         } else {
             None
@@ -423,7 +424,7 @@ mod tests {
         assert_eq!(record.arg_name.as_deref(), Some("local_8"));
         assert_eq!(record.inferred_type, "char *");
         assert_eq!(record.method, InferenceMethod::CrossFunction);
-        // The reading is about this site, not every site carrying the
+        // The reading is about this site, not every site using the
         // value: it reaches no further than this body.
         assert_eq!(record.scope, InferenceScope::Function);
         assert_eq!(record.confidence, CALLSITE_CONFIDENCE);
@@ -465,7 +466,7 @@ mod tests {
         assert_eq!(record.inferred_type, "char *");
         assert_eq!(record.method, InferenceMethod::CrossFunction);
         assert_eq!(record.scope, InferenceScope::Function);
-        // The climb sits below the site reading it came from.
+        // The record sits below the site reading it came from.
         assert_eq!(record.confidence, PARAM_CONFIDENCE);
         assert!(record.confidence < sites[0].confidence);
         assert_eq!(record.evidence, "FUN_18004b210(param_1, 0x10);");
@@ -474,7 +475,8 @@ mod tests {
     #[test]
     fn a_local_argument_gets_no_parameter_record() {
         // The site is still typed, but a local is not a parameter — the
-        // climb only happens for the enclosing function's own parameters.
+        // extra parameter record is made only for the enclosing
+        // function's own parameters.
         let records = propagated(
             "undefined FUN_180051c00(undefined8 param_1)",
             "  FUN_18004b210(local_8, 0x10);",
@@ -501,7 +503,7 @@ mod tests {
     #[test]
     fn an_unknown_callee_propagates_nothing() {
         // A callee the scan never typed — a library routine, a thunk, a
-        // helper no detector read — carries no contract to propagate.
+        // helper no detector read — has no contract to propagate.
         let records = propagated(
             "undefined FUN_180051c00(undefined8 param_1)",
             "  strlen(param_1);\n  FUN_180099999(param_1, param_1);",
@@ -598,8 +600,8 @@ mod tests {
 
     #[test]
     fn a_typed_caller_parameter_types_the_callee_parameter() {
-        // The caller hands along, untouched, a parameter it was itself
-        // typed as holding: the callee receives a `char *`.
+        // The caller passes along, unchanged, a parameter the inline
+        // detectors had already typed: the callee receives a `char *`.
         let records = from_callers(
             "undefined FUN_18004b210(undefined8 param_1)",
             "  FUN_18004b210(param_1);",
@@ -635,8 +637,8 @@ mod tests {
 
     #[test]
     fn a_known_routine_result_types_the_callee_parameter() {
-        // The signature database knows what the call hands back: an
-        // allocator a buffer, `strlen` a byte count.
+        // The known-signature database records what the call returns:
+        // an allocator a buffer, `strlen` a byte count.
         let buffer = from_callers(
             "undefined FUN_18004b210(undefined8 param_1)",
             "  FUN_18004b210(malloc(0x10));",
@@ -654,7 +656,7 @@ mod tests {
         // A numeric literal, a cast, an indexed operand, an untyped
         // local, and an untyped call all say nothing about the callee's
         // parameter — the call site may be typed elsewhere, but this
-        // pass lends no reading.
+        // pass produces no reading for it.
         let records = from_callers(
             "undefined FUN_18004b210(undefined8 param_1)",
             "  FUN_18004b210(0x10);\n\
@@ -669,8 +671,9 @@ mod tests {
 
     #[test]
     fn an_untyped_caller_parameter_types_nothing() {
-        // Passing a typed-looking name is not enough: the reading only
-        // travels when the scan actually typed the caller's parameter.
+        // Passing a typed-looking name is not enough: the reading is
+        // passed along only when the scan actually typed the caller's
+        // parameter.
         let callee = DecompiledFunction {
             name: "FUN_18004b210".into(),
             signature: "undefined FUN_18004b210(undefined8 param_1)".into(),
