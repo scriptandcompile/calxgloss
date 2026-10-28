@@ -133,7 +133,7 @@ pub async fn api_unskip_unit(
 }
 
 /// Shared skip/unskip body: the unit must exist and not be accepted (merged
-/// branch state is authoritative), the persisted skip set is updated
+/// branch state is authoritative). The persisted skip set is updated
 /// idempotently, and the result is reported like the other review actions.
 /// Also the per-unit body behind the batch skip endpoint (issue #78).
 pub(crate) fn set_unit_skipped(
@@ -148,9 +148,10 @@ pub(crate) fn set_unit_skipped(
         )));
     }
     if matches!(unit.status, ReviewStatus::DoNotTranslate) {
-        // A parked unit (issue #235) carries a system fact, not reviewer
-        // intent: skipping or unskipping it would be theater — the derived
-        // status re-applies on the next rebuild whatever the skip set says.
+        // A unit the binary's classification parked as do-not-translate
+        // (issue #235) reflects a system fact, not reviewer intent: skipping
+        // or unskipping it changes nothing — the derived status re-applies on
+        // the next rebuild whatever the skip set says.
         return Err(ServerError::Conflict(format!(
             "Unit {unit_id} is parked as do-not-translate — that status is derived from the binary's classification, not reviewer intent; set a classification override to release it"
         )));
@@ -277,13 +278,13 @@ pub(crate) fn save_skips(
 ///
 /// The active section (Queued + PendingReview) of [`sorted_queue`] is
 /// re-sorted by (dependency depth, priority, manual order). Depth is the
-/// longest dependency chain to a unit: if A depends on B then A's depth is
-/// strictly greater, so units sharing a depth are incomparable in the graph
-/// and reordering among them can never violate a dependency edge. Within a
-/// depth group, HIGH sorts before NORMAL before LOW, then the reviewer's
-/// manual order; units with no overlay entry keep their dependency-order
-/// position. Accepted and other non-active units stay in their
-/// [`sorted_queue`] tail, untouched by the overlay.
+/// longest dependency chain leading to a unit. If A depends on B, A's depth
+/// is strictly greater; so units sharing a depth are incomparable in the
+/// graph, and reordering among them can never violate a dependency edge.
+/// Within a depth group, HIGH sorts before NORMAL before LOW, then the
+/// reviewer's manual order; units with no overlay entry keep their
+/// dependency-order position. Accepted and other non-active units stay in
+/// their [`sorted_queue`] tail, untouched by the overlay.
 pub(crate) fn queue_order<'a>(
     dashboard: &'a calxgloss_types::ReviewDashboard,
     overlay: &QueueOverlay,
@@ -340,8 +341,8 @@ fn overlay_manual_index(overlay: &QueueOverlay) -> impl Fn(&str) -> usize + '_ {
 /// than the deepest unit it depends on, and zero when it depends on nothing.
 /// Because a dependency edge always points to a strictly smaller depth,
 /// units at equal depth are incomparable — the tie groups the overlay may
-/// reorder. Graph cycles (which `topological_order` already warns about)
-/// contribute no depth rather than looping.
+/// reorder. Graph cycles do not make this walk loop, and they contribute no
+/// depth (`topological_order` already warns about them).
 fn dependency_depths(graph: &DependencyGraph) -> HashMap<&str, usize> {
     let mut deps: HashMap<&str, Vec<&str>> = HashMap::new();
     for edge in &graph.edges {
@@ -679,11 +680,12 @@ mod tests {
 
     #[test]
     fn queue_order_excludes_parked_units_from_the_active_section() {
-        // A parked (.NET managed, issue #235) unit stays in the dashboard's
-        // review queue (so the operator can see the parking and reach the
-        // override hatch) but leaves the active, dependency-ordered section
-        // /api/queue and /api/queue/next serve from — the same routing a
-        // skipped unit gets.
+        // A unit classification parked as do-not-translate (.NET managed,
+        // issue #235) stays in the dashboard's review queue (so the operator
+        // can see the parking and reach the override that releases it) but
+        // leaves the active, dependency-ordered section that /api/queue and
+        // /api/queue/next serve from — it leaves exactly as a skipped unit
+        // does.
         let dashboard = make_dashboard(
             vec![
                 make_unit(

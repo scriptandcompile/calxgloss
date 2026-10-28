@@ -1,9 +1,10 @@
 //! Analytics handlers — the historical views over the persisted logs in
 //! `re/analysis/` (issues #125/#126/#127/#128, W3.1–W3.4): fault
 //! analytics, token usage analytics, strategy analytics, and LLM
-//! performance metrics, plus the scaffolding the later analytics tickets
-//! reuse: this module, its registration on the shared router, and the
-//! analytics wire types in `types.rs`.
+//! performance metrics. The module also holds the shared scaffolding the
+//! other analytics endpoints reuse: this file's filter and load helpers,
+//! their registration on the shared router, and the analytics wire types
+//! in `types.rs`.
 //!
 //! Registered in the shared routes: the data is the persisted logs, never
 //! live pipeline state, so every router answers it. Aggregation is computed
@@ -19,9 +20,9 @@
 //! data.
 //!
 //! Counts cover the logs' *retained* windows. The trim accumulators keep
-//! whole-run totals for `compute_stats`, but trimmed events carry no
+//! whole-run totals for `compute_stats`, but trimmed events have no
 //! timestamp, so they cannot take part in the date filter or the trend
-//! buckets — folding them into the cards would make the cards disagree
+//! buckets — counting them in the cards would make the cards disagree
 //! with the tables underneath them.
 
 use std::collections::HashMap;
@@ -429,7 +430,7 @@ pub async fn api_get_token_usage_by_binary(
 
 /// Serves the per-context-tier token totals — the breakdown for judging
 /// whether tier escalation pays for itself. Entries written before tier
-/// tracking carry an empty label and form their own honest bucket.
+/// tracking have an empty label and form their own honest bucket.
 pub async fn api_get_token_usage_by_tier(
     State(state): State<ServerState>,
     Query(params): Query<HashMap<String, String>>,
@@ -460,7 +461,8 @@ pub async fn api_get_token_usage_by_tier(
 // ─── GET /api/token-usage/by-strategy ──────────────────────────────────
 
 /// Serves the per-retry-strategy token totals with a success rate per
-/// strategy — which recovery paths burn tokens and which ones work.
+/// strategy — which retry strategies consume tokens without succeeding,
+/// and which ones succeed.
 pub async fn api_get_token_usage_by_strategy(
     State(state): State<ServerState>,
     Query(params): Query<HashMap<String, String>>,
@@ -574,10 +576,10 @@ pub async fn api_get_strategy_analytics_by_strategy(
 
 // ─── GET /api/strategy-analytics/by-category ───────────────────────────
 
-/// Serves pass rates broken down by binary category — whether one class of
-/// binary systematically defeats the current strategies. The category
-/// label is the `DllCategory` debug name, the same vocabulary the log's
-/// own aggregates use.
+/// Serves pass rates broken down by binary category — whether some class
+/// of binary systematically makes the current strategies fail. The
+/// category label is the `DllCategory` debug name, the same vocabulary
+/// the log's own aggregates use.
 pub async fn api_get_strategy_analytics_by_category(
     State(state): State<ServerState>,
     Query(params): Query<HashMap<String, String>>,
@@ -710,9 +712,9 @@ pub async fn api_get_llm_metrics_summary(
 /// The issue asked for a breakdown by *model* tier; no model name or tier
 /// is persisted per attempt, so the honest axis is the context tier the
 /// logs do record — the same axis the token usage view breaks down by.
-/// Entries written before tier tracking carry an empty label and form
+/// Entries written before tier tracking have an empty label and form
 /// their own honest bucket; a tier whose attempts recorded no durations
-/// answers with `None` percentiles, never an imputed zero.
+/// reports `None` percentiles, never an imputed zero.
 pub async fn api_get_llm_metrics_by_tier(
     State(state): State<ServerState>,
     Query(params): Query<HashMap<String, String>>,
@@ -771,7 +773,7 @@ fn share_percent(part: usize, whole: usize) -> f64 {
 /// Gap-filled per-day buckets: one entry per UTC day from the first day
 /// that holds an event to the last, zero-count days filled in between —
 /// zeros only between days that actually hold events, never a fabricated
-/// run outside them. An empty input answers an empty series.
+/// run outside them. An empty input returns an empty series.
 fn gap_filled_days(per_day: &BTreeMap<NaiveDate, usize>) -> Vec<(NaiveDate, usize)> {
     let (Some(first), Some(last)) = (
         per_day.keys().next().copied(),

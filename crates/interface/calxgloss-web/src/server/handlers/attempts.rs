@@ -1,6 +1,6 @@
-//! Unit attempt comparison reads — the attempt list with per-attempt
-//! metadata (issue #131, W4.5) and the side-by-side diff between any two
-//! attempt branches (issue #135, W4.6) that a function unit accumulated.
+//! Unit attempt comparison reads — for one function unit: the attempt list
+//! with per-attempt metadata (issue #131, W4.5), and the side-by-side diff
+//! between any two of the attempt branches it accumulated (issue #135, W4.6).
 //!
 //! Registered in the shared routes: every read is persisted history, never
 //! live pipeline state, so plain `serve` and `live` answer identically.
@@ -20,14 +20,14 @@
 //!
 //! Metadata comes only from persisted logs, and a missing or corrupt log
 //! leaves its fields absent on the wire — never zeroed or guessed. The
-//! token-usage log (`re/analysis/token_usage.json`) carries the full
-//! triple and answers strategy, tier, tokens, and success; the fault log
+//! token-usage log (`re/analysis/token_usage.json`) records the full triple
+//! and supplies strategy, tier, tokens, and success; the fault log
 //! (`re/analysis/fault_log.json`) is a strategy fallback for attempts the
-//! token log never recorded. Patch records answer the compile/test outcome
+//! token log never recorded. Patch records supply the compile/test outcome
 //! and the commit identity — except that a patch *request* record, written
-//! before the attempt it names has run, answers the attempt's identity only
-//! and no outcome at all. The prompt-strategy log is deliberately NOT
-//! joined for function units: its entries carry no function field, so
+//! before the attempt it refers to has run, gives that attempt's identity
+//! only and no outcome at all. The prompt-strategy log is deliberately NOT
+//! joined for function units: its entries have no function field, so
 //! joining them on a function-scoped triple would invent identity.
 //! `tests_passed` is likewise absent from the contract — no per-attempt
 //! pass count is persisted anywhere, so the honest outcome fields
@@ -46,10 +46,9 @@ use super::super::types::{AttemptDiffResponse, AttemptMetadata, UnitAttemptsResp
 use super::super::{ServerError, ServerState};
 use super::process::{binary_matches, fault_log_path, load_json_or_default, token_usage_log_path};
 
-/// What one attempt's persisted sources said about it, folded together
-/// before it becomes wire types. Kept private so the follow-up diff
-/// ticket consumes the finished [`UnitAttemptsResponse`] rather than
-/// raw fragments.
+/// What one attempt's persisted sources said about it, combined before it
+/// becomes wire types. Kept private so the diff endpoint in this module
+/// reads the finished [`UnitAttemptsResponse`] rather than raw fragments.
 struct AttemptFacts {
     attempt: u32,
     branch: Option<String>,
@@ -67,8 +66,9 @@ pub async fn api_get_unit_attempts(
     Ok(Json(response))
 }
 
-/// The full attempt join for one unit: discover the attempt set, fold in
-/// patch-record and log metadata, and answer ascending by attempt number.
+/// The full attempt join for one unit: discover the attempt set, add
+/// patch-record and log metadata, and return the attempts sorted ascending
+/// by attempt number.
 /// `comparable` is true exactly when at least two attempts exist — the
 /// honest precondition the detail panel uses to offer (or withhold) a diff.
 pub(crate) fn collect_unit_attempts(
@@ -138,7 +138,7 @@ pub(crate) fn collect_unit_attempts(
 /// `GET /api/units/{id}/attempts/diff?from={n}&to={m}` — the unified diff
 /// between two attempt branches, git2 tree-to-tree (issue #135, W4.6).
 /// Both attempts resolve through the same join the list uses; an attempt
-/// with no recorded branch answers an honest 404 naming it, never an
+/// with no recorded branch returns an honest 404 naming it, never an
 /// empty fabricated diff.
 pub async fn api_get_unit_attempts_diff(
     state: State<ServerState>,
@@ -188,8 +188,8 @@ fn parse_attempt_param(params: &HashMap<String, String>, key: &str) -> Result<u3
 }
 
 /// The branch the attempt join recorded for one attempt number. A missing
-/// attempt or a branchless one is a 404 naming the attempt — the honest
-/// error the ticket demands in place of a fabricated empty diff.
+/// attempt or a branchless one returns a 404 naming the attempt — the
+/// honest error demanded in place of a fabricated empty diff (issue #135).
 fn attempt_branch(attempts: &UnitAttemptsResponse, attempt: u32) -> Result<String, ServerError> {
     attempts
         .attempts
@@ -204,10 +204,11 @@ fn attempt_branch(attempts: &UnitAttemptsResponse, attempt: u32) -> Result<Strin
         })
 }
 
-/// Resolve one attempt's branch to a commit. A branch the join named —
+/// Resolve one attempt's branch to a commit. A branch the join recorded —
 /// e.g. a patch record's `branch_name` whose git branch was since deleted
-/// — is just as honestly a 404 naming the attempt as an attempt the join
-/// never found: the diff is never fabricated from a half-present pair.
+/// — honestly returns a 404 naming the attempt, just like an attempt the
+/// join never found: the diff is never fabricated when only one half of
+/// the pair is present.
 fn attempt_commit<'a>(
     git: &'a GitManager,
     attempt: u32,
@@ -299,7 +300,7 @@ fn scan_patch_records(repo_path: &std::path::Path, unit: &UnitOfWork) -> Vec<Pat
     records
 }
 
-/// Fold one attempt's facts and log entries into its wire metadata.
+/// Combine one attempt's facts and log entries into its wire metadata.
 /// Absent sources leave their fields absent — the honest degradation the
 /// ticket demands.
 fn attempt_metadata(
@@ -318,10 +319,11 @@ fn attempt_metadata(
         )
     });
     // A patch *request* record is a reviewer's note-to-self written before
-    // the attempt it names has run — its outcome fields are placeholders.
-    // It proves the attempt exists (its branch name still joins above),
-    // but reporting its empty errors as "compiled" would invent an
-    // outcome the disk never recorded, so it answers no metadata at all.
+    // the attempt it refers to has run — its outcome fields are
+    // placeholders. It proves the attempt exists (its branch name still
+    // joins above), but reporting its empty errors as "compiled" would
+    // invent an outcome the disk never recorded, so it supplies no
+    // metadata at all.
     let patch = fact
         .patch
         .as_ref()
@@ -675,9 +677,9 @@ mod tests {
 
     #[test]
     fn prompt_strategy_log_never_joins_a_function_unit() {
-        // Its entries carry no function field — joining them on a
+        // Its entries have no function field — joining them on a
         // function-scoped triple would invent identity, so the log is
-        // excluded even when it names the binary and attempt.
+        // excluded even when it records the same binary and attempt.
         let (_dir, repo_path) = seeded_workspace();
         write_json_file(
             &super::super::process::prompt_strategy_log_path(&repo_path),

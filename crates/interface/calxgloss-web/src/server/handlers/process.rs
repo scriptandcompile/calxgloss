@@ -320,7 +320,7 @@ fn sorted_entries(entries: &[TokenUsageEntry]) -> Vec<&TokenUsageEntry> {
 
 /// True when a log-entry DLL name refers to the same binary as a unit's
 /// DLL name. Both spell the binary identity verbatim, extension included
-/// (issue #68); the comparison only folds case.
+/// (issue #68); the comparison only ignores letter case.
 pub(crate) fn binary_matches(entry_binary: &str, unit_binary: &str) -> bool {
     entry_binary.eq_ignore_ascii_case(unit_binary)
 }
@@ -376,8 +376,8 @@ mod tests {
     }
 
     /// Write a trimmed token-usage log: two retained attempts for
-    /// `game_logic.dll!DrawSprite`, three older attempts folded into the
-    /// trimmed accumulator.
+    /// `game_logic.dll!DrawSprite`, with three older attempts already
+    /// counted in the log's trimmed accumulator.
     fn write_trimmed_token_log(repo_path: &std::path::Path) {
         use calxgloss_types::{TokenUsageEntry, TokenUsageLog, TokenUsageTrim};
 
