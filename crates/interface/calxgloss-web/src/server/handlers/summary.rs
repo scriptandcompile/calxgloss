@@ -111,7 +111,7 @@ pub fn compute_quality_summary(units: &[UnitOfWork]) -> QualitySummary {
     }
 }
 
-/// Totals token consumption from the pipeline's usage log.
+/// Adds up token consumption from the pipeline's token-usage log.
 ///
 /// Returns `None` when the log is missing, corrupt, or empty — the token
 /// budget visual then says "no usage recorded" instead of showing a
@@ -250,7 +250,8 @@ mod tests {
             make_unit(None, Some(1), Some(4)),
         ]);
         assert!((summary.avg_unit_confidence.unwrap() - 0.7).abs() < 1e-6);
-        // 3/8 across units, not the average of 0.5 and 0.25 weighted oddly.
+        // 3/8 across units: passed and total test counts are summed across
+        // the units (2+1 of 4+4), then divided.
         assert!((summary.baseline_pass_rate.unwrap() - 0.375).abs() < 1e-6);
         assert_eq!(summary.verification_pass_rate, None);
     }

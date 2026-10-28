@@ -12,9 +12,9 @@
 //!
 //! The row set is the workspace's classification records (`re/classify/`,
 //! read through the pipeline handler's one `disk_classifications` shape);
-//! a record that is missing, corrupt, or name/category-less is no record
-//! at all, so a workspace with none honestly answers an empty list rather
-//! than a wall of zero rows. Category and strategy carry the decision
+//! a record that is missing, corrupt, or has no name or category is no
+//! record at all, so a workspace with none honestly answers an empty list
+//! rather than a wall of zero rows. Category and strategy show the decision
 //! actually in force: the persisted classification-override layer
 //! (`re/analysis/classification_overrides.json`) is applied on top, keyed
 //! by binary identity verbatim — the same exact-match rule the override
@@ -23,7 +23,7 @@
 //! Function counts come from all the review dashboard's units — the queue
 //! plus recent activity, where the accepted ones live — counting only
 //! function-translation work (classification, shim, and PAL units are not
-//! functions). The status fold guarantees `total = done + queued + failed`
+//! functions). The status grouping guarantees `total = done + queued + failed`
 //! so no unit hides in an unshown bucket: `Accepted` is done,
 //! `SendBack`/`PatchRequested` are the failing verdicts, and everything
 //! else — queued, pending review, in progress, blocked, skipped — is
@@ -63,7 +63,7 @@ use super::classification::classification_record_path;
 use super::pipeline::disk_classifications;
 use super::process::{binary_matches, load_json_or_default, token_usage_log_path};
 
-/// Per-binary function tallies folded from the dashboard's units.
+/// Per-binary function tallies built from the dashboard's units.
 #[derive(Debug, Default, Clone, Copy)]
 struct FunctionCounts {
     total: usize,
@@ -73,7 +73,7 @@ struct FunctionCounts {
 
 impl FunctionCounts {
     /// The waiting remainder — everything the binary owns that is neither
-    /// done nor failing. Spelled once so the row's three counts always
+    /// done nor failing. Defined once so the row's three counts always
     /// add up to the total.
     fn queued(&self) -> usize {
         self.total.saturating_sub(self.done + self.failed)
@@ -81,7 +81,7 @@ impl FunctionCounts {
 }
 
 /// Whether a unit's status counts as a failing verdict — the same two
-/// roots the dashboard's auto-blocking cascade treats as failing. A
+/// verdicts the dashboard's auto-blocking cascade treats as failing. A
 /// `Blocked` unit is a dependent of a failure, not a failure itself, so
 /// it stays in the waiting bucket.
 fn is_failing(status: &ReviewStatus) -> bool {
@@ -95,7 +95,8 @@ fn is_failing(status: &ReviewStatus) -> bool {
 /// binary name so the join is case-insensitive like every other binary
 /// comparison the server makes. The caller supplies all the dashboard's
 /// units — accepted ones live in `recent_activity`, not the queue. A
-/// dashboard that cannot be built is the caller's error, not this fold's.
+/// dashboard that cannot be built is the caller's error, not this
+/// function's.
 fn function_counts_by_binary<'a>(
     units: impl IntoIterator<Item = &'a calxgloss_types::UnitOfWork>,
 ) -> HashMap<String, FunctionCounts> {
@@ -133,8 +134,8 @@ fn tokens_by_binary(repo_path: &Path) -> HashMap<String, usize> {
 
 /// The classification decision actually in force for one record: the
 /// recorded classification with the persisted override layer applied on
-/// top. Spelled once so the summary rows and the detail panel can never
-/// disagree about what the analyzer would act on.
+/// top. Computed in one place so the summary rows and the detail panel
+/// can never disagree about what the analyzer would act on.
 struct InForceDecision {
     category: String,
     strategy: String,
@@ -143,12 +144,12 @@ struct InForceDecision {
     overridden: bool,
 }
 
-/// Fold one record with its override (exact-key match, the same rule the
-/// override endpoints and the analyzer hold). `recorded_reason` is the
-/// raw record's stored reason, used only when no override is in force;
-/// under one, the decision matches what the analyzer would act on — its
-/// synthesized override reason, and a crate named only in
-/// crate-replacement mode, where the recorded crate stands in for the
+/// Combine one record with its override (exact-key match — the same rule
+/// the override endpoints and the analyzer hold). `recorded_reason` is the
+/// raw record's stored reason, used only when no override is in force.
+/// Under an override, the result matches what the analyzer would act on:
+/// it uses the override's synthesized reason, and it names a crate only in
+/// crate-replacement mode. There the recorded crate stands in for the
 /// analyzer's table fallback (the web crate does not link the
 /// classification table).
 fn in_force_decision(
@@ -185,7 +186,7 @@ fn in_force_decision(
 
 /// Build the full binaries list payload from the workspace's persisted
 /// history. Split from the handler so the aggregation is testable and the
-/// follow-up W4 tickets grow the same shape.
+/// follow-up W4 tickets extend the same shape.
 fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> {
     // The classification records decide which binaries exist at all; with
     // none readable, nothing downstream is worth reading either.
@@ -240,7 +241,7 @@ fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> 
             }
         })
         .collect();
-    // Alphabetical by binary name — persisted history carries no run-plan
+    // Alphabetical by binary name — persisted history has no run-plan
     // order, so the one stable order is the identity itself.
     binaries.sort_by(|a, b| a.binary.as_str().cmp(b.binary.as_str()));
     Ok(BinariesListResponse { binaries })
@@ -259,8 +260,8 @@ pub async fn api_get_binaries_list(
 }
 
 /// Tally the binary's function-translation units into the detail panel's
-/// function list — the same dashboard units the summary row's counts
-/// fold, so the list's length is always that row's `functions_total`.
+/// function list — the same dashboard units the summary row's counts are
+/// built from, so the list's length is always that row's `functions_total`.
 /// Alphabetical by function, then attempt: the same function can appear
 /// once per attempt, each with its own review status.
 fn functions_for_binary(
@@ -392,10 +393,11 @@ fn shim_artifact_dir(repo_path: &Path, name: &str) -> Option<PathBuf> {
     binary_artifact_dir(repo_path, "shims", name)
 }
 
-/// The per-binary artifact directory under `re/{root}/` whose name names
-/// the binary — matched case-insensitively like every other server
-/// binary join; deterministically, the alphabetically first spelling
-/// wins. No directory is `None` — the honest "no artifacts" answer.
+/// The per-binary artifact directory under `re/{root}/` whose directory
+/// name is the binary's — matched case-insensitively like every other
+/// server binary join; when several spellings match, the alphabetically
+/// first wins. If no directory matches, the result is `None` — the
+/// honest "no artifacts" answer.
 fn binary_artifact_dir(repo_path: &Path, root: &str, name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(repo_path.join("re").join(root))
         .ok()?
@@ -420,11 +422,11 @@ fn read_shim_artifact<T: serde::de::DeserializeOwned>(dir: &Path, file: &str) ->
         .and_then(|content| serde_json::from_str(&content).ok())
 }
 
-/// Fold the dashboard's shim unit for one crate into the tracker's
+/// Read the dashboard's shim unit for one crate into the tracker's
 /// branch state. The join is the same exact-crate-name rule the
 /// dashboard's own dependency wiring holds (shim units keyed by their
-/// function, the crate name); no shim unit for the crate is `None` —
-/// honestly "no shim branch", never a guessed verdict.
+/// function, the crate name); when the crate has no shim unit the result
+/// is `None` — honestly "no shim branch", never a guessed verdict.
 fn shim_branch_state(
     units: impl IntoIterator<Item = calxgloss_types::UnitOfWork>,
     krate: &str,
@@ -446,8 +448,9 @@ fn shim_branch_state(
 /// follows the decision in force — the override layer applied — so an
 /// overridden binary is tracked against the crate the analyzer would
 /// actually build on. A crate-replacement binary with no readable
-/// artifacts honestly reports not generated; a reverse-engineered
-/// binary honestly reports no shim expected.
+/// artifacts honestly reports not generated; when the decision in force
+/// names no crate replacement, the binary honestly reports no shim
+/// expected.
 fn shim_status(repo_path: &Path, name: &str) -> Result<ShimStatusResponse, ServerError> {
     let classifications = disk_classifications(repo_path);
     let record = find_classification_record(&classifications, name)?;
@@ -520,7 +523,7 @@ pub async fn api_get_binary_shim_status(
 
 // ─── PAL tracker (issue #134, W4.4) ────────────────────────────────────
 
-/// The category→trait mapping the PAL tracker derives with, mirroring
+/// The category→trait mapping the PAL tracker uses, mirroring
 /// the translator's Tier-4 PAL extraction (`extract_pal_traits` in
 /// `calxgloss-translator::retry::helpers`): the same categories demand
 /// the same traits. Kept as a web-side derivation on purpose — W4
@@ -633,8 +636,8 @@ pub(crate) fn recorded_api_categories(repo_path: &Path, name: &str) -> Vec<Strin
     categories
 }
 
-/// The workspace's generated PAL/shim source texts — the honest
-/// existence input, no new persistence format. The shared PAL crate the
+/// The workspace's generated PAL/shim source texts — the honest input for
+/// trait existence, adding no new persistence format. The shared PAL crate
 /// verifier generates under `scratch/pal/src/` (every `.rs` in it) plus
 /// every binary's generated shim source (`re/shims/{binary}/shim.rs`,
 /// the layout `shim_pipeline` persists — test sources reference traits
@@ -674,9 +677,9 @@ pub(crate) fn generated_pal_source_texts(repo_path: &Path) -> Vec<String> {
 }
 
 /// Whether a source text defines `trait {name}` — the `trait` keyword
-/// immediately followed by the exact trait name, both sides bounded so
-/// `trait GraphicsDevice2` never marks `GraphicsDevice` and a stray
-/// mention naming the trait in another position never counts.
+/// immediately followed by the exact trait name, with a word boundary on
+/// each side, so `trait GraphicsDevice2` never marks `GraphicsDevice` and
+/// a mention of the trait in any other position never counts.
 pub(crate) fn defines_trait(source: &str, name: &str) -> bool {
     let needle = format!("trait {name}");
     let ident_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -696,7 +699,7 @@ pub(crate) fn defines_trait(source: &str, name: &str) -> bool {
 /// artifacts only: needed traits derived from the per-function analysis
 /// artifacts' API-call categories, existence detected against the
 /// workspace's generated PAL/shim source artifacts. No classification
-/// or override fold is involved — the traits a binary needs are what
+/// or override decision is involved — the traits a binary needs are what
 /// its functions' recorded API calls demand, whatever the decision in
 /// force says. A binary with no readable API-call artifacts honestly
 /// answers an empty trait list.
@@ -857,7 +860,7 @@ mod tests {
 
     #[test]
     fn unit_join_is_case_insensitive() {
-        // The same binary spelled differently lands in one tally — the
+        // One binary with two spellings ends up in one tally — the
         // case-insensitive join every server-side binary comparison uses.
         let counts = function_counts_by_binary(&[
             make_unit(
@@ -936,7 +939,7 @@ mod tests {
 
     #[test]
     fn in_force_decision_prefers_the_override_layer() {
-        // The same fold the summary rows and the analyzer honor: category,
+        // The same combination the summary rows and the analyzer honor: category,
         // strategy label, crate, and reason come from the override;
         // without one, the record answers verbatim.
         let record = ClassificationInfo {
@@ -1019,8 +1022,8 @@ mod tests {
     #[test]
     fn shim_branch_state_folds_the_dashboard_verdicts() {
         // The shim unit's review status is the acceptance state: the
-        // builder spells merged as Accepted and a reviewer's verdict as
-        // SendBack; anything else is neither. Only shim-layer units
+        // builder sets merged for an Accepted unit and sent_back for a
+        // SendBack unit; anything else is neither. Only shim-layer units
         // join, keyed by the crate name exactly as the dashboard's own
         // dependency wiring keys it.
         let mut shim_unit = make_unit("shim", WorkKind::ShimLayer, ReviewStatus::Accepted);
@@ -1062,9 +1065,11 @@ mod tests {
 
     #[test]
     fn shim_artifact_dir_join_is_case_insensitive() {
-        // The shim directory carries the binary name the pipeline wrote;
-        // the lookup folds case like every other server binary join, and
-        // deterministically the alphabetically first spelling wins.
+        // The shim directory is named with the binary name the pipeline
+        // wrote;
+        // the lookup matches case-insensitively like every other server
+        // binary join, and deterministically the alphabetically first
+        // spelling wins.
         let workspace = tempfile::tempdir().expect("temp workspace");
         let shims = workspace.path().join("re").join("shims");
         std::fs::create_dir_all(shims.join("D3D9.dll")).expect("shim dir");
@@ -1189,9 +1194,9 @@ mod tests {
     #[test]
     fn analysis_artifact_dir_join_is_case_insensitive() {
         // The analysis directory carries the binary name the pipeline
-        // wrote; the lookup folds case like every other server binary
-        // join, and deterministically the alphabetically first spelling
-        // wins.
+        // wrote; the lookup matches case-insensitively like every other
+        // server binary join, and deterministically the alphabetically
+        // first spelling wins.
         let workspace = tempfile::tempdir().expect("temp workspace");
         let analysis = workspace.path().join("re").join("analysis");
         std::fs::create_dir_all(analysis.join("D3D9.dll")).expect("analysis dir");

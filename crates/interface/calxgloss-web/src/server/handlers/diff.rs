@@ -104,7 +104,8 @@ pub(crate) fn compute_line_diff(
         _ => return Ok(Vec::new()),
     };
 
-    // Run `git diff main...branch` to get a unified diff
+    // Run `git diff --no-color` between the two commit hashes to get a
+    // unified diff
     let diff_output = std::process::Command::new("git")
         .args(["diff", "--no-color", "--", &main_hash, &branch_hash])
         .current_dir(git.repo().path())

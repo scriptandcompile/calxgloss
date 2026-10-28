@@ -64,7 +64,7 @@ pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<Pro
 /// are the shared [`LiveTranslationState`] ones, so W2/W3 can consume them
 /// without depending on the web crate.
 ///
-/// Registered in the **live router only** (see [`super::super::live_only_routes`]):
+/// Registered in the **live router only** (see `live_only_routes`):
 /// outside `calxgloss live` there is no live translation state, and an empty
 /// payload here would be indistinguishable from an idle run.
 pub async fn api_get_progress_enhanced(
@@ -176,7 +176,7 @@ pub async fn api_get_pipeline(
     // Snapshot entries before dropping the lock to avoid nested borrows
     let entries_snapshot: HashMap<String, ProgressEntry> = entries.clone();
 
-    // Collect all binary identities from all three sources
+    // Collect every discovered binary identity from all sources in view
     let mut dll_names: HashSet<BinaryIdentity> = HashSet::new();
 
     // From live translation entries (group by DLL)
@@ -192,22 +192,23 @@ pub async fn api_get_pipeline(
         dll_names.insert(binary.clone());
     }
     // The binary whose batch pass has begun is discovered even when no
-    // unit, classification, or summary event has named it yet — otherwise
-    // a restarted run shows nothing until its first function event.
+    // unit, classification, or summary event has reported it yet —
+    // otherwise a restarted run shows nothing until its first function
+    // event.
     if let Some(binary) = &processing {
         dll_names.insert(binary.clone());
     }
-    // A beating pass names its binary too — the beat can only be honest
-    // about a binary the table actually shows.
+    // A beating pass names its binary too — the heartbeat can only be
+    // honest about a binary the table actually shows.
     if let Some((binary, _)) = &activity {
         dll_names.insert(binary.clone());
     }
-    // The run's queue plan names every binary it will process — the
+    // The run's queue plan lists every binary it will process — the
     // table shows the whole plan, not just what has started.
     dll_names.extend(queue.iter().map(|q| BinaryIdentity::new(q.as_str())));
-    // A binary whose engine auto-analysis landed is being ingested —
-    // the table shows it before any unit, classification, or plan event
-    // names it (issue #124).
+    // A binary whose analysis engine auto-analysis landed is being
+    // ingested — the table shows it before any unit, classification, or
+    // plan event names it (issue #124).
     dll_names.extend(ingestion.analyzed.iter().cloned());
 
     let total_dlls = dll_names.len();
@@ -216,22 +217,24 @@ pub async fn api_get_pipeline(
         // Three-tier order (issue #242): queue-planned non-PAL rows in
         // queue-plan order — the order the live loop will process them —
         // then unplanned non-PAL rows alphabetical, then PAL-mapped rows
-        // alphabetical. A PAL binary the plan happens to name still sorts
+        // alphabetical. A PAL binary the plan happens to list still sorts
         // last: display order reflects translation intent, not a queue
         // accident. Read from the merged live-over-disk classifications —
         // exactly the classification the row renders — and recomputed per
-        // poll, so a classification change relocates the row for free.
+        // poll, so a classification change relocates the row with no extra
+        // wiring.
         let is_pal = |d: &BinaryIdentity| {
             classifications
                 .get(d)
                 .is_some_and(|c| is_pal_strategy(&c.classification_strategy))
         };
         // Issue #284: a pending focus reads as the front of the plan — the
-        // live loop hoists it at the next binary boundary, and the served
-        // table shows that intent ahead of time. Only a focus the current
-        // plan names is hoisted; one it does not name waits, exactly as the
-        // worklist waits. PAL rows stay last: focus reorders intent, never
-        // overrides it. Names match case-insensitively (issue #107).
+        // live loop moves it to the front at the next binary boundary, and
+        // the served table shows that intent ahead of time. Only a focus
+        // the current plan lists moves to the front; one it does not list
+        // waits, exactly as the worklist waits. PAL rows stay last: focus
+        // reorders intent, never overrides it. Names match
+        // case-insensitively (issue #107).
         let plan: Vec<String> = {
             let mut plan = queue.clone();
             if let Some(focus) = combined
@@ -307,8 +310,9 @@ pub async fn api_get_pipeline(
         });
     }
 
-    // PAL trait-readiness summary (issue #243): it rides this single
-    // bulk poll, so the frontend never fetches per row. The generated
+    // PAL trait-readiness summary (issue #243): it is computed as part of
+    // this single bulk poll, so the frontend never fetches per row. The
+    // generated
     // PAL/shim source scan runs once per poll and is shared across all
     // PAL rows; when no row is PAL-mapped the scan never happens and no
     // per-binary artifact reads follow. Recomputed per poll, so trait
@@ -333,7 +337,7 @@ pub async fn api_get_pipeline(
     );
     if let Some(sources) = pal_sources {
         for row in &mut binaries {
-            // The summary rides only PalMapping rows; the per-binary
+            // The summary attaches only to PalMapping rows; the per-binary
             // artifact reads stay bounded to those rows. No derived
             // trait means no summary — never a fabricated empty one.
             if row
@@ -388,7 +392,7 @@ pub async fn api_get_pipeline(
 /// Classification records persisted by earlier runs (`re/classify/*.json`).
 /// A restarted pipeline re-classifies nothing, so these artifacts are the
 /// only account of what the workspace already knows — the pipeline table
-/// hydrates its rows from them until this run's own events supersede them.
+/// fills its rows from them until this run's own events supersede them.
 /// Records missing a name or category are skipped rather than guessed at.
 /// The binaries view (issue #130) reads the same records through this one
 /// shape — one reader of the artifact format, not two.
@@ -765,7 +769,7 @@ fn control_pipeline(
 
 /// Pause the live run (issue #90): the pipeline notices at the next **unit
 /// boundary** — the unit in flight is never interrupted mid-LLM-call — and
-/// parks there until resumed or stopped. Live router only.
+/// waits there until resumed or stopped. Live router only.
 pub async fn api_pause_pipeline(
     State(combined): State<CombinedState>,
 ) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
@@ -837,9 +841,9 @@ async fn discovered_binaries(
 /// A request naming an undiscovered binary is a 409 carrying the server's
 /// own reason, so a stale click is never a silent no-op. A successful call
 /// re-persists the scope record (the pause survives a restart, issue #218)
-/// and, on a handle built `with_events`, fans a `BinaryPauseChanged` out to
-/// WS clients. Pausing one binary never touches the run-level machine —
-/// steering, not lifecycle.
+/// and, on a handle built `with_events`, sends a `BinaryPauseChanged`
+/// event to WS clients. Pausing one binary never touches the run-level
+/// machine — steering, not lifecycle.
 async fn control_binary_pause(
     combined: &CombinedState,
     binary: &str,
@@ -899,19 +903,20 @@ pub async fn api_resume_binary(
 
 /// The pipeline rows' single translation toggle pressed in its Start
 /// Translation state (issue #285): one press **swaps** the run onto this
-/// binary, composed server-side so the sequence cannot half-apply from a
-/// flaky client. The target is resumed and focused — the front of the
-/// run's queue at the next binary boundary (issue #284) — and whatever is
-/// in flight is paused through the per-binary pause path (unit-boundary
-/// semantics, completed work kept, re-queued once), so exactly one binary
-/// is ever actively translated. The press also carries the lifecycle
-/// truth of the row it sits on: a run-level pause is released, and a
-/// session that has only classified so far begins translating with this
-/// binary first. A run that has already completed its pass for the target
-/// is refused with 409 naming the reason — re-running a finished pass is
-/// restart's verb, and the row's Configure opens that dialog with the
-/// binary pre-selected — and a terminal run is refused with the state
-/// machine's own message. The response reuses the binary-pause shape:
+/// binary. The whole sequence is applied on the server, so an unreliable
+/// client cannot leave it half-applied. The target is resumed and
+/// focused — the front of the run's queue at the next binary boundary
+/// (issue #284) — and whatever is in flight is paused through the
+/// per-binary pause path (unit-boundary semantics, completed work kept,
+/// re-queued once), so exactly one binary is ever actively translated.
+/// The press also acts on the lifecycle state of the row it sits on: a
+/// run-level pause is released, and a session that has only classified so
+/// far begins translating with this binary first. A run that has already
+/// completed its pass for the target is refused with 409 naming the
+/// reason. Re-running a finished pass is restart's verb; the row's
+/// Configure opens that dialog with the binary pre-selected. A terminal
+/// run is refused with the state machine's own message. The response
+/// reuses the binary-pause shape:
 /// the target echoed with `paused: false`, and a message naming the
 /// binary the swap paused, so the toast is honest about the side effect.
 /// Same honesty rules as the pause pair: 503 with no live scope handle or
@@ -933,9 +938,10 @@ async fn control_binary_start(
         )));
     }
 
-    // Stale-press guard: while the run is in flight, a target that is
-    // neither the binary in flight nor named by its live queue plan has
-    // already had its pass. (Names match case-insensitively, issue #107.)
+    // Stale-press guard: while the run is in flight, if the target is
+    // neither the binary in flight nor listed in the run's live queue
+    // plan, this run has already completed its pass for it. (Names match
+    // case-insensitively, issue #107.)
     let previous = control.state();
     let in_flight = matches!(
         previous,
@@ -971,7 +977,7 @@ async fn control_binary_start(
     // swap can actually proceed, a not-yet-translating session drives the
     // start transition before any request is queued, and a run already
     // translating is left exactly as it is. Stopping and terminal states
-    // are refused by the machine itself, carrying its own message.
+    // are refused by the machine itself, which reports its own message.
     match previous {
         PipelineState::Paused => control
             .resume()
@@ -990,10 +996,11 @@ async fn control_binary_start(
         }
     }
 
-    // The swap itself: the binary in flight yields to the target — held
-    // out of the queue at the next unit boundary through the existing
-    // pause path, with its `BinaryPauseChanged` fan-out; a differently-
-    // cased spelling of the same binary is the same binary (issue #107).
+    // The swap itself: the binary in flight makes way for the target —
+    // held out of the queue at the next unit boundary through the
+    // existing pause path, with its `BinaryPauseChanged` fan-out; a
+    // differently-cased spelling of the same binary is the same binary
+    // (issue #107).
     let mut swapped_out = None;
     if let Some(current) = &processing
         && !binary_matches(current.as_str(), binary)
@@ -1044,7 +1051,7 @@ pub async fn api_start_binary(
 
 /// Put one target binary at the front of the run's queue (issue #284): the
 /// scope handle's single focus slot is set here, the running worklist
-/// consults it at each binary boundary, hoists the focused binary to the
+/// consults it at each binary boundary, moves the focused binary to the
 /// front, re-publishes the plan with it there, and consumes the slot —
 /// honored once, never again. The same honesty rules as the pause pair:
 /// 503 without a scope handle, 409 for a binary the workspace has not
@@ -1115,7 +1122,7 @@ pub async fn api_start_pipeline(
 }
 
 /// Re-run a stopped pipeline inside the live process (issue #92, W2.3):
-/// the body carries the phase, target, and scope selectors — all
+/// the request body supplies the phase, target, and scope selectors — all
 /// optional, and a missing or empty body re-runs everything. The
 /// transition is driven first, so a run that is not in a terminal state
 /// is refused with 409 and nothing is queued; only then does the request
@@ -1150,9 +1157,9 @@ pub async fn api_restart_pipeline(
 
 /// Cancel the unit currently in flight (issue #91, W2.2): the pipeline
 /// aborts it at the earliest safe point — mid-LLM-call included — records
-/// the attempt as cancelled/failed, and continues with the next unit.
+/// the attempt as a cancelled failure, and continues with the next unit.
 /// With no unit in flight (idle, paused, or between units) the request is
-/// rejected with a 409 rather than silently doing nothing, so a stale
+/// refused with a 409 rather than silently doing nothing, so a stale
 /// dashboard button cannot drive the run inconsistent. Live router only.
 pub async fn api_cancel_current_unit(
     State(combined): State<CombinedState>,
