@@ -1,17 +1,18 @@
 //! Behavior tests over the generic scan command at the process seam
-//! (issues #339–#341, spec #337): the built CLI runs a ride over the
-//! fixture target in a temp workspace, and only outward results are
-//! asserted — process success/failure, the document filed at the row's
-//! own path, the printed report, and the failure/remediation wording.
-//! The run's report and a later `--show` report must be the same read
-//! of the same document.
+//! (issues #339–#341, spec #337). The built CLI runs a ride over the
+//! fixture target in a temp workspace, and the tests assert only outward
+//! results: whether the process succeeded or failed, the document filed
+//! at the row's own path, the printed report, and the failure and
+//! remediation wording. The run's report and a later `--show` report must
+//! be the same read of the same document.
 
 use std::path::Path;
 use std::process::Command;
 
-/// Run the built CLI isolated from the ambient config: the user's global
-/// file may hold anything, so each test points `CALXGLOSS_CONFIG` at an
-/// empty file in its own temp dir and strips the target/workspace vars.
+/// Run the built CLI isolated from the ambient config. The user's global
+/// config file may hold anything, so each test points `CALXGLOSS_CONFIG`
+/// at an empty file in its own temp dir and removes the target and
+/// workspace variables.
 fn cli(dir: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_calxgloss-cli"));
     let empty = dir.join("empty-config.toml");
@@ -35,10 +36,11 @@ fn run(cmd: &mut Command, dir: &Path) -> (bool, String, String) {
     )
 }
 
-/// A workspace holding a copy of the fixture target at its root, which
-/// doubles as the target dir: the persistor files `{binary}.json`
-/// literally, and a path-shaped key would land the document outside the
-/// workspace — the same layout the control-flow process test uses.
+/// A workspace with a copy of the fixture target at its root, which also
+/// serves as the target dir. The persistor names its file
+/// `{binary}.json` literally, so a path-shaped name would file the
+/// document outside the workspace. This is the same layout the control-flow
+/// process test uses.
 fn fixture_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temp workspace");
     let fixture = calxgloss_testfixtures::fixture_target_path().expect("fixture target");
@@ -57,8 +59,8 @@ fn the_typesdb_run_files_the_documents_and_prints_what_a_later_show_prints() {
     );
     assert!(ok, "the typesdb ride failed:\n{stdout}\n{stderr}");
 
-    // The document sits at the row's own path and the declarations file
-    // — the entry's one side effect — beside it.
+    // The document sits at the row's own path, and beside it is the
+    // declarations file — the entry's only side effect.
     let document = ws.path().join("re/analysis/typesdb/fixture-target.json");
     assert!(document.is_file(), "the document is filed at {document:?}");
     let decls = ws.path().join("re/analysis/typesdb/fixture-target.rs");
@@ -93,8 +95,8 @@ fn the_typesdb_run_files_the_documents_and_prints_what_a_later_show_prints() {
 
 #[test]
 fn show_with_no_filed_document_fails_naming_the_producing_command() {
-    // Remediation wording at the process seam: a fresh workspace, no
-    // scan ever run, and the failure tells the operator the exact
+    // The remediation wording at the process seam. The workspace is fresh,
+    // no scan has ever run, and the failure tells the operator the exact
     // command that would produce the document.
     let ws = fixture_workspace();
     let (ok, stdout, stderr) = run(
@@ -117,11 +119,12 @@ fn show_with_no_filed_document_fails_naming_the_producing_command() {
 
 #[test]
 fn a_ridden_flag_free_command_prints_the_same_report_run_and_show() {
-    // One of the eleven commands folded into the generic handler (issue
-    // #340) at the process seam: `controlflow` scans the fixture, files
-    // its document at the row's own path, and the run's report and a
-    // later `--show` report are byte-identical — the same read of the
-    // same document, with no entry-side engine composition left behind.
+    // One of the eleven flag-free commands moved onto the generic handler
+    // (issue #340), seen here at the process seam: `controlflow` scans the
+    // fixture and files its document at the row's own path, and the run's
+    // report and a later `--show` report are byte-identical — the same read
+    // of the same document. The command's entry builds no evidence engine
+    // of its own: that build stays the descriptor row's.
     let ws = fixture_workspace();
 
     let (ok, stdout, stderr) = run(
@@ -161,11 +164,11 @@ fn a_ridden_flag_free_command_prints_the_same_report_run_and_show() {
 
 #[test]
 fn the_apidetect_report_prints_the_scans_admission_run_and_show_alike() {
-    // The apidetect admission line at the process seam (issue #346):
-    // the scan stamps its coverage into the document it files, and both
-    // the run's report and a later `--show` report print the document's
-    // one bounded admission line beside the counts — byte-identically,
-    // because both are the same read of the same document.
+    // The apidetect admission line at the process seam (issue #346). The
+    // scan records its coverage in the document it files. Both the run's
+    // report and a later `--show` report print that document's one bounded
+    // admission line beside the counts, byte-identically, because both are
+    // the same read of the same document.
     let ws = fixture_workspace();
 
     let (ok, stdout, stderr) = run(
@@ -182,10 +185,10 @@ fn the_apidetect_report_prints_the_scans_admission_run_and_show_alike() {
     let document = ws.path().join("re/analysis/apidetect/fixture-target.json");
     assert!(document.is_file(), "the document is filed at {document:?}");
 
-    // The limitation line rides beside the counts, and it names the
-    // facet the engine never examines — the admission the scan owes.
-    // Label and admission print in different styles, so the assertion
-    // quotes each piece as printed, never their join across the codes.
+    // The limitation line prints beside the counts, and it names the facet
+    // the scan never examines — the admission the scan owes. The label and
+    // the admission text print in different styles, so the assertion checks
+    // each piece as printed, never the two joined across the styling codes.
     assert!(stdout.contains("Identified:"), "{stdout}");
     assert!(
         stdout.contains("Coverage:") && stdout.contains("partial — delay imports unexamined"),
@@ -217,13 +220,13 @@ fn the_apidetect_report_prints_the_scans_admission_run_and_show_alike() {
 
 #[test]
 fn the_libmatch_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The libmatch admission line at the process seam (issue #347): a
-    // filed document's coverage record — however it got stamped — prints
-    // its one bounded admission line beside the counts through `--show`,
-    // and a complete record prints nothing. The documents here are filed
-    // by the engine's own persistor with hand-stamped coverage, so the
-    // pin does not depend on which bodies the fixture's real decompile
-    // happens to produce.
+    // The libmatch admission line at the process seam (issue #347). Whatever
+    // a filed document's coverage record says, `--show` prints its one
+    // bounded admission line beside the counts. A complete record prints
+    // nothing. Here the test files each document through the evidence engine's
+    // own persistor, with the coverage written by hand, so the pin does not
+    // depend on which function bodies the fixture's real decompile happens to
+    // produce.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -288,11 +291,12 @@ fn the_libmatch_report_prints_the_documents_admission_line_only_when_there_is_on
 
 #[test]
 fn the_floatsimd_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The floatsimd admission line at the process seam (issue #347),
-    // pinned the same way as libmatch's: the `--show` report prints the
-    // filed document's one bounded line, naming the never-reached
-    // bodies, and prints nothing under a complete record — so the
-    // flagless rows beside a complete count mean examined-and-clean.
+    // The floatsimd admission line at the process seam (issue #347), pinned
+    // the same way as libmatch's: the `--show` report prints the filed
+    // document's one bounded line, which names the function bodies the scan
+    // never reached, and prints nothing under a complete record. So rows
+    // without a limitation line beside a complete count mean the scan looked
+    // at them and found nothing to admit.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -358,12 +362,12 @@ fn the_floatsimd_report_prints_the_documents_admission_line_only_when_there_is_o
 
 #[test]
 fn the_typesdb_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The typesdb admission line at the process seam (issue #348): a
-    // filed document's coverage record — however it got stamped — prints
-    // its one bounded admission line beside the counts through `--show`,
-    // and a complete record prints nothing. The documents here are filed
-    // by the engine's own persistor with hand-stamped coverage, so the
-    // pin does not depend on whether the fixture target carries RTTI.
+    // The typesdb admission line at the process seam (issue #348). Whatever
+    // a filed document's coverage record says, `--show` prints its one
+    // bounded admission line beside the counts. A complete record prints
+    // nothing. Here the test files each document through the evidence engine's
+    // own persistor, with the coverage written by hand, so the pin does not
+    // depend on whether the fixture target has RTTI.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -434,10 +438,10 @@ fn the_typesdb_report_prints_the_documents_admission_line_only_when_there_is_one
 #[test]
 fn the_consts_report_prints_the_documents_admission_line_only_when_there_is_one() {
     // The consts admission line at the process seam (issue #348), pinned
-    // the same way: the `--show` report prints the filed document's one
-    // bounded line — the whole picture's admission, naming both regions
-    // the scan could not read — and prints nothing under a complete
-    // record, so an empty findings list beside a complete count means
+    // the same way. The `--show` report prints the filed document's one
+    // bounded line: it is the whole scan's admission, and it names both
+    // regions the scan could not read. Under a complete record it prints
+    // nothing, so an empty findings list beside a complete count means
     // examined-and-clean.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
@@ -525,11 +529,12 @@ fn the_consts_report_prints_the_documents_admission_line_only_when_there_is_one(
 
 #[test]
 fn the_controlflow_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The control-flow admission line at the process seam (issue #349):
-    // the `--show` report prints the filed document's one bounded line,
-    // naming the never-reached bodies, and prints nothing under a
-    // complete record — pinned through the engine's own persistor so it
-    // does not depend on which bodies the fixture happens to decompile.
+    // The control-flow admission line at the process seam (issue #349). The
+    // `--show` report prints the filed document's one bounded line, which
+    // names the function bodies the scan never reached, and it prints
+    // nothing under a complete record. The test files the document through
+    // the evidence engine's own persistor, so the pin does not depend on
+    // which bodies the fixture happens to decompile.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -594,10 +599,10 @@ fn the_controlflow_report_prints_the_documents_admission_line_only_when_there_is
 
 #[test]
 fn the_memory_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The memory-lifecycle admission line at the process seam (issue
-    // #349), pinned the same way as control-flow's: the `--show` report
-    // prints the filed document's one bounded line naming the skipped
-    // bodies, and prints nothing under a complete record.
+    // The memory-lifecycle admission line at the process seam (issue #349),
+    // pinned the same way as control-flow's. The `--show` report prints the
+    // filed document's one bounded line naming the function bodies the scan
+    // never reached, and it prints nothing under a complete record.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -666,10 +671,10 @@ fn the_memory_report_prints_the_documents_admission_line_only_when_there_is_one(
 #[test]
 fn the_sync_report_prints_the_documents_admission_line_only_when_there_is_one() {
     // The concurrency admission line at the process seam (issue #349),
-    // pinned the same way: the `--show` report prints the filed
-    // document's one bounded line, and prints nothing under a complete
-    // record — so the flagless rows beside a complete count mean
-    // examined-and-clean.
+    // pinned the same way. The `--show` report prints the filed document's
+    // one bounded line, and it prints nothing under a complete record — so
+    // rows without a limitation line beside a complete count mean the scan
+    // looked at them and found nothing to admit.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -734,11 +739,12 @@ fn the_sync_report_prints_the_documents_admission_line_only_when_there_is_one() 
 
 #[test]
 fn the_globalstate_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The global-state admission line at the process seam (issue #350):
-    // the `--show` report prints the filed document's one bounded line,
-    // naming the never-reached bodies, and prints nothing under a
-    // complete record — pinned through the engine's own persistor so it
-    // does not depend on which bodies the fixture happens to decompile.
+    // The global-state admission line at the process seam (issue #350). The
+    // `--show` report prints the filed document's one bounded line, which
+    // names the function bodies the scan never reached, and it prints
+    // nothing under a complete record. The test files the document through
+    // the evidence engine's own persistor, so the pin does not depend on
+    // which bodies the fixture happens to decompile.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -803,10 +809,10 @@ fn the_globalstate_report_prints_the_documents_admission_line_only_when_there_is
 
 #[test]
 fn the_errhandling_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The error-handling admission line at the process seam (issue
-    // #350), pinned the same way as global-state's: the `--show` report
-    // prints the filed document's one bounded line naming the skipped
-    // bodies, and prints nothing under a complete record.
+    // The error-handling admission line at the process seam (issue #350),
+    // pinned the same way as global-state's. The `--show` report prints the
+    // filed document's one bounded line naming the function bodies the scan
+    // never reached, and it prints nothing under a complete record.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -875,10 +881,10 @@ fn the_errhandling_report_prints_the_documents_admission_line_only_when_there_is
 #[test]
 fn the_callback_report_prints_the_documents_admission_line_only_when_there_is_one() {
     // The callback-detection admission line at the process seam (issue
-    // #350), pinned the same way: the `--show` report prints the filed
-    // document's one bounded line, and prints nothing under a complete
-    // record — so the flagless counts beside a complete record mean
-    // examined-and-clean.
+    // #350), pinned the same way. The `--show` report prints the filed
+    // document's one bounded line and prints nothing under a complete
+    // record, so counts without a limitation line beside a complete record
+    // mean the scan looked at everything and found nothing to admit.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -943,12 +949,13 @@ fn the_callback_report_prints_the_documents_admission_line_only_when_there_is_on
 
 #[test]
 fn the_algorithm_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The algorithm-recognition admission line at the process seam
-    // (issue #351): the `--show` report prints the filed document's one
-    // bounded line, naming the never-reached bodies and unreadable
-    // caller edges, and prints nothing under a complete record — pinned
-    // through the engine's own persistor so it does not depend on which
-    // bodies the fixture happens to decompile.
+    // The algorithm-recognition admission line at the process seam (issue
+    // #351). The `--show` report prints the filed document's one bounded
+    // line, which names the function bodies the scan never reached and the
+    // caller edges it could not read, and it prints nothing under a complete
+    // record. The test files the document through the evidence engine's own
+    // persistor, so the pin does not depend on which bodies the fixture
+    // happens to decompile.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -1022,11 +1029,12 @@ fn the_algorithm_report_prints_the_documents_admission_line_only_when_there_is_o
 
 #[test]
 fn the_stringctx_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The string-context admission line at the process seam (issue #351):
-    // its three-facet record — bodies never read, a string listing that
-    // never arrived, cross-references that refused — prints beside the
-    // counts; a complete record prints nothing. Filed through the
-    // engine's own persistor, as every pin in this family.
+    // The string-context admission line at the process seam (issue #351).
+    // Its three-facet record prints beside the counts: function bodies the
+    // scan never read, a program string listing the scan could not read, and
+    // string cross-references that could not be read. A complete record
+    // prints nothing. It files the document through the evidence engine's own
+    // persistor, as every pin in this family does.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -1118,8 +1126,9 @@ fn the_stringctx_report_prints_the_documents_admission_line_only_when_there_is_o
 
 #[test]
 fn the_serialize_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The serialization-pattern admission line at the process seam
-    // (issue #351), filed through the engine's own persistor.
+    // The serialization-pattern admission line at the process seam (issue
+    // #351). The test files the document through the evidence engine's own
+    // persistor.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -1184,12 +1193,12 @@ fn the_serialize_report_prints_the_documents_admission_line_only_when_there_is_o
 
 #[test]
 fn the_typeinfer_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The type-inference admission line at the process seam (issue #351):
-    // the four-facet record prints with its complete bodies facet naming
-    // nothing, and a complete record prints no line at all. The ride
-    // goes through the scan-and-show path the write-back ticket already
-    // pins; this pin only proves the admission line lands beside the
-    // counts when the filed document has one to admit.
+    // The type-inference admission line at the process seam (issue #351).
+    // The four-facet record prints, and its complete `function-bodies` facet
+    // adds nothing to admit; a complete record prints no line at all. This
+    // ride runs along the scan-and-show path the write-back ticket's own test
+    // already pins. This pin only shows that the admission line prints beside
+    // the counts when the filed document has one to admit.
     let ws = fixture_workspace();
     let file_document = |coverage: calxgloss_types::ScanCoverage| {
         let mut metadata = calxgloss_types::ScanMetadata::new("fixture-target");
@@ -1291,10 +1300,11 @@ fn the_typeinfer_report_prints_the_documents_admission_line_only_when_there_is_o
 
 #[test]
 fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_alike() {
-    // The two rides' own stamps at the process seam (issue #348): each
-    // scan files the record it stamped, and the run's report and a later
-    // `--show` report stay the byte-identical same read — admission line
-    // when the scan owes one, silence when it does not.
+    // The two rides' own coverage stamps at the process seam (issue #348).
+    // Each scan files the coverage record it wrote. The run's report and a
+    // later `--show` report stay byte-identical, because both are the same
+    // read: the admission line when the scan owes one, silence when it does
+    // not.
     for command in ["typesdb", "consts"] {
         let ws = fixture_workspace();
         let (ok, stdout, stderr) = run(
@@ -1324,10 +1334,10 @@ fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_ali
 
 #[test]
 fn the_libmatch_and_floatsimd_rides_report_run_and_show_identically() {
-    // The run-equals-show doctrine holds for both engines' new stamps
-    // (issue #347): whatever coverage the fixture's real scans stamp,
-    // the run's report and a later `--show` report are the same read of
-    // the same document — admission line and all, or its absence.
+    // The run-equals-show rule holds for both evidence engines' new coverage
+    // stamps (issue #347). Whatever coverage the fixture's real scans record,
+    // the run's report and a later `--show` report are the same read of the
+    // same document — the admission line and all, or its absence.
     for command in ["libmatch", "floatsimd"] {
         let ws = fixture_workspace();
         let (ok, stdout, stderr) = run(
@@ -1358,11 +1368,10 @@ fn the_libmatch_and_floatsimd_rides_report_run_and_show_identically() {
 
 #[test]
 fn the_controlflow_memory_and_sync_rides_report_run_and_show_identically() {
-    // The run-equals-show doctrine holds for the fan-out trio's own
-    // stamps (issue #349): whatever coverage the fixture's real scans
-    // stamp, the run's report and a later `--show` report are the same
-    // read of the same document — admission line and all, or its
-    // absence.
+    // The run-equals-show rule holds for the fan-out trio's own coverage
+    // stamps (issue #349). Whatever coverage the fixture's real scans record,
+    // the run's report and a later `--show` report are the same read of the
+    // same document — the admission line and all, or its absence.
     for command in ["controlflow", "memory", "sync"] {
         let ws = fixture_workspace();
         let (ok, stdout, stderr) = run(
@@ -1393,20 +1402,19 @@ fn the_controlflow_memory_and_sync_rides_report_run_and_show_identically() {
 
 #[test]
 fn the_globalstate_errhandling_and_callback_rides_report_run_and_show_identically() {
-    // The run-equals-show doctrine holds for the fan-out B trio's own
-    // stamps (issue #350): whatever coverage the fixture's real scans
-    // stamp, the run's report and a later `--show` report are the same
-    // read of the same document — admission line and all, or its
-    // absence.
+    // The run-equals-show rule holds for the fan-out B trio's own coverage
+    // stamps (issue #350). Whatever coverage the fixture's real scans record,
+    // the run's report and a later `--show` report are the same read of the
+    // same document — the admission line and all, or its absence.
     for command in ["global-state", "errhandling", "callback"] {
         let ws = fixture_workspace();
         if command == "callback" {
             // The callback ride's pre-scan hook reads the type-inference
-            // document for signature enrichment and warns when it is
-            // absent — scan-side log noise on the tracing stream, not
-            // report bytes. Filing the empty document through its own
-            // persistor keeps the run's stdout to just the report, so
-            // run and --show compare byte for byte.
+            // document to enrich signatures, and it warns when that document
+            // is absent. The warning is scan-side log noise on the tracing
+            // stream, not report bytes. Filing the empty document through its
+            // own persistor first keeps the run's stdout to just the report,
+            // so the run output and the --show output compare byte for byte.
             let result = calxgloss_typeinfer::types::TypeInferenceResult::new(
                 calxgloss_types::ScanMetadata::new("fixture-target"),
             );
@@ -1442,10 +1450,10 @@ fn the_globalstate_errhandling_and_callback_rides_report_run_and_show_identicall
 
 #[test]
 fn the_fan_out_c_reports_run_and_show_identically() {
-    // The run-equals-show doctrine holds for the fan-out C quartet's own
-    // stamps (issue #351): whatever coverage the fixture's real scans
-    // stamp, the run's report and a later `--show` report are the same
-    // read of the same document — admission line and all, or its
+    // The run-equals-show rule holds for the fan-out C quartet's own
+    // coverage stamps (issue #351). Whatever coverage the fixture's real
+    // scans record, the run's report and a later `--show` report are the
+    // same read of the same document — the admission line and all, or its
     // absence.
     for command in ["algorithm", "stringctx", "serialize", "typeinfer"] {
         let ws = fixture_workspace();
@@ -1477,12 +1485,12 @@ fn the_fan_out_c_reports_run_and_show_identically() {
 
 #[test]
 fn the_typeinfer_write_back_rides_the_scan_and_show_paths_and_prints_its_report() {
-    // The type-inference follow-on at the process seam (issue #341):
-    // `--write-back --confidence-floor 0` applies through the typeinfer
-    // crate's own write-back API and prints its report after the main
-    // report; `--show --write-back` prints the same section from the
-    // filed document; and without the flag no write-back section
-    // appears at all — run or show.
+    // The type-inference follow-on at the process seam (issue #341).
+    // `--write-back --confidence-floor 0` runs through the typeinfer crate's
+    // own write-back API, and its report prints after the main report.
+    // `--show --write-back` prints the same section from the filed document.
+    // Without the flag, no write-back section prints at all, on the run path
+    // or on the show path.
     let ws = fixture_workspace();
 
     let (ok, stdout, stderr) = run(
@@ -1576,10 +1584,11 @@ fn the_typeinfer_write_back_rides_the_scan_and_show_paths_and_prints_its_report(
 
 #[test]
 fn a_malformed_set_override_file_fails_naming_its_path() {
-    // The set-override flags at the process seam (issue #341): a broken
-    // JSON document fails the run, and stderr names both the file's
-    // path and the database that could not be read — the row's own
-    // warning wording, never a silent fallback to the built-in set.
+    // The set-override flags at the process seam (issue #341). A malformed
+    // JSON document fails the run, and the process's whole diagnostic output
+    // names both the file's path and the database that could not be read —
+    // the row's own warning wording, never a silent fallback to the built-in
+    // set.
     for (command, flag, wording) in [
         ("algorithm", "--patterns", "could not read pattern database"),
         (
@@ -1610,10 +1619,11 @@ fn a_malformed_set_override_file_fails_naming_its_path() {
             !ok,
             "the {command} run with a malformed override must fail:\n{stdout}\n{stderr}"
         );
-        // The row's own warning carries the database error naming the
-        // file's path, and it rides the tracing stream (stdout); the
-        // handler's bail rides stderr. Assert over the process's whole
-        // diagnostic output rather than pinning one stream.
+        // The row's own warning holds the database error, which names the
+        // file's path. That warning goes out on the tracing stream (stdout),
+        // while the handler's failure message goes to stderr. So the
+        // assertion reads the process's whole diagnostic output rather than
+        // pinning one stream.
         let diagnostics = format!("{stdout}{stderr}");
         assert!(
             diagnostics.contains(wording) && diagnostics.contains("broken-database.json"),
@@ -1622,15 +1632,15 @@ fn a_malformed_set_override_file_fails_naming_its_path() {
     }
 }
 
-// ── #355: seam capability admission rides the scan run report ─────────────
+// ── #355: seam capability admission prints in the scan run report ─────────
 
 #[test]
 fn the_run_report_stays_silent_of_seam_admissions_when_the_seam_declares_answerable() {
-    // Issue #355 doctrine at the process seam: the Kuna seam declares every
-    // query family answerable, so a scan run report carries no seam
-    // admission line anywhere — byte-identical silence — and the
-    // run-equals-`--show` contract stands unchanged beside the seam line's
-    // recorded exemption (ADR-0054).
+    // Issue #355's rule at the process seam. The Kuna seam declares every
+    // query family answerable, so the scan run report prints no seam
+    // admission line at all — total silence. The run-equals-`--show`
+    // contract still stands unchanged, alongside the seam line's recorded
+    // exemption (ADR-0054).
     let ws = fixture_workspace();
     let (ok, stdout, stderr) = run(
         cli(ws.path()).args([
