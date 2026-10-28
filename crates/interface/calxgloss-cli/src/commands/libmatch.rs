@@ -1,24 +1,26 @@
 //! The `libmatch` command's CLI contribution — identify known-library
 //! functions for a binary (issue #341, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `known-library` registry row; this module contributes
-//! only what is genuinely per-engine: the cached-document loader, the
-//! report printer, and the `--signatures` derivation through the
-//! registry's own set-override option, which the row interprets inside
-//! its own engine build. The generic handler
-//! ([`scan_command`](crate::commands::scan_command)) routes the command
-//! end to end: it rebuilds the result on demand (the CLI's force-rescan
-//! contract) and can print what a cached one holds, filing it where the
-//! row files it — `re/analysis/libmatch/{binary}.json`. The run's
-//! report and a later `--show` report are the same read of the same
-//! document.
+//! The shape of this scan — how the evidence engine is built, how the
+//! scan runs, how the result is persisted, and how degradation is
+//! reported — lives in the pipeline's `known-library` registry row.
+//! This module contributes only what is genuinely specific to this
+//! evidence engine: the cached-document loader, the report printer, and
+//! the `--signatures` derivation through the registry's own
+//! set-override option, which the row applies when building its own
+//! evidence engine. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) runs the whole
+//! command: a run always rebuilds the result instead of reusing the
+//! cached document (the CLI's refresh-cache contract), and `--show`
+//! prints a cached document instead. The result is filed where the row
+//! files it — `re/analysis/libmatch/{binary}.json`. The run's report
+//! and a later `--show` report read the same document the same way.
 //!
 //! With `--signatures <file>`, the scan reads its signature set from a
 //! JSON [signature database](calxgloss_libmatch::signature_db) instead
-//! of the built-in starter set — a malformed file fails the run naming
-//! its path. The flag is ignored on the `--show` path, which prints a
-//! cached result without scanning.
+//! of the built-in starter set. A malformed file fails the run, naming
+//! the file's path. The flag is ignored on the `--show` path, which
+//! prints a cached result without scanning.
 
 use std::path::Path;
 
@@ -50,10 +52,10 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed result through the engine's own persistor — the same
-/// loader for the `--show` report and for reading the document a run
-/// just filed. A missing one arrives with the remediation wording
-/// naming the exact producing command.
+/// Read the filed result through the evidence engine's own persistor —
+/// the same loader for the `--show` report and for reading the document
+/// a run just filed. When the document is missing, the error names the
+/// exact command that produces one.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<LibmatchResult> {
     LibmatchPersistor::new(workspace)
         .load(binary)
@@ -66,18 +68,18 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<LibmatchResult> {
 }
 
 /// Print the report over the loaded result, naming where the document
-/// is filed. Both paths read the same on-disk state, so the run's
-/// report and a later `--show` report are byte-identical over one
-/// document.
+/// is filed. Both paths read the same on-disk state, so for one
+/// document the run's report and a later `--show` report come out
+/// byte-identical.
 fn print_report(result: &LibmatchResult, workspace: &Path, binary: &str) -> Result<()> {
     print_libmatch_report(result, &LibmatchPersistor::new(workspace).path_for(binary));
     Ok(())
 }
 
 /// The `--signatures` flag reaches the scan as the registry's
-/// set-override option, which the known-library row interprets inside
-/// its own engine build (issue #338); a malformed database fails the
-/// row, whose warning the handler turns into a failed run. The
+/// set-override option. The known-library row reads it when building
+/// its own evidence engine (issue #338). A malformed database fails
+/// the row, and the handler turns that failure into a failed run. The
 /// overwrite policy stays the generic handler's.
 pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
     ScanRunOptions {
@@ -205,7 +207,8 @@ fn confidence_color(confidence: u8) -> fn(&str) -> String {
     }
 }
 
-/// The "…and N more" line a detail section ends with when it collapsed.
+/// The "…and N more" line a detail section ends with when it hides some
+/// entries.
 fn print_hidden_count(noun: &str, total: usize) {
     if total > DETAIL_LIMIT {
         println_content(format!(

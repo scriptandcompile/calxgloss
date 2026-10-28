@@ -16,11 +16,11 @@ use crate::utils::*;
 
 /// Handle the `classify` subcommand: analyzes DLLs and writes classification records.
 ///
-/// The classification-override handle (issue #97, W2.8) is consulted before
-/// strategy dispatch: an operator's correction from the dashboard routes
-/// the binary without a CLI re-run. When no shared handle is passed (a
-/// plain CLI classify), one is opened over the workspace so persisted
-/// overrides are honored there too.
+/// The classification-override handle (issue #97, W2.8) is consulted
+/// before strategy dispatch: a correction the operator set from the
+/// dashboard decides the binary's classification, with no CLI re-run.
+/// When no shared handle is passed (a plain CLI classify), one is opened
+/// over the workspace so persisted overrides are honored there too.
 pub async fn handle_classify(
     dlls: &[String],
     target_dir: &Path,
@@ -34,8 +34,8 @@ pub async fn handle_classify(
 
     // Kuna is the only analysis engine (issue #214): the analyzer reads
     // through the seam. The classification counts themselves come from PE
-    // headers on disk; the primary DLL is loaded in-process so the
-    // analyzer has a live source for any engine read it makes.
+    // headers on disk. The primary DLL is loaded in-process so the
+    // analyzer has a live source for any analysis-engine read it needs.
     let primary = dlls.first().map(String::as_str).unwrap_or("classify");
     let kuna = load_kuna_at(settings, &target_dir.join(primary))?;
 

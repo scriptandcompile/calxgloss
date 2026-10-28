@@ -11,13 +11,15 @@ use crate::utils::*;
 
 /// Handle the `serve` subcommand: start the web review UI HTTP server.
 ///
-/// The server's review-actions backend is wired from the resolved settings
-/// (issue #327): the one `pipeline_spec` fold the commands run their passes
-/// through becomes the server's pass description, and every review-UI patch
-/// request assembles its retry pass from it — LLM selection, Kuna budgets,
-/// retry policy and all. A server started without LLM settings still serves
-/// the review surface; its patch requests fail at request time with the
-/// assembly error naming what's missing.
+/// The server's review-actions backend is built from the resolved
+/// settings (issue #327). The settings fold behind the `pipeline_spec`
+/// call — the one fold the commands run their passes through — also
+/// produces the server's pass description, with LLM selection, Kuna
+/// budgets, retry policy and all in it. Every review-UI patch request
+/// assembles its retry pass from that description. A server started
+/// without LLM settings still serves the review surface; its patch
+/// requests fail at request time, with the assembly error naming what
+/// is missing.
 pub async fn handle_serve(
     workspace: PathBuf,
     port: u16,
@@ -35,14 +37,14 @@ pub async fn handle_serve(
         );
     }
 
-    // Fold the resolved settings once (issue #327): the review-actions
-    // backend carries the same description the CLI commands run their passes
+    // Fold the resolved settings once (issue #327). The review-actions
+    // backend holds the same description the CLI commands run their passes
     // through (`pipeline_spec`, issue #324), so a review-UI patch retry
     // honors the settings the user configured. A fold failure — an
-    // unparseable retry-strategy name — stops startup like it stops the
-    // commands; a missing LLM pair is deliberately left unset on the
-    // description: the server still serves the review surface, and a patch
-    // request meets the seam's assembly error at request time.
+    // unparseable retry-strategy name — stops startup, just as it stops
+    // the commands. A missing LLM pair is deliberately left unset on the
+    // description: the server still serves the review surface, and a
+    // patch request meets the assembly seam's error at request time.
     let pass_spec = crate::settings::pipeline_spec(settings)?;
     if pass_spec.llm.is_none() {
         info!(
@@ -109,9 +111,9 @@ pub async fn handle_serve(
     hsep_bold();
     println!();
 
-    // Start the axum server with the settings-backed actions backend wired
-    // into the router (issue #327) — the review UI's patch button drives a
-    // real assembled pass, not a canned response.
+    // Start the axum server with the settings-backed actions backend
+    // connected to the router (issue #327). The review UI's patch button
+    // runs a real assembled pass, not a canned response.
     serve(server_state, actions, port, None).await?;
 
     Ok(())

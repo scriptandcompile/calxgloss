@@ -1,4 +1,4 @@
-//! The bundles that carry the run-wide options of the translation entry
+//! The bundles that hold the run-wide options of the translation entry
 //! points.
 //!
 //! `auto` and `live` accept the same flag surface, and both end up in the
@@ -10,16 +10,16 @@
 //!   workspace every phase needs.
 //! - [`LiveRunOptions`] — the `live` command's flags plus the log controls.
 //! - [`RunControls`] — the optional live run state (events, control,
-//!   cancellation, scope and override handles) that the web server drives;
-//!   `RunControls::default()` is a plain batch run with none of it, and
-//!   [`RunControls::apply`] layers whichever handles exist onto a pass
-//!   description for assembly to wire.
+//!   cancellation, scope and override handles) that the web server drives.
+//!   `RunControls::default()` is a plain batch run with none of it.
+//!   [`RunControls::apply`] copies whichever handles exist into a pass
+//!   description so assembly can attach them to the pipeline.
 //! - [`PassPlumbing`] — one binary's translation pass: workspace, settings,
 //!   git flag, the [`PipelineSpec`] description assembly consumes, and the
 //!   [`RunControls`] it observes.
 //! - [`command_pass_spec`] — the one-target commands' pass description:
-//!   settings folded once, the command's [`PassFlags`] and named target
-//!   layered on (issue #326).
+//!   the settings fold done once, then the command's [`PassFlags`] and
+//!   named target added on top (issue #326).
 
 use std::path::PathBuf;
 
@@ -118,14 +118,15 @@ pub struct RunControls<'a> {
 }
 
 impl RunControls<'_> {
-    /// Layer the live run state onto a pass description (issue #325): the
-    /// handles the `with_*` setters used to carry ride the description as
-    /// plain data now, and `assemble` wires them onto the pipeline. The
-    /// description ends up mirroring exactly what this bundle holds —
-    /// handles set, handles absent cleared (the fold leaves the injection
-    /// fields unset, so in practice this only ever sets).
+    /// Copy the live run state into a pass description (issue #325). The
+    /// `with_*` setters used to pass these handles one by one; now the
+    /// description holds them as plain data fields and `assemble` attaches
+    /// them to the pipeline. After this call the description holds exactly
+    /// what this bundle holds: a present handle is set, an absent one
+    /// clears the field. The settings fold always leaves these injection
+    /// fields unset, so in practice this only ever sets.
     ///
-    /// The classification handle is deliberately not layered: the pipeline
+    /// The classification handle is deliberately not copied: the pipeline
     /// never sees it — the classification phase reads it directly.
     pub fn apply(&self, spec: &mut PipelineSpec) {
         let RunControls {
@@ -150,15 +151,15 @@ impl RunControls<'_> {
 /// the git flag, the [`PipelineSpec`] description its assembly consumes, and
 /// the live run state it observes.
 ///
-/// The call-graph flags it used to carry (issue #268) are knob-set data the
-/// description now carries: `handle_auto` folds them into the spec once per
-/// run, and each pass clones the spec rather than re-deciding per knob
-/// (issue #325).
+/// The call-graph flags it used to carry (issue #268) are knob data that
+/// now lives on the description: `handle_auto` sets them into the spec
+/// once per run, and each pass clones the spec instead of re-deciding
+/// each knob (issue #325).
 #[derive(Clone)]
 pub struct PassPlumbing<'a> {
-    /// Settings the engine load is made from (its budgets); the pass
-    /// description carries what assembly needs beyond the binary the pass
-    /// names.
+    /// Settings the Kuna engine load is made from (its budgets); the pass
+    /// description holds what assembly needs beyond the binary this pass
+    /// targets.
     pub settings: &'a Settings,
     /// The workspace — git, src/, scratch all live here.
     pub workspace: &'a std::path::Path,
@@ -171,10 +172,10 @@ pub struct PassPlumbing<'a> {
     pub run: &'a RunControls<'a>,
 }
 
-/// The call-graph and read-cache flags a single-target translation command
-/// layers onto its pass description — the same four fields `AutoRunOptions`
-/// carries per run (issue #268's bundle convention), as one group (issue
-/// #326).
+/// The call-graph and scan read-cache flags of a single-target
+/// translation command, grouped into one struct (issue #326). They are
+/// the same four fields `AutoRunOptions` holds per run, from issue
+/// #268's bundle convention.
 #[derive(Clone, Default)]
 pub struct PassFlags {
     /// Skip call-graph analysis for this run.
@@ -187,21 +188,24 @@ pub struct PassFlags {
     pub refresh_cache: bool,
 }
 
-/// Build the pass description one single-target command run assembles (issue
-/// #326): the resolved settings folded once (issue #324), then this command's
-/// run options layered on — the resolved workspace, its call-graph and cache
-/// flags, and the binary it names.
+/// Build the pass description that one single-target command run
+/// assembles (issue #326). First the settings fold on the resolved
+/// settings, done once (issue #324). Then this command's run options are
+/// added on top: the resolved workspace, its call-graph and scan
+/// read-cache flags, and the binary the command names.
 ///
 /// This is the same data move `handle_auto` performs inline on its base
-/// description (issue #325), minus the live control handles only `auto` and
-/// `live` carry: the three commands end up with descriptions folded from the
-/// one fold, so an assembled pass honors the settings knobs identically
-/// whichever command typed the run.
+/// description (issue #325), except without the live control handles that
+/// only `auto` and `live` have. The three commands end up with
+/// descriptions built by the one settings fold, so an assembled pass
+/// honors the settings knobs identically whichever command started the
+/// run.
 ///
-/// A record with no endpoint pair is refused here with the settings layer's
-/// "not configured" guidance — naming every layer that can supply one —
-/// rather than the assembly seam's internal `MissingLlm` wording, exactly as
-/// `handle_auto` refuses.
+/// When the resolved settings hold no LLM endpoint pair, this command
+/// refuses with the settings layer's "not configured" guidance — that
+/// guidance names every layer that can supply a pair — instead of the
+/// assembly seam's internal `MissingLlm` wording. This matches exactly
+/// how `handle_auto` refuses.
 pub fn command_pass_spec(
     settings: &Settings,
     workspace: &std::path::Path,
@@ -255,11 +259,11 @@ mod tests {
 
     #[test]
     fn the_command_description_carries_the_settings_knobs_and_the_command_flags() {
-        // Issue #326: `translate` and `batch-translate` build their pass from the
-        // same fold `auto` reads — every knob the record resolved rides the
-        // description verbatim, and the command's own flags layer on top. The
-        // pass assembled from this description honors those knobs whichever
-        // command typed the run.
+        // Issue #326: `translate` and `batch-translate` build their pass from
+        // the same settings fold `auto` reads. Every knob the settings
+        // resolved is on the description verbatim, and the command's own
+        // flags are added on top. The pass assembled from this description
+        // honors those knobs whichever command started the run.
         let file = calxgloss_config::FileConfig {
             workspace: Some("/home/dev/from-settings".into()),
             llm: LlmSection {
@@ -320,8 +324,8 @@ mod tests {
             spec.refresh_cache,
             "--refresh-cache reaches the description"
         );
-        // The binary the command names rides as one target: report identity
-        // and read-cache key together.
+        // The binary the command names becomes one target record, holding
+        // the report identity and the read-cache key together.
         let target = spec.target_binary.expect("the command names its target");
         assert_eq!(target.name, "fixture_target.dll");
         assert_eq!(target.path, PathBuf::from("/targets/fixture_target.dll"));
@@ -330,9 +334,10 @@ mod tests {
     #[test]
     fn a_record_without_an_endpoint_pair_is_refused_with_settings_guidance() {
         // A translation pass always needs an LLM. The command's description
-        // build refuses with the settings layer's guidance wording — naming
-        // the flag, the env var, and the config table — before any engine
-        // load, exactly like `auto` and the old inline `require_*` ladders.
+        // build refuses with the settings layer's guidance wording — it
+        // names the flag, the env var, and the config table — before any
+        // analysis engine load, exactly like `auto` and the old inline
+        // `require_*` ladders.
         let s = settings_from(Default::default(), Default::default());
         let err = match command_pass_spec(
             &s,
@@ -350,10 +355,10 @@ mod tests {
 
     #[test]
     fn run_control_handles_layer_onto_the_pass_description() {
-        // Issue #325: bundle to description is a pure data move — every
-        // pipeline-facing handle in the bundle lands on the spec for
-        // assembly to wire, and the classification handle stays off it
-        // (the pipeline never sees it).
+        // Issue #325: moving the bundle onto the description is a pure data
+        // move — every pipeline-facing handle in the bundle is copied onto
+        // the spec for assembly to attach, and the classification handle is
+        // not copied (the pipeline never sees it).
         let events = TranslationEvents::new(16);
         let stop = StopSignal::new();
         let control = PipelineControl::new();

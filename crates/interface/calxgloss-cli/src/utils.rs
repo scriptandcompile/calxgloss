@@ -11,8 +11,8 @@ pub use tracing::{debug, warn};
 
 /// Load the Kuna engine over `target_dir/<binary>` — the scan commands'
 /// single entry into the analysis engine (issue #214). Kuna reads the file
-/// in-process, so there is no server to connect to; a missing or unreadable
-/// target fails naming the path it was looked for at.
+/// in-process, so there is no server to connect to. When the target is
+/// missing or unreadable, the error names the path it tried.
 pub(super) fn load_kuna_source(
     settings: &crate::Settings,
     binary: &str,
@@ -62,9 +62,10 @@ pub(super) fn resolve_live_workspace(cli_workspace: Option<&PathBuf>) -> PathBuf
 
 /// Refuse to translate a .NET managed binary at the CLI seam (issue #235).
 ///
-/// The pipeline translates native disassembly; a managed assembly's IL is
-/// not in it, so translating one burns LLM tokens on a program the engine
-/// cannot meaningfully decompile. The refusal follows the same precedence
+/// The pipeline translates native disassembly. A managed assembly's IL is
+/// not in that disassembly, so translating one burns LLM tokens on a
+/// program the analysis engine cannot meaningfully decompile. The refusal
+/// follows the same precedence
 /// as classification itself: the operator's override wins, then the
 /// managed-PE fact (the COM descriptor data directory), then the persisted
 /// classification record. A binary whose in-force decision parks it gets a
@@ -72,8 +73,9 @@ pub(super) fn resolve_live_workspace(cli_workspace: Option<&PathBuf>) -> PathBuf
 /// hatch; anything else passes — including a file that cannot be read or
 /// parsed, which the normal flow reports as its own error.
 ///
-/// Call it at the command entry points, before the engine loads or the LLM
-/// client is constructed, so a parked target never touches either.
+/// Call it at the command entry points, before the analysis engine loads
+/// and before the LLM client is constructed, so a parked target starts
+/// neither.
 pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path) -> Result<()> {
     use calxgloss::DllCategory;
 
@@ -99,8 +101,9 @@ pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path
     }
 
     // The PE fact itself — the same COM-descriptor check the classifier
-    // performs, run here so a never-classified managed binary is refused
-    // before the engine loads. It outranks a stale name-heuristic record.
+    // performs, run here so a managed binary that was never classified is
+    // refused before the analysis engine loads. It wins over a stale
+    // name-heuristic record.
     if calxgloss_analysis::file_is_managed_pe(target) {
         return Err(anyhow::anyhow!(parked_refusal(
             binary,
@@ -111,8 +114,8 @@ pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path
     Ok(())
 }
 
-/// The refusal text every parked-target guard gives: the gap, the signal,
-/// and the hatch (issue #235, stories 18–20).
+/// The refusal text every parked-target guard gives: the gap, the detected
+/// signal, and the way to override (issue #235, stories 18–20).
 fn parked_refusal(binary: &str, signal: &str) -> String {
     format!(
         "{binary} is a .NET managed assembly ({signal}) — we do not yet decompile .NET \
@@ -183,8 +186,8 @@ pub(super) fn log_level_for_verbosity(verbosity: u8) -> &'static str {
 ///
 /// The `EnvFilter` is installed inside a `reload` layer so the web server's
 /// `PATCH /api/server/log-level` endpoint can change verbosity while the
-/// process runs; the returned handle is the control side of that layer and
-/// is shared into server state by `serve`/`live`.
+/// process runs. The returned handle controls that layer. `serve` and
+/// `live` pass it into the server state.
 pub(super) fn init_logging(
     verbosity: u8,
     format: &str,
@@ -344,10 +347,10 @@ pub(super) fn hsep_bold() {
     println!("  {}", "═".repeat(SEP_WIDTH));
 }
 
-/// Whether `ch` occupies a terminal column: control characters do not, and
-/// neither do the printable parameter and final bytes of an ANSI escape —
-/// only the ESC that opens the sequence is a control character, so counting
-/// the rest as visible would truncate a line that still fits.
+/// Whether `ch` occupies a terminal column. Control characters do not, and
+/// neither do the printable parameter and final bytes of an ANSI escape.
+/// Only the ESC that opens the sequence is a control character; if the
+/// rest were counted as visible, a line that still fits would be cut.
 fn visible_char(ch: char) -> bool {
     !ch.is_control() && ch != '\u{1b}'
 }
@@ -381,10 +384,10 @@ fn visible_len(s: &str) -> usize {
 /// Safe for ANSI codes and multi-byte UTF-8.
 pub(super) fn println_content(content: impl AsRef<str>) {
     let s = content.as_ref();
-    // Count visible *characters*, not bytes: a multi-byte character like
-    // the ● bullet would otherwise push a short line into the truncation
-    // branch, where the character-counting cut below never reaches the
-    // byte-based limit and the whole line prints empty.
+    // Count visible *characters*, not bytes. Otherwise a multi-byte
+    // character like the ● bullet would push a short line into the
+    // truncation branch, where the character-counting cut below never
+    // reaches the byte-based limit and the whole line prints empty.
     let visible_chars = visible_len(s);
     let padded = if visible_chars < SEP_WIDTH {
         format!("{:<SEP_WIDTH$}", s)
@@ -420,14 +423,16 @@ pub(super) fn println_content(content: impl AsRef<str>) {
 }
 
 /// Prints a scan's own admission beside the counts it qualifies (issues
-/// #346–#348): the shared type's line framed under `Coverage:`, printed
-/// only when there is something to admit. A line that fits the report's
-/// column prints whole and byte-identical to how it always printed; one
-/// that does not — a scan whose every facet fell short, like a region-
-/// limited constant scan — breaks at its facet boundaries instead of at
-/// the column: the status word beside the label and each falling-short
-/// facet's limitation line on its own continuation line, so a reason is
-/// never cut mid-word and the report's box stays intact.
+/// #346–#348). The shared type's line goes under the `Coverage:` label,
+/// and prints only when there is something to admit.
+///
+/// A line that fits the report's column prints whole, byte-identical to
+/// how it always printed. A line that does not fit breaks at its facet
+/// boundaries instead of at the column — such a line comes from a scan
+/// whose every facet fell short, like a region-limited constant scan.
+/// The status word stays beside the label, and each falling-short facet's
+/// limitation line gets its own continuation line. A reason is never cut
+/// mid-word, and the report's box stays intact.
 pub(super) fn print_coverage(coverage: Option<&calxgloss_types::ScanCoverage>) {
     let Some(coverage) = coverage else { return };
     let Some(admission) = coverage.admission() else {
@@ -458,14 +463,17 @@ pub(super) fn print_coverage(coverage: Option<&calxgloss_types::ScanCoverage>) {
 }
 
 /// The run report's seam admission lines (issue #355): one line per query
-/// family the **opened seam itself** declared unavailable, naming the family
-/// and the seam's own bounded reason — never a bare silence and never an
-/// invented answer. A family the seam declared answerable, and one its
-/// declaration never mentioned (which reads as unknown), print nothing:
-/// under an all-answerable declaration there is no line at all, and the
-/// whole report is byte-identical to before this line existed. The lines
-/// print on the run path only — a capability is live session state, and a
-/// `--show` re-render opens no seam to ask (ADR-0054).
+/// family the **opened seam itself** declared unavailable. Each line names
+/// the family and the seam's own bounded reason. The report never falls
+/// silent on an unavailable family and never invents an answer.
+///
+/// A family the seam declared answerable prints nothing. So does a family
+/// the declaration never mentioned — that reads as unknown. Under an
+/// all-answerable declaration there is no line at all, and the whole
+/// report is byte-identical to before this line existed.
+///
+/// The lines print on the run path only. A capability is live session
+/// state, and a `--show` re-render opens no seam to ask (ADR-0054).
 pub(super) fn seam_admission_lines(report: &calxgloss_types::CapabilityReport) -> Vec<String> {
     report
         .families
@@ -728,7 +736,8 @@ mod tests {
     #[test]
     fn guard_passes_unreadable_file_for_the_normal_flow_to_report() {
         // Story 26: the guard does not change what a corrupt or missing
-        // file does — it passes, and the engine load surfaces the error.
+        // file does — it passes, and the Kuna engine load surfaces the
+        // error.
         let dir = fixture_workspace(&[]);
         let target = dir.path().join("target").join("broken.dll");
         guard_managed_binary(dir.path(), "broken.dll", &target)

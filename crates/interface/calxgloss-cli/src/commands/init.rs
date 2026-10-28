@@ -1,4 +1,4 @@
-//! The `init` command — scaffold a configuration file.
+//! The `init` command — writes the project's configuration template.
 
 use std::path::PathBuf;
 

@@ -1,24 +1,27 @@
 //! The `algorithm` command's CLI contribution — recognize algorithms in
 //! a binary (issue #341, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `algorithm-recognition` registry row; this module
-//! contributes only what is genuinely per-engine: the cached-document
-//! loader, the report printer, and the `--patterns` derivation through
-//! the registry's own set-override option, which the row interprets
-//! inside its own engine build. The generic handler
-//! ([`scan_command`](crate::commands::scan_command)) routes the command
-//! end to end: it rebuilds the result on demand (the CLI's force-rescan
-//! contract) and can print what a cached one holds, filing it where the
-//! row files it — `re/analysis/algorithm/{binary}.json` — the same file
+//! The shape of this scan — how the evidence engine is built, how the
+//! scan runs, how the result is persisted, and how degradation is
+//! reported — lives in the pipeline's `algorithm-recognition` registry
+//! row. This module contributes only what is genuinely specific to
+//! this evidence engine: the cached-document loader, the report
+//! printer, and the `--patterns` derivation through the registry's own
+//! set-override option, which the row applies when building its own
+//! evidence engine. The generic handler
+//! ([`scan_command`](crate::commands::scan_command)) runs the whole
+//! command: a run always rebuilds the result instead of reusing the
+//! cached document (the CLI's refresh-cache contract), and `--show`
+//! prints a cached document instead. The result is filed where the row
+//! files it — `re/analysis/algorithm/{binary}.json` — the same file
 //! batch translation reads as prompt context. The run's report and a
-//! later `--show` report are the same read of the same document.
+//! later `--show` report read the same document the same way.
 //!
 //! With `--patterns <file>`, the scan reads its signature sets from a
 //! JSON [pattern database](calxgloss_algorithm::pattern_db) instead of
-//! the built-in standard sets — a malformed file fails the run naming
-//! its path. The flag is ignored on the `--show` path, which prints a
-//! cached result without scanning.
+//! the built-in standard sets. A malformed file fails the run, naming
+//! the file's path. The flag is ignored on the `--show` path, which
+//! prints a cached result without scanning.
 
 use std::path::Path;
 
@@ -51,10 +54,10 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed result through the engine's own persistor — the same
-/// loader for the `--show` report and for reading the document a run
-/// just filed. A missing one arrives with the remediation wording
-/// naming the exact producing command.
+/// Read the filed result through the evidence engine's own persistor —
+/// the same loader for the `--show` report and for reading the document
+/// a run just filed. When the document is missing, the error names the
+/// exact command that produces one.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<AlgorithmRecognitionResult> {
     AlgorithmPersistor::new(workspace)
         .load(binary)
@@ -67,9 +70,9 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<AlgorithmRecognit
 }
 
 /// Print the report over the loaded result, naming where the document
-/// is filed. Both paths read the same on-disk state, so the run's
-/// report and a later `--show` report are byte-identical over one
-/// document.
+/// is filed. Both paths read the same on-disk state, so for one
+/// document the run's report and a later `--show` report come out
+/// byte-identical.
 fn print_report(result: &AlgorithmRecognitionResult, workspace: &Path, binary: &str) -> Result<()> {
     print_algorithm_recognition_report(
         result,
@@ -78,11 +81,11 @@ fn print_report(result: &AlgorithmRecognitionResult, workspace: &Path, binary: &
     Ok(())
 }
 
-/// The `--patterns` flag reaches the scan as the registry's set-override
-/// option, which the algorithm-recognition row interprets inside its
-/// own engine build (issue #338); a malformed database fails the row,
-/// whose warning the handler turns into a failed run. The overwrite
-/// policy stays the generic handler's.
+/// The `--patterns` flag reaches the scan as the registry's
+/// set-override option. The algorithm-recognition row reads it when
+/// building its own evidence engine (issue #338). A malformed database
+/// fails the row, and the handler turns that failure into a failed run.
+/// The overwrite policy stays the generic handler's.
 pub(crate) fn derive_run_options(flags: &ScanFlags) -> ScanRunOptions {
     ScanRunOptions {
         set_override_file: flags.set_override_file.clone(),
@@ -210,7 +213,8 @@ fn confidence_color(confidence: u8) -> fn(&str) -> String {
     }
 }
 
-/// The "…and N more" line a detail section ends with when it collapsed.
+/// The "…and N more" line a detail section ends with when it hides some
+/// entries.
 fn print_hidden_count(noun: &str, total: usize) {
     if total > DETAIL_LIMIT {
         println_content(format!(

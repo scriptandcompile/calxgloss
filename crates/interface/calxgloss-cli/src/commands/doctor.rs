@@ -1,8 +1,9 @@
 //! `calxgloss doctor` — a read-only report of the Kuna engine (issue #214).
 //!
-//! The engine is compiled into calxgloss, so there is no install, plugin,
-//! extension, or port to check: the doctor loads the `--binary` target
-//! in-process and reports the program identity the engine reads from it.
+//! The Kuna engine is compiled into calxgloss, so there is no install,
+//! plugin, extension, or port to check: the doctor loads the `--binary`
+//! target in-process and reports the program identity the Kuna engine
+//! reads from it.
 //! Nothing is spawned, installed, or modified; a failing check exits
 //! non-zero so CI can gate on the command.
 

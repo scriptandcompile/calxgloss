@@ -1,16 +1,18 @@
 //! The `sync` command's CLI contribution — detect concurrency constructs
 //! for a binary (issue #340, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `concurrency` registry row; this module contributes
-//! only what is genuinely per-engine: the cached-document loader and the
-//! report printer. The generic handler
-//! ([`scan_command`](crate::commands::scan_command)) routes the command
-//! end to end: it rebuilds the result on demand (the CLI's force-rescan
-//! contract) and can print what a cached one holds, filing it where the
-//! row files it — `re/analysis/sync/{binary}.json` — the same file batch
-//! translation reads as prompt context. The run's report and a later
-//! `--show` report are the same read of the same document.
+//! The shape of this scan — how the evidence engine is built, how the
+//! scan runs, how the result is persisted, and how degradation is
+//! reported — lives in the pipeline's `concurrency` registry row. This
+//! module contributes only what is genuinely specific to this evidence
+//! engine: the cached-document loader and the report printer. The
+//! generic handler ([`scan_command`](crate::commands::scan_command))
+//! runs the whole command: a run always rebuilds the result instead of
+//! reusing the cached document (the CLI's refresh-cache contract), and
+//! `--show` prints a cached document instead. The result is filed where
+//! the row files it — `re/analysis/sync/{binary}.json` — the same file
+//! batch translation reads as prompt context. The run's report and a
+//! later `--show` report read the same document the same way.
 
 use std::path::Path;
 
@@ -42,10 +44,10 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed result through the engine's own persistor — the same
-/// loader for the `--show` report and for reading the document a run
-/// just filed. A missing one arrives with the remediation wording
-/// naming the exact producing command.
+/// Read the filed result through the evidence engine's own persistor —
+/// the same loader for the `--show` report and for reading the document
+/// a run just filed. When the document is missing, the error names the
+/// exact command that produces one.
 fn load_filed_result(workspace: &Path, binary: &str) -> Result<SyncResult> {
     SyncPersistor::new(workspace).load(binary).with_context(|| {
         format!(
@@ -56,8 +58,8 @@ fn load_filed_result(workspace: &Path, binary: &str) -> Result<SyncResult> {
 }
 
 /// Print the report over the loaded result, naming where the document is
-/// filed. Both paths read the same on-disk state, so the run's report
-/// and a later `--show` report are byte-identical over one document.
+/// filed. Both paths read the same on-disk state, so for one document
+/// the run's report and a later `--show` report come out byte-identical.
 fn print_report(result: &SyncResult, workspace: &Path, binary: &str) -> Result<()> {
     print_concurrency_report(result, &SyncPersistor::new(workspace).path_for(binary));
     Ok(())
@@ -88,7 +90,7 @@ fn print_concurrency_report(result: &SyncResult, path: &Path) {
     ));
     println!();
 
-    // Findings, broken down by the record kind the union carries.
+    // Findings, broken down by the kind of each finding.
     let kind_breakdown: Vec<String> = [
         "mutex",
         "atomic",
@@ -189,7 +191,8 @@ fn confidence_color(confidence: u8) -> fn(&str) -> String {
     }
 }
 
-/// The "…and N more" line a detail section ends with when it collapsed.
+/// The "…and N more" line a detail section ends with when it hides some
+/// entries.
 fn print_hidden_count(noun: &str, total: usize) {
     if total > DETAIL_LIMIT {
         println_content(format!(
