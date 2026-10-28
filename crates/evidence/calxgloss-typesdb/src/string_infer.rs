@@ -4,7 +4,8 @@
 //! collect → cluster → infer → score pipeline: literals come from the
 //! seam's `strings()` read (regex filter plus quality filtering),
 //! cross-reference clustering groups them into candidate structs, and
-//! confidence scoring filters candidates against a configurable threshold.
+//! evidence-confidence scoring filters candidates against a configurable
+//! threshold.
 //!
 //! The evidence is co-reference. A function that reads `flowname`, `screen`,
 //! and `nextflow` is reading one object's fields, so those literals cluster
@@ -35,21 +36,21 @@ const MAX_LITERAL_LEN: usize = 64;
 const MIN_NAME_PART: usize = 3;
 
 /// A function pointing at more literals than this is a hub — a logging or
-/// formatting function — and does not evidence one struct.
+/// formatting function — and is not evidence for one struct.
 const MAX_HUB_FANOUT: usize = 24;
 
-/// Default cap on the literals whose cross-references are fetched, so a run
-/// stays bounded on a binary holding tens of thousands of them.
+/// Default cap on the literals whose cross-references are fetched, so the
+/// pass stays bounded on a binary holding tens of thousands of them.
 const DEFAULT_MAX_LITERALS: usize = 5_000;
 
 /// Default minimum literals for a cluster to be a candidate.
 const DEFAULT_MIN_FIELDS: usize = 2;
 
-/// Default confidence a candidate must reach to be reported.
+/// Default evidence confidence a candidate must reach to be reported.
 const DEFAULT_MIN_CONFIDENCE: u8 = 40;
 
-/// the decompiler's generated-name prefixes. A stem shared by generated names names
-/// nothing.
+/// The decompiler's generated-name prefixes. A stem shared by generated
+/// names names nothing.
 const AUTO_NAME_PREFIXES: [&str; 4] = ["FUN_", "DAT_", "LABEL_", "thunk_"];
 
 /// Characters that separate a qualifier from the name it qualifies. `_` is
@@ -62,7 +63,7 @@ const NAME_SEPARATORS: [char; 4] = ['.', ':', ' ', '-'];
 const STEM_SEPARATORS: [char; 5] = ['_', '.', ':', ' ', '-'];
 
 /// The literal-shape patterns the screening and the kind inference use,
-/// compiled once per run rather than per literal.
+/// compiled once per pass rather than once per literal.
 struct Shapes {
     format_spec: Regex,
     integer: Regex,
@@ -87,19 +88,21 @@ impl Shapes {
 /// that tied them.
 struct Cluster {
     literals: Vec<StringLiteral>,
-    /// The clustering-key functions — the shared functions that unioned the
-    /// literals. Naming reads these; a hub function names nothing.
+    /// The clustering-key functions — the shared functions that joined the
+    /// literals into this cluster. Naming uses only these; a hub function
+    /// never gives a name.
     functions: Vec<String>,
     /// Every function that references a literal in the cluster, hubs
-    /// included. This is the candidate's evidence of who reads its fields,
-    /// and the engine's cross-reference merge pass compares it across
-    /// candidates; hubs are excluded from clustering, not from evidence.
+    /// included. This is the candidate's evidence of who reads its fields;
+    /// the type-database engine's cross-reference merge pass compares it
+    /// across candidates. Hubs are excluded from clustering, not from
+    /// evidence.
     all_functions: Vec<String>,
 }
 
 /// Literals grouped by the functions that reference them.
 ///
-/// Literals are unioned through their referencing functions, so a chain of
+/// Literals are joined through their referencing functions, so a chain of
 /// co-references pulls a whole field list into one group. A hub function is
 /// skipped — it points at literals of many objects — and a literal no
 /// function references cannot join a group at all.
@@ -243,7 +246,8 @@ fn function_stem(functions: &[String]) -> Option<String> {
         .then(|| stem.to_string())
 }
 
-/// Whether a name is one the decompiler generated, carrying no information.
+/// Whether a name is one the decompiler generated. Generated names tell us
+/// nothing.
 fn is_auto_name(name: &str) -> bool {
     AUTO_NAME_PREFIXES
         .iter()
@@ -337,8 +341,8 @@ fn infer_field_type(value: &str, shapes: &Shapes) -> FieldType {
 /// Whether a literal is worth clustering.
 ///
 /// The defined-string listing carries sentences, paths, format strings, and
-/// numeric blobs alongside the identifier-shaped text that names fields, and
-/// a cluster built from that junk describes nothing.
+/// numeric blobs alongside the identifier-shaped text that names fields. A
+/// cluster built from that junk describes nothing.
 fn is_useful_literal(value: &str, shapes: &Shapes) -> bool {
     let length = value.chars().count();
     if !(MIN_LITERAL_LEN..=MAX_LITERAL_LEN).contains(&length) {
@@ -366,12 +370,12 @@ fn is_useful_literal(value: &str, shapes: &Shapes) -> bool {
     true
 }
 
-/// Confidence that one cluster describes a single struct, 0–100.
+/// Evidence confidence that one cluster describes a single struct, 0–100.
 ///
-/// More literals is stronger evidence than fewer, several functions agreeing
-/// is stronger than one, a name that came out of the data is stronger than a
-/// placeholder, and literals that already read as field names are stronger
-/// than ones that had to be cleaned up.
+/// More literals are stronger evidence than fewer. Several functions
+/// agreeing are stronger than one. A name that came out of the data is
+/// stronger than a placeholder, and literals that already read as field
+/// names are stronger than ones that had to be cleaned up.
 fn score(cluster: &Cluster, origin: NameOrigin, clean_fields: usize, fields: usize) -> u8 {
     let breadth = cluster.literals.len().min(5) * 8;
     let agreement = cluster.functions.len().min(4) * 5;
@@ -384,8 +388,9 @@ fn score(cluster: &Cluster, origin: NameOrigin, clean_fields: usize, fields: usi
 /// server could not answer".
 ///
 /// A literal whose cross-references cannot be read simply fails to cluster,
-/// degrading one candidate. Anything else — transport, a reported server
-/// failure — is a broken run, because every later literal would hit it too.
+/// and one candidate is lost. Anything else — transport, a reported server
+/// failure — ends the whole pass, because every later literal would hit the
+/// same failure.
 fn is_reference_miss(error: &EngineError) -> bool {
     matches!(
         error,
@@ -394,12 +399,12 @@ fn is_reference_miss(error: &EngineError) -> bool {
 }
 
 // ============================================================
-// Engine
+// The string-inference detector
 // ============================================================
 
 /// String-guided struct inference over the program's literals.
 ///
-/// The engine is generic over [`ScanSource`] so tests can drive it with
+/// The detector is generic over [`ScanSource`] so tests can drive it with
 /// canned responses; [`new`](Self::new) builds one over a loaded
 /// [`KunaSource`].
 #[derive(Debug, Clone)]
@@ -413,14 +418,15 @@ pub struct StringInferenceEngine<S = KunaSource> {
 }
 
 impl StringInferenceEngine<KunaSource> {
-    /// An engine over a loaded Kuna program.
+    /// A string-inference detector over a loaded Kuna program.
     pub fn new(source: &KunaSource) -> StringInferenceEngine<KunaSource> {
         Self::with_source(source.clone())
     }
 }
 
 impl<S> StringInferenceEngine<S> {
-    /// An engine over any source that can read strings and cross-references.
+    /// A string-inference detector over any source that can read strings
+    /// and cross-references.
     pub fn with_source(source: S) -> Self {
         Self {
             source,
@@ -485,7 +491,7 @@ impl<S> StringInferenceEngine<S> {
             .map(|cluster| self.infer_candidate(cluster, &shapes))
             .filter(|candidate| candidate.confidence >= self.min_confidence)
             .collect();
-        // Names break ties so a run over the same program is deterministic.
+        // Names break ties so two passes over one program sort alike.
         candidates.sort_by(|a, b| {
             b.confidence
                 .cmp(&a.confidence)
@@ -502,8 +508,8 @@ impl<S> StringInferenceEngine<S> {
     /// The program's literals, screened and deduplicated.
     ///
     /// The same text defined at several addresses is one field name, and the
-    /// lowest address is the canonical one. What survives is capped so a run
-    /// stays bounded on a binary holding tens of thousands of literals.
+    /// lowest address is the canonical one. What survives is capped so the
+    /// pass stays bounded on a binary holding tens of thousands of literals.
     async fn collect_literals(&self, shapes: &Shapes) -> Result<Vec<StringLiteral>>
     where
         S: ScanSource,
@@ -555,7 +561,7 @@ impl<S> StringInferenceEngine<S> {
     /// One cross-reference read per literal, then the grouping.
     ///
     /// A literal whose references cannot be read is dropped from clustering;
-    /// a server failure aborts the run.
+    /// a server failure ends the whole pass.
     async fn cluster(&self, literals: &[StringLiteral]) -> Result<Vec<Cluster>>
     where
         S: ScanSource,
@@ -613,12 +619,14 @@ impl<S> StringInferenceEngine<S> {
             name,
             name_origin: origin,
             fields,
-            // Evidence of who reads the fields includes hub functions:
-            // naming and scoring read the key functions above, but the
-            // engine's merge pass needs every reference, hubs included.
+            // Evidence of who reads the fields includes hub functions.
+            // Naming and scoring read only the key functions above; the
+            // type-database engine's merge pass needs every reference,
+            // hubs included.
             referenced_by: cluster.all_functions.clone(),
-            // The engine's linking and merge passes may later rename or
-            // combine the candidate; inference itself does neither.
+            // The type-database engine's vtable linking and merge passes
+            // may later rename or combine the candidate; string inference
+            // itself does neither.
             linked_vtable: None,
             merged_from: None,
         }
@@ -640,7 +648,7 @@ impl<S> StringInferenceEngine<S> {
             offset: None,
             source_value: literal.value.clone(),
             source_address: literal.address,
-            // The engine's flag pass fills this in after the scans.
+            // The type-database engine's flag pass fills this in after the scans.
             stl_kind: None,
         })
     }
@@ -983,7 +991,7 @@ mod tests {
     async fn a_hub_function_still_counts_as_referencing_evidence() {
         // A hub is skipped as a clustering key, but it really does read the
         // literals: the candidate records it in `referenced_by` so the
-        // engine's merge pass can see the overlap it creates.
+        // type-database engine's merge pass can see the overlap it creates.
         let mut source = MockSource::new(vec![literal("width", 0x400), literal("height", 0x408)]);
         for i in 0..23u64 {
             source
@@ -1161,8 +1169,9 @@ mod tests {
             .unwrap();
         assert_eq!(candidates.len(), 1);
         let candidate = &candidates[0];
-        // the engine named neither the struct nor its functions, so the candidate
-        // is named after the literals it came from.
+        // The literals share no qualifier and the one referencing function
+        // has a decompiler-generated name, so neither can name the struct:
+        // the candidate is named after the literals it came from.
         assert_eq!(candidate.name, "strings_at_180129340");
         assert_eq!(candidate.fields.len(), 8);
         assert_eq!(candidate.confidence, 40 + 5 + 20);
@@ -1237,7 +1246,7 @@ mod tests {
             "Widget_getHeight".to_string(),
         ];
         assert_eq!(function_stem(&methods).as_deref(), Some("Widget"));
-        // the decompiler's generated names carry nothing to name a struct after.
+        // The decompiler's generated names give nothing to name a struct after.
         let generated = vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()];
         assert_eq!(function_stem(&generated), None);
         // A stem that is the whole of one name is that name.
@@ -1282,8 +1291,8 @@ mod tests {
         );
         // The parts sum past the ceiling, so the score is capped at 100.
         assert_eq!(score(&cluster(5, 4), NameOrigin::LiteralPrefix, 5, 5), 100);
-        // More literals and more functions than that add nothing: the score
-        // saturates rather than crowding out the other signals.
+        // More literals and more functions than that add nothing: each term
+        // is capped, so no one signal outweighs the others.
         assert_eq!(score(&cluster(9, 9), NameOrigin::LiteralPrefix, 9, 9), 100);
         // Names that had to be cleaned up count for nothing.
         assert_eq!(score(&cluster(2, 1), NameOrigin::Address, 0, 2), 16 + 5);
