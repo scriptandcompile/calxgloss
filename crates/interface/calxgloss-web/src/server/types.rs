@@ -8,7 +8,7 @@ use calxgloss_types::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Wrapper for successful API responses carrying the full dashboard.
+/// Wrapper for successful API responses; it includes the full dashboard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardResponse {
     pub success: bool,
@@ -17,9 +17,10 @@ pub struct DashboardResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_metadata: Option<QueueMetadata>,
     /// Queue effort estimates (issue #64): unit_id → average seconds per
-    /// attempt from the token-usage log — the unit's own durations when it
-    /// has them, otherwise the global average. Empty (and omitted from the
-    /// payload) when the log carries no durations; the queue shows `—` then.
+    /// attempt, taken from the token-usage log. A unit with recorded
+    /// durations gets its own average; otherwise it gets the global
+    /// average. When the log holds no durations the map is empty and
+    /// omitted from the payload — the queue shows `—` then.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub queue_effort: std::collections::HashMap<String, u64>,
     /// Binary counts per classification category (issue #66), sourced from
@@ -70,17 +71,17 @@ pub struct CategoryCount {
 }
 
 /// Aggregate quality metrics over the dashboard units (issue #66). Each
-/// rate is `None` when no unit carries the underlying data, so the
+/// rate is `None` when no unit reports the underlying data, so the
 /// dashboard renders `—` rather than a fabricated zero.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct QualitySummary {
     /// Mean of the units' `unit_confidence`; `None` when no unit reports one.
     pub avg_unit_confidence: Option<f32>,
     /// Baseline tests passed / total summed across all units; `None` when no
-    /// unit carries baseline counts.
+    /// unit has baseline counts.
     pub baseline_pass_rate: Option<f32>,
     /// Verification tests passed / total summed across all units; `None`
-    /// when no unit carries verification counts.
+    /// when no unit has verification counts.
     pub verification_pass_rate: Option<f32>,
 }
 
@@ -714,7 +715,7 @@ pub struct BatchActionRequest {
 pub struct BatchItemResult {
     /// The unit this result belongs to.
     pub unit_id: String,
-    /// Whether the action landed on this unit.
+    /// Whether the action was applied to this unit.
     pub success: bool,
     /// The action's message on success, the failure reason otherwise.
     pub message: String,
@@ -730,7 +731,7 @@ pub struct BatchActionResponse {
     pub action: String,
     /// Per-unit outcomes, in the order the units were requested.
     pub results: Vec<BatchItemResult>,
-    /// How many units the action landed on.
+    /// How many units the action was applied to.
     pub succeeded: usize,
     /// How many units the action failed on.
     pub failed: usize,
@@ -757,17 +758,17 @@ pub enum ServerError {
     ServiceUnavailable(String),
 
     /// The request is valid but conflicts with the unit's current persisted
-    /// state — e.g. a review action refused because a different action landed
-    /// on the unit in the meantime (issue #86).
+    /// state — e.g. a review action was refused because a different review
+    /// action was applied to the unit in the meantime (issue #86).
     #[error("Conflict: {0}")]
     Conflict(String),
 }
 
 // ─── Fault analytics (issue #125, W3.1) ────────────────────────────────
 
-/// One fault from the persisted log, verbatim, carrying the full attempt
-/// identity triple (binary, function, attempt) so a fault pattern can be
-/// traced straight to a unit.
+/// One fault copied verbatim from the persisted fault log. It includes
+/// the full attempt identity triple (binary, function, attempt), so a
+/// fault pattern can be traced straight to a unit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaultAnalyticsEntry {
     /// The DLL containing the affected function.
@@ -816,8 +817,8 @@ pub struct FaultSummaryResponse {
     /// Total faults after filtering.
     pub total: usize,
     /// Counts per fault category, highest first (ties alphabetical).
-    /// Categories with no faults are omitted — the breakdown names what
-    /// actually happened.
+    /// Categories with no faults are omitted — the breakdown lists only
+    /// what actually happened.
     pub by_category: Vec<FaultCount>,
     /// Counts per severity in fixed warning → error → critical order,
     /// always all three so the severity cards never shift shape.
@@ -829,7 +830,7 @@ pub struct FaultSummaryResponse {
 pub struct FaultBinaryCount {
     /// The target binary, identity verbatim.
     pub binary: BinaryIdentity,
-    /// How many faults name it.
+    /// How many faults refer to it.
     pub count: usize,
 }
 
@@ -906,7 +907,7 @@ pub struct TokenUsageByBinaryResponse {
 }
 
 /// Token usage for one context tier. The tier label is the entry's
-/// verbatim `context_tier`; entries written before tier tracking carry an
+/// verbatim `context_tier`; entries written before tier tracking have an
 /// empty label and form their own honest bucket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageTierStats {
@@ -927,7 +928,7 @@ pub struct TokenUsageByTierResponse {
 }
 
 /// Token usage for one retry strategy, with the success rate that shows
-/// which recovery paths burn tokens and which ones work.
+/// which retry paths cost tokens and which ones succeed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageStrategyStats {
     /// The retry strategy label.
@@ -963,8 +964,8 @@ pub struct StrategyAnalyticsByStrategyResponse {
     pub total_in_log: usize,
 }
 
-/// Outcome counts for one retry strategy — the evidence for whether the
-/// strategy earns its place in the retry ladder.
+/// Outcome counts for one retry strategy — the evidence about whether the
+/// strategy belongs in the retry ladder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyAnalyticsStrategyStats {
     /// The retry strategy label, verbatim from the log.
@@ -980,8 +981,8 @@ pub struct StrategyAnalyticsStrategyStats {
 }
 
 /// `GET /api/strategy-analytics/by-category` response: pass rates broken
-/// down by binary category, revealing whether one class of binary
-/// systematically defeats the current strategies.
+/// down by binary category. It shows whether the current strategies
+/// consistently fail on one class of binary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyAnalyticsByCategoryResponse {
     /// Pass rates per binary category, most attempts first (ties alphabetical).
@@ -1066,9 +1067,9 @@ pub struct LlmMetricsByTierResponse {
 }
 
 /// Attempt duration for one context tier. The tier label is the entry's
-/// verbatim `context_tier`; entries written before tier tracking carry an
+/// verbatim `context_tier`; entries written before tier tracking have an
 /// empty label and form their own honest bucket. A tier whose attempts
-/// recorded no durations carries `None` percentiles — unmeasured, never
+/// recorded no durations reports `None` percentiles — unmeasured, never
 /// imputed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmMetricsTierStats {
@@ -1101,7 +1102,7 @@ pub struct BinariesListResponse {
     pub binaries: Vec<BinarySummaryRow>,
 }
 
-/// One classified binary's summary row. Category and strategy carry the
+/// One classified binary's summary row. Category and strategy show the
 /// decision actually in force: the recorded classification with the
 /// persisted override layer applied on top. Function counts cover the
 /// review dashboard's function-translation units for this binary —
@@ -1110,7 +1111,7 @@ pub struct BinariesListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinarySummaryRow {
     /// The binary identity — the filename verbatim, as the classification
-    /// record names it.
+    /// record spells it.
     pub binary: BinaryIdentity,
     /// The category in force (e.g. "WindowsOs", "ProjectSpecific").
     pub category: String,
@@ -1118,7 +1119,7 @@ pub struct BinarySummaryRow {
     /// "ReverseEngineer").
     pub strategy: String,
     /// Target crate for crate-replacement strategies, absent when the
-    /// strategy names none.
+    /// strategy records none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crate_replacement: Option<String>,
     /// Whether the category/strategy shown comes from a persisted
@@ -1140,16 +1141,17 @@ pub struct BinarySummaryRow {
 }
 
 /// `GET /api/binaries/{name}` response: the full detail the Binaries
-/// view's expandable panel renders for one classified binary — the
-/// classification decision actually in force (override layer applied, the
-/// same fold the summary rows and the analyzer honor) and the binary's
-/// per-function list with each function's review status, so a reviewer
-/// can find stalled functions inside a binary. An unknown binary name
-/// honestly 404s rather than answering with an empty shell.
+/// view's expandable panel renders for one classified binary. It reports
+/// the classification decision actually in force — the recorded
+/// classification with the persisted override layer applied on top, the
+/// same way the summary rows and the analyzer apply it — plus the
+/// binary's per-function list with each function's review status, so a
+/// reviewer can find stalled functions inside a binary. An unknown
+/// binary name honestly 404s rather than answering with an empty shell.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryDetailResponse {
     /// The binary identity — the filename verbatim, as the classification
-    /// record names it (the request may have spelled it differently).
+    /// record spells it (the request may have spelled it differently).
     pub binary: BinaryIdentity,
     /// The category in force (e.g. "WindowsOs", "ProjectSpecific").
     pub category: String,
@@ -1157,7 +1159,7 @@ pub struct BinaryDetailResponse {
     /// "ReverseEngineer").
     pub strategy: String,
     /// Target crate for crate-replacement strategies, absent when the
-    /// strategy names none.
+    /// strategy records none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crate_replacement: Option<String>,
     /// Whether the category/strategy shown comes from a persisted
@@ -1167,10 +1169,11 @@ pub struct BinaryDetailResponse {
     /// translation target — the glossary rule, mirroring the analyzer:
     /// the flag or a `RuntimeLibrary` category.
     pub known_runtime: bool,
-    /// The reason in force: the analyzer's synthesized override reason
-    /// when an override is, or the recorded reason verbatim when it is
-    /// not — an override carries no heuristic reasoning of its own.
-    /// Absent when the record stored none and no override is in force.
+    /// The reason in force. When an override is in force this is the
+    /// analyzer's synthesized override reason — an override has no
+    /// heuristic reasoning of its own. Otherwise it is the recorded
+    /// reason verbatim. Absent when the record stored none and no
+    /// override is in force.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// Exported symbols the classification record counted.
@@ -1178,8 +1181,9 @@ pub struct BinaryDetailResponse {
     /// Imported symbols the classification record counted.
     pub imports_count: usize,
     /// The binary's function-translation units, alphabetical by function
-    /// then attempt — the same dashboard units the summary row's counts
-    /// fold, so this list's length is always the row's `functions_total`.
+    /// then attempt. These are the same dashboard units the summary row's
+    /// counts cover, so this list's length is always the row's
+    /// `functions_total`.
     pub functions: Vec<BinaryFunctionRow>,
 }
 
@@ -1200,23 +1204,23 @@ pub struct BinaryFunctionRow {
 
 /// `GET /api/binaries/{name}/shim-status` response: the shim-layer
 /// tracker the Binaries detail panel renders for one binary. Every fact
-/// comes from persisted artifacts only — the shim files the shim pipeline
-/// writes under `re/shims/{binary}/` plus the shim branch's acceptance
-/// state in the review dashboard's branch model — so plain `serve` and
-/// `live` answer identically. A crate-replacement binary with no readable
-/// shim artifacts honestly reports `generated: false`; a binary whose
-/// decision in force names no crate honestly reports `shim_expected:
-/// false` — no shim is expected.
+/// comes from persisted artifacts only: the shim files the shim pipeline
+/// writes under `re/shims/{binary}/`, plus the shim branch's acceptance
+/// state in the review dashboard's branch model. So plain `serve` and
+/// `live` answer identically. A crate-replacement binary with no
+/// readable shim artifacts honestly reports `generated: false`; a
+/// binary whose decision in force records no target crate honestly
+/// reports `shim_expected: false` — no shim is expected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShimStatusResponse {
     /// The binary identity — the filename verbatim, as the classification
-    /// record names it (the request may have spelled it differently).
+    /// record spells it (the request may have spelled it differently).
     pub binary: BinaryIdentity,
-    /// Whether the decision in force is a crate replacement, so a shim
-    /// layer is expected at all.
+    /// Whether the decision in force is a crate replacement, i.e. whether
+    /// a shim layer is expected at all.
     pub shim_expected: bool,
-    /// The target crate the decision in force names, absent when the
-    /// decision names none.
+    /// The target crate the decision in force records, absent when the
+    /// decision records none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crate_replacement: Option<String>,
     /// Whether readable shim mappings exist under the workspace's shim
@@ -1232,7 +1236,7 @@ pub struct ShimStatusResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<ShimVerificationInfo>,
     /// The shim branch's acceptance state in the dashboard's branch
-    /// model, absent when the decision in force names no crate or no
+    /// model, absent when the decision in force records no crate or no
     /// shim unit for that crate exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<ShimBranchInfo>,
@@ -1256,13 +1260,13 @@ pub struct ShimVerificationInfo {
     pub edge_tests_total: usize,
 }
 
-/// The shim branch's acceptance state, folded from the dashboard's
-/// branch model: `Accepted` is the builder's merged-into-main verdict,
+/// The shim branch's acceptance state, read from the dashboard's branch
+/// model: `Accepted` is the builder's merged-into-main verdict,
 /// `SendBack` the reviewer's sent-back verdict — anything else is
 /// neither (queued, pending review, …).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShimBranchInfo {
-    /// The shim branch the dependency model names for the crate in
+    /// The shim branch the dependency model records for the crate in
     /// force (e.g. `re/shim/wgpu`).
     pub name: String,
     /// Whether the shim branch is merged into main.
@@ -1274,21 +1278,22 @@ pub struct ShimBranchInfo {
 // ─── Binary PAL tracker (issue #134, W4.4) ─────────────────────────────
 
 /// `GET /api/binaries/{name}/pal-status` response: the PAL-trait tracker
-/// the Binaries detail panel renders for one binary. The *needed* traits
-/// are derived on demand from the persisted per-function analysis
-/// artifacts — the `windows_apis` categories recorded under
-/// `re/analysis/{binary}/` — mapped category→trait with the same shape
-/// the translator's Tier-4 PAL extraction uses. *Existence* is detected
-/// from the workspace's generated PAL/shim source artifacts (the shared
-/// PAL crate under `scratch/pal/src/` and the generated shim sources
-/// under `re/shims/`), so plain `serve` and `live` answer identically
-/// and no new persisted "defined traits" record is introduced. Where
-/// neither source exists the trait list honestly answers empty — never a
-/// fabricated trait list.
+/// the Binaries detail panel renders for one binary.
+///
+/// The *needed* traits are derived on demand from the persisted
+/// per-function analysis artifacts: the `windows_apis` categories
+/// recorded under `re/analysis/{binary}/`, mapped to traits the same way
+/// the translator's Tier-4 PAL extraction maps them. *Existence* is
+/// detected from the workspace's generated PAL/shim source artifacts:
+/// the shared PAL crate under `scratch/pal/src/` and the generated shim
+/// sources under `re/shims/`. So plain `serve` and `live` answer
+/// identically, and no new persisted "defined traits" record is
+/// introduced. Where neither source exists the trait list honestly
+/// answers empty — never a fabricated trait list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PalStatusResponse {
     /// The binary identity — the filename verbatim, as the classification
-    /// record names it (the request may have spelled it differently).
+    /// record spells it (the request may have spelled it differently).
     pub binary: BinaryIdentity,
     /// The traits this binary needs, sorted by trait name; empty when no
     /// readable API-call artifact records a category that maps to a
@@ -1333,7 +1338,7 @@ pub struct UnitAttemptsResponse {
 ///
 /// `tests_passed` is deliberately absent: no per-attempt pass count is
 /// persisted anywhere (patch records store only failures), so reporting
-/// one would invent it. `success` plus the failure lists carry the
+/// one would invent it. `success` plus the failure lists give the
 /// honest outcome instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttemptMetadata {
@@ -1344,7 +1349,7 @@ pub struct AttemptMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// The prompt strategy the token-usage log recorded for this
-    /// attempt, absent when no log entry names it.
+    /// attempt, absent when no log entry records it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<String>,
     /// The context tier the token-usage log recorded, absent when the
@@ -1533,8 +1538,8 @@ impl ServerError {
 
 impl From<super::lifecycle::LifecycleError> for ServerError {
     /// A failed filter reload means the process's logging setup is broken,
-    /// which the operator cannot fix by changing the request — an internal
-    /// error carrying the reload failure.
+    /// which the operator cannot fix by changing the request. So this
+    /// becomes an internal error that reports the reload failure.
     fn from(err: super::lifecycle::LifecycleError) -> Self {
         ServerError::Internal(err.to_string())
     }
@@ -1571,7 +1576,8 @@ pub struct ProgressInfo {
     pub function: String,
     pub attempt: u32,
     /// Retry strategy of the current LLM-call attempt (issue #363) —
-    /// never a batch outcome; that rides [`outcome`](Self::outcome).
+    /// never a batch outcome; the batch outcome is reported by
+    /// [`outcome`](Self::outcome).
     pub retry_strategy: String,
     /// The batch outcome for a finished unit — "batch_ok" / "batch_failed"
     /// / "cancelled" — `None` while the unit is still in flight.
@@ -1608,10 +1614,12 @@ impl ProgressResponse {
 pub struct PipelineDllProgress {
     /// DLL/EXE file name.
     pub binary: BinaryIdentity,
-    /// Whether the DLL has been classified.
+    /// The classification result for this DLL, present once its
+    /// ClassificationComplete event has been observed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification: Option<ClassificationInfo>,
-    /// Whether batch translation has completed.
+    /// The batch translation summary for this DLL, present once its
+    /// BatchSummary event has been reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchInfo>,
     /// Current in-progress translation status (if any).
@@ -1687,8 +1695,8 @@ pub struct PipelineProgressResponse {
     /// Per-binary progress through the pipeline, in served display order
     /// (issue #242): queue-planned non-PAL rows in queue-plan order, then
     /// unplanned non-PAL rows alphabetical, then PAL-mapped (PalMapping)
-    /// rows alphabetical — PAL rows pin to the bottom even when the run's
-    /// queue plan names them.
+    /// rows alphabetical. PAL rows always come last, even when the run's
+    /// queue plan places them earlier.
     pub binaries: Vec<BinaryProgress>,
     /// Time remaining estimate (issue #64), `None` when no attempt has a
     /// recorded duration or no work remains.
@@ -1870,8 +1878,9 @@ pub struct PipelineLifecycleResponse {
 }
 
 /// Response body of `POST /api/pipeline/cancel-current` (issue #91, W2.2).
-/// Names the unit that was cancelled — the operator sees exactly which
-/// in-flight attempt the run just dropped — and confirms the run continues.
+/// Identifies the unit that was cancelled — the operator sees exactly
+/// which in-flight attempt the run just dropped — and confirms the run
+/// continues.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnitCancelResponse {
     /// The binary of the cancelled unit.
@@ -1884,25 +1893,26 @@ pub struct UnitCancelResponse {
 
 /// Response body of the `POST /api/pipeline/binaries/{binary}/pause`,
 /// `.../resume`, and `.../start` endpoints (issue #221, X6; #285). Echoes
-/// the addressed binary and the paused flag now in force, so the dashboard
-/// reconciles the row without a second round-trip — a start echoes the
-/// target with `paused: false`, its message naming the binary the swap
-/// paused instead.
+/// the addressed binary and the paused flag now in force, so the
+/// dashboard can reconcile the row without a second round-trip. A start
+/// echoes the target with `paused: false`, and its message states which
+/// binary the swap paused instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BinaryPauseResponse {
     /// The binary the call addressed, echoed verbatim.
     pub binary: String,
-    /// The paused flag now in force — `true` held out of the queue.
+    /// The paused flag now in force — `true` means the binary is held out
+    /// of the run's queue.
     pub paused: bool,
     /// Human-readable confirmation for the operator.
     pub message: String,
 }
 
 /// Response body of the `POST /api/pipeline/binaries/{binary}/focus`
-/// endpoint (issue #284). Echoes the addressed binary — the one now sitting
-/// in the scope record's single focus slot, which the running worklist
-/// hoists to the front of its queue at the next binary boundary and then
-/// consumes.
+/// endpoint (issue #284). Echoes the addressed binary — the one now
+/// recorded in the scope record's single focus slot. At the next binary
+/// boundary the running worklist brings it to the front of its queue,
+/// then consumes the focus.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BinaryFocusResponse {
     /// The binary the call addressed, echoed verbatim.
@@ -1944,10 +1954,10 @@ pub struct ScopeStatusResponse {
     /// Tokens charged to the run so far (per-run, never persisted).
     pub tokens_spent: u64,
     /// Every context tier the `max_context_tier` cap may name, lowest to
-    /// highest — the backend's own enumeration, so the dashboard populates
-    /// its tier select from the server instead of hardcoding the variant
-    /// names and silently turning a rename into a source of 400s
-    /// (issue #109).
+    /// highest. This is the backend's own enumeration, so the dashboard
+    /// fills its tier selector from the server instead of hardcoding the
+    /// variant names — hardcoding would silently turn a rename into a
+    /// source of 400s (issue #109).
     pub context_tiers: Vec<calxgloss_types::ContextTier>,
 }
 
@@ -2009,14 +2019,14 @@ pub struct RecordedClassification {
     pub category: String,
     /// Classification strategy (e.g. "CrateReplacement").
     pub strategy: String,
-    /// Crate recommended for replacement, when the strategy names one.
+    /// Crate recommended for replacement, when the strategy records one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crate_replacement: Option<String>,
     /// Whether the record marks the binary a known runtime library —
     /// never a translation target.
     #[serde(default)]
     pub known_runtime: bool,
-    /// Why the classification was chosen, if the record carries one.
+    /// Why the classification was chosen, if the record stores one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
