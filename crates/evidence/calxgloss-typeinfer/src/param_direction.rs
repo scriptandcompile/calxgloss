@@ -1,38 +1,40 @@
 //! Parameter direction detection.
 //!
-//! [`ParamDirectionDetector`] reads from a function's own body which way
-//! data flows through each of its pointer parameters: a body that writes
-//! through the pointer before returning makes the parameter an *out*
-//! parameter, one that only reads through it makes it an *in* one, and a
-//! parameter both read and written reads as *inout*. The reading rides the
-//! body the scan already keeps — the same kept bodies the assignment-chain
-//! and return-usage passes ride, no extra engine reads — and every
-//! record's evidence line names the deciding write or read.
+//! [`ParamDirectionDetector`] reads a function's own body to decide
+//! which way data flows through each of its pointer parameters. A body
+//! that writes through the pointer before returning makes the parameter
+//! an *out* parameter. A body that only reads through it makes the
+//! parameter an *in* one. A parameter both read and written reads as
+//! *inout*. The detector uses the body the scan already keeps: the same
+//! kept bodies the assignment-chain and return-usage passes read, so
+//! this pass costs no extra analysis engine reads. Every record's
+//! evidence line names the deciding write or read.
 //!
 //! The evidence families and their bands are the ones ADR-0045 anchors.
-//! The write family: a direct write — `*param_1 = x` and its
-//! double-pointer hand-back form `*param_2 = &local_8` — claims the
-//! solid-high band, and a write through a member or subscript chain, in
-//! any of the decompiler's cast spellings (`param_1->count = x`,
-//! `param_2[i] = x`, `((Data *)param_1)->count = x`), claims the solid
-//! band below it. The read family — the modest band — is a known
-//! string-function call, a comparison or rvalue use through the pointer
-//! (`if (*param_1 == 3)`, `uVar2 = param_1[i]`), or a field read behind a
-//! cast. An *inout* reading rides the band of the write that carried the
-//! out half and keeps the write's line as evidence.
+//! The write family has two bands. A direct write — `*param_1 = x` and
+//! its double-pointer hand-back form `*param_2 = &local_8` — scores in
+//! the solid-high band. A write through a member or subscript chain
+//! scores one band lower, in the solid band, in any of the
+//! decompiler's cast spellings (`param_1->count = x`, `param_2[i] = x`,
+//! `((Data *)param_1)->count = x`). The read family scores in the
+//! modest band: a known string-function call, a comparison or rvalue
+//! use through the pointer (`if (*param_1 == 3)`, `uVar2 = param_1[i]`),
+//! or a field read behind a cast. An *inout* reading scores in the band
+//! of its write, and its evidence line is that write's line.
 //!
-//! Where the body shows no deciding shape the detector records nothing:
-//! absence is unknown, never silently *in* — passing a parameter to an
-//! unknown callee is no evidence either way, the reading never guesses
-//! about a callee it has not read. And every claimed shape carries an
-//! explicit traversal through the pointer — a `*`, a `->` or subscript
-//! chain, or a pointer cast dereferenced at the use — which is also what
-//! proves the parameter is a pointer in the first place: a value
-//! parameter touched only at its own name (`param_3 = 4`, a null test on
-//! the pointer value itself) is silence without trusting the declared
-//! types, and a this-pointer written through before return reads inout
-//! like any other written pointer, its direction record standing beside
-//! the this-pointer type record for the same parameter.
+//! Where the body shows no deciding shape, the detector records
+//! nothing: absence is unknown, never silently *in*. Passing a
+//! parameter to an unknown callee is no evidence either way — the
+//! reading never guesses about a callee it has not read. Every claimed
+//! shape shows an explicit traversal through the pointer: a `*`, a `->`
+//! or subscript chain, or a pointer cast dereferenced at the use. That
+//! traversal is also what proves the parameter is a pointer in the
+//! first place. So a value parameter touched only at its own name
+//! (`param_3 = 4`, a null test on the pointer value itself) stays
+//! silent, without the detector trusting the declared types. And a
+//! this-pointer written through before return reads as *inout* like any
+//! other written pointer: its direction record stands beside the
+//! this-pointer type record for the same parameter.
 
 use crate::known_type::is_type_word;
 use crate::param_size::STRING_FUNCTIONS;
@@ -46,33 +48,33 @@ use calxgloss_types::{
 };
 
 // ============================================================
-// Reading confidences
+// Evidence confidences for direction readings
 // ============================================================
 
-/// Confidence of a direction reading decided by a direct write through
-/// the pointer: the body spells the store out — `*param_1 = x`, or the
-/// allocate-and-hand-back spelling `*param_2 = &local_8` — so the side
-/// effect on the caller's storage is visible in one line. This is the
-/// solid-high band ADR-0045 anchors for the direct-write family; an
-/// inout reading riding a direct write stands here too, the out half of
-/// the claim resting on the same write.
+/// Evidence confidence of a direction reading decided by a direct write
+/// through the pointer: the body spells the store out — `*param_1 = x`,
+/// or the allocate-and-hand-back spelling `*param_2 = &local_8` — so
+/// the side effect on the caller's storage is visible in one line. This
+/// is the solid-high band ADR-0045 anchors for the direct-write family.
+/// An inout reading decided by a direct write scores here too: its out
+/// half rests on the same write.
 const DIRECT_WRITE_CONFIDENCE: u8 = 75;
 
-/// Confidence of a direction reading decided by a write through a
-/// member or subscript chain — `param_1->count = x`, `param_2[i] = x`,
-/// or either spelled behind a cast. The write is plain, but it sits one
-/// inference step away from the pointer itself: the decompiler's member
-/// and index spellings can name a rebase this pass has not read. This is
-/// the solid band ADR-0045 anchors for the field and indexed writes,
-/// below the direct write; an inout reading riding one of these writes
-/// stands here.
+/// Evidence confidence of a direction reading decided by a write
+/// through a member or subscript chain — `param_1->count = x`,
+/// `param_2[i] = x`, or either spelled behind a cast. The write is
+/// plain, but it sits one inference step away from the pointer itself:
+/// the decompiler's member and index spellings can name a rebase this
+/// pass has not read. This is the solid band ADR-0045 anchors for the
+/// field and indexed writes, below the direct write. An inout reading
+/// decided by one of these writes scores here.
 const FIELD_INDEXED_WRITE_CONFIDENCE: u8 = 70;
 
-/// Confidence of a direction reading from a body that only reads through
-/// the parameter: the read is explicit, but it rules out no write
-/// elsewhere in a body this pass has not weighed, so the claim that the
-/// parameter is *in* only reaches the modest band ADR-0045 anchors for
-/// read-only bodies.
+/// Evidence confidence of a direction reading from a body that only
+/// reads through the parameter: the read is explicit, but it rules out
+/// no write elsewhere in a body this pass has not weighed, so the claim
+/// that the parameter is *in* only reaches the modest band ADR-0045
+/// anchors for read-only bodies.
 const READ_CONFIDENCE: u8 = 60;
 
 // ============================================================
@@ -180,13 +182,13 @@ fn inside_string(body: &str, offset: usize) -> bool {
 }
 
 /// What one whole-word occurrence of a parameter does through the
-/// parameter. A bare occurrence is no use at all — an assignment to the
-/// parameter's own name is a write to a local, an argument to a call the
-/// pass has not read says nothing, and a use of the pointer's own value
-/// (`local_8 = param_1`, a null test `param_1 == NULL`) never reaches
-/// through the pointer — so every claimed shape carries an explicit
-/// traversal: a `*` at the name's near side, a member or subscript
-/// chain behind it, or a pointer cast dereferenced at the use.
+/// parameter. A bare occurrence is no use at all: an assignment to the
+/// parameter's own name is a write to a local, an argument to a call
+/// the pass has not read says nothing, and a use of the pointer's own
+/// value (`local_8 = param_1`, a null test `param_1 == NULL`) never
+/// reaches through the pointer. So every claimed shape shows an
+/// explicit traversal: a `*` at the name's near side, a member or
+/// subscript chain behind it, or a pointer cast dereferenced at the use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Use {
     /// A store straight through the pointer — `*param_1 = x` and its
@@ -214,14 +216,17 @@ enum Use {
 /// byte the chain ends on decides store from read. A store is claimed
 /// only where the path reaches through the pointer: a `*` on the near
 /// side, a traversed chain, or a cast with a dereference in front of it
-/// (`*(Data *)param_1 = x`). The direct-write shape is decided soundly
-/// without parsing, as ADR-0045 records: a multiplication cannot take an
-/// assignment on its left, so a `*` beside a name the body assigns
-/// through can only be a dereference; `==`, `!=`, `<=`, and `>=` never
-/// put an `=` at the name's side, so a comparison stays a read. A
-/// dereference *read* needs the star proven unary — `count * param_1`
-/// multiplies — and a bare chain (`param_1.field`, no pointer spelling
-/// at all) reaches nothing, which is what keeps a value parameter silent
+/// (`*(Data *)param_1 = x`).
+///
+/// The direct-write shape is decided soundly without parsing, as
+/// ADR-0045 records. A multiplication cannot take an assignment on its
+/// left, so a `*` beside a name the body assigns through can only be a
+/// dereference. And `==`, `!=`, `<=`, and `>=` never put an `=` at the
+/// name's side, so a comparison stays a read.
+///
+/// A dereference *read* needs the star proven unary — `count * param_1`
+/// multiplies. And a bare chain (`param_1.field`, no pointer spelling
+/// at all) reaches nothing: that is what keeps a value parameter silent
 /// without reading its declared type.
 fn classify_use(bytes: &[u8], occ: &Occurrence) -> Option<Use> {
     let star = matches!(occ.before, Some(i) if bytes[i] == b'*');
@@ -379,9 +384,9 @@ fn is_deref_star(bytes: &[u8], at: usize) -> bool {
 /// `(Data *)param_1` — a `*` outside the cast dereferences it, so
 /// `*(Data *)param_1 = x` writes through the parameter while the bare
 /// `(Data *)param_1` is only a value cast. The cast's opening paren is
-/// found by walking back from `close`; the star ahead of it counts only
-/// as a dereference, which `count * (Data *)param_1` — a multiplication
-/// — is not.
+/// found by walking back from `close`. The star ahead of it counts only
+/// as a dereference; `count * (Data *)param_1` is a multiplication, so
+/// its star does not count.
 fn deref_outside_cast(bytes: &[u8], close: usize) -> bool {
     let Some(open) = matching_open(bytes, close) else {
         return false;
@@ -450,11 +455,12 @@ fn next_non_ws(bytes: &[u8], at: usize) -> Option<usize> {
 ///
 /// The detector is stateless: every reading comes from the decompiled
 /// function it is handed, so one detector serves an entire scan. It
-/// holds no engine client of its own — the [`DecompiledFunction`] text
-/// is fetched once per function and read by every detector — and it
-/// never writes back to the program: a direction is not a program type
-/// (ADR-0020 keeps the write trait for types), only a reading reported
-/// for the translator and the baseline tests to use.
+/// holds no handle to the analysis engine at the seam of its own: the
+/// [`DecompiledFunction`] text is fetched once per function and read by
+/// every detector. And it never writes back to the program: a direction
+/// is not a program type (ADR-0020 keeps the write trait for types),
+/// only a reading reported for the translator and the baseline tests to
+/// use.
 ///
 /// [`DecompiledFunction`]: calxgloss_decomp::DecompiledFunction
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -472,35 +478,35 @@ impl ParamDirectionDetector {
     /// Read the parameter directions the body shows, at most one record
     /// per parameter, in parameter order.
     ///
-    /// A parameter gets a record only when the body carries deciding
+    /// A parameter gets a record only when the body shows deciding
     /// evidence for it:
     ///
     /// - The first direct write through the pointer — `*param_1 = x`, or
     ///   the double-pointer hand-back `*param_2 = &local_8` — reads the
-    ///   parameter *out* at [`DIRECT_WRITE_CONFIDENCE`], evidenced by
-    ///   the line carrying the write.
+    ///   parameter *out* at `DIRECT_WRITE_CONFIDENCE`. The evidence is
+    ///   the line the write appears on.
     /// - A write through a member or subscript chain — `param_1->count =
     ///   x`, `param_2[i] = x`, `*(Data *)param_1 = x`, or either spelled
-    ///   behind a cast — reads it *out* at [`FIELD_INDEXED_WRITE_CONFIDENCE`],
+    ///   behind a cast — reads it *out* at `FIELD_INDEXED_WRITE_CONFIDENCE`,
     ///   the band ADR-0045 anchors below the direct write. Where both
     ///   write shapes appear on one parameter, the direct write decides.
-    /// - A read through the pointer — a known string function
-    ///   ([`STRING_FUNCTIONS`]) with the parameter at a character-pointer
-    ///   position, a comparison or rvalue use through the pointer, a
-    ///   field or subscript read — and no write reads it *in* at
-    ///   [`READ_CONFIDENCE`], evidenced by the earliest deciding line.
-    /// - Both families non-empty reads it *inout*, riding the write's
-    ///   band and naming the write's line — the out half of the claim is
-    ///   the stronger one.
-    /// - Neither family, and the parameter gets no record at all:
-    ///   absence is unknown, never silently *in*. A parameter merely
-    ///   passed to a callee this pass has not read is no evidence, an
-    ///   assignment to the parameter's own name is no write *through* a
-    ///   pointer, and a use of the pointer's own value never reaches
-    ///   through it. A this-pointer written through before return takes
-    ///   the same reading as any other parameter; its direction record
-    ///   coexists with the this-pointer type record because the conflict
-    ///   model keys the two apart (issue #274).
+    /// - A read through the pointer and no write — a known string
+    ///   function (`STRING_FUNCTIONS`) with the parameter at a
+    ///   character-pointer position, a comparison or rvalue use through
+    ///   the pointer, or a field or subscript read — reads it *in* at
+    ///   `READ_CONFIDENCE`, evidenced by the earliest deciding line.
+    /// - Both families non-empty reads it *inout*, scoring in the
+    ///   write's band and naming the write's line: the out half of the
+    ///   claim is the stronger one.
+    /// - Neither family: the parameter gets no record at all. Absence is
+    ///   unknown, never silently *in*. A parameter merely passed to a
+    ///   callee this pass has not read is no evidence. An assignment to
+    ///   the parameter's own name is no write *through* a pointer. A use
+    ///   of the pointer's own value never reaches through it. A
+    ///   this-pointer written through before return takes the same
+    ///   reading as any other parameter; its direction record coexists
+    ///   with the this-pointer type record because the conflict model
+    ///   keys the two apart (issue #274).
     pub fn detect_directions(&self, func: &DecompiledFunction) -> Vec<InferredParamDirection> {
         let params = func.parameter_names();
         if params.is_empty() {
@@ -512,10 +518,10 @@ impl ParamDirectionDetector {
         let block = &func.body[open..];
         let bytes = block.as_bytes();
 
-        // The read family's call half: a known string function — the
+        // The read family's call findings: a known string function — the
         // same table the size detector reads — with the parameter
         // sitting at one of its character-pointer positions. The first
-        // such call in source order is a parameter's read evidence.
+        // such call, in source order, is a parameter's read evidence.
         let mut read_at: Vec<Option<usize>> = vec![None; params.len()];
         for call in direct_calls(block) {
             let Some(spec) = STRING_FUNCTIONS.iter().find(|f| f.name == call.callee) else {
@@ -538,7 +544,7 @@ impl ParamDirectionDetector {
         for (index, name) in params.iter().enumerate() {
             // The write family: the first direct write through the
             // pointer and the first chain write through it, in source
-            // order; the reads join the call-half findings with the
+            // order. The read family joins its call findings with the
             // earliest deciding occurrence.
             let mut direct = None;
             let mut chain = None;
@@ -561,8 +567,8 @@ impl ParamDirectionDetector {
                 }
             }
             // The out half decides the band and the evidence: a direct
-            // write outranks a chain write, and an inout reading rides
-            // whichever write carried it.
+            // write outranks a chain write, and an inout reading scores
+            // in the band of the write that decided it.
             let (write, band) = match (direct, chain) {
                 (Some(at), _) => (Some(at), DIRECT_WRITE_CONFIDENCE),
                 (None, Some(at)) => (Some(at), FIELD_INDEXED_WRITE_CONFIDENCE),
@@ -686,8 +692,8 @@ mod tests {
     #[test]
     fn a_field_write_behind_a_pointer_cast_reads_it_out() {
         // The decompiler's cast spelling of a member store reaches
-        // through the same pointer and joins the field family — a step
-        // below the direct write in the ranking reviewers read.
+        // through the same pointer and joins the field family — one
+        // step below the direct write.
         let func = function(
             "undefined FUN_18003ab00(undefined *param_1)",
             "  ((Data *)param_1)->count = 0;\n  return;\n",
@@ -703,8 +709,9 @@ mod tests {
     #[test]
     fn a_dereference_write_through_a_pointer_cast_reads_it_out() {
         // `*(Data *)param_1 = 5` — a cast dereference and a store: the
-        // cast names a rebase this pass has not read, so the write sits
-        // at the cast band, not the direct-write band.
+        // cast names a rebase this pass has not read, so the store
+        // scores in the solid band for field and indexed writes, not
+        // the solid-high band for direct writes.
         let func = function(
             "undefined FUN_18003ab00(undefined *param_1)",
             "  *(Data *)param_1 = 5;\n  return;\n",
@@ -719,8 +726,8 @@ mod tests {
 
     #[test]
     fn a_compound_store_through_a_member_reads_it_out() {
-        // `+=` stores through the chain as surely as `=`, with the read
-        // folded into the same statement.
+        // `+=` stores through the chain as surely as `=`: the one
+        // statement reads and stores through it.
         let func = function(
             "undefined FUN_18003ab00(undefined *param_1)",
             "  param_1->count += 1;\n  return;\n",
@@ -852,16 +859,17 @@ mod tests {
         assert_eq!(records.len(), 1);
         let record = &records[0];
         assert_eq!(record.direction, Direction::InOut);
-        // The inout reading rides the write's band and names the write —
-        // the out half of the claim is the stronger one.
+        // The inout reading scores in the write's band, and its
+        // evidence names the write: the out half of the claim is the
+        // stronger one.
         assert_eq!(record.confidence, Confidence::new(75));
         assert_eq!(record.evidence, "*param_1 = 0;");
     }
 
     #[test]
     fn a_field_write_with_a_read_composes_inout_at_the_write_band() {
-        // Both families non-empty on a chain write: inout, riding the
-        // solid band the ADR anchors for field writes.
+        // Both families non-empty on a chain write: inout, scoring in
+        // the solid band ADR-0045 anchors for field writes.
         let func = function(
             "undefined FUN_18003ab00(undefined *param_1)",
             "  if (param_1->count == 0) { return; }\n  param_1->count = 1;\n  return;\n",
