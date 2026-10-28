@@ -1,33 +1,35 @@
 //! Cross-function concurrency readings over the bodies the scan keeps.
 //!
-//! The per-body detectors stop at a function's closing brace: two
+//! The per-body detectors stop at a function's closing brace. Two
 //! functions that acquire the same two locks in opposite orders — the
 //! classic deadlock shape — are invisible to each body read on its
 //! own. This module closes that gap over the bodies one scan already
-//! holds, mirroring the memory crate's cross-function pass
-//! (ADR-0027): the lock map is derived from the fetched bodies with
-//! the same call-site scan the mutex detector already uses, so no new
-//! [`ScanSource`](crate::engine::ScanSource) reads are made and the
-//! exactly-once-decompile guarantee and the skip-rate breaker survive
-//! untouched.
+//! holds, mirroring the memory crate's cross-function pass (ADR-0027).
+//! The lock sequences and spans it compares are derived from the kept
+//! bodies with the same call-site scan the mutex detector already
+//! uses. So no new [`ScanSource`](crate::engine::ScanSource) reads are
+//! made: the exactly-once-decompile guarantee and the skip-rate
+//! breaker stay untouched.
 //!
-//! [`CrossFunctionAnalyzer::analyze`] runs the readings: per function,
-//! the sequence of distinct lock objects acquired in body order, tied
-//! to lock objects by the pairing detector's own extraction and
-//! matched against the mutex detector's configured acquire names —
-//! custom spellings reach this pass through the same name set the
-//! pairing reads. Two functions whose sequences hold the same two
-//! locks in opposite relative orders land one
+//! [`CrossFunctionAnalyzer::analyze`] runs the readings. For each
+//! function it reads the sequence of distinct lock objects acquired
+//! in body order, tied to lock objects by the pairing detector's own
+//! extraction and matched against the mutex detector's configured
+//! acquire names — custom spellings reach this pass through the same
+//! name set the pairing reads. Two functions whose sequences hold the
+//! same two locks in opposite relative orders land one
 //! [`SyncFinding::LockOrder`] per conflicting lock pair, naming both
 //! functions and both lock objects, with the two acquire orders as
-//! evidence. The same kept bodies then carry the data-race reading:
-//! which identifiers name program globals is the global-state
-//! crate's shared rule, consumed through its pure reading
-//! ([`calxgloss_globalstate::global_sites`]) so a race finding and a
-//! global-state record can never name different accesses for the
-//! same identifier. This crate keeps only its lock-span attribution
-//! on top: an access inside a recognized acquire→release span counts
-//! as protected by that span's lock object. Two functions naming one
+//! evidence.
+//!
+//! The data-race reading then uses the same kept bodies. Which
+//! identifiers name program globals is the global-state crate's
+//! shared rule, consumed through its pure reading
+//! ([`calxgloss_globalstate::global_sites`]) — so a race finding and
+//! a global-state record can never name different accesses for the
+//! same identifier. This crate adds only its lock-span attribution on
+//! top: an access inside a recognized acquire→release span counts as
+//! protected by that span's lock object. Two functions naming one
 //! global land one [`SyncFinding::DataRace`] per pair unless one lock
 //! object covers every access on both sides — the same-lock rule is
 //! the false-positive gate, so properly locked data claims nothing.
@@ -40,18 +42,18 @@ use calxgloss_globalstate::{AccessKind, global_sites, statement_at};
 use calxgloss_types::{NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites};
 
 /// The scan: plain-identifier callees, member accesses skipped, and C
-/// keywords not calls — the same configuration the mutex pairing walk
-/// uses, so both read the same call sites.
+/// keywords not calls. The mutex detector's own scan configuration is
+/// the same, so both read the same call sites.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>",
     skip_keywords: &NON_CALL_KEYWORDS,
 };
 
-/// Confidence of a lock-order conflict read across two bodies: both
-/// orders are explicit acquisitions of recognized names, so the
-/// conflict sits level with an in-body mutex pairing — but the tie
-/// between the two bodies is the decompiler's naming, not resolved
+/// Evidence confidence of a lock-order conflict read across two
+/// bodies: both orders are explicit acquisitions of recognized names,
+/// so the conflict sits level with an in-body mutex pairing. But the
+/// tie between the two bodies is the decompiler's naming, not resolved
 /// data flow, and a branch could leave either acquisition unreached.
 const LOCK_ORDER_CONFIDENCE: u8 = 70;
 
@@ -60,11 +62,12 @@ const LOCK_ORDER_CONFIDENCE: u8 = 70;
 /// Rust locks give a translation when it picks a single order.
 const LOCK_ORDER_SUGGESTION: &str = "pick one consistent lock acquisition order";
 
-/// Confidence of a data race read across two bodies: the shared global
-/// and both access sites are explicit body evidence, but the
-/// unprotected side is absence-of-evidence — the body shows no lock,
-/// not proof that no lock exists — so the claim sits one rung below
-/// the evidence-based kinds, 60 against the pairing-level 70.
+/// Evidence confidence of a data race read across two bodies: the
+/// shared global and both access sites are explicit body evidence.
+/// But the unprotected side is absence-of-evidence — the body shows
+/// no lock, which is not proof that no lock exists — so the claim
+/// sits one band below the evidence-based kinds: 60 against the
+/// pairing-level 70.
 const DATA_RACE_CONFIDENCE: u8 = 60;
 
 /// The Rust pattern a data race suggests: one lock object guarding the
@@ -77,9 +80,9 @@ const DATA_RACE_SUGGESTION: &str = "guard the shared global with one lock held b
 /// The analyzer is stateless: every reading comes from the bodies it
 /// is handed and the mutex detector's configured name sets it is
 /// given, so one analyzer serves an entire scan. It fetches nothing
-/// itself — the engine hands it the same [`DecompiledFunction`]
-/// values the per-function pass already decompiled, keeping the scan
-/// at one decompile per function.
+/// itself — the scan hands it the same [`DecompiledFunction`] values
+/// the per-function pass already decompiled, so the scan stays at one
+/// decompile per function.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CrossFunctionAnalyzer;
 
@@ -90,22 +93,23 @@ impl CrossFunctionAnalyzer {
         Self
     }
 
-    /// The cross-function findings the program carries, in listing
-    /// order: for every pair of functions in listing order, each pair
-    /// of lock objects the two acquire in opposite relative orders
-    /// lands one [`SyncFinding::LockOrder`] on the earlier function,
-    /// naming the later one as its partner — once per conflicting lock
-    /// pair, so a full reversal of three locks reads as three
-    /// two-lock conflicts, the shape a deadlock review takes one lock
-    /// pair at a time. Then the data races, in the same pair order:
-    /// every global two functions both name lands one
-    /// [`SyncFinding::DataRace`] on the earlier one — once per pair
-    /// per global — unless one lock object's span covers every access
-    /// on both sides.
+    /// The cross-function findings read from the program's bodies, in
+    /// listing order. For every pair of functions in listing order,
+    /// each pair of lock objects the two acquire in opposite relative
+    /// orders lands one [`SyncFinding::LockOrder`] on the earlier
+    /// function, naming the later one as its partner — once per
+    /// conflicting lock pair. A full reversal of three locks therefore
+    /// reads as three two-lock conflicts, the shape a deadlock review
+    /// takes one lock pair at a time. Then the data races, in the
+    /// same pair order: every global two functions both name lands
+    /// one [`SyncFinding::DataRace`] on the earlier one — once per
+    /// pair per global — unless one lock object's span covers every
+    /// access on both sides.
     ///
-    /// A function whose body never made it — skipped by the engine —
-    /// is simply absent from `functions`, so it forms no sequence,
-    /// names no global, and fabricates no conflict or race.
+    /// A function whose body never made it — skipped when its
+    /// decompile failed — is simply absent from `functions`, so it
+    /// forms no sequence, names no global, and fabricates no conflict
+    /// or race.
     pub fn analyze(
         &self,
         functions: &[DecompiledFunction],
@@ -426,7 +430,7 @@ mod tests {
             "pick one consistent lock acquisition order"
         );
         assert_eq!(record.confidence, LOCK_ORDER_CONFIDENCE);
-        // The evidence carries both functions' acquire orders.
+        // The evidence records both functions' acquire orders.
         assert_eq!(
             record.evidence,
             "FUN_18003ab00: local_20 -> local_40; FUN_18003e750: local_40 -> local_20"
@@ -507,8 +511,8 @@ mod tests {
 
     #[test]
     fn findings_come_back_in_listing_order() {
-        // The earlier function carries the finding against each later
-        // one it conflicts with, in listing order.
+        // Findings land on the earlier function, one against each
+        // later one it conflicts with, in listing order.
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
@@ -687,8 +691,8 @@ mod tests {
 
     #[test]
     fn the_analyzer_can_be_shared_across_scans() {
-        // One analyzer is driven over every scan the engine runs, so
-        // sharing one by reference across tasks must stay sound.
+        // SyncEngine keeps one analyzer and runs it over every scan,
+        // so sharing one by reference across tasks must stay sound.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CrossFunctionAnalyzer>();
     }
@@ -714,10 +718,10 @@ mod tests {
             record.suggestion,
             "guard the shared global with one lock held by both functions"
         );
-        // The unprotected side is absence-of-evidence: one rung below
+        // The unprotected side is absence-of-evidence: one band below
         // the evidence-based kinds.
         assert_eq!(record.confidence, DATA_RACE_CONFIDENCE);
-        // The evidence carries both functions' access lines.
+        // The evidence records both functions' access lines.
         assert_eq!(
             record.evidence,
             "FUN_18003ab00: DAT_counter = iVar1 + 1; FUN_18003e750: uVar1 = DAT_counter;"
@@ -852,7 +856,7 @@ mod tests {
 
     #[test]
     fn the_lock_order_findings_come_before_the_race_findings() {
-        // One function pair carries both cross-function shapes: the
+        // One function pair produces both cross-function shapes: the
         // persisted list runs the conflicts first, then the races, so
         // two scans diff cleanly.
         let findings = analyze(&[
@@ -903,7 +907,7 @@ mod tests {
 
     #[test]
     fn a_body_that_never_arrived_names_no_global() {
-        // The engine hands the pass only the bodies that survived the
+        // The scan hands the pass only the bodies that survived the
         // decompile: a missing body forms no access and no race.
         let findings = analyze(&[("FUN_18003ab00", "DAT_g = 1;")]);
         assert!(findings.is_empty());
