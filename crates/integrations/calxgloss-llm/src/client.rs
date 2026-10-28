@@ -1,4 +1,5 @@
-//! The [`LlmConfig`] and [`LlmClient`] — connection settings and HTTP API client.
+//! Connection settings ([`LlmConfig`]) and the HTTP client ([`LlmClient`]) for
+//! the local LLM.
 
 use calxgloss_types::ResourceExhaustionKind;
 use futures::{Stream, StreamExt};
@@ -66,9 +67,10 @@ pub struct LlmConfig {
     pub api_key: Option<String>,
 
     /// Token budget for a single request: prompt plus generated output
-    /// together must fit inside this. Matches the server's context window;
-    /// the client derives each request's wire `max_tokens` (the output cap)
-    /// from it, so a large prompt can never overflow the window.
+    /// together must fit inside this. It is meant to match the server's
+    /// context window. The client derives each request's wire `max_tokens`
+    /// (the output cap) from it, so a large prompt can never overflow the
+    /// window.
     pub context_window: usize,
 
     /// Sampling temperature (0.0 = deterministic, higher = more creative).
@@ -344,12 +346,12 @@ impl LlmClient {
     /// configured [`LlmConfig::context_window`].
     ///
     /// Servers enforce `prompt_tokens + max_tokens ≤ context`, so the output
-    /// cap is the window minus a deliberately pessimistic prompt estimate
-    /// (~3 chars/token plus 12.5% headroom — disassembly and code tokenize
-    /// denser than prose; the EverQuest run measured ~3.4 chars/token).
-    /// Floored at 256 so a degenerate oversized prompt still produces a
-    /// server-side error naming the real numbers instead of a silent
-    /// zero-token request.
+    /// cap is the window minus a prompt estimate. The estimate is deliberately
+    /// pessimistic: it counts ~3 chars/token and adds 12.5% headroom.
+    /// Disassembly and code tokenize denser than prose — the EverQuest run
+    /// measured ~3.4 chars/token. The cap never drops below 256. That way a
+    /// degenerate oversized prompt still produces a server-side error naming
+    /// the real numbers, instead of a silent zero-token request.
     fn output_budget(&self, messages: &[LlmMessage]) -> usize {
         const CHARS_PER_TOKEN: usize = 3;
         let prompt_chars: usize = messages.iter().map(|m| m.content().len()).sum();
@@ -450,11 +452,13 @@ impl LlmClient {
         })
     }
 
-    /// Send a prompt to the LLM and receive a byte stream of the response.
+    /// Send a prompt to the LLM and receive the response as a stream.
     ///
-    /// The returned stream yields one line (NDJSON chunk) at a time from the
-    /// server's SSE (Server-Sent Events) stream. Each line can be parsed
-    /// with [`serde_json::from_str::<LlmStreamChunk>`].
+    /// The request asks the server for an SSE (Server-Sent Events) response.
+    /// The stream yields one JSON value per network chunk received; a chunk
+    /// that fails to parse arrives as [`LlmError::StreamParseError`]. The
+    /// chunk shape is described on `LlmStreamChunk`, and the example below
+    /// digs into the JSON by hand.
     ///
     /// The caller is responsible for concatenating the `content` fields from
     /// each chunk to reconstruct the full response.

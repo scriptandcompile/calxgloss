@@ -1,17 +1,16 @@
 //! Context-window detector for the LLM client.
 //!
-//! This module provides [`ContextWindowDetector`] which inspects LLM responses
-//! and requests to detect when the model's context window is being exceeded.
-//! It is the primary mechanism for fault detection.
+//! [`ContextWindowDetector`] inspects LLM responses and prompts and reports when
+//! the model's context window has been exceeded. This is the primary mechanism
+//! for fault detection.
 //!
 //! # How it works
 //!
 //! After each LLM call the detector checks:
 //!
-//! 1. **Response size vs. configured limit** — if the response text (in
-//!    characters) meets or exceeds the configured budget × 4 (rough estimate of
-//!    characters-per-token), a [`ContextWindowFault`](calxgloss_types::ContextWindowFault)
-//!    is raised.
+//! 1. **Response size vs. configured limit** — the output limit in tokens times
+//!    the characters-per-token ratio (default 4) gives a character limit. A
+//!    response text at or beyond that limit raises a [`ContextWindowFault`].
 //! 2. **Truncation signals** — the response body is scanned for markers that
 //!    some LLM runners append when they cut output short (e.g. `"[response
 //!    truncated]"` or `"[output limited]"`).
@@ -48,20 +47,20 @@
 use crate::LlmResponse;
 use calxgloss_types::ContextWindowFault;
 
-/// Default characters-per-token ratio used when converting token counts to
-/// character estimates.  LLM tokenizers produce ~4 characters per token on
-/// average for English source code, which is a safe approximation.
+/// Default characters-per-token ratio, used when converting token counts to
+/// character estimates. English source code tokenizes at roughly 4 characters
+/// per token in LLM tokenizers, so the ratio is a safe approximation.
 const DEFAULT_CHARS_PER_TOKEN: usize = 4;
 
-/// Default input context limit in tokens.  When the model-specific limit is
-/// not known this value is used as a conservative estimate.
+/// Default input context limit in tokens. Used as a conservative estimate
+/// when the model-specific limit is not known.
 const DEFAULT_INPUT_LIMIT_TOKENS: usize = 131_072;
 
-/// Detects context-window exceeded faults from LLM requests and responses.
+/// Reports context-window exceeded faults found in LLM prompts and responses.
 ///
-/// The detector is created with the model's configured token budget
-/// (`context_window`) and uses a standard characters-per-token ratio to convert
-/// token counts to character thresholds.
+/// The detector holds the model's configured token budget (`context_window`)
+/// and a characters-per-token ratio. Both convert a token limit into a
+/// character limit.
 #[derive(Debug, Clone)]
 pub struct ContextWindowDetector {
     /// Maximum output tokens the model is configured to generate.
@@ -79,8 +78,9 @@ impl ContextWindowDetector {
     ///
     /// # Arguments
     ///
-    /// * `max_output_tokens` — The `context_window` setting passed to the LLM
-    ///   client. When the response exceeds this, a fault is raised.
+    /// * `max_output_tokens` — The `context_window` setting given to the LLM
+    ///   client. Converted to a character limit; a response at or beyond that
+    ///   limit raises a fault.
     pub fn new(max_output_tokens: usize) -> Self {
         Self {
             max_output_tokens,
@@ -115,8 +115,8 @@ impl ContextWindowDetector {
     /// Inspect an LLM response and return a fault if the response is at or
     /// beyond the configured output limit.
     ///
-    /// This is the primary detection method called after every
-    /// [`LlmClient::complete`](calxgloss_llm::LlmClient::complete) call.
+    /// This is the primary detection method: call it after every
+    /// [`LlmClient::complete`](crate::LlmClient::complete) call.
     ///
     /// # Arguments
     ///
@@ -238,10 +238,10 @@ fn is_truncated_response(content: &str) -> bool {
 /// Splits a function's disassembly into smaller chunks suitable for
 /// context-window-limited LLM calls.
 ///
-/// The splitter works by identifying function boundaries in the disassembly
-/// (instruction addresses, labels, control-flow markers) and dividing the
-/// text into roughly equal-sized blocks. Each chunk is accompanied by
-/// metadata that tells the LLM to focus only on that region.
+/// The splitter keeps the disassembly in line order and cuts it into chunks of
+/// roughly equal line counts. Each chunk carries metadata naming the binary,
+/// the function, and its position in the split; [`FunctionChunk::prompt_context`]
+/// builds the header that tells the model to translate only that region.
 #[derive(Debug, Clone)]
 pub struct FunctionSplitter;
 
@@ -305,8 +305,9 @@ impl FunctionSplitter {
             });
         }
 
-        // Safety: ensure we have at least one chunk even if the math above
-        // produced none (e.g., chunk_count > total lines).
+        // Guard: make sure at least one chunk exists. This is defensive — the
+        // loop above always produces a chunk when the disassembly is non-empty,
+        // and empty disassembly returns earlier in this function.
         if chunks.is_empty() {
             chunks.push(FunctionChunk {
                 binary: binary.to_string(),

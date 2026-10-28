@@ -1,15 +1,16 @@
 //! Local LLM client for sending prompts and receiving Rust code.
 //!
-//! This crate provides `LlmClient`, which communicates with a local LLM server
-//! (Ollama, vLLM, llama.cpp, or any OpenAI-compatible API) over HTTP. It sends
-//! prompt messages and receives translated Rust code as the response.
+//! `LlmClient` talks over HTTP to a locally hosted model — Ollama, vLLM,
+//! llama.cpp, or any OpenAI-compatible API. It sends the prompt messages and
+//! returns the translated Rust code the model produced.
 //!
 //! # Modules
 //!
 //! - [`context`] — Context-window detection and function splitting for
 //!   fault recovery.
 //! - [`hallucination`] — Detection of hallucinated function calls.
-//! - [`infinite_loop`] — Detection of retry-loop divergence.
+//! - [`infinite_loop`] — Detection of a retry loop stuck repeating the same
+//!   output.
 //! - [`behavior_divergence`] — Detection of behavior divergence from expected output.
 //! - [`resource_exhaustion`] — Detection of resource-exhaustion signals.
 
