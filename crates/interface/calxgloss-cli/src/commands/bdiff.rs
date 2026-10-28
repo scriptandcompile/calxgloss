@@ -4,9 +4,10 @@
 //! (issue #298) leaves in `re/analysis/bdiff/` for a binary identity and
 //! lists the old↔new pairs with their confidence and match family, plus
 //! the functions paired on neither side — old-only and new-only (issue
-//! #300). The command is pure report: no scan runs, no engine read (the
-//! documents are the whole input), and no web or dashboard surface this
-//! track.
+//! #300). The command is pure report. It runs no scan, so it reads no
+//! evidence engine, and it never loads the Kuna engine: the filed
+//! documents are the whole input. Neither the web review surface nor the
+//! dashboard shows this track.
 //!
 //! The staleness rule is the carry-over track's (issue #299): a document
 //! is live only when it self-names `binary` and its `new_bytes_sha256`
@@ -29,9 +30,9 @@ const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `bdiff` subcommand: review `binary`'s pairing documents
 /// against the current bytes in the target directory, listing every
-/// old↔new pair, the family and confidence that carried it, and the
+/// old↔new pair, the match family and confidence behind it, and the
 /// functions paired on neither side. A missing or stale document fails
-/// the run naming the gap.
+/// the run, and the failure names the gap.
 pub async fn handle_bdiff(binary: &str, workspace: &Path, settings: &Settings) -> Result<()> {
     let target_dir = settings
         .target_dir
@@ -157,8 +158,8 @@ fn load_pairing_documents(
     Ok((live, stale))
 }
 
-/// Where the trigger filed one document — the persistor's own key rule,
-/// so the report names the exact file.
+/// Where the trigger filed one document: the path comes from the
+/// persistor's own key rule, so the report names the exact file.
 fn bdiff_document_path(workspace: &Path, document: &PairingDocument) -> PathBuf {
     calxgloss_bdiff::BdiffPersistor::new(workspace).path_for(
         &calxgloss_bdiff::BdiffPersistor::key_for(
@@ -226,8 +227,8 @@ fn unpaired_functions(document: &PairingDocument) -> (Vec<&str>, Vec<&str>) {
     )
 }
 
-/// One pair line: the two names, the confidence that carried the pair,
-/// and the family that claimed it — what an auditor reads to decide
+/// One pair line: the two names, the pair's confidence score, and the
+/// match family that matched it — what an auditor reads to decide
 /// whether the run's carry-over seeding can trust the pair.
 fn pair_line(record: &PairingRecord) -> String {
     let score = confidence_color(record.confidence.value())(&format!(

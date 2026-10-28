@@ -1,24 +1,26 @@
 //! The `typeinfer` command's CLI contribution — infer parameter types
 //! for a binary (issue #341, spec #337).
 //!
-//! The scan shape — engine build, scan, persist, degradation — lives in
-//! the pipeline's `type-inference` registry row; this module contributes
-//! only what is genuinely per-engine: the cached-document loader, the
+//! The scan shape — building the scan's evidence engine, the scan,
+//! persisting, honest degradation — lives in the pipeline's
+//! `type-inference` registry row. This module contributes only what
+//! belongs to this evidence engine: the cached-document loader, the
 //! report printer, and the post-scan step applying `--write-back`
 //! through the typeinfer crate's own write-back API, narrowed by the
 //! `--confidence-floor`. The generic handler
 //! ([`scan_command`](crate::commands::scan_command)) routes the command
-//! end to end: it rebuilds the result on demand (the CLI's force-rescan
-//! contract) and can print what a cached one holds, filing it where the
-//! row files it — `re/analysis/typeinfer/{binary}.json` — the same file
-//! batch translation reads as prompt context. The run's report and a
-//! later `--show` report are the same read of the same document.
+//! end to end. A scan run always rebuilds the result — the CLI's
+//! refresh-cache contract — and `--show` prints what a cached document
+//! holds. The result is filed where the row files it —
+//! `re/analysis/typeinfer/{binary}.json` — the same file batch
+//! translation reads as prompt context. The run's report and a later
+//! `--show` report are the same read of the same document.
 //!
 //! The write-back step runs on the scan path and on `--show
-//! --write-back`; the follow-on report it produces rides inside the
+//! --write-back`. The follow-on report it produces is stored inside the
 //! loaded document, so both paths print the main report first and the
 //! write-back section second, byte-identically. `--show` alone never
-//! loads the engine at all.
+//! loads the Kuna engine.
 
 use std::path::Path;
 
@@ -40,9 +42,10 @@ const DETAIL_LIMIT: usize = 10;
 
 /// The document this entry loads and prints: the filed inference result
 /// plus, when a `--write-back` pass ran, the report it produced and the
-/// floor it ran at. The follow-on report rides inside the document so
-/// the printer — the same on the scan path and `--show` — renders both
-/// sections in one order without the handler having to sequence them.
+/// floor it ran at. The follow-on report is stored inside this document,
+/// so the printer — the same printer on the scan path and on `--show` —
+/// renders both sections in one order, and the handler never has to
+/// sequence them itself.
 struct FiledInference {
     /// The filed inference result, exactly as the persistor reads it.
     result: TypeInferenceResult,
@@ -54,8 +57,9 @@ struct FiledInference {
 /// The `typeinfer` entry in the CLI-side contribution table: it serves
 /// the registry's `type-inference` row and supplies this command's
 /// loader, printer, and write-back post-scan step. The command's flags
-/// reach the row build as plain defaults; the write-back is the
-/// entry's own step, interpreting the flags itself.
+/// never change the row's options — the entry hands it plain defaults.
+/// The write-back is the entry's own step, and it interprets the flags
+/// itself.
 pub(crate) fn contribution() -> ScanContribution {
     ScanContribution::new(ScanContributionSteps {
         row: "type-inference",
@@ -67,9 +71,9 @@ pub(crate) fn contribution() -> ScanContribution {
     })
 }
 
-/// Read the filed result through the engine's own persistor, wrapped in
-/// the entry's document. A missing one arrives with the remediation
-/// wording naming the exact producing command.
+/// Read the filed result through the evidence engine's own persistor,
+/// wrapped in the entry's document. A missing result arrives with the
+/// remediation wording that names the exact command to produce it.
 fn load_filed_inference(workspace: &Path, binary: &str) -> Result<FiledInference> {
     let result = TypeInferPersistor::new(workspace)
         .load(binary)
@@ -85,10 +89,11 @@ fn load_filed_inference(workspace: &Path, binary: &str) -> Result<FiledInference
     })
 }
 
-/// Print the report over the loaded document: the inference summary
-/// first, then the write-back section when this very command line ran a
-/// write-back pass — the order the old dedicated handler printed in,
-/// now carried by the document itself so both paths agree.
+/// Print the report from the loaded document: the inference summary
+/// first, then the write-back section — and only when this very command
+/// line ran a write-back pass. This is the order the old dedicated
+/// handler printed in; it now lives in the document itself, so both
+/// paths print the same bytes.
 fn print_report(filed: &FiledInference, workspace: &Path, binary: &str) -> Result<()> {
     print_type_inference_report(
         &filed.result,
@@ -102,13 +107,14 @@ fn print_report(filed: &FiledInference, workspace: &Path, binary: &str) -> Resul
 
 /// The post-scan step: with `--write-back`, apply the surviving
 /// inferences into the open program through the typeinfer crate's own
-/// write-back seam — the engine's type-write API, not a re-implementation
-/// — keeping only records at the confidence floor or above, and leave
-/// the produced report in the document for the printer. Without the
-/// flag the step does nothing; the document is read-only in that run.
-/// The Kuna source answers both seams — the read cache never implements
-/// the write trait (ADR-0020), and the generic handler hands this entry
-/// the same settings-aware Kuna load the dedicated handler used.
+/// write-back seam — the Kuna engine's type-write API, not a
+/// re-implementation — keeping only records at the confidence floor or
+/// above, and leave the produced report in the document for the printer.
+/// Without the flag the step does nothing; the document is read-only in
+/// that run. The Kuna source answers both seams — the read cache never
+/// implements the write trait (ADR-0020), and the generic handler hands
+/// this entry the same settings-aware Kuna load the dedicated handler
+/// used.
 fn write_back_surviving_inferences<'a>(
     source: &'a PipelineSource,
     _workspace: &'a Path,
@@ -183,11 +189,12 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
         }
     ));
 
-    // The scan's own admission, beside the counts it qualifies (issue
-    // #351): the shared type's bounded line, framed under `Coverage:` and
-    // printed only when there is something to admit. The line names only
-    // listings that never arrived and edges that refused — an inference-
-    // free function under a complete record is examined and clean.
+    // The scan's own admission, printed beside the counts it qualifies
+    // (issue #351): the shared type's bounded line, shown under
+    // `Coverage:` and only when there is something to admit. The line
+    // names only listings that never arrived and edges that refused — a
+    // function with no inferences under a complete record was examined
+    // and is clean.
     print_coverage(result.metadata.coverage.as_ref());
     println!();
 
@@ -435,12 +442,12 @@ fn inference_method(inference: &InferredType) -> InferenceMethod {
     }
 }
 
-/// The name of what an inference types: a parameter (its decompiled name,
-/// falling back to its position), a local variable, a call-site argument
-/// spelled as the site that produced it, a function's return, a
-/// function's calling convention, or a parameter's direction — spelled
-/// with the parameter's name so a direction reading stands beside the
-/// type reading for the same parameter.
+/// The name of what an inference types: a parameter (its decompiled
+/// name, falling back to its position), a local variable, a call-site
+/// argument written as the call site that produced it, a function's
+/// return, a function's calling convention, or a parameter's direction —
+/// written with the parameter's name, so a direction reading prints
+/// beside the type reading for the same parameter.
 fn inference_target(inference: &InferredType) -> String {
     match inference {
         InferredType::Param(record) => record
@@ -453,8 +460,9 @@ fn inference_target(inference: &InferredType) -> String {
             None => format!("{} arg {}", record.callee, record.arg_index + 1),
         },
         InferredType::Return(_) => "return".to_string(),
-        // A call-site view names the callee it spells, so it stands
-        // beside the caller's own convention rather than on top of it.
+        // A call-site reading names its callee in the label, so it
+        // prints beside the caller's own convention instead of under the
+        // same label.
         InferredType::Convention(record) => match record.callee.as_deref() {
             Some(callee) => format!("{callee} convention"),
             None => "convention".to_string(),

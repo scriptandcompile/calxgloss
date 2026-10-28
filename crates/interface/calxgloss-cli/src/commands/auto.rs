@@ -1,6 +1,7 @@
-//! The `auto` command — smart pipeline dispatcher.
+//! The `auto` command — reads the project's state and runs the next
+//! step.
 //!
-//! Handles classification, batch translation, and the interactive
+//! It handles classification, batch translation, and the interactive
 //! file-selection flow.
 
 use std::collections::{HashSet, VecDeque};
@@ -48,14 +49,14 @@ impl PassOutcome {
     }
 }
 
-/// The pipeline's window onto the git history for carry-over seeding
+/// The pipeline's view of the git history for carry-over seeding
 /// (issue #326): where an accepted (merged) translation's code lives.
 ///
 /// The translator crate never touches git, so the CLI layer implements the
 /// port — one `GitManager::open` per lookup keeps the handle short-lived
 /// (the pass itself holds its own manager and may have a branch checked
 /// out; opening fresh reads history without disturbing it). Every command
-/// that wires the seam attaches this port when git is in play (issue #299).
+/// that uses this seam attaches this port when git is in play (issue #299).
 pub(crate) struct GitAcceptedAttempts {
     pub(crate) workspace: PathBuf,
 }
@@ -69,10 +70,11 @@ impl AcceptedAttemptSource for GitAcceptedAttempts {
 
 /// Run batch translation for a single DLL.
 ///
-/// This function runs one binary's pass: engine load, function enumeration
-/// and scope filtering, git operations, assembling the complete pass from
-/// the plumbing's description (issue #325), and result reporting. `handle_auto`
-/// calls it — `live` reaches it through `handle_auto`.
+/// This function runs one binary's translation pass: the analysis engine
+/// load, function enumeration and scope filtering, git operations,
+/// assembling the complete pass from the run description carried by its
+/// `PassPlumbing` argument (issue #325), and result reporting.
+/// `handle_auto` calls it; `live` reaches it through `handle_auto`.
 ///
 /// The Kuna engine is loaded per pass from `binary_path` (issue #214) —
 /// the file named for the pass is the program the scan reads, so there is
@@ -116,7 +118,7 @@ pub async fn run_translation_for_dll(
     // the file named for this pass is the program the scan reads.
     let kuna = load_kuna_at(settings, binary_path)?;
 
-    // List functions from the engine
+    // List functions from the analysis engine
     use calxgloss_decomp::ScanSource;
     let summaries = ScanSource::functions(&kuna)
         .await
@@ -172,9 +174,10 @@ pub async fn run_translation_for_dll(
 
     // The pass description (issue #325): `handle_auto` folded the resolved
     // settings once and layered this run's flags and live control handles
-    // on; the only thing separating one pass from another is the binary it
-    // names — its identity for reports and the read-cache key for the batch
-    // (issues #105, #106 ride the spec fields now).
+    // on top. The only thing separating one pass from another is the
+    // binary it names — its identity for reports and the read-cache key for
+    // the batch (issues #105 and #106, the read-cache key and the
+    // refresh-cache option, now reach the pass as fields on the spec).
     let mut spec = base_spec.clone();
     spec.target_binary = Some(BinaryTarget {
         name: binary.to_string(),
@@ -196,8 +199,9 @@ pub async fn run_translation_for_dll(
 
     // Carry-over seeding (issue #299): with git in play, the pipeline can
     // ask the branch history whether a paired previous-version twin has an
-    // accepted (merged) translation to seed attempt 1 from. With `--skip-git`
-    // there is no history to ask, and the queue translates fresh as today.
+    // accepted (merged) translation to seed attempt 1 from. With
+    // `--skip-git` there is no history to ask, and every unit is
+    // translated fresh.
     if let Some(git_manager) = git.as_ref() {
         spec.accepted_attempt_source = Some(std::sync::Arc::new(GitAcceptedAttempts {
             workspace: git_manager.repo_path().to_path_buf(),
@@ -205,9 +209,10 @@ pub async fn run_translation_for_dll(
     }
 
     // Assemble the complete pass once from the description (issue #325):
-    // the LLM client from the folded endpoint description, the detector,
-    // testgen, the verifier, the retry ladder, and every injected handle are
-    // wired by the seam — the `with_*` dance is no longer the command's.
+    // the assembly seam builds the LLM client from the folded endpoint
+    // description, the detector, testgen, the verifier, the retry ladder,
+    // and every injected handle — the command no longer performs the
+    // `with_*` builder dance itself.
     let pass = assemble(&spec, &kuna)
         .await
         .with_context(|| format!("Failed to assemble the translation pass for {binary}"))?;
@@ -267,10 +272,10 @@ pub async fn run_translation_for_dll(
                         && let Ok(_commit) = git_manager.commit(
                             branch_info,
                             // Carry-over provenance (issue #299): when attempt
-                            // 1 rode in on an accepted translation of a paired
-                            // previous-version function, the commit says so and
-                            // names the source. A fresh unit's message is
-                            // unchanged, byte for byte.
+                            // 1 was seeded from an accepted translation of a
+                            // paired previous-version function, the commit
+                            // says so and names the source. A fresh unit's
+                            // message is unchanged, byte for byte.
                             &match func_result.carry_over.as_ref() {
                                 Some(seed) => format!(
                                     "re/auto/{}: translate {} (batch attempt, {})",
@@ -383,8 +388,8 @@ pub async fn run_translation_for_dll(
 ///
 /// Ensure the workspace is a git repository before the run's slow steps
 /// begin (issue #123). A clean start otherwise leaves the dashboard — the
-/// only visible surface during the engine load — reporting "Not a Git
-/// repository" until translation finally reaches its own git setup.
+/// only visible surface during the analysis engine load — reporting "Not
+/// a Git repository" until translation finally reaches its own git setup.
 /// Idempotent: `Repository::init` on an existing repo keeps its history.
 fn ensure_workspace_repo(workspace: &Path, skip_git: bool) -> Result<()> {
     if skip_git {
@@ -555,8 +560,8 @@ pub async fn handle_auto(
         }
         println_content("Classification complete. Starting translation…");
 
-        // Newly classified DLLs are now ready — fold them into the classified list
-        // so the translation loop picks them up.
+        // Newly classified DLLs are now ready. Add them to the classified
+        // list so the translation loop picks them up.
         classified.extend(unclassified);
     }
 
@@ -579,11 +584,11 @@ pub async fn handle_auto(
         return Ok(());
     }
 
-    // Refuse parked (.NET managed) binaries before any translation engine
-    // load or LLM client (issue #235). Classification above has already
-    // recorded the fact; the guard reads the in-force decision — override,
-    // then the PE marker, then the record — for every binary about to be
-    // translated.
+    // Refuse Do Not Translate binaries — the .NET managed ones — before
+    // any analysis engine load or LLM client (issue #235). Classification
+    // above has already recorded the fact; the guard reads the in-force
+    // decision — override, then the PE marker, then the record — for
+    // every binary about to be translated.
     for binary in &classified {
         guard_managed_binary(&workspace, binary, &target_dir.join(binary))?;
     }
@@ -592,14 +597,14 @@ pub async fn handle_auto(
     // the resolved settings folded once (issue #324), this run's call-graph
     // flags, the resolved workspace, and the live control handles layered
     // on. Each pass clones this description, adds the binary it names, and
-    // assembles once — the `with_*` builder dance and the per-knob `if let`
-    // ladder no longer appear in the command body.
+    // assembles once — so the command body carries no `with_*` builder
+    // dance and no per-knob `if let` ladder.
     let mut pass_spec = crate::settings::pipeline_spec(settings)?;
     if pass_spec.llm.is_none() {
-        // A translation pass always needs an LLM; when the record holds no
+        // A translation pass always needs an LLM. When the record holds no
         // endpoint pair, the settings layer's "not configured" guidance —
-        // naming every layer that can supply one — beats the assembly
-        // seam's internal `MissingLlm` wording.
+        // naming every layer that can supply one — is reported instead of
+        // the assembly seam's internal `MissingLlm` wording.
         settings.require_llm_url()?;
         settings.require_llm_model()?;
     }
@@ -735,7 +740,7 @@ pub async fn handle_auto(
 ///
 /// The scope handle's **focus** slot (issue #284) is consulted at the same
 /// boundary: if the focused binary is among the not-yet-started entries it
-/// rotates to the front, the plan re-publishes with it there, and the focus
+/// moves to the front, the plan re-publishes with it there, and the focus
 /// is consumed — honored once, never again. A focus naming nothing still in
 /// the queue changes nothing and survives until a boundary names it. Focus
 /// reorders, it never parallelizes: the run still works one binary at a
