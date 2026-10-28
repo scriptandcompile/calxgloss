@@ -73,7 +73,7 @@ impl TestFixture {
             .port()
     }
 
-    /// Creates sample data that the DashboardBuilder understands:
+    /// Creates sample data the DashboardBuilder can read:
     /// - A translation branch with a small file committed on it
     /// - A patch record (so the unit has attempt history)
     /// - A baseline file (so the unit has test data)
@@ -357,11 +357,11 @@ fn baseline_result(
 }
 
 /// Start the axum server in a background task.
-/// The settings-backed actions backend the live (ws) routers carry (issue
-/// #327). The ws surface under test never posts a patch, so the default —
-/// LLM-less — description is enough here; a patch request against these
-/// routers would fail assembly, exactly what issue #327 specifies for a
-/// server started without LLM settings.
+/// The live (ws) routers get a settings-backed actions backend (issue
+/// #327). The web review surface under test never posts a patch, so the
+/// default — LLM-less — description is enough here; a patch request
+/// against these routers would fail assembly, exactly what issue #327
+/// specifies for a server started without LLM settings.
 fn ws_actions(fixture: &TestFixture) -> ActionsState {
     ActionsState::new(fixture.repo_path(), PipelineSpec::default())
 }
@@ -562,10 +562,10 @@ async fn post_lifecycle(port: u16, path: &str) -> (reqwest::StatusCode, serde_js
 }
 
 /// The live router's pause/resume/stop endpoints drive the shared
-/// PipelineControl (issue #90): 200 with the transition in the body, 409
-/// when the state machine refuses the operation, and `/api/server/status`
-/// derived from the machine — "paused" even while a unit record is still
-/// in flight, which the old in-flight-count inference could not tell apart.
+/// PipelineControl (issue #90): 200 with the transition in the body, and
+/// 409 when the state machine refuses the operation. `/api/server/status`
+/// reports the machine's state — "paused" even while a unit record is
+/// still in flight, which an in-flight-count guess could not tell apart.
 #[tokio::test]
 async fn test_pipeline_lifecycle_control_endpoints() {
     let fixture = TestFixture::new();
@@ -847,8 +847,8 @@ async fn test_pipeline_binary_pause_resume_endpoints() {
         "409 carries the server's own reason, got: {body}"
     );
 
-    // The pause rode the scope record — a handle re-opened over the same
-    // workspace (a restarted run) honors it, on the #107 match rule.
+    // The pause is saved in the scope record — a handle re-opened over the
+    // same workspace (a restarted run) honors it, on the #107 match rule.
     assert!(
         calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("GAME_LOGIC.DLL"),
         "the endpoint wrote through to the persisted scope record"
@@ -873,7 +873,7 @@ async fn test_pipeline_binary_pause_resume_endpoints() {
 /// A pause and a resume reach WS clients as raw `binary_pause_changed`
 /// events on the shared broadcast (issue #221) — the dashboard re-renders
 /// the rows when the event arrives, without a page reload (issue #222),
-/// following the batch-summary event precedent.
+/// as the batch-summary events did before it.
 #[tokio::test]
 async fn test_binary_pause_changed_reaches_ws_clients() {
     use futures_util::StreamExt;
@@ -950,13 +950,13 @@ async fn test_binary_pause_changed_reaches_ws_clients() {
 // Per-binary focus — "translate this next" (issue #284)
 // ─────────────────────────────────────────────────────────────
 
-/// The focus endpoint parks a discovered binary in the scope record's
+/// The focus endpoint records a discovered binary in the scope record's
 /// single focus slot: 200 echoing the addressed binary, 409 with the
 /// server's own reason for an undiscovered one, last press wins, the slot
-/// persists on disk (a re-opened handle honors it on the #107 case-rule) —
-/// and the served pipeline table hoists the focused binary to the front of
-/// its planned order, so a re-fetch shows the new plan before the worklist
-/// even reaches its next boundary.
+/// persists on disk (a re-opened handle honors it on the #107 case-rule),
+/// and the served pipeline table moves the focused binary to the front of
+/// its planned order, so a re-fetch shows the new plan before the work
+/// list reaches its next boundary.
 #[tokio::test]
 async fn test_pipeline_binary_focus_endpoint() {
     let fixture = TestFixture::new();
@@ -1011,7 +1011,7 @@ async fn test_pipeline_binary_focus_endpoint() {
         "GET /api/pipeline hoists the focused binary"
     );
 
-    // One slot, last press wins: b.dll replaces c.dll without ceremony.
+    // One slot, last press wins: b.dll simply replaces c.dll.
     let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/focus").await;
     assert_eq!(status, 200);
     assert_eq!(
@@ -1020,9 +1020,9 @@ async fn test_pipeline_binary_focus_endpoint() {
         "the later press is the focus now"
     );
 
-    // The slot rode the persisted scope record — a handle re-opened over
-    // the same workspace (a restarted run) honors it, on the #107 match
-    // rule.
+    // The slot is saved in the persisted scope record — a handle re-opened
+    // over the same workspace (a restarted run) honors it, on the #107
+    // match rule.
     let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
     assert!(reopened.is_focus("B.DLL"), "the focus survives a restart");
 }
@@ -1035,10 +1035,10 @@ async fn test_pipeline_binary_focus_endpoint() {
 /// server-side: 200 reusing the binary-pause body (the target echoed
 /// unpaused, the message naming the binary paused to make way), the scope
 /// seam recording the target resumed-and-focused and the binary in flight
-/// paused — each change fanned out as a `BinaryPauseChanged` on the shared
+/// paused — each change emitted as a `BinaryPauseChanged` on the shared
 /// broadcast, target first — the served plan re-ordered with the target at
-/// the front at once, and both answers persisted for a re-opened handle.
-/// The run-level machine is never walked by this press: a live pass stays
+/// the front at once, and both states persisted for a re-opened handle.
+/// The press never moves the run-level machine: a live pass stays
 /// live.
 #[tokio::test]
 async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
@@ -1086,9 +1086,9 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
         "the message names the binary the swap paused, got: {message}"
     );
 
-    // The seam saw exactly the swap's two changes, in composition order:
-    // the target admitted, then the previous leader held out at the next
-    // unit boundary.
+    // The scope seam sent exactly the swap's two changes, in composition
+    // order: the target resumed and focused, then the in-flight binary
+    // paused, to stop at its next unit boundary.
     let mut changes: Vec<(String, bool)> = Vec::new();
     while changes.len() < 2 {
         let event = tokio::time::timeout(Duration::from_millis(500), seam.recv())
@@ -1106,15 +1106,15 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
     );
 
     // The served rows follow the focus at once — no run-loop boundary has
-    // to be reached for the new plan order to show (issue #284's hoist).
+    // to be reached for the new plan order to show (issue #284's move-to-front).
     assert_eq!(
         pipeline_row_names(fixture.port()).await,
         ["c.dll", "a.dll", "b.dll"],
         "the swapped-in target leads the served plan"
     );
 
-    // Both answers rode the persisted scope record — a handle re-opened
-    // over the same workspace honors them on the #107 match rule.
+    // Both states are saved in the persisted scope record — a handle
+    // re-opened over the same workspace honors them on the #107 match rule.
     let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
     assert!(
         reopened.is_paused("A.DLL"),
@@ -1126,18 +1126,18 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
         "the target holds the focus slot"
     );
 
-    // And the swap steered, never lifecycle-walked: the run stayed live.
+    // And the swap steered the scope only, never the run-level machine: the run stayed live.
     assert!(
         matches!(control.state(), PipelineState::Running),
         "the composition never walks the run-level machine"
     );
 }
 
-/// A Start Translation press against a run that cannot honor it is refused
-/// with the server's own reason, never a silent no-op: an undiscovered
-/// binary is 409 like the pause pair, and a discovered binary the live plan
-/// no longer names — its pass already completed in this run — is the stale
-/// press, 409 naming the reason and pointing at the row's Configure.
+/// A Start Translation press that the run cannot honor is refused with
+/// the server's own reason, never a silent no-op. An undiscovered binary
+/// is a 409 like the pause pair. A discovered binary the live plan no
+/// longer names — its pass already completed in this run — is the stale
+/// press: 409 naming the reason and pointing at the row's Configure.
 #[tokio::test]
 async fn test_pipeline_binary_start_refusals() {
     let fixture = TestFixture::new();
@@ -1187,7 +1187,7 @@ async fn test_pipeline_binary_start_refusals() {
 
     // The stale press: discovered, but this run already had its pass —
     // 409 naming the reason and the fix, because re-running a finished
-    // pass is restart's verb, not the row button's.
+    // pass is restart's job, not this row button's.
     let (status, body) =
         post_lifecycle(fixture.port(), "/api/pipeline/binaries/done.dll/start").await;
     assert_eq!(status, 409);
@@ -1198,11 +1198,11 @@ async fn test_pipeline_binary_start_refusals() {
     );
 }
 
-/// The Start Translation press carries the lifecycle truth of the row it
-/// sits on: from Idle it drives the start transition before queueing a
-/// plain run request (transition-first, the run endpoint's ADR-0004
-/// discipline); from a run-level pause it releases the pause without
-/// queueing anything new; and a terminal run is refused with the state
+/// The Start Translation press also acts on the lifecycle state of the
+/// row it sits on. From Idle it drives the start transition first, then
+/// queues a plain run request (transition-first, the ADR-0004 rule the
+/// run endpoint follows). From a run-level pause it releases the pause
+/// without queueing anything new. A terminal run is refused with the state
 /// machine's own message — the row button never reaches restart.
 #[tokio::test]
 async fn test_pipeline_binary_start_walks_the_run_level_machine() {
@@ -1230,8 +1230,8 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Idle: the press begins translating with the pressed binary first —
-    // 200, the machine walked Running, the default full-scope request
-    // queued on the shared channel exactly as the run endpoint queues it.
+    // 200, the machine moved to Running, and the default full-scope
+    // request queued on the shared channel exactly as the run endpoint queues it.
     let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["paused"], false);
@@ -1626,9 +1626,9 @@ async fn test_override_endpoints_apply_get_and_persist() {
     assert_eq!(body["override"]["reviewer_notes"], "looks like a blitter");
 
     // A typo'd strategy label is refused — the record's typed field rejects
-    // the unknown variant rather than storing a force that looks active but
-    // silently does nothing (axum answers the failed JSON extraction with
-    // 422, like the classification override's category, issue #120).
+    // the unknown variant rather than storing an override that looks active
+    // but silently does nothing (axum answers the failed JSON extraction
+    // with 422, like the classification override's category, issue #120).
     let resp = client
         .post(&url)
         .json(&serde_json::json!({"override": {"retry_strategy_override": "escalatte"}}))
@@ -3126,8 +3126,8 @@ async fn test_dashboard_quality_summary() {
 
     // Fixture unit confidences: 0.5, 0.5 (DrawPrimitive v1/v2), 0.95, 0.95
     // (classify) → average 0.725. Baseline counts reach the units (issue #67):
-    // DrawPrimitive v1 and v2 each carry the 3/3 baseline artifact and
-    // UpdateScene 1/1 → weighted pass rate 7/7. No unit carries verification
+    // DrawPrimitive v1 and v2 each have the 3/3 baseline artifact and
+    // UpdateScene 1/1 → weighted pass rate 7/7. No unit has verification
     // test data → that rate stays null, not a fabricated zero. (The weighted
     // pass-rate math itself is covered by the summary module's unit tests.)
     let qs = &json["quality_summary"];
@@ -3364,7 +3364,7 @@ async fn test_queue_overlay_round_trip_and_persistence() {
         "manual order survives a server restart"
     );
 
-    // The dashboard response carries the overlay and the effective order.
+    // The dashboard response includes the overlay and the effective order.
     let resp = reqwest::get(format!("http://127.0.0.1:{restart_port}/api/dashboard"))
         .await
         .expect("dashboard request succeeds");
@@ -3892,7 +3892,7 @@ async fn test_dependency_graph_endpoint() {
     assert!(first_node["name"].as_str().is_some());
 
     // Enrichment (issue #76): every fixture unit belongs to a binary, so
-    // every node carries one; edges carry their relationship type.
+    // every node has one; edges record their relationship type.
     for node in nodes {
         assert!(
             node["binary"].as_str().is_some(),
@@ -4456,7 +4456,7 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     assert_eq!(b["classification_strategy"], "ReverseEngineer");
     assert_eq!(b["processing"], false);
 
-    // A tagged-object strategy hydrates to its variant name — not an
+    // A tagged-object strategy reads back as its variant name — not an
     // empty string that the UI would render as "Unclassified".
     let b = binary("steam_api64.dll");
     assert_eq!(b["category"], "KnownThirdParty");
@@ -4471,11 +4471,11 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     );
 }
 
-/// The pre-batch scan phase beats once around its whole group under the
-/// phase name (issue #239), and the call-graph pass beats per function
-/// while it walks its work list; `/api/pipeline` surfaces the latest
-/// beat as `activity` on the processing binary's row — and a phase beat
-/// with no per-item granularity beats with just its name.
+/// The pre-batch scan phase sends one heartbeat for its whole group, under
+/// the phase name (issue #239), and the call-graph pass sends one heartbeat
+/// per function as it processes its work list. `/api/pipeline` reports the
+/// latest heartbeat as `activity` on the row of the binary being worked on
+/// — and a heartbeat with no per-item detail reports only its name.
 #[tokio::test]
 async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
     let fixture = TestFixture::new();
@@ -4522,8 +4522,8 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
     assert_eq!(b["activity"]["index"], 1);
     assert_eq!(b["activity"]["total"], 22143);
 
-    // A phase beat before its first listing has no per-item
-    // granularity: only the name is honest.
+    // A heartbeat before its first listing has no per-item
+    // detail: only the name is honest.
     events.emit(ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
         pass: "evidence scans".into(),
@@ -4707,10 +4707,10 @@ async fn test_pipeline_pal_binaries_sort_last() {
     );
 }
 
-/// Issue #242: classification changes move rows for free. The order is
-/// recomputed per poll from the merged live-over-disk classifications, so a
-/// re-classification into PAL mapping sinks the row and one out of PAL
-/// mapping lifts it back — on the very next request, with no restart.
+/// Issue #242: classification changes move rows automatically. The order
+/// is recomputed per poll from the merged live-over-disk classifications:
+/// re-classifying into PAL mapping moves the row to the bottom and out of
+/// PAL mapping back up again — on the very next request, with no restart.
 #[tokio::test]
 async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
     let fixture = TestFixture::new();
@@ -4835,7 +4835,7 @@ fn write_pipeline_pal_readiness_fixtures(fixture: &TestFixture) {
     .expect("pal stub content written");
 }
 
-/// Issue #243: a PalMapping row carries the PAL-readiness summary — the
+/// Issue #243: a PalMapping row includes the PAL-readiness summary — the
 /// traits its recorded API-call categories demand (DirectX and DirectX11
 /// grouping into GraphicsDevice, Win32Core into PlatformCore), sorted by
 /// trait name, each flagged defined or missing against the workspace's
@@ -5009,7 +5009,7 @@ fn emit_canned_batch_summary(events: &TranslationEvents) {
     });
 }
 
-/// Issue #64: when the token-usage log carries measured attempt durations
+/// Issue #64: when the token-usage log records measured attempt durations
 /// and work remains, `/api/pipeline` reports a time estimate derived from
 /// the average duration × remaining functions.
 #[tokio::test]
@@ -5075,7 +5075,7 @@ async fn test_pipeline_time_estimate_absent_without_durations() {
     );
 }
 
-/// Issue #64: `/api/dashboard` carries a `queue_effort` map giving each
+/// Issue #64: `/api/dashboard` includes a `queue_effort` map giving each
 /// function-level queued unit its estimated per-attempt seconds, taken from
 /// that unit's own recorded durations.
 #[tokio::test]
@@ -5172,7 +5172,7 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
     );
 }
 
-/// Like `write_canned_run_telemetry` but the token-usage entries carry
+/// Like `write_canned_run_telemetry` but the token-usage entries include
 /// durations (100s and 200s for DrawPrimitive's two attempts).
 fn write_canned_run_telemetry_with_durations(fixture: &TestFixture) {
     let analysis_dir = fixture.repo_path().join("re").join("analysis");
@@ -5326,7 +5326,7 @@ async fn test_progress_empty() {
     assert_eq!(body["count"].as_u64().unwrap_or(0), 0);
 }
 
-/// Feed canned `ProgressEvent`s through the live wiring (broadcast channel →
+/// Feed canned `ProgressEvent`s through the live event path (broadcast channel →
 /// SessionManager callback → `ProgressState`) and assert `/api/progress`
 /// reports the current phase, the phase history in event order, and elapsed
 /// time per in-flight unit. The sequence includes a tier escalation:
@@ -6181,8 +6181,8 @@ async fn test_faults_api_exact_json_from_fixture_log() {
 
     let base = format!("http://127.0.0.1:{}", fixture.port());
 
-    // The fault list: every entry verbatim, oldest first, with the full
-    // attempt identity triple and the attached recovery guidance.
+    // The fault list: every entry verbatim, oldest first, with the three
+    // attempt-identity fields and the attached recovery guidance.
     let (status, body) = get_json(&format!("{base}/api/faults")).await;
     assert_eq!(status, 200);
     assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 6);
@@ -6428,9 +6428,9 @@ async fn test_faults_api_corrupt_log_honest_empty() {
 /// One token-usage entry with every field spelled out — the fixture's
 /// exact values are what the endpoint assertions pin. An empty tier omits
 /// `context_tier` entirely, the shape entries written before tier tracking
-/// (and by older versions) carry on disk.
+/// (and by older versions) have on disk.
 // One parameter per fixture field — the whole point is spelling every
-// field out, so folding them into a struct would only hide the values.
+// field out, so grouping them into a struct would only hide the values.
 #[allow(clippy::too_many_arguments)]
 fn token_usage_entry(
     binary: &str,
@@ -7144,12 +7144,12 @@ async fn test_strategy_analytics_api_corrupt_log_honest_empty() {
 // LLM performance metrics (issue #128, W3.4)
 // ─────────────────────────────────────────────────────────────
 
-/// One token-usage entry carrying a recorded attempt duration — the same
+/// One token-usage entry with a recorded attempt duration — the same
 /// shape as `token_usage_entry` plus `duration_secs`. `duration: None`
 /// writes the pre-duration-tracking shape (the field omitted entirely),
-/// which the percentile math must exclude rather than impute as zero.
+/// which the percentile math must exclude rather than count as zero.
 // One parameter per fixture field — the whole point is spelling every
-// field out, so folding them into a struct would only hide the values.
+// field out, so grouping them into a struct would only hide the values.
 #[allow(clippy::too_many_arguments)]
 fn llm_metrics_token_entry(
     binary: &str,
@@ -7171,7 +7171,7 @@ fn llm_metrics_token_entry(
     entry
 }
 
-/// One resource-exhaustion fault carrying the `metadata.reason` the
+/// One resource-exhaustion fault with the `metadata.reason` the
 /// pipeline's `ResourceExhaustionFault` writes — the timeout kind is what
 /// the metrics endpoints count, and the overloaded kind is what they must
 /// leave out.
@@ -7202,7 +7202,7 @@ fn resource_exhaustion_fault_entry(
 /// 2026-10-01, five on 2026-10-04) and four faults. Seven attempts
 /// recorded durations — 10/20/30/40/50/60/70 seconds, so nearest-rank
 /// P50/P95/P99 pin as 40/70/70 — and two predate duration tracking,
-/// excluded from the percentiles, never imputed. The faults hold exactly
+/// excluded from the percentiles, never counted as zero. The faults hold exactly
 /// two timeout-kind resource-exhaustion events (one per fixture day),
 /// one overloaded resource-exhaustion event that must not count as a
 /// timeout, and one slow-response fault that must not count either.
@@ -7409,7 +7409,7 @@ async fn test_llm_metrics_registered_in_plain_and_live_routers() {
 /// Issue #128 exact-JSON contract: against deterministic fixture logs,
 /// the summary pins exact nearest-rank P50/P95/P99 over the *recorded*
 /// durations — the two entries without a duration are excluded, never
-/// imputed — and counts exactly the two timeout-kind faults, bucketed
+/// counted as zero — and counts exactly the two timeout-kind faults, bucketed
 /// per UTC day with the gap days filled. The by-tier endpoint pins the
 /// per-tier correlation, including the untracked empty-label bucket.
 #[tokio::test]
@@ -7707,7 +7707,7 @@ fn write_binaries_list_fixtures(fixture: &TestFixture) {
     std::fs::write(classify.join("broken.dll.json"), "{ not json")
         .expect("corrupt classification written");
 
-    // The persisted override layer: d3d9.dll steered to KnownThirdParty
+    // The persisted override layer: it sets d3d9.dll to KnownThirdParty
     // with a different target crate — exact-key match on the filename.
     let analysis = fixture.repo_path().join("re").join("analysis");
     std::fs::create_dir_all(&analysis).expect("analysis dir");
@@ -7865,7 +7865,7 @@ async fn test_binaries_detail_registered_in_plain_and_live_routers() {
     }
 }
 
-/// Issue #132 exact-JSON contract: the detail carries the classification
+/// Issue #132 exact-JSON contract: the detail reports the classification
 /// decision in force — the override layer applied, exactly what the
 /// analyzer would act on — with its reasoning and symbol counts, plus
 /// the per-function list with each unit's review status. The lookup
@@ -7936,7 +7936,7 @@ async fn test_binaries_detail_api_exact_json_from_fixture() {
 
     // A differently-spelled name finds the same binary — the
     // case-insensitive join every other server comparison makes — and
-    // the response carries the record's verbatim identity.
+    // the response shows the record's verbatim identity.
     let (status, body) = get_json(&format!("{base}/api/binaries/GAME_LOGIC.DLL")).await;
     assert_eq!(status, 200, "the lookup is case-insensitive");
     assert_eq!(
@@ -8134,7 +8134,7 @@ async fn test_binaries_shim_status_registered_in_plain_and_live_routers() {
 /// persisted artifacts only. The crate joined to is the one the
 /// override in force names (`wgpu-rs`, not the recorded `wgpu`); a
 /// reverse-engineered binary honestly reports no shim expected; a
-/// crate-replacement binary whose branch a reviewer sent back carries
+/// crate-replacement binary whose branch a reviewer sent back reports
 /// the sent-back verdict. The lookup is case-insensitive; unknown and
 /// corrupt-record names honestly 404.
 #[tokio::test]
@@ -8212,7 +8212,7 @@ async fn test_binaries_shim_status_api_exact_json_from_fixture() {
 
     // A differently-spelled name finds the same binary — the
     // case-insensitive join every other server comparison makes — and
-    // the response carries the record's verbatim identity.
+    // the response shows the record's verbatim identity.
     let (status, body) = get_json(&format!("{base}/api/binaries/D3D9.DLL/shim-status")).await;
     assert_eq!(status, 200, "the lookup is case-insensitive");
     assert_eq!(
