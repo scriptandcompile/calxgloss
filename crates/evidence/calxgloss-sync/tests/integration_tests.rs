@@ -4,19 +4,19 @@
 //! cover on their own:
 //!
 //! - **Scan to disk** — [`SyncEngine`] scans a canned program, the
-//!   [`SyncPersistor`] files the result in the workspace layout, and
-//!   loading it back yields the same result the scan returned.
+//!   [`SyncPersistor`] saves the result in the workspace layout, and
+//!   loading it back gives the same result the scan returned.
 //! - **Consumption** — the loaded result answers the lookups a
-//!   translation pipeline makes (the findings recorded for one
-//!   function), and the persisted list keeps every finding in scan
+//!   translation pipeline makes: the findings recorded for one
+//!   function. The persisted list keeps every finding in scan
 //!   order: function by function, and within one function the mutex
 //!   pairings, then the atomic calls, then the thread spawns, then
 //!   the TLS records.
 //! - **Prompt rendering** — the loaded findings render into
-//!   `ConcurrencyInfo` prompt data and the escalate prompt carries
+//!   `ConcurrencyInfo` prompt data. The escalate prompt includes
 //!   the CONCURRENCY section.
 //! - **Cache behavior** — the `exists` check decides whether a scan
-//!   runs, and a rescan replaces the cached document.
+//!   runs. A rescan replaces the cached document.
 //!
 //! The fake program implements [`ScanSource`], so the whole flow runs
 //! without an external server.
@@ -51,11 +51,11 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
-/// A canned program implementing [`ScanSource`]: one function whose body
-/// carries an `EnterCriticalSection`/`LeaveCriticalSection` pair, an
+/// A canned program implementing [`ScanSource`]. Its first function's
+/// body has an `EnterCriticalSection`/`LeaveCriticalSection` pair, an
 /// `InterlockedIncrement` call, and a `CreateThread`/
-/// `WaitForSingleObject` pair — one finding family per detector — and
-/// one plain function that finds nothing.
+/// `WaitForSingleObject` pair — one finding family per detector. Its
+/// second function is plain and finds nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -83,8 +83,8 @@ impl ScanSource for FakeProgram {
             })
     }
 
-    // The rest of the shared trait's reads: these tests never make
-    // them, so they answer with empty or not-found data.
+    // The rest of the shared trait's reads. These tests never make
+    // them, so each read answers with empty or not-found data.
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
         Ok(Vec::new())
     }
@@ -191,10 +191,10 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
-    // The four detectors read disjoint shapes in one pass, so what
-    // reaches disk is function by function in listing order and, within
-    // one function, mutex then atomic then thread then TLS — the order
-    // two scans diff against.
+    // The four detectors read disjoint body shapes in one pass.
+    // Findings reach disk function by function in listing order.
+    // Within one function they appear as mutex, then atomic, then
+    // thread, then TLS. This is the order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = SyncEngine::with_source(program())
         .scan("eqmain.dll")
@@ -236,14 +236,14 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was found for the function it is about to
-    // translate; the plain function carries nothing.
+    // translate. The plain function has no findings.
     let findings: Vec<&SyncFinding> = loaded.for_function("FUN_18003ab00").collect();
     assert_eq!(findings.len(), 3);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
     // Each record keeps its detector's detail and evidence through the
-    // round trip, so a prompt sees the pairing that produced it.
+    // round trip. A prompt therefore sees the pairing that produced it.
     let SyncFinding::Mutex(hint) = findings[0] else {
         unreachable!("the lock pair reads as a mutex finding");
     };
@@ -268,11 +268,11 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
 
 #[tokio::test]
 async fn a_loaded_result_renders_into_the_escalate_prompt() {
-    // The whole escalate path, no external server needed: the fixture
-    // document on disk answers the per-function lookup, the findings
-    // render into `ConcurrencyInfo` prompt data, and the rendered
-    // escalate prompt carries the CONCURRENCY section with each
-    // finding's suggestion, kind, confidence, and evidence.
+    // The whole escalate path runs with no external server. The fixture
+    // document on disk answers the per-function lookup. The findings
+    // render into `ConcurrencyInfo` prompt data. The rendered escalate
+    // prompt includes the CONCURRENCY section with each finding's
+    // suggestion, kind, evidence confidence, and evidence text.
     let workspace = TempDir::new().unwrap();
     let result = SyncEngine::with_source(program())
         .scan("eqmain.dll")
@@ -317,9 +317,9 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
 
 #[tokio::test]
 async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
-    // A canned program with one Win32 key created and used in one
-    // function, one POSIX key created and used in another, and one
-    // lone access whose creation lives out of view.
+    // A canned program with three functions. One creates and uses a
+    // Win32 key, another creates and uses a POSIX key, and the third
+    // makes one lone access with no creation in view.
     let mut program = FakeProgram::empty();
     program.listing = vec![
         summary("FUN_18003ab00"),
@@ -369,7 +369,8 @@ async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
         .collect();
     assert_eq!(tls.len(), 3, "two pairs and the fragment all surface");
 
-    // The creation and access in one function pair up at 70, Win32 …
+    // The creation and access in one function pair up at evidence
+    // confidence 70, for Win32.
     let SyncFinding::Tls(pair) = tls[0] else {
         unreachable!("the key site reads as a tls finding");
     };
@@ -379,7 +380,7 @@ async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
     assert_eq!(pair.confidence, 70);
     assert!(tls[0].target().contains("TlsSetValue"));
 
-    // … and POSIX the same.
+    // The POSIX creation and access pair up the same way.
     let SyncFinding::Tls(posix) = tls[2] else {
         unreachable!("the key site reads as a tls finding");
     };
@@ -388,7 +389,8 @@ async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
     assert_eq!(posix.access, "pthread_getspecific");
     assert_eq!(posix.confidence, 70);
 
-    // The lone access, with no creation in view, is a fragment at 60.
+    // The lone access, with no creation in view, is a fragment at
+    // evidence confidence 60.
     let SyncFinding::Tls(fragment) = tls[1] else {
         unreachable!("the key access reads as a tls finding");
     };
@@ -398,7 +400,7 @@ async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
     assert_eq!(fragment.confidence, 60);
 
     // The escalate prompt describes each finding with its kind and
-    // confidence, like every other detector's records.
+    // evidence confidence, like every other detector's records.
     let findings: Vec<calxgloss_prompts::ConcurrencyInfo> = loaded
         .findings
         .iter()
@@ -432,8 +434,8 @@ async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
 async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
     // The deadlock shape across two functions: one takes `local_20`
     // before `local_40`, the other the other way round. The conflict
-    // rides the tagged union to disk and back, and renders into the
-    // escalate prompt through the usual accessors.
+    // is saved into the tagged union document on disk and read back.
+    // It renders into the escalate prompt through the usual accessors.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(
@@ -476,7 +478,7 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
     assert_eq!(conflicts.len(), 1, "one conflict per lock pair");
 
     // The record keeps both functions and both lock objects through
-    // the round trip, at the pairing's own confidence.
+    // the round trip, at the pairing's own evidence confidence.
     let SyncFinding::LockOrder(record) = conflicts[0] else {
         unreachable!("the reversed orders read as a lock-order finding");
     };
@@ -491,8 +493,8 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
     );
     assert!(conflicts[0].target().contains("local_20"));
 
-    // The cross-function finding lands after the per-function
-    // findings, so the persisted document stays diffable.
+    // The cross-function finding comes after the per-function
+    // findings, so the persisted document stays easy to diff.
     let order: Vec<(&str, &str)> = loaded
         .findings
         .iter()
@@ -510,7 +512,7 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
     );
 
     // The escalate prompt describes the conflict with its kind and
-    // confidence, like every other detector's records.
+    // evidence confidence, like every other detector's records.
     let findings: Vec<calxgloss_prompts::ConcurrencyInfo> = loaded
         .findings
         .iter()
@@ -543,9 +545,10 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
 async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
     // The unsynchronized-global shape across two functions: one
     // stores into `DAT_counter` under no lock, the other reads it
-    // under a lock of its own — neither side holds a lock the other
-    // respects. The race rides the tagged union to disk and back, and
-    // renders into the escalate prompt through the usual accessors.
+    // under a lock of its own. Neither side holds a lock the other
+    // respects. The race is saved into the tagged union document on
+    // disk and read back. It renders into the escalate prompt through
+    // the usual accessors.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(
@@ -584,7 +587,7 @@ async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
     assert_eq!(races.len(), 1, "one race per function pair and global");
 
     // The record keeps both functions and the shared variable through
-    // the round trip, one rung below the evidence-based kinds.
+    // the round trip. It scores one band below the evidence-based kinds.
     let SyncFinding::DataRace(record) = races[0] else {
         unreachable!("the shared global reads as a data race");
     };
@@ -598,8 +601,8 @@ async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
     );
     assert!(races[0].target().contains("DAT_counter"));
 
-    // The cross-function finding lands after the per-function
-    // findings, so the persisted document stays diffable.
+    // The cross-function finding comes after the per-function
+    // findings, so the persisted document stays easy to diff.
     let order: Vec<(&str, &str)> = loaded
         .findings
         .iter()
@@ -611,7 +614,7 @@ async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
     );
 
     // The escalate prompt describes the race with its kind and
-    // confidence, like every other detector's records.
+    // evidence confidence, like every other detector's records.
     let findings: Vec<calxgloss_prompts::ConcurrencyInfo> = loaded
         .findings
         .iter()
@@ -651,9 +654,9 @@ async fn a_rescan_replaces_the_cached_document() {
         .expect("first scan");
     persistor.save(&first).expect("save");
 
-    // A second scan of a program whose only function carries no shape
-    // replaces the document: the cache check still passes, but the
-    // findings are gone.
+    // The second scan reads a program whose only function has no
+    // concurrency shape for the detectors to find. It replaces the
+    // document: the cache check still passes, but the findings are gone.
     let mut quiet = FakeProgram::empty();
     quiet.listing = vec![summary("FUN_18003e750")];
     quiet.bodies.insert(
