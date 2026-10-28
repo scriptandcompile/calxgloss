@@ -1,53 +1,53 @@
 //! The evidence-bundle projector — one `AnalysisDoc` seam between the
 //! persisted analysis documents and the prompt bundle (issue #311, spec #310).
 //!
-//! The bundle's read path used to spell the same three steps per
-//! engine — nineteen near-identical `extract_*`/`load_*` functions in
-//! [`retry::helpers`](crate::retry) held the copies: load the engine's
-//! persisted analysis document for the binary, keep the records for the
-//! target function, convert them through the prompts crate's `From`
-//! impls. This module spells those steps once, behind one interface:
-//! [`AnalysisDoc`] is the seam (load,
+//! The bundle's read path used to repeat the same three steps for every
+//! engine, as copies: nineteen near-identical `extract_*`/`load_*`
+//! functions in [`retry::helpers`](crate::retry) each wrote them out —
+//! load the engine's persisted analysis document for the binary, keep
+//! the records for the target function, and convert them through the
+//! prompts crate's `From` impls. This module writes those steps once,
+//! behind one interface: [`AnalysisDoc`] is the seam (load,
 //! per-function selection, conversion), [`load_and_project`] is the
 //! generic contract, and [`ProjectionRow`] pairs an adapter with the
 //! bundle field(s) it fills so [`project_bundle`] can assemble the
-//! bundle by fold — the same descriptor-table shape P34's
-//! [`scan_registry`](crate::scan_registry) proved on the write side,
-//! kept deliberately separate: the scan-descriptor table owns the scan
-//! write path, this seam owns the prompt read path.
+//! bundle by folding the rows — the same descriptor-table shape P34's
+//! [`scan_registry`](crate::scan_registry) proved on the write side.
+//! The two stay deliberately separate: the scan-descriptor table owns
+//! the scan write path, this seam owns the prompt read path.
 //!
-//! The degradation contract, spelled exactly once here and inherited
-//! by every adapter (an adapter never logs and never degrades):
+//! The degradation rule, written exactly once here and inherited by
+//! every adapter (an adapter never logs and never degrades):
 //!
 //! * no workspace configured → the field stays empty, nothing is
 //!   logged — nothing was ever going to be there;
 //! * document missing or unparseable → a `debug` line naming the
 //!   document kind, the binary, and the error, then the field stays
-//!   empty — missing context degrades the prompt, it never fails it,
+//!   empty — missing context weakens the prompt, it never fails it,
 //!   and the two failure kinds log distinctly (nothing persisted means
 //!   the scan never ran; a broken artifact means the document on disk
 //!   needs investigating);
 //! * document present → exactly that function's records, converted, in
-//!   scan order, pushed into the designated field(s).
+//!   scan order, put into the designated field(s).
 //!
-//! Documents that feed two bundle fields — the consts document (the
-//! union findings and the data-table records) and the type-inference
-//! document (type info and parameter directions) — are one multi-field
-//! row: a single load feeds both fields, so they can never disagree
-//! about what the workspace holds.
+//! A document that feeds two bundle fields is one multi-field row, not
+//! two rows: that covers the consts document (its union findings and
+//! its data-table records) and the type-inference document (its type
+//! info and its parameter directions). One load fills both fields, so
+//! they can never disagree about what the workspace holds.
 //!
-//! The seam is live: issues #312 and #313 migrated the twelve
-//! single-field engines onto it, their adapters and the
-//! [`PROJECTION_ROWS`](adapters::PROJECTION_ROWS) table living in
+//! The seam is live: issues #312 and #313 moved the twelve single-field
+//! engines onto it. Their adapters and the
+//! [`PROJECTION_ROWS`](adapters::PROJECTION_ROWS) table live in
 //! [`adapters`], and `gather_function_evidence` now fills those fields
-//! by folding the registered rows — fourteen documents, the shared
-//! consts and type-inference ones as multi-field rows that load once
-//! and feed every field they touch (#314). libmatch's call-graph
-//! correlation and the whole-DLL extractions stay bespoke outside this
-//! seam, exactly as specced (#310). Every registered row is covered by
-//! the parametrized suite driven through `gather_function_evidence`;
-//! what is pinned *here* is the fold itself, against a fake in-memory
-//! adapter.
+//! by running the registered rows in order — fourteen documents, with
+//! the shared consts and type-inference ones as multi-field rows that
+//! load once and fill every field they touch (#314). libmatch's
+//! call-graph correlation and the whole-DLL extractions stay custom,
+//! outside this seam, exactly as specced (#310). Every registered row
+//! is covered by the parametrized suite driven through
+//! `gather_function_evidence`; what is pinned *here* is the fold
+//! itself, against a fake in-memory adapter.
 
 pub mod adapters;
 
@@ -58,17 +58,17 @@ use calxgloss_prompts::EvidenceBundle;
 use thiserror::Error;
 use tracing::debug;
 
-/// Why loading one analysis document came up empty.
+/// Why loading one analysis document produced nothing.
 ///
-/// Both cases degrade the bundle identically — the fold projects
+/// Both cases leave the bundle the same way — the fold projects
 /// nothing and the prompt still builds — but they log distinctly, and
-/// the distinction is why this type exists: a missing document says
-/// the scan has not run for this binary (recompute), a corrupt one
+/// that distinction is why this type exists: a missing document says
+/// the scan has not run for this binary (recompute), and a corrupt one
 /// says the artifact on disk is broken (investigate). An engine
-/// adapter maps its persistor's error onto this type the way it maps
-/// `PersistError` onto its own crate error: the persistor's
-/// `NotFound` variant folds into [`Missing`](Self::Missing), every
-/// other failure into [`Corrupt`](Self::Corrupt).
+/// adapter maps its persistor's error onto this type the same way it
+/// maps `PersistError` onto its own crate error: the persistor's
+/// `NotFound` variant becomes [`Missing`](Self::Missing), and every
+/// other failure becomes [`Corrupt`](Self::Corrupt).
 #[derive(Debug, Error)]
 pub enum DocLoadError {
     /// Nothing is persisted for the binary — the engine's scan has
@@ -83,11 +83,11 @@ pub enum DocLoadError {
     Corrupt(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
 
-/// One persisted analysis document, seen as what the projector needs
-/// of it: a per-function record source for one target binary.
+/// One persisted analysis document, seen as the projector needs
+/// it: a per-function record source for one target binary.
 ///
-/// The seam exposes exactly the three steps every hand-copied
-/// `extract_*` spelling repeats, and nothing else:
+/// The seam exposes exactly the three steps that every hand-copied
+/// `extract_*` function repeated, and nothing else:
 ///
 /// 1. [`load`](Self::load) — read the engine's persisted document for
 ///    the binary, through that engine's own persistor;
@@ -100,18 +100,18 @@ pub enum DocLoadError {
 ///    document fills.
 ///
 /// An implementor is a unit struct, one per analysis document, named
-/// once by a [`ProjectionRow`] — all the shared machinery (the
-/// workspace check, the miss logs, the degradation) belongs to
+/// once by a [`ProjectionRow`]. All the shared machinery (the
+/// workspace check, the miss logs, the degradation rule) belongs to
 /// [`load_and_project`], never to the adapter. The fourteen per-function
 /// documents `gather_function_evidence` reads all have their adapters
-/// here (issues #312–#314); the libmatch document's call-graph
-/// correlation and the whole-DLL extractions stay bespoke outside
+/// here (issues #312–#314); the libmatch document's call graph
+/// correlation and the whole-DLL extractions stay custom, outside
 /// this seam, exactly as specced (#310).
 pub trait AnalysisDoc {
-    /// The document kind, named in the miss log so an absent bundle
-    /// field stays answerable from the logs — "why is this engine not
-    /// in the prompt" — and doubling as the row's identity in the
-    /// roster test that pins the registered rows.
+    /// The document kind. The miss log names it, so an absent bundle
+    /// field can be explained from the logs — "why is this engine not
+    /// in the prompt?" It is also the row's identity in the roster
+    /// test that pins which rows are registered.
     const KIND: &'static str;
 
     /// The whole loaded document for one binary, whatever the
@@ -120,8 +120,8 @@ pub trait AnalysisDoc {
 
     /// One record of the document, as `for_function` hands it to
     /// `fill` — usually `&'a EngineRecord`, mirroring the engines' own
-    /// `for_function`, so conversion rides the existing
-    /// reference-taking `From` impls.
+    /// `for_function`, so conversion can use the existing `From`
+    /// impls that take a reference.
     type Record<'a>;
 
     /// Load this engine's persisted analysis document for `binary`
@@ -144,32 +144,32 @@ pub trait AnalysisDoc {
     /// Project what the loaded document itself admits about its scan's
     /// coverage into the bundle field(s) that sit beside this row's
     /// findings — called exactly once per successfully loaded document,
-    /// before any per-record [`fill`] (issue #346). The default no-op
-    /// serves documents from engines that do not stamp coverage; a
-    /// missing or corrupt document never reaches this leg at all, so a
-    /// bundle that read no document fills no coverage, and the section
-    /// beside this row renders exactly what it rendered before P19.
+    /// before any per-record [`fill`](Self::fill) (issue #346). The
+    /// default no-op serves engines that do not record coverage; a
+    /// missing or corrupt document never reaches this step at all, so
+    /// a bundle that read no document fills no coverage, and the
+    /// section beside this row renders as it did before P19.
     fn fill_coverage(_doc: &Self::Doc, _bundle: &mut EvidenceBundle) {}
 }
 
-/// The fold's step for one row, type-erased: each engine's document is
-/// its own type and the registered documents cannot sit in one list
-/// unboxed, so
-/// [`ProjectionRow::of`] monomorphizes the whole seam into this one
-/// function pointer.
+/// The fold's step for one row, with the concrete types hidden away:
+/// each engine's document is its own type, and the registered
+/// documents cannot sit unboxed in one list, so
+/// [`ProjectionRow::of`] turns the whole seam into this one function
+/// pointer for each concrete document type.
 type ProjectStep = fn(Option<&Path>, &str, &str, &mut EvidenceBundle);
 
-/// The shared contract, spelled once: run one adapter's three legs
-/// against the workspace and project the document's records into
-/// `bundle`, with the whole degradation rule applied here and nowhere
+/// The shared contract, written once: run one adapter's three steps
+/// against the workspace and put the document's records into
+/// `bundle`. The whole degradation rule applies here and nowhere
 /// else — no workspace configured projects nothing and logs nothing;
 /// a missing or unparseable document logs its miss (see
 /// [`DocLoadError`]) and projects nothing; a present document
 /// contributes exactly its `for_function` records, converted by
 /// `fill`, in scan order.
 ///
-/// The prompt is never failed by absent context: this function cannot
-/// fail at all.
+/// Missing context never fails the prompt: this function cannot fail
+/// at all.
 pub fn load_and_project<D: AnalysisDoc>(
     workspace: Option<&Path>,
     binary: &str,
@@ -205,10 +205,10 @@ pub fn load_and_project<D: AnalysisDoc>(
         }
     };
 
-    // The coverage leg runs once for the whole document — never per
-    // record, and never on the miss path, which returned above — so the
-    // bundle's coverage field can never be filled or doubled from one
-    // document (issue #346).
+    // The coverage step runs once for the whole document — never per
+    // record, and never on the miss path, which returned above — so one
+    // document can never fill the bundle's coverage field twice
+    // (issue #346).
     D::fill_coverage(&doc, bundle);
 
     for record in D::for_function(&doc, function) {
@@ -242,7 +242,7 @@ impl ProjectionRow {
     /// The row for one adapter type: the adapter, its per-function
     /// selection, and its field fills monomorphized behind
     /// [`load_and_project`], so a registered row adds no per-engine
-    /// spelling of its own.
+    /// code of its own.
     ///
     /// `const` because the registration table is a `static`: rows must
     /// be constructible in a static initializer, which the plain
@@ -267,13 +267,14 @@ impl ProjectionRow {
     }
 }
 
-/// Assemble an evidence bundle by folding the rows in their
+/// Assemble an evidence bundle by running the rows in their
 /// registered order — the one-call shape of [`project_into`] over an
 /// empty bundle, kept for readers (and tests) that want the whole
 /// bundle from the table alone.
 ///
-/// Row order is projection order: a field fed by several rows receives
-/// them in table order, keeping prompt diffs between attempts diffable.
+/// Row order is projection order: a field filled by several rows
+/// receives them in table order, so prompt output stays diffable
+/// between attempts.
 pub fn project_bundle(
     rows: &[ProjectionRow],
     workspace: Option<&Path>,
@@ -285,11 +286,11 @@ pub fn project_bundle(
     bundle
 }
 
-/// The fold itself, into a bundle that may already carry fields from
-/// bespoke extraction: `gather_function_evidence` runs the registered
+/// The fold itself, into a bundle that may already hold fields from
+/// custom extraction: `gather_function_evidence` runs the registered
 /// rows through it after the shared loads and before returning, so the
 /// migrated engines contribute their fields and nothing else (issue
-/// #312). Rows run in table order; a row's degradation is confined to
+/// #312). Rows run in table order; a row's degradation affects only
 /// its own field.
 pub fn project_into(
     rows: &[ProjectionRow],
@@ -318,14 +319,14 @@ mod tests {
     use tracing_test::traced_test;
 
     // The fake in-memory adapters (issue #311, spec #310's seam 2):
-    // the generic fold gets pinned once against these fakes, and the
-    // real adapters get their coverage from the parametrized suite at
+    // these fakes pin the generic fold once, and the real adapters
+    // get their coverage from the parametrized suite at
     // `gather_function_evidence` when they register (issue #312).
     //
     // Every scenario gets its own fake kind and its own binary name:
     // the log-capture buffer is process-global while tests run in
     // parallel, so each assertion quotes its scenario's own kind and
-    // binary and stays meaningful regardless of what other tests log.
+    // binary and stays meaningful no matter what other tests log.
 
     /// One record of the fake store, shared by every fake adapter: the
     /// function it belongs to, a label the projected info carries, and
@@ -442,8 +443,8 @@ mod tests {
 
     /// One fake adapter filling the type-info field from the store,
     /// borrowing its records the way every real engine's
-    /// `for_function` does. A kind of its own per scenario keeps the
-    /// log assertions scenario-local.
+    /// `for_function` does. Each scenario gets its own kind, so its
+    /// log assertions only concern that scenario.
     macro_rules! fake_single_doc {
         ($name:ident, $kind:literal) => {
             struct $name;
@@ -479,9 +480,9 @@ mod tests {
     fake_single_doc!(FakeSecondRowDoc, "fake second-row document");
 
     /// A fake multi-field document standing in for the shared consts
-    /// document: every record rides the const-findings union, and a
-    /// table record additionally rides the data-table findings — both
-    /// fields from the row's single load.
+    /// document: every record goes into the const-findings union, and
+    /// a table record also goes into the data-table findings — both
+    /// fields come from the row's single load.
     struct FakeSharedDoc;
 
     impl AnalysisDoc for FakeSharedDoc {
@@ -516,13 +517,13 @@ mod tests {
 
     // The coverage-carrying fakes (issue #346): a document that admits
     // falling short beside its records, standing in for the apidetect
-    // result, pinned against the same fold so the coverage leg runs once
-    // per document and never on a miss.
+    // result, pinned against the same fold so the coverage step runs
+    // once per document and never on a miss.
 
     /// A fake document's own coverage record, beside its records: the
-    /// admission the engine stamped, or `None` standing in for a
-    /// document written before coverage stamping — present, but with
-    /// nothing to admit.
+    /// admission the engine wrote, or `None` standing in for a
+    /// document written before coverage was recorded — present, but
+    /// with nothing to admit.
     #[derive(Debug, Clone)]
     struct FakeStampedDoc {
         records: Vec<FakeRecord>,
@@ -530,8 +531,8 @@ mod tests {
     }
 
     thread_local! {
-        /// Coverage legs run per document kind — the pins that one
-        /// present document runs its coverage leg exactly once and a
+        /// Coverage steps run per document kind — the pins that one
+        /// present document runs its coverage step exactly once and a
         /// missing or corrupt document never runs one at all.
         static FAKE_COVERAGE_FILLS: RefCell<HashMap<&'static str, usize>> =
             HashMap::new().into();
@@ -560,9 +561,9 @@ mod tests {
         FAKE_COVERAGE_FILLS.with(|fills| fills.borrow().get(kind).copied().unwrap_or(0))
     }
 
-    /// One fake stamped adapter: records through the ordinary fake
-    /// store, its admission through the beside-store, filling the API
-    /// coverage field the way the real API row does.
+    /// One fake stamped adapter: records come from the ordinary fake
+    /// store, its admission from the beside-store, and it fills the
+    /// API coverage field the way the real API row does.
     macro_rules! fake_stamped_doc {
         ($name:ident, $kind:literal) => {
             struct $name;

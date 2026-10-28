@@ -1,21 +1,21 @@
-//! Translation pipeline — full end-to-end workflow.
+//! Translation pipeline — the full end-to-end translation workflow.
 //!
-//! This module provides the [`TranslationPipeline`] struct, which wires together
-//! all the pieces needed to translate a disassembled function to Rust:
+//! This module holds the [`TranslationPipeline`] struct, which combines every
+//! piece needed to turn one disassembled function into Rust:
 //!
-//! 1. Pull function data through the analysis seam (Kuna decompiler output)
+//! 1. Read the function's data from the analysis engine (Kuna decompiler output)
 //! 2. Tag Windows API calls with their PAL mappings
-//! 3. Generate baseline test inputs from function signature and disassembly
-//! 4. Build a structured prompt bundling all context
-//! 5. Send the prompt to the LLM for Rust code generation
-//! 6. Return the translated code along with metadata
+//! 3. Generate the baseline test's inputs from the signature and disassembly
+//! 4. Build the evidence bundle that carries all this context into one prompt
+//! 5. Send that prompt to the LLM, which writes the Rust code
+//! 6. Return the translated code together with its metadata
 //!
 //! # Example
 //!
-//! A pass is described by [`PipelineSpec`](assembly::PipelineSpec) and wired
-//! by [`assemble`](assembly::assemble) — the pipeline's constructor is
-//! assembly-internal, so a hand-built pipeline does not compile outside the
-//! seam (issue #328).
+//! A pass is described by [`PipelineSpec`](assembly::PipelineSpec) and built by
+//! [`assemble`](assembly::assemble): the pipeline's constructor is
+//! assembly-internal, so a pipeline built by hand does not compile outside
+//! assembly (issue #328).
 //!
 //! ```no_run
 //! use calxgloss_kuna::KunaSource;
@@ -75,47 +75,47 @@ use crate::retry;
 use crate::scan_job::ScanJob;
 use crate::scan_registry::{ScanDescriptor, ScanLatches, arm_completion_latches, scan_rows};
 
-/// The pass name the scan phase's heartbeat carries: one honest
-/// "n of m functions consumed" row for the whole group of fifteen
-/// pre-batch evidence scans, instead of one row per scan that restarts
-/// with each scan (issue #239).
+/// The scan phase's name in progress reporting: one row carrying
+/// "n of m functions consumed" for the whole group of fifteen pre-batch
+/// evidence scans, instead of a separate row per scan that restarts with
+/// each scan (issue #239).
 const SCAN_PHASE: &str = "evidence scans";
 
-/// The scan phase's fan-out window: at most four evidence scans run at a
-/// time (issue #240).
+/// At most four evidence scans run at a time — the scan phase's fan-out
+/// window (issue #240).
 ///
-/// The window is not there to protect the Kuna engine — the engine stays
-/// the serial resource either way, the read cache's per-key cell already
-/// collapsing concurrent misses of one body into one engine request. The
-/// cap exists to bound peak memory, since each running scan keeps its own
-/// bodies while the shared memo holds every body only once, and to keep
-/// the scan phase's single dashboard row meaningful. Four is one named
-/// decision, measured (issue #241): on eqmain.dll (4,076 functions)
-/// widening the window from four to eleven bought the scan phase nothing
-/// (parse-only wall 56.6 s → 57.3 s) and cost it on the cold path
-/// (113.9 s → 153.8 s — the extra in-flight jobs pile waiting bodies onto
-/// the same listing region the engine is already chewing through), all
-/// while adding a seventh of the kept decompilation copies, so four
-/// stands. Widening it further stays a one-line change with the phase's
-/// tests behind it —
-/// `the_scan_phase_window_never_runs_more_than_the_named_cap_at_a_time`
-/// pins that the phase never exceeds this constant and never degenerates
-/// to one scan at a time.
+/// The cap does not protect the analysis engine. The engine handles one
+/// request at a time either way, and the scan read cache already turns
+/// simultaneous requests for one function body into a single engine request.
+///
+/// The cap exists to limit peak memory (each running scan keeps its own
+/// copies of function bodies, while the shared cache stores each body
+/// once) and to keep the scan phase's single dashboard row readable.
+///
+/// Four was chosen by measurement (issue #241). On eqmain.dll (4,076
+/// functions), raising the cap from four to eleven changed warm-cache
+/// speed almost nothing (56.6 s → 57.3 s), was slower on cold reads
+/// (113.9 s → 153.8 s, because more scans in flight stack up waiting work
+/// on the same listing data the engine is processing), and added about a
+/// seventh more kept decompilation copies. So four stands. Raising it
+/// later is a one-line change, guarded by
+/// `the_scan_phase_window_never_runs_more_than_the_named_cap_at_a_time`,
+/// which pins the phase at or under this constant and never at one scan.
 const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 
 /// One evidence scan as the fan-out's unit of work: takes its owned
-/// [`ScanJob`] and hands back the boxed scan future. The scans' futures
-/// are distinct types, so the window boxes them to move them onto tasks
-/// (issue #240). Registered rows enter as capturing thunks, hence the
-/// boxed `FnOnce` rather than the plain `fn` pointer this was (issue #302).
+/// [`ScanJob`] and hands back the scan's boxed future. Each scan's future
+/// is a distinct type, so the window boxes them to move them onto tasks
+/// (issue #240). Registered rows arrive as closures that capture their row,
+/// hence the boxed `FnOnce` rather than the plain `fn` pointer (issue #302).
 type EvidenceScanTask =
     Box<dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'static>;
 
-/// One evidence scan as it crosses the fan-out window: it announces itself
-/// to the phase's in-flight tracker, runs, and leaves. The phase keeps the
-/// high-water mark of that tracker, so the window's cap is a tested
-/// contract rather than only a comment (issue #241). A named async fn
-/// again, so the spawned future is `'static` (issue #240).
+/// One evidence scan as it passes through the fan-out window: it counts
+/// itself in, runs, and counts itself out. The phase records the highest
+/// count it ever reached, so the window's cap is a tested contract rather
+/// than only a comment (issue #241). A named async fn again, so that the
+/// spawned future is `'static` (issue #240).
 async fn run_scan_in_window(
     scan: EvidenceScanTask,
     job: ScanJob,
@@ -131,22 +131,22 @@ async fn run_scan_in_window(
 /// One registered row as the phase runs it: the row reads the batch
 /// through the job's owned context, carries the completion latches the
 /// phase armed for its declared dependency edge, and reports its own
-/// outcome; the phase's window, heartbeat, and joins wrap it from
-/// outside (issues #302, #305).
+    /// outcome; the phase's window, progress reporting, and joins wrap it
+    /// from outside (issues #302, #305).
 async fn run_registered_scan(row: ScanDescriptor, job: ScanJob, latches: ScanLatches) {
     let mut ctx = job.scan_context();
     ctx.latches = latches;
     row.run(ctx).await;
 }
 
-/// The registered rows as task-ready thunks: each row moves into its own
-/// thunk, boxed so the window can move it onto a task (issue #240).
-/// The phase's completion latches are wired onto each row's context from
-/// the table's own declarations — the latch armed for this row's name is
-/// the one its run publishes on every exit, and the latch named by its
-/// `waits_for` is the one its pre-scan hook waits on (issue #305). No
-/// row names a latch field of its own; the edge is table data, and this
-/// is the only way a scan enters the phase (issue #308).
+/// The registered rows as ready-to-run tasks: each row moves into its own
+/// closure, boxed so the window can move it onto a task (issue #240). The
+/// completion latches are attached to each row's context from the table's
+/// own declarations — the latch armed for this row's name is the one its
+/// run publishes on every exit, and the latch named by its `waits_for` is
+/// the one its pre-scan hook waits on (issue #305). No row carries its own
+/// latch field; the ordering edge is table data, and this is the only way
+/// a scan enters the phase (issue #308).
 fn registered_scan_tasks() -> Vec<EvidenceScanTask> {
     let rows = scan_rows();
     let armed = arm_completion_latches(&rows);
@@ -173,91 +173,91 @@ fn registered_scan_tasks() -> Vec<EvidenceScanTask> {
 // TranslationPipeline — full end-to-end pipeline
 // ============================================================
 
-/// Full translation pipeline: seam reads → Analysis → Tests → LLM → Rust code.
+/// Full translation pipeline: analysis reads → Analysis → tests → LLM → Rust code.
 ///
-/// This is the main entry point for the translation workflow. It orchestrates
-/// all the steps needed to translate a function from disassembly to working Rust:
+/// This is the main entry point of the translation workflow. It runs every
+/// step needed to turn one function's disassembly into working Rust:
 ///
-/// 1. Fetch function metadata through the analysis seam (decompiler output)
-/// 2. Tag Windows API calls with PAL mappings using the analyzer
-/// 3. Generate baseline test inputs from function signature and disassembly
-/// 4. Build a structured prompt bundling all context
-/// 5. Send the prompt to the LLM for Rust code generation
-/// 6. Return a [`Translation`] with the code and all metadata
+/// 1. Read the function's data from the analysis engine (decompiler output)
+/// 2. Tag Windows API calls with their PAL mappings using the analyzer
+/// 3. Generate the baseline test's inputs from the signature and disassembly
+/// 4. Build the evidence bundle that carries all this context into one prompt
+/// 5. Send that prompt to the LLM, which writes the Rust code
+/// 6. Return a [`Translation`] with the code and all its metadata
 ///
 /// # Construction
 ///
-/// The constructor is assembly-internal: the only way to bring a pipeline
-/// into existence is to describe the pass — a
+/// The constructor is assembly-internal: the only way to create a pipeline is
+/// to describe the pass — a
 /// [`PipelineSpec`](crate::assembly::PipelineSpec) — and assemble it with
 /// [`assemble`](crate::assembly::assemble) (or
 /// [`assemble_patch`](crate::assembly::assemble_patch) for a pass that
-/// loads its own engine). Hand-building one outside the pipeline
-/// context's assembly does not compile (issue #328).
+/// loads its own analysis engine). Building a pipeline by hand, outside
+/// assembly, does not compile (issue #328).
 pub struct TranslationPipeline {
-    /// The loaded Kuna program every seam read goes through.
+    /// The loaded Kuna program that every analysis read goes through.
     kuna: KunaSource,
 
-    /// Client for sending prompts to the LLM.
+    /// Client that sends prompts to the LLM.
     llm: LlmClient,
 
     /// Windows API → Rust mapping table.
     api_mappings: ApiMappings,
 
-    /// Analyzer for DLL classification and API tagging.
+    /// Analyzer used for DLL classification and API tagging.
     analyzer: Analyzer,
 
-    /// Built-in root-symbol patterns backing the translate-path guard: a
-    /// function named explicitly that the call-graph batch path would skip
-    /// (entry point, import thunk) is refused before any scan fetch or
-    /// LLM spend, instead of being translated from a body that owns no
-    /// logic of its own.
+    /// The built-in root-symbol patterns behind the single-function path's
+    /// guard: when a root symbol (entry point, import thunk) is named
+    /// directly, the pipeline stops before any scan fetch or LLM spend,
+    /// instead of translating a body that holds no logic of its own — the
+    /// call-graph batch path would have skipped this function anyway.
     root_detector: calxgloss_callgraph::RootDetector,
 
-    /// Optional test generator for baseline test input creation.
+    /// Test generator for the baseline test's inputs, when one is configured.
     testgen: Option<TestGenerator>,
 
-    /// Optional binary name override for test generation context.
+    /// Binary name override used as context when generating tests.
     target_binary: Option<BinaryIdentity>,
 
-    /// Optional workspace root path for experiment logging.
+    /// Workspace root path for experiment logging, when one is set.
     workspace: Option<std::path::PathBuf>,
 
-    /// Optional broadcast channel for progress events.
-    /// When present, events are emitted at key pipeline milestones
-    /// and can be consumed by a WebSocket server for live progress.
+    /// Broadcast channel for progress events, when one is attached. Events
+    /// go out at the pipeline's main steps, so a WebSocket server can
+    /// subscribe and show live progress.
     #[allow(dead_code)]
     events: Option<TranslationEvents>,
 
-    /// Context-window detector for fault detection.
-    /// Created once with the LLM client's `context_window` setting.
+    /// Detects context-window faults. Built once, from the LLM client's
+    /// `context_window` setting.
     context_detector: ContextWindowDetector,
 
-    /// Hallucination detector for validating LLM-generated code.
-    /// Created from engine symbols and PAL API catalogue; `None` when
-    /// no engine source is available.
+    /// Checks LLM-written code for invented symbols. Built from the
+    /// analysis engine's symbols and the PAL API catalogue; `None` when no
+    /// analysis engine source is available.
     hallucination_detector: Option<HallucinationDetector>,
 
     /// When `true`, skip call-graph extraction in `fetch_function`.
     ///
-    /// The call graph (caller/callee names) is used by higher context tiers
-    /// (ModuleContext, FullModule) to inject neighbor information into
-    /// prompts.  Setting this flag means those tiers fall back to less
-    /// context rather than call-graph-derived context.
+    /// The call graph (caller and callee names) is what the higher context
+    /// tiers (ModuleContext, FullModule) use to add neighbor information to
+    /// prompts. With this flag set, those context tiers fall back to less
+    /// context instead of context taken from the call graph.
     no_callgraph: AtomicBool,
 
-    /// When `true`, print call graph statistics after the graph is built.
+    /// When `true`, print call-graph statistics after the graph is built.
     ///
-    /// Useful for debugging and understanding the call graph structure before
-    /// translation begins.  The summary includes function count, root/middle/leaf
-    /// distribution, call-type breakdown, and external API count.
+    /// Useful for debugging: it shows the call graph's shape before
+    /// translation starts — how many functions there are, how they split
+    /// between root, middle, and leaf, the call types, and the external API count.
     callgraph_verbose: bool,
 
-    /// Explicit cache directory for call graph JSON files.
+    /// Explicit cache directory for call-graph JSON files.
     ///
     /// When set, call graphs are saved to and loaded from this directory
-    /// instead of the default `{workspace}/re/analysis/` path. This allows
-    /// users to customize the cache location via the `--callgraph-cache` CLI flag.
+    /// instead of the default `{workspace}/re/analysis/` path, so the
+    /// `--callgraph-cache` CLI flag can point the cache somewhere else.
     callgraph_cache_dir: Option<std::path::PathBuf>,
 
     /// Path to the target binary file on disk, used to build the batch's
@@ -270,13 +270,13 @@ pub struct TranslationPipeline {
     /// cache existed.
     binary_path: Option<std::path::PathBuf>,
 
-    /// Port to the git history's accepted (merged) translations, for
+    /// Port to the git history's accepted (merged) translations, used for
     /// carry-over seeding (issue #299).
     ///
-    /// Set by the CLI when git is enabled; `None` everywhere else, which
-    /// keeps the queue exactly as it is today. The translator never touches
-    /// git itself — this trait object is the only window onto it, the same
-    /// port pattern the version-pairing trigger uses.
+    /// The CLI sets it when git is enabled; everywhere else it is `None`,
+    /// which leaves the queue exactly as it is today. The translator never
+    /// runs git itself — this trait object is its only way to reach git,
+    /// the same port shape the version-pairing trigger uses.
     accepted_attempt_source: Option<Arc<dyn crate::carry_over::AcceptedAttemptSource>>,
 
     /// The current batch's carry-over seeds, keyed by new-function name.
@@ -289,110 +289,110 @@ pub struct TranslationPipeline {
     /// keys cannot collide.
     carry_over_seeds: Mutex<HashMap<String, crate::carry_over::CarryOverSeed>>,
 
-    /// The batch's shared cached scan source, armed by
+    /// The batch's shared cached scan source, set up by
     /// [`begin_cached_source`](Self::begin_cached_source) at the top of a
     /// batch and read by every scan, the call-graph build, and the
     /// retry/escalation helpers through [`scan_source`](Self::scan_source).
     ///
-    /// A second batch over the same workspace and unchanged binary replays
-    /// from the disk tier with zero live reads.
+    /// A second batch over the same workspace and an unchanged binary
+    /// replays from the disk tier with no live reads at all.
     cached_source: Mutex<Option<CachedScanSource>>,
 
-    /// The seam's capability report, pulled exactly once beside the
-    /// opening of the batch's cached scan source and held for the whole
+    /// What the analysis seam can and cannot report, fetched exactly once
+    /// when the batch's cached scan source opens, and held for the whole
     /// batch (issue #355).
     ///
-    /// The fetch rides [`begin_cached_source`](Self::begin_cached_source):
-    /// the report travels with the source it describes, and reading it
-    /// costs no additional engine read. A batch whose cache never opened
-    /// holds the live engine's own declaration instead — the same words,
-    /// read from the source its reads actually go through. Prompts never
-    /// re-ask the seam; they read this held copy.
+    /// The fetch goes out beside
+    /// [`begin_cached_source`](Self::begin_cached_source): the report travels
+    /// with the source it describes, so reading it costs no extra engine
+    /// read. A batch whose cache never opened holds the live engine's own
+    /// declaration instead — the same words, read from the source its reads
+    /// really go through. Prompts never ask again; they read this stored copy.
     seam_report: Mutex<calxgloss_types::CapabilityReport>,
 
-    /// The scan phase's fan-out window high-water mark: the most evidence
-    /// scans that ran at once during the latest
+    /// The scan phase's fan-out high-water mark: the most evidence scans
+    /// that ran at the same time during the latest
     /// [`run_prebatch_scans`](Self::run_prebatch_scans), recorded as each
     /// scan enters the window (issue #241).
     ///
-    /// The window is one named decision ([`MAX_CONCURRENT_EVIDENCE_SCANS`])
+    /// The window is one named decision ([`MAX_CONCURRENT_EVIDENCE_SCANS`]),
     /// and this is the test behind it: the phase reports its own high-water
     /// mark, so a test can pin that the scans never exceed the cap and never
-    /// degenerate to one at a time. Reset at the start of every phase.
+    /// fall back to one at a time. Reset at the start of every phase.
     scan_window_high_water: Arc<AtomicUsize>,
 
     /// Force the batch's scan read cache cold (issue #106).
     ///
-    /// Set by the CLI's `--refresh-cache` flag. When true,
+    /// The CLI's `--refresh-cache` flag sets this. When true,
     /// [`begin_cached_source`](Self::begin_cached_source) opens the cache
-    /// through [`CachedScanSource::new_refresh`]: the disk tier for the
+    /// through [`CachedScanSource::new_refresh`]: the disk tier holding the
     /// binary's current bytes is wiped before the run, every read goes
-    /// live, and the cache is rewritten. The manifest keys on the
-    /// binary's bytes, so a hand-edited cache is the one staleness it
-    /// cannot detect — this is the escape hatch for that case.
+    /// live, and the cache is rewritten afterwards. The manifest keys on the
+    /// binary's bytes, so a hand-edited cache is the one kind of staleness
+    /// it cannot notice — this is the way out of that case.
     refresh_cache: bool,
 
-    /// Shared stop signal for graceful shutdown of a live run.
+    /// Shared stop signal, for shutting a live run down cleanly.
     ///
-    /// When set and stopped, the batch loops break at the next **unit
-    /// boundary** — the unit in flight completes and persists before the
-    /// run stops. Set by the web server's shutdown/restart endpoints.
+    /// When it is set and stopped, the batch loops break at the next
+    /// **unit boundary**: the unit in flight finishes and is saved before
+    /// the run stops. The web server's shutdown and restart endpoints set it.
     stop: Option<StopSignal>,
 
-    /// Shared pipeline lifecycle control handle (issue #90, W2.1).
+    /// Shared handle for the pipeline's lifecycle (issue #90, W2.1).
     ///
-    /// When set, the batch loops observe it at each **unit boundary**:
-    /// `Paused` parks the loop until the run is resumed, and
+    /// When set, the batch loops check it at each **unit boundary**:
+    /// `Paused` holds the loop until the run resumes, and
     /// `Stopping`/`Complete` end the batch after the unit in flight has
-    /// completed and been reported to the caller (which persists it and
-    /// cleans up its branch). Driven by the web control endpoints.
+    /// finished and been reported to the caller (which saves it and cleans
+    /// up its branch). The web control endpoints drive this.
     pipeline_control: Option<PipelineControl>,
 
-    /// Shared unit-cancellation handle (issue #91, W2.2).
+    /// Shared handle for cancelling the unit in flight (issue #91, W2.2).
     ///
-    /// When set, each unit is registered in-flight while the batch loop
-    /// works on it; the web server's cancel-current endpoint cancels
-    /// whatever unit is in flight, and the loop aborts it at the earliest
-    /// safe point — mid-LLM-call included — records the attempt as a
-    /// failure, and continues with the next unit.
+    /// When set, each unit is registered as in-flight while the batch loop
+    /// works on it; the web server's cancel-current endpoint cancels the
+    /// unit in flight, and the loop stops it at the first safe point —
+    /// including in the middle of an LLM call — records that attempt as a
+    /// failure, and moves on to the next unit.
     unit_cancellation: Option<UnitCancellation>,
 
-    /// Shared translation-scope handle (issue #93, W2.5).
+    /// Shared handle for the translation scope (issue #93, W2.5).
     ///
-    /// When set, the batch loops apply it at **queue selection**: skipped
-    /// functions never enter the plan at all, and priority functions sort
-    /// ahead of the rest of the queue. Its constraints bound consumption —
-    /// max attempts caps the retry config, max context tier caps automatic
+    /// When set, the batch loops apply it when they pick from the queue:
+    /// skipped functions never enter the plan at all, and priority
+    /// functions sort ahead of the rest. Its limits bound spending — max
+    /// attempts caps the retry config, max context tier caps automatic
     /// escalation, and the token budget stops the batch at the next unit
-    /// boundary once spend reaches it. Driven by the web scope endpoints.
+    /// boundary once spending reaches it. The web scope endpoints drive it.
     scope: Option<ScopeControl>,
 
-    /// Shared per-unit reviewer-override handle (issue #96, W2.7).
+    /// Shared handle for per-unit reviewer overrides (issue #96, W2.7).
     ///
-    /// When set, the context builder honors it per unit: a forced tier
-    /// replaces the automatic selection, a forced retry strategy replaces
-    /// the configured one, and custom hints reach the unit's prompts. The
-    /// batch loops also drop override-skipped units at queue selection, so
-    /// one hopeless function never blocks the rest of its binary's pass.
-    /// Driven by the web override endpoints.
+    /// When set, the context builder honors it for that unit: a forced
+    /// context tier replaces the automatic choice, a forced retry strategy
+    /// replaces the configured one, and custom hints reach the unit's
+    /// prompts. The batch loops also drop override-skipped units when they
+    /// pick from the queue, so one hopeless function never blocks the rest
+    /// of its binary's pass. The web override endpoints drive it.
     overrides: Option<calxgloss_types::OverrideControl>,
 }
 
 impl TranslationPipeline {
-    /// Create a new translation pipeline over a loaded Kuna program, an LLM
-    /// client, and a PAL mapping table.
-    ///
-    /// This sets up the full pipeline with the default analyzer.
-    /// A context-window detector is initialized with the LLM client's
-    /// `context_window` setting for automatic fault detection.
-    ///
-    /// **Assembly-internal** (issue #328): this constructor and every
-    /// `with_*` setter below it form the wiring surface of the
-    /// [`assembly`](crate::assembly) module — [`wire_pass`](crate::assembly)
-    /// is the only production caller across the workspace, pinned at source
-    /// level by the seam's own test suite. Outside this crate the compiler
-    /// refuses a hand-built pipeline; in-crate tests may wire one directly
-    /// to pin behavior around the seam.
+/// Create a new translation pipeline over a loaded Kuna program, an LLM
+/// client, and a PAL mapping table.
+///
+/// This sets up the full pipeline with the default analyzer and builds the
+/// context-window detector from the LLM client's `context_window` setting,
+/// so context-window faults are detected automatically.
+///
+/// **Assembly-internal** (issue #328): this constructor and every `with_*`
+/// setter below it exist to build a pass in the
+/// [`assembly`](crate::assembly) module — [`wire_pass`](crate::assembly)
+/// is the only production caller in the workspace, pinned at source level
+/// by assembly's own tests. Outside this crate the compiler refuses a
+/// hand-built pipeline; tests inside the crate may still build one
+/// directly to pin behavior around the pipeline.
     pub(crate) fn new(kuna: KunaSource, llm: LlmClient, api_mappings: ApiMappings) -> Self {
         let analyzer = Analyzer::new(PipelineSource::Kuna(kuna.clone()), api_mappings.clone());
         let context_detector = ContextWindowDetector::new(llm.context_window());
@@ -429,18 +429,18 @@ impl TranslationPipeline {
     /// Disable call-graph extraction.
     ///
     /// When set, `fetch_function` returns an empty call graph (no caller or
-    /// callee names).  This speeds up translation when call-graph-derived
-    /// context is not needed.
+    /// callee names). This speeds up translation when call-graph context is
+    /// not needed.
     pub(crate) fn with_no_callgraph(self) -> Self {
         self.no_callgraph.store(true, Ordering::Relaxed);
         self
     }
 
-    /// Enable call-graph statistics output.
+    /// Turn on call-graph statistics output.
     ///
-    /// When set, [`translate`](Self::translate) prints a summary of call graph
-    /// statistics (function count, root/middle/leaf breakdown, call-type
-    /// distribution, external API count) after the graph is built.
+    /// When set, [`translate`](Self::translate) prints a summary of the call
+    /// graph after it is built: function count, root/middle/leaf split,
+    /// call-type breakdown, and the external API count.
     pub(crate) fn with_callgraph_verbose(mut self) -> Self {
         self.callgraph_verbose = true;
         self
@@ -448,28 +448,28 @@ impl TranslationPipeline {
 
     /// Set the workspace root path for experiment logging.
     ///
-    /// When set, every translation attempt is recorded to
+    /// When set, every translation attempt is recorded in
     /// `<workspace>/re/analysis/prompt_strategy_log.json`.
     pub(crate) fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = Some(workspace.into());
         self
     }
 
-    /// Attach a progress event emitter for live WebSocket streaming.
+    /// Attach a progress-event emitter for live WebSocket streaming.
     ///
-    /// When set, the pipeline emits [`ProgressEvent`] instances at every
-    /// major milestone. Subscribers to the channel (typically a WebSocket
-    /// server) can relay these events to connected clients in real time.
+    /// When set, the pipeline sends a [`ProgressEvent`] at each major step.
+    /// A subscriber to the channel (usually a WebSocket server) can pass
+    /// those events on to connected clients as they happen.
     pub(crate) fn with_events(mut self, events: TranslationEvents) -> Self {
         self.events = Some(events);
         self
     }
 
-    /// Attach a shared stop signal for graceful shutdown of a live run.
+    /// Attach a shared stop signal, for shutting a live run down cleanly.
     ///
-    /// When the signal is stopped (e.g. by the web server's shutdown
+    /// When the signal is stopped (for example by the web server's shutdown
     /// endpoint), the batch loops break at the next **unit boundary**: the
-    /// unit in flight completes and its result is persisted before the run
+    /// unit in flight finishes, and its result is saved before the run
     /// stops.
     pub(crate) fn with_stop_signal(mut self, stop: StopSignal) -> Self {
         self.stop = Some(stop);
@@ -479,10 +479,10 @@ impl TranslationPipeline {
     /// Attach the shared [`PipelineControl`] lifecycle handle (issue #90,
     /// W2.1).
     ///
-    /// The web server's pause/resume/stop endpoints drive it; the batch
-    /// loops observe it at each **unit boundary** — a pause parks the loop
-    /// (no unit is interrupted mid-LLM-call), a stop lets the unit in
-    /// flight finish and then halts the batch.
+    /// The web server's pause/resume/stop endpoints drive it. The batch
+    /// loops check it at each **unit boundary**: a pause holds the loop
+    /// (no unit is interrupted mid-LLM-call), and a stop lets the unit in
+    /// flight finish before the batch ends.
     pub(crate) fn with_pipeline_control(mut self, control: PipelineControl) -> Self {
         self.pipeline_control = Some(control);
         self
@@ -490,12 +490,12 @@ impl TranslationPipeline {
 
     /// Attach the shared [`UnitCancellation`] handle (issue #91, W2.2).
     ///
-    /// The web server's cancel-current endpoint drives it; the batch loop
-    /// registers each unit in-flight while it works on it and aborts the
-    /// unit as soon as a cancellation lands — the earliest safe point is
-    /// mid-LLM-call, since nothing an aborted attempt produced is
-    /// persisted. The cancelled unit is recorded as a failure and the run
-    /// continues with the next unit.
+    /// The web server's cancel-current endpoint drives it. The batch loop
+    /// marks each unit in-flight while it works on it and stops that unit
+    /// as soon as a cancellation arrives — the first safe point is in the
+    /// middle of an LLM call, because an aborted attempt has saved nothing.
+    /// The cancelled unit is recorded as a failure and the run moves on to
+    /// the next unit.
     pub(crate) fn with_unit_cancellation(mut self, cancellation: UnitCancellation) -> Self {
         self.unit_cancellation = Some(cancellation);
         self
@@ -503,13 +503,13 @@ impl TranslationPipeline {
 
     /// Attach the shared [`ScopeControl`] handle (issue #93, W2.5).
     ///
-    /// The web server's scope endpoints drive it; the batch loops consult
-    /// it at **queue selection** — a skipped function never enters the plan,
-    /// a priority function sorts ahead of the rest of the queue — and at each
-    /// **unit boundary** for the per-binary pause (issue #219, part of #217):
-    /// a binary the operator has paused ends its batch there rather than
-    /// parking it. Its constraints bound the retry config, tier escalation,
-    /// and the run's token budget.
+    /// The web server's scope endpoints drive it. The batch loops consult
+    /// it at **queue selection** — a skipped function never enters the
+    /// plan, and a priority function sorts ahead of the rest of the
+    /// queue — and at each **unit boundary** for the per-binary pause
+    /// (issue #219, part of #217): a binary the operator has paused ends
+    /// its batch there instead of being held open. Its constraints cap the
+    /// retry config, context tier escalation, and the run's token budget.
     pub(crate) fn with_scope(mut self, scope: ScopeControl) -> Self {
         self.scope = Some(scope);
         self
@@ -517,28 +517,28 @@ impl TranslationPipeline {
 
     /// Attach the shared [`OverrideControl`] handle (issue #96, W2.7).
     ///
-    /// The web server's override endpoints drive it; the translation context
-    /// builder consults it per unit — a forced tier replaces the automatic
-    /// selection, a forced retry strategy replaces the configured one, and
-    /// custom hints reach the unit's prompts — while the batch loops drop
-    /// override-skipped units at queue selection.
+    /// The web server's override endpoints drive it. The translation
+    /// context builder consults it per unit — a forced context tier
+    /// replaces the automatic choice, a forced retry strategy replaces the
+    /// configured one, and custom hints reach the unit's prompts — while
+    /// the batch loops drop override-skipped units at queue selection.
     pub(crate) fn with_overrides(mut self, overrides: calxgloss_types::OverrideControl) -> Self {
         self.overrides = Some(overrides);
         self
     }
 
-    /// Whether an attached stop signal has been requested.
+    /// Whether the attached stop signal, if any, has been requested.
     fn stop_requested(&self) -> bool {
         self.stop.as_ref().is_some_and(|s| s.is_stopped())
     }
 
-    /// Observe the lifecycle control at a unit boundary (issue #90, W2.1).
+    /// Check the lifecycle control at a unit boundary (issue #90, W2.1).
     ///
     /// Returns `false` when the batch must end: `Stopping` (a stop was
     /// requested) or `Complete` (stop-current ended the run) halt after the
-    /// unit in flight, and a stop signal arriving while the loop is parked
-    /// in a pause releases the park the same way — shutdown must never hang
-    /// on a paused run. Returns `true` when the next unit may start.
+    /// unit in flight. A stop signal that arrives while the loop is held in
+    /// a pause releases the hold the same way — shutting down must never
+    /// wait on a paused run. Returns `true` when the next unit may start.
     async fn control_allows_next_unit(&self) -> bool {
         let Some(control) = self.pipeline_control.as_ref() else {
             return true;
@@ -560,26 +560,26 @@ impl TranslationPipeline {
     /// Whether the operator has paused the batch's target binary (issue #219,
     /// part of #217).
     ///
-    /// Unlike a run-level pause, which parks the loop at a unit boundary until
-    /// the operator resumes, a paused binary **ends** the batch at the next
-    /// boundary — the batch returns rather than waits, so the run can move on
-    /// to another binary. The batch loops consult this just before
+    /// A run-level pause holds the loop at a unit boundary until the operator
+    /// resumes it; a paused binary, by contrast, **ends** the batch at the
+    /// next boundary — the batch returns instead of waiting, so the run can
+    /// move on to another binary. The batch loops check this just before
     /// [`control_allows_next_unit`](Self::control_allows_next_unit), so the
-    /// pause is honored at the boundary even while the run itself is parked.
-    /// With no scope handle attached, no binary is ever paused.
+    /// pause is honored at the boundary even while the run itself is on
+    /// hold. With no scope handle attached, no binary is ever paused.
     fn binary_paused(&self, binary: &str) -> bool {
         self.scope
             .as_ref()
             .is_some_and(|scope| scope.is_paused(binary))
     }
 
-    /// Resolves once a cancellation has landed on the named unit (issue #91,
-    /// W2.2). With no cancellation handle attached it never resolves, so the
-    /// `select!` in the batch loop simply never takes the abort branch.
+    /// Resolves once a cancellation has arrived for the named unit (issue
+    /// #91, W2.2). With no cancellation handle attached it never resolves,
+    /// so the `select!` in the batch loop simply never takes the abort branch.
     ///
-    /// The poll interval is short (50 ms) because the point of cancel-current
-    /// is to stop a runaway unit burning tokens *now* — unlike pause, which
-    /// only matters at unit boundaries.
+    /// The poll interval is short (50 ms) because cancel-current exists to
+    /// stop a runaway unit from spending tokens *now* — unlike a pause,
+    /// which only matters at unit boundaries.
     async fn wait_for_unit_cancel(&self, binary: &str, function: &str) {
         match self.unit_cancellation.as_ref() {
             None => std::future::pending::<()>().await,
@@ -593,26 +593,26 @@ impl TranslationPipeline {
     }
 
     /// Apply the operator's function scope and the reviewer's per-unit
-    /// overrides at queue selection (issues #93, W2.5 and #96, W2.7).
+    /// overrides when the queue is selected (issues #93, W2.5 and #96, W2.7).
     ///
     /// Skipped functions leave the plan before the first unit starts — they
     /// are never attempted — and priority functions sort ahead of the rest
-    /// of the queue: the prioritized group keeps its relative order, and
-    /// everything after it keeps its original order (a stable partition).
-    /// A reviewer override's skip flag removes its single unit the same way,
-    /// so one hopeless function never blocks the rest of its binary's pass.
-    /// With neither handle attached the list passes through untouched.
+    /// of the queue: the priority group keeps its relative order, and
+    /// everything after it keeps its original order (a stable split). A
+    /// reviewer override's skip flag removes its one unit the same way, so
+    /// one hopeless function never blocks the rest of its binary's pass.
+    /// With neither handle attached, the list passes through untouched.
     ///
-    /// `name_of` extracts the function name from a queue item, so the same
-    /// filtering serves plain name lists and call-graph plan entries alike.
+    /// `name_of` reads the function name out of a queue item, so the same
+    /// filtering works for plain name lists and call-graph plan entries.
     fn apply_function_scope<T>(
         &self,
         binary: &str,
         items: Vec<T>,
         name_of: impl Fn(&T) -> &str,
     ) -> Vec<T> {
-        // W2.7: reviewer-skipped units leave the plan at the same selection
-        // point as operator-skipped functions.
+        // W2.7: reviewer-skipped units leave the plan at the same point in
+        // the selection as operator-skipped functions.
         let items = match self.overrides.as_ref() {
             None => items,
             Some(overrides) => {
@@ -668,10 +668,10 @@ impl TranslationPipeline {
     /// W2.5).
     ///
     /// `max_attempts` can only lower the configured attempt count (a
-    /// constraint caps consumption, never raises the ceiling), and
-    /// `max_context_tier` rides into [`RetryLoopCtx`](retry::RetryLoopCtx)
-    /// where it caps automatic tier escalation. With no scope handle
-    /// attached the config passes through untouched.
+    /// constraint caps spending, it never raises the limit), and
+    /// `max_context_tier` goes into [`RetryLoopCtx`](retry::RetryLoopCtx),
+    /// where it caps automatic context tier escalation. With no scope
+    /// handle attached the config passes through untouched.
     fn constrained_retry_config(&self, config: &retry::RetryConfig) -> retry::RetryConfig {
         let Some(scope) = self.scope.as_ref() else {
             return config.clone();
@@ -693,15 +693,15 @@ impl TranslationPipeline {
     }
 
     /// Whether the attached scope's token budget has been reached (issue
-    /// #93). No handle or no budget means never exhausted — the batch runs
-    /// on. Checked at unit boundaries, like the stop signal and pause.
+    /// #93). No handle, or no budget, means never reached — the batch runs
+    /// on. Checked at unit boundaries, like the stop signal and the pause.
     fn budget_exhausted(&self) -> bool {
         self.scope.as_ref().is_some_and(|s| s.budget_exhausted())
     }
 
-    /// Charge a completed unit's attempt tokens against the run's token
-    /// budget (issue #93). Attempts that never reported a token count
-    /// charge nothing.
+    /// Add a completed unit's attempt tokens to the run's token budget
+    /// (issue #93). An attempt that never reported a token count adds
+    /// nothing.
     fn record_unit_tokens(&self, result: &batch::FunctionResult) {
         let Some(scope) = self.scope.as_ref() else {
             return;
@@ -718,34 +718,34 @@ impl TranslationPipeline {
         }
     }
 
-    /// Emit a progress event if an event emitter was attached.
+    /// Send a progress event, if an event emitter is attached.
     fn emit(&self, event: ProgressEvent) {
         if let Some(ref emitter) = self.events {
             let _ = emitter.emit(event);
         }
     }
 
-    /// Set the test generator for baseline test creation.
+    /// Set the test generator used to create the baseline test's inputs.
     pub(crate) fn with_testgen(mut self, testgen: TestGenerator) -> Self {
         self.testgen = Some(testgen);
         self
     }
 
-    /// Set the target binary name for test generation context.
+    /// Set the binary name used as context when generating tests.
     pub(crate) fn with_target_binary(mut self, binary: impl Into<BinaryIdentity>) -> Self {
         self.target_binary = Some(binary.into());
         self
     }
 
-    /// Attach a pre-built hallucination detector for validating LLM
-    /// responses.  Call this after `new()` when a runtime context is
-    /// available; skip it in unit tests that don't need detection.
+    /// Attach a hallucination detector that was built elsewhere, for
+    /// checking LLM responses. Call this after `new()` once the runtime
+    /// context is available; skip it in unit tests that do not need checking.
     pub(crate) fn with_hallucination_detector(mut self, detector: HallucinationDetector) -> Self {
         self.hallucination_detector = Some(detector);
         self
     }
 
-    /// Set an explicit cache directory for call graph JSON files.
+    /// Set an explicit cache directory for call-graph JSON files.
     ///
     /// When set, call graphs are saved to and loaded from this directory
     /// instead of the default `{workspace}/re/analysis/` path.
@@ -759,26 +759,26 @@ impl TranslationPipeline {
 
     /// Set the path to the target binary file on disk (issue #105).
     ///
-    /// With a workspace also set, a batch arms a shared
-    /// [`CachedScanSource`] for this binary at its top, and every scan,
-    /// the call-graph build, and the retry/escalation helpers read through
-    /// it — a second batch over the same workspace and unchanged binary
-    /// costs no live engine reads. Without it, batches read live.
+    /// With a workspace also set, a batch opens a shared
+    /// [`CachedScanSource`] for this binary at its start; every scan, the
+    /// call-graph build, and the retry/escalation helpers read through it,
+    /// so a second batch over the same workspace and an unchanged binary
+    /// needs no live engine reads. Without it, batches read live.
     pub(crate) fn with_binary_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.binary_path = Some(path.into());
         self
     }
 
-    /// Wire the port to the git history's accepted translations, enabling
-    /// carry-over seeding for this pipeline's batches (issue #299).
+    /// Attach the port to the git history's accepted translations, so this
+    /// pipeline's batches can use carry-over seeding (issue #299).
     ///
-    /// A batch then seeds attempt 1 of every function that is confidently
-    /// paired (per the pairing documents the scan step leaves behind) with a
-    /// previous-version twin whose translation is accepted — the code rides
-    /// in verbatim and faces the same baseline capture and full
-    /// verification against the new bytes. Without this, or without a
-    /// workspace and binary path also set, batches translate fresh exactly
-    /// as today.
+    /// A batch then starts attempt 1 for every confidently paired function
+    /// (per the pairing documents the scan step leaves behind) from its twin
+    /// in the previous version, when that twin's translation was accepted:
+    /// that code is copied in verbatim and goes through the same baseline
+    /// capture and full verification against the new bytes. Without this, or
+    /// without a workspace and binary path also set, batches translate from
+    /// scratch, exactly as they do today.
     pub(crate) fn with_accepted_attempt_source(
         mut self,
         source: Arc<dyn crate::carry_over::AcceptedAttemptSource>,
@@ -787,36 +787,36 @@ impl TranslationPipeline {
         self
     }
 
-    /// Force the batch's scan read cache cold for this pipeline's batches
-    /// (issue #106).
+    /// Force the scan read cache cold for this pipeline's batches (issue
+    /// #106).
     ///
     /// The CLI's `--refresh-cache` flag sets it. Each batch then wipes the
     /// disk tier for the binary's current bytes before reading: every
-    /// engine read goes live once and is written back. The manifest keys
-    /// on the binary's bytes, so a hand-edited cache is the one staleness
-    /// it cannot detect — this is the escape hatch for that case.
-    /// Without this, warm batches replay from the cache unchanged.
+    /// engine read goes live once and is written back. The manifest keys on
+    /// the binary's bytes, so a hand-edited cache is the one kind of
+    /// staleness it cannot notice — this is the way out of that case.
+    /// Without it, warm batches replay from the cache unchanged.
     pub(crate) fn with_refresh_cache(mut self) -> Self {
         self.refresh_cache = true;
         self
     }
 
-    /// Translate a function from the loaded program.
+    /// Translate one function from the loaded program.
     ///
-    /// This is the main pipeline entry point. It fetches all data from the
-    /// engine, analyzes the function, generates tests, builds a prompt, and
-    /// sends it to the LLM.
+    /// This is the main entry point of the pipeline. It reads all the data
+    /// from the analysis engine, analyzes the function, generates the
+    /// baseline test's inputs, builds the prompt, and sends it to the LLM.
     ///
     /// # Arguments
     ///
-    /// * `binary` — The DLL containing the function. Recorded on the result; the
-    ///   lookup is against the loaded program, which must be this DLL.
-    /// * `function` — The function name to translate.
+    /// * `binary` — The DLL containing the function. Recorded on the result;
+    ///   the lookup runs against the loaded program, which must be this DLL.
+    /// * `function` — The name of the function to translate.
     ///
     /// # Returns
     ///
-    /// A [`Translation`] with the generated Rust code and metadata, or an error
-    /// if any step in the pipeline fails.
+    /// A [`Translation`] with the generated Rust code and metadata, or an
+    /// error if any step of the pipeline fails.
     ///
     /// # Example
     ///
@@ -843,42 +843,42 @@ impl TranslationPipeline {
     pub async fn translate(&self, binary: &str, function: &str) -> Result<Translation> {
         debug!(binary, function, "Starting translation pipeline");
 
-        // Root symbols — entry points and import thunks — own no logic to
+        // Root symbols — entry points and import thunks — hold no logic to
         // translate. The call-graph batch path already skips or stubs them,
-        // but an explicitly named function reaches here unchecked, and a
+        // but an explicitly named function gets here unchecked, and a
         // `DelayLoad_` thunk is the classic trap: its resolved-import jump
-        // decompiles to an unrecovered jumptable plus a bare `return`, and
-        // the LLM faithfully translates the wreckage. Refuse before the
-        // scan fetch, before any token is spent.
+        // decompiles to an unrecovered jump table plus a bare `return`, and
+        // the LLM translates that broken result as if it were real. Stop
+        // before the scan fetch, before any token is spent.
         self.refuse_root_function(binary, function)?;
 
-        // Emit: translation started
+        // Report: translation started
         self.emit(ProgressEvent::TranslationStarted {
             binary: binary.to_string().into(),
             function: function.to_string(),
         });
 
-        // Step 1: Fetch function metadata from the engine
+        // Step 1: read the function's metadata from the analysis engine
         let function_info = self.fetch_function(binary, function).await?;
         info!(binary, function, "Fetched function metadata");
 
         // Body-shape guard (issue #269): an import thunk the symbol table
         // named after its import — `SetCursor` carrying only
         // `SetCursor(); return;` — matches no name-based root pattern, but
-        // its body is one unconditional call to its own name. Refuse it
-        // here, before the prompt is built and any token is spent: the LLM
-        // would faithfully translate the apparent recursion into a Rust
-        // function that calls itself.
+        // its body is one unconditional call to its own name. Stop it here,
+        // before the prompt is built and any token is spent: the LLM would
+        // translate that apparent recursion into a Rust function that calls
+        // itself.
         self.refuse_self_call_thunk(binary, function, &function_info.decompiler_output)?;
 
-        // Triage: Ghidra's analysis failures ride inside the pseudo-C as
+        // Triage: Ghidra's analysis failures arrive inside the pseudo-C as
         // WARNING comments. Name them before the LLM sees the body — an
-        // unrecovered jump table otherwise becomes a plausible, hollow
+        // unrecovered jump table otherwise becomes a plausible, empty
         // `return` in the generated Rust, with nothing marking the address
-        // that needs human recovery.
+        // that still needs a human.
         self.triage_decompiler_warnings(binary, function, &function_info.decompiler_output);
 
-        // Emit: scan fetch complete
+        // Report: scan fetch complete
         self.emit(ProgressEvent::ScanFetchComplete {
             binary: binary.to_string().into(),
             function: function.to_string(),
@@ -886,7 +886,7 @@ impl TranslationPipeline {
             disassembly_lines: function_info.disassembly.lines().count(),
         });
 
-        // Step 2: Fetch imports and tag Windows APIs
+        // Step 2: read the imports and tag the Windows APIs
         let imports = self.fetch_imports(binary).await?;
         let tagged_apis = self.tag_windows_apis(&function_info.disassembly, &imports)?;
         info!(
@@ -896,20 +896,20 @@ impl TranslationPipeline {
             "Tagged Windows APIs"
         );
 
-        // Emit: API tagging complete
+        // Report: API tagging complete
         self.emit(ProgressEvent::ApiTaggingComplete {
             binary: binary.to_string().into(),
             function: function.to_string(),
             tagged_apis: tagged_apis.len(),
         });
 
-        // Step 3: Generate baseline test inputs. The control-flow
-        // document loads once here and serves both consumers: its
-        // branch-site records target the baseline suite, and its
-        // findings ride into the prompt's CONTROL FLOW section below —
-        // one source of truth for the LLM's context and its test
-        // oracle (issue #261). A missing or corrupt document loads as
-        // nothing, leaving generation at exactly today's suite.
+        // Step 3: generate the baseline test's inputs. The control-flow
+        // document loads once here and serves both users: its branch-site
+        // records target the baseline suite, and its findings go into the
+        // prompt's CONTROL FLOW section below — one source of truth for the
+        // LLM's context and for the test oracle (issue #261). A missing or
+        // corrupt document loads as nothing, leaving generation on exactly
+        // today's suite.
         let control_flow =
             crate::retry::helpers::load_control_flow_result(self.workspace.as_deref(), binary);
         let branch_inventory =
@@ -924,14 +924,14 @@ impl TranslationPipeline {
             "Generated baseline tests"
         );
 
-        // Emit: tests generated
+        // Report: tests generated
         self.emit(ProgressEvent::TestsGenerated {
             binary: binary.to_string().into(),
             function: function.to_string(),
             test_count: baseline_tests.len(),
         });
 
-        // Step 4: Detect function complexity and build translation request
+        // Step 4: judge the function's complexity and build the request
         let complexity = self
             .analyzer
             .detect_complexity(&function_info.disassembly, &function_info.windows_apis);
@@ -942,16 +942,16 @@ impl TranslationPipeline {
             "Detected function complexity"
         );
 
-        // Select the context tier based on complexity and API call count.
-        // Historical success rate tracking is reserved for a later integration.
+        // Pick the context tier from the complexity and the API call count.
+        // Tracking historical success rates is left to a later integration.
         let api_call_count = tagged_apis.len();
         let auto_tier = calxgloss_types::select_context_tier(
             &complexity,
             api_call_count,
             calxgloss_types::SuccessRate::default(),
         );
-        // W2.7: a reviewer override forces the tier — the automatic selector
-        // is bypassed for this unit (issue #96).
+        // W2.7: a reviewer override forces the context tier — the automatic
+        // choice is skipped for this unit (issue #96).
         let tier = match self.forced_context_tier(binary, function) {
             Some(forced) => {
                 info!(
@@ -989,12 +989,12 @@ impl TranslationPipeline {
             baseline_tests.clone(),
         );
 
-        // Enrich the prompt data with call graph context when available.
+        // Add call-graph context to the prompt data when it is available.
         //
-        // Build and enrich from the engine — the auto/translate/batch passes
-        // that own a pre-built graph route it through
+        // Build and enrich it from the engine — the auto/translate/batch
+        // passes that already have a graph send it through
         // `batch_translate_from_callgraph`, which takes the graph as an
-        // argument; the pipeline never carried one (issue #328 retired the
+        // argument; the pipeline never kept one (issue #328 removed the
         // never-called `with_call_graph`).
         let enriched_context: Vec<FunctionContext> = if self.no_callgraph.load(Ordering::Relaxed) {
             Vec::new()
@@ -1038,12 +1038,12 @@ impl TranslationPipeline {
         // translation was *accepted* (a merged review branch), attempt 1
         // carries that code — no prompt built, no LLM called, no tokens
         // spent. Everything deterministic still runs: the scan fetch and
-        // root refusals above, the baseline tests and tier selection just
-        // above, and the full verification against the NEW binary's bytes
-        // in the retry loop ahead — the accepted translation is a
-        // hypothesis the new bytes get to reject, and a rejection hands the
-        // unit to the fresh attempt chain like any other failed attempt.
-        // Nothing here marks the unit verified; the review overlay's model
+        // root stops above, the baseline tests and context tier selection
+        // just above, and the full verification against the NEW binary's
+        // bytes in the retry loop ahead — the accepted code is a guess the
+        // new bytes may still fail, and that failure sends the unit into
+        // the fresh-attempt chain like any other failed attempt. Nothing
+        // here marks the unit verified; the review overlay's model
         // (ADR-0003) is untouched — the new branch starts unmerged.
         if let Some(seed) = self
             .carry_over_seeds
@@ -1066,7 +1066,7 @@ impl TranslationPipeline {
                 function: function.to_string(),
                 function_address: Some(function_info.address),
                 rust_code: seed.rust_code,
-                // No prompt was sent; the record says what rode in instead.
+                // No prompt was sent; the record says what arrived instead.
                 prompt_used: format!(
                     "carry-over seed: {} attempt {} (paired, {} family, {}% confidence) — no prompt sent, no LLM call",
                     seed.old_function, seed.old_attempt, seed.family, seed.confidence
@@ -1081,7 +1081,7 @@ impl TranslationPipeline {
             });
         }
 
-        // Step 5: Build a complexity-aware prompt and send to LLM
+        // Step 5: build a prompt sized to the complexity and send it to the LLM
         self.emit(ProgressEvent::LlmCallStart {
             binary: binary.to_string().into(),
             function: function.to_string(),
@@ -1106,9 +1106,9 @@ impl TranslationPipeline {
                 calxgloss_prompts::build_with_tests_prompt(&data)?
             }
             ContextTier::ModuleContext => {
-                // One gather over the analyzer caches (issue #268); the
-                // call-graph lists and the in-memory control-flow result
-                // ride in on top of it.
+                // One pass over the analyzer caches (issue #268); the
+                // call-graph lists and the in-memory control-flow result are
+                // added on top of it.
                 let mut evidence = crate::retry::helpers::gather_function_evidence(
                     self.workspace.as_deref(),
                     &function_info.binary,
@@ -1132,7 +1132,7 @@ impl TranslationPipeline {
                 calxgloss_prompts::build_module_context_prompt(&request, evidence)?
             }
             ContextTier::FullModule => {
-                // Tier 4: Full module context + shim layer code + PAL trait definitions
+                // FullModule context tier: whole-module context + shim layer code + PAL traits
                 let mut evidence = crate::retry::helpers::gather_function_evidence(
                     self.workspace.as_deref(),
                     &function_info.binary,
@@ -1154,13 +1154,13 @@ impl TranslationPipeline {
                 evidence.control_flow_findings =
                     crate::retry::helpers::control_flow_hints_from(control_flow.as_ref(), function);
 
-                // Extract shim layer code from the workspace
+                // Pull the shim layer's code out of the workspace
                 let shim_layers = crate::retry::helpers::extract_shim_layers(
                     self.workspace.as_deref(),
                     &function_info.binary,
                 );
 
-                // Extract PAL trait definitions from the function's Windows API categories
+                // Pull PAL trait definitions for the function's Windows API categories
                 let pal_traits =
                     crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
 
@@ -1173,8 +1173,8 @@ impl TranslationPipeline {
             }
         };
 
-        // W2.7: the reviewer's custom hints ride into the prompt, so what
-        // the reviewer knows about this function reaches the LLM (issue #96).
+        // W2.7: the reviewer's custom hints go into the prompt, so what the
+        // reviewer knows about this function reaches the LLM (issue #96).
         let reviewer_hints = self.reviewer_hints_for(binary, function);
         let prompt = if reviewer_hints.is_empty() {
             prompt
@@ -1188,7 +1188,7 @@ impl TranslationPipeline {
             Self::append_reviewer_hints(prompt, &reviewer_hints)
         };
 
-        // Emit: LLM request (full prompt)
+        // Report: LLM request (full prompt)
         self.emit(ProgressEvent::LlmRequest {
             binary: binary.to_string().into(),
             function: function.to_string(),
@@ -1215,7 +1215,7 @@ impl TranslationPipeline {
             });
         }
 
-        // Emit: LLM response (full content)
+        // Report: LLM response (full content)
         self.emit(ProgressEvent::LlmResponse {
             binary: binary.to_string().into(),
             function: function.to_string(),
@@ -1225,7 +1225,7 @@ impl TranslationPipeline {
             tokens_used: response.tokens_used,
         });
 
-        // Emit: LLM call complete
+        // Report: LLM call complete
         self.emit(ProgressEvent::LlmCallComplete {
             binary: binary.to_string().into(),
             function: function.to_string(),
@@ -1260,18 +1260,18 @@ impl TranslationPipeline {
 
     /// Translate using a pre-built [`TranslationRequest`].
     ///
-    /// Skips the scan fetch and analysis steps, going straight to prompt
-    /// building and LLM invocation. Useful when the request data comes from
-    /// a cache or manual source.
+    /// Skips the scan fetch and analysis steps and goes straight to building
+    /// the prompt and calling the LLM. Useful when the request's data comes
+    /// from a cache or from hand-written input.
     ///
     /// # Arguments
     ///
-    /// * `request` — A pre-built [`TranslationRequest`] with all context.
+    /// * `request` — A pre-built [`TranslationRequest`] carrying all context.
     pub async fn translate_from_request(&self, request: TranslationRequest) -> Result<Translation> {
         debug!(binary = %request.binary, function = %request.function, "Translating from request");
 
-        // Same root-symbol guard as [`translate`](Self::translate): a
-        // pre-built request is not a reason to spend LLM tokens on a thunk.
+        // The same root-symbol guard as in [`translate`](Self::translate): a
+        // pre-built request is no reason to spend LLM tokens on a thunk.
         self.refuse_root_function(&request.binary, &request.function)?;
 
         if request.disassembly.is_empty() && request.decompiler_output.is_empty() {
@@ -1280,9 +1280,9 @@ impl TranslationPipeline {
             ));
         }
 
-        // Same body-shape guard as [`translate`](Self::translate): a
-        // pre-built request carrying a thunk's self-call body is no reason
-        // to spend LLM tokens on a veneer that owns no logic.
+        // The same body-shape guard as in [`translate`](Self::translate): a
+        // pre-built request carrying a thunk's self-call body is no reason to
+        // spend LLM tokens on a wrapper that holds no logic.
         self.refuse_self_call_thunk(
             &request.binary,
             &request.function,
@@ -1337,29 +1337,29 @@ impl TranslationPipeline {
         })
     }
 
-    /// Translate with automatic retry on verification failure.
+    /// Translate with automatic retry when Verification fails.
     ///
-    /// This is the main entry point for production use. It performs the full
-    /// translation pipeline, verifies the result, and if verification fails
-    /// it retries with escalating strategies:
+    /// This is the main entry point for production use. It runs the full
+    /// pipeline, verifies the result, and when Verification fails it retries
+    /// with escalating retry strategies:
     ///
-    /// 1. **Initial attempt** — full pipeline, then verify
-    /// 2. **Compile fix** — if compilation fails, feed errors back to LLM
-    /// 3. **Test fix** — if tests fail, feed failing cases back to LLM
-    /// 4. **Escalate** — add more context and retry
+    /// 1. **Initial attempt** — the full pipeline, then Verification
+    /// 2. **Compile fix** — if compilation fails, send the errors back to the LLM
+    /// 3. **Test fix** — if tests fail, send the failing cases back to the LLM
+    /// 4. **Escalate** — add more context and try again
     ///
-    /// The retry loop continues until success or `max_attempts` is reached.
+    /// The retry loop continues until it succeeds or reaches `max_attempts`.
     ///
     /// # Arguments
     ///
-    /// * `binary` — The DLL containing the function.
-    /// * `function` — The function name to translate.
-    /// * `config` — Retry configuration (default: 3 attempts, compile_fix strategy).
-    /// * `verifier` — The verification engine to use for checking translations.
+    /// * `binary` — The DLL that contains the function.
+    /// * `function` — The name of the function to translate.
+    /// * `config` — The retry config (default: 3 attempts, compile_fix strategy).
+    /// * `verifier` — The Verifier used to check the translation.
     ///
     /// # Returns
     ///
-    /// A [`RetryResult`] containing all attempts and the final outcome.
+    /// A [`RetryResult`](crate::RetryResult) with every attempt and the final result.
     ///
     /// # Example
     ///
@@ -1405,11 +1405,11 @@ impl TranslationPipeline {
             function, "Starting translation with retry (max {} attempts)", config.max_attempts
         );
 
-        // Step 1: Initial translation via the full pipeline.
+        // Step 1: the first translation attempt, through the full pipeline.
         // The futures below are boxed so that downstream crates' `Send` checks
-        // stop at this boundary instead of recursively descending through the
-        // whole pipeline (which overflows the compiler's trait evaluation
-        // recursion limit — see rust-lang/rust#159228).
+        // stop at this boundary instead of walking down the whole pipeline,
+        // which overflows the compiler's trait evaluation recursion limit (see
+        // rust-lang/rust#159228).
         let initial_translation: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Translation>> + Send + '_>,
         > = Box::pin(self.translate(binary, function));
@@ -1422,13 +1422,13 @@ impl TranslationPipeline {
             "Initial translation complete, beginning verification loop"
         );
 
-        // Step 2: Run the retry loop
+        // Step 2: run the retry loop
         let source = self.scan_source();
         // W2.5: operator constraints (max attempts, max context tier) cap the
         // retry policy before the loop runs.
         let mut bounded_config = self.constrained_retry_config(config);
-        // W2.7: a reviewer override forces the retry strategy and carries its
-        // custom hints into the loop's failure-informed prompts (issue #96).
+        // W2.7: a reviewer override forces the retry strategy and adds its
+        // custom hints to the loop's prompts that follow a failure (issue #96).
         if let Some(strategy) = self.forced_retry_strategy(binary, function) {
             info!(
                 binary,
@@ -1440,8 +1440,8 @@ impl TranslationPipeline {
             bounded_config.retry_strategy = strategy;
         }
         let reviewer_hints = self.reviewer_hints_for(binary, function);
-        // The batch's held seam declaration, read off the held copy for
-        // this prompt's fold — never a fresh ask of the seam (issue #355).
+        // The batch's stored capability declaration, taken from the stored
+        // copy for this prompt — the seam is never asked again (issue #355).
         let seam_report = self.seam_report();
         let ctx = retry::RetryLoopCtx {
             verifier,
@@ -1455,7 +1455,7 @@ impl TranslationPipeline {
             reviewer_hints: &reviewer_hints,
             seam_report: &seam_report,
         };
-        // Boxed for the same reason as above.
+        // Boxed for the same reason as in step 1.
         let retry_loop: std::pin::Pin<
             Box<dyn std::future::Future<Output = retry::RetryResult> + Send + '_>,
         > = Box::pin(retry::try_translate_with_retry(initial, &ctx));
@@ -1489,21 +1489,21 @@ impl TranslationPipeline {
             );
         }
 
-        // Record the final result for future tier selection tracking.
-        // (Success rate tracking infrastructure will be added in a follow-up.)
+        // Record the final result for later context tier selection tracking.
+        // (The success-rate tracking itself comes in a follow-up.)
 
         Ok(result)
     }
 
-    /// Refuse a translate request for a function the built-in root patterns
-    /// mark as skip — entry points and import thunks (`DelayLoad_*`,
+    /// Stop a translate request for a function that the built-in root
+    /// patterns mark as skip — entry points and import thunks (`DelayLoad_*`,
     /// `_imp_*`, `thunk_*`).
     ///
     /// The matched pattern's description becomes the error's reason, so the
-    /// operator learns *why* the function was refused: the thunk owns no
+    /// operator learns *why* this function was stopped: the thunk holds no
     /// logic, and the caller's translation reaches the real API through the
-    /// PAL mappings instead. Only the `Skip` action is refused here —
-    /// `GenerateStub` is a batch-path policy and a single explicit request
+    /// PAL mappings instead. Only the `Skip` action stops here —
+    /// `GenerateStub` is a batch-path policy, and a single explicit request
     /// still gets a real translation attempt.
     fn refuse_root_function(&self, binary: &str, function: &str) -> Result<()> {
         if let Some(pattern) = self.root_detector.matched_pattern(function)
@@ -1524,20 +1524,20 @@ impl TranslationPipeline {
         Ok(())
     }
 
-    /// Refuse a translate request for a function whose whole decompiled
-    /// body is one unconditional call to its own name — an import thunk the
+    /// Stop a translate request when the function's whole decompiled body
+    /// is one unconditional call to its own name — an import thunk that the
     /// decompiler renders as a self-call (issue #269).
     ///
     /// The name-based root patterns cannot see these: the symbol table names
-    /// the veneer after the import it tail-jumps to, so `SetCursor` carries
-    /// no `thunk_` marker and matches no pattern. The body shape is the
-    /// tell, and unlike the name guard this one can only run once the body
-    /// is in hand — but still before the prompt is built and any LLM token
-    /// is spent. The reason names the shape so the operator learns the same
-    /// *why* the root patterns give: the veneer owns no logic, and the
-    /// caller's translation reaches the real API through the PAL mappings.
-    /// A genuinely recursive function — a self-call inside real logic, with
-    /// a base case — is not this shape and is never refused here.
+    /// the wrapper after the import it tail-jumps to, so `SetCursor` carries
+    /// no `thunk_` marker and matches no pattern. The body's shape is the
+    /// sign, and unlike the name guard this one can only run once the body
+    /// is in hand — still, that is before the prompt is built and any LLM
+    /// token is spent. The reason describes the shape, so the operator
+    /// learns the same *why* the root patterns give: the wrapper holds no
+    /// logic, and the caller's translation reaches the real API through the
+    /// PAL mappings. A genuinely recursive function — a self-call inside
+    /// real logic, with a base case — is not this shape and is never stopped.
     fn refuse_self_call_thunk(
         &self,
         binary: &str,
@@ -1563,11 +1563,11 @@ impl TranslationPipeline {
     ///
     /// A warning is not a failure — the translation still runs — but an
     /// unrecovered jump table means the body's dispatch is missing, and the
-    /// generated Rust will be hollow exactly there. Logging the address
-    /// turns "the Rust is just a `return`" into a pointer at the jump to
-    /// recover in the decompiler (or reconstruct from the disassembly's table).
-    /// Kuna's inline slug comment names no address, so the jump is logged
-    /// as an unknown site.
+    /// generated Rust will be empty exactly there. Logging the address turns
+    /// "the Rust is just a `return`" into a pointer at the jump to recover
+    /// in the decompiler (or rebuild from the disassembly's table). Kuna's
+    /// inline slug comment gives no address, so the jump is logged as an
+    /// unknown site.
     fn triage_decompiler_warnings(&self, binary: &str, function: &str, decompiler_output: &str) {
         for table in crate::triage::scan_unrecovered_jump_tables(decompiler_output) {
             let address = table.address.map_or_else(
@@ -1584,11 +1584,11 @@ impl TranslationPipeline {
         }
     }
 
-    /// Fetch function metadata through the batch's scan source.
+    /// Read the function's metadata through the batch's scan source.
     ///
-    /// The name is resolved to an address through the function listing
-    /// first, and only an exact match is accepted: a substring match would
-    /// silently translate a different function.
+    /// The name is turned into an address using the function listing first,
+    /// and only an exact match counts: a substring match would quietly
+    /// translate a different function.
     async fn fetch_function(&self, binary: &str, function: &str) -> Result<FunctionInfo> {
         let context = |source| TranslatorError::ScanFetch {
             binary: binary.to_string(),
@@ -1618,8 +1618,8 @@ impl TranslationPipeline {
             Vec::new()
         } else {
             // Callers come from the cross-references to the entry; callees
-            // are read out of the decompiled body and so cannot include
-            // calls through a function pointer.
+            // are read out of the decompiled body, so they cannot include
+            // calls made through a function pointer.
             let callers = ScanSource::callers(&source, found.address)
                 .await
                 .map_err(context)?;
@@ -1645,11 +1645,11 @@ impl TranslationPipeline {
         })
     }
 
-    /// Fetch the names of the target binary's imports.
+    /// Get the names of the target binary's imports.
     ///
-    /// Returned as names rather than [`calxgloss_decomp::Import`] values: the
-    /// engine reports an import as a name and an external slot with no module
-    /// attached, so there is no module name to put in an `Import`.
+    /// These come back as names rather than [`calxgloss_decomp::Import`]
+    /// values: the engine reports an import as a name plus an external slot
+    /// with no module attached, so there is no module name to put in an `Import`.
     async fn fetch_imports(&self, binary: &str) -> Result<Vec<String>> {
         ScanSource::imports(&self.scan_source())
             .await
@@ -1667,34 +1667,34 @@ impl TranslationPipeline {
         disassembly: &str,
         imports: &[String],
     ) -> Result<Vec<calxgloss_types::WindowsApiCall>> {
-        // Use the analyzer's tagging logic via the analyzer we constructed
+        // Use the analyzer that was built with the pipeline, so its tagging runs
         let tagged = self
             .analyzer
             .tag_windows_apis(disassembly, imports)
             .map_err(|e| TranslatorError::TestGen(anyhow::anyhow!("API tagging failed: {e}")))?;
 
-        // The analyzer already tags into the shared `WindowsApiCall`, so the
-        // tagged list is the prompt's list — no conversion needed.
+        // The analyzer already writes the shared `WindowsApiCall` values, so
+        // its tagged list is the prompt's list — no conversion needed.
         Ok(tagged)
     }
 
-    /// Generate baseline test inputs for a function, targeted at the
-    /// branch sites the loaded control-flow findings inventoried for it
-    /// (issue #261). An empty inventory — no records, or no usable
-    /// document — is today's suite exactly.
+    /// Generate the baseline test's inputs for a function, aimed at the
+    /// branch sites that the loaded control-flow findings listed for it
+    /// (issue #261). An empty list — no records, or no usable document —
+    /// gives exactly today's suite.
     async fn generate_baseline_tests(
         &self,
         function_info: &FunctionInfo,
         _imports: &[String],
         branch_inventory: &[calxgloss_controlflow::types::BranchSite],
     ) -> Result<Vec<TestCase>> {
-        // The signature the decompiler inferred, used to derive the
-        // parameters the test cases feed in.
+        // The signature the decompiler worked out, which gives the
+        // parameters that the test cases pass in.
         let signature = self.signature_for(function_info);
 
-        // Generate test inputs from signature, disassembly, and the
-        // branch inventory: one case per branch target, deduplicated
-        // against the boundary cases and capped per function.
+        // Generate the test inputs from the signature, the disassembly, and
+        // the branch list: one case per branch target, de-duplicated
+        // against the boundary cases, with a cap per function.
         let mut tests = calxgloss_testgen::generate_test_inputs(
             &signature,
             &function_info.disassembly,
@@ -1702,13 +1702,13 @@ impl TranslationPipeline {
         )
         .map_err(TranslatorError::TestGen)?;
 
-        // The global-state artifact supplies the typed side-effect
-        // expectations: when a persisted global-state document names
-        // globals for this function, every test case carries them as
-        // GlobalRead/GlobalWrite expectations naming each global — a
-        // global side effect is a named kind, never an Other string.
-        // No document (the scan has not run) or a corrupt one leaves
-        // the expectations empty, exactly as before.
+        // The saved global-state artifact provides the typed side-effect
+        // expectations: when a stored global-state document names globals
+        // for this function, every test case carries them as
+        // GlobalRead/GlobalWrite expectations that name each global — a
+        // global side effect is always a named kind, never an Other string.
+        // No document (the scan has not run) or a corrupt one leaves the
+        // expectations empty, exactly as before.
         if let Some(workspace) = self.workspace.as_deref() {
             let expectations = calxgloss_testgen::global_state_expectations(
                 workspace,
@@ -1725,9 +1725,9 @@ impl TranslationPipeline {
         Ok(tests)
     }
 
-    /// The function's C signature, as the decompiler inferred it.
+    /// The function's C signature, as the decompiler worked it out.
     ///
-    /// The reviewer's override record for a unit, if any (issue #96, W2.7).
+    /// The reviewer's override record for a unit, when there is one (issue #96, W2.7).
     fn unit_override(
         &self,
         binary: &str,
@@ -1738,8 +1738,8 @@ impl TranslationPipeline {
             .and_then(|o| o.get(binary, function))
     }
 
-    /// The context tier a reviewer forced for this unit, if any — the
-    /// context builder swaps it in for the automatic selection.
+    /// The context tier a reviewer forced for this unit, when there is one —
+    /// the context builder uses it instead of the automatic choice.
     fn forced_context_tier(
         &self,
         binary: &str,
@@ -1749,28 +1749,28 @@ impl TranslationPipeline {
             .and_then(|o| o.tier_override)
     }
 
-    /// The retry strategy a reviewer forced for this unit, if any. The
-    /// record's field is the shared [`calxgloss_types::RetryStrategy`]
-    /// enum, so a stored value is always a real strategy — an unknown
-    /// label was refused at the override boundary (issue #120) and never
-    /// reached the record.
+    /// The retry strategy a reviewer forced for this unit, when there is
+    /// one. The record's field is the shared
+    /// [`calxgloss_types::RetryStrategy`] enum, so a stored value is always
+    /// a real strategy — an unknown label was stopped at the override
+    /// boundary (issue #120) and never reached the record.
     fn forced_retry_strategy(&self, binary: &str, function: &str) -> Option<retry::RetryStrategy> {
         self.unit_override(binary, function)
             .and_then(|o| o.retry_strategy_override)
     }
 
-    /// The reviewer's custom hints for this unit — appended to its prompts.
+    /// The reviewer's custom hints for this unit, added to its prompts.
     fn reviewer_hints_for(&self, binary: &str, function: &str) -> Vec<String> {
         self.unit_override(binary, function)
             .map(|o| o.custom_hints)
             .unwrap_or_default()
     }
 
-    /// Append the reviewer's custom hints to a built prompt (issue #96, W2.7).
+    /// Add the reviewer's custom hints to a prompt that is already built.
     ///
-    /// The hints ride as a clearly-marked section at the end of the prompt —
-    /// the reviewer's knowledge of the function (what it really does, known
-    /// quirks) that the automatic context extraction cannot produce.
+    /// The hints go into a clearly-marked section at the end of the prompt —
+    /// what the reviewer knows about the function (what it really does, its
+    /// known quirks) that the automatic context gathering cannot produce.
     fn append_reviewer_hints(prompt: String, hints: &[String]) -> String {
         let mut out = prompt;
         out.push_str("\n\n## Reviewer hints\n\n");
@@ -1781,22 +1781,22 @@ impl TranslationPipeline {
         out
     }
 
-    /// The decompiler's first line is a real signature carrying real parameter
+    /// The decompiler's first line is a real signature with real parameter
     /// types, so it is preferred. Only when that line is unusable — the
     /// decompilation failed, or the text is not pseudo-C — does this fall back
-    /// to a placeholder, which yields boundary-value tests for the wrong
+    /// to a placeholder, which gives boundary-value tests for the wrong
     /// parameter count rather than no tests at all.
     ///
     /// A signature that names no calling convention — a usable line without a
-    /// convention word, or the placeholder — gets the convention the scan
-    /// detected for this function spelled in, so the FFI binding built from
-    /// the same string calls the original with the right convention instead
-    /// of the blanket `__stdcall` (issue #251, part of #226). A decompiler
-    /// line that names one still wins: the line is the better witness of the
-    /// function itself. Microsoft x64 has no C word to spell — the default
-    /// ABI already is the x64 convention — so it leaves the convention slot
-    /// empty rather than inventing a spelling. With no convention record, or
-    /// no artifact to hold one, today's default spelling stands untouched.
+    /// convention word, or the placeholder — has the convention the scan
+    /// detected for this function written into it, so the FFI binding built
+    /// from the same string calls the original with the right convention
+    /// instead of the blanket `__stdcall` (issue #251, part of #226). A
+    /// decompiler line that does name a convention still wins: that line
+    /// describes the function itself better. Microsoft x64 has no C keyword
+    /// for it — the default ABI already is the x64 convention — so the
+    /// convention slot is left empty rather than inventing a keyword. With no
+    /// convention record, or no artifact, today's default stands.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn signature_for(&self, function_info: &FunctionInfo) -> String {
         let detected = self.detected_convention(&function_info.binary, &function_info.name);
@@ -1804,8 +1804,8 @@ impl TranslationPipeline {
         if let Some(parsed) =
             calxgloss_decomp::parse::parse_decompiled(&function_info.decompiler_output)
         {
-            // Spell the detected convention only where the line named none,
-            // and only when the convention has a C spelling at all.
+            // Write in the detected convention only where the line named none,
+            // and only when the convention has a C keyword at all.
             if let Some(spelling) = detected
                 .and_then(|convention| convention.c_spelling())
                 .filter(|_| !names_convention(&parsed.signature))
@@ -1820,9 +1820,9 @@ impl TranslationPipeline {
             function = %function_info.name,
             "No signature in the decompiled output; falling back to a parameter-less one"
         );
-        // The default `__stdcall` stands only when no record read a
-        // convention; a record that did spells its own word, and the x64
-        // record spells none because the parser's default already fits.
+        // The default `__stdcall` is kept only when no record named a
+        // convention; a record that did writes its own keyword, and the x64
+        // record writes none because the parser's default already fits.
         let convention = match detected {
             Some(convention) => convention.c_spelling().unwrap_or_default(),
             None => "__stdcall",
@@ -1834,13 +1834,13 @@ impl TranslationPipeline {
         }
     }
 
-    /// The convention the persisted type-inference record detected for this
-    /// function (issue #251, part of #226). Only the function's own record
-    /// spells its signature: a call-site view of a callee's convention keys
-    /// beside the caller's records and must never be mistaken for the
-    /// caller's own. A missing workspace, a missing or corrupt artifact, or
-    /// no convention record yields none, leaving the existing default
-    /// spelling in force.
+    /// The calling convention that the saved type-inference record detected
+    /// for this function (issue #251, part of #226). Only the function's own
+    /// record describes its signature: a call-site view of a callee's
+    /// convention is stored beside the caller's records and must never be
+    /// mistaken for the caller's own. A missing workspace, a missing or
+    /// corrupt artifact, or no convention record gives nothing, so the
+    /// existing default convention stays in force.
     fn detected_convention(
         &self,
         binary: &str,
@@ -1860,9 +1860,9 @@ impl TranslationPipeline {
         };
         result.for_function(function).find_map(|inference| {
             match inference {
-                // The engine resolves to one convention per function, so the
-                // first own-convention record is the whole answer; call-site
-                // views (callee spelled) stay out.
+                // The records resolve to one convention per function, so the
+                // first record naming its own convention is the whole answer;
+                // call-site views (callee named) stay out.
                 InferredType::Convention(record) if record.callee.is_none() => {
                     Some(record.convention)
                 }
@@ -1871,7 +1871,7 @@ impl TranslationPipeline {
         })
     }
 
-    /// Build a [`TranslationRequest`] with all gathered context.
+    /// Build a [`TranslationRequest`] from all the gathered context.
     pub(crate) fn build_translation_request(
         &self,
         binary: &str,
@@ -1890,26 +1890,26 @@ impl TranslationPipeline {
         }
     }
 
-    /// Generate a stub implementation for a root function.
+    /// Generate a Stub implementation for a root function.
     ///
-    /// Root functions include entry points (e.g., `main`, `WinMain`,
-    /// `DllMain`) and runtime library initializers. These are not
-    /// translated via the LLM; instead, a minimal stub is generated
-    /// from the function's name and signature to serve as a placeholder
-    /// that can be compiled and linked.
+    /// Root functions include entry points (`main`, `WinMain`, `DllMain`) and
+    /// runtime library initializers. These do not go through the LLM;
+    /// instead, a minimal Stub is generated from the function's name and
+    /// signature, as a placeholder that can be compiled and linked.
     ///
     /// # Arguments
     ///
-    /// * `name` — The function name (e.g., `mainCRTStartup`, `WinMain`).
-    /// * `signature` — The inferred C signature from the decompiler.
+    /// * `name` — The function name (for example `mainCRTStartup`, `WinMain`).
+    /// * `signature` — The C signature the decompiler worked out.
     ///
     /// # Returns
     ///
-    /// A string containing a minimal stub implementation. For well-known
-    /// entry points, a meaningful stub is generated. For unknown root
-    /// functions, a generic placeholder is returned.
+    /// A string holding a minimal Stub implementation. For a well-known entry
+    /// point, the Stub says something meaningful. For an unknown root
+    /// function, the Stub is a general placeholder that still compiles
+    /// and links.
     pub fn generate_stub(&self, name: &str, signature: &str) -> String {
-        // Handle common entry point patterns
+        // Match the common entry-point patterns
         let stub = match name {
             // C/C++ entry points — return 0
             "main" | "wmain" | "_main" | "WinMain" | "WinMain@16" | "WinMain@20" | "wWinMain"
@@ -1953,9 +1953,9 @@ impl TranslationPipeline {
                     "/// MSVC runtime check stub for `{name}`.\npub fn {name}() {{\n    // Runtime check\n}}"
                 )
             }
-            // Generic entry point — use the signature to infer a stub
+            // Generic entry point — use the signature to work out a Stub
             _ => {
-                // Try to extract a return type and parameters from the signature
+                // Pull the return type and parameters out of the signature
                 let safe_name = if name.starts_with("FUN_") {
                     // Ghidra auto-generated name — keep as-is
                     name.to_string()
@@ -1968,25 +1968,25 @@ impl TranslationPipeline {
             }
         };
 
-        // Include the signature as a comment for reference
+        // Keep the signature in the output, as a comment for reference
         format!("{stub}\n// Signature: {signature}")
     }
 
-    /// Send a prompt to the LLM and extract the Rust code response.
+    /// Send a prompt to the LLM and take the Rust code out of the response.
     ///
-    /// If `events` is provided, emits `LlmCallInProgress` keepalive events
-    /// every 30 seconds while the request is in flight.
+    /// When `events` is present, a `LlmCallInProgress` keepalive event goes
+    /// out every 30 seconds while the request is running.
     ///
-    /// After receiving a response, the context-window detector checks whether
-    /// the output exceeds (or nears) the model's configured limit.  If a fault
-    /// is detected it is logged via `tracing::warn!` so the caller can act
-    /// on it (e.g., by splitting the function and retrying).
+    /// After the response arrives, the context-window detector checks whether
+    /// the output reaches or passes the model's configured limit. A detected
+    /// fault is logged with `tracing::warn!` so the caller can act on it —
+    /// for example by splitting the function and trying again.
     ///
     /// # Arguments
     ///
-    /// * `disassembly_lines` — The number of lines in the function's
-    ///   disassembly, used to compute a suggested chunk count for the retry
-    ///   splitter when a context-window fault is detected.
+    /// * `disassembly_lines` — How many lines the function's disassembly has,
+    ///   used to suggest a chunk count for the retry splitter when a
+    ///   context-window fault is detected.
     #[allow(clippy::too_many_arguments)]
     async fn send_to_llm(
         &self,
@@ -2000,7 +2000,7 @@ impl TranslationPipeline {
     ) -> Result<calxgloss_llm::LlmResponse> {
         let messages = vec![LlmMessage::user(prompt)];
 
-        // Pre-check: is the prompt itself too large for the model's context?
+        // Pre-check: is the prompt itself already too large for the context?
         if let Some(fault) = self.context_detector.detect_prompt_too_large(&messages) {
             warn!(
                 binary,
@@ -2011,8 +2011,8 @@ impl TranslationPipeline {
                 limit = fault.limit,
                 "Prompt exceeds model context limit — splitting function",
             );
-            // We still proceed with the call; the LLM server will handle
-            // truncation. The post-response check catches the actual output.
+            // The call still goes ahead; the LLM server handles the
+            // truncation, and the check after the response sees the real output.
         }
 
         let response = if let Some(em) = events {
@@ -2022,12 +2022,12 @@ impl TranslationPipeline {
             let function_s = function.to_string();
             let strategy_s = retry_strategy.to_string();
 
-            // Clone values before moving into the keepalive closure
+            // Copy the values before moving them into the keepalive closure
             let dll_kp = dll_s.clone();
             let function_kp = function_s.clone();
             let strategy_kp = strategy_s.clone();
 
-            // Spawn a keepalive task that emits progress events every 30s
+            // Start a keepalive task that sends a progress event every 30 seconds
             let keepalive_handle = tokio::task::spawn(async move {
                 let interval = std::time::Duration::from_secs(30);
                 let mut elapsed = interval;
@@ -2066,7 +2066,7 @@ impl TranslationPipeline {
             self.llm.complete(&messages).await
         }?;
 
-        // Post-check: detect context-window exceeded faults.
+        // Post-check: look for a context-window-exceeded fault.
         if let Some(fault) = self
             .context_detector
             .detect_response(&response, disassembly_lines)
@@ -2084,9 +2084,9 @@ impl TranslationPipeline {
             );
         }
 
-        // Hallucination detection: scan the generated code for non-existent
-        // API/function references.  When hallucinations are found, log a
-        // warning and emit a progress event so the caller can react.
+        // Hallucination check: look through the generated code for API or
+        // function references that do not exist. When invented references
+        // turn up, log a warning and send a progress event so the caller can act.
         let hallucinations = self
             .hallucination_detector
             .as_ref()
@@ -2123,17 +2123,17 @@ impl TranslationPipeline {
         Ok(response)
     }
 
-    /// Get a reference to the loaded Kuna program behind the seam.
+    /// The loaded Kuna program behind the analysis seam.
     pub fn kuna(&self) -> &KunaSource {
         &self.kuna
     }
 
-    /// Get a reference to the underlying LLM client.
+    /// The LLM client this pipeline uses.
     pub fn llm(&self) -> &LlmClient {
         &self.llm
     }
 
-    /// Get a reference to the API mappings.
+    /// The API mappings table this pipeline uses.
     pub fn api_mappings(&self) -> &ApiMappings {
         &self.api_mappings
     }
@@ -2142,25 +2142,25 @@ impl TranslationPipeline {
     // Batch translation
     // =========================================================
 
-    /// Arm the batch's shared read cache over Kuna for `binary` (issue #105).
+    /// Open the batch's shared read cache over Kuna for `binary` (issue #105).
     ///
-    /// Called at the top of both batch entry points. With a workspace and a
-    /// `binary_path` set, this builds one [`CachedScanSource`] for the
-    /// target binary — the binary's file bytes are hashed once — and every
-    /// later read made through [`scan_source`](Self::scan_source) resolves
-    /// memo → disk → engine, writing through as it goes.
+    /// Both batch entry points call this at their start. With a workspace and a
+    /// `binary_path` set, it builds one [`CachedScanSource`] for the target
+    /// binary — the binary's file bytes are hashed once — and every later read
+    /// made through [`scan_source`](Self::scan_source) then tries the memo, then
+    /// the disk tier, then the engine, saving what it reads as it goes.
     ///
-    /// Degrades rather than fails: without a workspace or binary path the
-    /// batch simply reads straight from the engine (the pre-cache
-    /// behaviour), and an unreadable binary file leaves the cache in
-    /// pass-through mode too.
+    /// It degrades instead of failing: with no workspace or binary path the batch
+    /// reads straight from the engine, exactly as before the cache existed, and an
+    /// unreadable binary file also leaves the cache in pass-through mode, so the
+    /// batch runs on either way.
     async fn begin_cached_source(&self, binary: &str) {
         let (Some(workspace), Some(binary_path)) =
             (self.workspace.as_deref(), self.binary_path.as_deref())
         else {
-            // No cache to open: the batch's reads will pass through to the
-            // live engine, so its own declaration is the one the prompts
-            // hold (issue #355) — pulled beside this decision, once.
+            // No cache to open: the batch's reads go to the live engine, so
+            // its declaration is the one the prompts hold (issue #355) —
+            // fetched once, right here, beside this decision.
             *self
                 .seam_report
                 .lock()
@@ -2183,10 +2183,10 @@ impl TranslationPipeline {
                         .map_or_else(|| "(memo only)".to_string(), |d| d.display().to_string()),
                     "Batch engine reads will go through the shared cache"
                 );
-                // The seam's word travels with the source it describes:
-                // pulled exactly here, beside the source's opening, and a
-                // capability read costs no additional engine read (issue
-                // #355). Every later prompt reads this held copy.
+                // The declaration travels with the source it describes: it is
+                // fetched right here, as the source opens, and reading a
+                // capability costs no extra engine read (issue #355). Every
+                // later prompt reads this stored copy.
                 *self
                     .seam_report
                     .lock()
@@ -2203,8 +2203,8 @@ impl TranslationPipeline {
                     error = %e,
                     "Could not open the batch read cache — reads will pass through to the engine"
                 );
-                // Same rule on the fallback path: the declaration belongs
-                // to whatever source the batch's reads go through.
+                // Same rule on the fallback path: the declaration belongs to
+                // whichever source the batch's reads go through.
                 *self
                     .seam_report
                     .lock()
@@ -2214,9 +2214,9 @@ impl TranslationPipeline {
         }
     }
 
-    /// The held seam capability report (issue #355): the declaration pulled
-    /// once at [`begin_cached_source`](Self::begin_cached_source), read by
-    /// the retry context's escalate fold for every fix prompt in the batch.
+    /// The stored capability declaration (issue #355): fetched once by
+    /// [`begin_cached_source`](Self::begin_cached_source), and read by the
+    /// escalate step of the retry loop for every fix prompt in the batch.
     pub(crate) fn seam_report(&self) -> calxgloss_types::CapabilityReport {
         self.seam_report
             .lock()
@@ -2224,12 +2224,12 @@ impl TranslationPipeline {
             .clone()
     }
 
-    /// The read source every batch consumer — the [`ScanJob`]s the fifteen
+    /// The source that every batch user — the [`ScanJob`]s the fifteen
     /// registered scans build, the call-graph build, and the
-    /// retry/escalation helpers — pulls program facts through: the batch's
-    /// [`CachedScanSource`] once armed by
-    /// [`begin_cached_source`](Self::begin_cached_source), the loaded
-    /// Kuna program otherwise.
+    /// retry/escalation helpers — reads program facts from: the batch's
+    /// [`CachedScanSource`] once
+    /// [`begin_cached_source`](Self::begin_cached_source) has opened it, and
+    /// the loaded Kuna program otherwise.
     fn scan_source(&self) -> PipelineSource {
         let guard = self
             .cached_source
@@ -2241,74 +2241,74 @@ impl TranslationPipeline {
         }
     }
 
-    /// Arm the engine's heartbeat for one analysis pass so the
+    /// Start the analysis engine's progress reporting for one pass, so the
     /// dashboard can show which function the pass is on. Without an event
-    /// channel there is nothing to beat to — the scan runs unchanged.
+    /// channel there is nothing to report to — the scan runs unchanged.
     fn begin_scan_pass(&self, binary: &str, pass: &str) {
         if let Some(ref ev) = self.events {
             self.kuna.begin_pass(binary, pass, ev);
         }
     }
 
-    /// Disarm the heartbeat — the pass is done.
+    /// Stop the engine's progress reporting — the pass is finished.
     fn end_scan_pass(&self) {
         self.kuna.end_pass();
     }
 
-    /// Build the owned handle one evidence scan runs as (issue #237):
-    /// clones of everything the scan reads — the workspace, the batch's
-    /// shared read source as currently armed — so the scan borrows
-    /// nothing from the batch and a caller can move the job onto a task.
-    /// `None` when no workspace is configured, which is every scan's skip
-    /// condition. The pass heartbeat is the phase's, not the job's (issue
-    /// #239), and the scan-phase ordering lives on the registry's rows,
-    /// not on the job (issue #305).
+    /// Build the owned handle that one evidence scan runs as (issue #237):
+    /// copies of everything the scan reads — the workspace, the batch's
+    /// shared read source as it stands now — so the scan borrows nothing
+    /// from the batch and a caller can move the job onto a task. `None`
+    /// when no workspace is configured, which is every scan's skip
+    /// condition. The pass's progress reporting belongs to the phase, not
+    /// to the job (issue #239), and the scan phase's ordering lives on the
+    /// registry's rows, not on the job (issue #305).
     fn scan_job(&self, binary: &str) -> Option<ScanJob> {
         let workspace = self.workspace.as_deref()?;
         Some(ScanJob::new(binary, workspace, self.scan_source()))
     }
 
-    /// Run the fifteen pre-batch evidence scans, the shared scan-phase
-    /// preamble both batch entry points drive — the function-list path
+    /// Run the fifteen pre-batch evidence scans: the shared scan phase that
+    /// both batch entry points call — the function-list path
     /// ([`batch_translate`](Self::batch_translate)) and the call-graph path
     /// ([`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph))
     /// — so neither keeps its own copy of the sequence and the CLI and web
     /// paths cannot drift apart (issue #234).
     ///
-    /// The scans run concurrently on a [`JoinSet`] with a window of
+    /// The scans run concurrently on a [`JoinSet`], at most
     /// [`MAX_CONCURRENT_EVIDENCE_SCANS`] at a time, each on its own owned
-    /// [`ScanJob`] (issues #237, #240): the engine thread is handed the
-    /// next body the moment it frees the last, so parse work overlaps
-    /// engine work and a cold scan phase costs roughly the engine's own
-    /// decompile time rather than that plus every scan's parse time. The
-    /// spawn order is the rows' order — [`scan_rows`] — but that
-    /// order is only the order the scans enter the window. Exactly-once
-    /// decompilation is preserved by construction, not by new locking:
-    /// the read cache's per-key cell collapses concurrent misses of one
-    /// body into one engine request, so the engine stays the serial
-    /// resource the racing scans share safely.
+    /// [`ScanJob`] (issues #237, #240): the engine thread is handed the next
+    /// body as soon as it frees the last one, so parse work overlaps engine
+    /// work, and a cold scan phase costs about the engine's own decompile
+    /// time rather than that plus every scan's parse time. Scans enter the
+    /// window in [`scan_rows`] order, but that is the order they enter, not
+    /// the order they finish. Each body is decompiled exactly once by
+    /// construction, with no new locking: the read cache's per-key cell turns
+    /// concurrent requests for one body into a single engine request, so the
+    /// engine stays the serial resource that the scans share safely.
     ///
-    /// Each scan keeps its own shape: a cached document short-circuits it
+    /// Each scan keeps its own shape: a cached-hit short-circuit ends it
     /// before any engine read, and a failed scan or save only warns and
-    /// continues — one detector's failure never takes down the batch. The
-    /// The group joins all fifteen and never cancels its siblings.
+    /// continues, so one detector's failure never takes down the batch. The
+    /// group joins all fifteen and never cancels its siblings.
     ///
     /// The one real ordering edge between the scans — callback detection
-    /// composing its closure contracts from the type-inference
-    /// document — is a declared row dependency: the phase arms a fresh
-    /// completion latch per declared producer ([`arm_completion_latches`])
-    /// and the inference row publishes its latch on every exit while the
-    /// callback row waits on it, so the edge is explicit table data
-    /// rather than any call order (issues #238, #305).
+    /// building its closure contracts from the type-inference document — is
+    /// a declared row dependency: the phase arms a fresh completion latch for
+    /// each declared producer ([`arm_completion_latches`]), the inference row
+    /// publishes its latch on every exit, and the callback row waits on it,
+    /// so the edge is explicit table data rather than a call order (issues
+    /// #238, #305).
     ///
-    /// The phase also arms the engine heartbeat once around the whole
-    /// group, under the phase name, and disarms it when the group ends:
-    /// the dashboard shows one honest "n of m functions consumed" row
-    /// for the scan phase instead of fifteen that restart with each
-    /// scan. Beats count unique functions consumed — a body pulled cold
-    /// from the engine and replayed warm by the read cache counts once —
-    /// so a warm run still shows life and the row stays honest while the
-    /// scans interleave (issue #239, preserving #121).
+    /// The phase also starts the engine's progress reporting once for the
+    /// whole group, under the phase name, and stops it when the group ends:
+    /// the dashboard shows one honest "n of m functions consumed" row for the
+    /// scan phase instead of fifteen rows that restart with each scan. The
+    /// counts are of unique functions consumed — a body pulled cold from the
+    /// engine and replayed warm by the read cache counts once — so a warm run
+    /// still shows life, and the row stays honest while the scans interleave
+    /// (issue #239, preserving #121). The phase skips itself when there is no
+    /// workspace to file its documents under.
     async fn run_prebatch_scans(&self, binary: &str) {
         self.begin_scan_pass(binary, SCAN_PHASE);
         let Some(job) = self.scan_job(binary) else {
@@ -2332,9 +2332,9 @@ impl TranslationPipeline {
                 Arc::clone(&high_water),
             ));
         }
-        // Sliding window: every completion frees a permit for the next
-        // scan, and the group joins all fifteen — a failing or panicking
-        // scan never cancels its siblings (issue #240).
+        // Sliding window: every completion frees a slot for the next scan,
+        // and the group joins all fifteen — a failing or panicking scan
+        // never cancels its siblings (issue #240).
         while let Some(outcome) = set.join_next().await {
             if let Err(e) = outcome {
                 warn!(
@@ -2354,14 +2354,14 @@ impl TranslationPipeline {
         }
         self.end_scan_pass();
 
-        // P18's version-change trigger (issue #298): the scan step has
-        // just written the current version's scan documents through. Pair
-        // this scan against any surviving scan of the same identity — the
-        // sibling hash directories under `re/cache/{identity}/` — exactly
-        // once per (old, new) hash pair; a later pass reuses the persisted
-        // document. Document-level only: no engine reads (ADR-0026), no
-        // LLM, milliseconds — and with no sibling directory it writes
-        // nothing, leaving the queue's behavior exactly as today.
+        // P18's version-change trigger (issue #298): the scan step has just
+        // written this version's scan documents. Compare this scan against
+        // any surviving scan of the same identity — the sibling hash
+        // directories under `re/cache/{identity}/` — exactly once per
+        // (old, new) hash pair; a later run reuses the saved document.
+        // Documents only: no engine reads (ADR-0026), no LLM, milliseconds.
+        // With no sibling directory it writes nothing, leaving the queue's
+        // behavior exactly as it is today.
         if let (Some(workspace), Some(binary_path)) =
             (self.workspace.as_deref(), self.binary_path.as_deref())
         {
@@ -2369,16 +2369,16 @@ impl TranslationPipeline {
         }
     }
 
-    /// Collect this batch's carry-over seeds (issue #299), immediately after
+    /// Collect this batch's carry-over seeds (issue #299), right after
     /// [`run_prebatch_scans`] wrote the pairing documents for the bytes being
     /// translated now.
     ///
     /// One directory pass, one hash, and one accepted-code lookup per paired
-    /// candidate — milliseconds against an LLM batch. With no port wired, no
-    /// workspace or binary path, no eligible documents, or no accepted twin
-    /// for a function, the map stays empty and every unit translates fresh,
-    /// byte for byte like today. Never fails the batch: the documents are
-    /// context a consumer may use, not an input it requires.
+    /// candidate — milliseconds next to an LLM batch. With no port wired, no
+    /// workspace or binary path, no eligible documents, or no accepted twin for
+    /// a function, the map stays empty and every unit translates fresh, byte
+    /// for byte as it does today. The batch never fails over this: the
+    /// documents are context a user may want, not an input it needs.
     fn refresh_carry_over_seeds(&self, binary: &str, functions: &[String]) {
         let mut seeds = self.carry_over_seeds.lock().expect("carry-over seeds lock");
         seeds.clear();
@@ -2404,15 +2404,15 @@ impl TranslationPipeline {
         *seeds = collected;
     }
 
-    /// Attach the carry-over provenance to a completed unit's result
-    /// (issue #299): the record names the old function and attempt branch
-    /// the winning code rode in on, so the batch callback's commit message
-    /// and any reader of the record can see where attempt 1's code came
+    /// Attach the carry-over history to a completed unit's result (issue
+    /// #299): the record names the old function and the attempt branch that
+    /// the winning code arrived on, so the batch callback's commit message,
+    /// and anyone reading the record, can see where attempt 1's code came
     /// from.
     ///
-    /// Attached only when the unit succeeded **with the seed's code** — if
-    /// the fresh chain won, the code is the LLM's, and claiming a carry-over
-    /// would be false provenance.
+    /// Attached only when the unit succeeded **with the seed's code** — if the
+    /// fresh attempt chain won instead, the code is the LLM's own, and claiming
+    /// a carry-over for it would be false provenance.
     fn attach_carry_over_provenance(&self, result: &mut batch::FunctionResult) {
         if !result.success {
             return;
@@ -2436,59 +2436,59 @@ impl TranslationPipeline {
         }
     }
 
-    /// The most evidence scans that ran at once during the latest scan
-    /// phase (issue #241) — the fan-out window's high-water mark, recorded
-    /// by [`run_scan_in_window`] as each scan enters the window. Zero when
-    /// no phase has run, or when the phase skipped for want of a workspace.
+    /// The most evidence scans that ran at the same time during the latest
+    /// scan phase (issue #241) — the fan-out window's high-water mark,
+    /// recorded by `run_scan_in_window` as each scan enters the window. Zero
+    /// when no phase has run, or when it skipped for want of a workspace.
     pub fn scan_window_high_water(&self) -> usize {
         self.scan_window_high_water.load(Ordering::SeqCst)
     }
 
-    /// Translate multiple functions from a single DLL, one at a time.
+    /// Translate several functions from one DLL, one at a time.
     ///
-    /// For each function, this runs the full translation pipeline with retry
-    /// logic (same as the single-function
-    /// [`try_translate_with_retry`](Self::try_translate_with_retry) path).
-    /// Functions are processed sequentially in the order provided.
+    /// Each function goes through the full pipeline with retry logic, the
+    /// same path as the single-function
+    /// [`try_translate_with_retry`](Self::try_translate_with_retry). The
+    /// functions are processed in the order they are given.
     ///
-    /// Before the first function, the per-binary type database, type inference
-    /// result, algorithm recognition result, memory lifecycle result, and
-    /// concurrency result are recovered (or loaded from their caches) so
-    /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the fifteen evidence scans run through
-    /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
+    /// Before the first function, the per-binary type database, the type
+    /// inference result, the algorithm recognition result, the memory
+    /// lifecycle result, and the concurrency result are collected, or loaded
+    /// from their caches, so the higher context tiers have data structure,
+    /// parameter type, algorithm, and concurrency context. The fifteen
+    /// evidence scans run through one shared scan phase, `run_prebatch_scans`.
     ///
-    /// The caller can provide a callback (`on_function_completed`) that is
-    /// invoked **immediately after each function completes** (before moving on
-    /// to the next). This enables incremental git commits and per-function
-    /// post-processing without blocking subsequent translations.
+    /// The caller may pass a callback (`on_function_completed`) that runs
+    /// **immediately after each function completes**, before the next one
+    /// starts. That allows git commits as the batch goes and per-function
+    /// follow-up work without delaying the later translations.
     ///
     /// # Arguments
     ///
-    /// * `binary` — The DLL containing all functions to translate.
-    /// * `functions` — Function names to translate.
-    /// * `config` — Retry configuration applied to every function.
-    /// * `verifier` — Verification engine used for checking translations.
-    /// * `on_function_completed` — Optional closure called after each function
-    ///   completes. Receives the DLL name, function name, a mutable reference to
-    ///   the [`batch::FunctionResult`], and a boolean indicating whether the
-    ///   caller should continue processing the remaining functions.
+    /// * `binary` — The DLL that holds all the functions to translate.
+    /// * `functions` — The names of the functions to translate.
+    /// * `config` — The retry config used for every function.
+    /// * `verifier` — The Verifier that checks each translation.
+    /// * `on_function_completed` — Optional closure that runs after each
+    ///   function completes. It gets the DLL name, the function name, a
+    ///   mutable reference to the [`batch::FunctionResult`], and a boolean
+    ///   telling the caller whether to continue with the remaining functions.
     ///
     /// # Returns
     ///
-    /// A [`BatchTranslationResult`] with per-function outcomes.  A function
-    /// counts as a failure when all retry attempts are exhausted without
-    /// producing passing tests.
+    /// A [`BatchTranslationResult`](crate::BatchTranslationResult) with each
+    /// function's outcome. A function counts as a failure when its retry
+    /// attempts run out without producing tests that pass.
     ///
     /// # Notes
     ///
-    /// - If the LLM is unreachable, the batch continues with the remaining
-    ///   functions (each failure is recorded individually).
-    /// - The retry strategy (compile_fix → test_fix → escalate) is applied
-    ///   independently to each function.
-    /// - The callback is called on the **same task** that is running the batch;
-    ///   it should return `true` quickly to avoid delaying the next function.
-    ///   If the callback returns `false`, the batch stops early.
+    /// - If the LLM cannot be reached, the batch carries on with the rest of
+    ///   the functions, recording each failure on its own.
+    /// - The retry strategy (compile_fix → test_fix → escalate) applies to
+    ///   each function separately.
+    /// - The callback runs on the **same task** that is running the batch, so
+    ///   it should return `true` quickly and not delay the next function. If
+    ///   it returns `false`, the batch stops early.
     ///
     /// # Example
     ///
@@ -2522,22 +2522,22 @@ impl TranslationPipeline {
     /// # }
     /// ```
     ///
-    /// Produces a priority-ordered translation plan from a call graph.
+    /// Produce a translation plan ordered by priority from a call graph.
     ///
-    /// This method is the bridge between call-graph analysis and the
-    /// batch translation pipeline.  It uses [`TranslationOrderer`] to
-    /// transform a [`CallGraph`] into an ordered list of
-    /// [`FunctionTranslationPlan`] instances, each annotated with its
-    /// priority tier (root / middle / leaf) and topological position.
-    /// When the workspace holds a persisted global-state document for the
-    /// graph's binary, the ordering is further extended by state-sharing
-    /// edges: within a tier, a global's first definer precedes the units
-    /// that reuse it (issue #256). No document leaves today's order intact.
+    /// This method connects call-graph analysis to the batch translation path.
+    /// Through [`TranslationOrderer`](calxgloss_callgraph::TranslationOrderer)
+    /// it turns a [`CallGraph`](calxgloss_callgraph::CallGraph) into a list of
+    /// [`FunctionTranslationPlan`](calxgloss_callgraph::FunctionTranslationPlan) records,
+    /// each with its priority group (root / middle / leaf) and topological
+    /// position. A saved global-state document for the graph's binary adds
+    /// state-sharing edges to that order: within a group, a global's first
+    /// definer comes before the units that reuse it (issue #256). With no
+    /// document, today's order is unchanged.
     ///
     /// # Arguments
     ///
     /// * `graph` — The call graph to plan from.
-    /// * `max_functions` — Optional limit on the number of functions in the plan.
+    /// * `max_functions` — An optional cap on how many functions the plan holds.
     ///
     /// # Example
     ///
@@ -2577,10 +2577,10 @@ impl TranslationPipeline {
         if let Some(max) = max_functions {
             orderer = orderer.with_max_functions(max);
         }
-        // State-sharing edges from the persisted shared-globals index
-        // extend the ordering when the global-state scan has run for this
-        // binary (issue #256); the plan reads the artifact, it never runs
-        // the scan.
+        // State-sharing edges from the saved shared-globals index extend
+        // the order when the global-state scan has run for this binary
+        // (issue #256); the plan reads the saved file, it never runs the
+        // scan itself.
         orderer = orderer.with_state_sharing(self.state_sharing_edges(&graph.binary));
         let plan = orderer
             .order(graph)
@@ -2588,11 +2588,11 @@ impl TranslationPipeline {
         Ok(plan.into_iter().collect())
     }
 
-    /// The state-sharing edges the persisted shared-globals index names for
-    /// this binary (issue #256, part of #225). The orderer consumes the
-    /// artifact the global-state scan wrote; it never runs the scan itself.
-    /// A missing workspace, a missing or corrupt document yields an empty
-    /// set, leaving today's dependency order exactly in force.
+    /// The state-sharing edges that the saved shared-globals index names for
+    /// this binary (issue #256, part of #225). The orderer uses the file the
+    /// global-state scan wrote; it never runs the scan itself. A missing
+    /// workspace, a missing document, or a corrupt one gives an empty set,
+    /// so today's dependency order stays exactly as it is.
     fn state_sharing_edges(&self, binary: &str) -> calxgloss_callgraph::StateSharingEdges {
         let Some(workspace) = self.workspace.as_deref() else {
             return calxgloss_callgraph::StateSharingEdges::default();
@@ -2617,9 +2617,9 @@ impl TranslationPipeline {
         }
     }
 
-    /// Performs batch translation of the specified functions within a binary.
+    /// Translate the given functions in one binary as a batch.
     ///
-    /// Returns a `BatchTranslationResult` containing the translation outcomes for each function.
+    /// Returns a `BatchTranslationResult` holding each function's translation outcome.
     #[allow(clippy::type_complexity)]
     pub async fn batch_translate(
         &self,
@@ -2641,13 +2641,13 @@ impl TranslationPipeline {
 
         self.run_prebatch_scans(binary).await;
 
-        // W2.5: operator scope — skipped functions never enter the queue,
-        // priority functions sort to the front.
+        // W2.5: operator scope — skipped functions never enter the queue and
+        // priority functions move to the front.
         let functions = self.apply_function_scope(binary, functions.to_vec(), |f| f.as_str());
 
-        // Carry-over seeding (issue #299): the scan step just persisted the
-        // pairing documents for these exact bytes; collect the seeds for
-        // this queue now, so the batch's inputs are fixed before its first
+        // Carry-over seeding (issue #299): the scan step just saved the
+        // pairing documents for these exact bytes, so collect the seeds for
+        // this queue now and the batch's inputs are settled before its first
         // unit starts.
         self.refresh_carry_over_seeds(binary, &functions);
 
@@ -2673,7 +2673,7 @@ impl TranslationPipeline {
             }
 
             // A paused binary ends this batch — unlike a run-level pause it
-            // never parks the loop (issue #219, part of #217).
+            // never holds the loop open (issue #219, part of #217).
             if self.binary_paused(binary) {
                 info!(
                     binary,
@@ -2700,19 +2700,19 @@ impl TranslationPipeline {
                 "Translating function in batch"
             );
 
-            // Register the unit in-flight so the web server's cancel-current
+            // Mark the unit in-flight so the web server's cancel-current
             // endpoint has something to name (issue #91, W2.2).
             if let Some(cancellation) = self.unit_cancellation.as_ref() {
                 cancellation.begin_unit(binary, function);
             }
 
             // The unit races the cancellation watch: a cancellation that
-            // lands mid-unit drops the in-flight future — the earliest safe
-            // point, since nothing an attempt produced is persisted until
-            // the unit completes — and the unit is recorded as a failed
-            // attempt while the batch continues with the next unit.
-            // A refused root is recorded skipped, not failed; the flag keeps
-            // it out of the completion callback (see below).
+            // arrives mid-unit drops the in-flight future — the first safe
+            // point, because an attempt has saved nothing until the unit
+            // completes — and the unit is recorded as a failed attempt while
+            // the batch carries on with the next unit. A stopped root symbol
+            // is recorded skipped rather than failed, and the flag keeps it
+            // out of the completion callback (see below).
             let mut unit_refused = false;
             let (mut result, mut aborted) = tokio::select! {
                 outcome = self.try_translate_with_retry(binary, function, config, verifier) => {
@@ -2748,8 +2748,8 @@ impl TranslationPipeline {
                             }
                         }
                         Err(e) => {
-                            // A root symbol named explicitly on the CLI is a
-                            // request the pipeline refuses, not a unit that
+                            // A root symbol named directly on the CLI is a
+                            // request the pipeline stops, not a unit that
                             // failed: record it skipped, the way the
                             // call-graph path records its Skip nodes.
                             if matches!(e, TranslatorError::SkippedRoot { .. }) {
@@ -2799,11 +2799,11 @@ impl TranslationPipeline {
             };
 
             // The unit is no longer in flight — a cancel-current arriving
-            // from here to the next unit's start is rejected, not absorbed.
-            // The release is also the race-free check for a cancellation
-            // that landed while the unit's own work was finishing: the
-            // operator's cancel still wins over the completion it raced,
-            // so the unit is recorded cancelled, not completed.
+            // between here and the next unit's start is refused, not taken.
+            // Releasing the registration is also the race-free check for a
+            // cancellation that arrived while the unit's own work was
+            // finishing: the operator's cancel still beats the completion it
+            // raced with, so the unit is recorded cancelled, not completed.
             if let Some(cancellation) = self.unit_cancellation.as_ref()
                 && cancellation.end_unit_was_cancelled()
             {
@@ -2823,20 +2823,20 @@ impl TranslationPipeline {
                 aborted = true;
             }
 
-            // Carry-over provenance (issue #299): when attempt 1 rode in on
-            // an accepted translation and that code is what succeeded, say
-            // so on the record — the git callback's commit message reads it.
+            // Carry-over history (issue #299): when attempt 1 arrived with
+            // an accepted translation and that code is what succeeded, the
+            // record says so — the git callback's commit message reads it.
             self.attach_carry_over_provenance(&mut result);
 
             let success = result.success;
-            // W2.5: charge the unit's token spend against the run budget.
+            // W2.5: add the unit's token spend to the run's budget.
             self.record_unit_tokens(&result);
             batch_result.add(result.clone());
 
-            // Emit progress event for real-time tracking. A cancelled unit
-            // already got its terminal `UnitCancelled` event from the
-            // cancellation handle the moment it landed — no completion on
-            // top of it.
+            // Send the progress event for live tracking. A cancelled unit
+            // already got its final `UnitCancelled` event from the
+            // cancellation handle the moment the cancel arrived — no
+            // completion event on top of that.
             if !aborted {
                 self.emit(ProgressEvent::FunctionCompleted {
                     binary: binary.to_string().into(),
@@ -2847,13 +2847,13 @@ impl TranslationPipeline {
                 });
             }
 
-            // Invoke the caller's callback (e.g., for incremental git
-            // commits). Cancelled units go through it too — the caller owns
-            // git cleanup, and per the Archive rule a cancelled unit's
-            // branch is archived under the archive refs, never deleted.
-            // A refused root never reaches it: it was never attempted, so
-            // it has no translated code to write and no branch to clean up,
-            // and a caller that assumes a success carries code would panic.
+            // Run the caller's callback (for example, for git commits as the
+            // batch goes). Cancelled units go through it too — the caller
+            // owns git cleanup, and per the Archive rule a cancelled unit's
+            // branch is archived under the archive refs, never deleted. A
+            // stopped root symbol never reaches this: it was never attempted,
+            // so it has no translated code to write and no branch to clean
+            // up, and a caller that assumed success means code would panic.
             let continue_batch = if let Some(ref mut cb) = on_function_completed
                 && !unit_refused
             {
@@ -2879,55 +2879,55 @@ impl TranslationPipeline {
         Ok(batch_result)
     }
 
-    /// Translate multiple functions from a single DLL, prioritized by
-    /// call-graph topology.
+    /// Translate several functions from one DLL, in an order the call
+    /// graph sets.
     ///
-    /// This method uses a [call graph] to determine translation order:
+    /// This method uses a [call graph] to pick the translation order:
     ///
-    /// 1. [Leaf] functions (call external APIs) — translated first
+    /// 1. [Leaf] functions (they call external APIs) — translated first
     /// 2. [Middle] functions — translated second
     /// 3. [Root] functions — translated last
     ///
-    /// Within each tier, functions are sorted topologically so that a
-    /// function is only translated after all of its callees have been
-    /// processed. This ordering lets the LLM reference already-translated
-    /// callee code when generating shim layers or caller wrappers.
+    /// Within each group, functions are sorted so that a function is only
+    /// translated after every function it calls. That lets the LLM use
+    /// already-translated callee code when it writes shim layers or caller
+    /// wrappers.
     ///
-    /// Before the first function, the per-binary type database, type inference
-    /// result, algorithm recognition result, memory lifecycle result, and
-    /// concurrency result are recovered (or loaded from their caches) so
-    /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — the fifteen evidence scans run through
-    /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
+    /// Before the first function, the per-binary type database, the type
+    /// inference result, the algorithm recognition result, the memory
+    /// lifecycle result, and the concurrency result are collected, or loaded
+    /// from their caches, so the higher context tiers have data structure,
+    /// parameter type, algorithm, memory, and concurrency context. The fifteen
+    /// evidence scans run through one shared scan phase, `run_prebatch_scans`.
     ///
-    /// The caller can provide a callback (`on_function_completed`) that is
-    /// invoked **immediately after each function completes** (before moving on
-    /// to the next). This enables incremental git commits and per-function
-    /// post-processing without blocking subsequent translations.
+    /// The caller can provide a callback (`on_function_completed`) that runs
+    /// **immediately after each function finishes** (before the next one
+    /// starts). That allows incremental git commits and per-function
+    /// follow-up work without delaying the rest of the batch.
     ///
     /// # Arguments
     ///
-    /// * `graph` — The call graph containing all functions to translate.
-    ///   Root functions are automatically stubbed with minimal placeholders
-    ///   (they have no translation work). Runtime library functions
+    /// * `graph` — The call graph holding all the functions to translate.
+    ///   Root functions get a minimal Stub automatically (they have no
+    ///   translation work). Runtime library functions
     ///   (`NodeCategory::Skip`) are not stubbed.
-    /// * `config` — Retry configuration applied to every function.
-    /// * `verifier` — Verification engine used for checking translations.
+    /// * `config` — The retry config applied to every function.
+    /// * `verifier` — The Verifier used to check the translations.
     /// * `on_function_completed` — Optional closure called after each function
-    ///   completes. Receives the DLL name, function name, a mutable reference to
-    ///   the [`batch::FunctionResult`], and a boolean indicating whether the
-    ///   caller should continue processing the remaining functions.
+    ///   finishes. It receives the DLL name, the function name, a mutable
+    ///   reference to the [`batch::FunctionResult`], and a boolean saying
+    ///   whether to keep going with the remaining functions.
     ///
     /// # Returns
     ///
-    /// A [`BatchTranslationResult`] with per-function outcomes.  A function
-    /// counts as a failure when all retry attempts are exhausted without
-    /// producing passing tests.
+    /// A [`BatchTranslationResult`](crate::BatchTranslationResult) with each
+    /// function's outcome. A function counts as a failure when its retry
+    /// attempts run out without producing passing tests.
     ///
-    /// Root functions from the call graph are stubbed automatically and
-    /// appear in the result with [`batch::FunctionResult::stubbed`].
-    /// Functions classified as [`NodeCategory::Skip`] (runtime library functions)
-    /// are not stubbed and appear as [`batch::FunctionResult::skipped`].
+    /// Root functions from the call graph get a Stub automatically and
+    /// appear in the result with `batch::FunctionResult::stubbed`. Functions
+    /// classified as [`NodeCategory::Skip`] (runtime library functions) are
+    /// not stubbed and appear as `batch::FunctionResult::skipped`.
     ///
     /// # Example
     ///
@@ -2989,9 +2989,9 @@ impl TranslationPipeline {
 
         self.run_prebatch_scans(&graph.binary).await;
 
-        // Build a priority-ordered plan, extended by the persisted
+        // Build the plan in priority order, extended by the saved
         // shared-globals index when the global-state scan has run for
-        // this binary (issue #256) — a read of the artifact, never a scan.
+        // this binary (issue #256) — it reads the artifact, never scans.
         let orderer = calxgloss_callgraph::TranslationOrderer::new()
             .with_state_sharing(self.state_sharing_edges(&graph.binary));
         let plan = orderer
@@ -3001,13 +3001,13 @@ impl TranslationPipeline {
         let plan: Vec<_> = plan.into_iter().collect();
         let binary = &graph.binary;
 
-        // W2.5: operator scope — skipped functions leave the plan before the
-        // first unit starts, priority functions sort to the front.
+        // W2.5: operator scope — skipped functions are taken out of the plan
+        // before the first unit starts, and priority functions sort first.
         let plan = self.apply_function_scope(binary, plan, |p| p.name.as_str());
 
-        // Carry-over seeding (issue #299): pairing documents for these exact
-        // bytes were persisted by the scan step; collect the seeds for this
-        // plan before its first unit starts.
+        // Carry-over seeding (issue #299): the scan step saved the pairing
+        // documents for these exact bytes; collect the seeds for this plan
+        // before its first unit starts.
         let queue_names: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
         self.refresh_carry_over_seeds(binary, &queue_names);
 
@@ -3035,7 +3035,7 @@ impl TranslationPipeline {
             }
 
             // A paused binary ends this batch — unlike a run-level pause it
-            // never parks the loop (issue #219, part of #217).
+            // never holds the loop open (issue #219, part of #217).
             if self.binary_paused(binary) {
                 info!(
                     binary,
@@ -3054,9 +3054,9 @@ impl TranslationPipeline {
                 break;
             }
 
-            // Handle root functions (entry points) — generate stubs instead of translating
+            // Handle root functions (entry points) — generate Stubs, not translations
             if matches!(plan_func.priority, TranslationPriority::Root) {
-                // Skip functions are truly skipped (runtime library functions)
+                // Skip functions are recorded as skipped (runtime library functions)
                 if matches!(plan_func.category, NodeCategory::Skip) {
                     info!(
                         binary,
@@ -3079,13 +3079,13 @@ impl TranslationPipeline {
                     // A skipped plan node never reaches the caller's
                     // callback: it was never attempted, so it has no
                     // translated code to write and no branch to clean up,
-                    // and a caller that assumes a success carries code
-                    // would panic.
+                    // and a caller that assumes a success always carries
+                    // code would panic.
 
                     continue;
                 }
 
-                // Generate stub for entry point functions
+                // Generate a Stub for entry-point functions
                 info!(
                     binary,
                     name = %plan_func.name,
@@ -3108,7 +3108,7 @@ impl TranslationPipeline {
                     branch: None,
                 });
 
-                // Invoke the caller's callback even for stubbed functions
+                // Run the caller's callback even for functions that got a Stub
                 if let Some(ref mut cb) = on_function_completed
                     && !cb(binary, &plan_func.name, &mut stubbed.clone())
                 {
@@ -3129,12 +3129,12 @@ impl TranslationPipeline {
                 "Translating function in batch"
             );
 
-            // A refused root — a name-pattern root that reached the unit
+            // A stopped root — a name-pattern root that reached the unit
             // anyway, or a self-call thunk the name patterns cannot see
-            // (issue #269) — is a request the pipeline refuses, not a unit
-            // that failed: record it skipped, the way the explicit-list
+            // (issue #269) — is a request the pipeline stops, not a unit
+            // that failed: record it as skipped, the way the explicit-list
             // path does, and the flag keeps it out of the completion
-            // callback below (a refused unit has no code to write).
+            // callback below (a stopped unit has no code to write).
             let mut unit_refused = false;
             let mut result = match self
                 .try_translate_with_retry(binary, &plan_func.name, config, verifier)
@@ -3172,8 +3172,8 @@ impl TranslationPipeline {
                     }
                 }
                 Err(e) => {
-                    // A root refusal is a refusal, not a failure: record
-                    // it skipped, exactly as the explicit-list path does.
+                    // A stopped root is a stop, not a failure: record it
+                    // as skipped, exactly as the explicit-list path does.
                     if matches!(e, TranslatorError::SkippedRoot { .. }) {
                         info!(
                             binary,
@@ -3200,9 +3200,9 @@ impl TranslationPipeline {
                 }
             };
 
-            // Carry-over provenance (issue #299): when attempt 1 rode in on
-            // an accepted translation and that code is what succeeded, say
-            // so on the record — the git callback's commit message reads it.
+            // Carry-over history (issue #299): when attempt 1 arrived on an
+            // accepted translation and that code is what succeeded, say so on
+            // the record — the git callback's commit message reads it.
             self.attach_carry_over_provenance(&mut result);
 
             let success = result.success;
@@ -3210,7 +3210,7 @@ impl TranslationPipeline {
             self.record_unit_tokens(&result);
             batch_result.add(result.clone());
 
-            // Emit progress event for real-time tracking
+            // Send the progress event used for real-time tracking
             self.emit(ProgressEvent::FunctionCompleted {
                 binary: binary.clone().into(),
                 function: plan_func.name.clone(),
@@ -3219,7 +3219,7 @@ impl TranslationPipeline {
                 branch: None, // filled by caller after git branch creation
             });
 
-            // Invoke the caller's callback. A refused root never reaches
+            // Run the caller's callback. A stopped root never reaches
             // it: it was never attempted, so it has no translated code to
             // write and no branch to clean up, and a caller that assumes a
             // success carries code would panic.
@@ -3253,10 +3253,10 @@ impl TranslationPipeline {
 // Signature synthesis helpers
 // ============================================================
 
-/// The calling-convention words the testgen signature parser extracts from a
-/// signature — the same closed set, so a decompiler line the parser would
-/// read as convention-bearing is never re-spelled over (issue #251, part of
-/// #226).
+/// The calling-convention keywords that the testgen signature parser picks
+/// out of a signature — the same closed set, so a decompiler line the
+/// parser reads as carrying a convention never gets a keyword written
+/// over it (issue #251, part of #226).
 const CONVENTION_SPELLINGS: [&str; 6] = [
     "__stdcall",
     "__cdecl",
@@ -3266,9 +3266,9 @@ const CONVENTION_SPELLINGS: [&str; 6] = [
     "__retpoline",
 ];
 
-/// Whether `signature` already names a calling convention in the slot the
-/// parser reads — between the return type and the parameter list. A
-/// parameter list cannot carry these words, so only the part before the
+/// Whether `signature` already names a calling convention in the slot
+/// the parser reads — between the return type and the parameter list. A
+/// parameter list cannot hold these keywords, so only the part before the
 /// opening parenthesis is checked.
 fn names_convention(signature: &str) -> bool {
     let before_paren = signature.split('(').next().unwrap_or(signature);
@@ -3277,10 +3277,10 @@ fn names_convention(signature: &str) -> bool {
         .any(|spelling| before_paren.contains(spelling))
 }
 
-/// Spell `convention` into `signature` between the return type and the
+/// Write `convention` into `signature` between the return type and the
 /// declarator's name — the slot the parser reads — leaving the parameter
-/// list untouched. None when there is no name slot to spell before (no
-/// whitespace separating a return type from the name), which leaves the
+/// list as it is. Returns None when there is no name to write before (no
+/// whitespace between the return type and the name), which leaves the
 /// signature exactly as the decompiler wrote it.
 fn spell_convention(signature: &str, convention: &str) -> Option<String> {
     let open = signature.find('(')?;
@@ -3303,15 +3303,15 @@ fn spell_convention(signature: &str, convention: &str) -> Option<String> {
 /// Build a [`HallucinationDetector`] from the program's symbols and the
 /// PAL API catalogue.
 ///
-/// The detector's known-good symbol set is the union of:
-/// 1. All engine functions (exports and user-defined functions)
-/// 2. All engine imports (DLL imports)
-/// 3. Every Windows API name from the PAL mapping table
+/// The detector's set of known-good symbols is the union of:
+/// 1. every analysis engine function (exports and user-defined functions)
+/// 2. every analysis engine import (DLL imports)
+/// 3. every Windows API name in the PAL mapping table
 pub async fn build_hallucination_detector(
     source: &KunaSource,
     api_mappings: &ApiMappings,
 ) -> HallucinationDetector {
-    // Engine functions
+    // Analysis engine functions
     let engine_functions: Vec<String> = ScanSource::functions(source)
         .await
         .ok()
@@ -3320,7 +3320,7 @@ pub async fn build_hallucination_detector(
         .map(|f| f.name)
         .collect();
 
-    // Engine imports
+    // Analysis engine imports
     let engine_imports: Vec<String> = ScanSource::imports(source)
         .await
         .ok()
@@ -3329,7 +3329,7 @@ pub async fn build_hallucination_detector(
         .map(|s| s.name)
         .collect();
 
-    // Collect Windows API names from the PAL mapping table
+    // Gather the Windows API names from the PAL mapping table
     let _windows_apis: Vec<String> = api_mappings
         .iter()
         .map(|m| m.windows_api.to_string())
@@ -3338,27 +3338,27 @@ pub async fn build_hallucination_detector(
     HallucinationDetector::new(engine_functions, engine_imports)
 }
 
-/// Compose the callback scan's signature map from the type-inference
+/// Build the callback scan's signature map from the type-inference
 /// document cached for `binary` under `workspace`.
 ///
-/// The callback engine takes callable contracts by injection (see
-/// [`calxgloss_callback::signatures`]); this is the one place that
-/// reads the type-inference scan's persisted per-binary document and
-/// composes those contracts, so the CLI `callback` command and the
-/// batch pre-analysis wire the enrichment identically (issue #173,
+/// The callback engine takes its callable contracts by injection (see
+/// [`calxgloss_callback::signatures`]); this is the only place that
+/// reads the type-inference scan's saved per-binary document and
+/// builds those contracts, so the CLI `callback` command and the
+/// batch pre-analysis get the same enrichment (issue #173,
 /// ADR-0036). A missing or corrupt document — the type-inference scan
-/// never ran, or its artifact is broken — yields an empty map and the
-/// callback scan degrades silently to its un-enriched suggestions: a
-/// bad neighbor artifact never fails the scan.
+/// never ran, or its artifact is broken — gives an empty map and the
+/// callback scan quietly falls back to its plain suggestions: a
+/// broken artifact next door never fails the scan.
 ///
-/// The composition is honest about what the records prove. A function
-/// joins the map only when its parameter records cover positions
-/// `0..n` **contiguously** and a return record stands: a gap proves a
+/// The map is honest about what the records prove. A function joins
+/// it only when its parameter records cover positions `0..n`
+/// **contiguously** and a return record is there: a gap means a
 /// middle parameter the records never typed, and a contract that
-/// skipped it would misplace every type after it; no parameter
-/// records at all cannot tell a zero-parameter callback from one
-/// whose parameters were never read; and with no return reading the
-/// contract would assert a unit return nobody read.
+/// skipped it would put every type after it in the wrong place; no
+/// parameter records at all cannot tell a zero-parameter callback
+/// from one whose parameters were never read; and with no return
+/// reading, the contract would claim a unit return that nobody read.
 pub fn callback_signature_map(workspace: &Path, binary: &str) -> SignatureMap {
     let persistor = TypeInferPersistor::new(workspace);
     match persistor.load(binary) {
@@ -3383,12 +3383,12 @@ pub fn callback_signature_map(workspace: &Path, binary: &str) -> SignatureMap {
 }
 
 /// Group one type-inference document's per-function records into the
-/// callable contracts the callback engine consumes: the parameter
+/// callable contracts that the callback engine uses: the parameter
 /// records by position, and the function's return record.
 fn compose_signature_map(result: &TypeInferenceResult) -> SignatureMap {
-    // First-seen wins per slot, mirroring the inference scan's own
-    // conflict-resolution tie: a well-formed document carries one
-    // record per slot anyway.
+    // First-seen wins per slot, matching the tie-break that the
+    // inference scan itself uses for conflicts: a well-formed document
+    // holds one record per slot anyway.
     let mut params: HashMap<&str, Vec<(usize, &str)>> = HashMap::new();
     let mut returns: HashMap<&str, &str> = HashMap::new();
     for inference in &result.inferences {
@@ -3402,7 +3402,7 @@ fn compose_signature_map(result: &TypeInferenceResult) -> SignatureMap {
                     .entry(record.function.as_str())
                     .or_insert(record.inferred_type.as_str());
             }
-            // Locals and call-site readings type storage, not the
+            // Locals and call-site readings describe storage, not the
             // callable's contract.
             _ => {}
         }
@@ -3410,9 +3410,9 @@ fn compose_signature_map(result: &TypeInferenceResult) -> SignatureMap {
 
     let mut signatures = SignatureMap::new();
     for (function, mut slots) in params {
-        // A stable sort keeps first-seen in front among equal
-        // positions, and the dedup then folds a repeated position to
-        // its first reading.
+        // A stable sort keeps the first-seen record in front among equal
+        // positions, and the dedup step then reduces a repeated position
+        // to its first reading.
         slots.sort_by_key(|(index, _)| *index);
         slots.dedup_by_key(|(index, _)| *index);
         if slots
