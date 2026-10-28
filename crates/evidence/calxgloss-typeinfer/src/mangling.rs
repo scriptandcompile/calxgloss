@@ -1,39 +1,39 @@
-//! C++ mangling analysis: the type contract carried in a name.
+//! C++ mangling analysis: the type contract written in a name.
 //!
 //! When a name visible in the decompiled output or the listing spells out
 //! a signature — a demangled qualified call like `Widget::Render(int,
 //! char *)`, or an MSVC-mangled symbol like `?Render@Widget@@QAEXH@Z` —
-//! the contract is already in the name, and no body usage says more than
-//! the symbol does. [`ManglingDetector`] reads both spellings:
+//! the contract is already in the name. No body usage says more than the
+//! symbol does. [`ManglingDetector`] reads both spellings:
 //!
 //! - **the listing's own symbols** — an MSVC-mangled name decodes for
 //!   calling convention (a member's implicit `this`), argument count, and
-//!   rough argument types, typing the function that carries the name even
-//!   when its body proves nothing: the unnamed wrapper typed from its own
-//!   symbol;
+//!   rough argument types. It types the function the symbol names, even
+//!   when that function's body proves nothing — for example an unnamed
+//!   wrapper typed from its own symbol;
 //! - **names inside a body** — the analyzed function's own demangled name
 //!   with a spelled parameter list, placed against its decompiled
-//!   parameters, and qualified calls whose callee carries one
-//!   (`Widget::Render(int,char*)(param_1, uVar2)`), placed against the
-//!   call's argument count.
+//!   parameters; and qualified calls whose callee has a spelled list of
+//!   its own (`Widget::Render(int,char*)(param_1, uVar2)`), placed
+//!   against the call's argument count.
 //!
-//! Every reading lands as a parameter (or return) record under
-//! [`InferenceMethod::Mangling`] at [`MANGLING_CONFIDENCE`] — a
-//! symbol-borne fact, above the usage-inference families and below the
-//! vtable/COM dispatch evidence — keyed by the name as spelled, with the
-//! name itself or the call line as evidence. A name that carries no
-//! parameter list produces nothing, and namespace noise (`std::`,
-//! `operator`) is never mistaken for a member contract — the
-//! this-pointer detector's qualified-chain handling is prior art for
-//! that guard.
+//! Every reading becomes a parameter (or return) record under
+//! [`InferenceMethod::Mangling`] at `MANGLING_CONFIDENCE`. The fact
+//! comes from the symbol itself, so it sits above the usage-inference
+//! families and below the vtable/COM dispatch evidence. The record key
+//! is the name as spelled, and the evidence is the name itself or the
+//! call line. A name with no parameter list produces nothing. Namespace
+//! noise (`std::`, `operator`) is never mistaken for a member contract —
+//! the this-pointer detector's qualified-chain handling set that
+//! precedent.
 //!
 //! The MSVC decoder covers the practical subset: simple integer, float,
 //! `bool`, and `wchar_t` arguments, near and 64-bit pointers to them,
 //! pointers to and by-value class/struct types, and the member
 //! conventions. Anything outside the subset — references, function
 //! pointers, enums, templates, operator spellings, name back-references
-//! — makes the name unparseable, and an unparseable name produces no
-//! records at all rather than a partial guess.
+//! — makes the name unparseable. An unparseable name produces no records
+//! at all, rather than a partial guess.
 
 use crate::types::{
     CallingConvention, InferenceMethod, InferenceScope, InferredParamType, InferredReturnType,
@@ -43,18 +43,19 @@ use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{closing_paren, is_ident_byte, line_at, skip_string, skip_ws};
 
-/// Confidence of a reading the name itself carries: the symbol spells the
-/// contract, so it outranks every usage-inference family (known-signature
-/// 75, cross-function 65–70, assignment-chain and return-usage 60) and
-/// sits just below the dispatch evidence that proves a `this` pointer
-/// structurally (vtable 85–90, COM 88).
+/// The confidence band for a reading taken from the name itself: 80.
+/// The symbol spells the contract out, so this band sits above every
+/// usage-inference family (known-signature 75, cross-function 65–70,
+/// assignment-chain and return-usage 60) and just below the dispatch
+/// evidence that proves a `this` pointer structurally (vtable 85–90,
+/// COM 88).
 const MANGLING_CONFIDENCE: u8 = 80;
 
 /// Qualified-name segments that mark library or operator plumbing rather
-/// than a class of the analyzed program — the same whole-segment guard the
-/// this-pointer detector applies to qualified chains (`NAMESPACE_NOISE`
-/// in [`crate::this_ptr`]): a `std::` library member or an `operator`
-/// spelling names no member contract for a parameter.
+/// than a class of the analyzed program. This is the same whole-segment
+/// guard the this-pointer detector applies to qualified chains
+/// (`NAMESPACE_NOISE` in [`crate::this_ptr`]): a `std::` library member
+/// or an `operator` spelling names no member contract for any parameter.
 const NAMESPACE_NOISE: [&str; 2] = ["std", "operator"];
 
 /// Whether a decoded class chain is namespace noise rather than a class of
@@ -66,9 +67,10 @@ pub(crate) fn is_namespace_noise(class: Option<&str>) -> bool {
     class.is_some_and(|class| class.split("::").any(|s| NAMESPACE_NOISE.contains(&s)))
 }
 
-/// Assemble one name-borne parameter reading into its record: the
-/// mangling method, function scope — the contract belongs to the named
-/// function — and the name or call line as evidence.
+/// Build one parameter reading that comes from a name into its record.
+/// It uses the mangling method and function scope, because the contract
+/// belongs to the named function, and it keeps the name or call line as
+/// evidence.
 fn param_record(
     function: &str,
     param_index: usize,
@@ -88,7 +90,7 @@ fn param_record(
     })
 }
 
-/// Assemble one name-borne return reading into its record.
+/// Build one return reading that comes from a name into its record.
 fn return_record(function: &str, inferred_type: &str, evidence: &str) -> InferredType {
     InferredType::Return(InferredReturnType {
         function: function.to_string(),
@@ -109,8 +111,9 @@ pub(crate) struct MsvcSignature {
     /// The qualified class chain, outermost first (`Outer::Inner`), when
     /// the symbol names a member.
     pub(crate) class: Option<String>,
-    /// Whether the encoding passes an implicit `this` as argument zero
-    /// — any non-static member, whatever the convention letter spells.
+    /// Whether the encoding passes an implicit `this` as argument zero.
+    /// Every non-static member does, whatever the convention letter
+    /// spells.
     implicit_this: bool,
     /// The calling convention the name's convention letter declares;
     /// `None` for a letter outside the closed set (a Pascal-spelled `B`).
@@ -123,7 +126,7 @@ pub(crate) struct MsvcSignature {
 }
 
 /// Decode an MSVC-mangled function name, or nothing when the name is not
-/// mangled or carries a shape outside the practical subset.
+/// mangled or has a shape outside the practical subset.
 ///
 /// The shape is `?name@Class@@<class><qualifiers><convention><return><args>`:
 /// the simple name, an optional class chain (innermost first, reversed
@@ -131,10 +134,11 @@ pub(crate) struct MsvcSignature {
 /// class (`Y`/`Z` free, the static-member codes `C D K L S T`, the plain
 /// member codes `A B E F I J M N Q R U V`), a non-static member's
 /// qualifiers (a 64-bit-`this` `E`, restrict/unaligned/ref letters, and a
-/// const/volatile letter), and the calling convention. A member that is
-/// not static carries the implicit `this` at argument zero, whatever the
-/// convention letter spells — an x64 member decorates `A` and still
-/// takes one.
+/// const/volatile letter), and the calling convention.
+///
+/// Every non-static member takes the implicit `this` at argument zero,
+/// whatever the convention letter spells — an x64 member decorates `A`
+/// and still takes one.
 pub(crate) fn parse_msvc(name: &str) -> Option<MsvcSignature> {
     let bytes = name.as_bytes();
     if bytes.first() != Some(&b'?') {
@@ -143,7 +147,7 @@ pub(crate) fn parse_msvc(name: &str) -> Option<MsvcSignature> {
     let mut i = 1usize;
 
     // The simple name, up to the first `@`. An empty name or an operator
-    // spelling (`??2@YAPAXI@Z`) carries no readable contract.
+    // spelling (`??2@YAPAXI@Z`) gives no readable contract.
     let name_start = i;
     while i < bytes.len() && bytes[i] != b'@' {
         i += 1;
@@ -190,7 +194,7 @@ pub(crate) fn parse_msvc(name: &str) -> Option<MsvcSignature> {
     // The property letters: the function class — free (`Y`/`Z`), a
     // static member (no implicit `this`), or a plain member (implicit
     // `this` at argument zero). Thunk classes (`G H O P W X`, each
-    // followed by an adjustment count) and anything else carry no
+    // followed by an adjustment count) and anything else give no
     // readable contract.
     let implicit_this = match bytes.get(i)? {
         b'Y' | b'Z' => false,
@@ -213,8 +217,8 @@ pub(crate) fn parse_msvc(name: &str) -> Option<MsvcSignature> {
     }
     // The convention letter, decoded into the closed set: `A` is cdecl,
     // `C`, `E`, and `G` thiscall (`G` the old EVC spelling), `I` stdcall.
-    // `B` spells Pascal — outside the closed set, so the name still
-    // decodes for types but carries no convention reading.
+    // `B` spells Pascal, which is outside the closed set: the name still
+    // decodes for its types but gives no convention reading.
     let convention = match bytes.get(i)? {
         b'A' => Some(CallingConvention::Cdecl),
         b'B' => None,
@@ -348,10 +352,11 @@ fn parse_msvc_class_chain(name: &str, i: &mut usize) -> Option<String> {
 // ============================================================
 
 /// The spelled parameter list of a demangled qualified name —
-/// `Widget::Render(int, char *)` → `["int", "char *"]` — or nothing when
-/// the name is not a qualified chain ending in one parenthesized group,
-/// carries namespace noise, or holds an entry that is not a plain type
-/// declaration (a template, a reference, an array, a named parameter).
+/// `Widget::Render(int, char *)` → `["int", "char *"]`. The parser
+/// returns nothing when the name is not a qualified chain ending in one
+/// parenthesized group, when it includes namespace noise, or when an
+/// entry is not a plain type declaration (a template, a reference, an
+/// array, or a named parameter).
 fn demangled_parameter_list(name: &str) -> Option<Vec<String>> {
     let open = name.find('(')?;
     let close = closing_paren(name, open)?;
@@ -397,11 +402,12 @@ fn parse_demangled_params(text: &str) -> Option<Vec<String>> {
     Some(types)
 }
 
-/// Words that may stand beside another word in one declaration: a
+/// Words that may stand beside another word in one declaration. A
 /// multi-word entry is a primitive spelled with qualifiers (`unsigned
-/// int`, `long long`, `signed char`), so every word must come from this
-/// set. That is what separates `unsigned int` from `int width` — a named
-/// parameter, which names no readable type.
+/// int`, `long long`, `signed char`), so every word in it must come from
+/// this set. This rule separates `unsigned int` from `int width`: the
+/// second entry is a named parameter, and a named parameter spells no
+/// readable type.
 const TYPE_WORDS: [&str; 12] = [
     "signed", "unsigned", "long", "short", "char", "int", "float", "double", "void", "struct",
     "union", "enum",
@@ -451,8 +457,8 @@ fn parse_type_declaration(entry: &str) -> Option<String> {
 }
 
 /// Whether a qualified-chain segment is a plain name: identifier bytes
-/// only, allowing a destructor's leading `~`. A segment carrying `$`,
-/// digits up front, or template punctuation makes the whole name
+/// only, allowing a destructor's leading `~`. A segment containing `$`,
+/// leading digits, or template punctuation makes the whole name
 /// unparseable.
 fn is_plain_segment(segment: &str) -> bool {
     let core = segment.strip_prefix('~').unwrap_or(segment);
@@ -474,10 +480,11 @@ fn is_clean_chain(segments: &[&str]) -> bool {
         && !segments.iter().any(|s| NAMESPACE_NOISE.contains(s))
 }
 
-/// A direct call to a qualified name — `a::b::method(...)`, a destructor
-/// segment's leading `~` allowed — found in a body: the end of the callee
-/// span and the `(` opening its first argument group. Prior art: the
-/// this-pointer detector's [`crate::this_ptr`] chain walk.
+/// Finds a direct call to a qualified name in a body — `a::b::method(...)`,
+/// with a destructor segment's leading `~` allowed — and returns the end
+/// of the callee span and the `(` that opens its first argument group.
+/// The this-pointer detector's [`crate::this_ptr`] chain walk set the
+/// precedent.
 fn qualified_chain(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
     let mut i = start;
     let mut end = start;
@@ -548,10 +555,10 @@ fn count_arguments(body: &str, open: usize, close: usize) -> usize {
 /// C++ mangling analysis over listing symbols and decompiled bodies.
 ///
 /// The detector is stateless: every reading comes from the name or body
-/// it is handed, so one detector serves an entire scan. It fetches
-/// nothing itself — the engine hands it the listing names and the same
-/// [`DecompiledFunction`] text every other inline detector reads, so the
-/// scan stays at one decompile per function.
+/// passed to it, so one detector serves an entire scan. It fetches
+/// nothing itself. The scan hands it the listing names and the same
+/// [`DecompiledFunction`] text every other inline detector reads, so
+/// the scan stays at one decompile per function.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ManglingDetector;
 
@@ -562,18 +569,18 @@ impl ManglingDetector {
         Self
     }
 
-    /// The records an MSVC-mangled listing symbol carries for the
-    /// function that bears it, keyed by the symbol verbatim with the
-    /// symbol itself as evidence: a member's implicit `this` at position
-    /// zero (typed as the named class's pointer), then one parameter
-    /// record per decoded argument, then a return record when the symbol
-    /// spells a non-`void` return.
+    /// The records an MSVC-mangled listing symbol produces for the
+    /// function it names. The key is the symbol verbatim and the evidence
+    /// is the symbol itself. First a member's implicit `this` at position
+    /// zero (typed as a pointer to the named class), then one parameter
+    /// record per decoded argument, and then a return record when the
+    /// symbol spells a non-`void` return.
     ///
     /// A name that is not mangled, or whose encoding falls outside the
-    /// practical subset, produces nothing — a half-decoded signature
-    /// would mis-type positions the decoder is not sure of. The records
-    /// carry no decompiled parameter names: the name is the evidence, and
-    /// the prompt falls back to `param_N` positions.
+    /// practical subset, produces nothing: a half-decoded signature would
+    /// mis-type positions the decoder is not sure of. The records have no
+    /// decompiled parameter names — the symbol is the evidence, so the
+    /// prompt falls back to `param_N` positions.
     pub fn detect_from_listing(&self, name: &str) -> Vec<InferredType> {
         let Some(signature) = parse_msvc(name) else {
             return Vec::new();
@@ -607,23 +614,30 @@ impl ManglingDetector {
         records
     }
 
-    /// The records a decompiled body carries in names: the analyzed
-    /// function's own demangled name with a spelled parameter list, and
-    /// every qualified call in the body whose callee carries one.
+    /// The records that names inside a decompiled body produce: the
+    /// analyzed function's own demangled name with a spelled parameter
+    /// list, and every qualified call in the body whose callee has such a
+    /// list.
     ///
     /// A spelled list types the function it names only where its
-    /// positions can be placed. For the analyzed function's own name,
-    /// the decompiled signature places it: the list maps from position 0
-    /// when the body declares as many parameters as the name lists, and
-    /// from position 1 — past the implicit `this` — when it declares one
-    /// more; any other mismatch places nothing. For a callee, the call's
-    /// argument count places it: equal counts map from 0, one extra
-    /// argument is the member's `this` (typed as the named class's
-    /// pointer at position 0) with the list starting at 1; any other
-    /// mismatch places nothing. A name without a parameter list — an
-    /// ordinary `Widget::paint(param_1)` call — is not a contract the
-    /// name carries, and produces nothing here (the this-pointer
-    /// detector already reads what usage shows of it).
+    /// positions can be placed.
+    ///
+    /// For the analyzed function's own name, the decompiled signature
+    /// does the placing. The list maps from position 0 when the body
+    /// declares as many parameters as the name lists, and from position
+    /// 1 — past the implicit `this` — when it declares one more. Any
+    /// other mismatch places nothing.
+    ///
+    /// For a callee, the call's argument count does the placing. Equal
+    /// counts map the list from 0. With one extra argument, that
+    /// argument is the member's `this`: it is typed as a pointer to the
+    /// named class at position 0, and the list starts at 1. Any other
+    /// mismatch places nothing.
+    ///
+    /// A name without a parameter list — an ordinary `Widget::paint(param_1)`
+    /// call — is not a contract written in the name, so it produces
+    /// nothing here. The this-pointer detector already reads what usage
+    /// shows of it.
     pub fn detect_from_body(&self, func: &DecompiledFunction) -> Vec<InferredType> {
         let mut records = self.own_name_readings(func);
         records.extend(self.qualified_call_readings(func));
@@ -663,10 +677,10 @@ impl ManglingDetector {
             .collect()
     }
 
-    /// Every qualified call in the body whose callee carries a spelled
+    /// Every qualified call in the body whose callee has a spelled
     /// parameter list — the name's group immediately followed by the
-    /// call's own group, `Widget::Render(int,char*)(param_1, uVar2)` —
-    /// read as [`call_contract`](Self::call_contract).
+    /// call's own group, as in `Widget::Render(int,char*)(param_1, uVar2)`
+    /// — read as [`call_contract`](Self::call_contract).
     fn qualified_call_readings(&self, func: &DecompiledFunction) -> Vec<InferredType> {
         let body = &func.body;
         let bytes = body.as_bytes();
@@ -702,14 +716,15 @@ impl ManglingDetector {
         records
     }
 
-    /// The contract one qualified call spells, or nothing: the callee's
-    /// first group must be a parameter list (a second group — the actual
-    /// call — follows it), the chain must be a clean qualified name, and
-    /// the call's argument count must place the list (equal counts, or
-    /// one extra argument standing as the member's `this`). The records
-    /// are keyed by the callee as spelled, name and list together, so
-    /// they compete with the callee's own readings under the same name
-    /// the listing carries; the call line is the evidence.
+    /// The contract one qualified call spells, or nothing. Three checks
+    /// must pass: the callee's first group must be a parameter list, with
+    /// a second group — the actual call — right after it; the chain must
+    /// be a clean qualified name; and the call's argument count must
+    /// place the list (equal counts, or one extra argument standing in
+    /// for the member's `this`). The key is the callee as spelled, name
+    /// and list together, so these readings compete with the callee's
+    /// own readings under the same name the listing shows. The call line
+    /// is the evidence.
     fn call_contract(
         &self,
         body: &str,
@@ -837,7 +852,8 @@ mod tests {
     #[test]
     fn a_mangled_symbol_with_a_non_void_return_types_the_return() {
         // `char *Widget::copy(const char *)`: return `PEAD`, argument
-        // `PEBD` (const char pointer) — the const rides off the reading.
+        // `PEBD` (const char pointer) — the const is dropped from the
+        // reading.
         let records = from_listing("?copy@Widget@@QEAAPEADPEBD@Z");
         assert_eq!(
             params(&records),
@@ -857,9 +873,9 @@ mod tests {
 
     #[test]
     fn a_static_member_symbol_carries_no_this() {
-        // `S` spells a static member: the contract takes no implicit
-        // this, so the spelled argument starts at position 0, and the
-        // void return narrows nothing.
+        // `S` spells a static member. The contract takes no implicit
+        // this, so the spelled argument starts at position 0. The void
+        // return narrows nothing.
         let records = from_listing("?create@Widget@@SAXPAVBrush@@@Z");
         assert_eq!(params(&records), vec![(0, "Brush *".into())]);
     }
@@ -886,7 +902,8 @@ mod tests {
     fn the_argument_set_decodes_convention_count_and_rough_types() {
         // `__thiscall` x86 member: `QAE` public member, void return,
         // int / bool / void-pointer / wchar_t-pointer arguments, and the
-        // `@`-separated class chain naming the this pointer.
+        // `@`-separated class chain, which supplies the this pointer's
+        // class.
         let records = from_listing("?setup@UdpRefCount@UdpLibrary@@QAEXH_NPAXPA_W@Z");
         assert_eq!(
             params(&records),
@@ -903,7 +920,7 @@ mod tests {
     #[test]
     fn a_void_argument_list_and_void_return_type_nothing_extra() {
         // `void Widget::paint(void)`: the lone `X` argument spells no
-        // parameters, and the void return narrows nothing.
+        // parameters. The void return narrows nothing.
         let records = from_listing("?paint@Widget@@QAEXXZ");
         assert_eq!(params(&records), vec![(0, "Widget *".into())]);
         assert!(
@@ -954,8 +971,9 @@ mod tests {
     #[test]
     fn an_extra_call_argument_is_the_member_this() {
         // The decompiler spells a thiscall member call with the object
-        // as its first argument: one more argument than the spelled list
-        // places the list at 1 and types position 0 as the class.
+        // as its first argument. When the call has one more argument
+        // than the spelled list, the list starts at position 1 and
+        // position 0 is typed as a pointer to the class.
         let func = function(
             "FUN_18003ab00",
             "undefined FUN_18003ab00(undefined8 param_1,undefined8 param_2)",
@@ -974,8 +992,8 @@ mod tests {
 
     #[test]
     fn a_name_without_a_parameter_list_produces_nothing() {
-        // An ordinary qualified call — one group, the arguments — carries
-        // no spelled contract; the this-pointer detector reads what usage
+        // An ordinary qualified call — one group, the arguments — has no
+        // spelled contract. The this-pointer detector reads what usage
         // shows of it.
         let func = function(
             "FUN_18003ab00",
@@ -1044,9 +1062,10 @@ mod tests {
 
     #[test]
     fn the_analyzed_function_s_own_demangled_name_types_its_parameters() {
-        // the decompiler carries the demangled name with the spelled list; the
-        // decompiled signature places it — one more body parameter than
-        // the name lists means the member's implicit this sits first.
+        // The decompiler hands over the demangled name with the spelled
+        // list. The decompiled signature places it: one more body
+        // parameter than the name lists means the member's implicit this
+        // comes first.
         let func = DecompiledFunction {
             name: "Widget::Render(int,char *)".into(),
             signature: "void __thiscall Widget::Render(Widget *this,int param_1,char *param_2)"
@@ -1069,9 +1088,10 @@ mod tests {
 
     #[test]
     fn an_own_name_the_signature_cannot_place_types_nothing() {
-        // The name lists two parameters, the body declares three that
-        // are not one-more-than... they are one more, so that places;
-        // this body declares four, which places neither way.
+        // The name lists two parameters. A body declaring three would
+        // place the list, because three is one more than two. This body
+        // declares four, which matches neither count, so nothing is
+        // placed.
         let func = DecompiledFunction {
             name: "Widget::Render(int,char *)".into(),
             signature: "void __thiscall Widget::Render(Widget *this,int param_1,char *param_2,undefined8 param_3)".into(),
@@ -1082,8 +1102,8 @@ mod tests {
 
     #[test]
     fn a_mangled_own_name_is_the_listing_pass_reading_not_a_second_one() {
-        // The engine reads the listing name once through
-        // `detect_from_listing`; the body pass must not duplicate it.
+        // The scan reads the listing name once through
+        // `detect_from_listing`. The body pass must not duplicate it.
         let func = function(
             "?paint@Widget@@QAEXXZ",
             "undefined ?paint@Widget@@QAEXXZ(undefined8 param_1)",
