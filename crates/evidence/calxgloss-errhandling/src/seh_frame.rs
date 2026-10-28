@@ -1,64 +1,66 @@
 //! The spelled `try`/`catch` SEH frame detector.
 //!
-//! The frame is the one error-handling shape the decompiler spells
-//! outright: a body that opens a `try {` block and later carries a
-//! `catch (...)` clause shows the whole frame in kept body text, and
-//! this detector claims exactly that — and nothing else. A lone
-//! `try {` without a `catch` clause, or a lone `catch` without a
+//! The spelled frame is the one error-handling shape the decompiler
+//! writes out in full. A body that opens a `try {` block and later
+//! shows a `catch (...)` clause has the whole frame in its kept body
+//! text, and this detector claims exactly that — and nothing else. A
+//! lone `try {` without a `catch` clause, or a lone `catch` without a
 //! `try`, is not a frame; neither is an identifier that merely
 //! contains one of the words (`catch_count`, `entry_try_helper`). The
 //! claim quotes the `catch` line, the clause that marks the block a
 //! handler, and scores the reading in the high band — the ADR-0046
-//! anchor for this family's confidences.
+//! anchor for this family's confidence bands.
 
 use crate::types::{ErrhandlingFinding, SehFrame};
 use calxgloss_types::Confidence;
 
-/// Confidence for a whole spelled `try`/`catch` frame (ADR-0046).
+/// Evidence confidence for a whole spelled `try`/`catch` frame
+/// (ADR-0046).
 ///
-/// The band is high but not highest: the body text carries the whole
-/// frame — open and handler — which is why the reading sits at 80.
-/// It is not the catalog's top band, because the decompiler's C
-/// spelling is its own normalization, and the exception-code paths
+/// The band is high but not highest. The body text shows the whole
+/// frame — opener and handler — which is why this reading scores 80.
+/// It is not the catalog's top band for two reasons: the decompiler's
+/// C spelling is its own normalization, and the exception-code paths
 /// that hide in other bodies (issue #288) are the same construct
-/// without the spelling; when those families land they score below
-/// this anchor, so a report can rank what it is shown.
+/// without the spelling. When those families land they score below
+/// this anchor, so a report can rank the findings it shows.
 pub const SPELLED_FRAME_CONFIDENCE: u8 = 80;
 
-/// The Rust pattern a spelled frame steers a translation toward.
+/// The Rust pattern a spelled frame points a translation toward.
 ///
 /// The pattern keeps the frame's structure — a fallible body and a
 /// handler — without pretending the SEH mechanism survives
-/// translation: whether the Rust side uses `Result`, `catch_unwind`
+/// translation. Whether the Rust side uses `Result`, `catch_unwind`
 /// or an explicit state machine is the translator's call, made with
-/// the caller set in view (ADR-0029), and this suggestion only names
+/// the set of callers in view (ADR-0029). This suggestion only names
 /// the shape the evidence points at.
 pub const SEH_FRAME_SUGGESTION: &str = "wrap the guarded block and its handler in a Rust error-handling frame \
      (Result, or catch_unwind if the handler must survive FFI)";
 
 /// Detect a spelled SEH `try`/`catch` frame in one function body.
 ///
-/// The detector answers with at most one finding per function: the
+/// The detector answers with at most one finding per function. The
 /// frame is a function-level shape, so a body that spells it twice
-/// (a second frame after the first) is still the one reading —
-/// "this function handles exceptions in a frame" — and a second
-/// finding would double-count the same claim. The detector fills no
-/// function name — it never sees one; the engine stamps it.
+/// (a second frame after the first) is still the one reading — "this
+/// function handles exceptions in a frame" — and a second finding
+/// would double-count the same claim. The detector fills no function
+/// name — it never sees one; the scan stamps it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SehFrameDetector;
 
 impl SehFrameDetector {
     /// Detect the spelled frame in one decompiled body.
     ///
-    /// The shape is read per line so the evidence is a real body line:
-    /// a trimmed line that is exactly a `try {` opener, and a later
-    /// line that opens a `catch` clause. Both must be block text —
-    /// the words as whole lines or line openers, never as parts of
-    /// identifiers.
+    /// The shape is read per line so the evidence is a real body
+    /// line: a trimmed line that opens with `try` and a block brace,
+    /// and a later line that opens a `catch` clause. Both must be
+    /// block text — the words as whole lines or line openers, never
+    /// as parts of identifiers.
     pub fn detect(&self, body: &str) -> Option<ErrhandlingFinding> {
-        // Two passes, one cursor: find the opener, then look for a
-        // catch clause *after* it, so a body that pairs a catch with
-        // an earlier construct cannot claim a frame it doesn't have.
+        // Two passes with one cursor: find the `try` opener first,
+        // then look for a `catch` clause *after* it. A body whose
+        // `catch` sits before the opener never claims a frame it
+        // does not have.
         let try_start = first_try_opener(body)?;
         let catch_line = first_catch_clause(body, try_start)?;
         Some(ErrhandlingFinding::SehFrame(SehFrame {
@@ -93,8 +95,9 @@ fn first_try_opener(body: &str) -> Option<usize> {
     None
 }
 
-/// The first `catch` clause line at or after `from`, as its full line,
-/// or `None` when no line from there on opens a catch clause.
+/// The first `catch` clause line strictly after `from`, as its full
+/// line, or `None` when no later line opens a catch clause. The line
+/// that starts at `from` itself — the `try` opener — never counts.
 ///
 /// The line's trimmed text must begin with the whole word `catch`
 /// followed (after optional whitespace, or on the next line) by a `(`
@@ -245,7 +248,7 @@ mod tests {
 
     #[test]
     fn detector_never_claims_a_function_itself() {
-        // The detector fills no function name; the engine stamps it.
+        // The detector fills no function name; the scan stamps it.
         let body = body_of(&["  try {", "  }", "  catch(...){", "  }"]);
         let finding = SehFrameDetector.detect(&body).unwrap();
         assert_eq!(finding.function(), "");

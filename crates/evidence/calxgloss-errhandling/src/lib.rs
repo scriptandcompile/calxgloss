@@ -1,47 +1,51 @@
-//! Error-handling idiom evidence: reading the try/catch frame, named
-//! handlers and failure codes from kept function bodies as
-//! decompile-level evidence, persisted per binary, alongside the
-//! failure codes a body hands back or guards against.
+//! Error-handling idiom evidence: the scan reads the try/catch frame,
+//! the named handler registrations, and the failure codes out of kept
+//! function bodies. The reading is decompile-level, persisted per
+//! binary, and the same document holds the failure codes a body hands
+//! back or guards against.
 //!
 //! This crate is the growing slice of P15 (the error-handling
-//! recovery pass): it detects the error-handling shapes kept body
-//! text carries — an SEH `try`/`catch` frame the decompiler spelled
-//! outright, a named personality-handler thunk registration where it
-//! left the frame undrawn, an exception-API call, a direct
+//! recovery pass). It detects the error-handling shapes visible in
+//! kept body text: an SEH `try`/`catch` frame the decompiler spelled
+//! outright, a named personality-handler thunk registration where the
+//! decompiler left the frame undrawn, an exception-API call, a direct
 //! `RaiseException` call, and the goto-cleanup ladder of guarded
-//! forward gotos converging on one releasing join block — and
-//! persists the findings as an evidence document under
+//! forward gotos converging on one releasing join block. It persists
+//! the findings as an evidence document under
 //! `re/analysis/errhandling/`. A failure code the function returns,
-//! raises, or compares for is one record of its own per distinct code
-//! per function — the failure contract named without reading the
-//! body — keyed to the function beside the idiom findings. Alongside
-//! them ride the second-hand records: the cross-function pass carries
-//! a callee's recorded codes onto the callers that guard on or
-//! re-return the call's result, codes only and idioms never, at a
-//! penalty below every band that saw the literal first-hand
-//! (ADR-0047). The whole-program pass and the prompt consumers are
-//! follow-up issues against this same artifact, and nothing here
-//! feeds an annotation prompt or a translation yet (ADR-0046).
+//! raises, or compares for gets one record of its own per distinct
+//! code per function: it names the failure contract without reading
+//! the body. Those records are keyed to the function and sit beside
+//! the idiom findings.
 //!
-//! The SEH readings rank on ADR-0046's family ladder and the engine
-//! keeps one claim per function: the strongest SEH family that fires
-//! wins, a `RaiseException` finding rides beside it as a different
-//! fact, a goto-cleanup ladder rides beside both as a third fact,
-//! and a GS stack-canary check — compiler noise, already
-//! stripped by the shipped decompiler-noise filter — never reads as
-//! exception handling.
+//! The second-hand records sit beside them too. The cross-function
+//! pass copies a callee's recorded failure codes onto the callers that
+//! guard on the callee's result or return it again. Only codes travel;
+//! idioms never do. The copies score at a confidence penalty below
+//! every band that saw the literal value first-hand (ADR-0047). The
+//! whole-program pass and the prompt consumers are follow-up issues
+//! against this same artifact, and nothing here feeds an annotation
+//! prompt or a translation yet (ADR-0046).
 //!
-//! The reading is decompile-level only — per-function body text. No
-//! disassembly, no CFG, no call-fact reads, and nothing written back
-//! to the program (ADR-0020); an earlier draft of the pass was
-//! rejected for exactly those violations, and the catalog's
-//! whole-program frame rule (ADR-0023) stays a future reading this
-//! artifact prepares (ADR-0046). The cross-function pass is the one
-//! reading that relates two bodies: it reads the call edges off the
-//! kept bodies themselves — the shared `call_sites` scan, never a
-//! call-graph query — and stops after one hop, where the callee's
-//! record and the call-site evidence already let a reader chase the
-//! chain by hand (ADR-0047).
+//! The SEH readings rank on ADR-0046's family ladder, and the scan
+//! keeps one claim per function. The strongest SEH family that fires
+//! wins. A `RaiseException` finding is kept beside it as a different
+//! fact, and a goto-cleanup ladder beside both as a third fact. A GS
+//! stack-canary check never reads as exception handling; it is
+//! compiler noise, already stripped by the shipped decompiler-noise
+//! filter.
+//!
+//! The reading is decompile-level only: one function's body text at a
+//! time. No disassembly, no CFG, no call-fact reads, and nothing
+//! written back to the program (ADR-0020). An earlier draft of the
+//! pass was rejected for exactly those violations. The catalog's
+//! whole-program frame rule (ADR-0023) stays a future reading; this
+//! artifact prepares for it (ADR-0046). The cross-function pass is
+//! the one reading that relates two bodies. It reads the call edges
+//! out of the kept bodies themselves — the shared `call_sites` scan,
+//! never a call-graph query — and stops after one hop. At one hop, the
+//! callee's record and the call-site evidence already let a reader
+//! chase the chain by hand (ADR-0047).
 //!
 //! Architecture:
 //! - [`types`] — the finding records, the tagged finding union, and
@@ -60,7 +64,7 @@
 //! - [`error_code`] — the failure-code detector: HRESULT- and
 //!   NTSTATUS-shaped literals at return, raise, and guard sites,
 //!   one record per distinct code per function at its strongest site.
-//! - [`cross_function`] — the propagation pass: carrying recorded
+//! - [`cross_function`] — the propagation pass: it copies recorded
 //!   codes along the call map onto the guards and re-returns, one
 //!   claim per code per function, at the inherited band.
 //! - [`identifier`] — the shared whole-identifier boundary rule the

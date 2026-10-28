@@ -1,52 +1,55 @@
 //! The named personality-handler thunk detector.
 //!
 //! Where the decompiler does *not* reconstruct an SEH frame into a
-//! spelled `try`/`catch` block, the frame still leaves its handler in
-//! the body text: MSVC registers one of a handful of named
+//! spelled `try`/`catch` block, the frame still leaves its handler
+//! name in the body text: MSVC registers one of a handful of named
 //! personality-handler thunks — `__except_handler3`,
 //! `_except_handler4`, `_CxxFrameHandler3` — and where one of those
 //! names stands as a whole identifier in a kept body, the function is
 //! guarded by an exception frame whether or not the decompiler drew
-//! it (issue #288, ADR-0046's named-handler rung). The reading claims
-//! exactly that sighting and nothing else: a body merely *resembling*
-//! an SEH frame, or naming a decorated variant of one of these
-//! routines, stays silence, and a GS stack-canary check — cookie
-//! comparison or cookie save — names none of these thunks and claims
-//! nothing (issue #288's guard rail: shipped noise-filter strips the
-//! canary family, and this is the insurance against a filter miss).
+//! it (issue #288, ADR-0046's named-handler band). The reading claims
+//! exactly that sighting and nothing else. A body that merely
+//! *resembles* an SEH frame, or that names a decorated variant of one
+//! of these routines, stays silent. A GS stack-canary check — a
+//! cookie comparison or a cookie save — names none of these thunks
+//! and claims nothing (issue #288's guard rail: the shipped noise
+//! filter strips the canary family, and this is the insurance against
+//! a filter miss).
 
 use crate::identifier::named_token;
 use crate::seh_frame::SEH_FRAME_SUGGESTION;
 use crate::types::{ErrhandlingFinding, NamedHandler};
 use calxgloss_types::Confidence;
 
-/// Confidence for a frame seen through a named personality-handler
-/// thunk (ADR-0046's rung ladder).
+/// Evidence confidence for a frame seen through a named
+/// personality-handler thunk (ADR-0046's confidence ladder).
 ///
-/// The high-mid band, a rung below the spelled block's 80 and above
-/// the exception-API call's 60: the thunk name witnesses a real frame
-/// registration, but the decompiler never read the frame's structure,
-/// so the claim is thinner than a spelled block's and thicker than an
-/// API call's. `ErrhandlingEngine` keeps the ranking honest by taking
-/// the strongest family that fires, whatever the numbers say.
+/// The high-mid band: below the spelled block's 80 and above the
+/// exception-API call's 60. The thunk name shows a real frame
+/// registration, but the decompiler never read the frame's
+/// structure, so the claim is thinner than a spelled block's and
+/// thicker than an API call's. `ErrhandlingEngine` keeps the ranking
+/// honest by taking the strongest family that fires, whatever the
+/// numbers say.
 pub const NAMED_HANDLER_CONFIDENCE: u8 = 70;
 
 /// The personality-handler thunks whose spelled registration names a
 /// frame: the SEH2 (`__except_handler3`) and SEH4 (`_except_handler4`)
 /// C-runtime handlers and the C++ frame handler. The spellings are
-/// MSVC's own; the identifier boundary also admits the engine's
-/// deeper-underscore decorations, and refuses longer or prefixed
-/// variants like `_except_handler4_common`.
+/// MSVC's own. The identifier boundary also admits the
+/// deeper-underscore decorations the decompiled body text carries,
+/// and refuses longer or prefixed variants like
+/// `_except_handler4_common`.
 pub const PERSONALITY_HANDLER_THUNKS: [&str; 3] =
     ["__except_handler3", "_except_handler4", "_CxxFrameHandler3"];
 
 /// Detect a named personality-handler thunk in one function body.
 ///
 /// The detector answers with at most one finding per function — a
-/// frame is a function-level shape, and one function never carries a
-/// stack of duplicate SEH claims — and fills no function name; the
-/// engine stamps it. The evidence is the body line carrying the
-/// registration, the thunk's name visible inside it.
+/// frame is a function-level shape, and one function never collects
+/// duplicate SEH claims — and fills no function name; the scan
+/// stamps it. The evidence is the body line showing the
+/// registration, with the thunk's name visible inside it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NamedHandlerDetector;
 
@@ -54,9 +57,9 @@ impl NamedHandlerDetector {
     /// Detect a named-handler frame in one decompiled body.
     ///
     /// Any line naming one of [`PERSONALITY_HANDLER_THUNKS`] as a
-    /// whole identifier carries the claim — a registration call, a
-    /// handler pointer argument, or the name standing alone all
-    /// witness the registration; only the identifier boundary is
+    /// whole identifier carries the claim: a registration call, a
+    /// handler pointer argument, or the name standing alone all show
+    /// the registration. Only the identifier boundary is
     /// load-bearing. The first such line in body order is the
     /// evidence.
     pub fn detect(&self, body: &str) -> Option<ErrhandlingFinding> {
@@ -69,9 +72,9 @@ impl NamedHandlerDetector {
                     function: String::new(),
                     confidence: Confidence::new(NAMED_HANDLER_CONFIDENCE),
                     evidence: line.trim_end().to_string(),
-                    // The same Rust mapping the spelled frame steers
-                    // toward: this is the same frame, read through
-                    // weaker evidence.
+                    // This uses the same Rust mapping the spelled
+                    // frame points to: it is the same frame, read
+                    // through weaker evidence.
                     suggestion: SEH_FRAME_SUGGESTION.to_string(),
                 }));
             }
@@ -118,8 +121,9 @@ mod tests {
 
     #[test]
     fn decorated_underscore_spellings_still_count() {
-        // The engine's decoration of `_except_handler4` adds
-        // underscores; the frame registration is the same fact.
+        // The decoration of the decompiled body text on
+        // `_except_handler4` adds underscores; the frame
+        // registration is the same fact.
         let body = body_of(&["  __except_handler4(a, b);"]);
         let finding = NamedHandlerDetector
             .detect(&body)
@@ -176,11 +180,11 @@ mod tests {
     #[test]
     fn gs_canary_noise_claims_nothing() {
         // The guard rail (issue #288): a GS stack-canary check —
-        // cookie save, cookie comparison, and the guard-runtime call,
-        // beside the engine's join-label noise — reads as compiler
-        // noise, not as exception handling. The shipped noise filter
-        // strips these bodies; this is the insurance against a
-        // filter miss.
+        // cookie save, cookie comparison, and the guard-runtime
+        // call, beside the decompiler's join-label noise — reads as
+        // compiler noise, not as exception handling. The shipped
+        // noise filter strips these bodies; this is the insurance
+        // against a filter miss.
         let body = body_of(&[
             "  uVar = __security_cookie ^ (ulonglong)&stack0xfffffffffffffff4;",
             "  if (uStack_8 == __security_cookie) {",
@@ -200,7 +204,8 @@ mod tests {
     #[test]
     fn the_named_handler_rung_sits_below_the_spelled_block() {
         // ADR-0046's ladder: every family scores strictly below the
-        // family above it, so a report can rank what it is shown.
+        // family above it, so a report can rank the findings it
+        // shows.
         const { assert!(NAMED_HANDLER_CONFIDENCE < SPELLED_FRAME_CONFIDENCE) };
     }
 

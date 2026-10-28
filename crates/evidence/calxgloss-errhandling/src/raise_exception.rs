@@ -1,56 +1,56 @@
 //! The direct `RaiseException` call detector.
 //!
 //! A function that calls `RaiseException` itself is the *source* of an
-//! exception, not a guarded victim of one — the raised code is the
-//! handler contract every caller up the chain must survive, and where
-//! the first argument is a literal the record names that code so the
+//! exception, not a function guarded by one. The raised code is the
+//! handler contract every caller up the chain must survive. Where the
+//! first argument is a literal, the record names that code, so the
 //! contract is visible without opening the body (issue #288, ADR-0046:
 //! `RaiseException` joins the union as its own kind, beside the SEH
 //! frame families rather than inside them). A named-constant or
 //! computed first argument still lands the finding with no code
-//! claimed — the raise is a fact, the code is only as certain as the
-//! text shows it.
+//! claimed: the raise is a fact, and the code is only as certain as
+//! the text shows it.
 
 use crate::identifier::named_token;
 use crate::types::{ErrhandlingFinding, RaiseException};
 use calxgloss_types::Confidence;
 
-/// Confidence for a direct `RaiseException` call (ADR-0046's family
-/// ladder).
+/// Evidence confidence for a direct `RaiseException` call
+/// (ADR-0046's family ladder).
 ///
 /// The high band, between the spelled frame's 80 and the named
-/// handler's 70: the call is spelled in kept body text by name, which
-/// is as literal as body evidence gets, but unlike a spelled frame it
-/// shows the function *raising* into a mechanism rather than the
-/// decompiler reading the frame's whole structure. The engine takes
+/// handler's 70. The call is spelled by name in kept body text, which
+/// is as literal as body evidence gets. But unlike a spelled frame,
+/// it shows the function *raising* into a mechanism, not the
+/// decompiler reading the frame's whole structure. The scan keeps
 /// this finding beside the function's one SEH finding, not instead of
 /// it — the raise and the frame are different facts.
 pub const RAISE_EXCEPTION_CONFIDENCE: u8 = 75;
 
-/// The API whose call position names the raise. The undecorated
-/// kernel32 spelling only: `__raise_exception` (the compiler
-/// intrinsic) is a different facility, and case- and
-/// identifier-boundary matching keeps `RaiseExceptionFilter` and a
-/// hand-named `MyRaiseException` out.
+/// The API whose name in call position marks a raise. The detector
+/// matches the undecorated kernel32 spelling only:
+/// `__raise_exception` (the compiler intrinsic) is a different
+/// facility, and case- and identifier-boundary matching keeps
+/// `RaiseExceptionFilter` and a hand-named `MyRaiseException` out.
 pub const RAISE_EXCEPTION_API: &str = "RaiseException";
 
-/// The Rust pattern a direct raise steers a translation toward.
+/// The Rust pattern a direct raise points a translation toward.
 ///
-/// Emulating `RaiseException` in a Rust translation recreates the
-/// SEH mechanism in code that has no SEH mechanism; the honest shape
-/// is an error value that carries the raised code, so the caller set
-/// the function raises into can keep the contract (ADR-0029's
-/// caller-set decision belongs to the translator, and this suggestion
-/// only names the shape the evidence points at).
+/// Emulating `RaiseException` in a Rust translation rebuilds the SEH
+/// mechanism in code that has no SEH mechanism. The honest shape is
+/// an error value that carries the raised code, so the set of callers
+/// the function raises into can keep the contract. The caller-set
+/// decision belongs to the translator (ADR-0029); this suggestion
+/// only names the shape the evidence points at.
 pub const RAISE_EXCEPTION_SUGGESTION: &str = "surface the exception the function raises as a Rust error value carrying the exception code, rather than emulating RaiseException";
 
 /// Detect a direct `RaiseException` call in one function body.
 ///
 /// The detector answers with at most one finding per function — the
 /// reading is the function-level fact "this function raises
-/// exceptions" — and fills no function name; the engine stamps it.
-/// When the call's first argument is a numeric literal, the record
-/// names the raised exception code; any other first argument (an
+/// exceptions" — and fills no function name; the scan stamps it. If
+/// the call's first argument is a numeric literal, the record names
+/// the raised exception code. Any other first argument (an
 /// identifier, a cast, a wrapped call) lands the finding with no code
 /// claimed.
 #[derive(Debug, Clone, Copy, Default)]
@@ -61,9 +61,10 @@ impl RaiseExceptionDetector {
     ///
     /// The shape is the name as a whole identifier with its `(` after
     /// it (spaces and tabs allowed between). The first such line in
-    /// body order is the evidence; the code is read from that line's
+    /// body order is the evidence. The code is read from that line's
     /// first argument, so a call wrapped across lines lands with no
-    /// code claimed rather than reaching into other lines.
+    /// code claimed instead of the detector reaching into other
+    /// lines.
     pub fn detect(&self, body: &str) -> Option<ErrhandlingFinding> {
         for line in body.lines() {
             let Some(after_name) = named_token(line, RAISE_EXCEPTION_API) else {
@@ -91,7 +92,7 @@ impl RaiseExceptionDetector {
 /// The call's first argument: the text from the open paren to the
 /// first top-level comma (or the close paren, or the line's end).
 /// Parenthesised and bracketed runs nest, so a cast or a nested call
-/// stays one argument. The failure-code reading takes the same cut:
+/// stays one argument. The failure-code reading uses the same cut:
 /// for `RaiseException` only the first argument names a code, never
 /// the flags or parameter-array arguments behind it.
 pub(crate) fn first_argument(args: &str) -> &str {
@@ -220,7 +221,7 @@ mod tests {
     fn a_call_wrapped_across_lines_lands_with_no_code_claimed() {
         // The line-local reading takes the raise from the line that
         // spells `RaiseException(`; the code on a later line stays
-        // unclaimed rather than the detector reaching for it.
+        // unclaimed, because the detector does not reach for it.
         let body = body_of(&["  RaiseException(", "    0xe06d7363, 0, 0, NULL);"]);
         let finding = RaiseExceptionDetector
             .detect(&body)

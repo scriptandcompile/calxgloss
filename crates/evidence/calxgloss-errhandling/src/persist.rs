@@ -8,10 +8,12 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is
-//! the check a caller runs before deciding whether a scan is needed,
-//! and [`load`](Self::load) reads the whole document back — metadata
-//! and every finding — for the follow-up P15 tickets to query.
+//! A persisted result also serves as a cache:
+//! [`exists`](ErrhandlingPersistor::exists) is the check a caller
+//! runs before deciding whether the scan needs to run, and
+//! [`load`](ErrhandlingPersistor::load) reads the whole document
+//! back — metadata and every finding — for the follow-up P15 tickets
+//! to query.
 
 use std::path::{Path, PathBuf};
 
@@ -226,8 +228,8 @@ mod tests {
 
     #[test]
     fn the_store_error_maps_without_losing_its_kind() {
-        // The shared store's not-found folds into this crate's
-        // not-found, keeping the distinction the CLI reports on.
+        // The shared store's not-found becomes this crate's
+        // not-found, so the distinction the CLI reports on survives.
         let err: ErrhandlingError = PersistError::NotFound {
             path: PathBuf::from("re/analysis/errhandling/eqmain.dll.json"),
         }
@@ -237,10 +239,10 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #350).
+        // The coverage record the scan stamped passes through the
+        // persistor untouched: statuses, ids, order, limitation
+        // lines — exactly what a later reader (the projection seam,
+        // the report, a `--show` months later) sees (issue #350).
         let dir = tempfile::tempdir().unwrap();
         let persistor = ErrhandlingPersistor::new(dir.path());
         let mut saved = sample_result("eqmain.dll");

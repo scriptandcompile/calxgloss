@@ -1,29 +1,30 @@
 //! Identifier-boundary matching shared by the body-text detectors.
 //!
-//! The named-handler, exception-API, `RaiseException`, and goto-
-//! cleanup readings all ask the same question of one body line: does
-//! it name a known API or thunk *as an identifier*, not as a fragment
-//! of some longer name? A plain substring search would read
-//! `my_except_handler3_wrapper` or a `RaiseExceptionFilter` call as
-//! the sighting it wants; this module gives the name-based detectors
-//! one boundary rule and one call-shape rule instead of four
-//! near-identical ones.
+//! The named-handler, exception-API, `RaiseException`, and
+//! goto-cleanup readings all ask the same question of one body line:
+//! does it name a known API or thunk *as an identifier*, not as a
+//! fragment of some longer name? A plain substring search would count
+//! `my_except_handler3_wrapper` or a `RaiseExceptionFilter` call as a
+//! sighting of the name it is looking for. This module gives the
+//! name-based detectors one boundary rule and one call-shape rule
+//! instead of four near-identical ones.
 
 /// Whether `line` names `name` as a whole identifier, returning the
 /// body text immediately following the identifier — what a
-/// caller-shaped detector inspects for its `(` — as an [`Option`].
+/// call-shape detector checks for its `(` — as an [`Option`].
 ///
 /// The boundary rule has two halves. Nothing identifier-shaped may
 /// *follow* the occurrence: the next character must not be an
-/// alphanumeric or underscore, which is what keeps
+/// alphanumeric or an underscore. That is what keeps
 /// `RaiseExceptionFilter` and `_except_handler4_common` (a different
-/// routine) from reading as the names they start with. Nothing but
-/// underscores may *precede* it: the import decoration the engine
-/// sometimes carries (`__except_handler4` beside `_except_handler4`)
-/// is a prefix of underscores only, while `my_` or `imp_` prefixes
-/// mark a different identifier entirely. A name that is itself
-/// underscore-led (`__except_handler3`) therefore matches its own
-/// spelled form and deeper-underscore spellings, and nothing else.
+/// routine) from matching the shorter names they start with. Nothing
+/// but underscores may *precede* the occurrence: the import
+/// decoration the decompiled body text sometimes carries
+/// (`__except_handler4` beside `_except_handler4`) is underscores
+/// only, while a `my_` or `imp_` prefix marks a different identifier
+/// entirely. A name that is itself underscore-led
+/// (`__except_handler3`) therefore matches its own spelled form and
+/// deeper-underscore spellings, and nothing else.
 pub(crate) fn named_token<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let mut from = 0usize;
     while let Some(idx) = line[from..].find(name) {
@@ -32,7 +33,8 @@ pub(crate) fn named_token<'a>(line: &'a str, name: &str) -> Option<&'a str> {
         from = end;
 
         // The character after the occurrence must not continue an
-        // identifier, or the body named a longer thing than we spell.
+        // identifier; if it does, the body named a longer name than
+        // the one we look for.
         if line[end..]
             .chars()
             .next()
@@ -56,10 +58,10 @@ pub(crate) fn named_token<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-/// Whether the text following a name opens its call — the `(` after
-/// any run of spaces and tabs (and a line-ending carriage return
-/// left behind by a CRLF body). A wrapped call whose paren opens on
-/// the *next* line is a miss the line-local reading accepts: the
+/// Whether the text following a name opens its call: a `(` after any
+/// run of spaces and tabs (also after a carriage return left behind
+/// by a CRLF body). A wrapped call whose paren opens on the *next*
+/// line is a miss, and the line-local reading accepts that miss: the
 /// decompiler spells calls on one line, and the pinned contract is
 /// that a bare name sighting claims nothing.
 pub(crate) fn starts_call(after: &str) -> bool {
@@ -67,9 +69,9 @@ pub(crate) fn starts_call(after: &str) -> bool {
 }
 
 /// Whether `s` opens with `word` as a whole word, not as the prefix
-/// of a longer name — the keyword-shape rule the goto-cleanup ladder
-/// reads its guard heads and constant returns through, and the
-/// failure-code reading reads its statement shapes through.
+/// of a longer name. This is the keyword-shape rule: the goto-cleanup
+/// ladder reads its guard heads and constant returns through it, and
+/// the failure-code reading reads its statement shapes through it.
 pub(crate) fn starts_word(s: &str, word: &str) -> bool {
     s.starts_with(word)
         && !s[word.len()..]
@@ -81,7 +83,7 @@ pub(crate) fn starts_word(s: &str, word: &str) -> bool {
 /// The offset of `word` as a whole word inside `hay`, if it stands
 /// anywhere in it. A keyword standing mid-line — the one-line
 /// `if (cond) return X;` spelling — still marks what follows it, so
-/// the reading of what the statement carries reads from there.
+/// a reading of the statement starts at that offset.
 pub(crate) fn find_word(hay: &str, word: &str) -> Option<usize> {
     let mut from = 0usize;
     while let Some(offset) = hay[from..].find(word) {
@@ -116,8 +118,9 @@ mod tests {
 
     #[test]
     fn underscore_prefixed_spellings_qualify() {
-        // The engine's decoration adds underscores; `_except_handler4`
-        // also reads inside a double-underscore `__except_handler4`.
+        // The decoration the decompiled body text carries adds
+        // underscores; `_except_handler4` also matches inside the
+        // double-underscore `__except_handler4`.
         assert!(named_token("  _except_handler4;", "_except_handler4").is_some());
         assert!(named_token("  __except_handler4;", "_except_handler4").is_some());
         assert!(named_token("  ___except_handler4();", "_except_handler4").is_some());

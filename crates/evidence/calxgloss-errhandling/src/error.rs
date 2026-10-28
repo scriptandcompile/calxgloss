@@ -1,13 +1,15 @@
-//! Failure surface for the error-handling evidence crate.
+//! The failure surface of the error-handling evidence scan.
 //!
-//! The scan fails in exactly two ways of its own: the listing could
+//! The scan fails in exactly two ways of its own. The listing could
 //! not be read at all, or more than half of the listing's functions
-//! failed to decompile — a skip-rate trip. Everything else the scan
-//! touches is already an [`EngineError`] (an engine not found, a
+//! failed to decompile, which trips the skip-rate breaker. Everything
+//! else the scan touches is already an
+//! [`EngineError`](calxgloss_decomp::EngineError) — the analysis
+//! engine, for example, cannot find what a read asked for. A
 //! decompile that failed for one function is skipped and counted, not
-//! surfaced as a failure); the persistor adds the shared store's
-//! three kinds, mapped below to keep a missing document distinct from
-//! a corrupt one.
+//! surfaced as a failure. The persistor adds the shared store's three
+//! error kinds; the conversion below maps them so a missing document
+//! stays distinct from a corrupt one.
 
 use thiserror::Error;
 
@@ -15,10 +17,10 @@ use thiserror::Error;
 /// persistence.
 #[derive(Debug, Error)]
 pub enum ErrhandlingError {
-    /// An engine read through the decompiler seam failed: the listing
-    /// could not be read, or the engine answered wrongly. The scan
-    /// makes no claim about why the seam failed beyond what the seam
-    /// itself reported.
+    /// A read through the seam to the analysis engine failed: the
+    /// listing could not be read, or the analysis engine answered
+    /// wrongly. The scan says no more about why the seam failed than
+    /// the seam itself reported.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -35,14 +37,14 @@ pub enum ErrhandlingError {
     #[error("error-handling result not found: {}", .path.display())]
     NotFound { path: std::path::PathBuf },
 
-    /// More than half of the listing's functions failed to decompile.
-    /// That is the signature of the bridge answering from the wrong
-    /// program, and a scan that skipped its way through the whole
-    /// listing would persist a phantom-clean record: no findings is
-    /// indistinguishable from a binary without the idiom. The scan
-    /// aborts with the counts instead (issue #71), telling the
-    /// operator to verify the open program before trusting anything
-    /// this artifact claims.
+    /// More than half of the listing's functions failed to
+    /// decompile. That is the signature of the seam answering about
+    /// the wrong program. A scan that skipped its way through the
+    /// whole listing would otherwise persist a record that looks
+    /// clean but is not: no findings looks exactly like a binary
+    /// without the idiom. The scan aborts with the counts instead
+    /// (issue #71) and tells the operator to verify the open program
+    /// before trusting anything this artifact claims.
     #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker {
         /// How many decompiles failed before the scan gave up.
@@ -54,8 +56,7 @@ pub enum ErrhandlingError {
 
 /// Maps the shared JSON store's errors onto this crate's error type:
 /// the store's not-found becomes [`ErrhandlingError::NotFound`], and
-/// its I/O and JSON errors fold into the existing pass-through
-/// variants.
+/// its I/O and JSON errors become the pass-through variants above.
 impl From<calxgloss_types::persist::PersistError> for ErrhandlingError {
     fn from(value: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;
