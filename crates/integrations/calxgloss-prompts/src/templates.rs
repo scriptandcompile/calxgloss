@@ -1,9 +1,9 @@
 //! Prompt templates — Askama template structs for LLM prompt generation.
 //!
-//! This module contains all the Askama [`Template`](askama::Template) structs
-//! used to render translation, fix, and escalation prompts.
+//! This module contains all the Askama [`Template`] structs used to render
+//! translation, fix, and escalation prompts.
 //!
-//! - [`MinimalTemplate`] — Tier 0: function name, signature, call graph
+//! - [`MinimalTemplate`] — minimal complexity (≤30 instructions): disassembly + decompiler + API mappings + tests
 //! - [`TranslateTemplate`] — Standard translation (disassembly + decompiler + tests)
 //! - [`FixTemplate`] — Retry after verification failure
 //! - [`EscalateTemplate`] — Retry with additional decompiler context
@@ -141,10 +141,10 @@ pub struct AlgorithmInfo {
 /// A memory lifecycle finding about the target function, made by the
 /// analysis pipeline.
 ///
-/// One finding whichever detector made it — the kind names the detector
-/// behind the claim (`allocation`, `handle`, `ref_count`) so the prompt
-/// can weigh the hypothesis beside the evidence without knowing the
-/// record shape that produced it.
+/// There is one record per finding, whichever detector made it. The
+/// kind names the detector behind the claim (`allocation`, `handle`,
+/// `ref_count`). This lets the prompt weigh the hypothesis beside the
+/// evidence without knowing the record shape that produced it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MemoryInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
@@ -162,10 +162,10 @@ pub struct MemoryInfo {
 /// A concurrency finding about the target function, made by the
 /// analysis pipeline.
 ///
-/// One finding whichever detector made it — the kind names the detector
-/// behind the claim (`mutex`, `atomic`, `thread`) so the prompt can weigh
-/// the hypothesis beside the evidence without knowing the record shape
-/// that produced it.
+/// There is one record per finding, whichever detector made it. The
+/// kind names the detector behind the claim (`mutex`, `atomic`,
+/// `thread`). This lets the prompt weigh the hypothesis beside the
+/// evidence without knowing the record shape that produced it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConcurrencyInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
@@ -183,12 +183,12 @@ pub struct ConcurrencyInfo {
 /// A serialization finding about the target function, made by the
 /// analysis pipeline.
 ///
-/// One finding whichever detector made it — the kind names the detector
-/// behind the claim (`byteswap`, `bitpack`, `magic`,
-/// `cross_field_validation`, `serialization_format`,
-/// `protocol_message`, `endianness_map`) so the prompt can
-/// weigh the hypothesis beside the evidence without knowing the record
-/// shape that produced it.
+/// There is one record per finding, whichever detector made it. The
+/// kind names the detector behind the claim (`byteswap`, `bitpack`,
+/// `magic`, `cross_field_validation`, `serialization_format`,
+/// `protocol_message`, `endianness_map`). This lets the prompt weigh
+/// the hypothesis beside the evidence without knowing the record shape
+/// that produced it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SerializationInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
@@ -208,8 +208,8 @@ pub struct SerializationInfo {
 /// A callback or function-pointer-table finding about one function,
 /// made by the `calxgloss-callback` detectors.
 ///
-/// The escalate prompt shows these alongside the other analysis findings
-/// so the LLM expresses the callback boundary with a Rust `dyn Fn`
+/// The escalate prompt shows these beside the other analysis findings.
+/// The LLM then expresses the callback boundary with a Rust `dyn Fn`
 /// pattern instead of transliterating the raw table indexing or
 /// registration call.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -230,10 +230,10 @@ pub struct CallbackInfo {
 /// A control-flow finding about one function, made by the
 /// `calxgloss-controlflow` detectors.
 ///
-/// The escalate and context-tier prompts show these alongside the other
-/// analysis findings so the LLM expresses switch chains, recursion, and
-/// state machines with Rust `match`/`loop`/`enum` patterns instead of
-/// transliterating the raw conditional chain or recursive call.
+/// The escalate and context-tier prompts show these beside the other
+/// analysis findings. The LLM then expresses switch chains, recursion,
+/// and state machines with Rust `match`/`loop`/`enum` patterns instead
+/// of transliterating the raw conditional chain or recursive call.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ControlFlowInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
@@ -252,12 +252,12 @@ pub struct ControlFlowInfo {
 /// A global-state access record about one function, made by the
 /// `calxgloss-globalstate` detector.
 ///
-/// The module-context and escalate prompts show these so the LLM models
-/// the program globals a function reads and writes as shared state with
-/// a home in a struct threaded through the translation, instead of
-/// inventing a local or reaching for a Rust `static`. The kind names the
-/// access direction — `global_read` or `global_write` — and the record
-/// names the global it touched.
+/// The module-context and escalate prompts show these. The LLM then
+/// treats the program globals a function reads and writes as shared
+/// state that lives in one struct passed through the translation,
+/// instead of inventing a local or using a Rust `static`. The kind
+/// records the access direction — `global_read` or `global_write` —
+/// and the record states which global it touched.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GlobalStateInfo {
     /// The function that made the access, e.g. `FUN_18003ab00`.
@@ -278,14 +278,14 @@ pub struct GlobalStateInfo {
 /// A float/SIMD usage flag about one function, made by the
 /// `calxgloss-floatsimd` detector.
 ///
-/// The module-context and escalate prompts show these so the LLM reads
-/// mangled vector pseudo-C — `CONCAT44`-style concatenations,
-/// `SUB4`-style extractions, undefined-typed arithmetic over `DAT_*`
-/// loads — as float math and translates it as float instead of integer
-/// or pointer logic. The kind names the shape the reading found —
-/// `scalar_float`, `vector_matrix`, or `mixed` — so the LLM picks the
-/// right Rust shape: plain `f32`/`f64` operations versus component
-/// arrays or small vector structs.
+/// The module-context and escalate prompts show these. They let the
+/// LLM read mangled vector pseudo-C as float math: `CONCAT44`-style
+/// concatenations, `SUB4`-style extractions, and undefined-typed
+/// arithmetic over `DAT_*` loads. The LLM then translates it as float
+/// instead of integer or pointer logic. The kind records the shape the
+/// reading found — `scalar_float`, `vector_matrix`, or `mixed`. From
+/// it the LLM picks the right Rust shape: plain `f32`/`f64` operations,
+/// component arrays, or small vector structs.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FloatsimdInfo {
     /// The function the flag is about, e.g. `FUN_18003ab00`.
@@ -305,12 +305,12 @@ pub struct FloatsimdInfo {
 /// `calxgloss-libmatch` body-signature matcher.
 ///
 /// The module-context prompt shows these for the *callees* of the
-/// function being translated — a matched target is stubbed, never
-/// prompted — so the LLM maps a call onto the suggested Rust equivalent
+/// function being translated. A matched target is stubbed, never
+/// prompted. The LLM maps a call onto the suggested Rust equivalent
 /// instead of re-implementing statically linked CRT or STL code. The
-/// symbol names the matched library routine, the family says which body
-/// of standard code it came from (`crt` or `stl`), and the evidence
-/// carries the body shape that matched.
+/// symbol field records the matched library routine, the family field
+/// records which body of standard code it came from (`crt` or `stl`),
+/// and the evidence field records the body shape that matched.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LibmatchInfo {
     /// The function the identification is about — a callee of the
@@ -325,7 +325,7 @@ pub struct LibmatchInfo {
     pub suggestion: String,
     /// Confidence that the match is right, 0–100.
     pub confidence: u8,
-    /// The normalized body shape that carried the match.
+    /// The normalized body shape that produced the match.
     pub evidence: String,
     /// P19-3: what the match record admits about its own version
     /// authority — `Signature match, version unknown` for engine-made
@@ -338,15 +338,15 @@ pub struct LibmatchInfo {
 /// One pointer parameter's direction reading about one function, made by
 /// the `calxgloss-typeinfer` direction detector.
 ///
-/// The module-context prompt shows these so the LLM shapes each pointer
-/// parameter to the way its data actually flows — a shared borrow for an
-/// `in` parameter, a mutable borrow or handed-back value for an `out`
-/// parameter, a read-modify-write for an `inout` — instead of guessing
-/// the Rust shape from the narrowed type alone. The parameter is named
-/// exactly as the type records name it, so the section and the retry
-/// prompts' type-info lines agree on which parameter a claim is about,
-/// and the evidence line carries the deciding write or read from the
-/// body so a reviewer can check the claim.
+/// The module-context prompt shows these. The LLM then shapes each
+/// pointer parameter to how its data actually flows: a shared borrow
+/// for an `in` parameter, a mutable borrow or handed-back value for an
+/// `out` parameter, a read-modify-write for an `inout`. It does not
+/// have to guess the Rust shape from the narrowed type alone. The
+/// parameter is named exactly as the type records name it, so the
+/// section and the retry prompts' type-info lines agree on which
+/// parameter a claim is about. The evidence line records the deciding
+/// write or read from the body so a reviewer can check the claim.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ParameterDirectionInfo {
     /// The function the parameter belongs to, e.g. `FUN_18003ab00`.
@@ -360,17 +360,17 @@ pub struct ParameterDirectionInfo {
     pub method: String,
     /// Confidence that the reading is right, 0–100.
     pub confidence: u8,
-    /// The decompiled line carrying the deciding write or read.
+    /// The decompiled line that contains the deciding write or read.
     pub evidence: String,
 }
 
 /// A string-context finding about one function, made by the
 /// `calxgloss-stringctx` engines.
 ///
-/// The escalate prompt shows these alongside the other analysis findings
-/// so the LLM names the string's role — a file path, an error message, a
-/// format string with typed arguments — instead of transliterating the
-/// raw literal or `DAT_` reference.
+/// The escalate prompt shows these beside the other analysis findings.
+/// The LLM then states the string's role — a file path, an error
+/// message, a format string with typed arguments — instead of
+/// transliterating the raw literal or `DAT_` reference.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StringContextInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
@@ -388,12 +388,12 @@ pub struct StringContextInfo {
 /// A library/API finding about one function or about the binary, made by
 /// the `calxgloss-apidetect` engines.
 ///
-/// The escalate prompt shows these alongside the other analysis findings
-/// so the LLM calls the API through the suggested Rust crate instead of
-/// transliterating the raw import or declaring it as an `extern "C"`
-/// stub. The kind names how the API was reached — `import` for a
-/// binary-level import-table entry, `direct` or `transitive` for a
-/// function-level call-graph usage.
+/// The escalate prompt shows these beside the other analysis findings.
+/// The LLM then calls the API through the suggested Rust crate instead
+/// of transliterating the raw import or declaring it as an
+/// `extern "C"` stub. The kind records how the API was reached:
+/// `import` for a binary-level import-table entry, `direct` or
+/// `transitive` for a function-level call-graph usage.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ApiInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`; empty
@@ -416,10 +416,10 @@ pub struct ApiInfo {
 /// A constant or enum finding about one function, made by the
 /// `calxgloss-consts` detectors.
 ///
-/// The escalate prompt shows these alongside the other analysis findings
-/// so the LLM expresses flag bits, enumerated dispatch, and repeated
+/// The escalate prompt shows these beside the other analysis findings.
+/// The LLM then expresses flag bits, enumerated dispatch, and repeated
 /// magic numbers with a bitflags struct, an `enum`, or a named `const`
-/// instead of scattering bare integer literals. The kind names the
+/// instead of scattering bare integer literals. The kind records the
 /// finding family — `bitflag_group`, `enum_candidate`, `named_constant`,
 /// `flag_family`, `protocol_constant`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -440,11 +440,10 @@ pub struct ConstInfo {
 /// A read-only data table the target function reads, made by the
 /// `calxgloss-consts` table reader.
 ///
-/// The module-context prompt names each table the function reads —
-/// its listing label, element type, and entry count — so the first
-/// translation attempt renders the lookup as a named `const` array
-/// instead of match arms over the magic numbers the scattered reads
-/// decode to.
+/// The module-context prompt shows each table the function reads: its
+/// listing label, element type, and entry count. The first translation
+/// attempt then renders the lookup as a named `const` array instead of
+/// match arms over the magic numbers the scattered reads decode to.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DataTableInfo {
     /// The listing label of the table object, e.g. `DAT_1400a1b60`.
@@ -460,14 +459,14 @@ pub struct DataTableInfo {
 /// A calling-convention reading about one function, made by the
 /// `calxgloss-typeinfer` convention detector.
 ///
-/// The module-context and escalate prompts show these so the LLM spells
-/// extern declarations and any stack cleanup with the detected convention
-/// instead of assuming `__stdcall`. The method names the evidence channel
-/// behind the claim — `mangled_convention`, `import_decoration`,
-/// `callee_epilogue`, `caller_cleanup`, `x64_shape`,
-/// `corroborated_convention`, `call_site_convention` — and a call-site
-/// record names its callee in `callee`, the caller's view of the function
-/// it calls rather than the caller's own convention.
+/// The module-context and escalate prompts show these. The LLM then
+/// spells extern declarations and any stack cleanup with the detected
+/// convention instead of assuming `__stdcall`. The method field records
+/// the evidence channel behind the claim — `mangled_convention`,
+/// `import_decoration`, `callee_epilogue`, `caller_cleanup`,
+/// `x64_shape`, `corroborated_convention`, `call_site_convention`. A
+/// call-site record states its callee in `callee`: the caller's view of
+/// the function it calls, rather than the caller's own convention.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConventionInfo {
     /// The function the record is about, e.g. `FUN_18003ab00`. For a
@@ -492,19 +491,19 @@ pub struct ConventionInfo {
 /// An error-handling finding about one function, made by the
 /// `calxgloss-errhandling` scan.
 ///
-/// The module-context and escalate prompts show these so the LLM keeps
-/// the function's error-handling contract — an SEH frame mapped to an
-/// exception-carrying Rust error type, a `goto`-cleanup ladder mapped to
-/// early returns plus RAII or scope guards — instead of flattening the
-/// frame into straight-line logic or collapsing the failure codes into
-/// ad-hoc error values. The kind spells the serde tag — `seh_frame`,
+/// The module-context and escalate prompts show these. The LLM then
+/// keeps the function's error-handling contract: an SEH frame becomes
+/// an exception-carrying Rust error type, and a `goto`-cleanup ladder
+/// becomes early returns plus RAII or scope guards. It does not flatten
+/// the frame into straight-line logic or collapse the failure codes into
+/// ad-hoc error values. The kind gives the serde tag — `seh_frame`,
 /// `named_handler`, `exception_api_call`, `raise_exception`,
 /// `goto_cleanup`, `error_code`, `inherited_error_code` — and the target
-/// names the same reading spelled for a reader. Code-bearing records
-/// carry the code in its spelled `0x…` form: failure-code records name
+/// states the same reading in words for a reader. Records that carry a
+/// code state it in its spelled `0x…` form: failure-code records state
 /// the site the literal was read from (`return`, `raise`, `guard`) or
-/// the callee an inherited code travels from; a `RaiseException` idiom
-/// names the code it raises without becoming a failure-code record.
+/// the callee an inherited code comes from. A `RaiseException` idiom
+/// states the code it raises without becoming a failure-code record.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ErrhandlingInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
@@ -533,8 +532,9 @@ pub struct ErrhandlingInfo {
 
 /// A formatted test result for template rendering.
 ///
-/// Carries the test case data alongside the pass/fail outcome observed
-/// during verification, plus the error message for any failed test.
+/// It stores the test case data together with the pass/fail outcome
+/// observed during verification, and the error message for any failed
+/// test.
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct FormattedTestResult {
     /// Test index (1-based).
@@ -781,22 +781,23 @@ impl FixTemplate {
 }
 
 // ============================================================
-// Evidence bundle — the finding lists a fix prompt is built from
+// Evidence bundle — the finding lists the bundle-fed prompts build from
 // ============================================================
 
 /// What a scan document admits about its own coverage, in the shape the
 /// shared section includes render (issue #346).
 ///
-/// The prompt-side view of a [`calxgloss_types::ScanCoverage`]: the
-/// record's status word beside the one bounded admission line the shared
-/// type produces — the wording lives once in
+/// This is the prompt-side view of a [`calxgloss_types::ScanCoverage`]:
+/// the record's status word beside the one bounded admission line that
+/// the shared type produces. The wording lives once in
 /// [`calxgloss_types::ScanCoverage::admission`], so a prompt section and
-/// a report printer never drift a word. A bundle that carries no coverage
-/// for an engine — the engine has not adopted coverage stamping, its
-/// document was missing or corrupt, or the document claims complete
-/// coverage — leaves the field default-empty, and an empty `admission`
-/// is exactly the include's signal that there is nothing to admit: the
-/// section renders byte-for-byte what it rendered before P19.
+/// a report printer never drift a word apart. A bundle that carries no
+/// coverage for an engine leaves the field default-empty. That happens
+/// when the engine has not adopted coverage stamping, when its document
+/// was missing or corrupt, or when the document claims complete
+/// coverage. An empty `admission` is exactly the include's signal that
+/// there is nothing to admit: the section then renders byte-for-byte
+/// what it rendered before P19.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CoverageInfo {
     /// The document's overall coverage status word, as persisted —
@@ -822,12 +823,12 @@ impl From<&calxgloss_types::ScanCoverage> for CoverageInfo {
 /// What the analysis seam itself states about one query family — the
 /// template-side view of a `calxgloss_types::FamilyCapability` (issue #355).
 ///
-/// Same default-empty discipline as [`CoverageInfo`]: a family the seam
-/// declared answerable, and one its declaration never mentioned (which
-/// reads as unknown), leave `admission` empty — the section renders
-/// byte-for-byte what it rendered before the seam spoke. Only an
-/// unavailable entry earns the one line, and its words are the shared
-/// admission wording, not a template-side invention.
+/// The same default-empty discipline as [`CoverageInfo`] applies. A
+/// family the seam declared answerable, and a family its declaration
+/// never mentioned (which reads as unknown), leave `admission` empty:
+/// the section renders byte-for-byte what it rendered before the seam
+/// spoke. Only an unavailable entry earns the one line, and its words
+/// are the shared admission wording, not a template-side invention.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CapabilityInfo {
     /// The declared availability word, as persisted — `answerable` or
@@ -847,10 +848,10 @@ impl From<&calxgloss_types::FamilyCapability> for CapabilityInfo {
     }
 }
 
-/// Resolve a family's [`CapabilityInfo`] from a held capability report:
-/// the entry when the seam declared one, and the default-empty view when
-/// it did not — absence reads as unknown, and unknown has nothing to
-/// render (issue #355).
+/// Resolve a family's [`CapabilityInfo`] from a held capability report.
+/// Return the entry when the seam declared one, and the default-empty
+/// view when it did not: absence reads as unknown, and unknown has
+/// nothing to render (issue #355).
 pub fn capability_for(report: &calxgloss_types::CapabilityReport, family: &str) -> CapabilityInfo {
     report
         .families
@@ -860,16 +861,17 @@ pub fn capability_for(report: &calxgloss_types::CapabilityReport, family: &str) 
         .unwrap_or_default()
 }
 
-/// The decompiler-derived evidence every bundle-fed prompt template renders from.
+/// The decompiler-derived evidence that every bundle-fed prompt
+/// template renders from.
 ///
-/// Every finding list a template may read, grouped into one struct so the
-/// builders take a bundle instead of a dozen same-typed positional lists
-/// (issue #268). The bundle is the single render input of the bundle-fed
-/// templates (issue #320) — which evidence sections a template shows is a
-/// property of which shared section includes that template calls, never of
-/// this struct's shape. Each list is optional: a bundle that populates only
-/// some findings renders exactly what the old call with empty lists
-/// elsewhere rendered.
+/// Every finding list a template may read, grouped into one struct so
+/// the builders take a bundle instead of a dozen same-typed positional
+/// lists (issue #268). The bundle is the single render input of the
+/// bundle-fed templates (issue #320). Which evidence sections a
+/// template shows is decided by which shared section includes that
+/// template calls, never by this struct's shape. Each list is optional:
+/// a bundle that populates only some findings renders exactly what the
+/// old call with empty lists elsewhere rendered.
 #[derive(Debug, Clone, Default)]
 pub struct EvidenceBundle {
     /// Functions directly called by or calling this function.
@@ -879,14 +881,14 @@ pub struct EvidenceBundle {
     /// Data structures referenced near this function.
     pub data_structures: Vec<StructuredData>,
     /// What the type database's own scan admits it examined and could
-    /// not — filled exactly once per database by the typesdb projection
-    /// row, beside (never inside) the per-record `data_structures` list
-    /// (issue #348). Default-empty when no type database was read, when
-    /// that document states no coverage, or when it claims complete
-    /// coverage; the data-structures include renders its one qualification
-    /// line exactly when this carries an admission — naming the vtable
-    /// evidence a target never yielded, never a structure the scan read
-    /// and left out of the list.
+    /// not. The typesdb projection row fills it exactly once per
+    /// database, beside (never inside) the per-record `data_structures`
+    /// list (issue #348). It stays default-empty when no type database
+    /// was read, when that document states no coverage, or when it
+    /// claims complete coverage. The data-structures include renders its
+    /// one qualification line exactly when this holds an admission —
+    /// naming the vtable evidence a target never yielded, never a
+    /// structure the scan read and left out of the list.
     pub type_database_coverage: CoverageInfo,
     /// Type information inferred by the decompiler.
     pub type_info: Vec<TypeInfo>,
@@ -895,54 +897,54 @@ pub struct EvidenceBundle {
     /// Memory lifecycle findings about this function made by the analysis
     /// pipeline.
     pub memory_findings: Vec<MemoryInfo>,
-    /// What the memory lifecycle scan's own document admits it examined
-    /// and could not — filled exactly once per document by the memory
-    /// projection row, beside (never inside) the per-record
-    /// `memory_findings` list (issue #349). Default-empty when no memory
-    /// document was read, when that document states no coverage, or when
-    /// it claims complete coverage; the memory-lifecycle include renders
-    /// its one qualification line exactly when this carries an admission
-    /// — naming the bodies the scan never reached, never a body it read
-    /// and left unflagged.
+    /// What the memory lifecycle scan's own document admits it
+    /// examined and could not. The memory projection row fills it
+    /// exactly once per document, beside (never inside) the per-record
+    /// `memory_findings` list (issue #349). It stays default-empty when
+    /// no memory document was read, when that document states no
+    /// coverage, or when it claims complete coverage. The
+    /// memory-lifecycle include renders its one qualification line
+    /// exactly when this holds an admission — naming the bodies the
+    /// scan never reached, never a body it read and left unflagged.
     pub memory_coverage: CoverageInfo,
     /// Concurrency findings about this function made by the analysis
     /// pipeline.
     pub concurrency_findings: Vec<ConcurrencyInfo>,
     /// What the concurrency scan's own document admits it examined and
-    /// could not — filled exactly once per document by the sync
-    /// projection row, beside (never inside) the per-record
-    /// `concurrency_findings` list (issue #349). Default-empty when no
-    /// sync document was read, when that document states no coverage, or
-    /// when it claims complete coverage; the concurrency include renders
-    /// its one qualification line exactly when this carries an admission
-    /// — naming the bodies the scan never reached, never a body it read
-    /// and left unflagged.
+    /// could not. The sync projection row fills it exactly once per
+    /// document, beside (never inside) the per-record
+    /// `concurrency_findings` list (issue #349). It stays default-empty
+    /// when no sync document was read, when that document states no
+    /// coverage, or when it claims complete coverage. The concurrency
+    /// include renders its one qualification line exactly when this
+    /// holds an admission — naming the bodies the scan never reached,
+    /// never a body it read and left unflagged.
     pub sync_coverage: CoverageInfo,
     /// Callback and function-pointer-table findings about this function
     /// made by the analysis pipeline.
     pub callback_findings: Vec<CallbackInfo>,
-    /// What the callback-detection scan's own document admits it examined
-    /// and could not — filled exactly once per document by the callback
-    /// projection row, beside (never inside) the per-record
-    /// `callback_findings` list (issue #350). Default-empty when no
-    /// callback document was read, when that document states no coverage,
-    /// or when it claims complete coverage; the callback include renders
-    /// its one qualification line exactly when this carries an admission
-    /// — naming the bodies the scan never reached, never a body it read
-    /// and left unflagged.
+    /// What the callback-detection scan's own document admits it
+    /// examined and could not. The callback projection row fills it
+    /// exactly once per document, beside (never inside) the per-record
+    /// `callback_findings` list (issue #350). It stays default-empty
+    /// when no callback document was read, when that document states no
+    /// coverage, or when it claims complete coverage. The callback
+    /// include renders its one qualification line exactly when this
+    /// holds an admission — naming the bodies the scan never reached,
+    /// never a body it read and left unflagged.
     pub callback_coverage: CoverageInfo,
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
     /// What the control-flow scan's own document admits it examined and
-    /// could not — filled exactly once per document by the control-flow
-    /// projection row, beside (never inside) the per-record
-    /// `control_flow_findings` list (issue #349). Default-empty when no
-    /// control-flow document was read, when that document states no
-    /// coverage, or when it claims complete coverage; the control-flow
-    /// include renders its one qualification line exactly when this
-    /// carries an admission — naming the bodies the scan never reached,
-    /// never a body it read and left without a finding.
+    /// could not. The control-flow projection row fills it exactly once
+    /// per document, beside (never inside) the per-record
+    /// `control_flow_findings` list (issue #349). It stays default-empty
+    /// when no control-flow document was read, when that document states
+    /// no coverage, or when it claims complete coverage. The
+    /// control-flow include renders its one qualification line exactly
+    /// when this holds an admission — naming the bodies the scan never
+    /// reached, never a body it read and left without a finding.
     pub control_flow_coverage: CoverageInfo,
     /// Calling-convention readings about this function and its callees
     /// made by the type-inference engine.
@@ -951,89 +953,95 @@ pub struct EvidenceBundle {
     /// global-state scan.
     pub global_state_findings: Vec<GlobalStateInfo>,
     /// What the global-state scan's own document admits it examined and
-    /// could not — filled exactly once per document by the global-state
-    /// projection row, beside (never inside) the per-record
-    /// `global_state_findings` list (issue #350). Default-empty when no
-    /// global-state document was read, when that document states no
-    /// coverage, or when it claims complete coverage; the global-state
-    /// include renders its one qualification line exactly when this
-    /// carries an admission — naming the bodies the scan never reached,
-    /// never a body it read and left without a record.
+    /// could not. The global-state projection row fills it exactly once
+    /// per document, beside (never inside) the per-record
+    /// `global_state_findings` list (issue #350). It stays default-empty
+    /// when no global-state document was read, when that document states
+    /// no coverage, or when it claims complete coverage. The
+    /// global-state include renders its one qualification line exactly
+    /// when this holds an admission — naming the bodies the scan never
+    /// reached, never a body it read and left without a record.
     pub global_state_coverage: CoverageInfo,
-    /// What the algorithm-recognition scan's own document admits it read
-    /// and could not — filled exactly once per document by the algorithm
-    /// projection row, beside (never inside) the per-record
-    /// `recognized_algorithms` list (issue #351). Default-empty when no
-    /// algorithm document was read, when that document states no coverage,
-    /// or when it claims complete coverage; the recognized-algorithms
-    /// include renders its one qualification line exactly when this
-    /// carries an admission — naming the bodies the scan never reached,
-    /// never a body it read and left without a recognition.
+    /// What the algorithm-recognition scan's own document admits it
+    /// read and could not. The algorithm projection row fills it
+    /// exactly once per document, beside (never inside) the per-record
+    /// `recognized_algorithms` list (issue #351). It stays default-empty
+    /// when no algorithm document was read, when that document states no
+    /// coverage, or when it claims complete coverage. The
+    /// recognized-algorithms include renders its one qualification line
+    /// exactly when this holds an admission — naming the bodies the scan
+    /// never reached, never a body it read and left without a
+    /// recognition.
     pub algorithm_coverage: CoverageInfo,
     /// String-context findings about this function made by the analysis
     /// pipeline.
     pub string_findings: Vec<StringContextInfo>,
     /// What the string-context scan's own document admits it read and
-    /// could not — filled exactly once per document by the string-context
-    /// projection row, beside (never inside) the per-record
-    /// `string_findings` list (issue #351). Default-empty when no
-    /// string-context document was read, when that document states no
-    /// coverage, or when it claims complete coverage; the string-context
-    /// include renders its one qualification line exactly when this
-    /// carries an admission.
+    /// could not. The string-context projection row fills it exactly
+    /// once per document, beside (never inside) the per-record
+    /// `string_findings` list (issue #351). It stays default-empty when
+    /// no string-context document was read, when that document states no
+    /// coverage, or when it claims complete coverage. The
+    /// string-context include renders its one qualification line exactly
+    /// when this holds an admission.
     pub string_context_coverage: CoverageInfo,
     /// Library/API findings about this function and its binary made by
     /// the analysis pipeline.
     pub api_findings: Vec<ApiInfo>,
     /// What the library-API scan's own document admits it examined and
-    /// could not — filled exactly once per document by the API
-    /// projection row, beside (never inside) the per-record
-    /// `api_findings` dance (issue #346). Default-empty when no API
-    /// document was read, when that document states no coverage, or when
-    /// it claims complete coverage; the libraries-apis include renders
-    /// its one qualification line exactly when this carries an admission.
+    /// could not. The API projection row fills it exactly once per
+    /// document, beside (never inside) the per-record `api_findings`
+    /// list (issue #346). It stays default-empty when no API document
+    /// was read, when that document states no coverage, or when it
+    /// claims complete coverage. The libraries-apis include renders its
+    /// one qualification line exactly when this holds an admission.
     pub api_coverage: CoverageInfo,
-    /// What the analysis seam itself states about the imported-APIs query
-    /// family (`imports`) — the held capability report's entry for that one
-    /// family, folded beside (never inside) the document's own
-    /// `api_coverage` (issue #355). Default-empty when the seam declared
-    /// the family answerable, declared nothing about it, or the pipeline
-    /// holds no report at all: the include then renders byte-identically
-    /// to before the seam spoke, and only an unavailable entry earns its
-    /// one admission line.
+    /// What the analysis seam itself states about the imported-APIs
+    /// query family (`imports`): the held capability report's entry for
+    /// that one family, placed beside (never inside) the document's own
+    /// `api_coverage` (issue #355). It stays default-empty when the seam
+    /// declared the family answerable, declared nothing about it, or the
+    /// pipeline holds no report at all. The include then renders
+    /// byte-identically to before the seam spoke, and only an
+    /// unavailable entry earns its one admission line.
     pub api_capability: CapabilityInfo,
-    /// What the analysis seam itself states about the decompilation query
-    /// family (`decompilation`) — the held capability report's admission
-    /// wording, folded beside (never inside) every section this family's
-    /// facets feed (issue #357). Default-empty when the seam declared the
-    /// family answerable, declared nothing about it, or the pipeline holds
-    /// no report at all; only an unavailable entry earns the one
-    /// `Analysis engine:` line per fed section.
+    /// What the analysis seam itself states about the decompilation
+    /// query family (`decompilation`): the held capability report's
+    /// admission wording, placed beside (never inside) every section
+    /// this family's facets feed (issue #357). It stays default-empty
+    /// when the seam declared the family answerable, declared nothing
+    /// about it, or the pipeline holds no report at all. Only an
+    /// unavailable entry earns the one `Analysis engine:` line per fed
+    /// section.
     pub decompilation_cap_line: String,
-    /// The seam's admission for the `disassembly` family, riding the
-    /// type-inference-surface sections its machine-listing facet feeds
-    /// (issue #357). Default-empty exactly like `decompilation_cap_line`.
-    pub disassembly_cap_line: String,
-    /// The seam's admission for the `strings` family, riding the
-    /// string-context section its program-strings facet feeds (issue #357).
-    /// Default-empty exactly like `decompilation_cap_line`.
-    pub strings_cap_line: String,
-    /// The seam's admission for the `caller-edges` family, riding the
-    /// inline call-graph trio and the sections its caller-edge facet feeds
-    /// (issue #357). Default-empty exactly like `decompilation_cap_line`.
-    pub caller_edges_cap_line: String,
-    /// The seam's admission for the `xrefs` family, riding the
-    /// string-context section its string-cross-reference facet feeds
-    /// (issue #357). Default-empty exactly like `decompilation_cap_line`.
-    pub xrefs_cap_line: String,
-    /// The seam's admission for the `type-database` family, riding the
-    /// data-structures section its vtable facet feeds (issue #357).
-    /// Default-empty exactly like `decompilation_cap_line`.
-    pub type_database_cap_line: String,
-    /// The seam's admission for the `data-items` family, riding the
-    /// constants, data-tables, and data-structures sections its
-    /// data-object facet feeds (issue #357). Default-empty exactly like
+    /// The seam's admission for the `disassembly` family, attached to
+    /// the type-inference-surface sections its machine-listing facet
+    /// feeds (issue #357). It stays default-empty exactly like
     /// `decompilation_cap_line`.
+    pub disassembly_cap_line: String,
+    /// The seam's admission for the `strings` family, attached to the
+    /// string-context section its program-strings facet feeds
+    /// (issue #357). It stays default-empty exactly like
+    /// `decompilation_cap_line`.
+    pub strings_cap_line: String,
+    /// The seam's admission for the `caller-edges` family, attached to
+    /// the inline call-graph trio and the sections its caller-edge facet
+    /// feeds (issue #357). It stays default-empty exactly like
+    /// `decompilation_cap_line`.
+    pub caller_edges_cap_line: String,
+    /// The seam's admission for the `xrefs` family, attached to the
+    /// string-context section its string-cross-reference facet feeds
+    /// (issue #357). It stays default-empty exactly like
+    /// `decompilation_cap_line`.
+    pub xrefs_cap_line: String,
+    /// The seam's admission for the `type-database` family, attached to
+    /// the data-structures section its vtable facet feeds (issue #357).
+    /// It stays default-empty exactly like `decompilation_cap_line`.
+    pub type_database_cap_line: String,
+    /// The seam's admission for the `data-items` family, attached to
+    /// the constants, data-tables, and data-structures sections its
+    /// data-object facet feeds (issue #357). It stays default-empty
+    /// exactly like `decompilation_cap_line`.
     pub data_items_cap_line: String,
     /// Constant and enum findings about this function made by the
     /// analysis pipeline.
@@ -1041,91 +1049,91 @@ pub struct EvidenceBundle {
     /// Endianness and serialization findings about this function made
     /// by the analysis pipeline.
     pub serialization_findings: Vec<SerializationInfo>,
-    /// What the serialization-pattern scan's own document admits it read
-    /// and could not — filled exactly once per document by the
-    /// serialization projection row, beside (never inside) the per-record
-    /// `serialization_findings` list (issue #351). Default-empty when no
-    /// serialization document was read, when that document states no
-    /// coverage, or when it claims complete coverage; the serialization
-    /// include renders its one qualification line exactly when this
-    /// carries an admission — naming the bodies the scan never reached,
-    /// never a body it read and left without a pattern.
+    /// What the serialization-pattern scan's own document admits it
+    /// read and could not. The serialization projection row fills it
+    /// exactly once per document, beside (never inside) the per-record
+    /// `serialization_findings` list (issue #351). It stays
+    /// default-empty when no serialization document was read, when that
+    /// document states no coverage, or when it claims complete coverage.
+    /// The serialization include renders its one qualification line
+    /// exactly when this holds an admission — naming the bodies the scan
+    /// never reached, never a body it read and left without a pattern.
     pub serialization_coverage: CoverageInfo,
     /// What the type-inference scan's own document admits it read and
-    /// could not — filled exactly once per document by the type-inference
-    /// projection row, beside (never inside) all three surfaces it feeds:
-    /// the type information list, the calling convention list, and the
-    /// parameter direction list (issue #351). Default-empty when no
-    /// type-inference document was read, when that document states no
-    /// coverage, or when it claims complete coverage; each of the three
-    /// includes renders its one qualification line exactly when this
-    /// carries an admission, and the ONE record qualifies all THREE
-    /// surfaces with byte-identical lines.
+    /// could not. The type-inference projection row fills it exactly
+    /// once per document, beside (never inside) all three surfaces it
+    /// feeds: the type information list, the calling convention list,
+    /// and the parameter direction list (issue #351). It stays
+    /// default-empty when no type-inference document was read, when that
+    /// document states no coverage, or when it claims complete coverage.
+    /// Each of the three includes renders its one qualification line
+    /// exactly when this holds an admission, and the ONE record
+    /// qualifies all THREE surfaces with byte-identical lines.
     pub type_inference_coverage: CoverageInfo,
     /// Library-match findings about this function and its call graph —
     /// shown where the module-context template's known-library include
     /// renders them; the escalate template calls no include for this list.
     pub libmatch_findings: Vec<LibmatchInfo>,
     /// What the libmatch scan's own document admits it examined and
-    /// could not — filled from the filed libmatch document at the
+    /// could not. The filed libmatch document fills it at the
     /// function-evidence gather (issue #347), beside (never inside) the
-    /// per-record `libmatch_findings` list. Default-empty when no
-    /// libmatch document was read, when that document states no
-    /// coverage, or when it claims complete coverage; the known-library
+    /// per-record `libmatch_findings` list. It stays default-empty when
+    /// no libmatch document was read, when that document states no
+    /// coverage, or when it claims complete coverage. The known-library
     /// include renders its one qualification line exactly when this
-    /// carries an admission.
+    /// holds an admission.
     pub libmatch_coverage: CoverageInfo,
     /// Parameter-direction readings about this function made by the
-    /// type-inference direction detector — shown where the module-context
-    /// template's parameter-directions include renders them; the escalate
-    /// template calls no include for this list, its direction lines ride
-    /// the type-information include through the finding union's prompt
-    /// conversion instead.
+    /// type-inference direction detector — shown where the
+    /// module-context template's parameter-directions include renders
+    /// them. The escalate template calls no include for this list;
+    /// instead the finding union's prompt conversion adds its direction
+    /// lines to the type-information include.
     pub parameter_direction_findings: Vec<ParameterDirectionInfo>,
     /// Data tables the target function reads, made by the
     /// `calxgloss-consts` table reader — shown where the module-context
-    /// template's data-tables include renders them; the escalate template
-    /// calls no include for this list, whose table facts ride the
-    /// constants include through the constant findings' union prompt
-    /// conversion.
+    /// template's data-tables include renders them. The escalate
+    /// template calls no include for this list; instead the constant
+    /// findings' union prompt conversion adds this list's table facts
+    /// to the constants include.
     pub data_table_findings: Vec<DataTableInfo>,
-    /// What the constant scan's own document admits it examined and could
-    /// not — filled exactly once per document by the constant projection
-    /// row, beside (never inside) the `const_findings` union and the
-    /// `data_table_findings` list that one load feeds both (issue #348).
-    /// Default-empty when no constant document was read, when that document
-    /// states no coverage, or when it claims complete coverage; the
-    /// constants and data-tables includes each render their one
-    /// qualification line exactly when this carries an admission — naming
-    /// the bodies and memory windows the scan never reached, never a
-    /// constant it read and did not name.
+    /// What the constant scan's own document admits it examined and
+    /// could not. The constant projection row fills it exactly once per
+    /// document, beside (never inside) the `const_findings` union and
+    /// the `data_table_findings` list that one load feeds both (issue
+    /// #348). It stays default-empty when no constant document was read,
+    /// when that document states no coverage, or when it claims complete
+    /// coverage. The constants and data-tables includes each render
+    /// their one qualification line exactly when this holds an
+    /// admission — naming the bodies and memory windows the scan never
+    /// reached, never a constant it read and did not name.
     pub consts_coverage: CoverageInfo,
     /// Error-handling findings about this function made by the
     /// `calxgloss-errhandling` scan — the idiom the body guards its
     /// work with and the failure codes it states.
     pub error_handling_findings: Vec<ErrhandlingInfo>,
-    /// What the error-handling scan's own document admits it examined and
-    /// could not — filled exactly once per document by the error-handling
-    /// projection row, beside (never inside) the per-record
-    /// `error_handling_findings` list (issue #350). Default-empty when no
-    /// error-handling document was read, when that document states no
-    /// coverage, or when it claims complete coverage; the error-handling
-    /// section renders its one qualification line exactly when this
-    /// carries an admission — naming the bodies the scan never reached,
-    /// never a body it read and left without a finding.
+    /// What the error-handling scan's own document admits it examined
+    /// and could not. The error-handling projection row fills it exactly
+    /// once per document, beside (never inside) the per-record
+    /// `error_handling_findings` list (issue #350). It stays
+    /// default-empty when no error-handling document was read, when that
+    /// document states no coverage, or when it claims complete coverage.
+    /// The error-handling section renders its one qualification line
+    /// exactly when this holds an admission — naming the bodies the scan
+    /// never reached, never a body it read and left without a finding.
     pub error_handling_coverage: CoverageInfo,
     /// The float/SIMD usage flag for this function made by the
     /// `calxgloss-floatsimd` scan — one record naming the shape the
     /// body's float evidence spells.
     pub floatsimd_findings: Vec<FloatsimdInfo>,
     /// What the float/SIMD scan's own document admits it examined and
-    /// could not — filled exactly once per document by the floatsimd
-    /// projection row, beside (never inside) the per-record
-    /// `floatsimd_findings` list (issue #347). Default-empty when no
-    /// floatsimd document was read, when that document states no
-    /// coverage, or when it claims complete coverage; the float/SIMD
+    /// could not. The floatsimd projection row fills it exactly once per
+    /// document, beside (never inside) the per-record
+    /// `floatsimd_findings` list (issue #347). It stays default-empty
+    /// when no floatsimd document was read, when that document states no
+    /// coverage, or when it claims complete coverage. The float/SIMD
     /// include renders its one qualification line exactly when this
-    /// carries an admission — naming the bodies the scan never reached,
+    /// holds an admission — naming the bodies the scan never reached,
     /// never a body it read and left unflagged.
     pub floatsimd_coverage: CoverageInfo,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -1138,13 +1146,14 @@ pub struct EvidenceBundle {
 
 /// Template for "add more context and retry" prompts.
 ///
-/// Used when previous attempts failed with compile_fix or test_fix strategies.
-/// The gathered evidence rides in as one [`EvidenceBundle`] — the single
-/// render input of every bundle-fed template (issue #320) — so the template
-/// carries only what is genuinely escalate-tier: the function identity, the
-/// failing code and its failure description, and the failure history. Which
-/// evidence sections the prompt shows is a property of the includes
-/// `escalate.j2` calls, not of this struct's fields.
+/// Used when previous attempts failed with compile_fix or test_fix
+/// strategies. The gathered evidence arrives as one
+/// [`EvidenceBundle`] — the single render input of every bundle-fed
+/// template (issue #320). So the template keeps only what is genuinely
+/// escalate-tier: the function identity, the failing code and its
+/// failure description, and the failure history. Which evidence
+/// sections the prompt shows is decided by the includes
+/// `escalate.j2` calls, not by this struct's fields.
 #[derive(Template)]
 #[template(path = "escalate.j2")]
 pub struct EscalateTemplate {
@@ -1317,13 +1326,15 @@ pub struct RichTemplate {
     /// above: the tier path builds from a bare request, which carries no
     /// capability report.
     pub decompilation_cap_line: String,
-    /// The seam's admission for the `disassembly` family (#357), riding
-    /// the type-information surface its machine-listing facet feeds.
-    /// Default-empty exactly like `decompilation_cap_line`.
+    /// The seam's admission for the `disassembly` family (#357),
+    /// attached to the type-information surface its machine-listing
+    /// facet feeds. It stays default-empty exactly like
+    /// `decompilation_cap_line`.
     pub disassembly_cap_line: String,
-    /// The seam's admission for the `caller-edges` family (#357), riding
-    /// the type-information surface its caller-edge facet feeds.
-    /// Default-empty exactly like `decompilation_cap_line`.
+    /// The seam's admission for the `caller-edges` family (#357),
+    /// attached to the type-information surface its caller-edge facet
+    /// feeds. It stays default-empty exactly like
+    /// `decompilation_cap_line`.
     pub caller_edges_cap_line: String,
 }
 
@@ -1421,13 +1432,15 @@ pub struct DetailedTemplate {
     /// above: the tier path builds from a bare request, which carries no
     /// capability report.
     pub decompilation_cap_line: String,
-    /// The seam's admission for the `disassembly` family (#357), riding
-    /// the type-information surface its machine-listing facet feeds.
-    /// Default-empty exactly like `decompilation_cap_line`.
+    /// The seam's admission for the `disassembly` family (#357),
+    /// attached to the type-information surface its machine-listing
+    /// facet feeds. It stays default-empty exactly like
+    /// `decompilation_cap_line`.
     pub disassembly_cap_line: String,
-    /// The seam's admission for the `caller-edges` family (#357), riding
-    /// the type-information surface its caller-edge facet feeds.
-    /// Default-empty exactly like `decompilation_cap_line`.
+    /// The seam's admission for the `caller-edges` family (#357),
+    /// attached to the type-information surface its caller-edge facet
+    /// feeds. It stays default-empty exactly like
+    /// `decompilation_cap_line`.
     pub caller_edges_cap_line: String,
 }
 
@@ -1561,15 +1574,16 @@ impl WithTestsTemplate {
 // Module context template — Tier 3: disassembly + tests + neighbors
 // ============================================================
 
-/// Template for Tier 3 translation prompts (disassembly + decompiler + tests
-/// + neighboring function context + shared data structures).
+/// Template for Tier 3 translation prompts (disassembly + decompiler +
+/// tests + neighboring function context + shared data structures).
 ///
-/// Contains full disassembly, decompiler pseudo-C, tagged Windows API calls,
-/// baseline test results, and — through the one [`EvidenceBundle`] it renders
-/// over (issue #320) — call graph neighbors, neighboring function code and
-/// decompiler output, shared data structure definitions, and the shared
-/// evidence sections its includes call. The bundle is the single render
-/// input; this struct keeps only the tier's own fields.
+/// Contains full disassembly, decompiler pseudo-C, tagged Windows API
+/// calls, and baseline test results. Through the one [`EvidenceBundle`]
+/// it renders (issue #320), it also contains call graph neighbors,
+/// neighboring function code and decompiler output, shared data
+/// structure definitions, and the shared evidence sections its includes
+/// call. The bundle is the single render input; this struct keeps only
+/// the tier's own fields.
 #[derive(Template)]
 #[template(path = "module_context_translate.j2")]
 pub struct ModuleContextTemplate {
@@ -1627,8 +1641,8 @@ impl ModuleContextTemplate {
 
 /// A shim layer code block for a crate-replacement DLL.
 ///
-/// Contains the generated Rust shim source code that bridges
-/// the original Windows DLL's API surface to a target Rust crate.
+/// Contains the generated Rust shim source code that routes the
+/// original Windows DLL's API calls to a target Rust crate.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ShimCode {
     /// The original DLL filename (e.g., `"d3d9.dll"`).
@@ -1675,12 +1689,12 @@ pub struct PalTraitMethod {
 
 /// Template for Tier 4 translation prompts (full module context).
 ///
-/// Contains everything from Tier 3 — rendered through the one
-/// [`EvidenceBundle`] it builds over alongside [`ModuleContextTemplate`]
-/// (issue #320) — plus shim layer code for crate-replacement DLLs and PAL
-/// trait definitions for platform abstraction. This tier is used when
-/// translating functions that call through shim layers and need the full
-/// translation-layer context to map correctly.
+/// Contains everything from Tier 3, rendered through the one
+/// [`EvidenceBundle`] it builds alongside [`ModuleContextTemplate`]
+/// (issue #320), plus shim layer code for crate-replacement DLLs and
+/// PAL trait definitions for platform abstraction. This tier is used
+/// when translating functions that call through shim layers and need
+/// the full translation-layer context to map correctly.
 #[derive(Template)]
 #[template(path = "full_module_translate.j2")]
 pub struct FullModuleTemplate {

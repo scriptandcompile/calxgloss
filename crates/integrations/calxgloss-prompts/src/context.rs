@@ -10,7 +10,7 @@
 //!
 //! Tier 3 (module context) and Tier 4 (full module) have no prompt-data
 //! struct. Their builders take the request and the gathered
-//! [`EvidenceBundle`] and build the template themselves (issue #320).
+//! [`EvidenceBundle`](crate::templates::EvidenceBundle) and build the template themselves (issue #320).
 
 use super::templates::{CallGraphNeighbor, ControlFlowInfo, FormattedTestResult};
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
