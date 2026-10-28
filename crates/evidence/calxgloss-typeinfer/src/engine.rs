@@ -1,34 +1,35 @@
 //! Type inference orchestration.
 //!
-//! [`TypeInferEngine`] runs the inline detectors — this-pointer
-//! detection, parameter-size detection, known-type propagation, the
+//! [`TypeInferEngine`] runs the scan over one loaded program. The scan
+//! runs the inline detectors — this-pointer detection,
+//! parameter-size detection, known-type propagation, the
 //! name-borne readings of the mangling detector, the direction readings
 //! of the parameter-direction detector, and the convention
 //! readings of the convention detector — over every function of
-//! one loaded program, reads each listed function's machine listing
-//! once with the listing-borne convention detectors — the 32-bit
-//! stack discipline and the Microsoft-x64 shape — then runs the post-inline
+//! one loaded program. It reads each listed function's machine listing
+//! once, with the listing-borne convention detectors — the 32-bit
+//! stack discipline and the Microsoft-x64 shape. It then runs the post-inline
 //! passes over the same bodies: the assignment-chain pass types each
 //! function's locals from its surviving parameter readings and known
-//! contracts, the cross-function passes carry readings across function
-//! boundaries in both directions, the return-usage pass types each
-//! function's return from how its callers use the value, and the
-//! convention corroborator raises readings the rest of the program's
-//! listings corroborate and lands call-site views of each detected
-//! callee in its callers — over exactly the kept bodies and listings,
-//! no extra reads — and everything assembles into one
-//! [`TypeInferenceResult`] with its scan provenance.
+//! contracts; the cross-function passes propagate readings across function
+//! boundaries in both directions; the return-usage pass types each
+//! function's return from how its callers use the value; and the
+//! convention corroborator raises the evidence confidence of readings the
+//! rest of the program's listings corroborate and records call-site views
+//! of each detected callee in its callers. All of it runs over exactly the
+//! kept bodies and listings, with no extra reads. Everything assembles
+//! into one [`TypeInferenceResult`] with its scan provenance.
 //!
-//! The inline detectors are pure text analysis over one decompiled body,
-//! so the engine fetches each function's pseudo-C exactly once and reads
-//! it with all of them, rather than having each detector pull its own copy
-//! — and the cross-function passes re-read those same bodies, fetching a
-//! caller outside the listing at most once, keeping the scan at one
+//! The inline detectors are pure text analysis over one decompiled body.
+//! So the scan fetches each function's pseudo-C exactly once and reads
+//! it with all of them, rather than having each detector pull its own
+//! copy. The cross-function passes re-read those same bodies, fetching a
+//! caller outside the listing at most once, which keeps the scan at one
 //! decompile per function. The listing-borne convention readings
-//! ride the same window: the engine takes exactly one disassembly read
+//! use the same window: the scan takes exactly one disassembly read
 //! per listed function, beside the body it pairs with, and none for a
-//! function the listing never shows. The inline pass is then one
-//! sequential pass over the function listing: there are no disjoint
+//! function the listing never shows. The inline pass is one
+//! sequential pass over the function listing. There are no disjoint
 //! endpoint sets to overlap the way the type-database scans have, and
 //! keeping the pass sequential keeps the persisted inference list in a
 //! stable, diffable order.
@@ -57,17 +58,17 @@ use tracing::{info, warn};
 
 /// The decompiler reads a type-inference scan performs.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// This is the shared trait from the decompiler seam crate, re-exported
+/// here so `TypeInferEngine`'s generic parameter names it where it
+/// always has. [`KunaSource`] implements it over the in-process
+/// analysis engine at the seam, and tests implement it over canned
+/// bodies so the orchestration runs without a server. The futures are
+/// `Send` so a scan can be driven from an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
 /// How many unreadable regions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump (the P19-7 admitted-semantics track).
+/// before it counts the rest — bounded prose beside the counts,
+/// not a dump (the P19-7 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
 /// The facets a type-inference scan declares, in order — the roster
@@ -85,30 +86,38 @@ pub const DECLARED_FACETS: &[&str] = &[
 /// The coverage record every type-inference scan stamps about itself
 /// (issue #351), beside the provenance and the timing.
 ///
-/// The type-inference scan reads four facets. `function-bodies` — the
-/// decompiled bodies the inline detectors read: the function listing is
-/// always read end to end (a failed listing aborts the run, and more
-/// than half failing to decompile trips the skip-rate breaker), so what
-/// a finished scan can not have read is exactly the bodies it skipped:
-/// a nameless listing entry, or a decompile that failed.
+/// The type-inference scan reads four facets.
+///
+/// `function-bodies` — the decompiled bodies the inline detectors read.
+/// The function listing is always read end to end: a failed listing
+/// aborts the run, and more than half failing to decompile trips the
+/// skip-rate breaker. So on a finished scan, the only bodies it can not
+/// have read are the ones it skipped: a nameless listing entry, or a
+/// decompile that failed.
+///
 /// `machine-listings` — the machine listing beside each listed
-/// function, the source of the stack-discipline convention readings: a
-/// failed read costs only that function's listing-borne readings, so it
-/// is admitted by name. `import-names` — the import listing the `@N`
-/// convention reading runs over: a failed listing costs only those
-/// readings, so the facet is then `unavailable` with its reason rather
-/// than silently empty. `caller-edges` — the call-graph lookups the
-/// caller→callee and return-usage passes share: a failed lookup drops
-/// both passes for that function, and is admitted by name. The
-/// cross-function passes read the bodies and listings the walk already
-/// kept, so they add no coverage border of their own. With nothing
-/// skipped and every read answered, all four facets are `complete`,
-/// and that is the admission's point: a function no record mentions
-/// was examined and clean, never silently unchecked. With any, the
-/// facet falls short and its limitation line names the regions
-/// (bounded at [`MAX_NAMED_UNREACHED`]), so silence and never-reaching
-/// are distinguishable in the filed record itself. The whole picture
-/// mirrors the four facets together.
+/// function, the source of the stack-discipline convention readings.
+/// A failed read costs only that function's listing-borne readings,
+/// so it is admitted by name.
+///
+/// `import-names` — the import listing the `@N` convention reading
+/// runs over. A failed listing costs only those readings, so the facet
+/// is then `unavailable` with its reason rather than silently empty.
+///
+/// `caller-edges` — the call-graph lookups the caller→callee and
+/// return-usage passes share. A failed lookup drops both passes for
+/// that function, and is admitted by name.
+///
+/// The cross-function passes read the bodies and listings the walk
+/// already kept, so they add no coverage border of their own.
+///
+/// With nothing skipped and every read answered, all four facets are
+/// `complete`, and that is the admission's point: a function no record
+/// mentions was examined and clean, never silently unchecked. With any
+/// shortfall, the facet falls short and its limitation line names the
+/// regions (bounded at [`MAX_NAMED_UNREACHED`]), so silence and
+/// never-reaching are distinguishable in the filed record itself. The
+/// whole picture mirrors the four facets together.
 fn coverage_stamp(
     unreached: &[String],
     nameless: usize,
@@ -230,10 +239,10 @@ fn coverage_stamp(
 /// Orchestrates the inline detectors and the cross-function pass into one
 /// [`TypeInferenceResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned bodies; [`new`](Self::new) builds one over
-/// a loaded [`KunaSource`]. The detectors carry no state, so one instance of
-/// each serves the whole scan.
+/// `TypeInferEngine` is generic over its [`ScanSource`], so tests can run
+/// the whole orchestration over canned bodies; [`new`](Self::new) builds
+/// one over a loaded [`KunaSource`]. The detectors hold no state, so one
+/// instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct TypeInferEngine<S = KunaSource> {
     source: S,
@@ -251,7 +260,7 @@ pub struct TypeInferEngine<S = KunaSource> {
 }
 
 impl TypeInferEngine<KunaSource> {
-    /// An engine over a loaded Kuna program.
+    /// A `TypeInferEngine` over a loaded Kuna program.
     pub fn new(source: &KunaSource) -> TypeInferEngine<KunaSource> {
         TypeInferEngine {
             source: source.clone(),
@@ -271,7 +280,7 @@ impl TypeInferEngine<KunaSource> {
 }
 
 impl<S> TypeInferEngine<S> {
-    /// An engine whose decompiles come from `source`.
+    /// A `TypeInferEngine` whose decompiles come from `source`.
     pub fn with_source(source: S) -> Self {
         TypeInferEngine {
             source,
@@ -292,26 +301,27 @@ impl<S> TypeInferEngine<S> {
     /// Infer types across `binary`, decompiling each function exactly
     /// once and reading it with all the inline detectors, then
     /// propagating the surviving readings across function boundaries in
-    /// both directions.
+    /// both directions. The scan reads each function's pseudo-C exactly
+    /// once.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
     /// becomes the key a persisted result is filed under. The inferences
-    /// follow the function listing — function by function, and within one
-    /// function the name-borne readings of its listing symbol (its
-    /// mangling contract, then the convention its letter spells), then
-    /// the this-pointer readings, then the size readings, then
-    /// the known-signature readings, then the readings carried in names
-    /// inside the body, then the direction readings of its parameters
-    /// (issue #274), then the convention readings off its machine
-    /// listing — the 32-bit stack discipline or the Microsoft-x64 shape
-    /// the listing's own register spelling keys — with the import
-    /// names' `@N` convention readings
-    /// after the listing, and the local records and the
-    /// cross-function records appended after the inline ones, in listing
-    /// order, so two scans of the same program diff cleanly. The
+    /// follow the function listing — function by function. Within one
+    /// function the order is: the name-borne readings of its listing
+    /// symbol (its mangling contract, then the convention its letter
+    /// spells), then the this-pointer readings, then the size readings,
+    /// then the known-signature readings, then the readings read from
+    /// names inside the body, then the direction readings of its
+    /// parameters (issue #274), then the convention readings off its
+    /// machine listing — the 32-bit stack discipline or the
+    /// Microsoft-x64 shape the listing's own register spelling keys.
+    /// The import names' `@N` convention readings come after the
+    /// listing. The local records and the cross-function records are
+    /// appended after the inline ones, in listing order, so two scans
+    /// of the same program diff cleanly. The
     /// convention corroborator (issue #249) runs last, over the resolved
     /// records and the kept listings: a corroborated reading replaces its
-    /// own record in place, and the call-site records it lands in the
+    /// own record in place, and the call-site records it writes into the
     /// callers append at the end, again in listing order.
     ///
     /// The caller→callee direction fetches each analyzed function's
@@ -340,10 +350,10 @@ impl<S> TypeInferEngine<S> {
     /// would persist a phantom-clean record (issue #71).
     /// Where several detectors read one parameter differently
     /// — `strlen`'s argument stands read by the size detector and the
-    /// known-signature engine at once — conflict resolution collapses the
-    /// competition to the strongest record before the result is assembled,
-    /// so the result carries at most one inference per parameter, local,
-    /// call-site argument, return, convention, or parameter direction —
+    /// known-signature detector at once — conflict resolution picks the
+    /// strongest record before the result is assembled, so the result
+    /// holds at most one inference per parameter, local, call-site
+    /// argument, return, convention, or parameter direction —
     /// and since the direction target is keyed apart from the parameter
     /// one, one parameter's direction reading stands beside its type
     /// reading rather than competing with it (issue #274). The
@@ -363,8 +373,8 @@ impl<S> TypeInferEngine<S> {
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         // The kept machine listings, in listing order: the cross-function
         // convention corroborator (issue #249) re-reads exactly these
-        // bodies for callee epilogues and caller cleanup, so it costs no
-        // read of its own.
+        // listings for callee epilogues and caller cleanup, so it costs
+        // no read of its own.
         let mut listings: Vec<(String, String)> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
@@ -375,9 +385,9 @@ impl<S> TypeInferEngine<S> {
         let mut listings_unreadable: Vec<String> = Vec::new();
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing can
-                // be inferred about it, so it passes unrecorded.
+                // For a nameless listing entry, a name lookup could reach
+                // some other function's body. Nothing can be inferred
+                // about it, so the scan records nothing for it.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -386,14 +396,14 @@ impl<S> TypeInferEngine<S> {
                 nameless += 1;
                 continue;
             }
-            // The contract carried in the symbol itself: an MSVC-mangled
+            // The contract in the symbol itself: an MSVC-mangled
             // listing name decodes without any body, so the reading
             // stands even when the decompile below fails.
             inferences.extend(self.mangling.detect_from_listing(&function.name));
             // The convention the same symbol's letter spells, keyed by
-            // the same name: for a mangled member it lands beside the
-            // implicit `this` parameter record the mangling reading just
-            // pushed, together saying the function is a method.
+            // the same name: for a mangled member it is recorded beside
+            // the implicit `this` parameter record the mangling reading
+            // just pushed; the pair says the function is a method.
             if let Some(reading) = self.convention.from_listing_name(&function.name) {
                 inferences.push(reading);
             }
@@ -411,10 +421,10 @@ impl<S> TypeInferEngine<S> {
                     unreached.push(function.name.clone());
                     // Skip-rate breaker: once most of the listing has
                     // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
-                    // skipping on.
+                    // program the analysis engine cannot analyze, and
+                    // an empty result would persist as a phantom-clean
+                    // record. The scan aborts with the counts instead
+                    // of skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::TypeInferError::DecompileBreaker {
                             failed: decompile_failures,
@@ -432,17 +442,18 @@ impl<S> TypeInferEngine<S> {
                 .chain(self.param_size.detect_parameter_sizes(&decompiled))
                 .chain(self.known.propagate_known_types(&decompiled));
             inferences.extend(readings.map(InferredType::Param));
-            // The contract carried in names inside the body: the
+            // The contract in names inside the body: the
             // function's own demangled name with a spelled parameter
             // list, and qualified calls whose callee spells one.
             inferences.extend(self.mangling.detect_from_body(&decompiled));
             // Which way the body's writes and reads move data through
             // the function's own pointer parameters (issue #274): read
-            // off the body already in hand, no extra engine read. The
-            // records join the same inline set and resolve in the same
-            // pass as the type readings, but key on a target of their
-            // own, so a direction reading stands beside the type
-            // reading for one parameter instead of competing with it.
+            // off the body already in hand, with no extra read from
+            // the analysis engine. The records join the same inline
+            // set and resolve in the same pass as the type readings,
+            // but key on a target of their own, so a direction reading
+            // stands beside the type reading for one parameter
+            // instead of competing with it.
             inferences.extend(
                 self.param_direction
                     .detect_directions(&decompiled)
@@ -532,9 +543,9 @@ impl<S> TypeInferEngine<S> {
         }
 
         // The surviving local readings, by function and name: the types
-        // a caller's `local_8 = FUN_x();` can lend back to the callee as
+        // a caller's `local_8 = FUN_x();` can pass back to the callee as
         // its return type. First-seen per name, matching what the final
-        // resolution will keep for an equal-confidence tie.
+        // resolution will keep for an equal evidence-confidence tie.
         let mut local_types: LocalReadings = HashMap::new();
         for inference in &locals {
             if let InferredType::Local(record) = inference {
@@ -557,11 +568,11 @@ impl<S> TypeInferEngine<S> {
         }
 
         // Caller to callee: what each function's callers actually hand
-        // in at their sites types that function's own parameters. The
-        // caller bodies are the ones already in hand wherever the caller
-        // is in the listing; any other caller is fetched once and kept
-        // in the cache — failures included — so no function's body is
-        // decompiled twice across the whole scan.
+        // in at their call sites types that function's own parameters.
+        // Where the caller is in the listing, its body is already in
+        // hand; any other caller is fetched once and kept in the cache,
+        // failures included. So the scan never decompiles one
+        // function's body twice.
         let inline_bodies: HashMap<&str, &DecompiledFunction> = bodies
             .iter()
             .map(|body| (body.name.as_str(), body))
@@ -637,7 +648,7 @@ impl<S> TypeInferEngine<S> {
         // The propagated records compete with the inline ones — one
         // parameter can stand read by its own body and by a callee's
         // contract or its callers' arguments at once — so the assembled
-        // list resolves once more, and the result carries at most one
+        // list resolves once more, and the result holds at most one
         // inference per target. The inline chain is first, so an inline
         // reading wins every tie against a propagated one.
         collected += locals.len() + propagated.len() + to_callee.len() + to_return.len();
@@ -657,7 +668,7 @@ impl<S> TypeInferEngine<S> {
         // pops the `N` bytes its name declares, with no caller cleaning
         // up after any site — stands higher than it did alone, and every
         // caller whose listing holds a call site to a detected callee
-        // carries a call-site record of that callee's convention. The
+        // receives a call-site record of that callee's convention. The
         // pass reads only the listings the scan already took and the
         // records already resolved: no extra decompiles, no second
         // listing read. Its output competes once more in the same
@@ -665,7 +676,7 @@ impl<S> TypeInferEngine<S> {
         // it agrees with and replaces it where that record first
         // appeared, so a function keeps exactly one convention record;
         // the call-site records key on the (caller, callee) pair no
-        // inline reading spells and land after the resolved records, in
+        // inline reading spells and come after the resolved records, in
         // listing order.
         let kept: Vec<(&str, &str)> = listings
             .iter()
@@ -677,11 +688,10 @@ impl<S> TypeInferEngine<S> {
         let conflicts_resolved = collected - inferences.len();
 
         let mut metadata = ScanMetadata::new(binary);
-        // The engine admits its own coverage inside its own scan, where
-        // the skips and the unreadable reads happened, so the filed
-        // record says what the walk never got (issue #351) — and a
-        // complete record lets an unmentioned function read as examined
-        // and clean.
+        // The scan records its own coverage where the skips and the
+        // unreadable reads happened, so the filed record says what the
+        // scan never reached (issue #351) — and a complete record lets
+        // an unmentioned function read as examined and clean.
         metadata.coverage = Some(coverage_stamp(
             &unreached,
             nameless,
@@ -689,7 +699,8 @@ impl<S> TypeInferEngine<S> {
             imports_unreadable,
             &callers_unreadable,
         ));
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source records the analysis engine's name and pin under
+        // `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -708,10 +719,10 @@ impl<S> TypeInferEngine<S> {
     }
 }
 
-/// The surviving parameter readings grouped by the function carrying
+/// The surviving parameter readings grouped by the function holding
 /// them — the contracts the cross-function pass propagates. A callee
 /// absent from the map is a library routine, a thunk, or a function no
-/// detector read: it carries nothing to propagate.
+/// detector read: it has nothing to propagate.
 fn surviving_param_readings(inferences: &[InferredType]) -> CalleeParams<'_> {
     let mut by_callee: CalleeParams<'_> = HashMap::new();
     for inference in inferences {
@@ -768,7 +779,8 @@ mod tests {
     }
 
     /// State shared by every clone of a [`FakeProgram`], so a test can read
-    /// what the scan did after the engine has consumed its source.
+    /// what the scan requested after the scan has finished with the
+    /// source.
     #[derive(Debug, Default)]
     struct Stats {
         decompiles: Mutex<Vec<String>>,
@@ -870,7 +882,7 @@ mod tests {
             Ok(self.listings.get(name).cloned().unwrap_or_default())
         }
 
-        // The rest of the shared trait's reads: this engine never makes
+        // The rest of the shared trait's reads: the scan never makes
         // them, so they answer with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
@@ -933,7 +945,7 @@ mod tests {
         }
     }
 
-    /// The canned program: one function whose body carries a vtable
+    /// The canned program: one function whose body has a vtable
     /// dispatch, a `strlen` call, and a `CloseHandle` call — one reading
     /// family per detector — and one plain function that infers nothing.
     fn program() -> FakeProgram {
@@ -1026,7 +1038,7 @@ mod tests {
         // the size detector's.
         assert_eq!(param_count(&result, "FUN_18003ab00", 1), 1);
 
-        // The vtable dispatch's first argument also carries a bare
+        // The vtable dispatch's first argument also has a bare
         // dereference, so the size detector reads that parameter too; the
         // stronger this-pointer reading wins the conflict.
         assert_eq!(param_count(&result, "FUN_18003ab00", 0), 1);
@@ -1078,7 +1090,8 @@ mod tests {
             .expect("the direction reading for the written this pointer");
         assert_eq!(direction.param_name.as_deref(), Some("param_1"));
         assert_eq!(direction.direction, Direction::InOut);
-        // The write rides the cast band, below the bare direct write.
+        // The write sits behind a cast, so it scores on the lower of
+        // the two write bands, below the bare direct write.
         assert_eq!(direction.confidence, Confidence::new(70));
         assert_eq!(
             direction.evidence,
@@ -1173,7 +1186,8 @@ mod tests {
     async fn scan_emits_local_records_from_assignment_chains() {
         // A local assigned a surviving parameter reading, and one
         // assigned a known routine's result, take the assignment-chain
-        // record; one hop from a typed local is chased, a second is not.
+        // record; one hop from a typed local is followed, a second is
+        // not.
         let result = scan(locals_program()).await;
 
         let record = local_finding(&result, "FUN_18003ab00", "local_8");
@@ -1305,13 +1319,13 @@ mod tests {
         assert_eq!(site.evidence, "FUN_18004b210(param_1, local_8);");
 
         // The second position takes the helper's `void *` reading; the
-        // argument is a local, so no parameter record rides along.
+        // argument is a local, so it produces no parameter record.
         let site = call_site_finding(&result, "FUN_180051c00", "FUN_18004b210", 1);
         assert_eq!(site.arg_name.as_deref(), Some("local_8"));
         assert_eq!(site.inferred_type, "void *");
 
         // The argument that is the caller's own parameter gets a
-        // parameter record too — the type climbing the call chain.
+        // parameter record too — the type moves up the call chain.
         let climb = finding(&result, "FUN_180051c00", InferenceMethod::CrossFunction, 0);
         let InferredType::Param(record) = climb else {
             unreachable!("the cross-function pass emits parameter records");
@@ -1324,7 +1338,7 @@ mod tests {
 
         // The literal, cast, and nested-call sites produced nothing:
         // two call-site records for the caller, and its second
-        // parameter carries no reading at all.
+        // parameter gets no reading at all.
         assert_eq!(call_site_count(&result, "FUN_180051c00"), 2);
         assert_eq!(param_count(&result, "FUN_180051c00", 1), 0);
 
@@ -1881,7 +1895,7 @@ mod tests {
     async fn scan_emits_a_return_record_from_how_callers_use_the_result() {
         // The helper's body never reads its own return; its callers do.
         // The first caller's typed-local reading wins the tie and its
-        // line is the evidence the record carries.
+        // line is the record's evidence.
         let program = returns_program();
         let result = scan(program.clone()).await;
 
@@ -1902,8 +1916,9 @@ mod tests {
             "char * (via return_usage, confidence 60)"
         );
 
-        // The return pass rides the caller lookup the caller→callee pass
-        // already made: still one decompile per function.
+        // The return-usage pass uses the caller lookups that the
+        // caller→callee pass already made: still one decompile per
+        // function.
         assert_eq!(
             program.decompiled(),
             vec!["FUN_18004b210", "FUN_180051c00", "FUN_180052000"],
@@ -1982,7 +1997,7 @@ mod tests {
     // ---- C++ mangling analysis ----
 
     /// The canned program for the mangling pass: one function whose body
-    /// carries a demangled qualified call with a spelled parameter list,
+    /// has a demangled qualified call with a spelled parameter list,
     /// and one function whose listing name is an MSVC-mangled symbol —
     /// `char * Widget::copy(char *)`, a member with an
     /// implicit `this`.
@@ -2223,11 +2238,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_scan_reads_each_listed_function_s_listing_exactly_once() {
-        // The listing read rides the breaker-gated window: exactly one
-        // read per listed function, in listing order, and none for a
-        // function the listing never shows — the off-listing caller
-        // the caller→callee pass fetches gets a body, never a
-        // listing read.
+        // The scan reads listings in the same breaker-gated window:
+        // exactly one read per listed function, in listing order, and
+        // none for a function the listing never shows. The off-listing
+        // caller that the caller→callee pass fetches gets a body,
+        // never a listing read.
         let mut program = program();
         program
             .callers
@@ -2302,8 +2317,8 @@ mod tests {
     async fn a_caller_that_cleans_up_after_a_call_reads_cdecl_for_the_callee() {
         // A canned esp-spelled caller listing: a direct call naming its
         // callee, then the caller popping the arguments it pushed. The
-        // record lands on the callee named at that site — cdecl, the
-        // caller-cleanup band, evidenced by the cleanup line.
+        // reading is recorded against the callee named at that site —
+        // cdecl, the caller-cleanup band, evidenced by the cleanup line.
         let mut program = program();
         program.listings.insert(
             "FUN_18003ab00".into(),
@@ -2324,10 +2339,10 @@ mod tests {
         assert_eq!(record.evidence, "00401108  ADD ESP, 0x8");
 
         // The caller pops for its callee but cleans nothing of its own:
-        // a bare `ret` is no epilogue reading — the only convention
+        // a bare `ret` yields no epilogue reading. The only convention
         // record naming the caller is the corroborator's call-site view
-        // of the callee, keyed by the caller and naming the callee with
-        // the callee's own convention and confidence.
+        // of the callee: keyed by the caller, naming the callee, with
+        // the callee's own convention and evidence confidence.
         let caller_records: Vec<&InferredConvention> = result
             .inferences
             .iter()
@@ -2503,7 +2518,7 @@ mod tests {
             .count()
     }
 
-    /// The call-site view one caller carries of one callee.
+    /// The call-site view one caller holds of one callee.
     fn call_site_view<'a>(
         result: &'a TypeInferenceResult,
         caller: &str,
@@ -2526,9 +2541,10 @@ mod tests {
     async fn agreement_across_functions_resolves_above_the_strongest_single_reading() {
         // `paint@12` declares twelve argument bytes, its epilogue pops
         // exactly those, and its one caller cleans up after no site:
-        // three spellings across functions agree, so the reading lands
-        // above every single one — and the persisted record shows the
-        // bump. The scan still reads each listing exactly once.
+        // three spellings across functions agree, so the corroborated
+        // reading scores above each single reading — and the persisted
+        // record shows the bump. The scan still reads each listing
+        // exactly once.
         let program = corroborated_program(false);
         let result = scan(program.clone()).await;
 
@@ -2551,8 +2567,9 @@ mod tests {
         );
 
         // The caller's view of its callee matches the callee's surviving
-        // record: same convention, same bumped confidence, keyed by the
-        // caller and naming the callee, evidenced by the call row.
+        // record: same convention, same bumped evidence confidence,
+        // keyed by the caller and naming the callee, evidenced by the
+        // call row.
         let view = call_site_view(&result, "FUN_caller", "paint@12")
             .expect("a call-site convention record in the caller");
         assert_eq!(view.convention, CallingConvention::Stdcall);
@@ -2596,7 +2613,7 @@ mod tests {
     #[tokio::test]
     async fn a_detected_convention_lands_a_view_in_every_caller_in_listing_order() {
         // One epilogue-read callee, two callers: each caller's listing
-        // carries the view, keyed by the caller and naming the callee,
+        // holds the view, keyed by the caller and naming the callee,
         // and the records follow listing order — twice over, the same
         // scan of the same program diffs cleanly.
         let mut program = corroborated_program(false);
@@ -2650,7 +2667,8 @@ mod tests {
         // A callee's Microsoft-x64 shape reading, corroborated by a call
         // site in an rsp-spelled caller that pops nothing — its `add rsp`
         // frees exactly its own prologue allocation, the frame teardown
-        // the convention itself emits — climbs above the shape-only tier.
+        // the convention itself emits — scores above the shape-only
+        // band.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -2769,12 +2787,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
-        // force-rescan file the same admission through this one
-        // definition. Every body, listing, import name, and caller edge
-        // was read here, so the record is complete and says nothing
-        // needs admitting.
+        // The coverage record belongs to the scan itself, not to the
+        // registry row and not to the CLI: the batch scan phase and the
+        // CLI's force-rescan both file the same admission through this
+        // one definition. Every body, listing, import name, and caller
+        // edge was read here, so the record is complete and says
+        // nothing needs admitting.
         let result = scan(program()).await;
         let coverage = result
             .metadata
@@ -2939,10 +2957,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_bodies_line_is_capped_at_five_names_and_counts_the_nameless() {
-        // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
-        // slot.
+        // Bounded prose beside the counts: of six decompile failures,
+        // five are named inline and the sixth is only counted. A
+        // nameless listing entry counts toward the total without
+        // using a name slot.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::empty();
         for (index, name) in names.iter().enumerate() {
