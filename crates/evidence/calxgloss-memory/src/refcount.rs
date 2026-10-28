@@ -1,35 +1,36 @@
 //! Reference counting detection.
 //!
-//! This module provides [`ReferenceCountDetector`], which carries the
-//! counter names a scan reads decompiled bodies against — the named
-//! count fields a body raises and lowers by arithmetic (`ref_count++`
-//! and `ref_count--`) and the COM `AddRef`/`Release` method pair —
-//! pairing each bump with its drop inside a single function so the
-//! prompt can later weigh the manual counting against `Rc<T>` or
-//! `Arc<T>`.
+//! This module provides [`ReferenceCountDetector`]. The detector holds
+//! the counter names the scan matches decompiled bodies against: the
+//! named count fields a body raises and lowers by arithmetic
+//! (`ref_count++` and `ref_count--`), and the COM `AddRef`/`Release`
+//! method pair. It pairs each bump with its drop inside a single
+//! function, so the prompt can later weigh the manual counting against
+//! `Rc<T>` or `Arc<T>`.
 //!
-//! The count is read in two shapes. Where the code counts through
+//! The count is read in two shapes. Where the code counts by
 //! arithmetic on a named field, a bump is a `++` or `+= 1` on a
-//! configured field name hanging off a plain-owner variable and a
+//! configured field name reached from a plain owner variable, and a
 //! drop is a `--` or `-= 1` on the same field of the same owner.
-//! Where the code counts through the COM method pair, a bump is a
-//! call to a recognized increment name and a drop is a call to a
-//! recognized decrement name, the two tied by the object variable
-//! their first argument names. [`default_field_names`],
-//! [`default_increments`] and [`default_decrements`] carry the
-//! standard name sets, and [`ReferenceCountDetector::with_default_names`]
-//! builds a detector that scans against them.
+//! Where the code counts through the COM method pair, a bump is a call
+//! to a recognized increment name and a drop is a call to a recognized
+//! decrement name. The two calls are tied together by the object
+//! variable named as their first argument. [`default_field_names`],
+//! [`default_increments`] and [`default_decrements`] supply the
+//! standard name sets, and
+//! [`ReferenceCountDetector::with_default_names`] builds a detector
+//! that uses them.
 //!
-//! [`ReferenceCountDetector::detect_reference_counts`] runs the
-//! reading: it walks a decompiled body in source order, answers each
+//! [`ReferenceCountDetector::detect_reference_counts`] makes the
+//! reading. It walks a decompiled body in source order, matches each
 //! recognized bump with the drop that closes it, and reports one
-//! [`ReferenceCount`] per pair. Each pair carries the shared-ownership
-//! pattern standing in for the manual counting: `Rc<T>` wherever the
-//! counted object stays inside this function, `Arc<T>` wherever the
-//! body hands the object to a thread-spawn call — a count reaching
+//! [`ReferenceCount`] per pair. Each pair gives the shared-ownership
+//! pattern that replaces the manual counting: `Rc<T>` when the counted
+//! object stays inside this function, and `Arc<T>` when the body
+//! passes the object to a thread-spawn call. A count that reaches
 //! another thread has to be atomic, and `Arc` is the shared ownership
-//! that spells it. [`default_thread_spawns`] carries the standard
-//! spawn names the narrowing reads against.
+//! that is atomic. [`default_thread_spawns`] supplies the standard
+//! spawn names this check reads.
 
 use crate::types::{CountStyle, ReferenceCount};
 use calxgloss_decomp::DecompiledFunction;
@@ -39,17 +40,18 @@ use calxgloss_types::{
     skip_string, skip_ws, strip_casts,
 };
 
-/// The scan: a `.` followed by an identifier byte continues a demangled
-/// spelling (`operator.delete`), member accesses through `->` are
-/// skipped, and C keywords are not calls.
+/// The call-scan options used on every body: a `.` followed by an
+/// identifier byte keeps a demangled spelling whole
+/// (`operator.delete`), member accesses through `->` are skipped, and
+/// C keywords are not treated as calls.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::DemangledDot,
     reject_preceding: b".>",
     skip_keywords: &NON_CALL_KEYWORDS,
 };
 
-/// Every direct call `name(args)` in the body — the shared pseudo-C
-/// scan configured by [`CALL_SCAN`].
+/// Every direct call `name(args)` in the body, found by the shared
+/// pseudo-C scan configured in [`CALL_SCAN`].
 fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
@@ -60,24 +62,25 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 
 /// Reference-count bump/drop pair tracking over decompiled functions.
 ///
-/// The detector owns the name sets a scan reads bodies against:
+/// The detector holds the name sets the scan matches bodies against:
 /// counter field names for the arithmetic shape, increment and
 /// decrement method names for the COM shape, and thread-spawn names
-/// for the shared-across-threads reading that picks `Arc<T>` over
-/// `Rc<T>`. All four sets are configurable — supply them whole
-/// through [`with_names`](Self::with_names) or grow them one name at
-/// a time with [`add_field`](Self::add_field),
+/// for the reading that picks `Arc<T>` over `Rc<T>`. All four sets are
+/// configurable. Supply them whole with
+/// [`with_names`](Self::with_names), or add names one at a time with
+/// [`add_field`](Self::add_field),
 /// [`add_increment`](Self::add_increment),
 /// [`add_decrement`](Self::add_decrement) and
-/// [`add_thread_spawn`](Self::add_thread_spawn) — and
+/// [`add_thread_spawn`](Self::add_thread_spawn).
 /// [`fields`](Self::fields), [`increments`](Self::increments),
 /// [`decrements`](Self::decrements) and
-/// [`thread_spawns`](Self::thread_spawns) report them in configuration
-/// order, so two detectors built the same way scan identically and
-/// results diff cleanly. The detector holds no scan source of its
-/// own and never writes back to the program; one detector serves an
-/// entire scan and can be shared by reference across concurrent
-/// per-function passes.
+/// [`thread_spawns`](Self::thread_spawns) report the names in
+/// configuration order, so two detectors built the same way scan
+/// identically and their results diff cleanly.
+///
+/// The detector holds no scan source of its own and never writes back
+/// to the program. One detector serves a whole scan, and it can be
+/// shared by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReferenceCountDetector {
     fields: Vec<String>,
@@ -87,10 +90,10 @@ pub struct ReferenceCountDetector {
 }
 
 impl ReferenceCountDetector {
-    /// A detector with no names configured: every body it is handed
-    /// pairs nothing until the standard sets arrive through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_field`](Self::add_field),
+    /// A detector with no names configured. It pairs nothing in any
+    /// body until the standard sets are added by
+    /// [`with_default_names`](Self::with_default_names), or names are
+    /// added one at a time by [`add_field`](Self::add_field),
     /// [`add_increment`](Self::add_increment),
     /// [`add_decrement`](Self::add_decrement) and
     /// [`add_thread_spawn`](Self::add_thread_spawn).
@@ -98,10 +101,10 @@ impl ReferenceCountDetector {
         Self::default()
     }
 
-    /// A detector that scans against the standard name sets —
+    /// A detector that uses the standard name sets from
     /// [`default_field_names`], [`default_increments`],
-    /// [`default_decrements`] and [`default_thread_spawns`] — in their
-    /// configuration order.
+    /// [`default_decrements`] and [`default_thread_spawns`], kept in
+    /// their configuration order.
     pub fn with_default_names() -> Self {
         Self::with_names(
             default_field_names(),
@@ -111,9 +114,9 @@ impl ReferenceCountDetector {
         )
     }
 
-    /// A detector that scans against exactly `fields`, `increments`,
-    /// `decrements` and `thread_spawns`, each kept in the order it is
-    /// given.
+    /// A detector that uses exactly `fields`, `increments`,
+    /// `decrements` and `thread_spawns`, keeping each name in the
+    /// order it is given.
     pub fn with_names(
         fields: impl IntoIterator<Item = impl Into<String>>,
         increments: impl IntoIterator<Item = impl Into<String>>,
@@ -128,82 +131,82 @@ impl ReferenceCountDetector {
         }
     }
 
-    /// Add one counter field name to the set this detector scans
-    /// against.
+    /// Add one counter field name to the set this detector uses.
     pub fn add_field(&mut self, field: impl Into<String>) {
         self.fields.push(field.into());
     }
 
-    /// Add one increment method name to the set this detector scans
-    /// against.
+    /// Add one increment method name to the set this detector uses.
     pub fn add_increment(&mut self, increment: impl Into<String>) {
         self.increments.push(increment.into());
     }
 
-    /// Add one decrement method name to the set this detector scans
-    /// against.
+    /// Add one decrement method name to the set this detector uses.
     pub fn add_decrement(&mut self, decrement: impl Into<String>) {
         self.decrements.push(decrement.into());
     }
 
-    /// Add one thread-spawn name to the set this detector scans
-    /// against for the shared-across-threads reading.
+    /// Add one thread-spawn name to the set this detector uses when it
+    /// reads a count shared across threads.
     pub fn add_thread_spawn(&mut self, spawn: impl Into<String>) {
         self.thread_spawns.push(spawn.into());
     }
 
-    /// The counter field names this detector scans against, in
-    /// configuration order.
+    /// The detector's counter field names, in configuration order.
     pub fn fields(&self) -> &[String] {
         &self.fields
     }
 
-    /// The increment method names this detector scans against, in
-    /// configuration order.
+    /// The detector's increment method names, in configuration order.
     pub fn increments(&self) -> &[String] {
         &self.increments
     }
 
-    /// The decrement method names this detector scans against, in
-    /// configuration order.
+    /// The detector's decrement method names, in configuration order.
     pub fn decrements(&self) -> &[String] {
         &self.decrements
     }
 
-    /// The thread-spawn names this detector scans against, in
-    /// configuration order.
+    /// The detector's thread-spawn names, in configuration order.
     pub fn thread_spawns(&self) -> &[String] {
         &self.thread_spawns
     }
 
-    /// The bump/drop pairs one function's body carries.
+    /// The bump/drop pairs found in one function's body.
     ///
     /// The reading walks the body in source order — outside string
     /// literals, whole names only — and reads both counting shapes.
-    /// The arithmetic shape keys on a configured field name hanging
-    /// off a plain-owner variable through `->` or `.`: a bump is `++`
-    /// or `+= 1` on it, a drop is `--` or `-= 1`, and a field reached
-    /// through a chain or a dereference (`a->next->ref_count`,
-    /// `(*pObj)->ref_count`) hangs off no owner the pairing can key
-    /// on. The COM shape keys on the object variable a recognized
-    /// increment or decrement call names as its first argument, seen
-    /// through any cast; a member-spelled `param_1->Release(param_1)`
-    /// is a member access, not a plain call, and names nothing. A
-    /// drop answers the most recent still-open bump of the same
-    /// counter *in its own shape* — bumps never cross shapes — and a
-    /// bump with no drop naming its counter in this function is
+    ///
+    /// The arithmetic shape looks for a configured field name reached
+    /// through `->` or `.` from a plain owner variable. On that field
+    /// a bump is `++` or `+= 1` and a drop is `--` or `-= 1`. A field
+    /// reached through a chain or a dereference (`a->next->ref_count`,
+    /// `(*pObj)->ref_count`) has no plain owner for the pairing to
+    /// match on, so it counts nothing.
+    ///
+    /// The COM shape looks for a recognized increment or decrement
+    /// call whose first argument names one plain variable, seen
+    /// through any cast. A member-spelled call
+    /// (`param_1->Release(param_1)`) is a member access rather than a
+    /// plain call, and names no object.
+    ///
+    /// A drop answers the most recent still-open bump of the same
+    /// counter in that counter's own shape: bumps never cross shapes.
+    /// A bump with no drop naming its counter in this function is
     /// reported by nothing: whether the count escapes or leaks is a
     /// cross-function question, outside this pairing.
     ///
-    /// Each pair becomes one [`ReferenceCount`] naming the shape and
-    /// the two recognized spellings that raised and lowered the
-    /// count, with the bump line and the drop line joined as the
-    /// evidence. The record carries the shared-ownership pattern
-    /// standing in for the manual counting: [`RC_SUGGESTION`] at
-    /// [`COUNT_PAIR_CONFIDENCE`], narrowed to [`ARC_SUGGESTION`] at
-    /// [`ARC_CONFIDENCE`] where the body hands the counted object to
-    /// one of the configured thread-spawn names. Records come back in
-    /// bump order, so two scans of one body diff cleanly.
+    /// Each pair becomes one [`ReferenceCount`]. It names the shape
+    /// and the two recognized spellings that raised and lowered the
+    /// count, and its evidence is the bump line and the drop line
+    /// joined together. It also gives the shared-ownership pattern
+    /// that replaces the manual counting: [`RC_SUGGESTION`] when the
+    /// counted object stays inside this function, narrowed to
+    /// [`ARC_SUGGESTION`] when the body passes the object to one of
+    /// the configured thread-spawn names. The evidence confidence is
+    /// [`COUNT_PAIR_CONFIDENCE`], or [`ARC_CONFIDENCE`] after that
+    /// narrowing. Records come back in bump order, so two scans of one
+    /// body diff cleanly.
     pub fn detect_reference_counts(&self, func: &DecompiledFunction) -> Vec<ReferenceCount> {
         let calls = direct_calls(&func.body);
         let mut pairs: Vec<(usize, ReferenceCount)> = Vec::new();
@@ -213,9 +216,9 @@ impl ReferenceCountDetector {
         pairs.into_iter().map(|(_, record)| record).collect()
     }
 
-    /// The arithmetic-shape pairs one body carries: a configured
+    /// The arithmetic-shape pairs found in one body: a configured
     /// counter field on a plain owner, raised by `++`/`+= 1` and
-    /// lowered by `--`/`-= 1`, a drop answering the most recent
+    /// lowered by `--`/`-= 1`. A drop answers the most recent
     /// still-open bump on the same field of the same owner.
     fn detect_field_pairs(
         &self,
@@ -250,10 +253,10 @@ impl ReferenceCountDetector {
         }
     }
 
-    /// The COM-shape pairs one body carries: a recognized increment
-    /// call bound to the plain variable its first argument names, and
-    /// a recognized decrement naming that same variable, the drop
-    /// answering the most recent still-open bump of the variable.
+    /// The COM-shape pairs found in one body: a recognized increment
+    /// call whose first argument names one plain variable, and a
+    /// recognized decrement naming that same variable. A drop answers
+    /// the most recent still-open bump of that variable.
     fn detect_com_pairs(
         &self,
         body: &str,
@@ -264,8 +267,8 @@ impl ReferenceCountDetector {
         let mut open: Vec<OpenCall> = Vec::new();
         for call in calls {
             if let Some(name) = self.increments.iter().find(|n| n == &call.callee) {
-                // An increment naming no variable its drop could
-                // answer counts no object this function releases.
+                // An increment whose first argument names no plain
+                // variable bumps no object this function releases.
                 let bumped = call.args.first().map(|arg| strip_casts(arg, is_type_word));
                 if let Some(object) = bumped.as_deref().and_then(plain_variable) {
                     open.push(OpenCall {
@@ -299,12 +302,13 @@ impl ReferenceCountDetector {
         }
     }
 
-    /// The shared-ownership pattern a counted object reads as:
-    /// [`ARC_SUGGESTION`] where the body hands the object to one of
-    /// the configured thread-spawn names — the new thread works
-    /// through the same object, so its count is shared across threads
-    /// and only an atomic count is safe there — and [`RC_SUGGESTION`]
-    /// wherever the object stays inside this function.
+    /// The shared-ownership pattern the reading gives for one counted
+    /// object. It is [`ARC_SUGGESTION`] where the body passes the
+    /// object to one of the configured thread-spawn names: the new
+    /// thread uses the same object, so the count is shared across
+    /// threads, and only an atomic count is safe there. Otherwise it
+    /// is [`RC_SUGGESTION`], because the object stays inside this
+    /// function.
     fn ownership_pattern(&self, calls: &[CallSite<'_>], object: &str) -> (&'static str, u8) {
         let shared = calls.iter().any(|call| {
             self.thread_spawns.iter().any(|spawn| spawn == call.callee)
@@ -325,38 +329,38 @@ impl ReferenceCountDetector {
 // The pairing reading
 // ============================================================
 
-/// Confidence of a pairing read from a bump and a drop of the same
-/// counter in one body: both sides are explicit recognized
-/// spellings — arithmetic on a configured field name, or calls to
-/// configured method names — but the tie between them is the
-/// decompiler's naming rather than resolved data flow, and a branch
-/// could leave either side unreached.
+/// The evidence confidence for a pairing read from a bump and a drop
+/// of the same counter in one body. Both sides are explicit,
+/// recognized spellings: arithmetic on a configured field name, or
+/// calls to configured method names. But the link between them is the
+/// decompiler's naming, not resolved data flow, and a branch could
+/// leave either side unreached.
 const COUNT_PAIR_CONFIDENCE: u8 = 70;
 
-/// The Rust pattern a bump/drop pairing stands in for: the manual
-/// counting is exactly what `Rc<T>` automates — handing out a shared
-/// owner bumps the count and dropping one lowers it — and where the
-/// counted object never reaches another thread in this body, the
-/// non-atomic `Rc` is the pattern to translate toward.
+/// The Rust pattern a bump/drop pairing reads as. Manual counting is
+/// what `Rc<T>` automates: handing out a shared owner bumps the count,
+/// and dropping one lowers it. Where the counted object never reaches
+/// another thread in this body, the non-atomic `Rc` is the pattern to
+/// translate toward.
 const RC_SUGGESTION: &str = "Rc<T>";
 
-/// The pattern a pairing reads as where the body hands the counted
-/// object to a thread spawn: the new thread works through the same
-/// object, so its count is shared across threads and only an atomic
-/// count is safe there — `Arc<T>` is the shared ownership that spells it.
+/// The pattern a pairing reads as where the body passes the counted
+/// object to a thread spawn. The new thread uses the same object, so
+/// the count is shared across threads, and only an atomic count is
+/// safe there. `Arc<T>` is the shared ownership that is atomic.
 const ARC_SUGGESTION: &str = "Arc<T>";
 
-/// Confidence of the `Arc` narrowing: the pairing evidence is
-/// [`COUNT_PAIR_CONFIDENCE`]'s, but the narrowing rests on reading
-/// which call the object sits in — a recognized spawn rather than an
-/// ordinary callee — and a spawn the reading misses keeps an `Rc`
-/// suggestion on a count that crosses threads.
+/// The evidence confidence for the `Arc` narrowing. Its pairing
+/// evidence is [`COUNT_PAIR_CONFIDENCE`]'s, but the narrowing depends
+/// on reading which call the object appears in — a recognized spawn,
+/// rather than an ordinary callee. If the reading misses a spawn, a
+/// count that crosses threads keeps an `Rc` suggestion.
 const ARC_CONFIDENCE: u8 = 65;
 
 /// A reference-count bump or drop found in a body: the plain owner
-/// variable the counted field hangs off, the field name, whether the
+/// variable that holds the counted field, the field name, whether the
 /// site raises (`++`, `+= 1`) or lowers (`--`, `-= 1`) the count, and
-/// where and on which line the site sits.
+/// where the site sits and on which line.
 struct CountSite<'a> {
     owner: &'a str,
     field: &'a str,
@@ -367,7 +371,7 @@ struct CountSite<'a> {
 
 /// A recognized increment still waiting for its drop while the body
 /// is walked: the object variable it bumped, the recognized method
-/// spelling behind it, and where and on which line the call sits.
+/// spelling it came from, and where the call sits and on which line.
 struct OpenCall {
     object: String,
     method: String,
@@ -376,14 +380,15 @@ struct OpenCall {
 }
 
 /// Every bump and drop of a configured counter field in the body, in
-/// source order: a configured field name hanging off a plain-owner
-/// variable through `->` or `.`, followed by `++` or `+= 1` (a bump)
-/// or `--` or `-= 1` (a drop). The scan runs outside string literals,
-/// and a field name carried by a longer identifier names nothing. A
-/// field reached through a chain or a dereference (`a->next->ref_count`,
-/// `(*pObj)->ref_count`) hangs off no plain owner the pairing can key
-/// on, and a comparison (`ref_count == 1`), a bare read, or a bump by
-/// anything but one (`+= 2`) counts nothing.
+/// source order. A site is a configured field name reached from a
+/// plain owner variable through `->` or `.`, followed by `++` or
+/// `+= 1` (a bump) or `--` or `-= 1` (a drop). The scan runs outside
+/// string literals, and a field name inside a longer identifier names
+/// nothing. A field reached through a chain or a dereference
+/// (`a->next->ref_count`, `(*pObj)->ref_count`) has no plain owner
+/// the pairing can match on. A comparison (`ref_count == 1`), a bare
+/// read, or a change by anything other than one (`+= 2`) counts
+/// nothing.
 fn count_sites<'a>(body: &'a str, fields: &[String]) -> Vec<CountSite<'a>> {
     let bytes = body.as_bytes();
     let mut sites = Vec::new();
@@ -425,12 +430,12 @@ fn count_sites<'a>(body: &'a str, fields: &[String]) -> Vec<CountSite<'a>> {
 }
 
 /// The start of the plain owner identifier ending at `owner_end` —
-/// the identifier immediately left of the `->` or `.` the counted
-/// field hangs off — or `None` when nothing plain ends there: no
+/// the identifier just left of the `->` or `.` that reaches the
+/// counted field. Returns `None` when nothing plain ends there: no
 /// identifier at all, or one reached through a chain, a dereference,
 /// or an index (`a->next->ref_count`, `(*pObj)->ref_count`,
-/// `p[1]->ref_count`), where the owner is no variable the pairing can
-/// key on.
+/// `p[1]->ref_count`). In those cases the owner is no variable the
+/// pairing can match on.
 fn plain_owner_start(bytes: &[u8], owner_end: usize) -> Option<usize> {
     let mut start = owner_end;
     while start > 0 && is_ident_byte(bytes[start - 1]) {
@@ -445,10 +450,10 @@ fn plain_owner_start(bytes: &[u8], owner_end: usize) -> Option<usize> {
     Some(start)
 }
 
-/// The direction the operator following a counter field moves it:
-/// `true` for `++` and `+= 1`, `false` for `--` and `-= 1`, and
-/// `None` for anything else — a comparison, a bare read, or a bump by
-/// any other amount (`+= 2`, `+= 1u`).
+/// Which way the operator after a counter field moves it: `true` for
+/// `++` and `+= 1`, `false` for `--` and `-= 1`, and `None` for
+/// anything else — a comparison, a bare read, or a change by any
+/// other amount (`+= 2`, `+= 1u`).
 fn bump_operator(bytes: &[u8], name_end: usize) -> Option<bool> {
     let i = skip_ws(bytes, name_end);
     let first = *bytes.get(i)?;
@@ -471,13 +476,14 @@ fn bump_operator(bytes: &[u8], name_end: usize) -> Option<bool> {
         _ => None,
     }
 }
-/// The type words a decompiler cast may spell, the decompiler's
-/// vocabulary the other detectors' scans strip plus the interface
-/// typedefs this detector's casts carry: COM analysis types an
-/// `AddRef` or `Release` argument as `IUnknown *` or `IDispatch *`,
-/// the pointer typedef a thread spawn passes its argument as
-/// (`LPVOID`), and the decompiler writes those names on a cast when
-/// the applied type differs from the callee's parameter.
+/// Whether `word` is one of the type words a decompiler cast may
+/// spell. This is the decompiler vocabulary the other detectors'
+/// scans strip, plus the interface typedefs this detector sees in
+/// casts: the COM types an `AddRef` or `Release` argument is cast to
+/// (`IUnknown *`, `IDispatch *`), and the pointer typedef a thread
+/// spawn passes its argument as (`LPVOID`). The decompiler writes
+/// these names on a cast when the cast type differs from the callee's
+/// parameter type.
 fn is_type_word(word: &str) -> bool {
     matches!(
         word,
@@ -517,10 +523,10 @@ fn is_type_word(word: &str) -> bool {
     )
 }
 
-/// The argument text when it is one plain variable name — the spelling
-/// a bump or drop names the counted object by. Anything else — a
+/// Whether the argument is one plain variable name — the spelling a
+/// bump or drop names the counted object by. Anything else — a
 /// dereferenced pointer, an offset into a table, a literal — names no
-/// variable the pairing can key on.
+/// variable the pairing can match on.
 fn plain_variable(arg: &str) -> Option<&str> {
     let trimmed = arg.trim();
     let mut bytes = trimmed.bytes();
@@ -535,11 +541,11 @@ fn plain_variable(arg: &str) -> Option<&str> {
 // The standard name sets
 // ============================================================
 
-/// The standard counter field names: the field spellings a scan
+/// The standard counter field names: the field spellings the scan
 /// recognizes as reference counts read through arithmetic —
-/// `ref_count` and its compact and long spellings, and the
-/// standard-library `use_count`. A bump on one name answers a drop on
-/// that same name; the names never cross.
+/// `ref_count`, its compact and long spellings, and the
+/// standard-library `use_count`. A bump on one name pairs only with a
+/// drop on that same name; the names never mix.
 pub fn default_field_names() -> Vec<String> {
     vec![
         "ref_count".into(),
@@ -549,26 +555,26 @@ pub fn default_field_names() -> Vec<String> {
     ]
 }
 
-/// The standard increment names: the method spellings a scan
+/// The standard increment names: the method spellings the scan
 /// recognizes as raising an object's reference count — the COM
 /// `AddRef`.
 pub fn default_increments() -> Vec<String> {
     vec!["AddRef".into()]
 }
 
-/// The standard decrement names: the method spellings a scan
+/// The standard decrement names: the method spellings the scan
 /// recognizes as releasing an object's reference count — the COM
 /// `Release`.
 pub fn default_decrements() -> Vec<String> {
     vec!["Release".into()]
 }
 
-/// The standard thread-spawn names: the callee spellings a scan
-/// recognizes as starting a thread that works through an argument —
-/// the Win32 `CreateThread` and the CRT's `_beginthread`/
-/// `_beginthreadex` twins, and the POSIX `pthread_create`. An object
-/// handed to one of these reaches another thread, which is what turns
-/// an `Rc<T>` reading into an `Arc<T>` one.
+/// The standard thread-spawn names: the callee spellings the scan
+/// recognizes as starting a thread that uses an argument — the Win32
+/// `CreateThread`, the CRT's `_beginthread`/`_beginthreadex` pair, and
+/// the POSIX `pthread_create`. An object passed to one of these
+/// reaches another thread, and that is what turns an `Rc<T>` reading
+/// into an `Arc<T>` reading.
 pub fn default_thread_spawns() -> Vec<String> {
     vec![
         "CreateThread".into(),
@@ -588,8 +594,8 @@ mod tests {
 
     #[test]
     fn a_new_detector_starts_with_no_names() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Building a detector is free: it starts empty, compares equal
+        // however it is made, and a clone behaves the same.
         let detector = ReferenceCountDetector::new();
         assert!(detector.fields().is_empty());
         assert!(detector.increments().is_empty());
@@ -706,15 +712,15 @@ undefined4 FUN_18003ab00(IUnknown *param_1) {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].function, "FUN_18003ab00");
         assert_eq!(records[0].style, CountStyle::ComMethods);
-        // The record names the two recognized spellings the pairing
-        // read, so a prompt sees which method bumped the count.
+        // The record names both spellings the pairing read, so the
+        // prompt can see which method raised the count.
         assert_eq!(records[0].increment, "AddRef");
         assert_eq!(records[0].decrement, "Release");
-        // The object stays inside this function: the manual counting
-        // reads as the non-atomic shared owner.
+        // The object stays inside this function, so the manual
+        // counting reads as the non-atomic shared owner.
         assert_eq!(records[0].suggestion, "Rc<T>");
         assert_eq!(records[0].confidence, COUNT_PAIR_CONFIDENCE);
-        // The evidence carries both sides of the pairing.
+        // The evidence shows both sides of the pairing.
         assert_eq!(
             records[0].evidence,
             "AddRef((IUnknown *)param_1); Release((IUnknown *)param_1);"
@@ -734,9 +740,9 @@ undefined4 FUN_18003ab00(IUnknown *param_1) {
 
     #[test]
     fn a_qualified_method_spelling_names_the_pair() {
-        // Ghidra writes the interface-qualified thunk spelling; the
-        // `::` separators break the name, and the method word behind
-        // them is the recognized callee.
+        // Ghidra writes the interface-qualified spelling of the
+        // method. The `::` separators break the name up, and the
+        // method word after them is the recognized callee.
         let records = counts(
             "\
   IUnknown::AddRef(param_1);
@@ -750,7 +756,8 @@ undefined4 FUN_18003ab00(IUnknown *param_1) {
     #[test]
     fn an_increment_with_no_decrement_is_not_reported() {
         // Whether the extra reference escapes or leaks is a
-        // cross-function question; this pairing stays quiet on it.
+        // cross-function question, so this pairing says nothing about
+        // it.
         assert!(
             counts(
                 "\
@@ -790,7 +797,7 @@ undefined4 FUN_18003ab00(IUnknown *param_1) {
     #[test]
     fn a_bump_naming_something_other_than_a_variable_pairs_nothing() {
         // A dereferenced pointer names no variable the pairing can
-        // key on.
+        // match on.
         assert!(
             counts(
                 "\
@@ -803,8 +810,8 @@ undefined4 FUN_18003ab00(IUnknown *param_1) {
 
     #[test]
     fn two_bumps_and_two_drops_pair_in_bump_order() {
-        // Drops answer out of nesting order, but the records come
-        // back in bump order so two scans diff cleanly.
+        // Drops answer bumps out of nesting order, but the records
+        // come back in bump order, so two scans diff cleanly.
         let records = counts(
             "\
   AddRef((IUnknown *)param_1);
@@ -841,7 +848,7 @@ undefined4 FUN_18003ab00(IUnknown *param_1) {
     #[test]
     fn a_member_spelling_or_a_longer_name_matches_no_configured_name() {
         // Whole plain calls only: a member access through an object
-        // is no call the pairing reads, and a longer spelling is a
+        // is not a call the pairing reads, and a longer spelling is a
         // different callee.
         assert!(
             counts(
@@ -882,8 +889,8 @@ void FUN_18003ab00(void) {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].function, "FUN_18003ab00");
         assert_eq!(records[0].style, CountStyle::FieldArithmetic);
-        // The record names the two recognized spellings the pairing
-        // read, so a prompt sees which field carried the count.
+        // The record names both spellings the pairing read, so the
+        // prompt can see which field holds the count.
         assert_eq!(records[0].increment, "ref_count++");
         assert_eq!(records[0].decrement, "ref_count--");
         assert_eq!(records[0].suggestion, "Rc<T>");
@@ -908,7 +915,7 @@ void FUN_18003ab00(void) {
     #[test]
     fn a_bump_on_one_owner_does_not_answer_a_drop_on_another() {
         // The owner is part of the counter's identity: two objects
-        // carrying the same field name count separately.
+        // with the same field name are counted separately.
         assert!(
             counts(
                 "\
@@ -935,8 +942,8 @@ void FUN_18003ab00(void) {
 
     #[test]
     fn one_drop_answers_the_latest_bump_of_a_field() {
-        // Two bumps under one owner and field, one drop: the drop
-        // answers the second, and the first stands unpaired.
+        // One owner, one field, two bumps and one drop: the drop
+        // answers the second bump, and the first is left unpaired.
         let records = counts(
             "\
   p->ref_count = 2;
@@ -950,7 +957,7 @@ void FUN_18003ab00(void) {
 
     #[test]
     fn a_comparison_or_a_bare_read_is_not_a_bump() {
-        // The `==` moves nothing, and the verbose rewrite
+        // The `==` changes nothing, and the longer form
         // `x = x + 1` is an assignment, not the bump shape the
         // pairing reads.
         assert!(
@@ -965,8 +972,9 @@ void FUN_18003ab00(void) {
 
     #[test]
     fn a_bump_by_any_other_amount_is_not_a_bump() {
-        // Only a move by one reads as counting: `+= 2` scales a
-        // value, and `+= 1u` carries the constant's type suffix.
+        // Only a change by one reads as counting: `+= 2` changes by
+        // two, and `+= 1u` is written with the constant's type
+        // suffix.
         assert!(
             counts(
                 "\
@@ -982,7 +990,7 @@ void FUN_18003ab00(void) {
     #[test]
     fn a_longer_name_or_a_string_names_no_bump() {
         // Whole field names outside string literals only: a longer
-        // spelling is a different field, and the field's letters
+        // spelling is a different field, and a field name's letters
         // inside a format string name nothing.
         assert!(
             counts(
@@ -999,8 +1007,8 @@ void FUN_18003ab00(void) {
     #[test]
     fn a_chained_or_dereferenced_owner_names_no_pair() {
         // The owner must be one plain variable: a field reached
-        // through a chain or a dereference hangs off something the
-        // pairing cannot key on.
+        // through a chain or a dereference is not held by a variable
+        // the pairing can match on.
         assert!(
             counts(
                 "\
@@ -1030,9 +1038,9 @@ void FUN_18003ab00(void) {
 
     #[test]
     fn an_object_handed_to_create_thread_suggests_arc() {
-        // The new thread works through the same interface pointer, so
-        // the count is shared across threads and only an atomic count
-        // is safe there.
+        // The new thread uses the same interface pointer, so the
+        // count is shared across threads, and only an atomic count is
+        // safe there.
         let records = counts(
             "\
 undefined FUN_18003ab00(IUnknown *param_1) {
@@ -1049,8 +1057,8 @@ undefined FUN_18003ab00(IUnknown *param_1) {
 
     #[test]
     fn a_field_owner_handed_to_a_thread_suggests_arc() {
-        // The narrowing keys on the owner the field arithmetic names,
-        // not only on COM objects.
+        // The narrowing uses the owner that the field arithmetic
+        // names, not only the owners of COM objects.
         let records = counts(
             "\
   obj->ref_count++;
@@ -1063,8 +1071,8 @@ undefined FUN_18003ab00(IUnknown *param_1) {
 
     #[test]
     fn the_spawn_may_sit_before_the_bump() {
-        // The object reaches the thread wherever the spawn sits in
-        // the body; the count is shared either way.
+        // The object reaches the new thread wherever the spawn sits
+        // in the body; the count is shared either way.
         let records = counts(
             "\
   CreateThread(0,0,thread_main,(LPVOID)param_1,0,0);
@@ -1092,7 +1100,7 @@ undefined FUN_18003ab00(IUnknown *param_1) {
     #[test]
     fn each_object_takes_its_own_reading() {
         // One pair's object reaches a thread and the other's does
-        // not: the two records carry the two patterns.
+        // not, so the two records give the two different patterns.
         let records = counts(
             "\
   AddRef((IUnknown *)param_1);
@@ -1134,8 +1142,8 @@ undefined FUN_18003ab00(IUnknown *param_1) {
     #[test]
     fn a_thread_argument_that_is_not_a_plain_variable_keeps_rc() {
         // `&obj` passes the variable's own storage, not the object
-        // the pairing keyed on; nothing here names the counted object
-        // to the new thread.
+        // the pairing matched on, so nothing here passes the counted
+        // object to the new thread.
         let records = counts(
             "\
   obj->ref_count++;
@@ -1181,9 +1189,9 @@ undefined FUN_18003ab00(IUnknown *param_1) {
 
     #[test]
     fn the_shapes_do_not_cross_pair() {
-        // A method drop answers a method bump and a field drop
-        // answers a field bump; neither spelling answers the other
-        // shape's bump.
+        // A method drop answers a method bump, and a field drop
+        // answers a field bump: neither spelling answers a bump of
+        // the other shape.
         assert!(
             counts(
                 "\
@@ -1204,8 +1212,8 @@ undefined FUN_18003ab00(IUnknown *param_1) {
 
     #[test]
     fn both_shapes_report_in_bump_order() {
-        // The two shape readings merge into one source-ordered list
-        // so two scans of one body diff cleanly.
+        // The readings from both shapes come back as one list in
+        // source order, so two scans of one body diff cleanly.
         let records = counts(
             "\
   AddRef((IUnknown *)param_1);
@@ -1251,8 +1259,8 @@ undefined FUN_18003ab00(IUnknown *param_1) {
         assert_eq!(records[1].style, CountStyle::ComMethods);
         assert_eq!(records[1].increment, "retain");
         assert_eq!(records[1].decrement, "release");
-        // No spawn names configured: both pairs keep the plain
-        // shared-ownership reading.
+        // No thread-spawn names are configured, so both pairs keep
+        // the plain shared-ownership reading.
         for record in &records {
             assert_eq!(record.suggestion, "Rc<T>");
         }
