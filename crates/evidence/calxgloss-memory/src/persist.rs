@@ -8,10 +8,10 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result doubles as a cache: [`exists`](Self::exists) is the
-//! check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and every
-//! finding — for the translation pipeline to query.
+//! A saved result also works as a cache. [`exists`](MemoryPersistor::exists)
+//! is the check a caller runs before deciding whether a scan is needed.
+//! [`load`](MemoryPersistor::load) reads the whole document back — the
+//! metadata and every finding — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -25,8 +25,8 @@ use crate::types::MemoryResult;
 ///
 /// # File Layout
 ///
-/// Results are filed under a cache directory, named after the binary the
-/// scan read:
+/// Each result is saved in a file named after the binary the scan
+/// read, under a cache directory:
 ///
 /// ```text
 /// cache_dir/
@@ -34,8 +34,9 @@ use crate::types::MemoryResult;
 /// ```
 ///
 /// The default cache directory is `{workspace}/re/analysis/memory/`,
-/// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir) points
-/// the persistor at an explicit directory instead.
+/// set by [`new`](Self::new). Use
+/// [`with_cache_dir`](Self::with_cache_dir) to pick an explicit
+/// directory instead.
 ///
 /// # Example
 ///
@@ -57,7 +58,8 @@ pub struct MemoryPersistor {
 }
 
 impl MemoryPersistor {
-    /// Creates a new persistor rooted at the given workspace directory.
+    /// Creates a persistor that saves results under the given
+    /// workspace directory.
     ///
     /// Results are stored in `<workspace>/re/analysis/memory/`.
     pub fn new(workspace: impl AsRef<Path>) -> Self {
@@ -75,26 +77,26 @@ impl MemoryPersistor {
         }
     }
 
-    /// Returns the path the result for `binary` is filed under.
+    /// Returns the path of the saved result for `binary`.
     pub fn path_for(&self, binary: &str) -> PathBuf {
         self.store.path_for(binary)
     }
 
-    /// Whether a persisted result exists for `binary`.
+    /// Whether a saved result exists for `binary`.
     ///
-    /// This is the cache check: a caller that wants memory lifecycle
-    /// findings without re-running the scan asks here first and only
-    /// drives the scan when the answer is `false`.
+    /// This is the cache check. A caller that wants memory lifecycle
+    /// findings without running the scan again asks here first, and
+    /// only runs the scan when the answer is `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
 
-    /// Saves a memory lifecycle result to JSON, keyed on its metadata's
-    /// binary name.
+    /// Saves a memory lifecycle result to JSON, keyed on the binary
+    /// name in its metadata.
     ///
-    /// Creates the cache directory hierarchy if it does not exist, serializes
-    /// the result, and writes it to disk — a rescan replaces the previous
-    /// document for the same binary.
+    /// If the cache directory does not exist, this creates it first,
+    /// then serializes the result and writes it to disk. A rescan
+    /// replaces the previous document for the same binary.
     ///
     /// # Errors
     ///
@@ -111,7 +113,7 @@ impl MemoryPersistor {
         Ok(())
     }
 
-    /// Loads the memory lifecycle result persisted for `binary`.
+    /// Loads the saved memory lifecycle result for `binary`.
     ///
     /// # Errors
     ///
@@ -142,9 +144,9 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    /// A result carrying one finding of every kind, so a round trip
-    /// proves every record shape survives the file, not just the
-    /// envelope.
+    /// A result with one finding of every kind, so a save-and-load
+    /// round trip proves every record shape survives the file, not
+    /// just the outer envelope.
     fn result(binary: &str) -> MemoryResult {
         MemoryResult {
             metadata: ScanMetadata {
@@ -322,10 +324,11 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the scan stamped rides the persistor untouched: statuses,
-        // ids, order, limitation lines — exactly what a later reader
-        // (the projection seam, the report, a `--show` months later)
-        // sees (issue #349).
+        // The coverage record the scan wrote passes through the
+        // persistor untouched: statuses, ids, order, and limitation
+        // lines. A later reader (the projection seam, the report, a
+        // `--show` months later) sees exactly what the scan stamped
+        // (issue #349).
         let dir = TempDir::new().expect("temp dir should be created");
         let persistor = MemoryPersistor::with_cache_dir(dir.path());
         let mut saved = result("eqmain.dll");

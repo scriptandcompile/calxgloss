@@ -1,28 +1,28 @@
 //! Allocation/deallocation pair tracking.
 //!
-//! This module provides [`AllocatorTracker`], which carries the
-//! allocator and deallocator names a scan reads decompiled bodies
-//! against — the C trio `malloc`/`calloc`/`realloc` closed by `free`,
-//! and the C++ `operator new` pair closed by `operator delete` —
-//! pairing each allocation with its release inside a single function
+//! This module provides [`AllocatorTracker`]. The tracker holds the
+//! allocator and deallocator names the scan matches decompiled bodies
+//! against: the C trio `malloc`/`calloc`/`realloc` closed by `free`,
+//! and the C++ `operator new` pair closed by `operator delete`. It
+//! pairs each allocation with its release inside a single function,
 //! so the prompt can suggest `Box<T>` or stack allocation for the
 //! short-lived cases.
 //!
 //! Each allocator name is an [`AllocatorSignature`]: the callee
-//! spelling as the decompiler writes it and the [`AllocationType`] it
-//! stands for. [`default_allocators`] and [`default_deallocators`]
-//! carry the standard name sets, covering both spellings Ghidra has
-//! written the C++ operators in — the demangled dot form
-//! (`operator.new`) and the 6.x decompiler's underscore form
-//! (`operator_new`) — and
+//! spelling as the decompiler writes it, plus the [`AllocationType`]
+//! it represents. [`default_allocators`] and [`default_deallocators`]
+//! supply the standard name sets. They include both spellings Ghidra
+//! uses for the C++ operators: the demangled dot form
+//! (`operator.new`) and the underscore form the 6.x decompiler writes
+//! (`operator_new`).
 //! [`AllocatorTracker::with_default_names`] builds a tracker that
-//! scans against them.
+//! uses these standard sets.
 //!
-//! [`AllocatorTracker::detect_pairs`] runs the reading: it walks a
-//! decompiled body's direct calls in source order, binds each
-//! recognized allocation to the variable the decompiler stores its
-//! result in, and closes that allocation when a recognized release
-//! names the same variable — one [`MemoryHint`] per pair.
+//! [`AllocatorTracker::detect_pairs`] makes the reading: it walks the
+//! direct calls in a decompiled body in source order, records the
+//! variable the decompiler stores each recognized allocation in, and
+//! closes that allocation when a recognized release names the same
+//! variable. Each pair becomes one [`MemoryHint`].
 
 use crate::types::{AllocationType, MemoryHint};
 use calxgloss_decomp::DecompiledFunction;
@@ -33,17 +33,18 @@ use calxgloss_types::{
     skip_string, strip_casts,
 };
 
-/// The scan: demangled `operator.new` spellings stay whole (including
-/// the `[]` of `operator.new[]`), member accesses are skipped, and C
-/// keywords are not calls.
+/// The call-scan options used on every body: demangled `operator.new`
+/// spellings stay whole (including the `[]` of `operator.new[]`),
+/// member accesses are skipped, and C keywords are not treated as
+/// calls.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::DemangledDot,
     reject_preceding: b".>",
     skip_keywords: &NON_CALL_KEYWORDS,
 };
 
-/// Every direct call `name(args)` in the body — the shared pseudo-C
-/// scan configured by [`CALL_SCAN`].
+/// Every direct call `name(args)` in the body, found by the shared
+/// pseudo-C scan configured in [`CALL_SCAN`].
 fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
@@ -52,20 +53,21 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 // Allocator names
 // ============================================================
 
-/// One allocator name the tracker recognizes: the callee spelling and
-/// the allocation family it stands for.
+/// One allocator name the tracker recognizes: the callee spelling, and
+/// the allocation family it represents.
 ///
-/// A signature is a name, not a shape: it only says that a call to
-/// [`name`](Self::name) obtained a resource of
+/// A signature is only a name, not a body shape. It says that a call
+/// to [`name`](Self::name) got a resource of
 /// [`allocation_type`](Self::allocation_type) — `calloc` a zero-filled
-/// block, `operator.new[]` array storage — while where the call sits
-/// in the function and what releases it is the tracker's reading.
+/// block, `operator.new[]` array storage. Where the call sits in the
+/// function, and what releases the resource, is left to the tracker's
+/// reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AllocatorSignature {
     /// The callee spelling as the decompiler writes it, e.g. `malloc`,
     /// `operator.new`.
     pub name: String,
-    /// The allocation family this spelling stands for.
+    /// The allocation family this spelling represents.
     pub allocation_type: AllocationType,
 }
 
@@ -86,18 +88,20 @@ impl AllocatorSignature {
 
 /// Allocation/deallocation pair tracking over decompiled functions.
 ///
-/// The tracker owns the name set a scan reads bodies against:
-/// [`AllocatorSignature`] records for the allocating side and plain
-/// callee spellings for the releasing side. Both sets are configurable
-/// — supply them whole through [`with_names`](Self::with_names) or
-/// grow them one name at a time with [`add_allocator`](Self::add_allocator)
-/// and [`add_deallocator`](Self::add_deallocator) — and
+/// The tracker holds the name sets the scan matches bodies against:
+/// [`AllocatorSignature`] records for the allocating side, and plain
+/// callee spellings for the releasing side. Both sets are
+/// configurable. Supply them whole with
+/// [`with_names`](Self::with_names), or add names one at a time with
+/// [`add_allocator`](Self::add_allocator) and
+/// [`add_deallocator`](Self::add_deallocator).
 /// [`allocators`](Self::allocators) and [`deallocators`](Self::deallocators)
-/// report them in configuration order, so two trackers built the same
-/// way scan identically and results diff cleanly. The tracker holds no
-/// scan source of its own and never writes back to the program; one
-/// tracker serves an entire scan and can be shared by reference across
-/// concurrent per-function passes.
+/// report the names in configuration order, so two trackers built the
+/// same way scan identically and their results diff cleanly.
+///
+/// The tracker holds no scan source of its own and never writes back
+/// to the program. One tracker serves a whole scan, and it can be
+/// shared by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AllocatorTracker {
     allocators: Vec<AllocatorSignature>,
@@ -105,24 +109,24 @@ pub struct AllocatorTracker {
 }
 
 impl AllocatorTracker {
-    /// A tracker with no names configured: every body it is handed
-    /// pairs nothing until the standard sets arrive through
-    /// [`with_default_names`](Self::with_default_names) or names join
-    /// one at a time through [`add_allocator`](Self::add_allocator)
+    /// A tracker with no names configured. It pairs nothing in any
+    /// body until the standard sets are added by
+    /// [`with_default_names`](Self::with_default_names), or names are
+    /// added one at a time by [`add_allocator`](Self::add_allocator)
     /// and [`add_deallocator`](Self::add_deallocator).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A tracker that scans against the standard name sets —
-    /// [`default_allocators`] and [`default_deallocators`] — in their
-    /// configuration order.
+    /// A tracker that uses the standard name sets from
+    /// [`default_allocators`] and [`default_deallocators`], kept in
+    /// their configuration order.
     pub fn with_default_names() -> Self {
         Self::with_names(default_allocators(), default_deallocators())
     }
 
-    /// A tracker that scans against exactly `allocators` and
-    /// `deallocators`, each kept in the order it is given.
+    /// A tracker that uses exactly `allocators` and `deallocators`,
+    /// keeping each name in the order it is given.
     pub fn with_names(
         allocators: impl IntoIterator<Item = AllocatorSignature>,
         deallocators: impl IntoIterator<Item = impl Into<String>>,
@@ -133,24 +137,22 @@ impl AllocatorTracker {
         }
     }
 
-    /// Add one allocator name to the set this tracker scans against.
+    /// Add one allocator name to the set this tracker uses.
     pub fn add_allocator(&mut self, allocator: AllocatorSignature) {
         self.allocators.push(allocator);
     }
 
-    /// Add one deallocator name to the set this tracker scans against.
+    /// Add one deallocator name to the set this tracker uses.
     pub fn add_deallocator(&mut self, deallocator: impl Into<String>) {
         self.deallocators.push(deallocator.into());
     }
 
-    /// The allocator names this tracker scans against, in
-    /// configuration order.
+    /// The tracker's allocator names, in configuration order.
     pub fn allocators(&self) -> &[AllocatorSignature] {
         &self.allocators
     }
 
-    /// The deallocator names this tracker scans against, in
-    /// configuration order.
+    /// The tracker's deallocator names, in configuration order.
     pub fn deallocators(&self) -> &[String] {
         &self.deallocators
     }
@@ -158,13 +160,14 @@ impl AllocatorTracker {
     /// The allocations one function's body leaves open: the blocks
     /// bound to a plain variable that no release in this body closes.
     ///
-    /// The same walk [`detect_pairs`](Self::detect_pairs) runs — same
-    /// name sets, same variable binding, same most-recent-allocation
-    /// closing rule — but where the pairing reports the closed pairs
-    /// and stays silent on the rest, this returns what the walk leaves
-    /// standing: the question of whether an open block escapes into a
-    /// callee or leaks is a cross-function one, and the cross-function
-    /// pass starts from exactly this list.
+    /// This runs the same walk as [`detect_pairs`](Self::detect_pairs)
+    /// — the same name sets, the same variable binding, and the same
+    /// rule of closing the most recent allocation — but where the
+    /// pairing reports the closed pairs and says nothing about the
+    /// rest, this returns what the walk leaves open. Whether an open
+    /// block escapes into a callee or leaks is a cross-function
+    /// question, so the cross-function pass starts from exactly this
+    /// list.
     pub(crate) fn open_allocations(&self, func: &DecompiledFunction) -> Vec<OpenAllocation> {
         let mut open: Vec<OpenAllocation> = Vec::new();
         for call in direct_calls(&func.body) {
@@ -190,41 +193,43 @@ impl AllocatorTracker {
         open
     }
 
-    /// The allocation/release pairs one function's body carries.
+    /// The allocation/release pairs found in one function's body.
     ///
     /// The reading walks the body's direct calls in source order —
     /// outside string literals, whole names only — and classifies each
-    /// against the configured sets. An allocation counts only where
-    /// its result is stored into a plain variable, the spelling the
-    /// decompiler writes on the assignment (`pvVar1 = malloc(0x20);`);
-    /// a release counts only where its first argument, seen through
-    /// any cast, names one plain variable (`free((void *)pvVar1);`).
-    /// A release closes the most recent still-open allocation of the
-    /// variable it names — so where a variable is allocated twice
-    /// before one release, the release closes the second block and
-    /// the first stands unpaired — and an allocation with no release
-    /// naming its variable in this function is reported by nothing:
-    /// whether the block escapes or leaks is a cross-function
-    /// question, outside this pairing.
+    /// call against the configured sets. An allocation counts only
+    /// where its result is stored into a plain variable, the spelling
+    /// the decompiler writes on an assignment (`pvVar1 = malloc(0x20);`).
+    /// A release counts only where its first argument names one plain
+    /// variable, seen through any cast (`free((void *)pvVar1);`). A
+    /// release closes the most recent still-open allocation of the
+    /// variable it names. So where a variable is allocated twice before
+    /// one release, the release closes the second block and the first
+    /// stands unpaired. An allocation with no release naming its
+    /// variable in this function is reported by nothing: whether the
+    /// block escapes or leaks is a cross-function question, outside
+    /// this pairing.
     ///
     /// Each pair becomes one [`MemoryHint`] naming the allocation's
     /// family. The pairing reads as [`STACK_SUGGESTION`] when the
-    /// block is short-lived — a constant-size block from a family
-    /// that never resizes it, its variable used nowhere after the
-    /// release, so the block is dead at its release and its whole
-    /// lifetime sits inside the function — and otherwise as
-    /// [`BOX_SUGGESTION`] ([`VEC_SUGGESTION`] for `operator new[]`
-    /// storage), at [`STACK_CONFIDENCE`] or [`PAIR_CONFIDENCE`]
-    /// respectively, with the allocation line and the release line
-    /// joined as the evidence. Hints come back in allocation order,
-    /// so two scans of one body diff cleanly.
+    /// block is short-lived: a constant-size block from a family that
+    /// never resizes it, its variable used nowhere after the release,
+    /// so the block is dead at its release and its whole lifetime sits
+    /// inside the function. Otherwise it reads as [`BOX_SUGGESTION`],
+    /// or [`VEC_SUGGESTION`] for `operator new[]` storage. The
+    /// evidence confidence is [`STACK_CONFIDENCE`] for the short-lived
+    /// reading and [`PAIR_CONFIDENCE`] otherwise. The hint's evidence
+    /// is the allocation line and the release line joined together.
+    /// Hints come back in allocation order, so two scans of one body
+    /// diff cleanly.
     pub fn detect_pairs(&self, func: &DecompiledFunction) -> Vec<MemoryHint> {
         let mut open: Vec<OpenAllocation> = Vec::new();
         let mut pairs: Vec<(usize, MemoryHint)> = Vec::new();
         for call in direct_calls(&func.body) {
             if let Some(signature) = self.allocators.iter().find(|a| a.name == call.callee) {
-                // An allocation the body stores nowhere the pairing
-                // can key on names no block this function closes.
+                // When the body stores an allocation nowhere the
+                // pairing can follow by name, that call names no
+                // block this function closes.
                 if let Some(variable) = assigned_variable(&func.body, call.offset) {
                     open.push(OpenAllocation {
                         variable: variable.to_string(),
@@ -272,40 +277,41 @@ impl AllocatorTracker {
 // The pairing reading
 // ============================================================
 
-/// Confidence of a pairing read from an allocation and a release of
-/// the same variable in one body: both sides are explicit calls to
-/// recognized names, and the variable the decompiler stored the
-/// result into is the variable the release names — but the tie
+/// The evidence confidence for a pairing read from an allocation and a
+/// release of the same variable in one body. Both sides are explicit
+/// calls to recognized names, and the variable the decompiler stored
+/// the result into is the variable the release names. But the link
 /// between them is the decompiler's naming, not resolved data flow,
 /// and a branch could leave either side unreached.
 const PAIR_CONFIDENCE: u8 = 70;
 
 /// The ownership pattern a heap block allocated and released inside
-/// one function reads as: the block has exactly the lifetime a
-/// boxed value owns.
+/// one function reads as: the block has exactly the lifetime a boxed
+/// value owns.
 const BOX_SUGGESTION: &str = "Box<T>";
 
 /// The ownership pattern `operator new[]` storage allocated and
 /// released inside one function reads as: array storage with a known
-/// release point is what a growable sequence stands in for.
+/// release point is the stand-in for a growable sequence.
 const VEC_SUGGESTION: &str = "Vec<T>";
 
 /// The ownership pattern a short-lived block reads as: a fixed-size
 /// block that is dead at its release never needs the heap at all — a
-/// local value stands in for it.
+/// local value takes its place.
 const STACK_SUGGESTION: &str = "stack allocation";
 
-/// Confidence of a pairing additionally read as short-lived: the
-/// pairing evidence is [`PAIR_CONFIDENCE`]'s, but the stack reading
-/// rests on absences — no resize in the family, no size beyond the
-/// constant the decompiler wrote, no use of the variable after the
-/// release — and an absence is weaker evidence than a presence: a
-/// pointer copied out of the variable, or a size the decompiler
-/// folded from a runtime value, would keep the block on the heap.
+/// The evidence confidence for a pairing that is additionally read as
+/// short-lived. Its pairing evidence is [`PAIR_CONFIDENCE`]'s, but the
+/// stack reading rests on absences: no resize in the family, no size
+/// beyond the constant the decompiler wrote, and no use of the
+/// variable after the release. An absence is weaker evidence than a
+/// presence: a pointer copied out of the variable, or a size the
+/// decompiler worked out from a runtime value, would keep the block on
+/// the heap.
 const STACK_CONFIDENCE: u8 = 65;
 
-/// The ownership pattern the pairing of one allocation family reads
-/// as.
+/// The ownership pattern that the pairing of one allocation family
+/// suggests.
 fn suggestion_for(allocation_type: AllocationType) -> &'static str {
     match allocation_type {
         AllocationType::NewArray => VEC_SUGGESTION,
@@ -313,13 +319,14 @@ fn suggestion_for(allocation_type: AllocationType) -> &'static str {
     }
 }
 
-/// Whether a closed pair's block is short-lived: a fixed-size block
-/// from a family that never resizes it — the C block families and
-/// single-object `operator new`, not `realloc`'s resized block or
-/// `operator new[]`'s array storage — carrying a size the decompiler
-/// wrote as a plain constant, and named nowhere in the body after
-/// the release that closed it, so the block is dead at its release
-/// and its whole lifetime sits inside the function.
+/// Whether a closed pair's block is short-lived. The family must never
+/// resize the block: the C block families and single-object `operator
+/// new` qualify, while `realloc`'s resized block and `operator new[]`'s
+/// array storage do not. The size must be a plain constant the
+/// decompiler wrote, and the variable must be named nowhere in the
+/// body after the release that closed it. Together these mean the
+/// block is dead at its release and its whole lifetime sits inside the
+/// function.
 fn is_short_lived(allocation: &OpenAllocation, body: &str, released_at: usize) -> bool {
     matches!(
         allocation.allocation_type,
@@ -328,10 +335,10 @@ fn is_short_lived(allocation: &OpenAllocation, body: &str, released_at: usize) -
         && !used_after(body, released_at, &allocation.variable)
 }
 
-/// An allocation still waiting for its release while the body is
-/// walked: the variable holding the block, the family behind it,
-/// whether the size arguments are plain constants, and where and on
-/// which line the allocation sits.
+/// An allocation the walk has found but not yet released: the variable
+/// holding the block, the family behind it, whether the size arguments
+/// are plain constants, and where and on which line the allocation
+/// sits.
 pub(crate) struct OpenAllocation {
     pub(crate) variable: String,
     pub(crate) allocation_type: AllocationType,
@@ -340,12 +347,12 @@ pub(crate) struct OpenAllocation {
     pub(crate) line: String,
 }
 /// The variable a call's result is stored into, read from the call's
-/// own line: walking left from the callee to the `=` that assigns,
-/// the plain identifier sitting left of that `=`. A `=` that is part
-/// of a comparison (`==`, `!=`, `<=`, `>=`) or a compound assignment
-/// (`+=` and friends) assigns no result, and a target that is not a
-/// plain variable — a dereference, an indexed element, a field —
-/// stores the block somewhere the pairing cannot key on, so neither
+/// own line: walking left from the callee to the `=` that assigns, the
+/// plain identifier sitting left of that `=`. A `=` that is part of a
+/// comparison (`==`, `!=`, `<=`, `>=`) or a compound assignment (`+=`
+/// and friends) assigns no result. A target that is not a plain
+/// variable — a dereference, an indexed element, a field — stores the
+/// block somewhere the pairing cannot follow by name. Neither case
 /// binds anything.
 fn assigned_variable(body: &str, callee_offset: usize) -> Option<&str> {
     let line_start = body[..callee_offset]
@@ -404,13 +411,12 @@ fn assigned_variable(body: &str, callee_offset: usize) -> Option<&str> {
     Some(&line[start..end])
 }
 
-/// Whether an allocation's size arguments are plain integer
-/// constants: the C block families and `operator new` take their
-/// byte size as the first argument, `calloc` its count and element
-/// size as the first two. A size the decompiler wrote as a bare
-/// literal is known at compile time, which is what a fixed local
-/// needs; a size spelled as an expression is a runtime question the
-/// heap answers.
+/// Whether an allocation's size arguments are plain integer constants.
+/// The C block families and `operator new` take their byte size as the
+/// first argument; `calloc` takes its count and element size as the
+/// first two. A size the decompiler wrote as a bare literal is known
+/// at compile time, which is what a fixed local needs. A size spelled
+/// as an expression is decided at runtime and needs the heap.
 fn sizes_constant(allocation_type: AllocationType, args: &[&str]) -> bool {
     let count = match allocation_type {
         AllocationType::Calloc => 2,
@@ -419,11 +425,11 @@ fn sizes_constant(allocation_type: AllocationType, args: &[&str]) -> bool {
     args.len() >= count && args[..count].iter().all(|arg| constant_size(arg))
 }
 
-/// The argument text when it is one plain integer constant — decimal
-/// or `0x`-prefixed hex, seen through any cast — as the decompiler
-/// writes a compile-time-known block size. Anything else — a
-/// variable, a product, a global — spells a size the compiler does
-/// not know.
+/// Whether the argument is one plain integer constant — decimal or
+/// `0x`-prefixed hex, seen through any cast — the way the decompiler
+/// writes a block size known at compile time. Anything else — a
+/// variable, a product, a global — spells a size the compiler does not
+/// know.
 fn constant_size(arg: &str) -> bool {
     let value = strip_casts(arg, is_type_word);
     let digits = value.strip_prefix("0x").unwrap_or(&value);
@@ -433,12 +439,12 @@ fn constant_size(arg: &str) -> bool {
 }
 
 /// Whether `variable` is named anywhere in the body at or after
-/// `from`, outside string literals and whole-word only — a longer
-/// name merely carrying it is a different variable. The decompiler's
-/// habit of clearing a released pointer (`pvVar1 = (void *)0x0;`)
-/// names the variable without using the block: the assignment
-/// happens after the block is dead and keeps it dead, so it counts
-/// as no use.
+/// `from`. Only whole words outside string literals count: a longer
+/// name that merely contains the variable is a different variable. The
+/// decompiler often clears a released pointer (`pvVar1 = (void *)0x0;`
+/// ). That names the variable without using the block: the assignment
+/// happens after the block is dead and keeps it dead, so it counts as
+/// no use.
 fn used_after(body: &str, from: usize, variable: &str) -> bool {
     let bytes = body.as_bytes();
     let name = variable.as_bytes();
@@ -472,10 +478,10 @@ fn used_after(body: &str, from: usize, variable: &str) -> bool {
 }
 
 /// Whether the variable occurrence at `at` opens a whole statement
-/// that assigns it a null literal — the decompiler clearing a
-/// released pointer — rather than reading it. A comparison against
+/// that assigns the variable a null literal — the decompiler clearing
+/// a released pointer — rather than reading it. A comparison against
 /// null (`pvVar1 == (void *)0x0`) still reads the value, so it is a
-/// use; only a plain `variable = <null>;` is not.
+/// use. Only a plain `variable = <null>;` is not.
 fn nulls_variable(body: &str, at: usize, name_len: usize) -> bool {
     let before = body[..at].trim_end();
     if !(before.is_empty() || before.ends_with([';', '{', '}'])) {
@@ -494,8 +500,9 @@ fn nulls_variable(body: &str, at: usize, name_len: usize) -> bool {
         "0" | "0x0" | "NULL"
     )
 }
-/// The type words a decompiler cast may spell, matching the decompiler's
-/// vocabulary the other detectors' scans strip.
+/// Whether `word` is one of the type words a decompiler cast may
+/// spell, matching the decompiler vocabulary the other detectors'
+/// scans strip.
 pub(crate) fn is_type_word(word: &str) -> bool {
     matches!(
         word,
@@ -532,10 +539,10 @@ pub(crate) fn is_type_word(word: &str) -> bool {
     )
 }
 
-/// The argument text when it is one plain variable name — the spelling
-/// a release names the block it closes by. Anything else — an offset
+/// Whether the argument is one plain variable name — the spelling a
+/// release names the block it closes by. Anything else — an offset
 /// into the block, an indexed element, a literal — names no variable
-/// the pairing can key on.
+/// the pairing can follow by name.
 pub(crate) fn plain_variable(arg: &str) -> Option<&str> {
     let trimmed = arg.trim();
     let mut bytes = trimmed.bytes();
@@ -550,20 +557,20 @@ pub(crate) fn plain_variable(arg: &str) -> Option<&str> {
 // The standard name sets
 // ============================================================
 
-/// The standard allocator names: the spellings a scan recognizes as
-/// allocations out of the box — the C trio `malloc`, `calloc`, and
-/// `realloc`, and both renderings of the C++ `operator new` pair.
+/// The standard allocator names: the spellings the scan recognizes as
+/// allocations by default — the C trio `malloc`, `calloc`, and
+/// `realloc`, and both spellings of the C++ `operator new` pair.
 /// Ghidra has written demangled `operator new` two ways: the demangled
 /// dot form `operator.new`/`operator.new[]` and, in the live 6.x
 /// decompiler, the underscore form `operator_new`/`operator_new[]`
-/// (`local_220 = operator_new(0x660);`) — the default set carries both
-/// spellings rather than normalizing `.`/`_` in the matcher, so each
-/// name stays exactly a callee spelling the scan matches whole and a
-/// per-scan override through [`with_names`](AllocatorTracker::with_names)
-/// can still name one spelling alone. Each name carries the family it
-/// stands for, so a recognized call knows whether it obtained a raw
-/// block, a zero-filled block, a resized block, object storage, or
-/// array storage.
+/// (`local_220 = operator_new(0x660);`). The default set includes both
+/// spellings instead of normalizing `.`/`_` in the matcher. Each name
+/// stays exactly a callee spelling the scan matches whole, so a
+/// per-scan override through
+/// [`with_names`](AllocatorTracker::with_names) can still name one
+/// spelling alone. Each name records the family it stands for, so a
+/// recognized call knows whether it obtained a raw block, a zero-filled
+/// block, a resized block, object storage, or array storage.
 pub fn default_allocators() -> Vec<AllocatorSignature> {
     vec![
         AllocatorSignature::new("malloc", AllocationType::Malloc),
@@ -576,14 +583,14 @@ pub fn default_allocators() -> Vec<AllocatorSignature> {
     ]
 }
 
-/// The standard deallocator names: the spellings a scan recognizes as
-/// releases — `free`, which closes every C allocation including the
-/// block `realloc` replaces, and both renderings of `operator delete`:
-/// the demangled dot form `operator.delete`/`operator.delete[]` and
-/// the 6.x decompiler's underscore form
-/// `operator_delete`/`operator_delete[]`, which close C++ object and
-/// array storage. As in [`default_allocators`], both spellings are
-/// carried whole rather than normalized in the matcher.
+/// The standard deallocator names: the spellings the scan recognizes
+/// as releases. `free` closes every C allocation, including the block
+/// `realloc` replaces. Both spellings of `operator delete` close C++
+/// object and array storage: the demangled dot form
+/// `operator.delete`/`operator.delete[]`, and the 6.x decompiler's
+/// underscore form `operator_delete`/`operator_delete[]`. As in
+/// [`default_allocators`], both spellings are kept whole instead of
+/// being normalized in the matcher.
 pub fn default_deallocators() -> Vec<String> {
     vec![
         "free".into(),
@@ -604,8 +611,8 @@ mod tests {
 
     #[test]
     fn a_new_tracker_starts_with_no_names() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Building a tracker is free: it starts empty, compares equal
+        // however it is made, and a clone behaves the same.
         let tracker = AllocatorTracker::new();
         assert!(tracker.allocators().is_empty());
         assert!(tracker.deallocators().is_empty());
@@ -751,12 +758,12 @@ undefined FUN_18003ab00(void) {
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].function, "FUN_18003ab00");
         assert_eq!(hints[0].allocation_type, AllocationType::Malloc);
-        // A constant-size block dead at its release: the whole
-        // lifetime sits inside the function, so the pairing reads as
-        // a local value rather than a boxed one.
+        // A constant-size block that is dead at its release: its whole
+        // lifetime sits inside the function, so the pairing suggests a
+        // local value rather than a boxed one.
         assert_eq!(hints[0].suggestion, "stack allocation");
         assert_eq!(hints[0].confidence, STACK_CONFIDENCE);
-        // The evidence carries both sides of the pairing.
+        // The evidence shows both sides of the pairing.
         assert_eq!(hints[0].evidence, "pvVar1 = malloc(0x20); free(pvVar1);");
     }
 
@@ -791,8 +798,8 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn an_operator_new_array_pair_reads_as_a_sequence() {
         // The demangled array spelling keeps its dot and brackets:
-        // `operator.new[]` is one callee, and its storage reads as
-        // what a growable sequence stands in for.
+        // `operator.new[]` is one callee, and its storage reads as a
+        // growable sequence.
         let hints = pairs(
             "\
   puVar2 = (ulonglong *)operator.new[](0x40);
@@ -806,8 +813,8 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn an_underscore_spelled_operator_new_pair_pairs_like_the_dot_form() {
         // The live 6.x decompiler writes the C++ operators with
-        // underscores (`local_220 = operator_new(0x660);`); the
-        // underscore spelling is a plain identifier to the scan and
+        // underscores (`local_220 = operator_new(0x660);`). To the
+        // scan, the underscore spelling is a plain identifier, and it
         // pairs exactly as the demangled dot form does.
         let hints = pairs(
             "\
@@ -825,9 +832,9 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn an_underscore_spelled_operator_new_array_pair_reads_as_a_sequence() {
-        // The array spelling carries its brackets the same way in
-        // either form: `operator_new[]` is one callee and its storage
-        // reads as what a growable sequence stands in for.
+        // The array spelling keeps its brackets the same way in either
+        // form: `operator_new[]` is one callee, and its storage reads
+        // as a growable sequence.
         let hints = pairs(
             "\
   puVar2 = (ulonglong *)operator_new[](0x40);
@@ -840,8 +847,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn an_underscore_spelled_name_inside_a_longer_name_matches_nothing() {
-        // Whole names still: a decompiler body calling the new handler is
-        // not calling `operator_new`.
+        // Still whole names only: a decompiler body calling the new
+        // handler is not calling `operator_new`.
         assert!(
             pairs(
                 "\
@@ -875,15 +882,15 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn an_allocation_stored_in_no_variable_pairs_nothing() {
-        // `free(malloc(0x10))` names no variable on either side for
-        // the pairing to key on.
+        // `free(malloc(0x10))` names no variable on either side that
+        // the pairing can follow.
         assert!(pairs("  free(malloc(0x10));").is_empty());
     }
 
     #[test]
     fn an_allocation_never_released_is_not_reported() {
         // Whether the block escapes or leaks is a cross-function
-        // question; this pairing stays quiet on it.
+        // question; this pairing says nothing about it.
         assert!(
             pairs(
                 "\
@@ -910,8 +917,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn the_latest_allocation_of_a_variable_pairs_with_the_release() {
-        // Two blocks stored under one name, one release: the release
-        // closes the second, and the first stands unpaired.
+        // Two blocks stored under one name and one release: the
+        // release closes the second, and the first stays unpaired.
         let hints = pairs(
             "\
   pvVar1 = malloc(0x10);
@@ -924,8 +931,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn independent_variables_each_pair_in_allocation_order() {
-        // Releases close out of nesting order, but the hints come
-        // back in allocation order so two scans diff cleanly.
+        // Releases close blocks out of nesting order, but the hints
+        // come back in allocation order so two scans diff cleanly.
         let hints = pairs(
             "\
   pvVar1 = malloc(0x10);
@@ -958,7 +965,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_longer_or_qualified_name_matches_no_configured_name() {
         // Whole names only: a longer spelling is a different callee,
-        // and a member access through an object is no plain call.
+        // and a member access through an object is not a plain call.
         assert!(
             pairs(
                 "\
@@ -974,7 +981,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_release_naming_something_other_than_a_variable_pairs_nothing() {
         // An offset into the block names no variable the pairing can
-        // key on.
+        // follow.
         assert!(
             pairs(
                 "\
@@ -1002,7 +1009,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_comparison_is_not_an_assignment() {
         // The `==` assigns nothing, so the recognized allocation
-        // stores its result nowhere the pairing keys on.
+        // stores its result where the pairing cannot follow it.
         assert!(pairs("  if (pvVar1 == realloc(pvVar1, 0x20)) { iVar1 = 1; }").is_empty());
     }
 
@@ -1028,9 +1035,9 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_dynamic_size_pair_keeps_the_box_suggestion() {
-        // A size spelled as an expression is a runtime question; a
+        // A size spelled as an expression is decided at runtime; a
         // block whose size the compiler does not know has no fixed
-        // local that could stand in for it.
+        // local value that could take its place.
         let hints = pairs(
             "\
   pvVar1 = malloc(uVar1);
@@ -1043,7 +1050,7 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_realloc_pair_never_reads_as_stack_allocation() {
-        // A resized block has no fixed size however constant this
+        // A resized block has no fixed size, however constant this
         // resize's argument is.
         let hints = pairs(
             "\
@@ -1074,7 +1081,7 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_variable_named_after_the_release_keeps_the_box_suggestion() {
-        // The block's story does not end at the release line, so the
+        // The block is still named after the release line, so the
         // reading stays with the safe heap pattern.
         let hints = pairs(
             "\
@@ -1088,7 +1095,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_comparison_after_the_release_is_a_use() {
         // Reading the variable against null still names it; only a
-        // plain null assignment clears it.
+        // plain assignment of null clears it.
         let hints = pairs(
             "\
   pvVar1 = malloc(0x20);
@@ -1100,9 +1107,9 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn clearing_a_released_pointer_is_not_a_use() {
-        // The decompiler's habit of nulling a freed pointer names the
-        // variable after the release without reading the block; the
-        // pair still reads as a local value.
+        // The decompiler often nulls a freed pointer: this names the
+        // variable after the release without reading the block, so
+        // the pair still reads as a local value.
         let hints = pairs(
             "\
   pvVar1 = malloc(0x20);
@@ -1115,7 +1122,7 @@ undefined FUN_18003ab00(void) {
     #[test]
     fn a_string_or_a_longer_name_after_the_release_is_not_a_use() {
         // Whole words outside string literals only: the variable's
-        // letters inside a format string or inside a longer name name
+        // letters inside a format string or inside a longer name are
         // no use of the block.
         let hints = pairs(
             "\
@@ -1129,8 +1136,8 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn a_pair_inside_a_loop_keeps_its_short_lived_reading() {
-        // The release sits inside the loop that allocates; the block
-        // is dead at every iteration's release either way.
+        // The release sits inside the loop that allocates; either
+        // way, the block is dead at every iteration's release.
         let hints = pairs(
             "\
   while (iVar1 != 0) {
