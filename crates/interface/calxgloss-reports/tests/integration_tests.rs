@@ -1,19 +1,22 @@
-//! Integration tests for [`DashboardBuilder`] — review verdicts must survive
-//! a dashboard rebuild (issue #9), and the dependency edges the builder wires
-//! must be dense enough for the `Blocked` cascade to bite (issue #10).
+//! Integration tests for [`DashboardBuilder`].
+//!
+//! Review verdicts must survive a dashboard rebuild (issue #9), and the
+//! dependency edges the builder records must be complete enough for a
+//! `Blocked` status to spread from a dependency to every unit translating
+//! on top of it (issue #10).
 //!
 //! The builder recomputes every unit's status from branch state on each
-//! build; these tests pin the fix that makes the failing verdicts durable:
-//! rejection records (`re/rejections/`) report `SendBack`, patch-request
-//! records (`re/patches/` with a `patch_request` field) report
-//! `PatchRequested`, and a merged branch stays `Accepted` whichever records
-//! exist — branch state remains authoritative for acceptance.
+//! build. These tests guard the fix that keeps failing verdicts after a
+//! rebuild: a rejection record (`re/rejections/`) reports `SendBack`, a
+//! patch-request record (`re/patches/` with a `patch_request` field)
+//! reports `PatchRequested`, and a merged branch stays `Accepted` no
+//! matter which records exist — branch state decides acceptance.
 //!
-//! The cascade tests pin the branch-model edges: a function unit depends on
-//! the shim-layer unit its classification requires (the same dependency the
-//! branch-creation policy checks) and on its DLL's classification unit, so a
-//! sent-back dependency cascades `Blocked` to everything translating on top
-//! of it.
+//! The cascade tests check the branch model's edges. A function unit
+//! depends on the shim-layer unit its classification requires (the same
+//! dependency the branch-creation policy checks) and on its DLL's
+//! classification unit. So when a dependency is sent back, every unit
+//! translating on top of it reports `Blocked`.
 
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_reports::dashboard::{
@@ -34,8 +37,8 @@ fn temp_workspace() -> tempfile::TempDir {
     dir
 }
 
-/// Creates the attempt branch `re/{binary}/{function}v{attempt}` off `main`,
-/// commits a stub source file on it, and returns HEAD to `main`.
+/// Creates the attempt branch `re/{binary}/{function}v{attempt}` from
+/// `main`, commits a stub source file on it, and returns HEAD to `main`.
 fn commit_on_branch(git: &GitManager, binary: &str, function: &str, attempt: u32) {
     git.create_branch(binary, function, attempt, None)
         .expect("create branch");
@@ -81,10 +84,10 @@ fn return_to_main(git: &GitManager) {
         .expect("reset to main");
 }
 
-/// Writes a failure-shaped patch record at
-/// `re/patches/{binary}/{function}/v{attempt}.json` — the shape
-/// `GitManager::store_failure` writes. With `patch_request` set it becomes
-/// the shape the review UI's request-patch action writes instead.
+/// Writes a patch record at `re/patches/{binary}/{function}/v{attempt}.json`
+/// in the shape `GitManager::store_failure` writes for a pipeline failure.
+/// With `patch_request` set, it instead has the shape the review UI's
+/// request-patch action writes.
 fn write_patch_record(
     git: &GitManager,
     binary: &str,
@@ -121,9 +124,10 @@ fn write_patch_record(
     .expect("write patch record");
 }
 
-/// Writes a classification record at `re/classify/{binary}.json` in the shape
-/// the `classify` command writes (a serialized `DllClassification`), carrying
-/// the category and crate replacement the branch-creation policy checks.
+/// Writes a classification record at `re/classify/{binary}.json`, in the
+/// shape the `classify` command writes (a serialized `DllClassification`).
+/// It carries the category and the crate replacement that the
+/// branch-creation policy checks.
 fn write_classification_record(
     git: &GitManager,
     binary: &str,
@@ -176,8 +180,9 @@ fn send_back_verdict_survives_rebuild() {
     git.reject_branch(&branch, "wrong blend mode mapping")
         .expect("write send-back record");
 
-    // The verdict must hold across rebuilds, not just the build that saw
-    // the action — the builder reads `re/rejections/`, not in-memory state.
+    // The verdict must survive rebuilds, not just the build that saw the
+    // send-back happen — the builder reads `re/rejections/`, not in-memory
+    // state.
     for round in 1..=2 {
         let dashboard = build(&git);
         let unit = find_unit(&dashboard, "game_logic.dll/DrawSprite/v1");
@@ -198,7 +203,8 @@ fn patch_request_record_reports_patch_requested() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
     commit_on_branch(&git, "game_logic.dll", "DrawSprite", 1);
-    // request_patch spawns the next-attempt branch and records the request there.
+    // request_patch creates the next-attempt branch and records the request
+    // on that attempt.
     commit_on_branch(&git, "game_logic.dll", "DrawSprite", 2);
     write_patch_record(
         &git,
@@ -226,7 +232,7 @@ fn failure_record_without_patch_request_reports_pending_review() {
     write_patch_record(&git, "game_logic.dll", "DrawSprite", 1, None);
 
     // A plain pipeline failure record is not a reviewer verdict — the
-    // attempt simply failed and awaits review as before.
+    // attempt only failed, and it waits for review like any other attempt.
     let dashboard = build(&git);
     let unit = find_unit(&dashboard, "game_logic.dll/DrawSprite/v1");
     assert_eq!(
@@ -248,8 +254,8 @@ fn merged_branch_with_send_back_reports_accepted() {
     git.reject_branch(&branch, "stale rejection")
         .expect("write send-back record");
 
-    // Branch state stays authoritative for acceptance: a merged branch is
-    // Accepted whichever records sit beside it.
+    // Branch state decides acceptance: a merged branch is Accepted no
+    // matter which other records exist.
     let dashboard = build(&git);
     let unit = find_unit(&dashboard, "game_logic.dll/DrawSprite/v1");
     assert_eq!(
@@ -284,9 +290,10 @@ fn send_back_is_scoped_to_its_attempt() {
 
 #[test]
 fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
-    // Binary identity is the filename verbatim, extension included: a
-    // workspace holding both `foo.dll` and `foo.exe` must key their units
-    // apart end-to-end — branches, unit ids, and the dashboard (issue #68).
+    // A binary's identity is its filename exactly as written, extension
+    // included. A workspace holding both `foo.dll` and `foo.exe` must keep
+    // their units separate everywhere — in branches, unit ids, and the
+    // dashboard (issue #68).
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
     commit_on_branch(&git, "foo.dll", "DrawSprite", 1);
@@ -306,7 +313,7 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
         "foo.exe"
     );
 
-    // Both units surface in the review queue side by side.
+    // Both units appear together in the review queue.
     let queued: Vec<&str> = dashboard
         .review_queue
         .iter()
@@ -329,10 +336,10 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
 
 #[test]
 fn accepted_units_keep_stable_recent_activity_across_rebuilds() {
-    // The web Recent activity panel showed every accepted unit as "just
-    // now" and cycled its order between refreshes: the builder stamped
-    // `updated_at` with the build time and left the list in filesystem
-    // order. Timestamps must come from the work, not the build.
+    // The web Recent activity panel once showed every accepted unit as
+    // "just now" and changed the list's order between refreshes: the
+    // builder set `updated_at` to the build time and left the list in
+    // filesystem order. Timestamps must come from the work, not the build.
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
     write_classification_record(&git, "game_logic.dll", "MicrosoftSdk", None);
@@ -359,7 +366,8 @@ fn accepted_units_keep_stable_recent_activity_across_rebuilds() {
         "a merged unit's updated_at is its branch commit time, not the build time"
     );
 
-    // The classification unit timestamps from its record file, not the build.
+    // The classification unit's timestamp comes from its record file, not
+    // from the build.
     let classify = find_unit(&first, "classify/game_logic.dll");
     let mtime = std::fs::metadata(dir.path().join("re/classify/game_logic.dll.json"))
         .expect("classification record")
@@ -372,10 +380,10 @@ fn accepted_units_keep_stable_recent_activity_across_rebuilds() {
     );
 }
 
-/// The `classify` command serializes `Strategy` as an enum: unit variants
-/// as bare strings, crate replacement as a tagged object. The dashboard
-/// must read the variant name from either form — a record whose strategy
-/// is an object must not fail to parse and lose its category too.
+/// The `classify` command serializes `Strategy` as an enum: its unit
+/// variants as bare strings, crate replacement as a tagged object. The
+/// dashboard must read the variant name from either form. A record whose
+/// strategy is an object must still parse and keep its category.
 #[test]
 fn tagged_object_strategy_hydrates_category_and_strategy() {
     let dir = temp_workspace();
@@ -418,7 +426,7 @@ fn sent_back_shim_blocks_dependent_function_unit() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
     // d3d9.dll is a crate-replacement target: the branch model requires the
-    // wgpu shim layer merged into main before its functions translate.
+    // wgpu shim layer to be merged into main before its functions translate.
     write_classification_record(&git, "d3d9.dll", "MicrosoftSdk", Some("wgpu"));
 
     commit_on_branch(&git, "shim", "wgpu", 1);
@@ -487,8 +495,9 @@ fn no_classification_record_means_no_shim_edge_and_no_blocking() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
 
-    // A shim branch sent back, but no classification record naming the shim:
-    // the branch model has no declared dependency, so nothing is blocked.
+    // The shim branch is sent back, but no classification record declares
+    // the shim: the branch model declares no dependency, so nothing is
+    // blocked.
     commit_on_branch(&git, "shim", "wgpu", 1);
     let shim_branch = GitBranch::new("shim", "wgpu", 1).expect("branch name");
     git.reject_branch(&shim_branch, "shim rejected")
