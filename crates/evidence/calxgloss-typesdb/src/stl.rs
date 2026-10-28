@@ -1,20 +1,23 @@
 //! STL/MFC shape detection over recovered names.
 //!
 //! C++ standard-library and MFC types — `basic_string`/`CString`, `vector`,
-//! `list`, the `map`/`set` family, smart pointers — arrive in the database
-//! like any other class: as Type Manager names, as RTTI-demangled vtable
-//! class names, and as the suggested types of inferred fields. The
-//! translator wastes effort inventing raw layouts for types that map
-//! directly onto Rust's `String`/`Vec<T>`/`BTreeMap<K,V>`, so the scan
-//! flags records whose *name* matches a known shape with the [`StlKind`]
-//! naming the family.
+//! `list`, the `map`/`set` family, smart pointers — arrive in the type
+//! database like any other class. They show up as Type Manager names, as
+//! RTTI-demangled vtable class names, and as the suggested types of
+//! inferred fields.
 //!
-//! Detection is name-pattern matching, not layout analysis: [`detect`]
-//! matches a recovered name against the family token lists below and
-//! never inspects fields or sizes. It is flag-only — a flagged record
-//! stays in every section and answers every lookup — because a name is
-//! evidence, not proof: the program may define its own `MySet`, and an
-//! STL type hidden behind a typedef alias carries no shape to match.
+//! The translator wastes effort inventing raw layouts for types that map
+//! directly onto Rust's `String`/`Vec<T>`/`BTreeMap<K,V>`. So the scan
+//! flags records whose *name* matches a known shape, and records the
+//! matched family as an [`StlKind`].
+//!
+//! Detection is name-pattern matching, not layout analysis. [`detect`]
+//! matches a recovered name against the family token lists below; it
+//! never inspects fields or sizes. The result is flag-only: a flagged
+//! record stays in every section and answers every lookup. The reason is
+//! that a name is evidence, not proof. The program may define its own
+//! `MySet`, and an STL type hidden behind a typedef alias has no name
+//! shape to match.
 
 use calxgloss_types::display_serde_label;
 use serde::{Deserialize, Serialize};
@@ -48,14 +51,15 @@ display_serde_label!(StlKind {
 
 /// The family token lists, matched case-sensitively.
 ///
-/// The spellings cover both the shapes Ghidra's own demangler writes into
-/// the Type Manager (`vector<int,std::allocator<int>_ >`) and the ones
-/// this crate's RTTI demangler produces for vtable class names — there
-/// template segments arrive reversed and `$`-prefixed
-/// (`std::VWidget::$vector`), which the boundary rule below accepts.
-/// Generic tokens stay lowercase so a program's own `Set`/`List`/`String`
-/// class is not mistaken for the standard-library one; `CString` is the
-/// one mixed-case token because that is how MFC spells it.
+/// The spellings cover two demangler dialects. One is what Ghidra's own
+/// demangler writes into the Type Manager (`vector<int,std::allocator<int>_ >`).
+/// The other is what this crate's RTTI demangler produces for vtable
+/// class names: there the template segments arrive reversed and
+/// `$`-prefixed (`std::VWidget::$vector`), and the boundary rule below
+/// accepts that form. Generic tokens stay lowercase, so a program's own
+/// `Set`/`List`/`String` class is not mistaken for the standard-library
+/// one. `CString` is the one mixed-case token because that is how MFC
+/// spells it.
 const SHAPES: &[(StlKind, &[&str])] = &[
     (
         StlKind::String,
@@ -95,16 +99,17 @@ const SHAPES: &[(StlKind, &[&str])] = &[
 /// The family whose shape `name` matches, or `None` when no shape does.
 ///
 /// Only the *head* of the name — the part before the first `<` — is
-/// matched: template arguments say what a type contains, not what it is,
-/// so `std::less<std::string>` and `pair<char *,int>` carry no shape even
-/// though their arguments do.
+/// matched. Template arguments say what a type contains, not what the
+/// type is, so `std::less<std::string>` and `pair<char *,int>` match no
+/// shape even though their arguments do.
 ///
 /// A token matches only as a whole word: the characters on either side
-/// (if any) must not be identifier characters, so `offset` is not a
-/// `set`, `listing` is not a `list`, and `my_set` is not a `set`, while
-/// `std::vector<…>`, `$vector`, and `char *` all match. Longer tokens
-/// need no special ordering — `multimap`'s embedded `map` is blocked by
-/// the boundary rule, so the `multimap` token carries the match.
+/// (if any) must not be identifier characters. So `offset` contains no
+/// `set`, `listing` contains no `list`, and `my_set` contains no `set`,
+/// while `std::vector<…>`, `$vector`, and `char *` all match. Longer
+/// tokens need no special ordering: `multimap` contains an embedded `map`,
+/// but the boundary rule blocks it, so the `multimap` token produces the
+/// match.
 ///
 /// When a head matches several families, the family whose token appears
 /// *earliest* wins, because the leading token names the outer type.
@@ -141,7 +146,7 @@ fn find_word(haystack: &str, token: &str) -> Option<usize> {
     None
 }
 
-/// Whether `byte` continues an identifier — the delimiters that *do*
+/// Whether `byte` continues an identifier. The delimiters that *do*
 /// separate shape tokens are `:`, `$`, `<`, `,`, spaces, and string ends.
 fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
@@ -213,9 +218,9 @@ mod tests {
     #[test]
     fn detects_the_rtti_demangler_s_spellings() {
         // Pin the detector against the demangler's real output, not a
-        // hand-written spelling: `.?AV?$vector@VWidget@@std@@` demangles
-        // to segments reversed and `$`-prefixed, and the boundary rule
-        // still sees the token.
+        // hand-written spelling. `.?AV?$vector@VWidget@@std@@` demangles
+        // to template segments reversed and `$`-prefixed, and the
+        // boundary rule still finds the token.
         let vector = crate::vtable::demangle_rtti_name(".?AV?$vector@VWidget@@std@@")
             .expect("a class descriptor should demangle");
         assert_eq!(detect(&vector), Some(StlKind::Vector), "{vector}");
@@ -237,8 +242,8 @@ mod tests {
 
     #[test]
     fn template_arguments_alone_never_name_a_family() {
-        // Wrappers whose own head carries no shape stay unflagged even
-        // when their arguments do.
+        // A wrapper whose own head has no shape stays unflagged, even
+        // when its template arguments do.
         assert_eq!(detect("std::less<std::string>"), None);
         assert_eq!(detect("pair<char *,int>"), None);
         assert_eq!(detect("allocator<char *>"), None);
@@ -266,11 +271,12 @@ mod tests {
 
     #[test]
     fn decompiler_default_names_are_not_flagged() {
-        // The unnamed-function placeholders both engines mint — Ghidra's
-        // `FUN_…`/`LAB_…`/`SUB_…` and Kuna's lowercase `sub_…`/`dat_…`/
-        // `label_…` — are address spellings, not types: no shape token
-        // can whole-word match inside the bare hex tail, so the detector
-        // stays silent on either dialect's names.
+        // Both analysis engines create unnamed-function placeholders:
+        // Ghidra writes `FUN_…`/`LAB_…`/`SUB_…`, and Kuna writes the
+        // lowercase `sub_…`/`dat_…`/`label_…`. These are address
+        // spellings, not types. No shape token can whole-word match
+        // inside the bare hex tail, so the detector stays silent on
+        // either dialect's names.
         for name in [
             "FUN_1800861f0",
             "LAB_1800010b7",

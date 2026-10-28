@@ -8,10 +8,10 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted database doubles as a cache: [`exists`](Self::exists) is the
-//! check a caller runs before deciding whether a scan is needed, and
-//! [`load`](Self::load) reads the whole document back — metadata and all
-//! three recovered sections — for the translation pipeline to query.
+//! A saved database also acts as a cache. [`exists`](Self::exists) is the
+//! check a caller makes before deciding whether to run the scan again.
+//! [`load`](Self::load) reads the whole document back — the metadata and
+//! all three recovered sections — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};
 
@@ -25,8 +25,8 @@ use crate::types::TypeDatabase;
 ///
 /// # File Layout
 ///
-/// Databases are filed under a cache directory, named after the binary the
-/// scan read:
+/// Each database is saved under a cache directory, in a file named after
+/// the binary the scan read:
 ///
 /// ```text
 /// cache_dir/
@@ -34,8 +34,8 @@ use crate::types::TypeDatabase;
 /// ```
 ///
 /// The default cache directory is `{workspace}/re/analysis/typesdb/`,
-/// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir) points
-/// the persistor at an explicit directory instead.
+/// set by [`new`](Self::new). [`with_cache_dir`](Self::with_cache_dir)
+/// instead points the persistor at an explicit directory.
 ///
 /// # Example
 ///
@@ -75,25 +75,26 @@ impl TypeDatabasePersistor {
         }
     }
 
-    /// Returns the path the database for `binary` is filed under.
+    /// Returns the path where the database for `binary` is saved.
     pub fn path_for(&self, binary: &str) -> PathBuf {
         self.store.path_for(binary)
     }
 
-    /// Whether a persisted database exists for `binary`.
+    /// Whether a saved database exists for `binary`.
     ///
-    /// This is the cache check: a caller that wants recovered types without
-    /// re-running the scan asks here first and only drives
+    /// This is the cache check. A caller that wants recovered types without
+    /// re-running the scan asks here first, and only runs
     /// [`TypesDBEngine`](crate::engine::TypesDBEngine) when the answer is
     /// `false`.
     pub fn exists(&self, binary: &str) -> bool {
         self.store.exists(binary)
     }
 
-    /// Saves a type database to JSON, keyed on its metadata's binary name.
+    /// Saves a type database to JSON, keyed on the binary name in its
+    /// metadata.
     ///
-    /// Creates the cache directory hierarchy if it does not exist, serializes
-    /// the database, and writes it to disk — a rescan replaces the previous
+    /// It creates the cache directory tree if needed, serializes the
+    /// database, and writes it to disk. A rescan replaces the previous
     /// document for the same binary.
     ///
     /// # Errors
@@ -130,9 +131,9 @@ impl TypeDatabasePersistor {
         Ok(self.store.load(binary)?)
     }
 
-    /// Returns the path the rendered Rust declarations for `binary` are
-    /// filed under — the JSON document's path with a `.rs` extension, so
-    /// the two artifacts always sit side by side.
+    /// Returns the path where the rendered Rust declarations for `binary`
+    /// are saved: the JSON document's path with a `.rs` extension, so the
+    /// two files always sit side by side.
     pub fn decls_path_for(&self, binary: &str) -> PathBuf {
         self.path_for(binary).with_extension("rs")
     }
@@ -144,9 +145,9 @@ impl TypeDatabasePersistor {
 
     /// Writes the rendered Rust declarations beside the JSON document.
     ///
-    /// The file is a derived artifact: it is rewritten whole from the
-    /// loaded database on every scan and never read back, so a rescan
-    /// that changes nothing leaves a byte-identical file.
+    /// The file is a derived artifact. Every scan rewrites it in full from
+    /// the loaded database, and nothing reads it back. So a rescan that
+    /// changes nothing leaves a byte-identical file.
     ///
     /// # Errors
     ///
@@ -250,10 +251,10 @@ mod tests {
 
     #[test]
     fn the_filed_document_carries_its_coverage_record_exactly() {
-        // What the engine stamped inside its scan is what every later
-        // reader — the projection seam, the report, a `--show` months
-        // later — sees: the status, the facet id, and the limitation line
-        // ride the persistor untouched (issue #348).
+        // What the scan writes about its own coverage is what every later
+        // reader sees — the projection seam, the report, or a `--show`
+        // months later. The status, the facet id, and the limitation line
+        // pass through the persistor untouched (issue #348).
         let dir = TempDir::new().unwrap();
         let persistor = TypeDatabasePersistor::with_cache_dir(dir.path());
         let mut db = database("eqmain.dll");
@@ -283,8 +284,8 @@ mod tests {
 
     #[test]
     fn a_document_in_the_shipped_mvp_shape_still_loads() {
-        // Databases written before the linking pass carry no
-        // `linked_vtable` key; the field defaults, so the cache keeps
+        // A database written before the linking pass has no
+        // `linked_vtable` key. The field defaults, so the cache keeps
         // working across the upgrade.
         let dir = TempDir::new().unwrap();
         let persistor = TypeDatabasePersistor::with_cache_dir(dir.path());
@@ -314,9 +315,9 @@ mod tests {
 
     #[test]
     fn a_named_type_written_before_the_nesting_pass_still_loads() {
-        // Documents written before the nesting pass carry no `linked_type`
-        // or `linked_kind` keys on their struct fields; both default, so
-        // the cache keeps working across the upgrade.
+        // Documents written before the nesting pass have no `linked_type`
+        // or `linked_kind` keys on their struct fields. Both fields
+        // default, so the cache keeps working across the upgrade.
         let dir = TempDir::new().unwrap();
         let persistor = TypeDatabasePersistor::with_cache_dir(dir.path());
         let text = r#"{

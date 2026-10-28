@@ -1,7 +1,7 @@
 //! Error types for the calxgloss-typesdb crate.
 //!
-//! This module defines `TypesDbError`, the unified error type used throughout
-//! the type database crate for decompiler type-library scanning, vtable detection,
+//! This module defines `TypesDbError`, the one error type the whole crate
+//! uses. It covers scanning the decompiler's type library, vtable detection,
 //! string-guided inference, and JSON persistence.
 
 use thiserror::Error;
@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Errors that can occur during type database operations.
 #[derive(Debug, Error)]
 pub enum TypesDbError {
-    /// An engine read through the analysis seam failed.
+    /// A read through the analysis seam failed.
     #[error("engine error: {0}")]
     Engine(#[from] calxgloss_decomp::EngineError),
 
@@ -29,14 +29,14 @@ pub enum TypesDbError {
     #[error("empty type name")]
     EmptyTypeName,
 
-    /// A type database scan failed for a DLL.
+    /// The type database scan failed for one target binary.
     #[error("type database scan failed for '{binary}': {reason}")]
     ScanFailed { binary: String, reason: String },
 }
 
-/// Maps the shared JSON store's errors onto this crate's error type: the
-/// store's not-found becomes [`TypesDbError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// Maps the shared JSON store's errors onto this crate's error type.
+/// The store's not-found error becomes [`TypesDbError::NotFound`]; its I/O
+/// and JSON errors become the existing pass-through variants.
 impl From<calxgloss_types::persist::PersistError> for TypesDbError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

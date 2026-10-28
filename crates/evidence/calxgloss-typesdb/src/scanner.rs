@@ -1,21 +1,21 @@
 //! Named type recovery from the Type Manager.
 //!
 //! [`TypeLibraryScanner`] with `scan_named_types()` queries the seam's
-//! `data_types()` / `struct_layout()` / `enum_values()` reads and
-//! returns every named type in the Type Manager — including types never
-//! applied to a symbol. Malformed or partially available type data degrades
-//! gracefully rather than failing the whole scan.
+//! `data_types()` / `struct_layout()` / `enum_values()` reads. It returns
+//! every named type in the Type Manager, including types never applied to
+//! a symbol. Malformed or partially available type data degrades that one
+//! type instead of failing the whole scan.
 //!
 //! The listing itself carries no kind column (`name | category | N bytes |
-//! path`), but the bridge's `category` filter matches the word against the
+//! path`). But the bridge's `category` filter matches the word against the
 //! type's category name *or* its own classification (`struct`, `union`,
 //! `enum`, `typedef`, `pointer`, `array`, `function`, `primitive`), as a
 //! case-insensitive substring (verified against the v6.0.0 plugin's
 //! `DataTypeService.listDataTypes`). So the scanner fetches one filtered
 //! listing per kind to learn which bucket a type sits in, then confirms
-//! structures and enumerations with layout probes. A type in no bucket is
-//! never a structure or enumeration — the bridge classifies every one into
-//! its bucket — so it is recorded without probing.
+//! structures and enumerations with layout probes. The bridge classifies
+//! every structure and enumeration into its bucket, so a type in no bucket
+//! is never a structure or enumeration and is recorded without probing.
 
 use crate::error::Result;
 use crate::types::{NamedType, TypeKind};
@@ -47,9 +47,10 @@ fn kind_word(kind: TypeKind) -> &'static str {
 
 /// Whether a Type Manager entry is worth recovering.
 ///
-/// Pointer and array variants arrive as separate entries (`name *`, `char[2]`)
-/// whose base type is already covered, and Ghidra's builtin primitives and
-/// demangler placeholders are vocabulary rather than recovered information.
+/// Pointer and array variants arrive as separate entries (`name *`,
+/// `char[2]`), and the scan already covers their base type. Ghidra's
+/// builtin primitives and demangler placeholders are vocabulary, not
+/// recovered information.
 fn is_recoverable_candidate(entry: &DataTypeEntry) -> bool {
     if entry.name.ends_with('*') || entry.name.ends_with(']') {
         return false;
@@ -63,11 +64,12 @@ fn is_recoverable_candidate(entry: &DataTypeEntry) -> bool {
 
 /// Which classification buckets each Type Manager path appeared in.
 ///
-/// Built from one filtered listing per classification word. A bucket is a
-/// superset: the filter matches the classification *or* the category name,
-/// so a typedef in a category named `struct.h` also lands in the struct
-/// bucket. [`KindHints::hint_for`] flags those suspect memberships, and the
-/// scanner confirms them with probes instead of trusting them.
+/// The map is built from one filtered listing per classification word. A
+/// bucket is a superset: the filter matches the classification *or* the
+/// category name, so a typedef in a category named `struct.h` also appears
+/// in the struct bucket. [`KindHints::hint_for`] marks those memberships
+/// as suspect, and the scanner confirms them with probes instead of
+/// trusting them.
 #[derive(Debug, Default)]
 pub struct KindHints {
     buckets: Vec<(TypeKind, HashSet<String>)>,
@@ -80,8 +82,8 @@ pub struct KindHint {
     /// The kind the type was bucketed as.
     pub kind: TypeKind,
     /// Whether the membership came from the classification alone. It is
-    /// suspect when the type's category name also contains the kind word,
-    /// because the filter would have matched on that instead.
+    /// suspect when the type's category name also contains the kind word:
+    /// the filter could have matched on the category name instead.
     pub certain: bool,
 }
 
@@ -103,7 +105,7 @@ impl KindHints {
     /// The certainty test mirrors the bridge's category-side match exactly:
     /// both ask whether the (lowercased) category name contains the kind
     /// word. When it does not, the membership can only come from the
-    /// classification side — and each kind word is a substring of only its
+    /// classification side. And each kind word is a substring of only its
     /// own classification, so a certain membership *is* the bridge's verdict.
     fn memberships<'a>(&'a self, entry: &'a DataTypeEntry) -> impl Iterator<Item = KindHint> + 'a {
         self.buckets.iter().filter_map(move |(kind, paths)| {
@@ -114,9 +116,10 @@ impl KindHints {
         })
     }
 
-    /// The bucket to resolve the entry against: a certain membership first,
-    /// since a suspect one may be nothing but the category name matching the
-    /// filter; among equals, probe priority (`KIND_BUCKETS` order).
+    /// The bucket to resolve the entry against. A certain membership comes
+    /// first, because a suspect one may only mean that the category name
+    /// matched the filter. Among equal memberships, probe priority decides
+    /// (`KIND_BUCKETS` order).
     fn hint_for(&self, entry: &DataTypeEntry) -> Option<KindHint> {
         let mut memberships: Vec<KindHint> = self.memberships(entry).collect();
         // Stable sort: certain before suspect, bucket order within each class.
@@ -126,9 +129,9 @@ impl KindHints {
 
     /// The kind to record when both layout probes missed.
     ///
-    /// Only the union and typedef buckets remain usable: the struct and enum
-    /// buckets were just disproven by the probes. A certain membership beats
-    /// a suspect one — a typedef in a category named `unions` sits in both
+    /// Only the union and typedef buckets remain usable: the probes just
+    /// ruled out the struct and enum buckets. A certain membership beats a
+    /// suspect one. A typedef in a category named `unions` appears in both
     /// buckets, and only the typedef bucket reflects its classification.
     fn fallback_kind(&self, entry: &DataTypeEntry) -> TypeKind {
         let candidates: Vec<KindHint> = self
@@ -147,7 +150,7 @@ impl KindHints {
 // Scanner
 // ============================================================
 
-/// Named type recovery from the engine's type listing.
+/// Named type recovery from the analysis engine's type listing.
 ///
 /// The scanner is generic over [`ScanSource`] so tests can drive it
 /// with canned responses; [`new`](Self::new) builds one over a loaded
@@ -175,7 +178,8 @@ impl<S> TypeLibraryScanner<S> {
     }
 
     /// The source this scanner reads the Type Manager through. The
-    /// engine's scan asks it what engine produced the reads (issue #208).
+    /// type-database scan uses it to record which analysis engine produced
+    /// the reads (issue #208).
     pub(crate) fn source(&self) -> &S {
         &self.source
     }
@@ -188,12 +192,12 @@ impl<S> TypeLibraryScanner<S> {
 
     /// Recover every named type the Type Manager holds.
     ///
-    /// Structures and enumerations are confirmed with layout probes; unions
-    /// and typedefs are recorded from their bucket with size only; anything
-    /// else is recorded as [`TypeKind::Other`]. A probe that misses or
-    /// refuses degrades that one type to the listing-only shape — a server
+    /// Structures and enumerations are confirmed with layout probes. Unions
+    /// and typedefs are recorded from their bucket, with size only. Anything
+    /// else is recorded as [`TypeKind::Other`]. A probe that finds nothing
+    /// or refuses degrades that one type to the listing-only shape. A server
     /// failure mid-scan aborts the whole scan instead, because every later
-    /// type would hit it too.
+    /// type would hit the same failure.
     pub async fn scan_named_types(&self) -> Result<Vec<NamedType>>
     where
         S: ScanSource,
@@ -228,8 +232,8 @@ impl<S> TypeLibraryScanner<S> {
         Ok(KindHints::from_buckets(listings))
     }
 
-    /// Resolve one entry to a `NamedType`, probing layouts where the buckets
-    /// promise one.
+    /// Resolve one entry to a `NamedType`, probing for a layout wherever a
+    /// bucket promises one.
     async fn recover_type(&self, entry: &DataTypeEntry, hints: &KindHints) -> Result<NamedType>
     where
         S: ScanSource,
@@ -237,7 +241,7 @@ impl<S> TypeLibraryScanner<S> {
         let hint = hints.hint_for(entry);
 
         // A certain union or typedef membership comes from the bridge's own
-        // classification, and neither kind has a layout endpoint to confirm
+        // classification. Neither kind has a layout endpoint to confirm
         // against, so the listing is the best available record.
         if let Some(h) = &hint
             && h.certain
@@ -252,9 +256,10 @@ impl<S> TypeLibraryScanner<S> {
             return Ok(NamedType::from_listing(entry, TypeKind::Other));
         };
 
-        // Probe the promised kind first; the other kind second, because a
-        // suspect membership can equally well be the classification and the
-        // first probe the false positive (a typedef in a `struct.h` category).
+        // Probe the promised kind first and the other kind second. A suspect
+        // membership may come from the category name rather than the
+        // classification, so the first probe may hit that false membership
+        // (a typedef in a `struct.h` category).
         let probes: [Probe; 2] = if hint.kind == TypeKind::Enum {
             [Probe::Enum, Probe::Struct]
         } else {
@@ -289,12 +294,12 @@ enum Probe {
 /// Whether an error means "this type is not that kind" rather than "the
 /// server could not answer".
 ///
-/// The bridge answers a kind mismatch as prose (`Structure not found: X`,
-/// `Data type is not a structure: X`), which the client surfaces as
+/// The bridge answers a kind mismatch with prose (`Structure not found: X`,
+/// `Data type is not a structure: X`), and the client surfaces that as
 /// `NotFound` or `Malformed`. Both are expected misses: the other probe may
-/// still resolve the type, and if neither does the type degrades. Anything
-/// else — transport, a reported server failure — is a broken scan, not a
-/// broken type.
+/// still resolve the type, and if neither probe does, the type degrades.
+/// Anything else — a transport failure, a reported server failure — means
+/// the scan is broken, not the type.
 fn is_layout_miss(error: &EngineError) -> bool {
     matches!(
         error,
@@ -562,8 +567,8 @@ mod tests {
 
     #[tokio::test]
     async fn scan_degrades_a_type_whose_probes_all_miss() {
-        // Bucketed as a struct but every probe refuses: the type is still
-        // worth recording, at listing fidelity.
+        // It is bucketed as a struct, but every probe refuses. The type is
+        // still worth recording, at listing-level detail.
         let e = entry("GHOST_STRUCT", "pe", Some(16));
         let mut source = MockSource::new(vec![e.clone()]);
         source.bucket("struct", vec![e]);
@@ -579,9 +584,9 @@ mod tests {
 
     #[tokio::test]
     async fn scan_falls_back_to_the_enum_probe_when_the_struct_probe_refuses() {
-        // Both bucket memberships are suspect (the category name contains
-        // both kind words), so probe priority decides: struct first, and the
-        // type turns out to be an enum.
+        // Both bucket memberships are suspect, because the category name
+        // contains both kind words. Probe priority decides: struct first.
+        // The type turns out to be an enum.
         let e = entry("MODES", "struct_enum.h", Some(4));
         let mut source = MockSource::new(vec![e.clone()]);
         source.bucket("struct", vec![e.clone()]);
@@ -638,7 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn certain_union_and_typedef_buckets_are_recorded_without_probing() {
-        // Neither kind has a layout endpoint, and their certain bucket
+        // Neither kind has a layout endpoint, and the certain bucket
         // membership came from the classification itself.
         let listing = vec![
             entry("MY_UNION", "sys", Some(8)),
@@ -663,7 +668,7 @@ mod tests {
     #[tokio::test]
     async fn a_typedef_in_a_struct_named_category_resolves_to_typedef() {
         // The struct bucket matched on the category name, not the
-        // classification; the typedef bucket's membership is certain, and a
+        // classification. The typedef bucket's membership is certain, and a
         // certain membership wins over a suspect one without any probing.
         let e = entry("WIDGET", "struct.h", Some(12));
         let mut source = MockSource::new(vec![e.clone()]);
@@ -683,10 +688,10 @@ mod tests {
     #[tokio::test]
     async fn a_typedef_in_a_union_named_category_resolves_to_typedef() {
         // The live bridge matches its category filter as a substring against
-        // the category name *or* the classification, so a typedef in a
-        // category named `unions` lands in the (suspect) union bucket and the
-        // (certain) typedef bucket. Trusting the bucket order would record a
-        // Union; the certain membership must win.
+        // the category name *or* the classification. So a typedef in a
+        // category named `unions` appears in the suspect union bucket and in
+        // the certain typedef bucket. Trusting the bucket order would record
+        // a Union; the certain membership must win.
         let e = entry("WIDGET", "unions", Some(12));
         let mut source = MockSource::new(vec![e.clone()]);
         source.bucket("union", vec![e.clone()]);
@@ -704,7 +709,7 @@ mod tests {
     #[tokio::test]
     async fn an_unbucketed_type_is_recorded_as_other_without_probing() {
         // Function signatures and stray primitives sit in no classification
-        // bucket, and no bucket membership can make them a struct or enum.
+        // bucket. No bucket membership can make them a struct or an enum.
         let source = MockSource::new(vec![entry("SOME_SIGNATURE", "windows.h", None)]);
         let scanner = scanner_over(source);
         let types = scanner.scan_named_types().await.unwrap();
@@ -718,8 +723,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_failure_mid_scan_aborts_the_scan() {
-        // A reported server failure is not a kind miss: every later probe
-        // would hit it too, so the scan fails rather than degrading.
+        // A reported server failure is not a kind miss. Every later probe
+        // would hit it too, so the scan fails instead of degrading.
         let e = entry("IMAGE_DOS_HEADER", "pe", Some(128));
         let mut source = MockSource::new(vec![e.clone()]);
         source.bucket("struct", vec![e]);
@@ -750,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn category_filter_reaches_the_listing() {
         // The mock filters an unbucketed category against the entry's own
-        // category, so a matching filter keeps the entry and a non-matching
+        // category. A matching filter keeps the entry, and a non-matching
         // one would empty the listing.
         let mut source = MockSource::new(vec![entry("ANYWAY", "pe", Some(4))]);
         source.bucket("struct", vec![entry("ANYWAY", "pe", Some(4))]);
