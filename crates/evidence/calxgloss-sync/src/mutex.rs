@@ -1,25 +1,25 @@
 //! Mutex/lock acquire/release pair tracking.
 //!
-//! This module provides [`MutexDetector`], which carries the acquire
-//! and release names a scan reads decompiled bodies against — the
-//! Win32 `EnterCriticalSection`/`LeaveCriticalSection` pair, the POSIX
+//! This module provides [`MutexDetector`]. It holds the acquire and
+//! release names a scan checks decompiled bodies against: the Win32
+//! `EnterCriticalSection`/`LeaveCriticalSection` pair, the POSIX
 //! `pthread_mutex_lock`/`pthread_mutex_unlock` pair, and the POSIX
-//! reader/writer `pthread_rwlock_rdlock`/`wrlock`/`unlock` trio —
-//! pairing each acquisition with its release inside a single function
-//! so the prompt can suggest the Rust lock type that stands in for
-//! the manual locking.
+//! reader/writer `pthread_rwlock_rdlock`/`wrlock`/`unlock` trio. The
+//! detector pairs each acquisition with its release inside a single
+//! function, so the prompt can suggest the Rust lock type that stands
+//! in for the manual locking.
 //!
 //! Each acquire name is a [`MutexSignature`]: the callee spelling as
 //! the decompiler writes it and the [`SyncType`] it stands for.
-//! [`default_acquires`] and [`default_releases`] carry the standard
+//! [`default_acquires`] and [`default_releases`] return the standard
 //! name sets, and [`MutexDetector::with_default_names`] builds a
 //! detector that scans against them.
 //!
-//! [`MutexDetector::detect_pairs`] runs the reading: it walks a
-//! decompiled body's direct calls in source order, binds each
-//! recognized acquire to the lock object named by its first argument,
+//! [`MutexDetector::detect_pairs`] runs the reading. It walks a
+//! decompiled body's direct calls in source order. It binds each
+//! recognized acquire to the lock object named by its first argument
 //! and closes that acquire when a recognized release names the same
-//! lock object — one [`ConcurrencyHint`] per pair.
+//! lock object. Each pair yields one [`ConcurrencyHint`].
 
 use crate::types::{ConcurrencyHint, SyncType};
 use calxgloss_decomp::DecompiledFunction;
@@ -51,10 +51,10 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 /// One acquire name the detector recognizes: the callee spelling and
 /// the lock family it stands for.
 ///
-/// A signature is a name, not a shape: it only says that a call to
+/// A signature is a name, not a shape. It only says that a call to
 /// [`name`](Self::name) took a lock of [`sync_type`](Self::sync_type)
-/// — `pthread_rwlock_wrlock` an exclusive reader/writer lock — while
-/// where the call sits in the function and what releases it is the
+/// — `pthread_rwlock_wrlock`, an exclusive reader/writer lock. Where
+/// the call sits in the function and what releases it is the
 /// detector's reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MutexSignature {
@@ -82,18 +82,18 @@ impl MutexSignature {
 
 /// Mutex/lock acquire/release pair tracking over decompiled functions.
 ///
-/// The detector owns the name set a scan reads bodies against:
-/// [`MutexSignature`] records for the acquiring side and plain callee
-/// spellings for the releasing side. Both sets are configurable —
-/// supply them whole through [`with_names`](Self::with_names) or grow
-/// them one name at a time with [`add_acquire`](Self::add_acquire) and
-/// [`add_release`](Self::add_release) — and [`acquires`](Self::acquires)
+/// The detector owns the name set a scan reads bodies against. The
+/// acquiring side is [`MutexSignature`] records; the releasing side is
+/// plain callee spellings. Both sets are configurable: supply them
+/// whole through [`with_names`](Self::with_names), or grow them one
+/// name at a time with [`add_acquire`](Self::add_acquire) and
+/// [`add_release`](Self::add_release). [`acquires`](Self::acquires)
 /// and [`releases`](Self::releases) report them in configuration
 /// order, so two detectors built the same way scan identically and
 /// results diff cleanly. The detector holds no scan source of its own
-/// and never writes back to the program; one detector serves an entire
-/// scan and can be shared by reference across concurrent per-function
-/// passes.
+/// and never writes back to the program. One detector serves an
+/// entire scan and can be shared by reference across concurrent
+/// per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MutexDetector {
     acquires: Vec<MutexSignature>,
@@ -151,27 +151,27 @@ impl MutexDetector {
         &self.releases
     }
 
-    /// The acquire/release pairs one function's body carries.
+    /// The acquire/release pairs found in one function's body.
     ///
-    /// The reading walks the body's direct calls in source order —
-    /// outside string literals, whole names only — and classifies each
-    /// against the configured sets. An acquire counts only where its
-    /// first argument names one plain lock object — a variable, seen
-    /// through any cast and a leading `&` the decompiler writes for
-    /// the lock's address (`EnterCriticalSection(&local_20);`); an
-    /// acquire whose first argument is something else — a field, an
+    /// The reading walks the body's direct calls in source order,
+    /// outside string literals, whole names only, and classifies each
+    /// call against the configured sets. An acquire counts only where
+    /// its first argument names one plain lock object: a variable,
+    /// seen through any cast and a leading `&` the decompiler writes
+    /// for the lock's address (`EnterCriticalSection(&local_20);`).
+    /// An acquire whose first argument is something else — a field, an
     /// indexed element, a global — locks something the pairing cannot
     /// key on. A release closes the most recent still-open acquire of
-    /// the lock object it names — so where a body locks one object
+    /// the lock object it names. So where a body locks one object
     /// twice before one release, the release closes the second
-    /// acquisition and the first stands unpaired — and an acquire
-    /// with no release naming its lock object in this function is
-    /// reported by nothing: whether the lock is held across a return
-    /// is a cross-function question, outside this pairing.
+    /// acquisition and the first stands unpaired. An acquire with no
+    /// release naming its lock object in this function is not
+    /// reported: whether the lock is held across a return is a
+    /// cross-function question, outside this pairing.
     ///
     /// Each pair becomes one [`ConcurrencyHint`] naming the lock's
     /// family and suggesting the Rust synchronization type that family
-    /// reads as, at [`PAIR_CONFIDENCE`], with the acquire line and
+    /// reads as, at `PAIR_CONFIDENCE`, with the acquire line and
     /// the release line joined as the evidence. Hints come back in
     /// acquire order, so two scans of one body diff cleanly.
     pub fn detect_pairs(&self, func: &DecompiledFunction) -> Vec<ConcurrencyHint> {
@@ -218,20 +218,20 @@ impl MutexDetector {
 // The pairing reading
 // ============================================================
 
-/// Confidence of a pairing read from an acquire and a release of the
-/// same lock object in one body: both sides are explicit calls to
-/// recognized names, and the lock object the acquire passes is the
-/// lock object the release names — but the tie between them is the
-/// decompiler's naming, not resolved data flow, and a branch could
-/// leave either side unreached.
+/// Evidence confidence of a pairing read from an acquire and a
+/// release of the same lock object in one body. Both sides are
+/// explicit calls to recognized names, and the lock object the
+/// acquire passes is the lock object the release names. But the tie
+/// between them is the decompiler's naming, not resolved data flow,
+/// and a branch could leave either side unreached.
 const PAIR_CONFIDENCE: u8 = 70;
 
 /// The Rust synchronization type one lock family reads as.
 ///
 /// A Win32 critical section maps to the standard library's mutex,
-/// poisoning and all; a POSIX mutex maps to `parking_lot`'s, because
-/// pthread locking has no poisoning to translate and `std::sync`'s
-/// would invent a failure mode the original never had; a POSIX
+/// poisoning and all. A POSIX mutex maps to `parking_lot`'s: pthread
+/// locking has no poisoning to translate, and `std::sync`'s would
+/// invent a failure mode the original never had. A POSIX
 /// reader/writer lock maps to the standard library's reader/writer
 /// lock.
 fn suggestion_for(sync_type: SyncType) -> &'static str {
@@ -254,7 +254,7 @@ struct OpenAcquire {
     line: String,
 }
 /// The lock object a call's first argument names: a plain variable,
-/// seen through any cast and a leading `&` — the decompiler writes
+/// seen through any cast and a leading `&`. The decompiler writes
 /// `EnterCriticalSection(&local_20)` and
 /// `pthread_mutex_lock((pthread_mutex_t *)param_1)` for the same
 /// shape of lock. Anything else — a field, an indexed element, a
@@ -282,12 +282,12 @@ fn plain_variable(arg: &str) -> Option<&str> {
     }
     Some(trimmed)
 }
-/// The type words a decompiler cast may spell, matching the decompiler's
-/// vocabulary the other detectors' scans strip, plus the lock struct
-/// names the decompiler writes when the program carries pthread debug
-/// info.
+/// The type words a decompiler cast may spell, matching the
+/// decompiler's vocabulary the other detectors' scans strip, plus the
+/// lock struct names the decompiler writes when the program has
+/// pthread debug info.
 ///
-/// The cross-function data-race reading no longer restates this
+/// The cross-function data-race reading does not restate this
 /// vocabulary: which identifiers name program globals — type words
 /// included — is the global-state crate's single shared rule, read
 /// through its reading (issue #255).
@@ -336,12 +336,12 @@ fn is_type_word(word: &str) -> bool {
 // ============================================================
 
 /// The standard acquire names: the spellings a scan recognizes as
-/// lock acquisitions out of the box — the Win32 critical section
-/// enter, the POSIX mutex lock, and both POSIX reader/writer lock
-/// acquisitions, which share one release spelling and one Rust
-/// reader/writer lock behind them. Each name carries the family it
-/// stands for, so a recognized acquire knows which Rust
-/// synchronization type the pairing should suggest.
+/// lock acquisitions out of the box. These are the Win32 critical
+/// section enter, the POSIX mutex lock, and both POSIX reader/writer
+/// lock acquisitions, which share one release spelling and one Rust
+/// reader/writer lock. Each name records the family it stands for, so
+/// a recognized acquire knows which Rust synchronization type the
+/// pairing should suggest.
 pub fn default_acquires() -> Vec<MutexSignature> {
     vec![
         MutexSignature::new("EnterCriticalSection", SyncType::StdMutex),
@@ -352,9 +352,9 @@ pub fn default_acquires() -> Vec<MutexSignature> {
 }
 
 /// The standard release names: the spellings a scan recognizes as
-/// lock releases — `LeaveCriticalSection`, closing the Win32 critical
-/// section, `pthread_mutex_unlock`, closing the POSIX mutex, and
-/// `pthread_rwlock_unlock`, closing either POSIX reader/writer
+/// lock releases. `LeaveCriticalSection` closes the Win32 critical
+/// section, `pthread_mutex_unlock` closes the POSIX mutex, and
+/// `pthread_rwlock_unlock` closes either POSIX reader/writer
 /// acquisition.
 pub fn default_releases() -> Vec<String> {
     vec![
@@ -374,8 +374,9 @@ mod tests {
 
     #[test]
     fn a_new_detector_starts_with_no_names() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Construction is free: the detector starts empty, compares
+        // equal however it is built, and is interchangeable with its
+        // clone.
         let detector = MutexDetector::new();
         assert!(detector.acquires().is_empty());
         assert!(detector.releases().is_empty());
@@ -519,7 +520,7 @@ undefined FUN_18003ab00(void) {
         // poisoned mutex.
         assert_eq!(hints[0].suggestion, "std::sync::Mutex<T>");
         assert_eq!(hints[0].confidence, PAIR_CONFIDENCE);
-        // The evidence carries both sides of the pairing.
+        // The evidence includes both sides of the pairing.
         assert_eq!(
             hints[0].evidence,
             "EnterCriticalSection(&local_20); LeaveCriticalSection(&local_20);"

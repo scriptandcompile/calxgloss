@@ -1,22 +1,22 @@
 //! Atomic operation detection.
 //!
-//! This module provides [`AtomicDetector`], which carries the atomic
-//! call names a scan reads decompiled bodies against — the Win32
+//! This module provides [`AtomicDetector`]. It holds the atomic call
+//! names a scan checks decompiled bodies against: the Win32
 //! `InterlockedIncrement`/`InterlockedDecrement` pair and the GCC
-//! `__atomic_fetch_add`/`__sync_fetch_and_add` builtins — and reads
-//! each recognized call site as an operation on a Rust atomic type.
+//! `__atomic_fetch_add`/`__sync_fetch_and_add` builtins. Each
+//! recognized call site reads as an operation on a Rust atomic type.
 //!
 //! Each name is an [`AtomicSignature`]: the callee spelling as the
 //! decompiler writes it and the [`width`](AtomicSignature::width) of
-//! the value it operates on. [`default_atomics`] carries the standard
+//! the value it operates on. [`default_atomics`] returns the standard
 //! name set, and [`AtomicDetector::with_default_names`] builds a
 //! detector that scans against it.
 //!
-//! [`AtomicDetector::detect`] runs the reading: it walks a decompiled
+//! [`AtomicDetector::detect`] runs the reading. It walks a decompiled
 //! body's direct calls in source order and emits one
-//! [`AtomicOperation`] per recognized call site — an atomic needs no
-//! release to complete the picture, so unlike the lock pairing one
-//! call is a whole finding.
+//! [`AtomicOperation`] per recognized call site. An atomic needs no
+//! release to complete the picture, so one call is a whole finding —
+//! unlike the lock pairing.
 
 use crate::types::AtomicOperation;
 use calxgloss_decomp::DecompiledFunction;
@@ -48,12 +48,12 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 /// One atomic call name the detector recognizes: the callee spelling
 /// and the width of the value it operates on.
 ///
-/// A signature is a name, not a shape: it only says that a call to
+/// A signature is a name, not a shape. It only says that a call to
 /// [`name`](Self::name) performs a read-modify-write on a value
-/// [`width`](Self::width) bits wide — `InterlockedIncrement` a 32-bit
-/// counter, `__atomic_fetch_add` a 64-bit one — while where the call
-/// sits in the function is the detector's reading. The width decides
-/// which sized Rust atomic type the call site reads as.
+/// [`width`](Self::width) bits wide: `InterlockedIncrement` a 32-bit
+/// counter, `__atomic_fetch_add` a 64-bit one. Where the call sits in
+/// the function is the detector's reading. The width decides which
+/// sized Rust atomic type the call site reads as.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtomicSignature {
     /// The callee spelling as the decompiler writes it, e.g.
@@ -82,19 +82,19 @@ impl AtomicSignature {
 
 /// Atomic operation detection over decompiled functions.
 ///
-/// The detector owns the name set a scan reads bodies against:
-/// [`AtomicSignature`] records, each a callee spelling and the width
-/// it operates at. The set is configurable — supply it whole through
-/// [`with_names`](Self::with_names) or grow it one name at a time with
-/// [`add_name`](Self::add_name) — and [`names`](Self::names) reports
+/// The detector owns the name set a scan reads bodies against. The
+/// set is [`AtomicSignature`] records, each a callee spelling and the
+/// width it operates at. It is configurable: supply it whole through
+/// [`with_names`](Self::with_names), or grow it one name at a time
+/// with [`add_name`](Self::add_name). [`names`](Self::names) reports
 /// it in configuration order, so two detectors built the same way scan
 /// identically and results diff cleanly. The widths are a documented
-/// default, not a law: the Win32 interlocked calls really do carry a
-/// `LONG`, but the GCC builtins are width-polymorphic, and the 64-bit
-/// default for them is a convention a per-scan override through
-/// [`with_names`](Self::with_names) can restate for a program whose
-/// counters are known to be narrower. The detector holds no engine
-/// client of its own and never writes back to the program; one
+/// default, not a law. The Win32 interlocked calls really do operate
+/// on a `LONG`, but the GCC builtins are width-polymorphic: their
+/// 64-bit default is a convention, and a per-scan override through
+/// [`with_names`](Self::with_names) can restate it for a program whose
+/// counters are known to be narrower. The detector holds no scan
+/// source of its own and never writes back to the program. One
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -135,15 +135,15 @@ impl AtomicDetector {
         &self.names
     }
 
-    /// The atomic call sites one function's body carries.
+    /// The atomic call sites found in one function's body.
     ///
-    /// The reading walks the body's direct calls in source order —
-    /// outside string literals, whole names only — and reports every
+    /// The reading walks the body's direct calls in source order,
+    /// outside string literals, whole names only. It reports every
     /// call to a configured name as one [`AtomicOperation`]: the
-    /// operation is the callee spelling, the suggestion the sized
+    /// operation is the callee spelling, the suggestion is the sized
     /// Rust atomic type the signature's width names, and the evidence
-    /// the call's own line. Findings come back in call order, so two
-    /// scans of one body diff cleanly.
+    /// is the call's own line. Findings come back in call order, so
+    /// two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<AtomicOperation> {
         let mut operations = Vec::new();
         for call in direct_calls(&func.body) {
@@ -165,10 +165,10 @@ impl AtomicDetector {
 // The reading
 // ============================================================
 
-/// Confidence of an atomic reading from a single call to a recognized
-/// name: the call is explicit and its name is the whole evidence —
-/// an interlocked increment is an atomic increment wherever it
-/// appears — but the width of the value behind the pointer is the
+/// Evidence confidence of an atomic reading from a single call to a
+/// recognized name. The call is explicit and its name is the whole
+/// evidence: an interlocked increment is an atomic increment wherever
+/// it appears. But the width of the value behind the pointer is the
 /// signature's default, not a fact read from the body.
 const ATOMIC_CONFIDENCE: u8 = 70;
 
@@ -181,11 +181,11 @@ fn suggestion_for(width: u8) -> String {
 // ============================================================
 
 /// The standard atomic names: the spellings a scan recognizes as
-/// atomic operations out of the box — the Win32 interlocked
-/// increment and decrement, which carry a 32-bit `LONG`, and the GCC
-/// `__atomic` and `__sync` fetch-and-add builtins, defaulted to 64
-/// bits. The builtins are width-polymorphic in C; the 64-bit default
-/// is the convention the suggestion is written against, and a
+/// atomic operations out of the box. These are the Win32 interlocked
+/// increment and decrement, which operate on a 32-bit `LONG`, and the
+/// GCC `__atomic` and `__sync` fetch-and-add builtins, defaulted to 64
+/// bits. The builtins are width-polymorphic in C, so the 64-bit
+/// default is the convention the suggestion is written against. A
 /// per-scan override through [`AtomicDetector::with_names`] can
 /// restate it.
 pub fn default_atomics() -> Vec<AtomicSignature> {
@@ -207,8 +207,9 @@ mod tests {
 
     #[test]
     fn a_new_detector_starts_with_no_names() {
-        // Construction is free: empty, equal however it is made, and
-        // clones interchangeable.
+        // Construction is free: the detector starts empty, compares
+        // equal however it is built, and is interchangeable with its
+        // clone.
         let detector = AtomicDetector::new();
         assert!(detector.names().is_empty());
         assert_eq!(detector, AtomicDetector::default());
