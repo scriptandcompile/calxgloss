@@ -1,17 +1,18 @@
 //! Parameter size detection.
 //!
-//! [`ParameterSizeDetector`] scans decompiled functions for the usage
-//! shapes that pin a parameter's size: string-function calls (`strlen`,
-//! `strcpy`, `strcmp`, ...) that read a parameter as a character
-//! pointer, integer bit patterns (shifts, masks, OR/XOR, comparisons,
-//! and compound assignments, whose constants bound the width), and
-//! pointer arithmetic (offsets, dereferences, field access) that says
-//! the parameter points at something. Each reading is emitted as an
-//! [`InferredParamType`] record whose method is one of
-//! [`StringFunction`], [`IntegerBitPattern`], or [`PointerArithmetic`] —
-//! the size readings beside the this-pointer detector's — and when
-//! several readings compete for one parameter, the highest-confidence
-//! one wins.
+//! [`ParameterSizeDetector`] reads decompiled function bodies for the
+//! usage shapes that pin a parameter's size. String-function calls
+//! (`strlen`, `strcpy`, `strcmp`, ...) read a parameter as a character
+//! pointer. Integer bit patterns (shifts, masks, OR/XOR, comparisons,
+//! and compound assignments) carry constants that bound the width.
+//! Pointer arithmetic (offsets, dereferences, field access) shows that
+//! the parameter points at something.
+//!
+//! Each reading is emitted as an [`InferredParamType`] record whose
+//! method is one of [`StringFunction`], [`IntegerBitPattern`], or
+//! [`PointerArithmetic`] — the size readings, sitting beside the
+//! this-pointer detector's readings. When several readings compete for
+//! one parameter, the one with the highest evidence confidence wins.
 //!
 //! [`InferredParamType`]: crate::types::InferredParamType
 //! [`StringFunction`]: crate::types::InferenceMethod::StringFunction
@@ -28,41 +29,42 @@ use calxgloss_types::{
 use std::collections::HashMap;
 
 // ============================================================
-// Reading confidences
+// Reading evidence confidences
 // ============================================================
 
-/// Confidence of a character-pointer reading from a string-function call:
-/// the callee's contract says the argument is a NUL-terminated string, so
-/// the narrowing is concrete, but the call site alone cannot rule out a
-/// buffer of another element type.
+/// The evidence confidence of a character-pointer reading that comes
+/// from a string-function call. The callee's contract says the argument
+/// is a NUL-terminated string, so the narrowing is concrete. The call
+/// site alone, however, cannot rule out a buffer of another element
+/// type.
 const STRING_CONFIDENCE: u8 = 70;
 
-/// Confidence of a pointer reading from dereference, offset, field access,
-/// or indexing: the body reads or writes through the parameter, which
-/// proves it points at something, but not at what — the pointee stays
-/// unnamed.
+/// The evidence confidence of a pointer reading that comes from a
+/// dereference, offset, field access, or index. The body reads or
+/// writes through the parameter, which proves it points at something —
+/// but not at what: the pointee stays unnamed.
 const POINTER_CONFIDENCE: u8 = 65;
 
-/// Confidence of an integer reading from shift and mask usage: the bit
-/// operations say the parameter is an integer, and the constants beside
-/// them still fit the decompiler's default word, so the reading stays
-/// there.
+/// The evidence confidence of an integer reading that comes from shift
+/// and mask usage. The bit operations say the parameter is an integer.
+/// The constants beside them still fit the decompiler's default word,
+/// so the reading stays at that word.
 const INTEGER_CONFIDENCE: u8 = 55;
 
-/// Confidence of an integer reading whose constants outrun the default
-/// word: a mask, compared value, or compound-assignment operand wider
-/// than the word, or a shift count the word cannot hold, proves the
-/// parameter spans more than the decompiler's default — a pinned
-/// width, stronger evidence than the bare operation shape.
+/// The evidence confidence of an integer reading whose constants outrun
+/// the default word. A mask, compared value, or compound-assignment
+/// operand wider than the word, or a shift count the word cannot hold,
+/// proves the parameter spans more than the decompiler's default. That
+/// is a pinned width — stronger evidence than the bare operation shape.
 const WIDE_INTEGRAL_CONFIDENCE: u8 = 60;
 
 /// The type text for a parameter the body reads through: the arithmetic
-/// proves the parameter is a pointer, not what it points at. Readings
-/// that recover a pointee type or a class name narrow this further.
+/// proves the parameter is a pointer, not what it points at. A reading
+/// that recovers a pointee type or a class name narrows this further.
 const UNNAMED_POINTEE: &str = "void *";
 
 /// The type text for a parameter the body shifts and masks: the bit
-/// operations prove an integer, and the default word stands until a
+/// operations prove an integer. The default word stands until a
 /// constant beside one of the operations outruns it.
 const DEFAULT_WORD: &str = "u32";
 
@@ -79,15 +81,15 @@ const WORD_BITS: u32 = 32;
 // String-function calls
 // ============================================================
 
-/// A known string function and the argument positions its contract reads
-/// as character pointers. Everything else it takes — a count for the
-/// `strn*` family, the character for `strchr`, the buffer size for
-/// `snprintf` — is not a string, and a parameter sitting there gets no
-/// character-pointer reading.
+/// A known string function and the argument positions its contract
+/// reads as character pointers. Everything else it takes is not a
+/// string — a count for the `strn*` family, the character for `strchr`,
+/// the buffer size for `snprintf` — and a parameter sitting in one of
+/// those positions gets no character-pointer reading.
 ///
-/// `pub(crate)` because the direction detector reads the same family:
-/// one table, so a "string function" means the same routine — and reads
-/// the same argument positions — to the size reading and to the
+/// `pub(crate)` because the direction detector reads the same family.
+/// One table means a "string function" is the same routine — read at
+/// the same argument positions — for the size reading and for the
 /// direction reading.
 pub(crate) struct StringFunction {
     pub(crate) name: &'static str,
@@ -95,11 +97,11 @@ pub(crate) struct StringFunction {
 }
 
 /// The C string-function family: the routines whose `char *` arguments
-/// sit at known positions of the call. The positions are explicit rather
-/// than a leading count because the `sprintf` line hides its format
-/// string behind a size argument — `snprintf(buf, size, fmt, ...)` reads
-/// positions 0 and 2 — and a variadic tail argument is not necessarily a
-/// string at all.
+/// sit at known positions of the call. The positions are listed
+/// explicitly rather than assumed to lead the argument list, because
+/// the `sprintf` family hides its format string behind a size argument —
+/// `snprintf(buf, size, fmt, ...)` reads positions 0 and 2 — and a
+/// variadic tail argument is not necessarily a string at all.
 pub(crate) const STRING_FUNCTIONS: [StringFunction; 23] = [
     StringFunction {
         name: "strlen",
@@ -195,25 +197,27 @@ pub(crate) const STRING_FUNCTIONS: [StringFunction; 23] = [
     },
 ];
 
-/// The scan this reader uses: every balanced `name(` counts, keyword
-/// shapes included — `if (param_1 & 1)` still reads the parameter's
-/// width. A name preceded by an identifier byte is the tail of a
-/// longer identifier, and one preceded by a `.` is a member access;
-/// neither is a plain call.
+/// The scan that finds the calls the string-function reading looks at.
+/// It records every balanced `name(`, keyword shapes included: a
+/// keyword name never matches a string function, and a parameter inside
+/// a keyword shape is still read for width — `if (param_1 & 1)` still
+/// reads the parameter's width. A name preceded by an identifier byte
+/// is the tail of a longer identifier. One preceded by a `.` is a
+/// member access. Neither is a plain call.
 const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".",
     skip_keywords: &[],
 };
 
-/// Every direct call `name(args)` in the body — the shared pseudo-C
-/// scan configured by [`CALL_SCAN`].
+/// Every direct call `name(args)` in the body, found by the shared
+/// pseudo-C scan configured by [`CALL_SCAN`].
 fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
 
-/// The type words a decompiler cast may spell, matching the decompiler's
-/// vocabulary the this-pointer scan already strips.
+/// The type words a decompiler cast may spell. They match the
+/// decompiler's vocabulary the this-pointer scan already strips.
 fn is_type_word(word: &str) -> bool {
     matches!(
         word,
@@ -266,8 +270,8 @@ struct Occurrence {
 }
 
 /// Every whole-word occurrence of `name` in the body. An occurrence
-/// glued to a longer identifier (`param_1x`) is not the parameter
-/// standing on its own; a field access (`param_1->count`) is the
+/// stuck onto a longer identifier (`param_1x`) is not the parameter
+/// standing on its own. A field access (`param_1->count`) is the
 /// parameter plus a member, and its own reading shape decides it.
 fn occurrences(body: &str, name: &str) -> Vec<Occurrence> {
     let bytes = body.as_bytes();
@@ -292,7 +296,7 @@ fn occurrences(body: &str, name: &str) -> Vec<Occurrence> {
 }
 
 /// Whether the occurrence sits inside a string literal. The scan walks
-/// the body's literals in order; a literal that never closes runs to
+/// the body's literals in order. A literal that never closes runs to
 /// the end of the body.
 fn inside_string(body: &str, offset: usize) -> bool {
     let bytes = body.as_bytes();
@@ -315,37 +319,37 @@ fn inside_string(body: &str, offset: usize) -> bool {
 /// sitting beside an occurrence, with what the constants beside it say
 /// about the parameter's width.
 struct BitOperation {
-    /// The smallest width, in bits, the constants beside the operation
-    /// force on the parameter: a mask, an OR or XOR value, a compared
-    /// value, or a compound-assignment operand needs its own bit
-    /// length, and a shift the parameter is the operand of needs one
-    /// bit more than its count. `None` when the operation carries no
-    /// constant that bounds the parameter — a bare `param_1 & param_2`,
-    /// a shift whose count the parameter itself supplies, or a
-    /// parameter behind a cast, which types the expression rather than
-    /// the parameter.
+    /// The smallest width, in bits, that the constants beside the
+    /// operation force on the parameter. A mask, an OR or XOR value, a
+    /// compared value, or a compound-assignment operand needs its own
+    /// bit length. A shift the parameter is the operand of needs one
+    /// bit more than its count. This is `None` when the operation
+    /// carries no constant that bounds the parameter: a bare
+    /// `param_1 & param_2`, a shift whose count the parameter itself
+    /// supplies, or a parameter behind a cast — the cast types the
+    /// expression, not the parameter.
     width_bound: Option<u32>,
 }
 
-/// The class of operator sitting beside an occurrence, naming what the
-/// operation shape alone — before any constant is weighed — says about
-/// the parameter.
+/// The class of operator sitting beside an occurrence. It names what
+/// the operation shape alone says about the parameter, before any
+/// constant is weighed.
 #[derive(Clone, Copy)]
 enum Operator {
-    /// `<<`, `>>`, and their compound forms: the parameter is the
+    /// `<<`, `>>`, and their compound forms. The parameter is the
     /// shifted operand, so the shape alone reads it as an integer.
     Shift,
-    /// `&`, `|`, `^`, and their compound forms: bitwise operations only
+    /// `&`, `|`, `^`, and their compound forms. Bitwise operations only
     /// exist on integers, so the shape alone reads it as one.
     Bitwise,
-    /// `==`, `!=`, `<`, `>`, `<=`, `>=`: pointers compare just as
-    /// readily as integers, so the shape alone says nothing — only a
+    /// `==`, `!=`, `<`, `>`, `<=`, `>=`. Pointers compare just as
+    /// readily as integers, so the shape alone says nothing. Only a
     /// non-zero constant beside the operator names an integer, and a
     /// comparison against zero is the null-test spelling.
     Comparison,
-    /// `+=`, `-=`, `*=`, `/=`, `%=`: a pointer advances by `+=`, so the
-    /// shape alone says nothing — only a non-zero constant names an
-    /// integer wide enough to hold it.
+    /// `+=`, `-=`, `*=`, `/=`, `%=`. A pointer also advances by `+=`,
+    /// so the shape alone says nothing. Only a non-zero constant names
+    /// an integer wide enough to hold it.
     ArithmeticCompound,
 }
 
@@ -369,14 +373,14 @@ impl Operator {
     }
 }
 
-/// The operation at the occurrence, if any: the bytes after the name
-/// open with a shift (`<<`, `>>`), a bitwise `&`, `|`, or `^` (the
-/// compound `<<=`, `>>=`, `&=`, `|=`, `^=` included, the logical `&&`
-/// and `||` excluded), a comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`),
-/// or an arithmetic compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`);
-/// or the name closes a `<<`/`>>` or their compound forms, follows a
-/// binary `&`, `|`, or `^` — one whose left side is an operand, not the
-/// unary address-of spelling — or closes a comparison.
+/// The operation at the occurrence, if there is one. The bytes after
+/// the name open with a shift (`<<`, `>>`), a bitwise `&`, `|`, or `^`
+/// (the compound `<<=`, `>>=`, `&=`, `|=`, `^=` included, the logical
+/// `&&` and `||` excluded), a comparison (`==`, `!=`, `<`, `>`, `<=`,
+/// `>=`), or an arithmetic compound assignment (`+=`, `-=`, `*=`, `/=`,
+/// `%=`). Or the name closes a `<<`/`>>` or their compound forms,
+/// follows a binary `&`, `|`, or `^` — one whose left side is an
+/// operand, not the unary address-of spelling — or closes a comparison.
 fn bit_operation(bytes: &[u8], occ: &Occurrence) -> Option<BitOperation> {
     if let Some(a) = occ.after
         && let Some((op, at)) = operator_after(bytes, a)
@@ -444,10 +448,11 @@ fn operator_before(bytes: &[u8], p: usize) -> Option<(Operator, usize)> {
     }
 }
 
-/// The reading the operation at an occurrence supports: the operation
-/// shape alone when it only exists on integers, otherwise only when a
-/// non-zero constant sits beside it — and the width that constant
-/// forces, unless the parameter stands behind a cast that carries it.
+/// The reading the operation at an occurrence supports. The operation
+/// shape alone supports it when the operation only exists on integers;
+/// otherwise a non-zero constant has to sit beside it. The reading
+/// carries the width that constant forces, unless the parameter stands
+/// behind a cast — the cast, not the parameter, carries that width.
 fn operation_reading(
     op: Operator,
     bytes: &[u8],
@@ -463,14 +468,14 @@ fn operation_reading(
 }
 
 /// The width a mask-shaped constant forces: the number of bits the
-/// value itself spans — the bound an AND, OR, or XOR operand, a
-/// compared value, and a compound-assignment operand all pay out.
+/// value itself spans. An AND, OR, or XOR operand, a compared value,
+/// and a compound-assignment operand all pay out this bound.
 fn mask_bound(mask: u64) -> Option<u32> {
     Some(64 - mask.leading_zeros())
 }
 
-/// The width a shift forces: one bit more than its count, since a
-/// count at or past the operand's width empties it.
+/// The width a shift forces: one bit more than its count. A count at
+/// or past the operand's width empties the operand.
 fn shift_bound(count: u64) -> Option<u32> {
     Some(count.min(64) as u32 + 1)
 }
@@ -561,11 +566,11 @@ fn parse_number(text: &str) -> Option<u64> {
     Some(value)
 }
 
-/// Whether the body points through the parameter: the byte before the
+/// Whether the body points through the parameter. The byte before the
 /// name is a `*` that dereferences rather than multiplies (`*param_1`,
-/// `**(code **)*param_1`), the name is offset by a number inside a
+/// `**(code **)*param_1`), or the name is offset by a number inside a
 /// parenthesized group that a `*` reads through (`*(undefined4 *)
-/// (param_2 + 4)`), the name is followed by an arrow into a field
+/// (param_2 + 4)`), or the name is followed by an arrow into a field
 /// (`param_1->count`, chained `param_1->next->value` — the arrow only
 /// exists on a pointer), or the name is indexed (`param_1[2]` — the
 /// decompiler indexes what it types as a pointer). A multiply
@@ -596,9 +601,9 @@ fn is_pointer_operand(bytes: &[u8], occ: &Occurrence) -> bool {
 }
 
 /// Whether the `*` at `star` dereferences its operand rather than
-/// multiplying: nothing operand-shaped ends before it, or the operand
-/// it follows is a type cast — `(code *)*param_1` reads through the
-/// parameter even though a `)` stands beside the star.
+/// multiplying. Either nothing operand-shaped ends before it, or the
+/// operand it follows is a type cast — `(code *)*param_1` reads
+/// through the parameter even though a `)` stands beside the star.
 fn dereferences(bytes: &[u8], star: usize) -> bool {
     if !operand_before(bytes, star) {
         return true;
@@ -642,8 +647,9 @@ fn operand_before(bytes: &[u8], at: usize) -> bool {
 }
 
 /// Whether the number at `at` — decimal or `0x` hex — is the offset
-/// side of pointer arithmetic, rather than an identifier making the
-/// expression a pointer difference or an indexed offset.
+/// side of pointer arithmetic. If an identifier stood at `at`, the
+/// expression would be a pointer difference or an indexed offset
+/// instead.
 fn is_number_at(bytes: &[u8], at: usize) -> bool {
     match bytes.get(at) {
         Some(b'0') => match bytes.get(at + 1) {
@@ -728,11 +734,12 @@ fn matching_open(bytes: &[u8], close: usize) -> Option<usize> {
 /// Parameter size detection over decompiled functions.
 ///
 /// The detector is stateless: every reading comes from the decompiled
-/// function it is handed, so one detector serves an entire scan and can
-/// be shared across concurrent per-function passes. It holds no engine
-/// client of its own — the [`DecompiledFunction`] text is fetched once
-/// per function and read by every detector — and it never writes back to
-/// the program, only reporting what the body's usage implies.
+/// function it is handed. One detector therefore serves an entire scan
+/// and can be shared across concurrent per-function passes. It holds
+/// no client of the analysis engine: the [`DecompiledFunction`] text
+/// is fetched once per function, and every detector reads that same
+/// text. It never writes back to the program — it only reports what
+/// the body's usage implies.
 ///
 /// [`DecompiledFunction`]: calxgloss_decomp::DecompiledFunction
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -740,8 +747,9 @@ pub struct ParameterSizeDetector;
 
 impl ParameterSizeDetector {
     /// A detector with the full standard detection set: string-function
-    /// calls, integer bit patterns, and pointer arithmetic, resolved by
-    /// confidence when they compete for one parameter.
+    /// calls, integer bit patterns, and pointer arithmetic. When these
+    /// compete for one parameter, the reading with the highest evidence
+    /// confidence wins.
     pub fn new() -> Self {
         Self
     }
@@ -749,48 +757,48 @@ impl ParameterSizeDetector {
     /// Read the parameter sizes implied by a decompiled body's usage.
     ///
     /// A parameter gets a reading from each usage family the body shows
-    /// for it, at most one per family, carrying that family's first
-    /// matching shape in source order:
+    /// for it, at most one per family. The reading carries that family's
+    /// first matching shape, in source order:
     ///
-    /// - A call to a known string function ([`STRING_FUNCTIONS`]) with
+    /// - A call to a known string function (`STRING_FUNCTIONS`) with
     ///   the parameter in a string argument position narrows it to
     ///   `char *` through [`InferenceMethod::StringFunction`]. An
-    ///   argument behind a cast still names the value; a parameter in a
+    ///   argument behind a cast still names the value. A parameter in a
     ///   count, character, or buffer-size position gets no reading.
     /// - A shift, bitwise (`&`, `|`, `^`), comparison (`==`, `!=`, `<`,
     ///   `>`, `<=`, `>=`), or compound-assignment (`<<=`, `&=`, `|=`,
     ///   `+=`, ...) operation on the parameter reads it as an integer
     ///   through [`InferenceMethod::IntegerBitPattern`]. The constants
-    ///   beside the operations are weighed: while every mask, compared
-    ///   value, and compound operand fits the word and every shift
+    ///   beside the operations are weighed. While every mask, compared
+    ///   value, and compound operand fits the word, and every shift
     ///   count the parameter is the operand of stays inside it, the
-    ///   reading is the default word ([`DEFAULT_WORD`]); any of them
-    ///   spanning more than [`WORD_BITS`] widens the reading to
-    ///   [`WIDE_WORD`], backed by the line carrying that constant. A
+    ///   reading is the default word (`DEFAULT_WORD`). If any of them
+    ///   spans more than `WORD_BITS`, the reading widens to
+    ///   `WIDE_WORD`, backed by the line carrying that constant. A
     ///   comparison or arithmetic compound assignment names an integer
     ///   only through a non-zero constant — `param_1 == 0` is the
     ///   null-test spelling and `param_1 += 4` could advance a pointer,
-    ///   so neither reads a width on its own. A logical `&&` or `||` and
-    ///   a unary address-of are not bit operations, a field's bit
-    ///   operations (`param_1->flags & 0xff`) are not the parameter's,
-    ///   a shift whose count the parameter supplies bounds no width,
-    ///   and a parameter behind a cast (`(ulonglong)param_1 << 0x20`)
-    ///   keeps the default word — the cast types the expression.
+    ///   so neither reads a width on its own. A logical `&&` or `||`,
+    ///   and a unary address-of, are not bit operations. A field's bit
+    ///   operations (`param_1->flags & 0xff`) are not the parameter's.
+    ///   A shift whose count the parameter supplies bounds no width. A
+    ///   parameter behind a cast (`(ulonglong)param_1 << 0x20`) keeps
+    ///   the default word — the cast types the expression.
     /// - A dereference (`*param_1`, `**(code **)*param_1`), a numeric
     ///   offset inside a dereferenced group (`*(undefined4 *)(param_2 +
     ///   4)`), a field access (`param_1->count`, chained
     ///   `param_1->next->value`), or an array index (`param_1[2]`) reads
-    ///   it as a pointer to an unnamed pointee ([`UNNAMED_POINTEE`])
+    ///   it as a pointer to an unnamed pointee (`UNNAMED_POINTEE`)
     ///   through [`InferenceMethod::PointerArithmetic`]. A multiply and a
     ///   bare offset nothing reads through are not dereferences.
     ///
-    /// Every reading is scoped to the function it was made in — the
-    /// evidence lives in this body and reaches nowhere else. When
+    /// Every reading is scoped to the function it was made in: the
+    /// evidence lives in this body and reaches no other function. When
     /// several families read one parameter differently, the detector
-    /// resolves the ambiguity itself: the highest-confidence reading
-    /// wins and the rest are dropped — a parameter both copied by
-    /// `strcpy` and dereferenced reads as `char *`, not `void *` — and
-    /// a tie keeps the reading the body showed first.
+    /// resolves the conflict itself: the reading with the highest
+    /// evidence confidence wins and the rest are dropped — a parameter
+    /// both copied by `strcpy` and dereferenced reads as `char *`, not
+    /// `void *`. A tie keeps the reading the body showed first.
     ///
     /// [`InferenceMethod::StringFunction`]: crate::types::InferenceMethod::StringFunction
     /// [`InferenceMethod::IntegerBitPattern`]: crate::types::InferenceMethod::IntegerBitPattern
@@ -827,9 +835,10 @@ impl ParameterSizeDetector {
             }
         }
 
-        // The integer and pointer families: the first bit-operation and
-        // the first read-through shape each parameter shows, with the
-        // widest constant beside the bit operations pinning the width.
+        // The integer and pointer families: for each parameter, the
+        // first bit-operation and the first read-through shape, with
+        // the widest constant beside the bit operations pinning the
+        // width.
         for (index, name) in params.iter().enumerate() {
             let mut integer: Option<usize> = None;
             let mut widest: Option<(usize, u32)> = None;
@@ -901,8 +910,9 @@ impl ParameterSizeDetector {
             .map(|(_, reading)| reading)
             .collect();
         // Ambiguity handling: when families read one parameter
-        // differently, the highest-confidence reading wins and the rest
-        // are dropped; a tie keeps the reading the body showed first.
+        // differently, the reading with the highest evidence confidence
+        // wins and the rest are dropped. A tie keeps the reading the
+        // body showed first.
         let winners = Reading::resolve(kept);
         winners
             .into_iter()
@@ -1609,7 +1619,8 @@ mod tests {
     #[test]
     fn a_pointer_reading_beats_an_integer_reading_for_one_parameter() {
         // Shifted in one line, read through in the next: the pointer
-        // reading carries more certainty than the bare default word.
+        // reading has higher evidence confidence than the bare default
+        // word.
         let func = function(
             "undefined FUN_18003ab00(undefined4 param_1)",
             "  uVar2 = param_1 >> 2;\n\
@@ -1640,7 +1651,7 @@ mod tests {
     #[test]
     fn a_parameter_read_three_ways_keeps_only_the_string_reading() {
         // Called through `strlen`, indexed, and shifted: the character
-        // pointer reading carries the body's strongest claim.
+        // pointer reading has the body's highest evidence confidence.
         let func = function(
             "undefined FUN_18003ab00(undefined8 param_1)",
             "  uVar2 = strlen(param_1);\n\
