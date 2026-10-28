@@ -1,20 +1,22 @@
-//! Confidence scoring and conflict resolution.
+//! Evidence confidence: scoring and conflict resolution.
 //!
 //! The confidence *score* itself is the shared [`calxgloss_types::Confidence`]
-//! type (a 0–100 value) now that every engine rates evidence the same way.
+//! type, a 0–100 value: every evidence engine rates its findings the
+//! same way.
 //!
 //! [`resolve_conflicts`] is the cross-detector half of the model. Each
 //! detector already resolves its own readings down to one record per
-//! parameter, but the detectors read a body independently, so a finished
-//! scan can still carry several records for one target — `strlen`'s
-//! argument stands read by the size detector and by the known-signature
-//! engine at once. Conflict resolution collapses each target — a
-//! parameter, a local variable, a call-site argument, a function's
-//! return value, a function's calling convention, or a parameter's
-//! direction — to its single strongest record: the highest confidence
-//! wins, a tie keeps the record the scan showed first, and the survivor
-//! stands where its target first appeared, so the list keeps scan order
-//! and two scans of the same program diff cleanly.
+//! parameter, but the detectors read a body independently. So a finished
+//! scan can still hold several records for one target: `strlen`'s
+//! argument may stand read by the size detector and by the
+//! known-signature detector at once. Conflict resolution collapses each
+//! target to its single strongest record. A target is a parameter, a
+//! local variable, a call-site argument, a function's return value, a
+//! function's calling convention, or a parameter's direction. The
+//! highest evidence confidence wins. A tie keeps the record the scan
+//! showed first. The survivor stands where its target first appeared, so the
+//! list keeps scan order and two scans of the same program diff
+//! cleanly.
 //!
 //! [`calxgloss_types::Confidence`]: calxgloss_types::Confidence
 
@@ -26,15 +28,16 @@ use crate::types::InferredType;
 /// local variable, one call-site argument, one function's return, one
 /// function's calling convention, or one parameter's direction.
 ///
-/// The six record kinds identify their targets differently — a
+/// The six record kinds identify their targets differently: a
 /// parameter by position, a local by its decompiled name, a call-site
-/// argument by the callee and position, a return and a convention by the
-/// function alone (a call-site convention view by the caller-and-callee
-/// pair), and a direction by the function and parameter position in a
-/// key of its own, separate from the parameter arm, so a direction
-/// reading stands beside the type reading for one parameter instead of
-/// competing with it (issue #274) — so one key shape names all six and
-/// records of different kinds never collide.
+/// argument by the callee and position, a return and a convention by
+/// the function alone, and a call-site convention view by the
+/// caller-and-callee pair. A direction keys on the function and
+/// parameter position in a key of its own, separate from the parameter
+/// arm: that separation lets a direction reading stand beside the type
+/// reading for one parameter instead of competing with it (issue
+/// #274). One enum names all six key shapes, so records of different
+/// kinds never collide.
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Target {
     /// One parameter of one function, by position.
@@ -57,7 +60,7 @@ enum Target {
     /// function has exactly one return type.
     Return { function: String },
     /// One function's calling convention — the function alone, since a
-    /// function is called one way; a caller's call-site view of its
+    /// function is called one way. A caller's call-site view of its
     /// callee keys on the pair, so it stands beside the caller's own
     /// convention without colliding with it (issue #249).
     Convention {
@@ -65,8 +68,8 @@ enum Target {
         callee: Option<String>,
     },
     /// One parameter's direction — the function and parameter position,
-    /// a key of its own beside the parameter arm: one parameter may
-    /// carry a type reading and a direction reading at once, but only
+    /// a key of its own beside the parameter arm. One parameter may
+    /// have a type reading and a direction reading at once, but only
     /// one direction (issue #274).
     Direction {
         function: String,
@@ -109,12 +112,12 @@ impl Target {
 /// Resolve competing inferences down to one per target.
 ///
 /// Where several detectors read the same parameter, local, call-site
-/// argument, return value, or parameter direction differently, the
-/// highest-confidence record wins and the rest drop; a tie keeps the
-/// record the scan showed first.
+/// argument, return value, calling convention, or parameter direction
+/// differently, the record with the highest evidence confidence wins
+/// and the rest drop; a tie keeps the record the scan showed first.
 /// The survivor stands where its target first appeared in the list, so
-/// the resolved list keeps scan order — function by function, targets in
-/// the order the bodies showed them — exactly as the raw scan did.
+/// the resolved list keeps scan order — function by function, targets
+/// in the order the bodies showed them — exactly as the raw scan did.
 pub fn resolve_conflicts(inferences: Vec<InferredType>) -> Vec<InferredType> {
     let mut winners: Vec<InferredType> = Vec::new();
     let mut positions: HashMap<Target, usize> = HashMap::new();
@@ -240,9 +243,10 @@ mod tests {
 
     #[test]
     fn the_highest_confidence_record_wins_across_detectors() {
-        // The same parameter stands read by the size detector (`strlen`'s
-        // `char *` at 70) and the known-signature engine (`CloseHandle`'s
-        // `void *` at 75); the stronger reading survives.
+        // The same parameter is read twice: by the size detector
+        // (`strlen`'s `char *` at 70) and by the known-signature
+        // detector (`CloseHandle`'s `void *` at 75). The stronger
+        // reading survives.
         let winners = resolve_conflicts(vec![
             param(
                 "FUN_1800412a0",
@@ -274,7 +278,8 @@ mod tests {
     #[test]
     fn a_tie_keeps_the_record_the_scan_showed_first() {
         // `strlen` is a string-function call and a known signature at
-        // once, both at 70; the scan showed the size detector first.
+        // once. Both readings score 70, and the scan showed the size
+        // detector first.
         let winners = resolve_conflicts(vec![
             param(
                 "FUN_1800412a0",
@@ -417,8 +422,9 @@ mod tests {
 
     #[test]
     fn one_function_never_keeps_two_conventions() {
-        // A mangled letter says thiscall at 90 and an `@N`-style reading
-        // says stdcall at 85 for one symbol — the stronger spelling wins.
+        // For one symbol, a mangled letter says thiscall at 90 and an
+        // `@N`-style reading says stdcall at 85. The stronger spelling
+        // wins.
         let winners = resolve_conflicts(vec![
             convention("CreateFileA@28", CallingConvention::Stdcall, 85),
             convention("CreateFileA@28", CallingConvention::Thiscall, 90),
@@ -454,10 +460,10 @@ mod tests {
 
     #[test]
     fn a_caller_s_own_convention_and_its_view_of_a_callee_stand_apart() {
-        // The call-site view keys on the (caller, callee) pair: the
+        // The call-site view keys on the (caller, callee) pair, so the
         // caller keeps its own convention record beside its view of the
-        // callee, and two views of one callee inside one caller — the
-        // same pair — resolve to the first seen.
+        // callee. Two views of one callee inside one caller share the
+        // same pair, so they resolve to the first seen.
         let site = |confidence: u8| {
             InferredType::Convention(InferredConvention {
                 function: "FUN_18003ab00".into(),
@@ -483,8 +489,8 @@ mod tests {
 
     #[test]
     fn a_convention_does_not_compete_with_the_same_function_s_return() {
-        // Keyed differently on purpose: a function's return reading and its
-        // convention reading are separate facts and both survive.
+        // Keyed differently on purpose: a function's return reading and
+        // its convention reading are separate facts, and both survive.
         let winners = resolve_conflicts(vec![
             ret("?paint@Widget@@QAEXXZ", "char *", 60),
             convention("?paint@Widget@@QAEXXZ", CallingConvention::Thiscall, 90),
@@ -495,9 +501,9 @@ mod tests {
     #[test]
     fn a_direction_reading_does_not_compete_with_the_type_reading_for_one_parameter() {
         // The direction arm is keyed apart from the parameter arm on
-        // purpose (issue #274): what a parameter *is* and which way it
-        // *flows* are separate facts and both survive — the type record
-        // and the direction record stand side by side.
+        // purpose (issue #274). What a parameter *is* and which way it
+        // *flows* are separate facts, and both survive: the type
+        // record and the direction record stand side by side.
         let winners = resolve_conflicts(vec![
             param(
                 "FUN_1800412a0",
@@ -515,8 +521,9 @@ mod tests {
 
     #[test]
     fn one_parameter_never_keeps_two_directions() {
-        // Two direction readings for one parameter — a stronger out and a
-        // weaker in — resolve to the stronger, like every other target.
+        // Two direction readings compete for one parameter: a stronger
+        // out and a weaker in. The stronger one wins, like every other
+        // target.
         let winners = resolve_conflicts(vec![
             direction("FUN_1800412a0", 1, Direction::In, 60),
             direction("FUN_1800412a0", 1, Direction::Out, 75),
@@ -544,8 +551,9 @@ mod tests {
 
     #[test]
     fn directions_of_two_functions_do_not_conflict() {
-        // The key carries the function: the same parameter position in two
-        // functions is two targets, exactly as for the parameter arm.
+        // The key includes the function, so the same parameter position
+        // in two functions is two targets — exactly as for the
+        // parameter arm.
         let winners = resolve_conflicts(vec![
             direction("FUN_18003ab00", 0, Direction::Out, 75),
             direction("FUN_18003e750", 0, Direction::In, 60),
@@ -557,8 +565,9 @@ mod tests {
 
     #[test]
     fn a_winner_stands_where_its_target_first_appeared() {
-        // The stronger record for param_1 arrives after param_2's record;
-        // the resolved list keeps the order the scan showed the targets.
+        // The stronger record for param_1 arrives after param_2's
+        // record. The resolved list keeps the order the scan showed the
+        // targets.
         let winners = resolve_conflicts(vec![
             param(
                 "FUN_18003ab00",

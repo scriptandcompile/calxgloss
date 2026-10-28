@@ -1,59 +1,64 @@
-//! Calling-convention detection off the machine listing: the x86
+//! Calling-convention detection from the machine listing: the x86
 //! stack-discipline channels.
 //!
-//! Where the [`crate::convention`] detector reads how a function is
-//! called off its *name*, this detector reads it off the function's
+//! The [`crate::convention`] detector reads how a function is called
+//! from its *name*. This detector reads it from the function's
 //! *instructions* — the seam's per-function disassembly text (issue
-//! #245), turned into convention records by the 32-bit stack discipline
-//! the listing spells:
+//! #245). The 32-bit stack discipline the listing spells turns that
+//! text into convention records:
 //!
-//! - **a callee epilogue that cleans up its own arguments** — a `ret N`
+//! - **A callee epilogue that cleans up its own arguments.** A `ret N`
 //!   with a positive byte count states the callee-pops discipline
-//!   outright, so the function is called stdcall; the epilogue line
+//!   outright, so the function is called stdcall. The epilogue line
 //!   itself is the evidence, at the exact-epilogue band
-//!   ([`EPILOGUE_CONFIDENCE`]);
-//! - **a caller that cleans up after a call** — an `add esp, N` in the
+//!   (`EPILOGUE_CONFIDENCE`).
+//! - **A caller that cleans up after a call.** An `add esp, N` in the
 //!   instruction right after a direct call site naming a callee means
-//!   the caller pops, so that callee is called cdecl; the cleanup line
-//!   is the evidence, at the caller-cleanup band ([`CALLER_CLEANUP_CONFIDENCE`]).
+//!   the caller pops. That callee is called cdecl. The cleanup line is
+//!   the evidence, at the caller-cleanup band (`CALLER_CLEANUP_CONFIDENCE`).
 //!
 //! The whole family keys on the stack register spelled in the listing
-//! itself, not on any new metadata: an `esp`-spelled listing is the
-//! 32-bit class and an `rsp`-spelled one the 64-bit class, and the two
-//! families never cross-fire — a 64-bit listing never produces a
-//! 32-bit reading, and a listing that spells no stack register keys no
-//! family and yields no reading rather than a guess. This module's
-//! [`machine_class`] pass is the single dispatch both listing-borne
-//! families ride: the x64 shape family (shadow-space prologue,
-//! register-first arguments, no cleanup) lives in [`crate::x64_shape`]
-//! and is routed from [`StackDisciplineDetector::from_listing`] (issue
-//! #248). The row-shape helpers below are `pub(crate)` so that family
-//! parses the same listing shape.
+//! itself, not on any new metadata. An `esp`-spelled listing is the
+//! 32-bit class; an `rsp`-spelled one is the 64-bit class. The two
+//! families never read the other's class: a 64-bit listing never
+//! produces a 32-bit reading. A listing that spells no stack register
+//! keys no family, and it yields no reading rather than a guess. This
+//! module's `machine_class` function is the single dispatch that routes
+//! both listing-borne families: the x64 shape family (shadow-space
+//! prologue, register-first arguments, no cleanup) lives in
+//! [`crate::x64_shape`] and is routed from
+//! [`StackDisciplineDetector::from_listing`] (issue #248). The
+//! row-shape helpers below are `pub(crate)` so that family parses the
+//! same listing shape.
 //!
 //! A call site whose operand is an address (`CALL 0x140002490`, the
-//! engine's own spelling) or an indirect register or memory operand
-//! names no callee to key a record by, and yields no reading; landing
-//! a detected callee convention at its call sites is the
-//! cross-function corroboration pass's job, in [`crate::corroboration`]
+//! analysis engine's own spelling) or an indirect register or memory
+//! operand names no callee to key a record by, and yields no reading.
+//! Recording a detected callee convention at its call sites is the job
+//! of the cross-function corroboration pass, in [`crate::corroboration`]
 //! (issue #249).
 
 use crate::convention::convention_record;
 use crate::types::{CallingConvention, InferenceMethod, InferredType};
 
-/// Confidence of the exact-epilogue band: a `ret N` states the callee's
-/// own cleanup outright — an exact spelling of the discipline, so it
-/// sits beside the name-borne bands and above every body-shape reading
-/// — but it names only who pops, not which callee-pops convention, so
-/// it stays below the mangled letter (90) and the `@N` decoration (85),
-/// which spell the convention itself.
+/// Evidence confidence of the exact-epilogue band: a `ret N` states the
+/// callee's own cleanup outright — an exact spelling of the discipline.
+/// That puts the reading with the name-borne bands, above this family's
+/// shape-based readings. But the epilogue names only who pops, not
+/// which callee-pops convention, so it stays below the mangled letter
+/// (90) and the `@N` decoration (85), which spell the convention
+/// itself.
 const EPILOGUE_CONFIDENCE: u8 = 80;
 
-/// Confidence of the caller-cleanup band: an `add esp, N` right after a
-/// call is the direct mark of a caller that pops, so the callee reads
-/// cdecl — solid body evidence, a notch below the exact epilogue, since
-/// one call site shows the caller's habit rather than the callee's own
-/// epilogue. Nothing self-upgrades; the cross-function corroboration
-/// pass (issue #249) is what raises a reading above this tier.
+/// Evidence confidence of the caller-cleanup band: an `add esp, N`
+/// right after a call is the direct mark of a caller that pops, so the
+/// callee reads cdecl. That is solid listing evidence, one band below
+/// the exact epilogue — one call site shows the caller's habit rather
+/// than the callee's own epilogue. Nothing self-upgrades, and the
+/// cross-function corroboration pass (issue #249) does not raise this
+/// band: it raises only epilogue and x64-shape readings. A cleanup
+/// reading stands until a stronger record for the same callee wins
+/// resolution.
 const CALLER_CLEANUP_CONFIDENCE: u8 = 70;
 
 /// The general-purpose x86 register names an indirect call can spell as
@@ -93,12 +98,12 @@ pub(crate) fn spells_register(listing: &str, register: &str) -> bool {
         .any(|token| token.eq_ignore_ascii_case(register))
 }
 
-/// The instruction text of one listing row. The engine's own rows carry
-/// an address column — `{:08x}  MNEMONIC operands` — and a canned
-/// listing spells the same shape; the column is stripped when the row
-/// opens with a hex run of address length, and a row without one is
-/// already just the instruction. (Address-length, so an `ADD` row with
-/// no column is not mistaken for one: `ADD` is three hex-looking
+/// The instruction text of one listing row. The analysis engine's own
+/// rows use an address column — `{:08x}  MNEMONIC operands` — and a
+/// canned listing spells the same shape. The column is stripped when
+/// the row opens with a hex run of address length; a row without one
+/// is already just the instruction. (Address length, so an `ADD` row
+/// with no column is not mistaken for one: `ADD` is three hex-looking
 /// letters, not an address.) Shared with [`crate::x64_shape`].
 pub(crate) fn instruction(row: &str) -> &str {
     match row.split_once("  ") {
@@ -109,9 +114,9 @@ pub(crate) fn instruction(row: &str) -> &str {
     }
 }
 
-/// `MNEMONIC operands` split the way the engine spells them: the first
-/// token is the mnemonic, the rest the operand text. Shared with
-/// [`crate::x64_shape`].
+/// `MNEMONIC operands` split the way the analysis engine spells them:
+/// the first token is the mnemonic, the rest the operand text. Shared
+/// with [`crate::x64_shape`].
 pub(crate) fn split_instruction(text: &str) -> (&str, &str) {
     let mut words = text.splitn(2, char::is_whitespace);
     (
@@ -120,7 +125,7 @@ pub(crate) fn split_instruction(text: &str) -> (&str, &str) {
     )
 }
 
-/// The operands of one instruction as the lifter spells them,
+/// The operands of one instruction as the analysis engine spells them,
 /// comma-separated; a canned listing that separates with plain spaces
 /// reads the same. Shared with [`crate::x64_shape`].
 pub(crate) fn operands(operand_text: &str) -> Vec<&str> {
@@ -149,10 +154,10 @@ pub(crate) fn declared_count(text: &str) -> Option<u64> {
 }
 
 /// The callee a direct call site names: one identifier-like operand
-/// that is not an address and not a register. The engine's own rows
-/// call through an address (`CALL 0x140002490`) — that names nothing a
-/// record can be keyed by — and an indirect call through a register or
-/// a memory operand names nothing either. Shared with
+/// that is not an address and not a register. The analysis engine's own
+/// rows call through an address (`CALL 0x140002490`) — that names
+/// nothing a record can be keyed by — and an indirect call through a
+/// register or a memory operand names nothing either. Shared with
 /// [`crate::corroboration`].
 pub(crate) fn called_name(operand_text: &str) -> Option<&str> {
     let target = operand_text.trim();
@@ -172,9 +177,9 @@ pub(crate) fn called_name(operand_text: &str) -> Option<&str> {
 
 /// Calling-convention analysis over one function's machine listing.
 ///
-/// The detector is stateless: every reading comes from the listing text
-/// it is handed, so one detector serves an entire scan. It fetches
-/// nothing itself — the engine hands it each listed function's
+/// The detector is stateless: every reading comes from the listing
+/// text it is handed, so one detector serves an entire scan. It fetches
+/// nothing itself — the scan hands it each listed function's
 /// disassembly text, read once inside the breaker-gated window.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StackDisciplineDetector;
@@ -185,25 +190,25 @@ impl StackDisciplineDetector {
         Self
     }
 
-    /// The convention readings one function's machine listing carries —
+    /// The convention readings one function's machine listing yields —
     /// whichever family the listing's own stack register keys. The
     /// 32-bit readings are keyed by the function whose listing it is,
     /// except a caller-cleanup reading, which is keyed by the callee
-    /// named at the cleaned-up call site; the x64 shape reading is keyed
-    /// by the function whose listing it is.
+    /// named at the cleaned-up call site; the x64 shape reading is
+    /// keyed by the function whose listing it is.
     ///
-    /// The evidence of every reading is the listing line that carries
-    /// it, address column and all, so the claim can be checked against
-    /// the listing itself. An empty listing, and a listing whose stack
+    /// The evidence of every reading is the listing line it came from,
+    /// address column and all, so the claim can be checked against the
+    /// listing itself. An empty listing, and a listing whose stack
     /// register keys no readable family, yield no readings.
     pub fn from_listing(&self, function: &str, listing: &str) -> Vec<InferredType> {
         match machine_class(listing) {
             MachineClass::X86 => self.x86_readings(function, listing),
-            // The x64 shape family reads the same listing read: an
-            // rsp-spelled listing goes to the 64-bit shapes and never
-            // to the x86 channels, and a listing that spells no stack
-            // register keys no family at all — no reading rather than
-            // a guess about which machine it is.
+            // One listing read feeds both families. An rsp-spelled
+            // listing goes to the 64-bit shapes and never to the x86
+            // channels. A listing that spells no stack register keys
+            // no family at all: no reading rather than a guess about
+            // which machine it is.
             MachineClass::X64 => {
                 crate::x64_shape::X64ShapeDetector::new().from_listing(function, listing)
             }
@@ -223,8 +228,9 @@ impl StackDisciplineDetector {
 
         // The exact epilogue: the first `ret N` with a positive count
         // states this function's own cleanup outright. A function can
-        // carry several epilogues; the first seen carries the reading,
-        // the same first-seen rule the resolution applies to a tie.
+        // have several epilogues. The first one seen yields the
+        // reading — the same first-seen rule that settles a tie in
+        // resolution.
         for row in &rows {
             let (mnemonic, operand_text) = split_instruction(instruction(row));
             if mnemonic.eq_ignore_ascii_case("ret")
@@ -243,8 +249,9 @@ impl StackDisciplineDetector {
         }
 
         // The caller-side cleanup: an `add esp, N` in the instruction
-        // right after a direct call — the shape a compiler emits when
-        // the caller pops — reads the callee named at that site cdecl.
+        // right after a direct call. That is the shape a compiler emits
+        // when the caller pops, so the callee named at that site reads
+        // cdecl.
         for (call, cleanup) in rows.iter().zip(rows.iter().skip(1)) {
             let (call_mnemonic, call_operand) = split_instruction(instruction(call));
             if !call_mnemonic.eq_ignore_ascii_case("call") {
@@ -296,8 +303,9 @@ mod tests {
 
     /// A canned `esp`-spelled epilogue: a frame setup, then a `ret`
     /// that pops twelve argument bytes — the callee cleans up its own
-    /// stack. Rows carry the engine's own spelling: an address column,
-    /// then uppercase SLEIGH mnemonics with `0x` hex operands.
+    /// stack. The rows use the analysis engine's own spelling: an
+    /// address column, then uppercase SLEIGH mnemonics with `0x` hex
+    /// operands.
     fn epilogue_listing() -> String {
         "00401000  PUSH EBP\n\
          00401001  MOV EBP, ESP\n\
@@ -343,8 +351,8 @@ mod tests {
     #[test]
     fn an_epilogue_that_pops_its_arguments_reads_stdcall() {
         // `ret 0xC` in an esp-spelled listing states the callee's own
-        // cleanup outright — the exact-epilogue band, with the
-        // epilogue line itself as the evidence.
+        // cleanup outright. The reading sits at the exact-epilogue
+        // band, with the epilogue line itself as the evidence.
         let readings =
             StackDisciplineDetector::new().from_listing("FUN_18003e750", &epilogue_listing());
         assert_eq!(readings.len(), 1);
@@ -372,9 +380,9 @@ mod tests {
 
     #[test]
     fn several_epilogues_land_one_reading_on_the_first() {
-        // A function can carry several epilogues; the first one seen
-        // carries the reading — the same first-seen rule the
-        // resolution applies to an equal-confidence tie.
+        // A function can have several epilogues. The first one seen
+        // yields the reading — the same first-seen rule that settles an
+        // equal-confidence tie in resolution.
         let listing = "00401000  MOV EBP, ESP\n\
                        00401003  RET 0x4\n\
                        00401005  RET 0x8";
@@ -438,9 +446,9 @@ mod tests {
 
     #[test]
     fn an_indirect_or_address_call_site_names_no_callee() {
-        // The engine's own rows call through an address, and an
-        // indirect call runs through a register or memory operand —
-        // none of them names a callee a record could be keyed by, so
+        // The analysis engine's own rows call through an address. An
+        // indirect call runs through a register or memory operand.
+        // None of them names a callee a record could be keyed by, so
         // the cleanup yields no reading rather than a record keyed by
         // an address or a register.
         let detector = StackDisciplineDetector::new();
@@ -468,12 +476,12 @@ mod tests {
     #[test]
     fn an_rsp_spelled_listing_yields_no_32_bit_reading() {
         // The same cleanup shapes spelled with the 64-bit stack
-        // register — and even a `ret N` — produce no 32-bit reading:
-        // the family keys on the register the listing itself spells,
-        // so the two families never cross-fire. The x64 family stays
-        // silent on this listing too: the cleanup contradicts its
-        // shape and no argument register is spelled, so the dispatch
-        // records nothing at all.
+        // register — even a `ret N` — produce no 32-bit reading. The
+        // family keys on the register the listing itself spells, so
+        // the two families never read the other's class. The x64
+        // family stays silent on this listing too: the cleanup
+        // contradicts its shape and no argument register is spelled,
+        // so the dispatch records nothing at all.
         let listing = "140001000  SUB RSP, 0x28\n\
                        140001007  CALL FUN_1800412a0\n\
                        14000100c  ADD RSP, 0x20\n\
@@ -505,9 +513,10 @@ mod tests {
 
     #[test]
     fn the_dispatch_routes_an_rsp_spelled_listing_to_the_x64_family() {
-        // The x64 shape family rides this dispatch: an rsp-spelled
-        // listing showing the full shape lands its Microsoft-x64
-        // reading through the same entry point as the 32-bit channels.
+        // The x64 shape family is routed through this dispatch. An
+        // rsp-spelled listing showing the full shape produces its
+        // Microsoft-x64 reading through the same entry point as the
+        // 32-bit channels.
         let listing = "140001000  SUB RSP, 0x28\n\
                        140001007  MOV [RSP+0x8], RCX\n\
                        14000100c  RET";
