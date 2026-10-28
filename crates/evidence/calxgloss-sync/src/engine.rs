@@ -8,14 +8,15 @@
 //! it kept, and assembles their findings into a single [`SyncResult`]
 //! with its scan provenance.
 //!
-//! The detectors are pure text analysis over one decompiled body, so
-//! the engine fetches each function's pseudo-C exactly once and reads
+//! The detectors are pure text analysis over one decompiled body. The
+//! sync scan fetches each function's pseudo-C exactly once and reads
 //! it with all of them, rather than having each detector pull its own
 //! copy; the cross-function pass reads those same kept bodies, so the
-//! scan stays at one decompile per function. The scan is then one
-//! sequential pass over the function listing: unlike typeinfer's
-//! competing families there is nothing to resolve between the
-//! detectors — they read disjoint body shapes — and keeping the pass
+//! scan stays at one decompile per function.
+//!
+//! The scan is one sequential pass over the function listing. Unlike
+//! typeinfer's competing families, there is nothing to resolve between
+//! the detectors: they read disjoint body shapes. Keeping the pass
 //! sequential keeps the persisted finding list in a stable, diffable
 //! order.
 
@@ -36,17 +37,17 @@ use tracing::{info, warn};
 
 /// The decompiler a concurrency scan reads.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// The shared trait from the decompiler seam crate, re-exported here;
+/// `SyncEngine`'s generic bound has always named it at this path.
+/// [`KunaSource`] implements it over the in-process analysis engine,
+/// and tests implement it over canned bodies so the orchestration runs
+/// without a server. The futures are `Send` so a scan can be driven
+/// from an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
-/// counts, not a dump (the P19-5 admitted-semantics track).
+/// How many unreached functions one coverage limitation line names
+/// inline before the rest are replaced by a count — bounded prose
+/// beside the counts, not a dump (the P19-5 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
 /// The facets a concurrency scan declares, in order — the roster the
@@ -54,24 +55,27 @@ const MAX_NAMED_UNREACHED: usize = 5;
 /// facet: the decompiled bodies every per-body detector shares.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
 
-/// The coverage record every concurrency scan stamps about itself (issue
-/// #349), beside the provenance and the timing.
+/// The coverage record every concurrency scan stamps about itself
+/// (issue #349), beside the provenance and the timing.
 ///
-/// The concurrency scan has one facet: `function-bodies`, the decompiled
-/// bodies every per-body detector reads. The function listing is always
-/// read end to end — a failed listing aborts the run, and more than half
-/// failing to decompile trips the skip-rate breaker above — so what a
-/// finished scan can not have read is exactly the bodies it skipped
-/// along the way: a nameless listing entry, or a decompile that failed.
-/// The cross-function pass reads only bodies this walk already kept, so
-/// it adds no coverage border of its own. With nothing skipped, the facet
-/// is `complete`, and that is the admission's point: a function no
-/// finding mentions was examined and clean, never silently unchecked.
-/// With any, the facet is `partial` and the limitation line names the
-/// unreached bodies (bounded at [`MAX_NAMED_UNREACHED`]), so silence and
-/// never-reaching are distinguishable in the filed record itself. The
-/// whole picture mirrors the single facet — there is nothing else this
-/// engine examines.
+/// The concurrency scan has one facet: `function-bodies` — the
+/// decompiled bodies every per-body detector reads. The function
+/// listing is always read end to end. A failed listing aborts the
+/// run, and more than half failing to decompile trips the skip-rate
+/// breaker in the scan below. So what a finished scan could not have
+/// read is exactly the bodies it skipped along the way: a nameless
+/// listing entry, or a decompile that failed.
+///
+/// The cross-function pass reads only bodies this walk already kept,
+/// so it adds no coverage border of its own.
+///
+/// With nothing skipped, the facet is `complete`. That is the
+/// admission's point: a function no finding mentions was examined and
+/// clean, never silently unchecked. With any skips, the facet is
+/// `partial` and the limitation line names the unreached bodies
+/// (bounded at [`MAX_NAMED_UNREACHED`]), so silence and never-reaching
+/// are distinguishable in the filed record itself. The whole picture
+/// mirrors the single facet: the sync scan reads nothing else.
 fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
     let total = unreached.len() + nameless;
     if total == 0 {
@@ -110,13 +114,15 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
 /// Orchestrates the per-body detectors and the cross-function pass
 /// into one [`SyncResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a loaded [`KunaSource`]. Each detector carries no state
-/// and starts configured with its standard name sets —
+/// `SyncEngine` is generic over its [`ScanSource`], so tests can run
+/// the whole orchestration over canned bodies. [`new`](Self::new)
+/// builds one over a loaded [`KunaSource`].
+///
+/// Each detector is stateless and starts configured with its standard
+/// name sets.
 /// [`with_mutex`](Self::with_mutex), [`with_atomics`](Self::with_atomics),
 /// [`with_threads`](Self::with_threads), and [`with_tls`](Self::with_tls)
-/// swap a detector's sets whole — so one instance of each serves the
+/// swap a detector's sets whole, so one instance of each serves the
 /// whole scan. The cross-function pass has no name set of its own: it
 /// reads the mutex detector's configured acquire names, so custom
 /// spellings reach it through [`with_mutex`](Self::with_mutex).
@@ -133,8 +139,8 @@ pub struct SyncEngine<S = KunaSource> {
 }
 
 impl SyncEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the four
-    /// detectors' standard name sets.
+    /// A `SyncEngine` over a loaded Kuna program, scanning with the
+    /// six per-body detectors' standard name sets.
     pub fn new(source: &KunaSource) -> SyncEngine<KunaSource> {
         SyncEngine {
             source: source.clone(),
@@ -150,8 +156,8 @@ impl SyncEngine<KunaSource> {
 }
 
 impl<S> SyncEngine<S> {
-    /// An engine whose decompiles come from `source`, scanning with
-    /// the four detectors' standard name sets.
+    /// A `SyncEngine` whose decompiles come from `source`, scanning
+    /// with the six per-body detectors' standard name sets.
     pub fn with_source(source: S) -> Self {
         SyncEngine {
             source,
@@ -249,26 +255,28 @@ impl<S> SyncEngine<S> {
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
-    /// findings follow the function listing — function by function,
-    /// and within one function the mutex pairings, then the atomic
-    /// calls, then the thread spawns, then the TLS records, then the
-    /// async-runtime shapes, then the futex calls — and after every
-    /// function the cross-function pass adds its findings, in listing
-    /// order, over the bodies this walk already decompiled: no extra
-    /// engine reads. So two scans of the same program diff
-    /// cleanly.
+    /// findings follow the function listing, function by function.
+    /// Within one function they run in order: the mutex pairings,
+    /// then the atomic calls, then the thread spawns, then the TLS
+    /// records, then the async-runtime shapes, then the futex calls.
+    /// After the whole per-function walk, the cross-function pass
+    /// adds its findings, in listing order, over the bodies this
+    /// walk already decompiled — no extra analysis engine calls.
+    /// So two scans of the same program diff cleanly.
     ///
-    /// A function whose body the decompiler cannot produce (a thunk, a bad
-    /// entry point) is skipped with a warning; only a failure of the
-    /// listing itself — the server being down — aborts the run, since
-    /// then nothing was scanned.
+    /// A function whose body the decompiler cannot produce (a thunk, a
+    /// bad entry point) is skipped with a warning. Only a failure of
+    /// the listing itself — the server being down — aborts the run,
+    /// since then nothing was scanned.
+    ///
     /// But when more than half the listing fails to decompile, the
     /// skip-rate breaker aborts the run too: that is the signature of
-    /// the bridge answering from the wrong program, and skipping on
-    /// would persist a phantom-clean record (issue #71).
-    /// The detectors read disjoint
-    /// body shapes, so a function can carry findings of every kind at
-    /// once and nothing is resolved between them.
+    /// the seam answering about the wrong program, and skipping on
+    /// would persist a record that looks clean but is not (issue #71).
+    ///
+    /// The detectors read disjoint body shapes, so a function can
+    /// have findings of every kind at once and nothing is resolved
+    /// between them.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<SyncResult>
     where
         S: ScanSource,
@@ -280,17 +288,18 @@ impl<S> SyncEngine<S> {
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // P19-5: which bodies the scan could NOT read, named where a name
-        // exists, counted where the listing entry is nameless — the
-        // coverage record below states it, so an unmentioned function
-        // means examined-and-clean, never silently unchecked.
+        // P19-5: which bodies the scan could NOT read — named where a
+        // name exists, counted where the listing entry is nameless.
+        // The coverage record below states it, so an unmentioned
+        // function means examined-and-clean, never silently unchecked.
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // A nameless listing entry could land the name lookup
+                // on some other function's body. Nothing can be said
+                // about it, so it is skipped and counted in the
+                // nameless coverage figure.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -310,11 +319,11 @@ impl<S> SyncEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
+                    // Skip-rate breaker: once more than half the listing
+                    // has failed to decompile, the scan is reading a
+                    // program the analysis engine cannot analyze, and an
+                    // empty result would persist as a record that looks
+                    // clean but is not. Abort with the counts instead of
                     // skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::SyncError::DecompileBreaker {
@@ -367,19 +376,20 @@ impl<S> SyncEngine<S> {
 
         // The cross-function pass runs after the per-function walk,
         // over the bodies the scan already decompiled — no extra
-        // engine reads — and its findings append in listing
-        // order, after the per-function findings.
+        // calls to the analysis engine. Its findings append in
+        // listing order, after the per-function findings.
         findings.extend(self.cross_function.analyze(&bodies, &self.mutex));
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The scan source names the analysis engine behind it, with
+        // its pinned release, under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage inside its own scan, where
-        // the truth lives — not the registry row and not the CLI (issue
+        // The scan admits its own coverage, inside scan() where the
+        // truth lives — not the registry row and not the CLI (issue
         // #349): every listed body was read by every per-body detector
-        // unless the scan says which ones it could not reach. The batch
-        // scan phase and the CLI's force-rescan file the same admission
-        // through the same single definition.
+        // unless the record says which bodies the scan could not
+        // reach. The batch scan phase and the CLI's force-rescan file
+        // the same admission through this one definition.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -429,7 +439,7 @@ mod tests {
     }
 
     /// State shared by every clone of a [`FakeProgram`], so a test can
-    /// read what the scan did after the engine has consumed its
+    /// read what the scan did even after `SyncEngine` takes the
     /// source.
     #[derive(Debug, Default)]
     struct Stats {
@@ -490,8 +500,8 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads: this engine never makes
-        // them, so they answer with empty or not-found data.
+        // The rest of the shared trait's reads: the sync scan never
+        // makes them, so they answer with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
@@ -898,8 +908,8 @@ mod tests {
 
     #[tokio::test]
     async fn lock_order_findings_append_after_the_per_function_findings() {
-        // One function carries in-body pairs and a cross-function
-        // conflict: the pairings ride the per-function walk, the
+        // One function has in-body lock pairs and a cross-function
+        // conflict. The pairs come from the per-function walk; the
         // cross-function finding lands after every function's own
         // findings.
         let mut program = FakeProgram::empty();
@@ -981,8 +991,8 @@ mod tests {
             record.suggestion,
             "guard the shared global with one lock held by both functions"
         );
-        // The unprotected side is absence-of-evidence: one rung below
-        // the evidence-based kinds.
+        // The unprotected side rests on absence of evidence, so it
+        // scores one band below the evidence-based kinds.
         assert_eq!(record.confidence, 60);
         assert_eq!(
             record.evidence,
@@ -1070,11 +1080,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_race_reading_runs_without_a_global_state_document() {
-        // The pairing consumes the global-state crate's reading in
-        // process, not its persisted artifact: this scan has no
-        // global-state document behind it — the global-state engine
-        // never ran — and the race finding still lands, so the two
-        // engines stay independently runnable in either order.
+        // The pairing uses the global-state evidence engine's reading
+        // in process, not its persisted document. This scan has no
+        // global-state document behind it — that evidence engine
+        // never ran — and the race finding still lands. The two
+        // evidence engines stay independently runnable in either
+        // order.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -1106,10 +1117,10 @@ mod tests {
 
     #[tokio::test]
     async fn data_race_findings_append_after_the_per_function_findings() {
-        // One function carries an in-body lock pair and an unprotected
-        // store the other function reads: the pairings ride the
-        // per-function walk, the race lands after every function's own
-        // findings.
+        // One function has an in-body lock pair and an unprotected
+        // store that the other function reads. The pair comes from
+        // the per-function walk; the race finding lands after every
+        // function's own findings.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -1143,9 +1154,9 @@ mod tests {
 
     #[tokio::test]
     async fn scan_decompiles_each_function_exactly_once() {
-        // The four detectors share one fetch per function; a scan
-        // that asked each detector for its own copy would quadruple
-        // the wall time.
+        // The six per-body detectors share one decompile call per
+        // function; a scan that asked each detector for its own copy
+        // would multiply the wall time.
         let program = program();
         let result = scan(program.clone()).await;
         assert!(!result.is_empty());
@@ -1173,11 +1184,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_where_every_decompile_fails_aborts() {
-        // The 2026-10-08 incident: the bridge answered the listing from
+        // The 2026-10-08 incident: the seam answered the listing from
         // one program and the decompiles from another, every decompile
-        // failed, and the scan nearly persisted a phantom-clean record
-        // under the target's name. The skip-rate breaker aborts with
-        // the counts instead, so nothing is persisted.
+        // failed, and the scan nearly filed a record that looks clean
+        // but is not under the target's name. The skip-rate breaker
+        // aborts with the counts instead, so nothing is persisted.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         let result = SyncEngine::with_source(program).scan("eqmain.dll").await;
@@ -1192,9 +1203,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
-        // The breaker is a circuit breaker, not a post-mortem: once
-        // most of the listing has failed, the remaining decompiles are
-        // wasted round-trips against the wrong program.
+        // The skip-rate breaker is a fuse, not a post-mortem: once
+        // more than half the listing has failed to decompile, the
+        // remaining decompiles are wasted round-trips against the
+        // wrong program.
         let mut program = program();
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
@@ -1226,9 +1238,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_nameless_listing_entry_is_skipped() {
-        // An empty name would send the by-name lookup into an
-        // arbitrary function's body, so the entry passes without a
-        // decompile.
+        // Looking up an empty name could land the by-name lookup on
+        // an arbitrary function's body, so the entry is skipped
+        // without a decompile.
         let mut program = program();
         program.listing.insert(0, summary(""));
         let result = scan(program.clone()).await;
@@ -1239,9 +1251,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_listing_fails_the_whole_run() {
-        // With the listing gone nothing was scanned, so the run aborts
-        // rather than returning a result that looks empty by
-        // detection.
+        // With the listing gone nothing was scanned, so the run
+        // aborts rather than returning a result that reads like a
+        // clean scan that simply found nothing.
         let mut program = program();
         program.fail_listing = true;
         let result = SyncEngine::with_source(program).scan("eqmain.dll").await;
@@ -1325,16 +1337,17 @@ mod tests {
 
     #[tokio::test]
     async fn scan_stamps_the_scan_provenance() {
-        // The metadata names the binary, carries a finish time, and
-        // the duration is stamped from the wall clock — a canned scan
+        // The metadata names the binary and records a finish time.
+        // The duration is stamped from the wall clock; a canned scan
         // is instant, so it reads as zero seconds rather than never
         // set.
         let result = scan(program()).await;
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
-        // Story 9 (#203): the record also names the engine that produced it —
-        // scan() copies the source's provenance through (#208).
+        // Story 9 (#203): the record also names the analysis engine
+        // behind the source — scan() copies the source's provenance
+        // through (#208).
         let engine = result
             .metadata
             .engine
@@ -1356,19 +1369,19 @@ mod tests {
     // Admitted scan coverage (issue #349)
     // ============================================================
 
-    /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
-    /// drift.
+    /// The data-level verdict of the roster pin. An empty result
+    /// means the record names every declared facet exactly once; each
+    /// fault states one drift.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
-        // force-rescan file the same admission through this one
-        // definition. Every body was read here, so the record is
+        // The stamp comes from `SyncEngine`'s own scan, not from the
+        // registry row and not from the CLI. The batch scan phase and
+        // the CLI's force-rescan file the same admission through this
+        // one definition. Every body was read here, so the record is
         // complete and says nothing needs admitting.
         let result = scan(program()).await;
         let coverage = result
@@ -1430,8 +1443,8 @@ mod tests {
     #[tokio::test]
     async fn the_coverage_line_is_capped_at_five_names_and_counts_the_nameless() {
         // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
+        // five inline and replace the sixth with a count. A nameless
+        // listing entry counts toward the total without taking a name
         // slot.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::empty();
