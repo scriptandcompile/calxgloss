@@ -11,9 +11,9 @@
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the switch
 //!   chains, then the recursion, then the state machines, then the
-//!   loop reading, then the branch density — and after every
-//!   function, the cross-function mutual-recursion cycles in listing
-//!   order.
+//!   loop reading, then the branch density, then the branch
+//!   inventory — and after every function, the cross-function
+//!   mutual-recursion cycles in listing order.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -50,15 +50,15 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
-/// A canned program implementing [`ScanSource`]: one function whose
-/// body carries a three-arm switch-shaped chain over `local_4` with a
-/// trailing default, a self-call nested inside a `while` loop in one
-/// arm (the depth-multiplier reading), and a call to the second
-/// function in another, one function whose
-/// body is a named-constant state chain over `state` with transition
-/// assignments, and one plain function that finds nothing. The first
-/// two functions also call each other, so the cross-function pass has
-/// a mutual-recursion cycle to read.
+/// A canned program implementing [`ScanSource`]. Built by `program()`:
+/// the first function's body carries a three-arm switch-shaped chain
+/// over `local_4` with a trailing default, a self-call nested inside a
+/// `while` loop in one arm (what sets the recursion finding's in-loop
+/// flag), and a call to the second function in another arm. The second
+/// function's body is a named-constant state chain over `state` with
+/// transition assignments. The third function's body is plain and
+/// finds nothing. The first two functions also call each other, so
+/// the cross-function pass has a mutual-recursion cycle to read.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -396,9 +396,9 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.evidence, "else {");
     assert_eq!(record.confidence.value(), 50);
 
-    // The cross-function cycle rode the walk's kept bodies: it lands
-    // last, attached to the cycle's earliest member, naming both
-    // members in cycle order through the round trip.
+    // The cross-function pass read the cycle off the walk's kept
+    // bodies: it lands last, attached to the cycle's earliest member,
+    // and names both members in cycle order through the round trip.
     let ControlFlowFinding::MutualRecursion(record) = findings[6] else {
         unreachable!("the mutual calls read as a mutual_recursion finding");
     };
@@ -452,7 +452,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     // document on disk answers the per-function lookup, the findings
     // render into `ControlFlowInfo` prompt data, and the rendered
     // escalate prompt carries the CONTROL FLOW section with each
-    // finding's suggestion, kind, confidence, and evidence.
+    // finding's suggestion, kind, evidence confidence, and evidence.
     let workspace = TempDir::new().unwrap();
     let result = ControlFlowEngine::with_source(program())
         .scan("eqmain.dll")
