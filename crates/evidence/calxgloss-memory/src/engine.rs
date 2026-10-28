@@ -3,17 +3,17 @@
 //! [`MemoryEngine`] runs the three detectors — allocation/release pair
 //! tracking, handle lifetime detection, and reference-counting
 //! detection — over every function of one loaded program and
-//! assembles their findings into a single [`MemoryResult`] with its scan
+//! combines their findings into a single [`MemoryResult`] with its scan
 //! provenance.
 //!
-//! The detectors are pure text analysis over one decompiled body, so the
-//! engine fetches each function's pseudo-C exactly once and reads it with
-//! all three, rather than having each detector pull its own copy. The
-//! scan is then one sequential pass over the function listing: unlike
-//! typeinfer's competing families there is nothing to resolve between the
-//! detectors — they read disjoint body shapes — and keeping the pass
-//! sequential keeps the persisted finding list in a stable, diffable
-//! order.
+//! The detectors are pure text analysis over one decompiled body. So the
+//! memory scan fetches each function's pseudo-C exactly once, and all
+//! three detectors read that one copy instead of each pulling its own.
+//! The scan is then one sequential pass over the function listing.
+//! Unlike typeinfer's competing families, there is nothing to resolve
+//! between the detectors — they read disjoint body shapes. Keeping the
+//! pass sequential keeps the persisted finding list in a stable order
+//! that diffs cleanly.
 
 use crate::allocator::AllocatorTracker;
 use crate::cross_function::CrossFunctionAnalyzer;
@@ -29,42 +29,45 @@ use tracing::{info, warn};
 
 /// The decompiler reads a memory lifecycle scan performs.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// This is the shared trait from the decompiler seam crate, re-exported
+/// here so the memory scan's generic bounds can name it directly.
+/// [`KunaSource`] implements it over the in-process analysis engine, and
+/// tests implement it over canned bodies so the orchestration runs
+/// without a server. The futures are `Send` so a scan can be driven from
+/// an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
+/// How many unreached functions one coverage limitation line names by
+/// name before counting the rest instead — bounded prose beside the
 /// counts, not a dump (the P19-5 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
-/// The facets a memory lifecycle scan declares, in order — the roster
-/// the record must name exactly once each. The memory scan reads one
-/// facet: the decompiled bodies all three detectors share.
+/// The facets a memory lifecycle scan declares, in order. The record
+/// must name each one exactly once. The memory scan reads one facet:
+/// the decompiled bodies all three detectors share.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
 
 /// The coverage record every memory lifecycle scan stamps about itself
 /// (issue #349), beside the provenance and the timing.
 ///
 /// The memory scan has one facet: `function-bodies`, the decompiled
-/// bodies all three detectors read. The function listing is always read
-/// end to end — a failed listing aborts the run, and more than half
-/// failing to decompile trips the skip-rate breaker above — so what a
-/// finished scan can not have read is exactly the bodies it skipped
-/// along the way: a nameless listing entry, or a decompile that failed.
-/// The cross-function pass reads only bodies this walk already decompiled,
-/// so it adds no coverage border of its own. With nothing skipped, the
-/// facet is `complete`, and that is the admission's point: a function no
-/// finding mentions was examined and clean, never silently unchecked.
-/// With any, the facet is `partial` and the limitation line names the
-/// unreached bodies (bounded at [`MAX_NAMED_UNREACHED`]), so silence and
+/// bodies all three detectors read. The scan always reads the function
+/// listing end to end: a failed listing aborts the scan, and more than
+/// half the functions failing to decompile trips the skip-rate breaker
+/// (see above). So what a finished scan could not read is exactly the
+/// bodies it skipped along the way: a nameless listing entry, or a
+/// decompile that failed. The cross-function pass reads only bodies
+/// this walk already decompiled, so it adds no coverage border of its
+/// own.
+///
+/// With nothing skipped, the facet is `complete`, and that is the
+/// admission's point: a function no finding mentions was examined and
+/// clean, never silently unchecked. With any skip, the facet is
+/// `partial` and the limitation line names the unreached bodies (the
+/// line names at most [`MAX_NAMED_UNREACHED`]), so silence and
 /// never-reaching are distinguishable in the filed record itself. The
-/// whole picture mirrors the single facet — there is nothing else this
-/// engine examines.
+/// whole picture mirrors the single facet — this evidence engine
+/// examines nothing else.
 fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
     let total = unreached.len() + nameless;
     if total == 0 {
@@ -102,13 +105,13 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
 
 /// Orchestrates the three detectors into one [`MemoryResult`].
 ///
-/// The engine is generic over its [`ScanSource`], so tests can run the
-/// whole orchestration over canned bodies; [`new`](Self::new) builds one
+/// This type is generic over its [`ScanSource`], so tests can run the
+/// whole orchestration over canned bodies. [`new`](Self::new) builds one
 /// over a loaded [`KunaSource`]. Each detector carries no state and
-/// starts configured with its standard name sets —
+/// starts configured with its standard name sets.
 /// [`with_allocator`](Self::with_allocator), [`with_handles`](Self::with_handles),
 /// and [`with_refcounts`](Self::with_refcounts) swap a detector's sets
-/// whole — so one instance of each serves the whole scan.
+/// whole, so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct MemoryEngine<S = KunaSource> {
     source: S,
@@ -119,7 +122,7 @@ pub struct MemoryEngine<S = KunaSource> {
 }
 
 impl MemoryEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, scanning with the three
+    /// A memory scan over a loaded Kuna program, using the three
     /// detectors' standard name sets.
     pub fn new(source: &KunaSource) -> MemoryEngine<KunaSource> {
         MemoryEngine {
@@ -133,7 +136,7 @@ impl MemoryEngine<KunaSource> {
 }
 
 impl<S> MemoryEngine<S> {
-    /// An engine whose decompiles come from `source`, scanning with the
+    /// A memory scan whose decompiles come from `source`, using the
     /// three detectors' standard name sets.
     pub fn with_source(source: S) -> Self {
         MemoryEngine {
@@ -171,18 +174,21 @@ impl<S> MemoryEngine<S> {
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
     /// becomes the key a persisted result is filed under. The findings
-    /// follow the function listing — function by function, and within one
-    /// function the allocation pairs, then the handle lifetimes, then the
-    /// reference counts — so two scans of the same program diff cleanly.
+    /// follow the function listing: function by function, and within one
+    /// function the allocation pairs, then the handle lifetimes, then
+    /// the reference counts. Two scans of the same program therefore
+    /// diff cleanly.
     ///
-    /// A function whose body the decompiler cannot produce (a thunk, a bad entry
-    /// point) is skipped with a warning; only a failure of the listing
-    /// itself — the server being down — aborts the run, since then
-    /// nothing was scanned.
-    /// But when more than half the listing fails to decompile, the
-    /// skip-rate breaker aborts the run too: that is the signature of
-    /// the bridge answering from the wrong program, and skipping on
-    /// would persist a phantom-clean record (issue #71).
+    /// The scan skips a function whose body the decompiler cannot
+    /// produce (a thunk, a bad entry point) and logs a warning. Only a
+    /// failure of the listing itself — the server being down — aborts
+    /// the scan, since then nothing was scanned.
+    /// But when more than half the program's functions fail to
+    /// decompile, the skip-rate breaker aborts the scan too. A high
+    /// skip rate is the signature of a seam letting the scan answer
+    /// about the wrong program. The breaker is a fuse: it aborts the
+    /// scan rather than persisting a record that looks clean but is not
+    /// (issue #71).
     /// The three detectors read disjoint body
     /// shapes, so a function can carry findings of every kind at once
     /// and nothing is resolved between them.
@@ -197,17 +203,18 @@ impl<S> MemoryEngine<S> {
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // P19-5: which bodies the scan could NOT read, named where a name
-        // exists, counted where the listing entry is nameless — the
-        // coverage record below states it, so an unmentioned function
-        // means examined-and-clean, never silently unchecked.
+        // P19-5: track which bodies the scan could NOT read: named
+        // where a name exists, counted where the listing entry is
+        // nameless. The coverage record below persists this, so an
+        // unmentioned function means examined-and-clean, never
+        // silently unchecked.
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing can
-                // be said about it, so it passes unrecorded.
+                // With an empty name, the by-name lookup could land on
+                // some other function's body. Nothing can be said about
+                // the entry, so the scan passes it by without recording.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -227,12 +234,14 @@ impl<S> MemoryEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
-                    // skipping on.
+                    // Skip-rate breaker: more than half the program's
+                    // functions have now failed to decompile, so the
+                    // scan's answer cannot be trusted. A high skip
+                    // rate is the signature of a seam letting the scan
+                    // answer about the wrong program. The breaker is a
+                    // fuse: it aborts the scan rather than persisting
+                    // a record that looks clean but is not, so abort
+                    // with the counts instead of skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::MemoryError::DecompileBreaker {
                             failed: decompile_failures,
@@ -265,22 +274,23 @@ impl<S> MemoryEngine<S> {
         }
 
         // The cross-function pass runs after the per-function walk,
-        // over the bodies the scan already decompiled — no extra
-        // engine reads — and its findings append in listing
-        // order, so the persisted list stays stable and diffable.
+        // over the bodies the scan already decompiled, so it makes no
+        // extra reads from the analysis engine. Its findings append in
+        // listing order, so the persisted list stays stable and diffs
+        // cleanly.
         findings.extend(
             self.cross_function
                 .analyze(&bodies, &self.allocator, &self.handles),
         );
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names the analysis engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage inside its own scan, where
+        // The scan records its own coverage inside its own scan, where
         // the truth lives — not the registry row and not the CLI (issue
-        // #349): every listed body was read by all three detectors unless
-        // the scan says which ones it could not reach. The batch scan
-        // phase and the CLI's force-rescan file the same admission
+        // #349). Every listed body was read by all three detectors
+        // unless the scan says which ones it could not reach. The batch
+        // scan phase and the CLI's force-rescan file the same admission
         // through the same single definition.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless));
         metadata.duration_secs = started.elapsed().as_secs();
@@ -328,8 +338,8 @@ mod tests {
         }
     }
 
-    /// State shared by every clone of a [`FakeProgram`], so a test can read
-    /// what the scan did after the engine has consumed its source.
+    /// State shared by every clone of a [`FakeProgram`], so a test can
+    /// read what the scan did even after the scan has finished.
     #[derive(Debug, Default)]
     struct Stats {
         decompiles: Mutex<Vec<String>>,
@@ -389,7 +399,7 @@ mod tests {
                 })
         }
 
-        // The rest of the shared trait's reads: this engine never makes
+        // The rest of the shared trait's reads: this scan never makes
         // them, so they answer with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
@@ -537,9 +547,9 @@ mod tests {
     #[tokio::test]
     async fn scan_keeps_findings_in_scan_order() {
         // Both functions carry every shape, so the persisted list must
-        // group their findings by function in listing order — and within
-        // one function run allocation, handle, then reference count —
-        // never interleaved.
+        // group their findings by function in listing order. Within one
+        // function it must run allocation, then handle, then reference
+        // count. The two functions' findings must never interleave.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -586,8 +596,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_is_skipped() {
-        // The decompiler cannot produce a body for every function; one bad entry
-        // point must not cost the whole program its scan.
+        // The decompiler cannot produce a body for every function. One
+        // bad entry point must not stop the scan of the whole program.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into()];
         let result = scan(program.clone()).await;
@@ -601,11 +611,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_where_every_decompile_fails_aborts() {
-        // The 2026-10-08 incident: the bridge answered the listing from
-        // one program and the decompiles from another, every decompile
-        // failed, and the scan nearly persisted a phantom-clean record
-        // under the target's name. The skip-rate breaker aborts with
-        // the counts instead, so nothing is persisted.
+        // The 2026-10-08 incident: the seam served the function listing
+        // from one program and the decompiles from another, so every
+        // decompile failed. A high skip rate like that is the signature
+        // of a seam letting the scan answer about the wrong program,
+        // and this scan nearly persisted a record that looked clean but
+        // was not, under the target's name. The skip-rate breaker now
+        // aborts with the counts instead, so nothing is persisted.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
         let result = MemoryEngine::with_source(program).scan("eqmain.dll").await;
@@ -620,9 +632,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
-        // The breaker is a circuit breaker, not a post-mortem: once
-        // most of the listing has failed, the remaining decompiles are
-        // wasted round-trips against the wrong program.
+        // The skip-rate breaker is a fuse, not a post-mortem: it aborts
+        // the scan rather than persisting a record that looks clean but
+        // is not. Once most of the listing has failed, the remaining
+        // decompiles are wasted round-trips against the wrong program.
         let mut program = program();
         program.listing.push(summary("FUN_1800412a0"));
         program.bodies.insert(
@@ -654,8 +667,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_nameless_listing_entry_is_skipped() {
-        // An empty name would send the by-name lookup into an arbitrary
-        // function's body, so the entry passes without a decompile.
+        // An empty name could send the by-name lookup into an arbitrary
+        // function's body, so the scan skips the entry without a
+        // decompile.
         let mut program = program();
         program.listing.insert(0, summary(""));
         let result = scan(program.clone()).await;
@@ -666,8 +680,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_listing_fails_the_whole_run() {
-        // With the listing gone nothing was scanned, so the run aborts
-        // rather than returning a result that looks empty by detection.
+        // With the listing gone, nothing was scanned. The scan aborts
+        // rather than returning a result that could pass for a scan
+        // that legitimately found nothing.
         let mut program = program();
         program.fail_listing = true;
         let result = MemoryEngine::with_source(program).scan("eqmain.dll").await;
@@ -679,9 +694,9 @@ mod tests {
 
     #[tokio::test]
     async fn custom_name_sets_reach_every_detector() {
-        // Swapping a detector's sets whole reaches the scan: the
-        // configured custom spellings pair in all three families, and the
-        // standard names the swaps replaced pair nothing.
+        // Swapping a detector's name sets whole reaches the scan: the
+        // configured custom spellings pair in all three families, and
+        // the standard names the swaps replaced pair nothing.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0")];
         program.bodies.insert(
@@ -782,9 +797,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_reports_a_pointer_handed_to_a_non_releasing_callee() {
-        // The block escapes into a callee that keeps it: no pair forms,
-        // but the move itself is the ownership transfer a Rust author
-        // would express as `Box`.
+        // The block escapes into a callee that keeps it. No pair forms,
+        // but the escape itself is an ownership transfer, which a Rust
+        // author would express as `Box`.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -840,8 +855,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_scan_reports_an_allocation_never_released_or_handed_on() {
-        // The thing the crate promises to find: the block is taken,
-        // never freed, never passed, never returned — a leak.
+        // What this crate exists to find: an allocation that is never
+        // freed, never handed on, and never returned — a leak.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -901,7 +916,7 @@ mod tests {
     #[tokio::test]
     async fn a_scan_upgrades_a_pair_whose_callee_keeps_the_block_to_rc() {
         // End-to-end through the seam: the callee frees the block and
-        // stores the parameter into a global, so the allocating
+        // also stores the parameter into a global. So the allocating
         // function's reading is shared ownership, not a move.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
@@ -935,8 +950,9 @@ mod tests {
     #[tokio::test]
     async fn cross_function_findings_append_after_the_per_function_findings() {
         // One function carries an in-body pair and an open allocation
-        // handed to a releasing callee: the pairing finding rides the
-        // per-function walk, the cross-function finding lands after it.
+        // handed to a releasing callee. The per-function walk produces
+        // the pairing finding, and the cross-function finding is
+        // appended after it.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -964,9 +980,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_fabricates_no_cross_function_claim() {
-        // A hands an open allocation to B, but B never decompiled: the
-        // pass reads only the bodies the scan holds, so a missing half
-        // claims nothing.
+        // A hands an open allocation to B, but B never decompiled. The
+        // pass reads only the bodies the scan holds, so the missing
+        // half supports no claim.
         let mut program = program();
         program.bodies.insert(
             "FUN_18003ab00".into(),
@@ -989,7 +1005,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_deallocator_names_reach_the_cross_function_pass() {
-        // The pass reads the tracker the engine was configured with,
+        // The pass reads the tracker the scan was configured with,
         // not a private default set.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0"), summary("FUN_1800413b0")];
@@ -1023,15 +1039,17 @@ mod tests {
 
     #[tokio::test]
     async fn scan_stamps_the_scan_provenance() {
-        // The metadata names the binary, carries a finish time, and the
-        // duration is stamped from the wall clock — a canned scan is
-        // instant, so it reads as zero seconds rather than never set.
+        // The metadata names the binary, carries a finish time, and
+        // stamps the duration from the wall clock. A canned scan is
+        // instant, so the duration reads as zero seconds rather than
+        // never set.
         let result = scan(program()).await;
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
-        // Story 9 (#203): the record also names the engine that produced it —
-        // scan() copies the source's provenance through (#208).
+        // Story 9 (#203): the record also names the analysis engine
+        // that produced it — scan() copies the source's provenance
+        // through (#208).
         let engine = result
             .metadata
             .engine
@@ -1053,20 +1071,20 @@ mod tests {
     // Admitted scan coverage (issue #349)
     // ============================================================
 
-    /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
-    /// drift.
+    /// The data-level verdict from the roster pin. An empty list means
+    /// the record names every declared facet exactly once. Each fault
+    /// describes one drift from that rule.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
-        // force-rescan file the same admission through this one
+        // This coverage stamp comes from the scan itself, not the
+        // registry row and not the CLI: the batch scan phase and the
+        // CLI's force-rescan file the same admission through this one
         // definition. Every body was read here, so the record is
-        // complete and says nothing needs admitting.
+        // complete and admits nothing.
         let result = scan(program()).await;
         let coverage = result
             .metadata
@@ -1092,9 +1110,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_decompiled_failure_is_admitted_by_name_on_the_coverage_record() {
-        // The whole point of the admission: a body the scan could not
-        // read is named, so it is never mistaken for an examined-and-
-        // clean function the findings simply left unmentioned.
+        // The whole point of the admission: the record names a body
+        // the scan could not read. So it is never mistaken for an
+        // examined-and-clean function the findings simply left
+        // unmentioned.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003e750".into()];
         let result = scan(program).await;
@@ -1126,10 +1145,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_coverage_line_is_capped_at_five_names_and_counts_the_nameless() {
-        // Bounded prose beside the counts: six decompile failures name
-        // five inline and fold the sixth into a count, and a nameless
-        // listing entry counts toward the total without stealing a name
-        // slot.
+        // Bounded prose beside the counts: of six decompile failures,
+        // five are named inline and the sixth is counted. A nameless
+        // listing entry counts toward the total without using one of
+        // the five name slots.
         let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
         let mut program = FakeProgram::empty();
         for (index, name) in names.iter().enumerate() {

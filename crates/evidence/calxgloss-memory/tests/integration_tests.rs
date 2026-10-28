@@ -13,8 +13,9 @@
 //!   allocation pairs, then the handle lifetimes, then the reference
 //!   counts.
 //! - **Cross-function claims** — the cross-function pass's release,
-//!   hand-off, and leak claims ride the persisted document like every
-//!   other kind, appended after the per-function findings in order.
+//!   hand-off, and leak claims are persisted in the document like every
+//!   other kind of finding, appended after the per-function findings in
+//!   order.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -193,10 +194,10 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
-    // The three detectors read disjoint shapes in one pass, so what
-    // reaches disk is function by function in listing order and, within
-    // one function, allocation then handle then ref_count — the order
-    // two scans diff against.
+    // The three detectors read disjoint shapes in one pass. So what
+    // reaches disk is function by function in listing order, and
+    // within one function allocation, then handle, then ref_count.
+    // This is the order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = MemoryEngine::with_source(program())
         .scan("eqmain.dll")
@@ -225,10 +226,11 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
 // Cross-function claims
 // ------------------------------------------------------------
 
-/// A canned program for the cross-function pass: one function makes
-/// three allocations — one a scanned callee releases, one handed to a
-/// function outside the scanned set, one never touched again — and
-/// the releasing callee itself stands in the listing.
+/// A canned program for the cross-function pass. One function makes
+/// three allocations: one a callee inside the scanned set releases,
+/// one is handed to a function outside the scanned set, and one is
+/// never touched again. The releasing callee itself stands in the
+/// function listing.
 fn cross_program() -> FakeProgram {
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18004b210")];
@@ -260,9 +262,9 @@ fn cross_program() -> FakeProgram {
 async fn cross_function_claims_ride_the_persisted_document() {
     // The pass's three readings — a scanned callee's release, a hand-off
     // to an unscanned function, and an allocation that never leaves —
-    // walk scan to disk and back like every other kind: appended after
-    // the per-function findings in listing order, and within one
-    // function in allocation order.
+    // go from scan to disk and back like every other kind of finding:
+    // appended after the per-function findings in listing order, and
+    // within one function in allocation order.
     let workspace = TempDir::new().unwrap();
     let result = MemoryEngine::with_source(cross_program())
         .scan("eqmain.dll")
@@ -368,11 +370,11 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
 
 #[tokio::test]
 async fn a_loaded_result_renders_into_the_escalate_prompt() {
-    // The whole escalate path, no external server needed: the fixture
-    // document on disk answers the per-function lookup, the findings
-    // render into `MemoryInfo` prompt data, and the rendered escalate
-    // prompt carries the MEMORY LIFECYCLE section with each finding's
-    // suggestion, kind, confidence, and evidence.
+    // The whole escalate path, with no external server needed. The
+    // fixture document on disk answers the per-function lookup, the
+    // findings render into `MemoryInfo` prompt data, and the rendered
+    // escalate prompt carries the MEMORY LIFECYCLE section with each
+    // finding's suggestion, kind, evidence confidence, and evidence.
     let workspace = TempDir::new().unwrap();
     let result = MemoryEngine::with_source(program())
         .scan("eqmain.dll")
