@@ -1,24 +1,24 @@
 //! Hybrid string-to-function mapping.
 //!
-//! The mapper ties the program's strings to the functions that use them
+//! The mapper links the program's strings to the functions that use them
 //! through two sources, in the order the scan reaches them:
 //!
 //! - [`extract_strings_from_body`](HybridXrefMapper::extract_strings_from_body)
-//!   reads a decompiled body directly — string literals, `DAT_xxxxxxxx`
+//!   reads a decompiled body directly: string literals, `DAT_xxxxxxxx`
 //!   references resolved against the program's string table, and calls to
 //!   recognized format functions.
 //! - [`extract_strings_from_xrefs`](HybridXrefMapper::extract_strings_from_xrefs)
-//!   consumes the seam's already-parsed xref records from the `xrefs_to()`
-//!   read, the fallback for functions whose body parse found
-//!   nothing.
+//!   uses the xref records the seam has already parsed for the
+//!   `xrefs_to()` read. This is the fallback for functions whose body
+//!   parse found nothing.
 //!
-//! The hybrid rule keeps the two apart per function: a function whose
-//! body parse found strings gets no xref lookups. Where both sources do
+//! The hybrid rule keeps the two sources apart, per function: a function
+//! whose body parse found strings gets no xref lookups. If both sources
 //! report the same string, [`merge_usages`](HybridXrefMapper::merge_usages)
-//! deduplicates by address and value and keeps the body-parsed
-//! provenance, and the [`StringSource`] on each usage records how the tie
-//! was made so confidence can follow it — 70 body-parsed, 60 xref-only,
-//! the sync crate's precedent.
+//! removes the duplicate by address and value and keeps the body-parsed
+//! provenance. The [`StringSource`] on each usage records how the link was
+//! made, so the evidence confidence can follow it: 70 for body-parsed, 60
+//! for xref-only, following the sync crate's precedent.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -28,30 +28,32 @@ use regex::Regex;
 
 use crate::types::StringSource;
 
-/// Confidence for a string tied to a function through its decompiled body.
+/// Evidence confidence for a string linked to a function through its
+/// decompiled body.
 pub const BODY_CONFIDENCE: u8 = 70;
 
-/// Confidence for a string tied to a function only by an xref lookup.
+/// Evidence confidence for a string linked to a function only by an xref
+/// lookup.
 pub const XREF_CONFIDENCE: u8 = 60;
 
-/// One string tied to one function, with the line or xref that shows the
-/// tie.
+/// One string linked to one function, with the line or xref that shows the
+/// link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappedString {
-    /// The function the string is tied to, e.g. `FUN_18003ab00`.
+    /// The function the string is linked to, e.g. `FUN_18003ab00`.
     pub function: String,
-    /// The address the string is defined at, or 0 when the body carries
-    /// the literal inline and the string table names no address for it.
+    /// The address the string is defined at, or 0 when the body holds the
+    /// literal inline and the string table names no address for it.
     pub string_address: u64,
     /// The string's contents.
     pub string_value: String,
-    /// Whether the tie came from the body parse or an xref lookup.
+    /// Whether the body parse or an xref lookup made the link.
     pub source: StringSource,
     /// The decompiled line or xref rendering that shows the use.
     pub evidence: String,
 }
 
-/// One format-function call read out of a decompiled body.
+/// One format-function call found in a decompiled body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatCall {
     /// The function the call sits in, e.g. `FUN_18003ab00`.
@@ -63,7 +65,7 @@ pub struct FormatCall {
     /// The format string passed to the call.
     pub format_string: String,
     /// The address the format string is defined at, or 0 when the body
-    /// carries it inline.
+    /// holds it inline.
     pub string_address: u64,
 }
 
@@ -75,8 +77,8 @@ struct FormatFunction {
     format_arg: usize,
 }
 
-/// The format functions the mapper recognizes, with where each call
-/// carries its format string.
+/// The format functions the mapper recognizes, and the argument position
+/// where each call puts its format string.
 fn default_format_functions() -> Vec<FormatFunction> {
     vec![
         FormatFunction {
@@ -122,10 +124,10 @@ fn default_format_functions() -> Vec<FormatFunction> {
     ]
 }
 
-/// The quoted-string-or-`DAT_` token scan, quote-aware: the alternation
-/// consumes a whole quoted span before any `DAT_` lookalike inside it
-/// can be seen, so a body line like `printf("DAT_180127cd8");` yields the
-/// literal and no phantom reference.
+/// The quoted-string-or-`DAT_` token scan, aware of quotes. It reads a
+/// whole quoted span before looking for any `DAT_` lookalike inside it. So
+/// a body line like `printf("DAT_180127cd8");` yields the literal and no
+/// invented reference.
 fn token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -133,7 +135,7 @@ fn token_re() -> &'static Regex {
     })
 }
 
-/// Turns a decompiled literal's inner text into the string's value,
+/// Turns a decompiled literal's inner text into the string's value by
 /// resolving the escapes the decompiler writes.
 pub(crate) fn unescape(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
@@ -161,12 +163,12 @@ pub(crate) fn unescape(inner: &str) -> String {
     out
 }
 
-/// Maps the program's strings to the functions that use them, through
-/// body parsing with an xref fallback.
+/// Maps the program's strings to the functions that use them, by parsing
+/// bodies and falling back to xrefs.
 ///
-/// The mapper holds no per-scan state beyond the format-function list, so
-/// one instance serves a whole scan; the scan hands it each function's
-/// body and the program's string table.
+/// The mapper keeps no state for a scan, other than the format-function
+/// list, so one instance serves a whole scan. The scan gives it each
+/// function's body and the program's string table.
 #[derive(Debug, Clone)]
 pub struct HybridXrefMapper {
     format_functions: Vec<FormatFunction>,
@@ -179,15 +181,15 @@ impl Default for HybridXrefMapper {
 }
 
 impl HybridXrefMapper {
-    /// A mapper recognizing the standard format functions.
+    /// A mapper that recognizes the standard format functions.
     pub fn new() -> Self {
         Self {
             format_functions: default_format_functions(),
         }
     }
 
-    /// A mapper recognizing exactly `names` as format functions, each
-    /// carrying its format string at the usual argument position.
+    /// A mapper that recognizes exactly `names` as format functions. Each
+    /// one's format string sits at its usual argument position.
     pub fn with_format_functions(names: &[&'static str]) -> Self {
         let defaults = default_format_functions();
         Self {
@@ -208,21 +210,22 @@ impl HybridXrefMapper {
     }
 
     /// The format-function names this mapper reads calls for, in
-    /// configuration order — the cross-function pass excludes these
-    /// callees so a format call is read once, as a format call.
+    /// configuration order. The cross-function pass skips callees with
+    /// these names, so each format call is read once, as a format call.
     pub(crate) fn format_function_names(&self) -> impl Iterator<Item = &str> {
         self.format_functions.iter().map(|f| f.name)
     }
 
-    /// Read the string uses out of one decompiled body.
+    /// Read the string uses in one decompiled body.
     ///
-    /// Recognizes direct literals, `DAT_xxxxxxxx` references resolved
-    /// against `string_table` by address (a `DAT_` the table names no
-    /// string for is not a string use and is skipped), and — through
-    /// [`extract_format_calls`](Self::extract_format_calls) — format
-    /// function calls. Usages are deduplicated by address and value,
-    /// keeping the first line that showed each, and every usage carries
-    /// [`BodyParse`](StringSource::BodyParse) provenance.
+    /// It recognizes direct literals, `DAT_xxxxxxxx` references resolved
+    /// by address against `string_table` (if the table names no string for
+    /// a `DAT_`, that is not a string use and is skipped), and format
+    /// function calls through
+    /// [`extract_format_calls`](Self::extract_format_calls). Duplicates are
+    /// removed by address and value, keeping the first line that showed
+    /// each string. Every usage records its provenance as
+    /// [`BodyParse`](StringSource::BodyParse).
     pub fn extract_strings_from_body(
         &self,
         function: &str,
@@ -271,12 +274,12 @@ impl HybridXrefMapper {
         usages
     }
 
-    /// Read the format-function calls out of one decompiled body.
+    /// Read the format-function calls in one decompiled body.
     ///
     /// A call counts when it names a recognized format function and its
-    /// format-string argument is a direct literal or a `DAT_` the string
-    /// table resolves; an argument held in a variable is not a format
-    /// string the scan can read, and the call is skipped.
+    /// format-string argument is a direct literal or a `DAT_` that the
+    /// string table resolves. An argument held in a variable is not a
+    /// format string the scan can read, so that call is skipped.
     pub fn extract_format_calls(
         &self,
         function: &str,
@@ -314,12 +317,12 @@ impl HybridXrefMapper {
         calls
     }
 
-    /// Turn one string's xref records into per-function usages.
+    /// Turn one string's xref records into usages, one per function.
     ///
-    /// The seam has already parsed the `xrefs_to()` answer;
-    /// each xref that names an enclosing function ties that function to
-    /// `string`, with the xref rendering as evidence and
-    /// [`Xref`](StringSource::Xref) provenance.
+    /// The seam has already parsed the answer to `xrefs_to()`. Each xref
+    /// that names an enclosing function links that function to `string`.
+    /// The xref's rendering is the evidence, and the usage records its
+    /// provenance as [`Xref`](StringSource::Xref).
     pub fn extract_strings_from_xrefs(
         &self,
         string: &StringLiteral,
@@ -340,13 +343,13 @@ impl HybridXrefMapper {
             .collect()
     }
 
-    /// Merge the two sources' usages for one function, deduplicating by
-    /// address and value.
+    /// Merge the two sources' usages for one function, removing duplicates
+    /// by address and value.
     ///
-    /// The hybrid rule means `xref_usages` is normally empty whenever
-    /// `body_usages` is not — the scan only asks for xrefs when the body
-    /// parse found nothing — but a string reported by both still collapses
-    /// to one usage, keeping the body-parsed provenance.
+    /// Because of the hybrid rule, `xref_usages` is normally empty whenever
+    /// `body_usages` is not: the scan asks for xrefs only when the body
+    /// parse found nothing. If both sources report the same string, it
+    /// still becomes one usage, and the body-parsed provenance wins.
     pub fn merge_usages(
         body_usages: Vec<MappedString>,
         xref_usages: Vec<MappedString>,
@@ -362,8 +365,8 @@ impl HybridXrefMapper {
     }
 }
 
-/// Index the string table by value for direct-literal lookups, taking the
-/// lowest address when several addresses carry the same value.
+/// Index the string table by value, so direct literals can be looked up.
+/// When several addresses hold the same value, the lowest address wins.
 pub(crate) fn index_by_value(string_table: &HashMap<u64, String>) -> HashMap<&str, u64> {
     let mut by_value: HashMap<&str, u64> = HashMap::new();
     let mut entries: Vec<(&u64, &String)> = string_table.iter().collect();
@@ -394,8 +397,9 @@ fn find_call(line: &str, name: &str) -> Option<usize> {
     None
 }
 
-/// Split a call's argument list — `line` starting just past the `(` — on
-/// top-level commas, respecting nested parentheses and quoted spans.
+/// Split a call's argument list on top-level commas. `line` starts just
+/// past the `(`. The split does not happen inside nested parentheses or
+/// inside quoted spans.
 fn split_arguments(line: &str) -> Option<Vec<String>> {
     let mut depth = 1usize;
     let mut in_string = false;
@@ -454,14 +458,15 @@ pub(crate) fn dat_reference(arg: &str) -> Option<&str> {
         .filter(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// The string one call argument carries — the reading both call-site
-/// walks share: a whole quoted literal unescapes to its value (its
-/// address comes from the string table when the table names one, 0 when
-/// it does not — the classified records' convention), and a whole `DAT_`
-/// reference resolves against the string table — one the table names no
-/// string for is some other data reference and claims nothing. Anything
-/// else — a variable, an expression, a cast — is not a string the scan
-/// can read, and yields nothing.
+/// The string a call argument holds — the reading that both call-site
+/// walks share. A whole quoted literal is unescaped into its value. Its
+/// address comes from the string table when the table names one for that
+/// value, and 0 when the table does not — the convention the classified
+/// records use. A whole `DAT_` reference is resolved against the string
+/// table; if the table names no string for it, the reference is some other
+/// data reference and claims nothing. Anything else — a variable, an
+/// expression, a cast — is not a string the scan can read, and yields
+/// nothing.
 pub(crate) fn read_string_arg(
     arg: &str,
     string_table: &HashMap<u64, String>,
@@ -657,8 +662,8 @@ mod tests {
     #[test]
     fn the_hybrid_rule_leaves_xref_usages_out_when_the_body_parse_found_strings() {
         // The scan asks for xrefs only when the body parse came back
-        // empty; the mapper's merge keeps that rule visible in the
-        // provenance either way.
+        // empty. Either way, the merge keeps that rule visible in the
+        // provenance.
         let mapper = HybridXrefMapper::new();
         let body = "  pcVar1 = \"Everquest\";";
         let body_usages = mapper.extract_strings_from_body("FUN_18003ab00", body, &table());

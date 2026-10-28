@@ -1,27 +1,28 @@
 //! Localization signal detection.
 //!
 //! A binary's language machinery leaves a distinctive shape in the strings
-//! a function uses: a whole string that is a language name (`"English"`,
-//! `"French"` — the arms of a language-selection ladder), a locale code
-//! (`en-US`, `fr_FR`), or user-facing text carrying non-ASCII characters
-//! (accented Latin, CJK). [`LocalizationDetector`] reads those three
-//! signal kinds off the string values the scan already maps to each
-//! function and reports them as one [`LocalizationSignals`] record per
-//! function — a structural reading that rides beside the classified
-//! records and never reclassifies them.
+//! a function uses. There are three signal kinds: a whole string that is a
+//! language name (`"English"`, `"French"` — one branch of a
+//! language-selection chain), a locale code (`en-US`, `fr_FR`), or
+//! user-facing text with non-ASCII characters (accented Latin, CJK).
+//! [`LocalizationDetector`] reads these three signal kinds from the string
+//! values the scan already maps to each function. It reports them as one
+//! [`LocalizationSignals`] record per function. This is a separate
+//! structural reading: it sits beside the classified records and never
+//! changes how they are classified.
 //!
 //! The honesty gates are the point of the module:
 //!
-//! - A language word buried inside a longer sentence — `"Do you speak
-//!   English?"` — claims nothing; only the *whole* string value being a
+//! - A language word inside a longer sentence — `"Do you speak
+//!   English?"` — claims nothing. Only a *whole* string value that is a
 //!   language name is a signal.
-//! - The non-ASCII signal reads only values the decoded program string
-//!   listing carries, so an escaped body literal (`"caf\xe9"` as the
-//!   decompiler writes it) can neither fake a signal the program does not
-//!   hold nor hide one the listing has decoded, and only the classifier's
-//!   user-facing buckets (`UserVisible`/`Error`) claim it — internal
-//!   identifiers and data blobs with high bytes say nothing about
-//!   localization.
+//! - The non-ASCII signal reads only values from the decoded program
+//!   string listing. An escaped body literal (`"caf\xe9"` as the
+//!   decompiler writes it) cannot fake a signal the program does not hold,
+//!   and it cannot hide a signal the listing has decoded. Only the
+//!   classifier's user-facing buckets (`UserVisible`/`Error`) make this
+//!   signal count. Internal identifiers and data blobs with high bytes say
+//!   nothing about localization.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -30,19 +31,20 @@ use regex::Regex;
 
 use crate::types::{Confidence, LocalizationSignalKind, LocalizationSignals, StringClassification};
 
-/// Confidence for a localization reading: a pattern inference over string
-/// shapes, visibly below the 70 a directly classified record carries.
+/// Evidence confidence for a localization reading. It comes from a pattern
+/// inferred from string shapes, so it sits clearly below the 70 that a
+/// directly classified record gets.
 pub const LOCALIZATION_CONFIDENCE: u8 = 60;
 
-/// The Rust shape every localization finding suggests: the language
-/// switch as an enum with the localized strings held in a table, in place
-/// of the string ladder the decompiled body shows.
+/// The Rust shape every localization finding suggests: model the language
+/// switch as an enum and keep the localized strings in a table. This
+/// replaces the string comparison chain the decompiled body shows.
 pub const LOCALIZATION_SUGGESTION: &str =
     "model the language switch as a Rust enum with the localized strings held in a table";
 
-/// The language names the default detector claims, stored lowercase so
-/// the whole-string match is case-insensitive. A binary's own spellings
-/// are reachable through [`LocalizationDetector::with_names`].
+/// The language names the default detector recognizes. They are stored
+/// lowercase so the whole-string match ignores case. To use a binary's own
+/// spellings, pass them to [`LocalizationDetector::with_names`].
 pub const DEFAULT_LANGUAGE_NAMES: &[&str] = &[
     "arabic",
     "chinese",
@@ -75,38 +77,38 @@ pub const DEFAULT_LANGUAGE_NAMES: &[&str] = &[
     "vietnamese",
 ];
 
-/// The `xx-YY`/`xx_YY` locale shape: two lowercase letters, the separator,
-/// two uppercase letters — `en-US`, `fr_FR`. A longer or differently
-/// cased value (`en-USA`, `EN-US`) is not the shape.
+/// The `xx-YY`/`xx_YY` locale shape: two lowercase letters, one separator,
+/// two uppercase letters — `en-US`, `fr_FR`. A longer value or a different
+/// case (`en-USA`, `EN-US`) is not this shape.
 fn locale_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[a-z]{2}[-_][A-Z]{2}$").expect("static pattern"))
 }
 
 /// One string the scan mapped to a function, as the localization detector
-/// reads it: the value, the classification the scan gave it, whether the
-/// value is one of the decoded program string listing's values, and the
-/// line that shows the use.
+/// reads it. It holds the string value, the classification the scan gave
+/// it, whether the value came from the decoded program string listing, and
+/// the line that shows the use.
 #[derive(Debug, Clone)]
 pub(crate) struct MappedStringSignal<'a> {
     /// The string's contents, as the scan recorded them.
     pub value: &'a str,
-    /// The category the classifier read the string as.
+    /// The category the classifier gave the string.
     pub classification: StringClassification,
     /// Whether the value is a decoded value from the program string
-    /// listing — the only values the non-ASCII signal may read.
+    /// listing. These are the only values the non-ASCII signal reads.
     pub from_listing: bool,
     /// The decompiled line or xref that shows the use.
     pub evidence: &'a str,
 }
 
-/// Reads the three localization signal kinds off one function's mapped
+/// Reads the three localization signal kinds from one function's mapped
 /// strings and reports them as one [`LocalizationSignals`] record.
 ///
-/// The detector holds no per-scan state beyond the language-name set, so
-/// one instance serves a whole scan; [`with_names`](Self::with_names)
-/// swaps the set whole, mirroring the classifier's and mapper's
-/// configured-name conventions.
+/// The detector keeps no state for a scan, other than the set of language
+/// names, so one instance serves a whole scan.
+/// [`with_names`](Self::with_names) replaces that set completely, the same
+/// way the classifier and the mapper take their configured name lists.
 #[derive(Debug, Clone)]
 pub struct LocalizationDetector {
     language_names: HashSet<String>,
@@ -119,7 +121,7 @@ impl Default for LocalizationDetector {
 }
 
 impl LocalizationDetector {
-    /// A detector claiming the standard language-name set.
+    /// A detector that recognizes the standard language-name set.
     pub fn new() -> Self {
         Self {
             language_names: DEFAULT_LANGUAGE_NAMES
@@ -129,9 +131,9 @@ impl LocalizationDetector {
         }
     }
 
-    /// A detector claiming exactly `names` as language names, replacing
-    /// the standard set. Names are matched case-insensitively against the
-    /// whole string value.
+    /// A detector that recognizes exactly `names` as language names,
+    /// replacing the standard set. Names are matched against the whole
+    /// string value, ignoring case.
     pub fn with_names(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             language_names: names
@@ -141,23 +143,23 @@ impl LocalizationDetector {
         }
     }
 
-    /// Whether the *whole* value is one of the claimed language names —
-    /// case-insensitively. A language word inside a longer sentence is
-    /// not the whole value and claims nothing.
+    /// Whether the *whole* value is one of the recognized language names,
+    /// ignoring case. A language word inside a longer sentence is not a
+    /// whole value, so it claims nothing.
     pub(crate) fn is_language_name(&self, value: &str) -> bool {
         self.language_names.contains(&value.to_lowercase())
     }
 
-    /// Read the localization signals out of one function's mapped
-    /// strings, reporting `None` when none of them carries a signal.
+    /// Read the localization signals from one function's mapped strings.
+    /// Returns `None` when none of them carries a signal.
     ///
-    /// One record per function, not per signal: `signal_kinds` names the
-    /// kinds seen in the order the scan first saw each, `signals` keeps
-    /// the signal strings in scan order (each value recorded once however
-    /// often the function uses it), and `evidence` joins the lines that
-    /// showed them. The reading never touches the classified records —
-    /// it sits beside them as a separate structural claim, at
-    /// [`LOCALIZATION_CONFIDENCE`].
+    /// There is one record per function, not one per signal. `signal_kinds`
+    /// lists the signal kinds in the order the scan first saw each one.
+    /// `signals` keeps the signal strings in scan order, recording each
+    /// value once no matter how often the function uses it. `evidence`
+    /// joins the lines that showed them. This reading never changes the
+    /// classified records. It sits beside them as a separate structural
+    /// claim, with the evidence confidence in [`LOCALIZATION_CONFIDENCE`].
     pub(crate) fn detect(
         &self,
         function: &str,
@@ -192,7 +194,7 @@ impl LocalizationDetector {
     }
 
     /// The signal kind one mapped string claims, if any. The whole-string
-    /// gates run first; the non-ASCII gate additionally demands a decoded
+    /// checks run first. The non-ASCII check also requires a decoded
     /// listing value and a user-facing classification.
     fn signal_kind(&self, candidate: &MappedStringSignal<'_>) -> Option<LocalizationSignalKind> {
         if self.is_language_name(candidate.value) {
@@ -222,8 +224,8 @@ impl LocalizationDetector {
 mod tests {
     use super::*;
 
-    /// A body-parsed candidate: the value stands on its own, not read off
-    /// the listing.
+    /// A body-parsed candidate: the value comes from the body itself, not
+    /// from the program string listing.
     fn candidate(value: &str, classification: StringClassification) -> MappedStringSignal<'_> {
         MappedStringSignal {
             value,
@@ -291,8 +293,8 @@ mod tests {
 
     #[test]
     fn a_language_word_buried_in_a_sentence_claims_nothing() {
-        // The whole-string gate: only a value that *is* the language name
-        // reads as a selection signal.
+        // The whole-string rule: only a value that *is* the language name
+        // counts as a selection signal.
         let detector = LocalizationDetector::new();
         assert!(
             detector
@@ -329,7 +331,7 @@ mod tests {
     #[test]
     fn the_non_ascii_signal_reads_decoded_listing_values_only() {
         // The same user-facing value claims nothing when it is not one of
-        // the program string listing's decoded values — an escaped body
+        // the program string listing's decoded values. An escaped body
         // literal cannot fake a signal the listing does not carry.
         let detector = LocalizationDetector::new();
         assert!(
@@ -355,9 +357,9 @@ mod tests {
 
     #[test]
     fn the_non_ascii_signal_claims_only_user_facing_classifications() {
-        // High bytes on an internal identifier or a generic data value
-        // say nothing about localization; only the UserVisible and Error
-        // buckets do.
+        // High bytes on an internal identifier or a generic data value say
+        // nothing about localization. Only the UserVisible and Error
+        // buckets count.
         let detector = LocalizationDetector::new();
         assert!(
             detector
@@ -430,10 +432,10 @@ mod tests {
 
     #[test]
     fn one_finding_names_every_signal_once_however_often_used() {
-        // One record per function, not per signal or per use: the two
-        // language names and the locale code collapse into one reading,
-        // each string named once, the kinds in first-seen order, and the
-        // signal lines joined into the evidence.
+        // One record per function, not one per signal or per use. The two
+        // language names and the locale code combine into one reading.
+        // Each string is named once, the kinds appear in first-seen order,
+        // and the signal lines are joined into the evidence.
         let detector = LocalizationDetector::new();
         let lines = [
             "pcVar1 = DAT_180129b00;",
@@ -470,8 +472,8 @@ mod tests {
 
     #[test]
     fn the_suggestion_names_the_rust_shape() {
-        // The union renders the finding's suggestion from this constant;
-        // pin the wording the prompt will carry.
+        // The union builds the finding's suggestion from this constant.
+        // Pin the wording the prompt will carry.
         assert!(LOCALIZATION_SUGGESTION.contains("enum"));
         assert!(LOCALIZATION_SUGGESTION.contains("table"));
     }
