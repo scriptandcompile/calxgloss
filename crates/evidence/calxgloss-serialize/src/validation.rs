@@ -1,23 +1,23 @@
 //! Cross-field validation (message integrity) detection.
 //!
-//! This module provides [`ValidationDetector`], which reads each
+//! This module provides [`ValidationDetector`]. It reads each
 //! decompiled body for the comparisons that define message
-//! validation: a stored field checked against a value computed from
-//! other fields — `if (checksum == computed_sum)`, the checksum
-//! shape — and a read length checked against a buffer size or
-//! remaining count, the framing shape that keeps a parser inside its
-//! buffer. Each qualifying check lands as its own
-//! [`CrossFieldValidation`] record naming the compared field, the
-//! computed-side expression, and the [`ValidationShape`] it was read
-//! from, with the comparison line as evidence.
+//! validation. There are two shapes. The checksum shape is a stored
+//! field checked against a value computed from other fields, as in
+//! `if (checksum == computed_sum)`. The framing shape is a read length
+//! checked against a buffer size or a remaining count; it keeps a
+//! parser inside its buffer. Each check that qualifies lands as its
+//! own [`CrossFieldValidation`] record. The record names the compared
+//! field, the computed-side expression, and the [`ValidationShape`] the
+//! reading came from, and it keeps the comparison line as evidence.
 //!
-//! The silence gates keep the claim honest: constant-vs-constant
-//! comparisons, variable-vs-literal comparisons (that is magic and
-//! constant territory, read by the other detectors), and comparisons
-//! the magic detector already reported claim nothing here — the
-//! engine hands the scan's [`MagicFormat`] records to
-//! [`detect`](ValidationDetector::detect) so a signature check never
-//! double-lands as validation.
+//! The silence gates keep the claim honest. Three kinds of comparison
+//! claim nothing here: a constant compared with a constant, a variable
+//! compared with a literal (that is magic and constant territory, read
+//! by the other detectors), and a comparison the magic detector already
+//! reported. The scan hands its [`MagicFormat`] records to
+//! [`detect`](ValidationDetector::detect), so a signature check never
+//! lands twice as validation.
 
 use std::collections::HashSet;
 
@@ -31,10 +31,10 @@ use calxgloss_decomp::DecompiledFunction;
 
 /// Cross-field validation detection over decompiled functions.
 ///
-/// The detector holds no configuration — the reading is a fixed shape
-/// rule over comparison lines — and no scan source of its own; one
-/// detector serves an entire scan and can be shared by reference
-/// across concurrent per-function passes.
+/// The detector has no configuration: the reading is a fixed shape
+/// rule over comparison lines. It also holds no scan source of its
+/// own. One detector serves an entire scan, and it can be shared by
+/// reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationDetector {}
 
@@ -46,23 +46,23 @@ impl ValidationDetector {
 
     /// The message-integrity comparisons one function's body carries.
     ///
-    /// The reading walks the body line by line and reports every
-    /// `==`/`!=` comparison whose sides fit a validation shape as one
-    /// [`CrossFieldValidation`]: a plain field against an arithmetic
-    /// expression over variables (the checksum shape), or a length
-    /// against a size or remaining count (the framing shape — read
-    /// from a subtraction on the computed side, e.g. Ghidra's
-    /// `size + -N` spelling of `size - N`, or from a length-, size-,
-    /// or count-flavoured name on either side). A comparison against
-    /// a bare literal, a constant-vs-constant comparison, and a plain
-    /// variable pair with nothing naming a length claim nothing;
-    /// neither side being a plain field claims nothing either — the
-    /// check must validate a *stored* field. Lines the magic detector
-    /// already reported — matched by their evidence text, so a custom
-    /// signature table gates exactly what the scan actually reported
-    /// — are skipped, so a signature check lands exactly once.
-    /// Findings come back in body order, so two scans of one body
-    /// diff cleanly.
+    /// The reading walks the body line by line. Every `==`/`!=`
+    /// comparison whose sides fit a validation shape becomes one
+    /// [`CrossFieldValidation`]. That happens in two cases: a plain
+    /// field compared with an arithmetic expression over variables (the
+    /// checksum shape), or a length compared with a size or remaining
+    /// count (the framing shape). Framing is read either from a
+    /// subtraction on the computed side, for example Ghidra's
+    /// `size + -N` spelling of `size - N`, or from a length-, size-, or
+    /// count-flavoured name on either side. Four things claim nothing: a
+    /// comparison against a bare literal, a constant compared with a
+    /// constant, a plain pair of variables where nothing names a length,
+    /// and a comparison where neither side is a plain field — the check
+    /// must validate a *stored* field. Lines the magic detector already
+    /// reported are skipped, so a signature check lands exactly once.
+    /// The skip matches on the evidence text, so a custom signature
+    /// table gates exactly what the scan actually reported. Findings
+    /// come back in body order, so two scans of one body diff cleanly.
     pub fn detect(
         &self,
         func: &DecompiledFunction,
@@ -77,13 +77,13 @@ impl ValidationDetector {
 
         for raw in func.body.lines() {
             let line = raw.trim();
-            // Integrity checking is a comparison; the same shapes
+            // Integrity checking is a comparison. The same shapes
             // anywhere else are just arithmetic.
             if line.is_empty() || !(line.contains("==") || line.contains("!=")) {
                 continue;
             }
-            // A comparison the magic detector already named is that
-            // check's one landing — validation claims nothing on it.
+            // The magic detector already named this comparison, so it
+            // lands only once: validation claims nothing on it.
             if magic_lines.contains(line) {
                 continue;
             }
@@ -132,21 +132,22 @@ impl ValidationDetector {
 // The reading
 // ============================================================
 
-/// Confidence of a validation reading from the comparison shape: the
-/// check is explicit body evidence, but which side is the stored
-/// field and which the computed one is a reading of the shape, not a
-/// name that carries the intent outright — so the claim sits above
-/// the shape-read bit packs and below the swap calls.
+/// The evidence confidence of a validation reading taken from the
+/// comparison shape. The check itself is clear body evidence, but which
+/// side is the stored field and which is the computed one comes from
+/// reading the shape, not from a name that states the intent outright.
+/// So the claim sits above bit packs read from shape and below the swap
+/// calls.
 const VALIDATION_CONFIDENCE: u8 = 65;
 
-/// The Rust pattern a validation check reads as: the integrity logic
-/// modelled on the type, so translation keeps the check instead of
-/// dropping the comparison.
+/// The Rust pattern a validation check suggests: model the integrity
+/// logic on the type, so translation keeps the check instead of dropping
+/// the comparison.
 const VALIDATION_SUGGESTION: &str = "checked parse or validate step on the Rust type";
 
-/// Identifier words that name a type or a literal, never a variable:
-/// the decompiler's cast and keyword spellings, filtered out wherever
-/// a reading asks whether a side actually mentions a field.
+/// Identifier words that name a type or a literal, never a variable.
+/// These are the decompiler's cast and keyword spellings. Every reading
+/// that asks whether a side really mentions a field filters them out.
 const NON_VARIABLE_WORDS: &[&str] = &[
     "uint",
     "int",
@@ -172,12 +173,13 @@ const NON_VARIABLE_WORDS: &[&str] = &[
 ];
 
 /// Name fragments that say a variable holds a length, a size, or a
-/// remaining count: the framing shape's only textual signal when both
-/// compared sides are plain. A marker must open an underscore-
-/// separated segment of the name — `read_len`, `bytes_remaining` —
-/// so a name that merely ends inside a marker (`discount`) says
-/// nothing. Ghidra's minted names (`uVar1`, `local_18`, `param_2`)
-/// carry none of them, so a default-named pair claims nothing.
+/// remaining count. When both compared sides are plain, these names are
+/// the framing shape's only textual signal. A marker must start an
+/// underscore-separated segment of the name, as in `read_len` or
+/// `bytes_remaining`, so a name that merely ends inside a marker
+/// (`discount`) says nothing. Ghidra's minted names (`uVar1`,
+/// `local_18`, `param_2`) carry none of these markers, so a pair of
+/// default-named variables claims nothing.
 const LENGTH_NAME_MARKERS: &[&str] = &[
     "len", "size", "count", "remain", "avail", "bytes", "capacity", "left",
 ];
@@ -196,8 +198,8 @@ enum Side {
     Other,
 }
 
-/// Which characters of a line sit inside a string literal, so the
-/// reading stays blind to comparisons spelled inside text.
+/// Which characters of a line sit inside a string literal. This keeps
+/// the reading from seeing comparisons spelled inside text.
 fn quoted_mask(chars: &[char]) -> Vec<bool> {
     let mut mask = vec![false; chars.len()];
     let mut i = 0;
@@ -225,10 +227,11 @@ fn quoted_mask(chars: &[char]) -> Vec<bool> {
 }
 
 /// The `(left, right)` operand pairs of every `==`/`!=` comparison on
-/// the line, quote-blind. Operands are read outward from the operator
-/// through balanced parens (so a cast like `*(ushort *)pvVar2` stays
-/// one side) and stop at statement and logical-operator boundaries, so
-/// `if (a == b && c == d)` yields both comparisons.
+/// the line, ignoring text inside string literals. Operands are read
+/// outward from the operator through balanced parens, so a cast like
+/// `*(ushort *)pvVar2` stays one side. The walk stops at statement and
+/// logical-operator boundaries, so `if (a == b && c == d)` yields both
+/// comparisons.
 fn comparisons(chars: &[char], quoted: &[bool]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -260,8 +263,8 @@ fn comparisons(chars: &[char], quoted: &[bool]) -> Vec<(String, String)> {
 }
 
 /// The left operand of the comparison whose operator starts at
-/// `op_start`: walk left through balanced parens, stopping at an
-/// unbalanced `(`, a statement boundary, an `=`, or a `&&`/`||`.
+/// `op_start`. The walk goes left through balanced parens and stops at
+/// an unbalanced `(`, a statement boundary, an `=`, or a `&&`/`||`.
 fn take_left(chars: &[char], quoted: &[bool], op_start: usize) -> String {
     let mut depth = 0usize;
     let mut j = op_start;
@@ -289,10 +292,10 @@ fn take_left(chars: &[char], quoted: &[bool], op_start: usize) -> String {
     chars[j..op_start].iter().collect()
 }
 
-/// The right operand of the comparison whose operator ends at
-/// `op_end`, and the index where the walk stopped: walk right through
-/// balanced parens, stopping at an unbalanced `)`, a statement
-/// boundary, an `=`, or a `&&`/`||`.
+/// The right operand of the comparison whose operator ends at `op_end`,
+/// plus the index where the walk stopped. The walk goes right through
+/// balanced parens and stops at an unbalanced `)`, a statement boundary,
+/// an `=`, or a `&&`/`||`.
 fn take_right(chars: &[char], quoted: &[bool], op_end: usize) -> (String, usize) {
     let mut depth = 0usize;
     let mut j = op_end;
@@ -366,14 +369,14 @@ fn identifiers(s: &str) -> Vec<String> {
 }
 
 /// Whether a word is one of the decompiler's type and literal
-/// spellings rather than a variable name. `undefined8` and its kin
-/// count as the `undefined` family.
+/// spellings rather than a variable name. `undefined8` and similar
+/// spellings count as the `undefined` family.
 fn is_non_variable_word(word: &str) -> bool {
     NON_VARIABLE_WORDS.contains(&word) || word.starts_with("undefined")
 }
 
-/// Drop `(type)` and `(type *)` cast spellings, so a cast names no
-/// arithmetic and its type word names no variable.
+/// Remove `(type)` and `(type *)` cast spellings, so a cast does not
+/// count as arithmetic and its type word does not count as a variable.
 fn strip_casts(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
@@ -408,9 +411,10 @@ fn strip_casts(s: &str) -> String {
     out
 }
 
-/// Whether a side carries arithmetic of its own: an operator with an
-/// operand in front of it, so a leading deref or unary minus stays
-/// part of a plain field's spelling and `->` names no subtraction.
+/// Whether a side carries arithmetic of its own, which means an operator
+/// with an operand in front of it. A leading deref or unary minus
+/// therefore stays part of a plain field's spelling, and `->` does not
+/// count as subtraction.
 fn has_binary_operator(s: &str) -> bool {
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
@@ -451,20 +455,20 @@ fn has_binary_operator(s: &str) -> bool {
     false
 }
 
-/// Whether a side spells a subtraction — the remaining-count signal
-/// that reads as framing (`size - 4`, and Ghidra's `size + -4`). A
-/// `-` that is really the `->` of a member access subtracts nothing,
-/// so a checksum read through struct fields stays a checksum.
+/// Whether a side spells a subtraction: the remaining-count signal that
+/// reads as framing (`size - 4`, and Ghidra's `size + -4`). A `-` that
+/// is really the `->` of a member access subtracts nothing, so a
+/// checksum read through struct fields stays a checksum.
 fn has_subtraction(s: &str) -> bool {
     let chars: Vec<char> = s.chars().collect();
     (0..chars.len()).any(|i| chars[i] == '-' && chars.get(i + 1) != Some(&'>'))
 }
 
-/// Whether any identifier in a side is spelled like a length, size,
-/// or remaining count — the framing shape's name signal. The marker
-/// must open an underscore-separated segment of the name, so
-/// `read_len` and `bytes_remaining` say framing while `discount`
-/// (which merely ends in "count") says nothing.
+/// Whether any identifier in a side is spelled like a length, size, or
+/// remaining count: the framing shape's name signal. A marker must start
+/// an underscore-separated segment of the name, so `read_len` and
+/// `bytes_remaining` say framing while `discount` (which merely ends in
+/// "count") says nothing.
 fn names_a_length(s: &str) -> bool {
     identifiers(s).iter().any(|id| {
         let lowered = id.to_lowercase();
@@ -542,10 +546,10 @@ mod tests {
 
     #[test]
     fn a_field_verified_against_another_field_plus_a_constant_reads_as_a_checksum() {
-        // A stored field checked against a global plus a fixed offset
-        // is a computed comparison — the checksum shape. Nothing says
-        // framing: no subtraction on the computed side and no
-        // length-ish name on either.
+        // A stored field checked against a global plus a fixed offset is
+        // a computed comparison, which is the checksum shape. Nothing
+        // says framing: there is no subtraction on the computed side and
+        // no length-like name on either side.
         let records = detect("  if (iVar1 == DAT_14004a0b0 + 0x10) {");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].shape, ValidationShape::Checksum);
@@ -555,7 +559,7 @@ mod tests {
 
     #[test]
     fn a_remaining_count_comparison_lands_a_length_validation() {
-        // Ghidra spells `size - 4` as `size + -4`; the subtraction on
+        // Ghidra spells `size - 4` as `size + -4`. The subtraction on
         // the computed side is what reads as a remaining count.
         let records = detect("  if (uVar4 == local_18 + -4) {");
         assert_eq!(records.len(), 1);
@@ -566,9 +570,9 @@ mod tests {
 
     #[test]
     fn a_checksum_read_through_struct_fields_stays_a_checksum() {
-        // `->` carries a `-`, but it names a member, not a
-        // subtraction: a stored field verified against fields of the
-        // same object is the checksum shape, not framing.
+        // `->` contains a `-`, but it names a member, not a subtraction.
+        // A stored field checked against fields of the same object is
+        // the checksum shape, not framing.
         let records = detect("  if (obj->crc == obj->a + obj->b) {");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].shape, ValidationShape::Checksum);
@@ -578,7 +582,7 @@ mod tests {
 
     #[test]
     fn a_name_that_merely_ends_inside_a_length_marker_claims_nothing() {
-        // The length markers read as name segments, not substrings:
+        // The length markers match name segments, not substrings.
         // `discount` ends in "count" but holds no length, so a plain
         // pair of ordinary fields stays silent.
         let records = detect("  if (discount == price) {");
@@ -590,7 +594,7 @@ mod tests {
 
     #[test]
     fn a_named_length_versus_size_comparison_lands_a_length_validation() {
-        // Both sides plain, but the names say framing: a read length
+        // Both sides are plain, but the names say framing: a read length
         // checked against a buffer size.
         let records = detect("  if (read_len == buffer_size) {");
         assert_eq!(records.len(), 1);
@@ -622,24 +626,24 @@ mod tests {
 
     #[test]
     fn a_computed_versus_literal_comparison_claims_nothing() {
-        // No plain stored field on either side, so no field is being
-        // validated — the shape does not fit either reading.
+        // Neither side is a plain stored field, so no field is being
+        // validated: the shape fits neither reading.
         let records = detect("  if (uVar5 + uVar6 == 0) {");
         assert!(records.is_empty());
     }
 
     #[test]
     fn a_plain_variable_pair_claims_nothing() {
-        // Two default-named variables: nothing says which is a length
-        // and which a size, so the comparison claims no framing.
+        // Two default-named variables. Nothing says which is a length
+        // and which is a size, so the comparison claims no framing.
         let records = detect("  if (uVar1 == uVar2) {");
         assert!(records.is_empty());
     }
 
     #[test]
     fn a_comparison_already_reported_as_a_magic_hit_claims_nothing() {
-        // The magic detector reports this line (it carries the PNG
-        // literal); validation must not double-report it even though
+        // The magic detector reports this line, because it carries the
+        // PNG literal. Validation must not report it twice, even though
         // the sides fit the checksum shape.
         let line = "if (uVar1 == 0x89504e47 + uVar2) {";
         let detector = ValidationDetector::new();
@@ -648,8 +652,8 @@ mod tests {
             records.is_empty(),
             "a magic hit claims no validation finding"
         );
-        // Without the magic finding on record the same line does
-        // read as validation — the gate is what silences it.
+        // Without the magic finding on record, the same line does read
+        // as validation. The gate is what silences it.
         let unguarded = detector.detect(&function(&format!("  {line}")), &[]);
         assert_eq!(unguarded.len(), 1);
     }
