@@ -27,7 +27,7 @@ use crate::display_serde_label;
 pub struct EngineProvenance {
     /// The engine's name, e.g. `kuna`.
     pub name: String,
-    /// The engine's release, e.g. the pinned Kuna tag `v1.878`.
+    /// The engine's release, e.g. the pinned Kuna tag `v1.984`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// The pinned engine source the build came from — the commit the

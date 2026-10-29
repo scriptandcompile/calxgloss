@@ -27,7 +27,10 @@ pub(crate) struct ProcessSample {
 /// anything).
 pub(crate) struct ProcessMetrics {
     pid: sysinfo::Pid,
-    system: Mutex<sysinfo::System>,
+    // sysinfo 0.40's `System::new` can fail if the platform backend cannot
+    // initialize; then samples fall back to zeros instead of failing, the
+    // same way the PID-0 fallback above works.
+    system: Mutex<Option<sysinfo::System>>,
 }
 
 impl ProcessMetrics {
@@ -38,16 +41,19 @@ impl ProcessMetrics {
             // process's PID; samples then fall back to zeros instead of
             // failing.
             pid: sysinfo::get_current_pid().unwrap_or_else(|_| sysinfo::Pid::from(0usize)),
-            system: Mutex::new(sysinfo::System::new()),
+            system: Mutex::new(sysinfo::System::new().ok()),
         }
     }
 
     /// Refresh and return the current resource reading for this process.
     pub(crate) fn sample(&self) -> ProcessSample {
-        let mut system = self
+        let mut guard = self
             .system
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(system) = guard.as_mut() else {
+            return ProcessSample::default();
+        };
         system.refresh_processes_specifics(
             sysinfo::ProcessesToUpdate::Some(&[self.pid]),
             true,
@@ -69,7 +75,7 @@ impl ProcessMetrics {
 /// Host name of the machine running the server, resolved once at startup.
 /// Falls back to "unknown" when the OS does not expose one.
 pub(crate) fn host_name() -> String {
-    sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string())
+    sysinfo::System::host_name().unwrap_or_else(|_| "unknown".to_string())
 }
 
 #[cfg(test)]
