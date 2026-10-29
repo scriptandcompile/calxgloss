@@ -821,6 +821,7 @@ dependencies = [
  "anyhow",
  "calxgloss-controlflow",
  "calxgloss-globalstate",
+ "calxgloss-testfixtures",
  "calxgloss-types",
  "goblin",
  "regex",
@@ -926,6 +927,7 @@ dependencies = [
  "anyhow",
  "calxgloss-types",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
