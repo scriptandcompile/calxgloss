@@ -347,6 +347,12 @@ pub async fn try_translate_with_retry(
                 );
                 let evidence = format!("Pruned: escalate would re-ask {admission}");
                 failure_history.push(FailureHint::new(attempt_num, "escalate", evidence.clone()));
+                crate::ladder_residue::file_escalate_prune(
+                    &mut result.unknown_residue,
+                    binary.as_str(),
+                    &function,
+                    &blocked,
+                );
                 result.add_attempt(TranslationAttempt {
                     attempt: attempt_num,
                     rust_code: initial_translation.rust_code.clone(),
@@ -457,6 +463,13 @@ pub async fn try_translate_with_retry(
                             next_tier.label()
                         ),
                     ));
+                    crate::ladder_residue::file_tier_refusal(
+                        &mut result.unknown_residue,
+                        binary.as_str(),
+                        &function,
+                        next_tier,
+                        &blocked,
+                    );
                 } else {
                     warn!(
                         binary = %binary,
@@ -482,6 +495,7 @@ pub async fn try_translate_with_retry(
         }
     }
 
+    // Ladder residue: each arm above filed its decision's own record (#372).
     result
 }
 
@@ -2291,6 +2305,157 @@ mod tests {
                 .decompile_calls()
                 .contains(&"UpdateScene".to_string()),
             "the unblocked ladder re-asks the seam along the climb"
+        );
+    }
+
+    /// The pruned escalate rung's own decision is evidence too (issue
+    /// #372): the walk is byte-for-byte the #356 walk — no rung, tier, or
+    /// prune decision changed by the residue — and beside the unchanged
+    /// prune hint the run hands up one `retry_pruned` record naming the
+    /// blocked family, the retry decision as its origin.
+    #[tokio::test]
+    async fn a_pruned_escalate_rung_files_its_own_unknown_record() {
+        let run = run_ladder_with_report(
+            unavailable_report("decompilation", "Zanthoxylum builds never produce a body"),
+            6,
+            Some(calxgloss_types::ContextTier::Signature),
+        )
+        .await;
+
+        // today's #356 walk and hint, byte-unchanged: the records ride the
+        // decisions, they change nothing about them
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "test_fix",
+                "pruned_escalate",
+                "edge_case_fix",
+                "compile_fix"
+            ],
+            "the presence of residue records changes no rung of the walk"
+        );
+        assert_eq!(
+            run.result.attempts[3].compilation_errors,
+            vec![
+                "Pruned: escalate would re-ask decompilation — unavailable — Zanthoxylum builds never produce a body"
+            ],
+            "the prune hint stays exactly as it is"
+        );
+
+        // the decision's own record: one per blocked family, naming the
+        // family and the seam's reason, the retry decision as origin
+        assert_eq!(run.result.unknown_residue.len(), 1);
+        let record = &run.result.unknown_residue[0];
+        assert_eq!(
+            record.id,
+            "game_logic.dll/DrawSprite/retry_pruned/decompilation",
+            "the ladder-residue kind, the shared derivation"
+        );
+        assert_eq!(
+            record.origin,
+            calxgloss_types::UnknownOrigin::RetryDecision {
+                decision: "decompilation".to_string(),
+            },
+            "the retry decision is the origin, naming the family the prune stood against"
+        );
+        assert!(
+            record.question.contains("Zanthoxylum builds never produce a body"),
+            "the record names the unavailable reason beside the family: {}",
+            record.question
+        );
+    }
+
+    /// The refused tier step files its matching record too (issue #372),
+    /// and a decision re-admitted later re-derives the same standing
+    /// question rather than a duplicate: two escalate prunes and two
+    /// tier holds over this nine-attempt walk leave exactly two records,
+    /// while the walk itself stays byte-identical to the #356 pin.
+    #[tokio::test]
+    async fn a_refused_tier_step_files_its_own_unknown_record() {
+        let run = run_ladder_with_report(
+            unavailable_report("decompilation", "Zanthoxylum builds never produce a body"),
+            9,
+            None,
+        )
+        .await;
+
+        // the #356 hold walk unchanged — the refused step and its record
+        // change no rung and no tier step
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "escalated(disassembly)",
+                "pruned_escalate",
+                "edge_case_fix",
+                "escalated(with_tests)",
+                "test_fix",
+                "pruned_escalate",
+                "edge_case_fix"
+            ]
+        );
+        assert_eq!(run.tier_steps, vec!["disassembly", "with_tests"]);
+
+        // four decisions admitted, two standing questions: the second
+        // escalate prune and the second tier hold re-derived what the
+        // first already filed
+        let kinds: Vec<(String, String)> = run
+            .result
+            .unknown_residue
+            .iter()
+            .map(|r| (r.kind.to_string(), r.source_slot()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("retry_pruned".to_string(), "decompilation".to_string()),
+                ("tier_refused".to_string(), "module_context".to_string()),
+            ],
+            "one record per standing question, in decision order"
+        );
+        let refused = &run.result.unknown_residue[1];
+        assert_eq!(
+            refused.origin,
+            calxgloss_types::UnknownOrigin::RetryDecision {
+                decision: "module_context".to_string(),
+            },
+            "the refused step is the origin, naming the tier held"
+        );
+        assert!(
+            refused.question.contains("Zanthoxylum builds never produce a body"),
+            "the refused step's record names the family and its reason: {}",
+            refused.question
+        );
+    }
+
+    /// The matching control (issue #372): a ladder that prunes nothing
+    /// files nothing — an empty residue set never even opens the
+    /// accumulator's fold, and the walk stays the #356 control walk.
+    #[tokio::test]
+    async fn a_ladder_with_nothing_pruned_files_no_ladder_residue() {
+        let run =
+            run_ladder_with_report(calxgloss_types::CapabilityReport::default(), 9, None).await;
+
+        assert_eq!(
+            walk(&run.result),
+            vec![
+                "initial",
+                "compile_fix",
+                "escalated(disassembly)",
+                "escalate",
+                "escalated(with_tests)",
+                "compile_fix",
+                "escalated(module_context)",
+                "escalate",
+                "escalated(full_module)"
+            ]
+        );
+        assert!(
+            run.result.unknown_residue.is_empty(),
+            "nothing pruned, nothing refused, nothing filed"
         );
     }
 

@@ -140,6 +140,16 @@ pub struct RetryResult {
 
     /// The strategy that produced success, if any.
     pub success_strategy: Option<String>,
+
+    /// The unknown records this ladder's own pruned decisions admitted
+    /// (issue #372): one `retry_pruned` record per escalate rung the held
+    /// report blocked, one `tier_refused` record per refused context-tier
+    /// step, in the order the walk made the decisions and deduplicated by
+    /// id — a later prune on the same family re-admits the same standing
+    /// question. The records leave the ladder as evidence for the
+    /// pipeline's ledger; nothing in this set feeds the walk itself, the
+    /// ladder still owns which prompt runs.
+    pub unknown_residue: Vec<calxgloss_types::UnknownRecord>,
 }
 
 impl Default for RetryResult {
@@ -156,6 +166,7 @@ impl RetryResult {
             success: false,
             rust_code: None,
             success_strategy: None,
+            unknown_residue: Vec::new(),
         }
     }
 

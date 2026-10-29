@@ -24,6 +24,7 @@ pub mod carry_over;
 pub mod coverage_residue;
 pub mod error;
 pub mod evidence_projector;
+pub mod ladder_residue;
 mod pipeline;
 pub mod retry;
 mod scan_job;

@@ -1517,6 +1517,18 @@ impl TranslationPipeline {
         > = Box::pin(retry::try_translate_with_retry(initial, &ctx));
         let result = retry_loop.await;
 
+        // Ladder residue (issue #372): every escalate rung the walk pruned
+        // and every context-tier step it refused on a declared unavailable
+        // filed its record at the decision — the loop hands them up, and
+        // the pipeline folds them into the same per-binary accumulator
+        // every other record lands in, deduplicated by id. The walk has
+        // already run: a filed record feeds nothing back into which rung
+        // or tier comes next (that door is P27's). A ladder that pruned
+        // nothing opens nothing.
+        if !result.unknown_residue.is_empty() {
+            self.record_unknown_residue(result.unknown_residue.clone());
+        }
+
         if result.success {
             self.emit(ProgressEvent::TranslationCompleted {
                 binary: binary.to_string().into(),
@@ -5783,6 +5795,286 @@ void SetCursor(void)
         assert_eq!(
             again, landed,
             "re-runs land the same ids at the same revisions and first-seens"
+        );
+    }
+
+    /// A canned LLM that always answers with broken code — alternating
+    /// two spellings so the loop detector never streaks a repeated
+    /// (prompt, output) pair to a fire. Every attempt verification-fails,
+    /// so a pipeline-driven ladder really walks its strategy cycle and
+    /// its tier climb (the #356 harness pattern, retargeted at the real
+    /// wrapper). Returns the base URL to point a client at.
+    async fn broken_alternating_llm() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("canned LLM should bind");
+        let addr = listener.local_addr().expect("canned LLM address");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_server = calls;
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let n = calls_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    let content = if n % 2 == 0 {
+                        "fn draw_sprite(x: i32) -> i32 { let y: = ; x }"
+                    } else {
+                        "fn draw_sprite(x: i32) -> i32 { let z: = ; x }"
+                    };
+                    let body = format!(
+                        "{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}}}}],\"usage\":{{\"completion_tokens\":123,\"total_tokens\":123}}}}"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// The ticket's demoable run (issue #372): a canned-report run whose
+    /// report makes the escalate re-ask `unavailable`, driving a whole
+    /// pipeline ladder. The walk prunes its escalate rung and holds its
+    /// module-tier step exactly as #356 pinned — the attempt walk, the
+    /// tier steps, and the prune hints stay byte-unchanged — while each
+    /// pruned decision files its own record in the same binary's ledger
+    /// as every other record, with the retry decision as origin and the
+    /// shared derived id. A second, differently capped run re-derives the
+    /// same standing questions at the same revisions and first-seens:
+    /// the ladder keeps owning which prompt runs, and nothing here feeds
+    /// unknowns back into strategy.
+    #[tokio::test]
+    async fn a_pruned_ladder_walk_files_its_residue_in_the_binaries_ledger() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        // The pipeline the batch would run, pointed at the canned LLM.
+        let llm =
+            LlmClient::from_url(&broken_alternating_llm().await, "qwen3").expect("llm config");
+        let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
+        let binary_file = dir.path().join(calxgloss_testfixtures::TARGET_FILE_NAME);
+        std::fs::copy(fixture.path(), &binary_file).expect("fixture copied into the workspace");
+        let pipeline = TranslationPipeline::new(fixture_kuna(), llm, ApiMappings::default())
+            .with_workspace(dir.path().to_path_buf())
+            .with_binary_path(&binary_file);
+
+        // The held report, hand-degraded onto the batch's copy exactly as
+        // the #371 filing test stamps it: `decompilation` unavailable with
+        // its own reason, every other family answerable-or-undeclared.
+        pipeline.begin_cached_source(PROGRAM).await;
+        let degraded = calxgloss_types::CapabilityReport {
+            families: vec![calxgloss_types::FamilyCapability {
+                id: "decompilation".to_string(),
+                status: calxgloss_types::AvailabilityStatus::Unavailable,
+                reason: Some("the engine never produced a body".to_string()),
+            }],
+        };
+        *pipeline
+            .seam_report
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = degraded;
+
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let unit = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists fixture_status")
+            .name
+            .clone();
+
+        // Run one: the cap pins the tier at Signature, so the walk takes
+        // the tier gate never and prunes exactly one escalate rung.
+        let capped = retry::RetryConfig {
+            max_attempts: 6,
+            retry_strategy: retry::RetryStrategy::CompileFix,
+            escalate_on_failure: true,
+            max_context_tier: Some(calxgloss_types::ContextTier::Signature),
+        };
+        let result = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &capped, &verifier)
+            .await
+            .expect("the canned LLM answers every attempt");
+        assert_eq!(
+            result.attempts[1]
+                .context_tier
+                .as_deref()
+                .expect("the attempt records its tier"),
+            "signature",
+            "the fixture unit's ladder starts at the signature tier — the walk \
+             shapes below are pinned against that"
+        );
+        assert_eq!(
+            result
+                .attempts
+                .iter()
+                .map(|a| a.retry_strategy.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "initial",
+                "compile_fix",
+                "test_fix",
+                "pruned_escalate",
+                "edge_case_fix",
+                "compile_fix"
+            ],
+            "the walk is exactly the #356 prune walk — the residue records change no rung"
+        );
+        assert_eq!(
+            result.attempts[3].compilation_errors,
+            vec![
+                "Pruned: escalate would re-ask decompilation — unavailable — the engine never produced a body"
+            ],
+            "the existing prune hint stays byte-unchanged"
+        );
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("the filing call");
+        let ledger_path = calxgloss_types::unknown_ledger_path(
+            dir.path(),
+            &calxgloss_types::BinaryIdentity::new(PROGRAM),
+        );
+        let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
+            .expect("a pruned walk files its unknown ledger beside every other record");
+        let records = ledger
+            .records
+            .expect("a pruned walk files a current set, never an absent key");
+
+        // The pruned rung's record, in the same ledger as the seam's own
+        // posture record (#371), naming family, reason, and decision.
+        let pruned = records
+            .iter()
+            .find(|r| r.kind == calxgloss_types::UnknownKind::RetryPruned)
+            .expect("the pruned escalate rung filed its own record");
+        assert_eq!(
+            pruned.id,
+            format!("{PROGRAM}/{unit}/retry_pruned/decompilation"),
+            "the shared derivation, the ladder-residue kind, the family as slot"
+        );
+        assert_eq!(
+            pruned.origin,
+            calxgloss_types::UnknownOrigin::RetryDecision {
+                decision: "decompilation".to_string(),
+            },
+            "the retry decision is the origin"
+        );
+        assert_eq!(pruned.function.as_deref(), Some(unit.as_str()));
+        assert_eq!(pruned.severity, calxgloss_types::UnknownSeverity::Blocking);
+        assert!(
+            pruned.question.contains("the engine never produced a body"),
+            "the record names the unavailable reason beside the family: {}",
+            pruned.question
+        );
+        let landed: Vec<(String, u32, u64)> = records
+            .iter()
+            .map(|r| (r.id.clone(), r.revision, r.first_seen))
+            .collect();
+
+        // Run two: the uncapped nine-attempt climb — the #356 hold walk,
+        // byte-identical walk and tier holds — whose second escalate
+        // prune and second tier hold re-admit standing questions the
+        // first prune and first hold already filed.
+        let climbing = retry::RetryConfig {
+            max_attempts: 9,
+            ..retry::RetryConfig::default()
+        };
+        let result = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &climbing, &verifier)
+            .await
+            .expect("the canned LLM answers every attempt");
+        assert_eq!(
+            result
+                .attempts
+                .iter()
+                .map(|a| a.retry_strategy.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "initial",
+                "compile_fix",
+                "escalated(disassembly)",
+                "pruned_escalate",
+                "edge_case_fix",
+                "escalated(with_tests)",
+                "test_fix",
+                "pruned_escalate",
+                "edge_case_fix"
+            ],
+            "the climb is exactly the #356 hold walk — records change no rung and no tier step"
+        );
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("the second filing call");
+        let refiled: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the re-filed ledger");
+        let records = refiled.records.expect("a current set every re-file");
+
+        // The refused step's matching record: one for the step, naming
+        // the held tier and the family's admission.
+        let refused: Vec<&calxgloss_types::UnknownRecord> = records
+            .iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::TierRefused)
+            .collect();
+        assert_eq!(
+            refused.len(),
+            1,
+            "two tier holds land one standing question at one id"
+        );
+        assert_eq!(
+            refused[0].id,
+            format!("{PROGRAM}/{unit}/tier_refused/module_context"),
+            "the refused step names the tier the ladder refused to step onto"
+        );
+        assert_eq!(
+            refused[0].origin,
+            calxgloss_types::UnknownOrigin::RetryDecision {
+                decision: "module_context".to_string(),
+            }
+        );
+        assert!(
+            refused[0]
+                .question
+                .contains("decompilation — unavailable — the engine never produced a body"),
+            "the refused step's record names the family and its reason: {}",
+            refused[0].question
+        );
+
+        // The re-run re-derives, never re-numbers: every record run one
+        // landed keeps its id, revision, and first-seen; the only new
+        // entry is the refused step's own question. And the walk filed
+        // only ladder and seam records — the fixture's complete scans
+        // still admit no facet residue.
+        let again: Vec<(String, u32, u64)> = records
+            .iter()
+            .map(|r| (r.id.clone(), r.revision, r.first_seen))
+            .collect();
+        let new_ids: Vec<&String> = again
+            .iter()
+            .filter(|entry| !landed.contains(entry))
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(
+            new_ids,
+            vec![&format!("{PROGRAM}/{unit}/tier_refused/module_context")],
+            "a re-run adds only the refused step's own question, at revision 1"
+        );
+        assert_eq!(
+            records.iter().filter(|r| r.kind == calxgloss_types::UnknownKind::RetryPruned).count(),
+            1,
+            "two escalate prunes, one standing question"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| r.kind == calxgloss_types::UnknownKind::AnalysisFamily)
+                .count(),
+            1,
+            "the seam's posture record (#371) rides the same ledger, untouched"
         );
     }
 
