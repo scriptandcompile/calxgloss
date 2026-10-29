@@ -2699,7 +2699,75 @@ mod tests {
                 "dir:param_2:out",
             ],
         },
+        RowKit {
+            kind: "unknown ledger",
+            persist: |dir| {
+                persist_unknown_ledger(
+                    dir,
+                    vec![
+                        unknown_record(Some("FUN_18003ab00"), "question-one", "facet-one"),
+                        unknown_record(Some("FUN_zzz"), "question-two", "facet-two"),
+                        unknown_record(Some("FUN_18003ab00"), "question-three", "facet-three"),
+                        // A record about the binary itself, naming no
+                        // function: never part of a unit's prompt.
+                        unknown_record(None, "question-four", "facet-four"),
+                    ],
+                );
+            },
+            corrupt: |dir| {
+                corrupt_at(calxgloss_types::unknown_ledger_path(
+                    dir.path(),
+                    &calxgloss_types::BinaryIdentity::new("eqmain.dll"),
+                ))
+            },
+            projected: |bundle| {
+                bundle
+                    .open_unknowns
+                    .iter()
+                    .map(|u| u.question.clone())
+                    .collect()
+            },
+            expected: &["question-one", "question-three"],
+        },
     ];
+
+    /// One derived unknown record for the ledger row's shared shape — the
+    /// same derivation a producer takes, each record holding its own
+    /// source slot so the derived ids stay unique.
+    fn unknown_record(
+        function: Option<&str>,
+        question: &str,
+        facet: &str,
+    ) -> calxgloss_types::UnknownRecord {
+        calxgloss_types::UnknownRecord::derive(
+            "eqmain.dll",
+            function.map(str::to_string),
+            calxgloss_types::UnknownKind::CoverageFacet,
+            calxgloss_types::UnknownSeverity::Material,
+            question,
+            format!("{facet} evidence"),
+            calxgloss_types::UnknownOrigin::Document {
+                document: "algorithm recognition result".to_string(),
+                facet: facet.to_string(),
+            },
+            1_700_000_000,
+        )
+    }
+
+    /// File the ledger document exactly as the batch's writer files it —
+    /// the pipeline owning the whole document at `re/unknowns/<binary>.json`.
+    fn persist_unknown_ledger(dir: &TempDir, records: Vec<calxgloss_types::UnknownRecord>) {
+        let ledger = calxgloss_types::UnknownLedger {
+            binary: calxgloss_types::BinaryIdentity::new("eqmain.dll"),
+            filed_at: 1_700_000_000,
+            records: Some(records),
+        };
+        calxgloss_types::save_json(
+            &calxgloss_types::unknown_ledger_path(dir.path(), &ledger.binary),
+            &ledger,
+        )
+        .expect("the unknown ledger should be saved");
+    }
 
     /// Write an unparseable document where `path` would hold the real one.
     fn corrupt_at(path: std::path::PathBuf) {
@@ -2790,6 +2858,148 @@ mod tests {
                 row.kind
             );
         }
+    }
+
+    /// The join the ledger row performs at load (issue #370): a
+    /// reviewer's resolved or dismissed settlement folds its record out
+    /// of the projection at read time, an unsettled record stays open
+    /// and rides, and a reopen — the settlement taken back, which drops
+    /// the reviewer's entry — rides in again. Nothing downstream stores
+    /// its own dispositions: the gather recomputes the join every time.
+    #[test]
+    fn settled_unknown_records_fold_out_of_the_projection_and_open_ones_ride_in() {
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let records = vec![
+            unknown_record(Some("FUN_18003ab00"), "question-open", "facet-open"),
+            unknown_record(Some("FUN_18003ab00"), "question-resolved", "facet-resolved"),
+            unknown_record(
+                Some("FUN_18003ab00"),
+                "question-dismissed",
+                "facet-dismissed",
+            ),
+        ];
+        persist_unknown_ledger(&dir, records.clone());
+
+        let mut resolutions = calxgloss_types::UnknownResolutions::default();
+        resolutions
+            .resolve(
+                &records[1],
+                "the decompiler re-run returned the body",
+                1,
+                1_700_000_100,
+            )
+            .expect("the settle should land");
+        resolutions
+            .dismiss(
+                &records[2],
+                "the facet never bears on this unit",
+                1,
+                1_700_000_100,
+            )
+            .expect("the dismissal should land");
+        calxgloss_types::save_json(
+            &calxgloss_types::unknown_resolutions_path(dir.path()),
+            &resolutions,
+        )
+        .expect("the resolutions document should be saved");
+
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle
+                .open_unknowns
+                .iter()
+                .map(|u| u.question.as_str())
+                .collect::<Vec<_>>(),
+            ["question-open"],
+            "a resolved and a dismissed record never render; only the open question does"
+        );
+
+        // The reviewer takes the settlement back: the reopen drops their
+        // entry, and the read-time join puts the record back in the
+        // projection — open again, beside the never-settled one, in
+        // ledger order.
+        resolutions
+            .reopen(&records[1])
+            .expect("the reopen should land at the settled revision");
+        calxgloss_types::save_json(
+            &calxgloss_types::unknown_resolutions_path(dir.path()),
+            &resolutions,
+        )
+        .expect("the reopened resolutions document should be saved");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle
+                .open_unknowns
+                .iter()
+                .map(|u| u.question.as_str())
+                .collect::<Vec<_>>(),
+            ["question-open", "question-resolved"],
+            "a reopened record is open again at read time, and a dismissed one still never rides"
+        );
+    }
+
+    /// The ledger row's readings at the gather (issue #370): a filed
+    /// document carrying an explicitly empty list is the known-and-none
+    /// nothing, a filed document whose `records` key is absent reads as
+    /// unknown, and neither fails the gather or renders anything. A
+    /// corrupt resolutions document degrades the whole row exactly like
+    /// a corrupt ledger — half-known settlements are never quietly read
+    /// as no settlements, and an admitted record the reviewer may have
+    /// closed never renders as open.
+    #[test]
+    fn empty_absent_and_unusable_ledgers_never_fail_the_gather_and_never_render() {
+        // A filed empty list: the only honest known-and-none.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_unknown_ledger(&dir, Vec::new());
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.open_unknowns.is_empty(),
+            "a filed empty ledger projects nothing"
+        );
+
+        // A filed document with no `records` key at all: unknown, and
+        // unknown renders nothing — never an empty section claiming zero
+        // open gaps.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        let path = calxgloss_types::unknown_ledger_path(
+            dir.path(),
+            &calxgloss_types::BinaryIdentity::new("eqmain.dll"),
+        );
+        std::fs::create_dir_all(path.parent().expect("the ledger has a parent"))
+            .expect("the ledger directory should be creatable");
+        std::fs::write(&path, r#"{"binary": "eqmain.dll", "filed_at": 1700000000}"#)
+            .expect("the keyless ledger should be writable");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.open_unknowns.is_empty(),
+            "an absent records key reads as unknown, and unknown renders nothing"
+        );
+
+        // A corrupt reviewer document: the row degrades to empty,
+        // exactly like the corrupt ledger beside it.
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_unknown_ledger(
+            &dir,
+            vec![unknown_record(
+                Some("FUN_18003ab00"),
+                "question-one",
+                "facet-one",
+            )],
+        );
+        let resolutions_path = calxgloss_types::unknown_resolutions_path(dir.path());
+        std::fs::create_dir_all(
+            resolutions_path
+                .parent()
+                .expect("the resolutions document has a parent"),
+        )
+        .expect("the review directory should be creatable");
+        std::fs::write(&resolutions_path, "{ not json")
+            .expect("the corrupt resolutions document should be writable");
+        let bundle = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            bundle.open_unknowns.is_empty(),
+            "an unusable resolutions document degrades the whole ledger row to empty"
+        );
     }
 
     /// Files an API document whose metadata carries `coverage` — the

@@ -61,7 +61,7 @@ pub use templates::{
     MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef,
     PalTraitMethod, ParameterDirectionInfo, SerializationInfo, ShimCode, SignatureTemplate,
     StringContextInfo, StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo,
-    WithTestsTemplate,
+    UnknownInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -2530,6 +2530,7 @@ mod tests {
     fn empty_bundle_escalate_omits_every_evidence_section() {
         let prompt = render_escalate_full(&EvidenceBundle::default());
         assert!(!prompt.contains("## ADDITIONAL CONTEXT"));
+        assert!(!prompt.contains("## OPEN UNKNOWNS"));
         assert!(prompt.contains("## TRANSLATION REQUIREMENTS"));
         assert!(!prompt.contains("\n\n\n"));
     }
@@ -2554,6 +2555,7 @@ mod tests {
             "## PARAMETER DIRECTIONS",
             "## DATA TABLES",
             "## ERROR HANDLING",
+            "## OPEN UNKNOWNS",
         ] {
             assert!(
                 !prompt.contains(heading),
@@ -2576,6 +2578,7 @@ mod tests {
             "## NEIGHBORING FUNCTION CONTEXT",
             "## SHARED DATA STRUCTURES",
             "## CONTROL FLOW PATTERNS",
+            "## OPEN UNKNOWNS",
         ] {
             assert!(
                 !prompt.contains(heading),
@@ -2764,6 +2767,34 @@ mod tests {
 
     fn expected_data_structures_section(heading: &str) -> String {
         format!("## {heading}\n\n{DATA_STRUCTURES_SECTION_BODY}")
+    }
+
+    /// The full body of the open-unknowns section — steering paragraph,
+    /// entry lines, and the fold — pinned byte-for-byte (issue #370).
+    /// Shared by its three consuming templates: escalate, module-context,
+    /// and full-module. The fixture holds two open records, so the pin
+    /// covers the two-line entry shape — the question line and its
+    /// required-evidence line — as well as the paragraph above them.
+    const OPEN_UNKNOWNS_SECTION_BODY: &str = "The analysis filed these open questions about this function: facts it could\nnot establish from what it read, each beside the evidence that would settle\nit. They are admitted gaps, not tasks — treat them as limits on what is\nestablished about this function, and never fill one in with invention.\n\n- What does the second parameter point at?\n  Required evidence: a decompiler re-run with the pointer type pinned\n\n- Does the body share a lock with FUN_18003cd00?\n  Required evidence: a cross-reference sweep of the global at 0x180140a30";
+
+    fn expected_open_unknowns_section(heading: &str) -> String {
+        format!("## {heading}\n\n{OPEN_UNKNOWNS_SECTION_BODY}")
+    }
+
+    /// The open-unknowns fixture pair — two records in ledger order, the
+    /// wording each carries being one bounded line of its own.
+    fn open_unknowns_fixtures() -> Vec<UnknownInfo> {
+        vec![
+            UnknownInfo {
+                question: "What does the second parameter point at?".to_string(),
+                required_evidence: "a decompiler re-run with the pointer type pinned".to_string(),
+            },
+            UnknownInfo {
+                question: "Does the body share a lock with FUN_18003cd00?".to_string(),
+                required_evidence: "a cross-reference sweep of the global at 0x180140a30"
+                    .to_string(),
+            },
+        ]
     }
 
     /// One (section × consuming template) pair of the parametrized
@@ -3012,6 +3043,30 @@ mod tests {
             populate: |b| b.control_flow_findings.push(control_flow_fixture()),
             render: render_detailed_full,
             expected: expected_control_flow_section,
+        },
+        SectionRow {
+            section: "sections/open_unknowns.j2",
+            template: "escalate.j2",
+            heading: "OPEN UNKNOWNS",
+            populate: |b| b.open_unknowns.extend(open_unknowns_fixtures()),
+            render: render_escalate_full,
+            expected: expected_open_unknowns_section,
+        },
+        SectionRow {
+            section: "sections/open_unknowns.j2",
+            template: "module_context_translate.j2",
+            heading: "OPEN UNKNOWNS",
+            populate: |b| b.open_unknowns.extend(open_unknowns_fixtures()),
+            render: render_module_context_full,
+            expected: expected_open_unknowns_section,
+        },
+        SectionRow {
+            section: "sections/open_unknowns.j2",
+            template: "full_module_translate.j2",
+            heading: "OPEN UNKNOWNS",
+            populate: |b| b.open_unknowns.extend(open_unknowns_fixtures()),
+            render: render_full_module_full,
+            expected: expected_open_unknowns_section,
         },
     ];
 
@@ -5939,5 +5994,117 @@ mod tests {
              template by adding an import/call pair in the template and a section-\
              suite row together, and this roster moves only with them"
         );
+    }
+
+    /// The bundle carries the ledger's whole open list, but the include
+    /// owns the render bound (issue #370): the first five records ride
+    /// in ledger order, the sixth and later never render at all, and the
+    /// remainder folds into exactly one count line beside the listed
+    /// five — the P19 five-names-plus-count discipline, kept by the
+    /// escalate reader.
+    #[test]
+    fn open_unknowns_render_in_ledger_order_and_fold_the_remainder_into_one_count_line() {
+        let bundle = EvidenceBundle {
+            open_unknowns: (0..7)
+                .map(|n| UnknownInfo {
+                    question: format!("question-{n}?"),
+                    required_evidence: format!("evidence-{n}"),
+                })
+                .collect(),
+            ..EvidenceBundle::default()
+        };
+        let prompt = render_escalate_full(&bundle);
+        assert_eq!(
+            prompt.matches("## OPEN UNKNOWNS").count(),
+            1,
+            "the section opens exactly once however many records the ledger filed"
+        );
+        let mut cursor = 0;
+        for n in 0..5 {
+            let needle = format!("- question-{n}?");
+            let at = cursor
+                + prompt[cursor..]
+                    .find(&needle)
+                    .unwrap_or_else(|| panic!("`{needle}` must render"));
+            assert!(
+                !prompt[cursor..at].contains("- question-"),
+                "`question-{n}` is the entry right after the previous one — the \
+                 list rides in ledger order, never a sorted or grouped one"
+            );
+            cursor = at + needle.len();
+        }
+        for n in 5..7 {
+            assert!(
+                !prompt.contains(&format!("question-{n}?")),
+                "the sixth and later open records never render their question"
+            );
+            assert!(
+                !prompt.contains(&format!("evidence-{n}")),
+                "the sixth and later open records never render their evidence line"
+            );
+        }
+        assert_eq!(
+            prompt
+                .matches("(+2 more open questions not listed)")
+                .count(),
+            1,
+            "the remainder folds into exactly one count line"
+        );
+        assert!(
+            !prompt.contains("\n\n\n"),
+            "the folded section leaves no stray blank lines"
+        );
+    }
+
+    /// A unit with forty open gaps still keeps the section bounded
+    /// (issue #370): every bundle-fed reader renders exactly the first
+    /// five questions, names none of the other thirty-five, and folds
+    /// them into one count line.
+    #[test]
+    fn forty_open_unknowns_keep_the_section_bounded_in_every_reader() {
+        let bundle = EvidenceBundle {
+            open_unknowns: (0..40)
+                .map(|n| UnknownInfo {
+                    question: format!("question-{n}?"),
+                    required_evidence: format!("evidence-{n}"),
+                })
+                .collect(),
+            ..EvidenceBundle::default()
+        };
+        for render in [
+            render_escalate_full,
+            render_module_context_full,
+            render_full_module_full,
+        ] {
+            let prompt = render(&bundle);
+            assert_eq!(
+                prompt.matches("## OPEN UNKNOWNS").count(),
+                1,
+                "the section opens exactly once"
+            );
+            for n in 0..5 {
+                assert!(
+                    prompt.contains(&format!("- question-{n}?")),
+                    "the first five open questions ride in, question-{n} missing"
+                );
+            }
+            for n in 5..40 {
+                assert!(
+                    !prompt.contains(&format!("question-{n}?")),
+                    "question-{n} sits past the bound and never renders"
+                );
+            }
+            assert_eq!(
+                prompt
+                    .matches("(+35 more open questions not listed)")
+                    .count(),
+                1,
+                "the thirty-five hidden records fold into exactly one count line"
+            );
+            assert!(
+                !prompt.contains("\n\n\n"),
+                "the bounded section leaves no stray blank lines"
+            );
+        }
     }
 }

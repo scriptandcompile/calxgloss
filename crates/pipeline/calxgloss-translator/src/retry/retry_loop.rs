@@ -1901,7 +1901,22 @@ mod tests {
         max_attempts: u32,
         max_context_tier: Option<calxgloss_types::ContextTier>,
     ) -> CapLadderRun {
+        run_ladder_prepared(report, max_attempts, max_context_tier, |_| {}).await
+    }
+
+    /// The same ladder run, with a hook that stages workspace documents
+    /// before the batch starts — what a real workspace would already hold
+    /// when the ladder reads it (issue #370's unknowns ledger pin files its
+    /// fixture here). The captured prompts are exactly what the web LLM
+    /// I/O log records, so they prove what the model actually received.
+    async fn run_ladder_prepared(
+        report: calxgloss_types::CapabilityReport,
+        max_attempts: u32,
+        max_context_tier: Option<calxgloss_types::ContextTier>,
+        prepare: impl FnOnce(&std::path::Path),
+    ) -> CapLadderRun {
         let ws = tempfile::TempDir::new().expect("temp workspace");
+        prepare(ws.path());
         // Today's ladder-pin unit, with a real fixture function in the call
         // graph so a rung that does re-ask the seam leaves its mark in the
         // engine-call log.
@@ -2277,5 +2292,159 @@ mod tests {
                 .contains(&"UpdateScene".to_string()),
             "the unblocked ladder re-asks the seam along the climb"
         );
+    }
+
+    /// The filed unknown ledger rides the ladder end to end (issue #370):
+    /// staged in the workspace before the batch starts, it reaches the
+    /// recorded LLM I/O — the same prompt text the web log stores — at
+    /// every bundle-fed rung: each open question quoted exactly once, the
+    /// settled ones never, the other units' records never, and past five
+    /// open questions the remainder folds into one count line.
+    #[tokio::test]
+    async fn a_filed_unknown_ledger_reaches_the_ladder_prompts_bounded_and_settled_free() {
+        fn record(
+            function: Option<&str>,
+            question: &str,
+            facet: &str,
+        ) -> calxgloss_types::UnknownRecord {
+            calxgloss_types::UnknownRecord::derive(
+                "game_logic.dll",
+                function.map(str::to_string),
+                calxgloss_types::UnknownKind::CoverageFacet,
+                calxgloss_types::UnknownSeverity::Material,
+                question,
+                format!("filed {facet} evidence"),
+                calxgloss_types::UnknownOrigin::Document {
+                    document: "memory lifecycle result".to_string(),
+                    facet: facet.to_string(),
+                },
+                1_700_000_000,
+            )
+        }
+
+        // Seven open records for this unit — past the include's five-record
+        // bound — plus a resolved, a dismissed, and an open record naming
+        // another function, none of which may ever render.
+        let mut open = (1..=7)
+            .map(|i| {
+                record(
+                    Some("DrawSprite"),
+                    &format!("Open unknown {i}: what does DrawSprite assume here?"),
+                    &format!("facet {i}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let resolved = record(
+            Some("DrawSprite"),
+            "Settled unknown: already answered.",
+            "settled",
+        );
+        let dismissed = record(
+            Some("DrawSprite"),
+            "Dismissed unknown: out of scope.",
+            "dismissed",
+        );
+        let other = record(
+            Some("UpdateScene"),
+            "Foreign unknown: another unit's question.",
+            "foreign",
+        );
+
+        let mut resolutions = calxgloss_types::UnknownResolutions::default();
+        resolutions
+            .resolve(
+                &resolved,
+                "the answer landed in the type database",
+                1,
+                1_700_000_500,
+            )
+            .expect("first settle lands on a fresh record");
+        resolutions
+            .dismiss(
+                &dismissed,
+                "the reviewer ruled it out of scope",
+                1,
+                1_700_000_500,
+            )
+            .expect("first settle lands on a fresh record");
+
+        let prepared = |workspace: &std::path::Path| {
+            let mut records = std::mem::take(&mut open);
+            records.extend([resolved.clone(), dismissed.clone(), other.clone()]);
+            let ledger = calxgloss_types::UnknownLedger {
+                binary: calxgloss_types::BinaryIdentity::new("game_logic.dll"),
+                filed_at: 1_700_000_000,
+                records: Some(records),
+            };
+            calxgloss_types::save_json(
+                &calxgloss_types::unknown_ledger_path(workspace, &ledger.binary),
+                &ledger,
+            )
+            .expect("stage the ledger fixture");
+            calxgloss_types::save_json(
+                &calxgloss_types::unknown_resolutions_path(workspace),
+                &resolutions,
+            )
+            .expect("stage the resolutions fixture");
+        };
+
+        let run = run_ladder_prepared(
+            calxgloss_types::CapabilityReport::default(),
+            9,
+            None,
+            prepared,
+        )
+        .await;
+        assert_eq!(walk(&run.result).len(), 9, "the full climb ran");
+
+        // The recorded request map is exactly what the web LLM I/O log
+        // keeps — assert against it, the model's own view.
+        for attempt in [4u32, 7, 8, 9] {
+            let prompt = run.prompts.get(&attempt).expect("rung prompt recorded");
+            assert!(
+                prompt.contains("## OPEN UNKNOWNS"),
+                "rung {attempt} renders the section"
+            );
+            // Ledger order, first five listed, the rest one count line.
+            for i in 1..=5 {
+                let question = format!("Open unknown {i}: what does DrawSprite assume here?");
+                assert_eq!(
+                    prompt.matches(&question).count(),
+                    1,
+                    "rung {attempt} quotes open unknown {i} exactly once"
+                );
+            }
+            assert!(
+                prompt.contains("(+2 more open questions not listed)"),
+                "rung {attempt} folds the remainder into one count line"
+            );
+            for i in 6..=7 {
+                let question = format!("Open unknown {i}: what does DrawSprite assume here?");
+                assert!(
+                    !prompt.contains(&question),
+                    "rung {attempt} past the bound lists the count, not unknown {i}"
+                );
+            }
+            assert!(
+                !prompt.contains("Settled unknown") && !prompt.contains("Dismissed unknown"),
+                "rung {attempt} never renders a settled record"
+            );
+            assert!(
+                !prompt.contains("Foreign unknown"),
+                "rung {attempt} never renders another unit's record"
+            );
+        }
+
+        // The bundle-fed reading is the ladder's own discipline, not the
+        // section deciding which rung runs: the earlier rungs that never
+        // read the evidence bundle carry no section (attempt 1 is the
+        // batch's starting translation — the ladder never asks it).
+        for attempt in [2u32, 3, 5, 6] {
+            let prompt = run.prompts.get(&attempt).expect("rung prompt recorded");
+            assert!(
+                !prompt.contains("## OPEN UNKNOWNS"),
+                "rung {attempt} is not a bundle-fed reader — no section"
+            );
+        }
     }
 }

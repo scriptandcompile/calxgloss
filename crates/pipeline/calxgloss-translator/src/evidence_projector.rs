@@ -104,9 +104,10 @@ pub enum DocLoadError {
 /// workspace check, the miss logs, the degradation rule) belongs to
 /// [`load_and_project`], never to the adapter. The fourteen per-function
 /// documents `gather_function_evidence` reads all have their adapters
-/// here (issues #312–#314); the libmatch document's call graph
-/// correlation and the whole-DLL extractions stay custom, outside
-/// this seam, exactly as specced (#310).
+/// here (issues #312–#314), beside the analysis's own unknown ledger row
+/// (#370); the libmatch document's call graph correlation and the
+/// whole-DLL extractions stay custom, outside this seam, exactly as
+/// specced (#310).
 pub trait AnalysisDoc {
     /// The document kind. The miss log names it, so an absent bundle
     /// field can be explained from the logs — "why is this engine not

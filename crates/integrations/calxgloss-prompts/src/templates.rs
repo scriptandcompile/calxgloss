@@ -861,6 +861,38 @@ pub fn capability_for(report: &calxgloss_types::CapabilityReport, family: &str) 
         .unwrap_or_default()
 }
 
+/// One open item of the analysis's unknowns ledger, in the shape the
+/// escalate and module-context prompts render it (issue #370): the
+/// bounded question line the analysis admitted, beside the bounded line
+/// naming the evidence that would settle it. The two wording fields are
+/// quoted from the record verbatim — the prompt-side view adds no frame
+/// of its own. The bundle carries the ledger's whole open list in ledger
+/// order: the shared `sections/open_unknowns.j2` include owns the render
+/// bound, showing the first five and folding the rest into one count
+/// line, the same discipline the P19 coverage lines keep. Settled
+/// records never reach this type: the ledger's join folds resolved and
+/// dismissed away at read time, and the projection row filters to what
+/// is open. An empty list is what an absent or empty ledger fills — the
+/// include then renders exactly what it rendered before any ledger was
+/// filed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UnknownInfo {
+    /// The bounded question line, verbatim from the record.
+    pub question: String,
+    /// The bounded line naming the evidence that would close the record,
+    /// verbatim from the record.
+    pub required_evidence: String,
+}
+
+impl From<&calxgloss_types::UnknownRecord> for UnknownInfo {
+    fn from(record: &calxgloss_types::UnknownRecord) -> Self {
+        Self {
+            question: record.question.clone(),
+            required_evidence: record.required_evidence.clone(),
+        }
+    }
+}
+
 /// The decompiler-derived evidence that every bundle-fed prompt
 /// template renders from.
 ///
@@ -1138,6 +1170,16 @@ pub struct EvidenceBundle {
     pub floatsimd_coverage: CoverageInfo,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+    /// The open items of the analysis's unknowns ledger for this unit, in
+    /// ledger order — the unknown-ledger projection row fills it from the
+    /// filed per-binary ledger joined with the reviewer's resolutions, so
+    /// a resolved or dismissed record is never in the list (issue #370).
+    /// It stays default-empty when no ledger was filed, when the filed
+    /// ledger names no records for this unit, and when every record it
+    /// names is settled. The open-unknowns include renders its section
+    /// exactly when this is non-empty, shows the first five records, and
+    /// folds the remainder into one count line.
+    pub open_unknowns: Vec<UnknownInfo>,
 }
 
 // ============================================================

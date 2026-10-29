@@ -12,6 +12,7 @@
 {%- import "sections/string_context.j2" as string_context -%}
 {%- import "sections/libraries_apis.j2" as libraries_apis -%}
 {%- import "sections/data_structures.j2" as data_structures -%}
+{%- import "sections/open_unknowns.j2" as open_unknowns -%}
 You are a reverse engineering specialist. You previously translated a function to Rust, but earlier attempts failed. This time, additional Ghidra context has been injected to help you succeed.
 
 ## FUNCTION: {{ function_name }}
@@ -178,6 +179,7 @@ Coverage: {{ evidence.error_handling_coverage.admission }}
 Analysis engine: {{ evidence.decompilation_cap_line }}
 
 {% endif %}
+{% call open_unknowns::open_unknowns_section(evidence.open_unknowns, "OPEN UNKNOWNS") %}{% endcall %}
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

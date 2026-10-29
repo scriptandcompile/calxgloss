@@ -275,4 +275,175 @@ mod tests {
              renders byte-identically to before the seam spoke"
         );
     }
+
+    // --- the filed unknown ledger riding the escalate prompt (#370) -------
+
+    /// One ledger record for the fixtures: same shape the batch's writer
+    /// files, so the test proves the render against the real document.
+    fn unknown_record(
+        function: Option<&str>,
+        question: &str,
+        facet: &str,
+    ) -> calxgloss_types::UnknownRecord {
+        calxgloss_types::UnknownRecord::derive(
+            "game_logic.dll",
+            function.map(str::to_string),
+            calxgloss_types::UnknownKind::CoverageFacet,
+            calxgloss_types::UnknownSeverity::Material,
+            question,
+            format!("{facet} evidence"),
+            calxgloss_types::UnknownOrigin::Document {
+                document: "algorithm recognition result".to_string(),
+                facet: facet.to_string(),
+            },
+            1_700_000_000,
+        )
+    }
+
+    #[tokio::test]
+    async fn escalate_prompt_quotes_each_open_unknown_once_and_folds_the_rest_away() {
+        let dir = tempfile::TempDir::new().expect("temp workspace");
+        // Two open records for this unit, one resolved and one dismissed
+        // (both must never render), one open record naming another
+        // function, and one functionless binary-level record — neither of
+        // the last two belongs to this unit's prompt.
+        let open_a = unknown_record(
+            Some("DrawSprite"),
+            "Which field of the sprite struct holds the render flags?",
+            "struct fields",
+        );
+        let open_b = unknown_record(
+            Some("DrawSprite"),
+            "Does the caller or the callee own the returned buffer?",
+            "memory lifecycle",
+        );
+        let settled = unknown_record(
+            Some("DrawSprite"),
+            "What does the second parameter control?",
+            "signature",
+        );
+        let dismissed = unknown_record(
+            Some("DrawSprite"),
+            "Is the frame timer shared across threads?",
+            "concurrency",
+        );
+        let other_function =
+            unknown_record(Some("FUN_zzz"), "What does this helper do?", "call graph");
+        let binary_level = unknown_record(
+            None,
+            "Is this module loaded once per process?",
+            "module load",
+        );
+
+        let mut resolutions = calxgloss_types::UnknownResolutions::default();
+        resolutions
+            .resolve(
+                &settled,
+                "answered by the parameter naming pass",
+                1,
+                1_700_000_500,
+            )
+            .expect("first settle lands on a fresh record");
+        resolutions
+            .dismiss(
+                &dismissed,
+                "out of scope for this translation",
+                1,
+                1_700_000_500,
+            )
+            .expect("first settle lands on a fresh record");
+
+        let ledger = calxgloss_types::UnknownLedger {
+            binary: calxgloss_types::BinaryIdentity::new("game_logic.dll"),
+            filed_at: 1_700_000_000,
+            records: Some(vec![
+                open_a.clone(),
+                settled.clone(),
+                open_b.clone(),
+                dismissed.clone(),
+                other_function.clone(),
+                binary_level.clone(),
+            ]),
+        };
+        calxgloss_types::save_json(
+            &calxgloss_types::unknown_ledger_path(dir.path(), &ledger.binary),
+            &ledger,
+        )
+        .expect("file the ledger");
+        calxgloss_types::save_json(
+            &calxgloss_types::unknown_resolutions_path(dir.path()),
+            &resolutions,
+        )
+        .expect("file the resolutions");
+
+        let unit = unit();
+        let verdict = UnitVerdict {
+            compilation_errors: vec!["unresolved name: RECT".to_string()],
+            failed_test_quotes: Vec::new(),
+            structured_failed_cases: Vec::new(),
+        };
+        let source = source();
+        let req = FixPromptRequest {
+            unit: &unit,
+            verdict: &verdict,
+            history: &[],
+            workspace: Some(dir.path()),
+            source: &source,
+            seam_report: &calxgloss_types::CapabilityReport::default(),
+        };
+        let prompt = escalate_prompt(&req).await;
+
+        // Each open record quotes exactly once, beside its evidence line,
+        // in ledger order — and the section is present at all.
+        assert!(
+            prompt.contains("Which field of the sprite struct holds the render flags?"),
+            "the first open record renders:\n{prompt}"
+        );
+        assert_eq!(
+            prompt
+                .matches("Which field of the sprite struct holds the render flags?")
+                .count(),
+            1,
+            "each open question crosses into the prompt exactly once"
+        );
+        assert!(prompt.contains("Does the caller or the callee own the returned buffer?"));
+        // Resolved and dismissed records never render...
+        assert!(
+            !prompt.contains("What does the second parameter control?"),
+            "a resolved record never reaches the prompt"
+        );
+        assert!(
+            !prompt.contains("Is the frame timer shared across threads?"),
+            "a dismissed record never reaches the prompt"
+        );
+        // ...and neither do records about another function or the binary.
+        assert!(!prompt.contains("What does this helper do?"));
+        assert!(!prompt.contains("Is this module loaded once per process?"));
+    }
+
+    #[tokio::test]
+    async fn escalate_prompt_without_a_filed_ledger_renders_no_unknowns_section() {
+        // The same unit, no workspace document at all: the prompt carries
+        // no section heading, byte-identical to before any ledger existed.
+        let unit = unit();
+        let verdict = UnitVerdict {
+            compilation_errors: vec!["unresolved name: RECT".to_string()],
+            failed_test_quotes: Vec::new(),
+            structured_failed_cases: Vec::new(),
+        };
+        let source = source();
+        let req = FixPromptRequest {
+            unit: &unit,
+            verdict: &verdict,
+            history: &[],
+            workspace: None,
+            source: &source,
+            seam_report: &calxgloss_types::CapabilityReport::default(),
+        };
+        let prompt = escalate_prompt(&req).await;
+        assert!(
+            !prompt.contains("## OPEN UNKNOWNS"),
+            "no ledger, no section:\n{prompt}"
+        );
+    }
 }

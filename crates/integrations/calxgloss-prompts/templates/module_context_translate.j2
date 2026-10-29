@@ -6,6 +6,7 @@
 {%- import "sections/parameter_direction.j2" as parameter_direction -%}
 {%- import "sections/data_tables.j2" as data_tables -%}
 {%- import "sections/data_structures.j2" as data_structures -%}
+{%- import "sections/open_unknowns.j2" as open_unknowns -%}
 You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
 
 ## FUNCTION: {{ function_name }}
@@ -182,6 +183,7 @@ Coverage: {{ evidence.error_handling_coverage.admission }}
 Analysis engine: {{ evidence.decompilation_cap_line }}
 
 {% endif %}
+{% call open_unknowns::open_unknowns_section(evidence.open_unknowns, "OPEN UNKNOWNS") %}{% endcall %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.

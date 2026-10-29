@@ -29,7 +29,9 @@
 //! function are migrated: the twelve single-field ones (first batch in
 //! #312, second in #313) and the shared consts and type-inference
 //! documents as multi-field rows (#314); libmatch's call-graph
-//! correlation stays bespoke outside this seam (#310).
+//! correlation stays bespoke outside this seam (#310). The analysis's
+//! own unknown ledger rides the fold as the table's one non-engine row
+//! (#370).
 
 use std::path::Path;
 
@@ -885,16 +887,89 @@ impl AnalysisDoc for TypeInferDoc {
 }
 
 // ============================================================
+// The analysis's own unknown ledger (#370)
+// ============================================================
+
+/// The pipeline's unknowns ledger, `re/unknowns/<binary>.json`: the open
+/// questions the analysis itself admitted about this unit, filling
+/// `open_unknowns` beside the engine findings (issue #370). The load
+/// joins the reviewer's resolutions document into the ledger before any
+/// selection, so resolved and dismissed records fold away at read time
+/// and never reach `fill` — and a record reopened back to open rides in
+/// again. An absent document and a filed document whose `records` key is
+/// absent read as [`DocLoadError::Missing`] — absence is unknown, the
+/// field stays empty, and no render ever reads absence as zero gaps —
+/// while a filed empty list loads as the known-and-none nothing. A
+/// corrupt ledger degrades exactly like every other row's corrupt
+/// document. Selection is unit-scoped: records naming another function
+/// and records about the binary itself (functionless) never enter a
+/// unit's prompt. The row deliberately derives no coverage residue: the
+/// ledger is what the batch already admitted, and feeding residue back
+/// from it would let the ledger inflate itself.
+pub struct UnknownLedgerDoc;
+
+impl AnalysisDoc for UnknownLedgerDoc {
+    const KIND: &'static str = "unknown ledger";
+
+    type Doc = Vec<calxgloss_types::JoinedUnknown>;
+    type Record<'a> = &'a calxgloss_types::JoinedUnknown;
+
+    fn load(workspace: &Path, binary: &str) -> Result<Self::Doc, DocLoadError> {
+        let identity = calxgloss_types::BinaryIdentity::new(binary);
+        let records = match calxgloss_types::read_unknown_ledger(workspace, &identity) {
+            Ok(calxgloss_types::EffectiveLedger::Filed(records)) => records,
+            Ok(calxgloss_types::EffectiveLedger::Unknown) => {
+                return Err(DocLoadError::Missing(
+                    calxgloss_types::unknown_ledger_path(workspace, &identity)
+                        .display()
+                        .to_string(),
+                ));
+            }
+            Err(error) => return Err(DocLoadError::Corrupt(error.into())),
+        };
+        // The reviewer's document is their intent, kept beside the ledger
+        // rather than inside it: its absence is simply no settlements, not
+        // a miss — the join then reads every landed record open.
+        let path = calxgloss_types::unknown_resolutions_path(workspace);
+        let resolutions =
+            match calxgloss_types::load_json::<calxgloss_types::UnknownResolutions>(&path) {
+                Ok(resolutions) => resolutions,
+                Err(calxgloss_types::PersistError::NotFound { .. }) => Default::default(),
+                Err(error) => return Err(DocLoadError::Corrupt(error.into())),
+            };
+        Ok(resolutions.join(&records))
+    }
+
+    fn for_function<'a>(
+        doc: &'a Self::Doc,
+        function: &str,
+    ) -> impl Iterator<Item = Self::Record<'a>> {
+        doc.iter().filter(move |joined| {
+            joined.record.function.as_deref() == Some(function)
+                && joined.disposition == calxgloss_types::EffectiveDisposition::Open
+        })
+    }
+
+    fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
+        bundle
+            .open_unknowns
+            .push(calxgloss_prompts::UnknownInfo::from(&record.record));
+    }
+}
+
+// ============================================================
 // The registered projection table
 // ============================================================
 
 /// The projection rows the gather folds, in registered order: the six
 /// single-field engines of the first migration batch (issue #312), the
-/// six of the second (issue #313), and the two shared documents as
-/// multi-field rows last (issue #314 — the fields they feed belong to
-/// those rows alone, so their table position fixes nothing). A field
-/// fed by several rows receives them in table order, so this order is
-/// the prompts' order — changing it rewrites prompt sections for no
+/// six of the second (issue #313), the two shared documents as
+/// multi-field rows (issue #314 — the fields they feed belong to
+/// those rows alone, so their table position fixes nothing), and the
+/// analysis's own unknown ledger last (issue #370 — its field belongs to
+/// that row alone, so its table position fixes nothing there either). A
+/// field fed by several rows receives them in table order, so this order
+/// is the prompts' order — changing it rewrites prompt sections for no
 /// reason and must be a deliberate edit.
 pub static PROJECTION_ROWS: &[ProjectionRow] = &[
     ProjectionRow::of::<AlgorithmDoc>(),
@@ -911,6 +986,7 @@ pub static PROJECTION_ROWS: &[ProjectionRow] = &[
     ProjectionRow::of::<GlobalStateDoc>(),
     ProjectionRow::of::<ConstsDoc>(),
     ProjectionRow::of::<TypeInferDoc>(),
+    ProjectionRow::of::<UnknownLedgerDoc>(),
 ];
 
 // ============================================================
@@ -952,9 +1028,11 @@ mod tests {
                 "string context result",
                 "type database",
                 "type inference result",
+                "unknown ledger",
             ],
             "exactly the fourteen engines of the three migration batches \
-             (issues #312, #313, #314) are registered"
+             (issues #312, #313, #314) plus the analysis's own unknown ledger \
+             (issue #370) are registered"
         );
     }
 

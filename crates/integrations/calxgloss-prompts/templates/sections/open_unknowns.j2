@@ -1,0 +1,33 @@
+{# The open-unknowns section, shared by the escalate and module-context #}
+{# templates (issue #370). Parameterized by (open-unknown list, heading #}
+{# text) so each template passes its own heading. The list arrives in #}
+{# ledger order, already joined with the reviewer's resolutions: only #}
+{# open records reach it, and a resolved or dismissed record never #}
+{# renders. The include owns the render bound — the first five records #}
+{# in ledger order, the remainder folded into one count line — the same #}
+{# discipline the P19 coverage lines keep, so a unit with forty open #}
+{# questions still keeps the section bounded. An empty list contributes #}
+{# literally nothing: the template renders byte-for-byte what it #}
+{# rendered before any ledger was filed. The body is verbatim-pinned by #}
+{# the section suite in src/lib.rs — wording or formatting drift fails #}
+{# CI. The section states the analysis's own admitted questions; it #}
+{# never says what the translation should do about them. #}
+{% macro open_unknowns_section(unknowns, heading) %}
+{% if !unknowns.is_empty() %}
+## {{ heading }}
+
+The analysis filed these open questions about this function: facts it could
+not establish from what it read, each beside the evidence that would settle
+it. They are admitted gaps, not tasks — treat them as limits on what is
+established about this function, and never fill one in with invention.
+
+{% for unknown in unknowns.iter().take(5) %}
+- {{ unknown.question|safe }}
+  Required evidence: {{ unknown.required_evidence|safe }}
+{% endfor %}
+{% if unknowns.len() > 5 %}
+(+{{ unknowns.len() - 5 }} more open questions not listed)
+{% endif %}
+
+{% endif %}
+{% endmacro %}
