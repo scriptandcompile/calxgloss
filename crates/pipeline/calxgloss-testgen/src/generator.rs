@@ -19,7 +19,8 @@ pub use crate::inputs::generate_test_inputs;
 ///
 /// Manages the generation of FFI bindings, test inputs, and baseline execution
 /// for functions extracted from DLLs. The generator stores baseline results
-/// in a structured directory layout under `re/baseline/{binary}/{function}.json`.
+/// in a structured directory layout: one `baseline.json` per function
+/// under `re/baseline/{binary}/{function}/`.
 ///
 /// # Directory Layout
 ///
@@ -34,7 +35,8 @@ pub use crate::inputs::generate_test_inputs;
 #[derive(Debug, Clone)]
 pub struct TestGenerator {
     /// Base directory for storing baseline data.
-    /// Baselines are written to `{target_dir}/re/baseline/{binary}/{function}.json`.
+    /// Baselines are written to
+    /// `{target_dir}/re/baseline/{binary}/{function}/baseline.json`.
     target_dir: PathBuf,
 }
 
@@ -241,7 +243,8 @@ impl TestGenerator {
 
     /// Save baseline test results to disk.
     ///
-    /// Writes the test results to `re/baseline/{binary}/{function}.json` under
+    /// Writes the test results to
+    /// `re/baseline/{binary}/{function}/baseline.json` under
     /// the generator's target directory. Creates parent directories as needed.
     ///
     /// # Arguments
