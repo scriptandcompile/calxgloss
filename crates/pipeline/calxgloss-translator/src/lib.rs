@@ -28,6 +28,7 @@ mod pipeline;
 pub mod retry;
 mod scan_job;
 pub mod scan_registry;
+pub mod seam_residue;
 mod translator;
 pub mod triage;
 mod version_pairing;

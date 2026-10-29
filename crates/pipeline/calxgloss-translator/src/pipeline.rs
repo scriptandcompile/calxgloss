@@ -310,22 +310,23 @@ pub struct TranslationPipeline {
     /// really go through. Prompts never ask again; they read this stored copy.
     seam_report: Mutex<calxgloss_types::CapabilityReport>,
 
-    /// The batch's coverage residue: the unknown records the units'
-    /// evidence folds have admitted so far (issue #369).
+    /// The batch's unknown residue: the records its producers have admitted
+    /// so far — the units' evidence folds (issue #369) and each unit's
+    /// seam-residue derivation from the held capability report (issue #371).
     ///
-    /// `None` says no unit's fold has read a document yet this batch —
-    /// the ledger writer files nothing, because nothing has been looked
-    /// at; the absence of a ledger document reads as *unknown* by
-    /// ADR-0053's absent-field rule, and a writer that filed an empty
-    /// set nobody derived would fake a known-and-none. `Some` holds the
-    /// records in first-seen scan order, deduplicated by id: re-running
-    /// a unit's fold re-derives the same ids, never a second question
-    /// for one gap. Reset at the start of every batch; the per-binary
-    /// ledger merge ([`file_unknown_ledger`](Self::file_unknown_ledger))
+    /// `None` says no unit's fold has read a document and no seam admission
+    /// has filed yet this batch — the ledger writer files nothing, because
+    /// nothing has been looked at; the absence of a ledger document reads as
+    /// *unknown* by ADR-0053's absent-field rule, and a writer that filed an
+    /// empty set nobody derived would fake a known-and-none. `Some` holds
+    /// the records in first-seen order, deduplicated by id: re-running a
+    /// unit's fold or a unit's posture re-derives the same ids, never a
+    /// second question for one gap. Reset at the start of every batch; the
+    /// per-binary ledger merge ([`file_unknown_ledger`](Self::file_unknown_ledger))
     /// folds this set against the landed document at every unit
     /// boundary, so the document is always the current derived set —
     /// never an append log.
-    coverage_residue: Mutex<Option<Vec<calxgloss_types::UnknownRecord>>>,
+    unknown_residue: Mutex<Option<Vec<calxgloss_types::UnknownRecord>>>,
 
     /// The scan phase's fan-out high-water mark: the most evidence scans
     /// that ran at the same time during the latest
@@ -433,7 +434,7 @@ impl TranslationPipeline {
             carry_over_seeds: Mutex::new(HashMap::new()),
             cached_source: Mutex::new(None),
             seam_report: Mutex::new(calxgloss_types::CapabilityReport::default()),
-            coverage_residue: Mutex::new(None),
+            unknown_residue: Mutex::new(None),
             scan_window_high_water: Arc::new(AtomicUsize::new(0)),
             refresh_cache: false,
             stop: None,
@@ -1138,7 +1139,7 @@ impl TranslationPipeline {
                         function,
                         &function_info.call_graph,
                     );
-                self.record_coverage_residue(residue);
+                self.record_unknown_residue(residue);
                 evidence.call_graph_neighbors =
                     crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
                         &enriched_context,
@@ -1168,7 +1169,7 @@ impl TranslationPipeline {
                         function,
                         &function_info.call_graph,
                     );
-                self.record_coverage_residue(residue);
+                self.record_unknown_residue(residue);
                 evidence.call_graph_neighbors =
                     crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
                         &enriched_context,
@@ -1435,6 +1436,51 @@ impl TranslationPipeline {
             function, "Starting translation with retry (max {} attempts)", config.max_attempts
         );
 
+        // The ladder's posture, settled before the unit's first attempt:
+        // W2.5's operator constraints (max attempts, max context tier) cap
+        // the retry policy, and W2.7 a reviewer override can force the retry
+        // strategy and add its custom hints to the loop's prompts that follow
+        // a failure (issue #96). Steering lands at unit boundaries, so the
+        // reads below belong ahead of Step 1 — the seam-residue filing and
+        // the loop itself walk one and the same settled posture.
+        let source = self.scan_source();
+        let mut bounded_config = self.constrained_retry_config(config);
+        if let Some(strategy) = self.forced_retry_strategy(binary, function) {
+            info!(
+                binary,
+                function,
+                strategy = %strategy,
+                configured = %config.retry_strategy,
+                "Reviewer override forces the retry strategy"
+            );
+            bounded_config.retry_strategy = strategy;
+        }
+        let reviewer_hints = self.reviewer_hints_for(binary, function);
+        // The batch's stored capability declaration, taken from the stored
+        // copy for this prompt — the seam is never asked again (issue #355).
+        let seam_report = self.seam_report();
+
+        // Seam residue (issue #371): every family the held report declares
+        // `unavailable`, and this unit's ladder posture would re-ask, files
+        // its standing question against the unit — the P20 admission that
+        // pruned the re-ask (issue #356) is now a record a reviewer can
+        // resolve. Filed at the unit's entry into the retry wrapper: the
+        // posture, not the unit's outcome, is what the admission bears on.
+        // A family the report never declared — which reads unknown — files
+        // nothing, and so does a posture that never re-asks.
+        let residue = crate::seam_residue::seam_residue(
+            binary,
+            function,
+            &seam_report,
+            crate::seam_residue::posture_reask_families(&bounded_config),
+            calxgloss_types::scan::now_unix_secs(),
+        );
+        if !residue.is_empty() {
+            // A seam that admitted nothing opens nothing: the fold stays
+            // the only writer that files an empty ledger (issue #369).
+            self.record_unknown_residue(residue);
+        }
+
         // Step 1: the first translation attempt, through the full pipeline.
         // The futures below are boxed so that downstream crates' `Send` checks
         // stop at this boundary instead of walking down the whole pipeline,
@@ -1453,26 +1499,6 @@ impl TranslationPipeline {
         );
 
         // Step 2: run the retry loop
-        let source = self.scan_source();
-        // W2.5: operator constraints (max attempts, max context tier) cap the
-        // retry policy before the loop runs.
-        let mut bounded_config = self.constrained_retry_config(config);
-        // W2.7: a reviewer override forces the retry strategy and adds its
-        // custom hints to the loop's prompts that follow a failure (issue #96).
-        if let Some(strategy) = self.forced_retry_strategy(binary, function) {
-            info!(
-                binary,
-                function,
-                strategy = %strategy,
-                configured = %config.retry_strategy,
-                "Reviewer override forces the retry strategy"
-            );
-            bounded_config.retry_strategy = strategy;
-        }
-        let reviewer_hints = self.reviewer_hints_for(binary, function);
-        // The batch's stored capability declaration, taken from the stored
-        // copy for this prompt — the seam is never asked again (issue #355).
-        let seam_report = self.seam_report();
         let ctx = retry::RetryLoopCtx {
             verifier,
             llm: &self.llm,
@@ -2254,14 +2280,15 @@ impl TranslationPipeline {
             .clone()
     }
 
-    /// Record one unit's coverage residue into the batch accumulator
-    /// (issue #369): the fold's per-unit derivations arrive in scan
-    /// order, and an id already admitted is never recorded twice — the
-    /// same gap re-derived is one question, not a second opinion. The
-    /// accumulator opening to `Some` is also the writer's signal that a
-    /// fold actually looked at this batch's documents.
-    fn record_coverage_residue(&self, residue: Vec<calxgloss_types::UnknownRecord>) {
-        let mut accumulator = self.coverage_residue.lock().expect("coverage residue lock");
+    /// Record one unit's admitted residue into the batch accumulator —
+    /// the coverage fold's facet admissions (issue #369) and the seam
+    /// report's unavailable families (issue #371): they arrive in the
+    /// unit's own derivation order, and an id already admitted is never
+    /// recorded twice — the same gap re-derived is one question, not a
+    /// second opinion. The accumulator opening to `Some` is also the
+    /// writer's signal that a producer actually looked this batch over.
+    fn record_unknown_residue(&self, residue: Vec<calxgloss_types::UnknownRecord>) {
+        let mut accumulator = self.unknown_residue.lock().expect("unknown residue lock");
         let admitted = accumulator.get_or_insert_with(Vec::new);
         for record in residue {
             if !admitted.iter().any(|landed| landed.id == record.id) {
@@ -2273,8 +2300,9 @@ impl TranslationPipeline {
     /// File (or re-file) the batch's per-binary unknown ledger,
     /// `re/unknowns/<binary identity>.json` (issue #369).
     ///
-    /// The current derived set — every coverage-residue record the batch's
-    /// folds have admitted so far — merges through the shared
+    /// The current derived set — every record the batch's producers have
+    /// admitted so far, the folds' facet admissions and the seam report's
+    /// unavailable families — merges through the shared
     /// [`UnknownLedger::file`](calxgloss_types::UnknownLedger::file)
     /// revision doctrine against the landed document: a re-run lands the
     /// same ids, a revision bumps only when a persisted field actually
@@ -2298,9 +2326,9 @@ impl TranslationPipeline {
             return Ok(());
         };
         let derived = self
-            .coverage_residue
+            .unknown_residue
             .lock()
-            .expect("coverage residue lock")
+            .expect("unknown residue lock")
             .clone();
         let Some(derived) = derived else {
             return Ok(());
@@ -2777,10 +2805,11 @@ impl TranslationPipeline {
         // unit starts.
         self.refresh_carry_over_seeds(binary, &functions);
 
-        // Coverage residue (issue #369): the batch's ledger write files the
-        // current derived set, so the previous batch's accumulated set
-        // starts out gone — what this batch's folds admit replaces it.
-        *self.coverage_residue.lock().expect("coverage residue lock") = None;
+        // Unknown residue (issues #369, #371): the batch's ledger write
+        // files the current derived set, so the previous batch's
+        // accumulated set starts out gone — what this batch's producers
+        // admit replaces it.
+        *self.unknown_residue.lock().expect("unknown residue lock") = None;
 
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
@@ -3147,10 +3176,11 @@ impl TranslationPipeline {
         let queue_names: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
         self.refresh_carry_over_seeds(binary, &queue_names);
 
-        // Coverage residue (issue #369): the batch's ledger write files the
-        // current derived set, so the previous batch's accumulated set
-        // starts out gone — what this batch's folds admit replaces it.
-        *self.coverage_residue.lock().expect("coverage residue lock") = None;
+        // Unknown residue (issues #369, #371): the batch's ledger write
+        // files the current derived set, so the previous batch's
+        // accumulated set starts out gone — what this batch's producers
+        // admit replaces it.
+        *self.unknown_residue.lock().expect("unknown residue lock") = None;
 
         let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
 
@@ -5555,6 +5585,204 @@ void SetCursor(void)
             std::fs::read(&resolutions_path).expect("the reviewer document after the writes"),
             resolutions_before,
             "the ledger write never touches the reviewer's resolutions document"
+        );
+    }
+
+    // ============================================================
+    // The batch's unknown ledger from seam residue (issue #371)
+    // ============================================================
+
+    /// The ticket's demoable run: the batch's held capability report is
+    /// re-stamped to degrade the `decompilation` family with its reason
+    /// spelled, to declare `strings` answerable and `xrefs` unavailable,
+    /// and to declare `function-inventory` not at all. One fixture unit
+    /// enters the retry wrapper twice under two postures — a second pass
+    /// whose ladder never escalates asks the seam nothing, so it files
+    /// nothing; a pass at the default posture walks onto the escalate
+    /// rungs, and every family its re-asked roster meets an `unavailable`
+    /// declaration files one record: kind, severity, wording, origin,
+    /// slot and id all derived from the admission. The answerable family,
+    /// the undeclared family the posture also re-asks, and the admitted
+    /// family the posture never re-asks all stay silent; a re-run lands
+    /// the same id at the same revision.
+    #[tokio::test]
+    async fn a_unit_filing_the_seams_unavailable_families_lands_one_record_per_re_asked_gap(
+    ) {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _binary_file) = cached_pipeline(dir.path());
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        // Open the cached source, then re-stamp the declaration it holds.
+        // Kuna admits nothing itself, so the degraded report is written
+        // onto the batch's held copy — the same document the escalate
+        // rung reads, only hand-degraded the way a failing engine would
+        // (the #355 fake-for-a-degraded-engine precedent).
+        pipeline.begin_cached_source(PROGRAM).await;
+        let degraded = calxgloss_types::CapabilityReport {
+            families: vec![
+                calxgloss_types::FamilyCapability {
+                    id: "decompilation".to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Unavailable,
+                    reason: Some("the engine never produced a body".to_string()),
+                },
+                calxgloss_types::FamilyCapability {
+                    id: "strings".to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Answerable,
+                    reason: None,
+                },
+                calxgloss_types::FamilyCapability {
+                    id: "xrefs".to_string(),
+                    status: calxgloss_types::AvailabilityStatus::Unavailable,
+                    reason: None,
+                },
+                // `function-inventory` is deliberately undeclared: the
+                // posture re-asks it, the report never says anything
+                // about it, and absence files nothing.
+            ],
+        };
+        *pipeline
+            .seam_report
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = degraded.clone();
+
+        // Kuna lists MinGW exports with the leading underscore; the unit
+        // name is the one the queue itself would use.
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let unit = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists fixture_status")
+            .name
+            .clone();
+
+        // A ladder that never escalates repeats its fix strategy and
+        // never steps tier: it asks the seam nothing beyond the first
+        // attempt, so the held admission bears on no retry it would make.
+        let flat = retry::RetryConfig {
+            max_attempts: 3,
+            retry_strategy: retry::RetryStrategy::CompileFix,
+            escalate_on_failure: false,
+            max_context_tier: None,
+        };
+        let _ = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &flat, &verifier)
+            .await;
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("the filing call");
+        let ledger_path = calxgloss_types::unknown_ledger_path(
+            dir.path(),
+            &calxgloss_types::BinaryIdentity::new(PROGRAM),
+        );
+        assert!(
+            !ledger_path.exists(),
+            "a unit whose posture never re-asks files no seam record — and a \
+             seam residue admitted by nobody opens no ledger at all"
+        );
+
+        // The same unit at the default posture: its ladder walks onto the
+        // escalate rungs, whose re-asked roster meets the report's
+        // `decompilation` admission. The unit's own translation outcome —
+        // offline here, so the attempts fail — never bears on the filing:
+        // it is the posture, taken at the unit's entry, that asked.
+        let _ = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &retry::RetryConfig::default(), &verifier)
+            .await;
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("a re-asking posture opened the accumulator");
+        let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
+            .expect("the re-asking posture files its unknown ledger");
+        assert_eq!(
+            ledger.binary,
+            calxgloss_types::BinaryIdentity::new(PROGRAM),
+            "the ledger envelope names the binary it was filed for"
+        );
+        let records = ledger
+            .records
+            .expect("a posture that re-asked files a current set, never an absent key");
+        let family_id = format!("{PROGRAM}/{unit}/analysis_family/decompilation");
+        let seams: Vec<&calxgloss_types::UnknownRecord> = records
+            .iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::AnalysisFamily)
+            .collect();
+        assert_eq!(
+            seams.iter().map(|r| r.source_slot()).collect::<Vec<String>>(),
+            vec!["decompilation"],
+            "one record for the one re-asked family the report admits — the \
+             answerable `strings` family asks nothing, the undeclared \
+             `function-inventory` reads unknown and files nothing, and the \
+             admitted `xrefs` family stands outside this posture's roster"
+        );
+        assert_eq!(
+            records.len(),
+            1,
+            "the fixture's complete scans admit no facet residue either — \
+             the seam record is the ledger's only entry"
+        );
+
+        // The record's shape, derived from the admission itself.
+        let seam = seams[0];
+        assert_eq!(seam.id, family_id, "the derivation is the shared one");
+        assert_eq!(
+            seam.severity,
+            calxgloss_types::UnknownSeverity::Blocking,
+            "the seam says the answer cannot arrive at all — the Blocking level's own criterion"
+        );
+        assert_eq!(seam.function.as_deref(), Some(unit.as_str()));
+        assert_eq!(
+            seam.origin,
+            calxgloss_types::UnknownOrigin::Family {
+                family: "decompilation".to_string(),
+            },
+            "the origin names the seam family that could not answer"
+        );
+        assert_eq!(
+            seam.question,
+            format!(
+                "What is `{unit}` really doing — analysis engine admitted \
+                 `unavailable — the engine never produced a body` for the \
+                 `decompilation` family?"
+            ),
+            "the question is built on the entry's own admission line"
+        );
+        assert_eq!(
+            seam.required_evidence,
+            "Full `decompilation` answers from the analysis engine",
+            "the required evidence names the family that could not answer"
+        );
+        assert_eq!(seam.revision, 1, "a first landing starts at revision 1");
+
+        // The flat posture re-walks after the record landed and still
+        // contributes nothing of its own; the default posture re-walks
+        // once more, and the re-derivation lands the same id at the same
+        // revision — a re-run never re-numbers a diff.
+        let _ = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &flat, &verifier)
+            .await;
+        let _ = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &retry::RetryConfig::default(), &verifier)
+            .await;
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("the ledger re-file");
+        let refiled: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the re-filed ledger");
+        let again = refiled
+            .records
+            .expect("a current set every re-file")
+            .into_iter()
+            .map(|r| (r.id, r.revision, r.first_seen))
+            .collect::<Vec<_>>();
+        let landed = records
+            .into_iter()
+            .map(|r| (r.id, r.revision, r.first_seen))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            again, landed,
+            "re-runs land the same ids at the same revisions and first-seens"
         );
     }
 
