@@ -1126,7 +1126,7 @@ mod tests {
                 .known_gaps
                 .iter()
                 .any(|g| g.contains("we do not yet decompile .NET programs")),
-            "the record's reason rides along for the queue view, got: {:?}",
+            "the queue view carries the record's reason, got: {:?}",
             parked.known_gaps
         );
 

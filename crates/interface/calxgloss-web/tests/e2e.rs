@@ -1812,7 +1812,7 @@ async fn test_classification_override_endpoints_set_get_and_persist() {
             .as_str()
             .unwrap_or_default()
             .contains("no known library"),
-        "the reasoning rides along, got: {body}"
+        "the reasoning is included, got: {body}"
     );
     assert!(
         body["override"].is_null(),
@@ -8207,7 +8207,7 @@ async fn test_binaries_shim_status_api_exact_json_from_fixture() {
             "branch": { "name": "re/shim/fmod-rs", "merged": false, "sent_back": true },
         }),
         "no artifacts is honestly not generated; the send-back record \
-         still folds to the branch's acceptance state"
+         still shows through in the branch's acceptance state"
     );
 
     // A differently-spelled name finds the same binary — the
@@ -13115,7 +13115,7 @@ async fn test_headless_binary_translation_toggle_matrix() {
     );
     assert!(
         calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("game_logic.dll"),
-        "the start click also parked the binary in the focus slot"
+        "the start click also gave the binary the focus slot"
     );
     // The swap toast says what the server actually did.
     assert!(
@@ -14621,7 +14621,7 @@ async fn test_headless_classification_override_panel() {
     assert_eq!(
         record.crate_replacement.as_deref(),
         Some("fmod-rs"),
-        "the crate replacement rides along"
+        "the crate replacement comes through"
     );
 
     tab.close_target().ok();

@@ -1264,7 +1264,7 @@ mod tests {
             assert!(
                 !production.contains(ghost),
                 "the production cache spells an engine identity through {ghost} — \
-                 identity must ride the engine's own stamp, never a hand-copy"
+                 identity must come from the engine's own stamp, never a hand-copy"
             );
         }
     }
@@ -1297,7 +1297,7 @@ mod tests {
         assert_eq!(
             cached_functions(&scan).expect("the listing reads back"),
             listing,
-            "scan order rides through the round trip"
+            "scan order is kept through the round trip"
         );
         assert!(
             cached_exports(&scan).is_none(),
@@ -1435,12 +1435,9 @@ mod tests {
         // Two modules' directories as the pre-bump build left them, plus a
         // sibling pairing manifest filed under the same stale identity —
         // the very state the pairing pass used to replay before this track.
-        let (eqmain, eqmain_stale) =
-            file_scan("eqmain.dll", "abc", previous.identity());
-        let (launchpad, launchpad_stale) =
-            file_scan("LaunchPad.exe", "d1", previous.identity());
-        let (sibling, sibling_stale) =
-            file_scan("eqmain.dll", "abc-sibling", previous.identity());
+        let (eqmain, eqmain_stale) = file_scan("eqmain.dll", "abc", previous.identity());
+        let (launchpad, launchpad_stale) = file_scan("LaunchPad.exe", "d1", previous.identity());
+        let (sibling, sibling_stale) = file_scan("eqmain.dll", "abc-sibling", previous.identity());
 
         // A control directory filed by this very build, standing beside them:
         // identical records, identical format version, and the only fact that
@@ -1456,12 +1453,17 @@ mod tests {
             (&launchpad, &launchpad_stale),
             (&sibling, &sibling_stale),
         ] {
-            let filed =
-                load_json::<CacheManifest>(&scan.join("manifest.json")).expect("manifest reads back");
-            assert_eq!(filed, *stale, "the directory stands exactly as the old build filed it");
+            let filed = load_json::<CacheManifest>(&scan.join("manifest.json"))
+                .expect("manifest reads back");
+            assert_eq!(
+                filed, *stale,
+                "the directory stands exactly as the old build filed it"
+            );
             assert_eq!(
                 filed.binary_sha256,
-                scan.file_name().and_then(|n| n.to_str()).expect("hash-named dir"),
+                scan.file_name()
+                    .and_then(|n| n.to_str())
+                    .expect("hash-named dir"),
                 "the manifest names the hash the directory stands under"
             );
             assert_eq!(

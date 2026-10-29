@@ -1082,9 +1082,9 @@ fn serialization_row() -> ScanDescriptor {
 
 /// Parameter-type inference, running from its row (issue #305). The
 /// wording matches the legacy `type_inference`
-/// scan method byte-for-byte, and the document is filed where that
-/// method filed it: `re/analysis/typeinfer/<binary>.json` through the
-/// engine's own persistor. No hooks: publishing the completion latch its
+/// scan method byte-for-byte, and the document is filed where that method
+/// filed it: `re/analysis/typeinfer/<binary>.json` through calxgloss-typeinfer's
+/// own persistor. No hooks: publishing the completion latch its
 /// waiter declared is the run shape's own every-exit step, not a row
 /// hook — the row names no latch; it only *is* the producer the
 /// callback row's `waits_for` names.
@@ -1131,7 +1131,7 @@ fn type_inference_row() -> ScanDescriptor {
 /// engine step reads back. The wording matches the legacy
 /// `callback_detection` scan method
 /// byte-for-byte, and the document is filed where that method filed it:
-/// `re/analysis/callback/<binary>.json` through the engine's own
+/// `re/analysis/callback/<binary>.json` through calxgloss-callback's own
 /// persistor.
 fn callback_row() -> ScanDescriptor {
     // The composed signature map passes from the pre-scan hook to the

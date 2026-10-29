@@ -59,9 +59,9 @@ async fn build_escalate_prompt_inner(
         &ctx.function_name,
         &ctx.call_graph,
     );
-    // The seam's own word rides beside the documents' (issue #355): one
-    // family's entry from the report held since the source was opened —
-    // this render reads no seam, only the held copy.
+    // The seam's own word sits beside the documents' (issue #355): one
+    // family's entry from the report held since the source was opened — this
+    // render reads no seam, only the held copy.
     super::helpers::fold_seam_capability(&ctx.seam_report, &mut evidence);
     evidence.call_graph_neighbors =
         extract_call_graph_neighbors(&ctx.source, &ctx.call_graph, ctx.address).await;
@@ -226,7 +226,7 @@ mod tests {
                 "## ADDITIONAL CONTEXT — LIBRARIES AND APIS\n\n\
                  Analysis engine: unavailable — Quincunx sessions never open the import table\n"
             ),
-            "the seam admission rides the escalate prompt as its own line:\n{prompt}"
+            "the seam admission appears in the escalate prompt as its own line:\n{prompt}"
         );
         assert_eq!(
             prompt.matches("Quincunx").count(),

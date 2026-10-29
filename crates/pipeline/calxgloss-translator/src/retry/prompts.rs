@@ -168,9 +168,9 @@ pub(crate) fn test_fix_prompt(req: &crate::retry::FixPromptRequest<'_>) -> Strin
     }
 }
 
-/// The edge_case_fix adapter — the structured payload rides from the
-/// verdict directly (the seam built it from the attempt's real cases, or
-/// the same null-filled placeholder when the verification run fell over).
+/// The edge_case_fix adapter — the structured payload comes straight from the
+/// verdict directly (the seam built it from the attempt's real cases, or the
+/// same null-filled placeholder when the verification run fell over).
 pub(crate) fn edge_case_fix_prompt(req: &crate::retry::FixPromptRequest<'_>) -> String {
     let failed_cases = req.verdict.structured_failed_cases.clone();
     let fix_ctx = FixPromptCtx {
@@ -277,9 +277,9 @@ mod tests {
         history: &'a [FailureHint],
         source: &'a calxgloss_decomp::PipelineSource,
     ) -> FixPromptRequest<'a> {
-        // These adapter pins render compile/test/edge-case fix prompts —
-        // none reads the seam family — and all ride a report declaring
-        // nothing, the honest empty (issue #355).
+        // These adapter pins render compile/test/edge-case fix prompts — none
+        // reads the seam family — and all receive a report declaring nothing,
+        // the honest empty (issue #355).
         static NO_SEAM: std::sync::OnceLock<calxgloss_types::CapabilityReport> =
             std::sync::OnceLock::new();
         FixPromptRequest {
@@ -331,7 +331,7 @@ mod tests {
         assert!(prompt.contains("1 of 4 tests passed"));
         assert!(
             prompt.contains("expected 9223372036854775807, got 0"),
-            "the structured failing case must ride the prompt:\n{prompt}"
+            "the structured failing case must appear in the prompt:\n{prompt}"
         );
     }
 

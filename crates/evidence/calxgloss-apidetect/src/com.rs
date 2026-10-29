@@ -400,7 +400,7 @@ mod tests {
         let decorated = "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z";
         let findings = detect_com(&[import(decorated)], &names(&[decorated]));
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].evidence(), decorated, "the name rides once");
+        assert_eq!(findings[0].evidence(), decorated, "the name is kept once");
         let ApiFinding::ComInterface(record) = &findings[0] else {
             unreachable!("the named claim reads as its own record");
         };
@@ -437,7 +437,7 @@ mod tests {
         assert!(suggestion.contains("IDataSource"), "got: {suggestion}");
         assert!(
             suggestion.contains("QueryInterface, Release"),
-            "the method listing rides the suggestion: {suggestion}"
+            "the method listing is included in the suggestion: {suggestion}"
         );
 
         let runtime = detect_com(&[import("CoCreateInstance")], &[]);

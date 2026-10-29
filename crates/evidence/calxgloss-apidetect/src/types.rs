@@ -669,7 +669,7 @@ mod tests {
         assert!(suggestion.contains("trait"), "got: {suggestion}");
         assert!(
             suggestion.contains("QueryInterface, AddRef, Release"),
-            "the method listing rides the suggestion: {suggestion}"
+            "the method listing is included in the suggestion: {suggestion}"
         );
     }
 

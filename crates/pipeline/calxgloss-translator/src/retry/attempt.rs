@@ -103,10 +103,10 @@ pub(crate) struct AttemptRunCtx<'a> {
 pub(crate) enum AttemptOutcome {
     /// Compiled and its suite passed (or there was no suite). Done.
     Passed,
-    /// Ran and failed verification. The structured failing cases ride out
-    /// for the next prompt — the loop routes them, together with this
-    /// attempt's recorded evidence, into the next fix prompt instead of
-    /// re-verifying to re-gather them (#334).
+    /// Ran and failed verification. The structured failing cases go out to
+    /// the next prompt — the loop routes them, together with this attempt's
+    /// recorded evidence, into the next fix prompt instead of re-verifying to
+    /// re-gather them (#334).
     VerificationFailed {
         structured_failed_cases: Vec<calxgloss_prompts::EdgeCaseTest>,
     },

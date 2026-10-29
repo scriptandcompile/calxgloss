@@ -883,7 +883,7 @@ mod tests {
                 .filter(|f| f.kind == "data_table")
                 .count(),
             1,
-            "the table still rides the union for the escalate CONSTANTS section"
+            "the table is still part of the union for the escalate CONSTANTS section"
         );
         assert_eq!(
             fake_load_count(FakeSharedDoc::KIND),

@@ -768,7 +768,7 @@ fn a_fresh_manifest_files_the_identity_the_seam_stamps() {
     assert_eq!(
         manifest["engine_identity"].as_str(),
         Some(stamp.as_str()),
-        "the manifest identity rides solely the provenance the seam already answers with"
+        "the manifest identity comes solely from the provenance the seam already answers with"
     );
     assert_eq!(
         manifest["engine_identity"].as_str(),

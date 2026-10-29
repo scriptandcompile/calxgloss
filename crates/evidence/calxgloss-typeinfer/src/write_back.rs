@@ -506,9 +506,9 @@ fn named_type_needed(type_text: &str) -> Option<&str> {
 }
 
 /// The engine-resolvable spelling of a record's type text. The detectors
-/// persist Rust-flavored widths (`u32`, `u64`) for the prompts; the engine's C
-/// parser resolves the built-in spellings instead. Everything else rides
-/// verbatim.
+/// persist Rust-flavored widths (`u32`, `u64`) for the prompts; the engine's
+/// C parser resolves the built-in spellings instead. Everything else passes
+/// through unchanged.
 fn engine_type_text(type_text: &str) -> &str {
     match type_text {
         "u8" => "uchar",
@@ -597,7 +597,7 @@ struct ParsedParameter {
 /// A decompiled signature line split into the parts write-back merges into:
 /// the current return type, any calling-convention spelling between the type
 /// and the name, the function name, and the parameters. The name and every
-/// untouched slot ride back out verbatim, so a merge changes only the slots
+/// untouched slot come back out verbatim, so a merge changes only the slots
 /// it narrows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedSignature {
@@ -675,7 +675,7 @@ impl ParsedSignature {
     }
 
     /// Rebuild the prototype text with the (possibly narrowed) return type
-    /// and parameters; everything the pass did not narrow rides back out as
+    /// and parameters; everything the pass did not narrow comes back out as
     /// it came in.
     fn reassemble(&self, return_type: &str, parameters: &[ParsedParameter]) -> String {
         let mut parts: Vec<String> = Vec::new();
@@ -1273,7 +1273,7 @@ mod tests {
             0,
         )
         .await;
-        // param_1 narrows, param_2 stays `int`, the name and return ride on.
+        // param_1 narrows, param_2 stays `int`, the name and return stay unchanged.
         assert_eq!(
             writer.log(),
             ["set_function_prototype 0x18003ab00 undefined FUN_18003ab00(char * param_1, int param_2)"

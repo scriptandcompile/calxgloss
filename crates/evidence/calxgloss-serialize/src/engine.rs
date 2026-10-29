@@ -811,7 +811,7 @@ mod tests {
                 "serialization_format",
                 "endianness_map"
             ],
-            "the composed layout rides alongside its component findings"
+            "the composed layout is recorded alongside its component findings"
         );
 
         let formats: Vec<&crate::types::SerializationFormat> = result
@@ -909,7 +909,7 @@ mod tests {
         assert_eq!(
             kinds,
             vec!["byteswap", "magic", "protocol_message", "endianness_map"],
-            "the handler claim rides alongside its magic and byte-swap findings"
+            "the handler claim is recorded alongside its magic and byte-swap findings"
         );
 
         let SerializeFinding::Magic(record) = &result.findings[1] else {

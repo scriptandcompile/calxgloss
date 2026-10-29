@@ -2526,7 +2526,7 @@ mod tests {
         assert_eq!(
             facet(&coverage, "function-bodies").limitation.as_deref(),
             Some("2 function bodies unreached: FUN_18003e750, +1 more"),
-            "the failed decompile names itself, the nameless entry rides the count"
+            "the failed decompile names itself, the nameless entry is counted"
         );
         assert_eq!(
             facet(&coverage, "data-objects").limitation.as_deref(),

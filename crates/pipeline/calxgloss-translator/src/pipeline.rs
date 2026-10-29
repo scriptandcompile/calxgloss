@@ -131,8 +131,8 @@ async fn run_scan_in_window(
 /// One registered row as the phase runs it: the row reads the batch
 /// through the job's owned context, carries the completion latches the
 /// phase armed for its declared dependency edge, and reports its own
-    /// outcome; the phase's window, progress reporting, and joins wrap it
-    /// from outside (issues #302, #305).
+/// outcome; the phase's window, progress reporting, and joins wrap it
+/// from outside (issues #302, #305).
 async fn run_registered_scan(row: ScanDescriptor, job: ScanJob, latches: ScanLatches) {
     let mut ctx = job.scan_context();
     ctx.latches = latches;
@@ -379,20 +379,20 @@ pub struct TranslationPipeline {
 }
 
 impl TranslationPipeline {
-/// Create a new translation pipeline over a loaded Kuna program, an LLM
-/// client, and a PAL mapping table.
-///
-/// This sets up the full pipeline with the default analyzer and builds the
-/// context-window detector from the LLM client's `context_window` setting,
-/// so context-window faults are detected automatically.
-///
-/// **Assembly-internal** (issue #328): this constructor and every `with_*`
-/// setter below it exist to build a pass in the
-/// [`assembly`](crate::assembly) module — [`wire_pass`](crate::assembly)
-/// is the only production caller in the workspace, pinned at source level
-/// by assembly's own tests. Outside this crate the compiler refuses a
-/// hand-built pipeline; tests inside the crate may still build one
-/// directly to pin behavior around the pipeline.
+    /// Create a new translation pipeline over a loaded Kuna program, an LLM
+    /// client, and a PAL mapping table.
+    ///
+    /// This sets up the full pipeline with the default analyzer and builds the
+    /// context-window detector from the LLM client's `context_window` setting,
+    /// so context-window faults are detected automatically.
+    ///
+    /// **Assembly-internal** (issue #328): this constructor and every `with_*`
+    /// setter below it exist to build a pass in the
+    /// [`assembly`](crate::assembly) module — [`wire_pass`](crate::assembly)
+    /// is the only production caller in the workspace, pinned at source level
+    /// by assembly's own tests. Outside this crate the compiler refuses a
+    /// hand-built pipeline; tests inside the crate may still build one
+    /// directly to pin behavior around the pipeline.
     pub(crate) fn new(kuna: KunaSource, llm: LlmClient, api_mappings: ApiMappings) -> Self {
         let analyzer = Analyzer::new(PipelineSource::Kuna(kuna.clone()), api_mappings.clone());
         let context_detector = ContextWindowDetector::new(llm.context_window());
@@ -2802,8 +2802,8 @@ impl TranslationPipeline {
             // between here and the next unit's start is refused, not taken.
             // Releasing the registration is also the race-free check for a
             // cancellation that arrived while the unit's own work was
-            // finishing: the operator's cancel still beats the completion it
-            // raced with, so the unit is recorded cancelled, not completed.
+            // finishing: the operator's cancel still outranks the completion
+            // it raced with, so the unit is recorded cancelled, not completed.
             if let Some(cancellation) = self.unit_cancellation.as_ref()
                 && cancellation.end_unit_was_cancelled()
             {
@@ -3939,7 +3939,7 @@ void SetCursor(void)
     /// The reviewer's custom hints reach the unit's prompt as a marked
     /// section; units without hints keep the prompt untouched.
     #[test]
-    fn reviewer_hints_ride_into_the_prompt() {
+    fn reviewer_hints_reach_the_prompt() {
         let overrides = calxgloss_types::OverrideControl::new();
         overrides
             .set(
@@ -4161,7 +4161,7 @@ void SetCursor(void)
     /// releases the wait and ends the batch — server shutdown must never
     /// hang on a paused run (issue #90, W2.1).
     #[tokio::test]
-    async fn batch_translate_stop_during_pause_releases_the_park() {
+    async fn batch_translate_stop_during_pause_releases_the_wait() {
         let dir = TempDir::new().expect("temp workspace");
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
@@ -4204,7 +4204,7 @@ void SetCursor(void)
         assert_eq!(
             result.results.len(),
             1,
-            "the parked loop ended at the boundary on the stop signal"
+            "the paused loop ended at the boundary on the stop signal"
         );
     }
 
@@ -4250,7 +4250,7 @@ void SetCursor(void)
             ),
         )
         .await
-        .expect("a paused binary ends the batch — it never parks waiting for a resume");
+        .expect("a paused binary ends the batch — it never waits for a resume");
 
         let result = batch
             .expect("batch over functions the fixture lacks still reports per-function failures");
@@ -5140,9 +5140,9 @@ void SetCursor(void)
             .collect()
     }
 
-    /// Every beat must name the scan phase, not the scan that happened
-    /// to be running, and its index must sit inside the listing the
-    /// phase is consuming (issue #239).
+    /// Every heartbeat must name the scan phase, not the scan that happened
+    /// to be running, and its index must sit inside the listing the phase is
+    /// consuming (issue #239).
     fn assert_phase_beats(beats: &[ProgressEvent]) {
         for beat in beats {
             match beat {
@@ -5151,27 +5151,26 @@ void SetCursor(void)
                 } => {
                     assert_eq!(
                         pass, "evidence scans",
-                        "the beat names the scan phase, not the scan: {beat}"
+                        "the heartbeat names the scan phase, not the scan: {beat}"
                     );
                     assert!(
                         *total > 0 && index <= total,
                         "the index never exceeds the listing size: {beat}"
                     );
                 }
-                other => unreachable!("drain_beats keeps only beats, got {other:?}"),
+                other => unreachable!("drain_beats keeps only heartbeats, got {other:?}"),
             }
         }
     }
 
-    /// The scan phase arms one progress beat once around the whole group
-    /// under the phase name (issue #239): a cold batch's beats name
-    /// "evidence scans" and count unique functions consumed — later
-    /// scans replaying a body warm from the read cache never push the
-    /// index past the listing — and a warm batch replaying every body
-    /// from the cache still beats, so a cached binary shows life
-    /// (issue #121 preserved).
+    /// The scan phase arms one progress heartbeat for the whole group,
+    /// named for the phase (issue #239): a cold batch's heartbeats say
+    /// "evidence scans" and count unique functions consumed — later scans
+    /// replaying a body warm from the read cache never push the index past
+    /// the listing — and a warm batch replaying every body from the cache
+    /// still beats, so a cached binary shows life (issue #121 preserved).
     #[tokio::test]
-    async fn the_scan_phase_beats_under_the_phase_name_cold_and_warm() {
+    async fn scan_phase_heartbeats_name_the_phase_cold_and_warm() {
         let dir = TempDir::new().expect("temp workspace");
         let (pipeline, _) = cached_pipeline(dir.path());
         let events = TranslationEvents::new(64);
@@ -5375,7 +5374,7 @@ void SetCursor(void)
         );
         assert!(
             !document.pairings.is_empty(),
-            "kept bodies ride the snapshot, and equal bodies pair through the body family"
+            "kept bodies are recorded in the snapshot, and equal bodies pair through the body family"
         );
 
         // A later run of the same version reuses the persisted document:
@@ -5551,7 +5550,7 @@ void SetCursor(void)
         );
         assert_eq!(
             attempt.retry_strategy, "initial",
-            "the seed rides as attempt 1"
+            "the seed is kept as attempt 1"
         );
         assert!(
             attempt.tokens_used.is_none(),
@@ -5581,8 +5580,8 @@ void SetCursor(void)
         );
         assert!(
             seeded.carry_over.is_none(),
-            "provenance rides only an honest done: with verification saying \
-             not-done, nothing marks the carried code as a win (ADR-0003)"
+            "provenance is recorded only beside an honest done: with verification \
+             saying not-done, nothing marks the carried code as a win (ADR-0003)"
         );
 
         let fresh = result
@@ -5712,7 +5711,7 @@ void SetCursor(void)
         pipeline.attach_carry_over_provenance(&mut seeded_win);
         let record = seeded_win
             .carry_over
-            .expect("the seed won: provenance rides");
+            .expect("the seed won: provenance is recorded");
         assert_eq!(record.old_function, "legacy_draw");
         assert_eq!(record.old_attempt, 2);
         assert_eq!(
@@ -5743,7 +5742,7 @@ void SetCursor(void)
         pipeline.attach_carry_over_provenance(&mut failed);
         assert!(
             failed.carry_over.is_some(),
-            "the check rides the final code, however it got there"
+            "the check looks at the final code, however it got there"
         );
     }
 
@@ -6441,9 +6440,9 @@ void SetCursor(void)
             assert_eq!(
                 path.parent()
                     .and_then(|domain| domain.parent())
-                    .expect("the document rides re/analysis/<domain>/<binary>.json"),
+                    .expect("the document sits under re/analysis/<domain>/<binary>.json"),
                 dir.path().join("re").join("analysis"),
-                "the {} row's document rides the analysis-document convention: {}",
+                "the {} row's document follows the analysis-document convention: {}",
                 row.name(),
                 path.display()
             );
@@ -6988,7 +6987,7 @@ void SetCursor(void)
         let document = persistor.path_for(calxgloss_testfixtures::TARGET_FILE_NAME);
         assert!(
             document.starts_with(dir.path().join("re").join("analysis").join("libmatch")),
-            "the known-library document rides the analysis-document convention: {}",
+            "the known-library document follows the analysis-document convention: {}",
             document.display()
         );
         assert!(
@@ -7341,7 +7340,7 @@ void SetCursor(void)
     }
 
     #[test]
-    fn record_order_never_matters_and_a_void_return_rides_the_map() {
+    fn record_order_never_matters_and_a_void_return_is_kept_in_the_map() {
         // Records arrive in whatever order the scan persisted them;
         // the positions sort out. A `void` return is kept as read —
         // dropping the clause is the contract renderer's call, not
@@ -7583,8 +7582,15 @@ void SetCursor(void)
         // without the read growing — or the reverse — names itself in a
         // count before it can hide inside a pairing.
         let methods: usize = roster.iter().map(|(_, m)| m.len()).sum();
-        assert_eq!(roster.len(), 12, "twelve declared families pair the seam today");
-        assert_eq!(methods, 14, "fourteen program-query methods ride those families today");
+        assert_eq!(
+            roster.len(),
+            12,
+            "twelve declared families pair the seam today"
+        );
+        assert_eq!(
+            methods, 14,
+            "fourteen program-query methods sit behind those families today"
+        );
         assert_eq!(
             read.families.len(),
             roster.len(),
@@ -7619,7 +7625,9 @@ void SetCursor(void)
             faults.join("\n")
         );
         assert!(
-            faults.iter().any(|fault| fault.contains("strings") && fault.contains("times")),
+            faults
+                .iter()
+                .any(|fault| fault.contains("strings") && fault.contains("times")),
             "the family declared twice is named:\n{}",
             faults.join("\n")
         );
@@ -7671,8 +7679,10 @@ void SetCursor(void)
         let read = sweep_report(&ids);
         assert_eq!(
             seam_sweep_faults(&read, &roster),
-            ["seam method `read_memory` is claimed by 2 declared families — \
-             a query method pairs with exactly one family"],
+            [
+                "seam method `read_memory` is claimed by 2 declared families — \
+             a query method pairs with exactly one family"
+            ],
             "a query method claimed twice fails the pairing, naming itself"
         );
     }

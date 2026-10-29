@@ -1404,7 +1404,7 @@ mod tests {
         assert_eq!(
             classification.crate_replacement.as_deref(),
             Some("mlua"),
-            "the operator's target crate rides into the record"
+            "the operator's target crate is saved into the record"
         );
     }
 

@@ -1,32 +1,30 @@
 //! Branch inventory: one record per branch site in one decompiled body.
+//! Where the branch-density detector counts the branching of a body as a
+//! whole, this detector walks the same per-body control flow graph and
+//! inventories the individual branch sites: each site's condition as written,
+//! the parameter and local names it reads, and — where the comparison is
+//! readable — the operator and the constant immediate compared against them.
+//! A site is only recorded when the branch guards something in the
+//! [`GuardedTarget`] vocabulary: a taken arm that returns (an early return)
+//! or reports an error (an error path), a loop header (the loop exit), a
+//! trailing `else` arm, a `case` arm, or a `default:` arm. A plain guarded
+//! body that guards nothing in that vocabulary is not a site worth a record —
+//! the branch-density and switch findings already tell that story, and this
+//! detector stays out of their way.
 //!
-//! Where the branch-density detector counts the branching of a body as
-//! a whole, this detector walks the same per-body control flow graph and
-//! inventories the individual branch sites: each site's condition as
-//! written, the parameter and local names it reads, and — where the
-//! comparison is readable — the operator and the constant immediate
-//! compared against them. A site is only recorded when the branch
-//! guards something in the [`GuardedTarget`] vocabulary: a taken arm
-//! that returns (an early return) or reports an error (an error path), a
-//! loop header (the loop exit), a trailing `else` arm, a `case` arm, or
-//! a `default:` arm. A plain guarded body that guards nothing in that
-//! vocabulary is not a site worth a record — the branch-density and
-//! switch findings already tell that story, and this detector stays out
-//! of their way.
-//!
-//! Confidence rides how much of the comparison was actually read: 80
-//! when the operator and a numeric or char immediate both came out —
-//! the exact boundary — 70 when the operator was read but the other
-//! side is a name rather than a constant, and 50 for a shape-only
-//! reading, which names no operator or immediate at all. A `case` arm
-//! always names its probe value, so it reads 80 for a numeric or char
+//! Confidence depends on how much of the
+//! comparison was actually read: 80 when the operator and a numeric or char
+//! immediate both came out — the exact boundary — 70 when the operator was
+//! read but the other side is a name rather than a constant, and 50 for a
+//! shape-only reading, which names no operator or immediate at all. A `case`
+//! arm always names its probe value, so it reads 80 for a numeric or char
 //! constant and 70 for a named one.
 //!
-//! The site enumeration reuses the graph's block cuts and the chain
-//! walker's string-literal blindness, so keywords and braces spelled
-//! inside string literals invent no sites. A truncated body (the
-//! decompiler cutting a decompile off mid-brace) inventories only what
-//! is visible: the headers whose text is readable still record, and the
+//! The site enumeration reuses the graph's
+//! block cuts and the chain walker's string-literal blindness, so keywords
+//! and braces spelled inside string literals invent no sites. A truncated
+//! body (the decompiler cutting a decompile off mid-brace) inventories only
+//! what is visible: the headers whose text is readable still record, and the
 //! edges the missing brace would have carried are simply absent.
 
 use calxgloss_types::Confidence;

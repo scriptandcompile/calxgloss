@@ -1178,7 +1178,7 @@ mod tests {
             first
                 .findings
                 .last()
-                .expect("the inherited record rides last")
+                .expect("the inherited record comes last")
                 .kind(),
             "inherited_error_code",
             "the propagated record is in the compared set — two scans diff cleanly over it too"
@@ -1304,7 +1304,7 @@ mod tests {
             .findings
             .iter()
             .find(|f| matches!(f, crate::ErrhandlingFinding::ErrorCode(c) if c.code == 0xc000_0022))
-            .expect("the guard code rides along");
+            .expect("the guard code is recorded");
         assert_eq!(guard.confidence(), crate::ERROR_CODE_GUARD_CONFIDENCE);
         let returned = result
             .findings
@@ -1344,7 +1344,7 @@ mod tests {
         assert_eq!(
             result.findings.len(),
             1,
-            "the code record lands without any idiom record riding with it"
+            "the code record stands with no idiom finding beside it"
         );
         let finding = &result.findings[0];
         assert!(
@@ -1397,7 +1397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn code_records_ride_beside_idiom_findings_in_the_same_function() {
+    async fn code_records_sit_beside_idiom_findings_in_the_same_function() {
         // The issue's grouping rule, asserted through the scan itself: a
         // function carrying an idiom finding AND its failure codes gets
         // all of them, keyed to the function, codes in body order after

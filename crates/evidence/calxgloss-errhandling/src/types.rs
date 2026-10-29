@@ -620,7 +620,7 @@ mod tests {
         ];
         for (finding, tag) in cases {
             let json = serde_json::to_string(&finding).unwrap();
-            assert!(json.contains(tag), "the {tag} tag rides the document");
+            assert!(json.contains(tag), "the {tag} tag is kept in the document");
             let back: ErrhandlingFinding = serde_json::from_str(&json).unwrap();
             assert_eq!(back, finding);
         }
@@ -744,7 +744,7 @@ mod tests {
                 crate::error_code::ERROR_CODE_GUARD_CONFIDENCE,
             ));
             let json = serde_json::to_string(&finding).unwrap();
-            assert!(json.contains(tag), "the {tag} tag rides the document");
+            assert!(json.contains(tag), "the {tag} tag is kept in the document");
             assert!(json.contains(&format!("\"code\":{}", 0x8007_0057u32)));
             let back: ErrhandlingFinding = serde_json::from_str(&json).unwrap();
             match &back {

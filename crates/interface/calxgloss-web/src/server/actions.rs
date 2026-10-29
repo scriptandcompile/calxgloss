@@ -1286,7 +1286,7 @@ mod tests {
         // Everything the fold composed arrives unchanged:
         assert!(
             layered.llm.is_some(),
-            "the description's LLM selection rides along"
+            "the description carries the LLM selection"
         );
         assert_eq!(
             layered.retry_max_attempts,
@@ -1295,7 +1295,7 @@ mod tests {
         );
         assert!(
             layered.no_callgraph && layered.refresh_cache,
-            "the call-graph/cache flags ride along"
+            "the call-graph/cache flags carry through"
         );
         assert_eq!(
             layered.callgraph_cache_dir.as_deref(),

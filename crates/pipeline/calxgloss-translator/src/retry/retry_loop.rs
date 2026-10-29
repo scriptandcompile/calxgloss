@@ -265,10 +265,10 @@ pub async fn try_translate_with_retry(
             )
             .await;
 
-            // The failed candidate's own verdict and code ride into the
-            // next prompt (#334), and a fired detector ends the chain
-            // wherever it lands — its fault record and event are already
-            // written by the seam.
+            // The failed candidate's own verdict and code go into the next
+            // prompt (#334), and a fired detector ends the chain wherever it
+            // lands — its fault record and event are already written by the
+            // seam.
             route_latest_failure(&result, &report, &mut verdict, &mut fix_code);
             if report.loop_fired {
                 break;
@@ -947,7 +947,7 @@ mod tests {
         );
     }
 
-    // ─── The loop rides the seam: today's event stream, zero divergence ──
+    // ─── The loop uses the seam: today's event stream, zero divergence ───
     // (issue #332 — the deleted probe's absence is pinned here too)
 
     /// A canned LLM server answering the first call with broken code and
@@ -1247,7 +1247,7 @@ mod tests {
         let mut rx = events.subscribe();
 
         // The cap pins the tier at Signature — Signature's next tier would
-        // breach it — so no attempt ever rides the tier-escalated path and
+        // breach it — so no attempt ever takes the tier-escalated path and
         // the ladder's compile_fix → test_fix → escalate walk is what
         // dispatches all three retry prompts.
         let config = RetryConfig {
@@ -1529,16 +1529,16 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// #334 criterion 1, end to end: the initial translation rides the
-    /// seam with its baseline suite — a merely-compiling unit with a
-    /// non-empty suite is NOT done. The attempt-1 record carries the
-    /// suite's real counts, the run reports failure, and the retry prompt
-    /// is the test-fix one built from that verdict's payload. (The scratch
-    /// toolchain's suite runner currently fails to build — a verify-crate
-    /// defect out of this ticket's scope — so the honest verdict lands as
-    /// 0-of-1 with no per-case lines; what is pinned is that the suite was
-    /// consulted at all and the record tells the truth about it, which is
-    /// what closes the compile-only success hole.)
+    /// #334 criterion 1, end to end: the initial translation goes through the
+    /// seam with its baseline suite — a merely-compiling unit with a non-
+    /// empty suite is NOT done. The attempt-1 record carries the suite's real
+    /// counts, the run reports failure, and the retry prompt is the test-fix
+    /// one built from that verdict's payload. (The scratch toolchain's suite
+    /// runner currently fails to build — a verify-crate defect out of this
+    /// ticket's scope — so the honest verdict lands as 0-of-1 with no per-
+    /// case lines; what is pinned is that the suite was consulted at all and
+    /// the record tells the truth about it, which is what closes the compile-
+    /// only success hole.)
     #[tokio::test]
     async fn a_compiling_unit_with_a_failing_suite_is_not_reported_success() {
         let ws = tempfile::TempDir::new().expect("temp workspace");
@@ -1605,7 +1605,7 @@ mod tests {
         assert_eq!(
             result.attempts.len(),
             2,
-            "the failing suite rides into a retry"
+            "the failing suite leads to a retry"
         );
         let first = &result.attempts[0];
         assert_eq!(first.retry_strategy, "initial");
@@ -1655,11 +1655,11 @@ mod tests {
 
     /// #334 criterion 2, pinned through the captured request bodies: once
     /// attempt N has failed, attempt N+1's prompt names N's OWN code and
-    /// quotes N's OWN failure evidence — the initial translation is no
-    /// longer the repair target or the evidence source. (The structured
-    /// failing cases of a tests-failed verdict ride the same routing;
-    /// they are pinned at seam and adapter level because this toolchain's
-    /// suite runner cannot produce real case lines — defect note above.)
+    /// quotes N's OWN failure evidence — the initial translation is no longer
+    /// the repair target or the evidence source. (The structured failing
+    /// cases of a tests-failed verdict go through the same routing; they are
+    /// pinned at seam and adapter level because this toolchain's suite runner
+    /// cannot produce real case lines — defect note above.)
     #[tokio::test]
     async fn fix_prompts_quote_the_latest_failed_attempts_code_and_evidence() {
         let ws = tempfile::TempDir::new().expect("temp workspace");
@@ -1774,9 +1774,9 @@ mod tests {
         );
     }
 
-    /// #334: a fired infinite-loop detector ends the chain wherever it
-    /// lands. Same canned code as the initial translation on every call —
-    /// the initial attempt rides the detector too, so the third straight
+    /// #334: a fired infinite-loop detector ends the chain wherever it lands.
+    /// Same canned code as the initial translation on every call — the
+    /// initial attempt goes through the detector too, so the third straight
     /// identical failing output fires at attempt 3. Today's loop merely
     /// observed the mid-chain fire; this one stops on it, leaving its one
     /// event and one fault record as the whole story past attempt 3.
@@ -2065,7 +2065,7 @@ mod tests {
     /// Pruning is only ever about the family a rung re-asks: a report naming
     /// a different family unavailable leaves the walk itself today's — the
     /// re-ask still reaches the seam — while that family's admission now
-    /// rides the escalate prompt once, where its facets feed a section
+    /// appears in the escalate prompt once, where its facets feed a section
     /// (issue #357 moved this pin from never-quoted to quoted-exactly-once).
     #[tokio::test]
     async fn a_report_unavailable_about_another_family_leaves_the_ladder_today() {
@@ -2094,9 +2094,9 @@ mod tests {
                 .contains(&"UpdateScene".to_string()),
             "an unblocked escalate rung must still re-ask the seam"
         );
-        // the escalate rung re-asked the seam, so the seam's word now rides
-        // its prompt (issue #357): strings feeds the escalate string-context
-        // section, and its reason quotes itself there exactly once —
+        // the escalate rung re-asked the seam, so the seam's word now appears
+        // in its prompt (issue #357): strings feeds the escalate string-
+        // context section, and its reason quotes itself there exactly once —
         // beside the section the re-ask left empty, never as a second voice
         let prompt4 = run
             .prompts
@@ -2105,7 +2105,7 @@ mod tests {
         assert_eq!(
             prompt4.matches("Ginkgo").count(),
             1,
-            "the unavailable family's admission rides the escalate prompt exactly once"
+            "the unavailable family's admission appears in the escalate prompt exactly once"
         );
         // and no other rung's prompt quotes it — only the escalate rung
         // held the seam's word at the prompt surface

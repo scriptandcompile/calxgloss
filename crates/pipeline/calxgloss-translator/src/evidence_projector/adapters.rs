@@ -336,10 +336,10 @@ impl AnalysisDoc for FloatsimdDoc {
 // ============================================================
 
 /// The type database's two per-function record kinds as one item type:
-/// [`TypeDatabaseDoc`]'s selection yields inferred candidates and named
-/// types alike, and a `for_function` iterator yields a single item
-/// type, so the two kinds ride a small sum the `fill` leg unpacks onto
-/// their own `From` impls.
+/// [`TypeDatabaseDoc`]'s selection yields inferred candidates and named types
+/// alike, and a `for_function` iterator yields a single item type, so the two
+/// kinds come through one small sum type the `fill` leg unpacks onto their
+/// own `From` impls.
 pub enum TypeDbRecord<'a> {
     Candidate(&'a calxgloss_typesdb::types::InferredStruct),
     Named(&'a calxgloss_typesdb::types::NamedType),
@@ -693,13 +693,12 @@ impl AnalysisDoc for GlobalStateDoc {
 // The two shared multi-field adapters (#314)
 // ============================================================
 
-/// The constant document, `re/analysis/consts/{binary}.json`: every
-/// finding naming the function rides the union `const_findings` — the
-/// escalate CONSTANTS section reads the whole union, table included —
-/// while a table record *also* fills `data_table_findings` for the
-/// module-context DATA TABLES section. One row, one load, two fields:
-/// the union and the table records can never disagree about what the
-/// workspace holds.
+/// The constant document, `re/analysis/consts/{binary}.json`: every finding
+/// naming the function lands in the union `const_findings` — the escalate
+/// CONSTANTS section reads the whole union, table included — while a table
+/// record *also* fills `data_table_findings` for the module-context DATA
+/// TABLES section. One row, one load, two fields: the union and the table
+/// records can never disagree about what the workspace holds.
 pub struct ConstsDoc;
 
 impl AnalysisDoc for ConstsDoc {
@@ -727,9 +726,9 @@ impl AnalysisDoc for ConstsDoc {
     }
 
     fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
-        // The table record fans out to its own field first; the union
-        // entry it also rides keeps the escalate CONSTANTS section in
-        // the same single pass.
+        // The table record fans out to its own field first; the union entry
+        // it also fills keeps the escalate CONSTANTS section in the same
+        // single pass.
         if let calxgloss_consts::types::ConstFinding::DataTable(table) = record {
             bundle
                 .data_table_findings
@@ -755,14 +754,14 @@ impl AnalysisDoc for ConstsDoc {
     }
 }
 
-/// The type-inference document, `re/analysis/typeinfer/{binary}.json`:
-/// every inference naming the function rides `type_info` — parameter,
-/// local, call-site, return, and convention and direction readings
-/// alike, each through the existing type-info conversion — while a
-/// convention record *also* fills `convention_findings` and a direction
-/// record *also* fills `parameter_direction_findings`. One row, one
-/// load, three fields: the convention extraction no longer re-reads the
-/// document a third time (issue #314).
+/// The type-inference document, `re/analysis/typeinfer/{binary}.json`: every
+/// inference naming the function lands in `type_info` — parameter, local,
+/// call-site, return, and convention and direction readings alike, each
+/// through the existing type-info conversion — while a convention record
+/// *also* fills `convention_findings` and a direction record *also* fills
+/// `parameter_direction_findings`. One row, one load, three fields: the
+/// convention extraction no longer re-reads the document a third time (issue
+/// #314).
 pub struct TypeInferDoc;
 
 impl AnalysisDoc for TypeInferDoc {
@@ -790,10 +789,10 @@ impl AnalysisDoc for TypeInferDoc {
     }
 
     fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
-        // Every reading lands in type_info exactly as the type-info
-        // seam converted it before — the direction line rides this
-        // section on the escalate side (issue #276). The two kinds with
-        // a module-context section of their own fan out beside it.
+        // Every reading lands in type_info exactly as the type-info seam
+        // converted it before — the direction line joins this section on the
+        // escalate side (issue #276). The two kinds with a module-context
+        // section of their own fan out beside it.
         bundle
             .type_info
             .push(calxgloss_prompts::TypeInfo::from(record));
@@ -1070,7 +1069,7 @@ mod tests {
         // visibly distinct.
         assert_eq!(
             bundle.algorithm_coverage.status, "partial",
-            "the algorithm record's overall status rides its own field"
+            "the algorithm record's overall status stays in its own field"
         );
         assert_eq!(
             bundle.algorithm_coverage.admission,
@@ -1108,18 +1107,18 @@ mod tests {
 
         // The one record qualifies all three type-inference surfaces: the
         // single load fills the type-information list beside the same one
-        // coverage record — the convention and direction lists ride the
-        // same field even when this fixture files none of their kind.
+        // coverage record — the convention and direction lists use the same
+        // field even when this fixture files none of their kind.
         assert_eq!(bundle.type_info.len(), 1);
         assert!(
             bundle.convention_findings.is_empty() && bundle.parameter_direction_findings.is_empty()
         );
     }
 
-    /// A document filed before coverage stamping — the standing fixture
-    /// kit's shape, with findings but no record — leaves its coverage
-    /// field default-empty while the findings still ride: the old render
-    /// stands (issue #351).
+    /// A document filed before coverage stamping — the standing fixture kit's
+    /// shape, with findings but no record — leaves its coverage field
+    /// default-empty while the findings still land: the old render stands
+    /// (issue #351).
     #[test]
     fn fill_coverage_from_a_pre_p19_kit_document_fills_neither_findings_side_nor_coverage() {
         use calxgloss_types::ScanMetadata;
@@ -1196,7 +1195,7 @@ mod tests {
 
         let bundle = gather_function_evidence(Some(dir), "eqmain.dll", "FUN_18003ab00", &[]);
 
-        // The findings still ride their rows.
+        // The findings are still in their rows.
         assert_eq!(bundle.recognized_algorithms.len(), 1);
         assert_eq!(bundle.string_findings.len(), 1);
         assert_eq!(bundle.serialization_findings.len(), 1);

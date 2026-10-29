@@ -1488,7 +1488,7 @@ mod tests {
         assert_eq!(
             suggestion_for(&result, "jump_table", "FUN_18003ab00"),
             suggestion_for(&plain, "jump_table", "FUN_18003ab00"),
-            "a jump-table suggestion rides the map untouched"
+            "a jump-table suggestion is kept in the map untouched"
         );
         assert_eq!(
             suggestion_for(&result, "registration", "FUN_18003ab00"),

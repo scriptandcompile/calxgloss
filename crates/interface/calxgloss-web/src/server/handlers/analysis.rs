@@ -7,7 +7,7 @@
 //! `windows_apis`) and the per-binary call-graph record
 //! (`re/analysis/{binary}_call_graph.json`). No new persistence is
 //! introduced; missing or corrupt artifacts degrade to empty sections rather
-//! than errors. The data rides the shared `GET /api/units/{id}` endpoint
+//! than errors. The data comes over the shared `GET /api/units/{id}` endpoint
 //! (registered in every router) — no new route is introduced.
 
 use std::path::Path;

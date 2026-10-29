@@ -137,7 +137,7 @@ async fn a_scan_persists_and_reads_back_the_same_document() {
             .path_for("game_logic.dll")
             .to_string_lossy()
             .contains("re/analysis/floatsimd/"),
-        "the document rides the analysis-directory convention"
+        "the document follows the analysis-directory convention"
     );
 
     let loaded = persistor

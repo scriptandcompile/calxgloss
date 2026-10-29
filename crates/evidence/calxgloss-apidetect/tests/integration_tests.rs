@@ -459,7 +459,7 @@ async fn the_com_interface_finding_survives_scan_persist_load_and_prompt() {
     assert_eq!(
         record.methods,
         ["QueryInterface".to_string(), "Release".to_string()],
-        "the method listing rides the document"
+        "the method listing is kept in the document"
     );
     assert_eq!(
         record.evidence,

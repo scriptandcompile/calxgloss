@@ -198,8 +198,8 @@ pub async fn api_get_pipeline(
     if let Some(binary) = &processing {
         dll_names.insert(binary.clone());
     }
-    // A beating pass names its binary too — the heartbeat can only be
-    // honest about a binary the table actually shows.
+    // A pass that is beating names its binary too: a heartbeat can only
+    // be honest about a binary the table actually shows.
     if let Some((binary, _)) = &activity {
         dll_names.insert(binary.clone());
     }
@@ -797,8 +797,8 @@ pub async fn api_stop_pipeline(
 
 /// The binaries the workspace has discovered — the same set `GET
 /// /api/pipeline` builds its rows from: live progress (entries,
-/// classifications, batch summaries, the binary in flight, a beating pass,
-/// the queue plan, ingested analysis) plus the persisted classification
+/// classifications, batch summaries, the binary in flight, the working
+/// pass's heartbeat, the queue plan, ingested analysis) plus the persisted classification
 /// records, plus the persisted paused set. A binary paused in an earlier run
 /// is known to the workspace even before this run rediscovers it, and
 /// resume must never lock the operator out of clearing that pause.

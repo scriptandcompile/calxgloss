@@ -15,14 +15,13 @@ use tracing::debug;
 /// spelled once here because this is where the escalate fold names it.
 pub(crate) const IMPORTS_FAMILY: &str = "imports";
 
-/// The prompt-fed query families of the #357 fan-out: every seam family
-/// whose facets feed a bundle-fed or tier prompt section besides
-/// `imports` (which has ridden its own `api_capability` field since
-/// #355), in the order the bundle keeps its capability fields. A family
-/// that feeds no prompt surface (`function-inventory`, `exports`,
-/// `image-base`, `memory-reads`) stops at the seam report — no bundle
-/// field, no include parameter — and the roster here is where that line
-/// is drawn.
+/// The prompt-fed query families of the #357 fan-out: every seam family whose
+/// facets feed a bundle-fed or tier prompt section besides `imports` (which
+/// has kept its own `api_capability` field since #355), in the order the
+/// bundle keeps its capability fields. A family that feeds no prompt surface
+/// (`function-inventory`, `exports`, `image-base`, `memory-reads`) stops at
+/// the seam report — no bundle field, no include parameter — and the roster
+/// here is where that line is drawn.
 pub(crate) const FED_CAP_FAMILIES: &[&str] = &[
     "decompilation",
     "disassembly",
@@ -33,16 +32,15 @@ pub(crate) const FED_CAP_FAMILIES: &[&str] = &[
     "data-items",
 ];
 
-/// Fold the held seam capability report into one function's evidence
-/// bundle (issue #355, fanned out by issue #357): the `imports` family's
-/// entry rides beside (never inside) the document's own `api_coverage`
-/// coverage half, and every other prompt-fed family's admission wording
-/// rides its own `*_cap_line` field beside the coverage lines of every
-/// section that family's facets feed. An answerable entry and an
-/// undeclared family both fold to the empty view the includes render
-/// silently — the seam's word only ever lands as the engine's own
-/// admission line, never a template-side invention, and one family's
-/// wording never reaches another family's field.
+/// Fold the held seam capability report into one function's evidence bundle
+/// (issue #355, fanned out by issue #357): the `imports` family's entry sits
+/// beside (never inside) the document's own `api_coverage` coverage half, and
+/// every other prompt-fed family's admission wording sits in its own
+/// `*_cap_line` field beside the coverage lines of every section that
+/// family's facets feed. An answerable entry and an undeclared family both
+/// fold to the empty view the includes render silently — the seam's word only
+/// ever lands as the engine's own admission line, never a template-side
+/// invention, and one family's wording never reaches another family's field.
 pub(crate) fn fold_seam_capability(
     report: &calxgloss_types::CapabilityReport,
     evidence: &mut EvidenceBundle,
@@ -163,13 +161,13 @@ pub fn gather_function_evidence(
     function: &str,
     call_graph: &[String],
 ) -> EvidenceBundle {
-    // The libmatch document is loaded once here: its findings join the
-    // live call-graph neighbor list outside the projection fold — the
-    // correlation is not a per-function fold row — and its coverage
-    // record, what the libmatch scan admitted about the bodies it read,
-    // rides beside those findings (issue #347). A document stating no
-    // coverage, or complete coverage, leaves the qualification field
-    // default-empty, exactly the pre-P19 render.
+    // The libmatch document is loaded once here: its findings join the live
+    // call-graph neighbor list outside the projection fold — the correlation
+    // is not a per-function fold row — and its coverage record, what the
+    // libmatch scan admitted about the bodies it read, sits beside those
+    // findings (issue #347). A document stating no coverage, or complete
+    // coverage, leaves the qualification field default-empty, exactly the
+    // pre-P19 render.
     let libmatch = load_libmatch_result(workspace, binary);
     let libmatch_coverage = libmatch
         .as_ref()
@@ -1008,10 +1006,10 @@ mod tests {
         TypeDatabasePersistor::new(dir.path()).save(&db).unwrap();
     }
 
-    // The degradation trio and the merged-ordering case for this row now
-    // ride the parametrized projection-row suite below (issue #313);
-    // what stays here are the conversion-content checks the row suite
-    // does not pin, run through the gather seam like any prompt input.
+    // The degradation trio and the merged-ordering case for this row are
+    // covered by the parametrized projection-row suite below (issue #313);
+    // what stays here are the conversion-content checks the row suite does
+    // not pin, run through the gather seam like any prompt input.
 
     #[test]
     fn inferred_candidates_the_function_references_are_converted() {
@@ -1602,8 +1600,8 @@ mod tests {
                 evidence:
                     "  *(undefined8 *)((long)puVar1 + -8) = *(undefined8 *)((long)lVar2 + -8);"
                         .to_string(),
-                // Shaped as the engine writes them (P19-3): the note
-                // rides every match record a fresh scan files.
+                // Shaped as the engine writes them (P19-3): the note is
+                // written into every match record a fresh scan files.
                 admission: Some(calxgloss_libmatch::types::VERSION_UNKNOWN_ADMISSION.to_string()),
             },
         )
@@ -2076,7 +2074,7 @@ mod tests {
                 .filter(|f| f.kind == "data_table")
                 .count(),
             1,
-            "the same table also rides the union findings for the escalate CONSTANTS section"
+            "the same table also lands in the union findings for the escalate CONSTANTS section"
         );
 
         // The call-graph lists are the caller's to fill — the gather reads
@@ -2524,13 +2522,13 @@ mod tests {
         },
         RowKit {
             // The shared constant document is one load feeding two fields
-            // (issue #314): every finding naming the function rides the
+            // (issue #314): every finding naming the function goes into the
             // union, and a table record *also* lands in the module-context
             // table field — the same record in both fields from the single
             // pass. Program-level findings answer to every function they
-            // name; a table naming only the other function stays out of
-            // both fields, and the union entry keeps the escalate
-            // CONSTANTS section riding.
+            // name; a table naming only the other function stays out of both
+            // fields, and the union entry keeps the escalate CONSTANTS
+            // section riding.
             kind: "constant result",
             persist: |dir| {
                 persist_const_findings(
@@ -2580,13 +2578,13 @@ mod tests {
         },
         RowKit {
             // The shared type-inference document is one load feeding three
-            // fields (issue #314): every reading naming the function rides
-            // type_info — parameter, local, call-site, convention, and
-            // direction alike — while the convention reading *also* fans
-            // out to its module-context section and the direction reading
-            // to the directions section. The collapsed convention re-read
-            // and the per-field loads leave this one projection behind:
-            // other functions' records stay out of all three fields.
+            // fields (issue #314): every reading naming the function goes
+            // into type_info — parameter, local, call-site, convention, and
+            // direction alike — while the convention reading *also* fans out
+            // to its module-context section and the direction reading to the
+            // directions section. The collapsed convention re-read and the
+            // per-field loads leave this one projection behind: other
+            // functions' records stay out of all three fields.
             kind: "type inference result",
             persist: |dir| {
                 persist_inferences(
@@ -2785,11 +2783,11 @@ mod tests {
     }
 
     /// The API row's coverage leg end to end (issue #346): the record
-    /// apidetect stamps into its filed document rides one gather into
-    /// the bundle's coverage field beside the findings, word for word;
-    /// a document filed before coverage stamping fills nothing; and a
-    /// missing or corrupt document fills nothing and degrades exactly
-    /// as its findings do.
+    /// apidetect stamps into its filed document is carried through one gather
+    /// into the bundle's coverage field beside the findings, word for word; a
+    /// document filed before coverage stamping fills nothing; and a missing
+    /// or corrupt document fills nothing and degrades exactly as its findings
+    /// do.
     #[test]
     fn the_api_row_gathers_the_documents_coverage_beside_its_findings() {
         // The engine's own stamp beside a complete call graph: partial
@@ -2825,7 +2823,7 @@ mod tests {
                 .map(|f| f.api.clone())
                 .collect::<Vec<_>>(),
             vec!["inflate".to_string()],
-            "the findings still ride their ordinary row"
+            "the findings still land in their ordinary row"
         );
         assert_eq!(bundle.api_coverage.status, "partial");
         assert_eq!(
@@ -2874,8 +2872,8 @@ mod tests {
         );
     }
 
-    /// The float/SIMD row's coverage leg end to end (issue #347): the
-    /// record floatsimd stamps into its filed document rides one gather
+    /// The float/SIMD row's coverage leg end to end (issue #347): the record
+    /// floatsimd stamps into its filed document is carried through one gather
     /// into the bundle beside the flag, word for word; a document filed
     /// before coverage stamping fills nothing; and a missing or corrupt
     /// document fills nothing and degrades exactly as its flag does.
@@ -2907,7 +2905,7 @@ mod tests {
         assert_eq!(
             bundle.floatsimd_findings.len(),
             1,
-            "the flag still rides its ordinary row"
+            "the flag still lands in its ordinary row"
         );
         assert_eq!(bundle.floatsimd_coverage.status, "partial");
         assert_eq!(
@@ -2948,16 +2946,17 @@ mod tests {
     }
 
     /// The type database row's coverage leg end to end (issue #348): the
-    /// record typesdb stamps into its filed document rides one gather into
-    /// the bundle beside the structures, word for word; a document filed
-    /// before coverage stamping fills nothing; and a missing or corrupt
-    /// document fills nothing and degrades exactly as its structures do.
+    /// record typesdb stamps into its filed document is carried through one
+    /// gather into the bundle beside the structures, word for word; a
+    /// document filed before coverage stamping fills nothing; and a missing
+    /// or corrupt document fills nothing and degrades exactly as its
+    /// structures do.
     #[test]
     fn the_typesdb_row_gathers_the_documents_coverage_beside_its_structures() {
         // The engine's own stamp over a target that yielded no vtable
-        // evidence: the single facet unavailable beside its reason, while
-        // the string-inferred candidates this function references still
-        // ride the row.
+        // evidence: the single facet unavailable beside its reason, while the
+        // string-inferred candidates this function references still land in
+        // the row.
         let stamp = calxgloss_types::ScanCoverage {
             status: calxgloss_types::CoverageStatus::Unavailable,
             facets: vec![calxgloss_types::FacetCoverage {
@@ -2981,7 +2980,7 @@ mod tests {
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
             ["Player"],
-            "the structures still ride their ordinary row"
+            "the structures still land in their ordinary row"
         );
         assert_eq!(bundle.type_database_coverage.status, "unavailable");
         assert_eq!(
@@ -3026,12 +3025,12 @@ mod tests {
     }
 
     /// The constant row's coverage leg end to end (issue #348): the record
-    /// consts stamps into its filed document rides one gather into the
-    /// bundle beside the findings, word for word — and one load feeds both
-    /// fields it populates, so the same admission qualifies the constants
-    /// union and the data-tables list. A document filed before coverage
-    /// stamping fills nothing; a missing or corrupt document fills nothing
-    /// and degrades exactly as its findings do.
+    /// consts stamps into its filed document is carried through one gather
+    /// into the bundle beside the findings, word for word — and one load
+    /// feeds both fields it populates, so the same admission qualifies the
+    /// constants union and the data-tables list. A document filed before
+    /// coverage stamping fills nothing; a missing or corrupt document fills
+    /// nothing and degrades exactly as its findings do.
     #[test]
     fn the_consts_row_gathers_the_documents_coverage_beside_its_findings() {
         // The engine's own stamp over a region-limited scan: both facets
@@ -3072,12 +3071,12 @@ mod tests {
         assert_eq!(
             bundle.const_findings.len(),
             2,
-            "both findings still ride the union row"
+            "both findings still land in the union row"
         );
         assert_eq!(
             bundle.data_table_findings.len(),
             1,
-            "and the table record still rides its own field"
+            "and the table record still lands in its own field"
         );
         assert_eq!(bundle.consts_coverage.status, "partial");
         assert_eq!(
@@ -3125,12 +3124,11 @@ mod tests {
     }
 
     /// The libmatch gather's coverage leg end to end (issue #347): the
-    /// libmatch document is read outside the projection fold — its
-    /// findings join the live call-graph neighbor list — so its coverage
-    /// record rides the gather beside those joined findings, word for
-    /// word; a document filed before coverage stamping fills nothing;
-    /// and a missing or corrupt document fills neither findings nor
-    /// coverage.
+    /// libmatch document is read outside the projection fold — its findings
+    /// join the live call-graph neighbor list — so its coverage record is
+    /// carried through the gather, beside those joined findings, word for
+    /// word; a document filed before coverage stamping fills nothing; and a
+    /// missing or corrupt document fills neither findings nor coverage.
     #[test]
     fn the_libmatch_gather_carries_the_documents_coverage_beside_its_hints() {
         let stamp = calxgloss_types::ScanCoverage {
@@ -3235,12 +3233,11 @@ mod tests {
         );
     }
 
-    /// The memory row's coverage leg end to end (issue #349): the record
-    /// the memory scan stamps into its filed document rides one gather
-    /// into the bundle beside the findings, word for word; a document
-    /// filed before coverage stamping fills nothing; and a missing or
-    /// corrupt document fills nothing and degrades exactly as its
-    /// findings do.
+    /// The memory row's coverage leg end to end (issue #349): the record the
+    /// memory scan stamps into its filed document is carried through one
+    /// gather into the bundle beside the findings, word for word; a document
+    /// filed before coverage stamping fills nothing; and a missing or corrupt
+    /// document fills nothing and degrades exactly as its findings do.
     #[test]
     fn the_memory_row_gathers_the_documents_coverage_beside_its_findings() {
         // The engine's own stamp: its one bodies facet fell short, naming
@@ -3271,7 +3268,7 @@ mod tests {
         assert_eq!(
             bundle.memory_findings.len(),
             1,
-            "the findings still ride their ordinary row"
+            "the findings still land in their ordinary row"
         );
         assert_eq!(bundle.memory_coverage.status, "partial");
         assert_eq!(
@@ -3315,12 +3312,11 @@ mod tests {
         );
     }
 
-    /// The concurrency row's coverage leg end to end (issue #349): the
-    /// record the sync scan stamps into its filed document rides one
-    /// gather into the bundle beside the findings, word for word; a
-    /// document filed before coverage stamping fills nothing; and a
-    /// missing or corrupt document fills nothing and degrades exactly as
-    /// its findings do.
+    /// The concurrency row's coverage leg end to end (issue #349): the record
+    /// the sync scan stamps into its filed document is carried through one
+    /// gather into the bundle beside the findings, word for word; a document
+    /// filed before coverage stamping fills nothing; and a missing or corrupt
+    /// document fills nothing and degrades exactly as its findings do.
     #[test]
     fn the_sync_row_gathers_the_documents_coverage_beside_its_findings() {
         // The engine's own stamp: its one bodies facet fell short, naming
@@ -3352,7 +3348,7 @@ mod tests {
         assert_eq!(
             bundle.concurrency_findings.len(),
             1,
-            "the findings still ride their ordinary row"
+            "the findings still land in their ordinary row"
         );
         assert_eq!(bundle.sync_coverage.status, "partial");
         assert_eq!(
@@ -3396,11 +3392,11 @@ mod tests {
     }
 
     /// The control-flow row's coverage leg end to end (issue #349): the
-    /// record the control-flow scan stamps into its filed document rides
-    /// one gather into the bundle beside the findings, word for word; a
-    /// document filed before coverage stamping fills nothing; and a
-    /// missing or corrupt document fills nothing and degrades exactly as
-    /// its findings do.
+    /// record the control-flow scan stamps into its filed document is carried
+    /// through one gather into the bundle beside the findings, word for word;
+    /// a document filed before coverage stamping fills nothing; and a missing
+    /// or corrupt document fills nothing and degrades exactly as its findings
+    /// do.
     #[test]
     fn the_control_flow_row_gathers_the_documents_coverage_beside_its_findings() {
         // The engine's own stamp: its one bodies facet fell short, naming
@@ -3429,7 +3425,7 @@ mod tests {
         assert_eq!(
             bundle.control_flow_findings.len(),
             1,
-            "the findings still ride their ordinary row"
+            "the findings still land in their ordinary row"
         );
         assert_eq!(bundle.control_flow_coverage.status, "partial");
         assert_eq!(
@@ -3472,11 +3468,11 @@ mod tests {
     }
 
     /// The global-state row's coverage leg end to end (issue #350): the
-    /// record the global-state scan stamps into its filed document rides
-    /// one gather into the bundle beside the access records, word for
-    /// word; a document filed before coverage stamping fills nothing; and
-    /// a missing or corrupt document fills nothing and degrades exactly
-    /// as its findings do.
+    /// record the global-state scan stamps into its filed document is carried
+    /// through one gather into the bundle beside the access records, word for
+    /// word; a document filed before coverage stamping fills nothing; and a
+    /// missing or corrupt document fills nothing and degrades exactly as its
+    /// findings do.
     #[test]
     fn the_global_state_row_gathers_the_documents_coverage_beside_its_records() {
         // The engine's own stamp: its one bodies facet fell short, naming
@@ -3503,7 +3499,7 @@ mod tests {
         assert_eq!(
             bundle.global_state_findings.len(),
             1,
-            "the access records still ride their ordinary row"
+            "the access records still land in their ordinary row"
         );
         assert_eq!(bundle.global_state_coverage.status, "partial");
         assert_eq!(
@@ -3545,12 +3541,12 @@ mod tests {
         );
     }
 
-    /// The error-handling row's coverage leg end to end (issue #350):
-    /// the record the error-handling scan stamps into its filed document
-    /// rides one gather into the bundle beside the idiom and code
-    /// findings, word for word; a document filed before coverage
-    /// stamping fills nothing; and a missing or corrupt document fills
-    /// nothing and degrades exactly as its findings do.
+    /// The error-handling row's coverage leg end to end (issue #350): the
+    /// record the error-handling scan stamps into its filed document is
+    /// carried through one gather into the bundle beside the idiom and code
+    /// findings, word for word; a document filed before coverage stamping
+    /// fills nothing; and a missing or corrupt document fills nothing and
+    /// degrades exactly as its findings do.
     #[test]
     fn the_error_handling_row_gathers_the_documents_coverage_beside_its_findings() {
         let stamp = calxgloss_types::ScanCoverage {
@@ -3577,7 +3573,7 @@ mod tests {
         assert_eq!(
             bundle.error_handling_findings.len(),
             1,
-            "the findings still ride their ordinary row"
+            "the findings still land in their ordinary row"
         );
         assert_eq!(bundle.error_handling_coverage.status, "partial");
         assert_eq!(
@@ -3619,12 +3615,12 @@ mod tests {
         );
     }
 
-    /// The callback row's coverage leg end to end (issue #350): the
-    /// record the callback-detection scan stamps into its filed document
-    /// rides one gather into the bundle beside the findings, word for
-    /// word; a document filed before coverage stamping fills nothing; and
-    /// a missing or corrupt document fills nothing and degrades exactly
-    /// as its findings do.
+    /// The callback row's coverage leg end to end (issue #350): the record
+    /// the callback-detection scan stamps into its filed document is carried
+    /// through one gather into the bundle beside the findings, word for word;
+    /// a document filed before coverage stamping fills nothing; and a missing
+    /// or corrupt document fills nothing and degrades exactly as its findings
+    /// do.
     #[test]
     fn the_callback_row_gathers_the_documents_coverage_beside_its_findings() {
         let stamp = calxgloss_types::ScanCoverage {
@@ -3649,7 +3645,7 @@ mod tests {
         assert_eq!(
             bundle.callback_findings.len(),
             1,
-            "the findings still ride their ordinary row"
+            "the findings still land in their ordinary row"
         );
         assert_eq!(bundle.callback_coverage.status, "partial");
         assert_eq!(
@@ -3688,13 +3684,12 @@ mod tests {
         );
     }
 
-    /// The algorithm-recognition row's coverage leg end to end (issue
-    /// #351): the two-facet record the scan stamps into its filed
-    /// document — bodies it never read and caller edges it could not
-    /// pull — rides one gather into the bundle beside the hints, word
-    /// for word; a document filed before coverage stamping fills
-    /// nothing; and a missing or corrupt document fills nothing and
-    /// degrades exactly as its findings do.
+    /// The algorithm-recognition row's coverage leg end to end (issue #351):
+    /// the two-facet record the scan stamps into its filed document — bodies
+    /// it never read and caller edges it could not pull — is carried through
+    /// one gather into the bundle beside the hints, word for word; a document
+    /// filed before coverage stamping fills nothing; and a missing or corrupt
+    /// document fills nothing and degrades exactly as its findings do.
     #[test]
     fn the_algorithm_row_gathers_the_documents_coverage_beside_its_hints() {
         // The engine's own stamp: its bodies facet fell short, naming the
@@ -3729,7 +3724,7 @@ mod tests {
         assert_eq!(
             bundle.recognized_algorithms.len(),
             1,
-            "the hints still ride their ordinary row"
+            "the hints still land in their ordinary row"
         );
         assert_eq!(bundle.algorithm_coverage.status, "partial");
         assert_eq!(
@@ -3772,13 +3767,12 @@ mod tests {
         );
     }
 
-    /// The string-context row's coverage leg end to end (issue #351):
-    /// the three-facet record the scan stamps — bodies it never read, a
-    /// string listing that never arrived, and cross-reference lookups
-    /// that refused — rides one gather into the bundle beside the
-    /// strings, word for word; a pre-P19 document fills nothing; and a
-    /// missing or corrupt document fills nothing and degrades exactly as
-    /// its findings do.
+    /// The string-context row's coverage leg end to end (issue #351): the
+    /// three-facet record the scan stamps — bodies it never read, a string
+    /// listing that never arrived, and cross-reference lookups that refused —
+    /// is carried through one gather into the bundle beside the strings, word
+    /// for word; a pre-P19 document fills nothing; and a missing or corrupt
+    /// document fills nothing and degrades exactly as its findings do.
     #[test]
     fn the_string_context_row_gathers_the_documents_coverage_beside_its_findings() {
         let stamp = calxgloss_types::ScanCoverage {
@@ -3819,7 +3813,7 @@ mod tests {
         assert_eq!(
             bundle.string_findings.len(),
             1,
-            "the strings still ride their ordinary row"
+            "the strings still land in their ordinary row"
         );
         assert_eq!(bundle.string_context_coverage.status, "partial");
         assert_eq!(
@@ -3873,11 +3867,10 @@ mod tests {
     }
 
     /// The serialization row's coverage leg end to end (issue #351): the
-    /// record the scan stamps into its filed document rides one gather
-    /// into the bundle beside the findings, word for word; a document
-    /// filed before coverage stamping fills nothing; and a missing or
-    /// corrupt document fills nothing and degrades exactly as its
-    /// findings do.
+    /// record the scan stamps into its filed document is carried through one
+    /// gather into the bundle beside the findings, word for word; a document
+    /// filed before coverage stamping fills nothing; and a missing or corrupt
+    /// document fills nothing and degrades exactly as its findings do.
     #[test]
     fn the_serialization_row_gathers_the_documents_coverage_beside_its_findings() {
         let stamp = calxgloss_types::ScanCoverage {
@@ -3902,7 +3895,7 @@ mod tests {
         assert_eq!(
             bundle.serialization_findings.len(),
             1,
-            "the findings still ride their ordinary row"
+            "the findings still land in their ordinary row"
         );
         assert_eq!(bundle.serialization_coverage.status, "partial");
         assert_eq!(
@@ -3944,15 +3937,15 @@ mod tests {
         );
     }
 
-    /// The type-inference row's coverage leg end to end (issue #351):
-    /// the four-facet record the scan stamps — with its complete bodies
-    /// facet dropping out of the admission — rides one gather into the
-    /// bundle, and the ONE record qualifies all THREE surfaces the row
-    /// feeds: the type-information list, the calling-convention list,
-    /// and the parameter-direction list all stand beside the same
-    /// admission line, word for word; a pre-P19 document fills nothing;
-    /// and a missing or corrupt document fills nothing and degrades
-    /// exactly as its findings do.
+    /// The type-inference row's coverage leg end to end (issue #351): the
+    /// four-facet record the scan stamps — with its complete bodies facet
+    /// dropping out of the admission — is carried through one gather into the
+    /// bundle, and the ONE record qualifies all THREE surfaces the row feeds:
+    /// the type-information list, the calling-convention list, and the
+    /// parameter-direction list all stand beside the same admission line,
+    /// word for word; a pre-P19 document fills nothing; and a missing or
+    /// corrupt document fills nothing and degrades exactly as its findings
+    /// do.
     #[test]
     fn the_type_inference_row_gathers_the_documents_coverage_beside_its_three_surfaces() {
         let stamp = calxgloss_types::ScanCoverage {
@@ -4012,7 +4005,7 @@ mod tests {
         assert_eq!(
             bundle.type_info.len(),
             2,
-            "both readings still ride their ordinary row"
+            "both readings still land in their ordinary row"
         );
         assert_eq!(
             bundle.parameter_direction_findings.len(),
@@ -4315,7 +4308,7 @@ mod tests {
         assert!(
             module_prompt
                 .contains("## DATA TABLES\n\nAnalysis engine: unavailable — Nettle bins hold no data objects\n\n"),
-            "the data-tables surface filed nothing, so the seam's line rides its heading"
+            "the data-tables surface filed nothing, so the seam's line sits under its heading"
         );
         assert!(
             module_prompt

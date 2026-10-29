@@ -77,10 +77,10 @@ pub fn parse_test_results(
                             .unwrap_or_default(),
                         actual: result.get("actual").cloned().unwrap_or_default(),
                         error: error_msg.to_string(),
-                        // The expected side effects ride the failure as
-                        // typed kinds, so a divergence on global handling
-                        // is reported by name — machine-comparable — and
-                        // not only inside the prose error string.
+                        // The expected side effects travel with the failure
+                        // as typed kinds, so a divergence on global handling
+                        // is reported by name — machine-comparable — and not
+                        // only inside the prose error string.
                         expected_side_effects: baseline_tests
                             .get(i)
                             .map(|t| t.expected_side_effects.clone())

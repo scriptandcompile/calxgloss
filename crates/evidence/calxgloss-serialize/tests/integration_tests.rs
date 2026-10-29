@@ -951,7 +951,7 @@ async fn the_confidence_ladder_ranks_every_composed_claim_above_its_parts() {
     let map = confidence("endianness_map");
     assert!(
         confidence("byteswap") < map && map < confidence("magic"),
-        "the binary-level map rides between the byte-swap floor and the lone-magic floor"
+        "the binary-level map sits between the byte-swap floor and the lone-magic floor"
     );
 }
 

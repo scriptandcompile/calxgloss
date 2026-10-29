@@ -473,7 +473,7 @@ mod tests {
         ));
         assert!(line.contains("fixture_init"), "the old name is named");
         assert!(line.contains("brand_new"), "the new name is named");
-        assert!(line.contains("88"), "the confidence rides along");
+        assert!(line.contains("88"), "the confidence is included");
         assert!(
             line.contains("normalized_body"),
             "the match family is named"

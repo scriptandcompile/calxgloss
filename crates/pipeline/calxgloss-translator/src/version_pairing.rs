@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(
             document.old_functions,
             ["fixture_init", "FUN_10001200"],
-            "the listings ride in scan order"
+            "the listings are kept in scan order"
         );
         assert_eq!(document.new_functions, ["fixture_init", "brand_new"]);
         assert_eq!(document.pairings.len(), 1);

@@ -202,10 +202,10 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
 
-    // The pin comes out of the lock file, and the tag and short rev ride
-    // into the crate's environment so the reported release, the embedded
-    // specs, and the source fingerprint a scan record names can never
-    // drift apart from the pin.
+    // The pin comes out of the lock file, and the tag and short rev are
+    // passed into the crate's environment so the reported release, the
+    // embedded specs, and the source fingerprint a scan record names can
+    // never drift apart from the pin.
     let pin = read_pin();
     println!("cargo:rustc-env=CALXGLOSS_KUNA_RELEASE={}", pin.tag);
     println!("cargo:rustc-env=CALXGLOSS_KUNA_PIN_REV={}", pin.rev);

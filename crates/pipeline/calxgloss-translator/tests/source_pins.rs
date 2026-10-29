@@ -179,8 +179,8 @@ fn only_the_retry_loop_rides_the_attempt_seam() {
             hits,
             vec![RETRY_LOOP_MODULE.to_string()],
             "`{needle}` must be called in exactly one production module — the \
-             retry loop — so every attempt provably rides the seam's recording \
-             and reporting tail (issue #330)"
+             retry loop — so every attempt provably goes through the seam's \
+             recording and reporting tail (issue #330)"
         );
     }
 }

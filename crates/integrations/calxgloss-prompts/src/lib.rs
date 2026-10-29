@@ -1828,7 +1828,7 @@ mod tests {
         assert!(prompt.contains("- `param_1`: out parameter (via param_direction, confidence 75)"));
         assert!(
             !prompt.contains("PARAMETER DIRECTION"),
-            "directions ride the existing section, not a new one"
+            "directions go into the existing section, not a new one"
         );
     }
 
@@ -1862,7 +1862,7 @@ mod tests {
         assert!(prompt.contains("- `param_1`: out parameter (via param_direction, confidence 75)"));
         assert!(
             !prompt.contains("PARAMETER DIRECTION"),
-            "directions ride the existing section, not a new one"
+            "directions go into the existing section, not a new one"
         );
     }
 
@@ -1896,7 +1896,7 @@ mod tests {
         assert!(prompt.contains("- `param_1`: out parameter (via param_direction, confidence 75)"));
         assert!(
             !prompt.contains("PARAMETER DIRECTION"),
-            "directions ride the existing section, not a new one"
+            "directions go into the existing section, not a new one"
         );
     }
 
@@ -3189,7 +3189,7 @@ mod tests {
                 &format!("{LIBRARIES_APIS_SECTION_BODY}\n\n"),
                 &format!("{LIBRARIES_APIS_SECTION_BODY}\n\nCoverage: {API_ADMISSION}\n\n"),
             ),
-            "the admission rides the section as exactly one line beside the entries"
+            "the admission appears in the section as exactly one line beside the entries"
         );
         assert_eq!(
             admitted
@@ -3308,7 +3308,7 @@ mod tests {
                     "{LIBRARIES_APIS_SECTION_BODY}\n\nAnalysis engine: {SEAM_IMPORTS_ADMISSION}\n\n"
                 ),
             ),
-            "the seam admission rides the section as exactly one line beside the entries"
+            "the seam admission appears in the section as exactly one line beside the entries"
         );
         assert_eq!(
             admitted
@@ -3429,7 +3429,7 @@ mod tests {
                 "{LIBRARIES_APIS_SECTION_BODY}\n\nCoverage: {API_ADMISSION}\n\n\
                  Analysis engine: {SEAM_IMPORTS_ADMISSION}\n\n"
             )),
-            "both admissions ride, each as its own line, scan first"
+            "both admissions appear, each as its own line, scan first"
         );
         assert_eq!(
             admitted
@@ -3449,7 +3449,8 @@ mod tests {
     /// keeps its own frame and the two lines never merge. The `Tanglewood`
     /// sentinel is coined here and belongs to neither doctrine's fixtures.
     #[test]
-    fn a_coverage_admission_and_a_capability_admission_worded_alike_never_share_bytes_at_either_end() {
+    fn a_coverage_admission_and_a_capability_admission_worded_alike_never_share_bytes_at_either_end()
+     {
         const SENTINEL: &str = "Tanglewood bridge offline";
 
         // The collision, built on purpose: the same status word and the
@@ -3487,9 +3488,7 @@ mod tests {
         bundle.api_capability = CapabilityInfo::from(&capability);
         let admitted = render_escalate_full(&bundle);
         assert_eq!(
-            admitted
-                .matches(&format!("Coverage: {SENTINEL}"))
-                .count(),
+            admitted.matches(&format!("Coverage: {SENTINEL}")).count(),
             0,
             "the coverage line carries the shared status word ahead of the sentence, as always"
         );
@@ -3728,7 +3727,7 @@ mod tests {
                 for heading in row.fed[host] {
                     assert!(
                         admitted.contains(&format!("## {heading}\n\n{line}\n\n")),
-                        "{family}'s admission must ride heading-plus-line when {host}'s \
+                        "{family}'s admission must appear as heading-plus-line when {host}'s \
                          {heading} section filed nothing",
                         family = row.family,
                         host = HOST_LABELS[host],
@@ -3804,7 +3803,7 @@ mod tests {
                 line_of("Mallow sessions open no type database"),
                 line_of("Nettle bins hold no data objects"),
             )),
-            "the shared section's lines ride in roster order, no other family's words between",
+            "the shared section's lines appear in roster order, with no other family's words between",
         );
         assert!(
             escalate.contains(&format!(
@@ -4075,7 +4074,7 @@ mod tests {
                 &format!("{LIBMATCH_SECTION_BODY}\n\n"),
                 &format!("{LIBMATCH_SECTION_BODY}\n\nCoverage: {LIBMATCH_ADMISSION}\n\n"),
             ),
-            "the admission rides the section as exactly one line beside the entries"
+            "the admission appears in the section as exactly one line beside the entries"
         );
         assert_eq!(
             admitted
@@ -4141,7 +4140,7 @@ mod tests {
                 LIBMATCH_SECTION_BODY,
             ),
             clean,
-            "the note rides exactly one extra line, right after the evidence line"
+            "the note adds exactly one extra line, right after the evidence line"
         );
         assert!(
             admitted.contains("  Admission: Signature match, version unknown"),
@@ -4229,7 +4228,7 @@ mod tests {
                 &format!("{FLOATSIMD_SECTION_BODY}\n\n"),
                 &format!("{FLOATSIMD_SECTION_BODY}\n\nCoverage: {FLOATSIMD_ADMISSION}\n\n"),
             ),
-            "the admission rides the section as exactly one line beside the entries"
+            "the admission appears in the section as exactly one line beside the entries"
         );
         assert_eq!(
             admitted
@@ -4410,7 +4409,7 @@ mod tests {
                 &format!("{DATA_STRUCTURES_SECTION_BODY}\n\n"),
                 &format!("{DATA_STRUCTURES_SECTION_BODY}\n\nCoverage: {TYPESDB_ADMISSION}\n\n"),
             ),
-            "the admission rides the section as exactly one line beside the entries"
+            "the admission appears in the section as exactly one line beside the entries"
         );
         assert_eq!(
             admitted
@@ -4766,7 +4765,7 @@ mod tests {
                     &format!("{body}\n\n"),
                     &format!("{body}\n\nCoverage: {CONTROL_FLOW_ADMISSION}\n\n"),
                 ),
-                "the admission rides the {heading} section as exactly one line beside the entries"
+                "the admission appears in the {heading} section as exactly one line beside the entries"
             );
             assert_eq!(
                 admitted.matches(&format!("## {heading}")).count(),
@@ -4806,7 +4805,7 @@ mod tests {
             );
         assert_eq!(
             admitted, expected,
-            "each admission rides its own section as exactly one line beside the entries"
+            "each admission appears in its own section as exactly one line beside the entries"
         );
         assert_eq!(
             admitted
@@ -5169,7 +5168,7 @@ mod tests {
             );
         assert_eq!(
             escalate_admitted, escalate_expected,
-            "each admission rides its own escalate section as exactly one line beside the entries"
+            "each admission appears in its own escalate section as exactly one line beside the entries"
         );
         let module_expected = module_clean
             .replace(
@@ -5186,7 +5185,7 @@ mod tests {
             );
         assert_eq!(
             module_admitted, module_expected,
-            "the one type-inference admission rides both of its module-context surfaces"
+            "the one type-inference admission appears in both of its module-context surfaces"
         );
         for (prompt, heading) in [
             (&escalate_admitted, ESCALATE_RECOGNIZED_ALGORITHMS_HEADING),
@@ -5542,7 +5541,7 @@ mod tests {
             );
         assert_eq!(
             escalate_admitted, escalate_expected,
-            "each admission rides its own escalate section as exactly one line beside the entries"
+            "each admission appears in its own escalate section as exactly one line beside the entries"
         );
         let module_expected = module_clean
             .replace(
@@ -5559,7 +5558,7 @@ mod tests {
             );
         assert_eq!(
             module_admitted, module_expected,
-            "each admission rides its own module-context section as exactly one line beside the entries"
+            "each admission appears in its own module-context section as exactly one line beside the entries"
         );
         for (prompt, heading) in [
             (&escalate_admitted, ESCALATE_GLOBAL_STATE_HEADING),

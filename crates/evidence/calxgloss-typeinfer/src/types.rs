@@ -209,7 +209,7 @@ pub enum CallingConvention {
     /// stack; the callee pops. No MSVC name letter spells it on the
     /// binaries in scope — the body-evidence channels read it.
     Fastcall,
-    /// The `this` pointer rides in `ECX`, the rest of the arguments go on
+    /// The `this` pointer is passed in `ECX`, the rest of the arguments go on
     /// the stack, and the callee pops; the MSVC C++ member convention,
     /// spelled `C`, `E`, or `G` on mangled names.
     Thiscall,
@@ -258,15 +258,14 @@ impl CallingConvention {
 }
 
 /// One function's inferred calling convention, with the evidence behind it.
-///
-/// The fifth place an inference can land: the convention is not a type, so
-/// it rides its own record — the function, the convention, the channel that
-/// read it, its confidence, and the name text that carried the reading.
-/// Like the return record it is keyed by function, so one function never
-/// shows two conventions — except the call-site view the cross-function
-/// pass lands in a caller for its callee (issue #249): that record names
-/// the callee in `callee`, so it keys beside the caller's own convention
-/// without colliding with it.
+/// The fifth place an inference can land: the convention is not a type, so it
+/// gets its own record — the function, the convention, the channel that read
+/// it, its confidence, and the name text that carried the reading. Like the
+/// return record it is keyed by function, so one function never shows two
+/// conventions — except the call-site view the cross-function pass lands in a
+/// caller for its callee (issue #249): that record names the callee in
+/// `callee`, so it keys beside the caller's own convention without colliding
+/// with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferredConvention {
     /// The function whose convention is read, e.g. `CreateFileA@28`. For
@@ -467,15 +466,14 @@ impl Direction {
 }
 
 /// One pointer parameter's inferred direction, with the evidence behind it.
-///
-/// The sixth place an inference can land: where the type records say what
-/// a parameter *is*, this record says which way its data *flows* — read
-/// from the same body the type detectors ride. It is keyed by function
-/// and parameter position, the key the baseline-test follow-up needs so
-/// out-parameters can become expected side effects without
-/// re-derivation, and it rides beside the parameter's type record rather
-/// than competing with it: one parameter may carry both, but only one
-/// direction. Absence of a record means *unknown*, never silently *in*.
+/// The sixth place an inference can land: where the type records say what a
+/// parameter *is*, this record says which way its data *flows* — read from
+/// the same function body the type detectors use. It is keyed by function and
+/// parameter position, the key the baseline-test follow-up needs so out-
+/// parameters can become expected side effects without re-derivation, and it
+/// sits beside the parameter's type record rather than competing with it: one
+/// parameter may carry both, but only one direction. Absence of a record
+/// means *unknown*, never silently *in*.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferredParamDirection {
     /// The function the parameter belongs to, e.g. `FUN_18003ab00`.
@@ -1215,9 +1213,9 @@ mod tests {
 
     #[test]
     fn a_call_site_convention_record_names_its_callee_and_omits_nothing_else() {
-        // The caller's view of its callee: the callee rides as an
-        // optional field, a document written before it existed reads
-        // back with `callee: None`, and the prompt names the site.
+        // The caller's view of its callee: the callee is kept as an optional
+        // field, a document written before it existed reads back with
+        // `callee: None`, and the prompt names the site.
         let record = InferredConvention {
             callee: Some("FUN_1800412a0".into()),
             ..convention_record()

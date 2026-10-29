@@ -805,7 +805,7 @@ impl ProgressState {
     }
 
     /// The working pass's latest heartbeat — `(binary, activity)`, `None`
-    /// while no pass is beating.
+    /// while no pass is running to report one.
     pub async fn activity(&self) -> Option<(BinaryIdentity, BinaryActivity)> {
         self.activity.read().await.clone()
     }

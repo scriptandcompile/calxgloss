@@ -1403,7 +1403,7 @@ mod tests {
         assert_eq!(tests.len(), MAX_TEST_CASES_PER_FUNCTION);
         assert!(
             without.len() < MAX_TEST_CASES_PER_FUNCTION,
-            "the cap bites on the branch cases, not the boundary suite"
+            "the cap cuts into the branch cases, not the boundary suite"
         );
         let probed = probed_values(&tests, "param_0");
         // The shape-only probe ({0, 42}) is gone...
@@ -1417,7 +1417,7 @@ mod tests {
         // not.
         let room = MAX_TEST_CASES_PER_FUNCTION - without.len();
         let dropped = 31 - room; // 30 exact probes plus the shape-only one
-        assert!(dropped >= 1, "the inventory is meant to bite the cap");
+        assert!(dropped >= 1, "the inventory is meant to exceed the cap");
         let highest_kept = 32 - dropped;
         assert!(probed.contains(&json!(highest_kept)));
         assert!(!probed.contains(&json!(highest_kept + 1)));

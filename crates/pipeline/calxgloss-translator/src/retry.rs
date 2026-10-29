@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(
             verdict.structured_failed_cases.len(),
             1,
-            "the structured cases ride in from the seam outcome"
+            "the structured cases arrive from the seam outcome"
         );
         assert_eq!(verdict.structured_failed_cases[0].error, "mismatch");
     }

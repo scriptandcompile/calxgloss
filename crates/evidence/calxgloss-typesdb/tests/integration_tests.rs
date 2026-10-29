@@ -1176,7 +1176,7 @@ async fn a_flagged_record_names_its_stl_family_in_the_prompt() {
     let rendered = StructuredData::from(string_type);
     assert_eq!(
         rendered.name, "basic_string (STL string)",
-        "the family rides in the type description"
+        "the family is included in the type description"
     );
 
     let dos = db
