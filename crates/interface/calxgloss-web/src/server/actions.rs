@@ -120,7 +120,7 @@ impl ActionsState {
         // started without one rather than guessing a path.
         let target_dir = self.target_dir.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "no target directory configured: this server was started without a              target_dir, so {binary} cannot be loaded for the patch retry"
+                "no target directory is configured for this server, so {binary} cannot be loaded for the patch retry"
             )
         })?;
         let mut spec = self.pass_spec.clone();
@@ -1237,7 +1237,7 @@ mod tests {
         .expect_err("a server without a target dir cannot load the binary for a retry");
         let msg = err.to_string();
         assert!(
-            msg.contains("no target directory configured") && msg.contains("game_logic.dll"),
+            msg.contains("no target directory is configured") && msg.contains("game_logic.dll"),
             "the refusal names the missing wiring and the binary: {msg}"
         );
         assert_eq!(spawns.load(Ordering::SeqCst), 0, "no retry task is started");

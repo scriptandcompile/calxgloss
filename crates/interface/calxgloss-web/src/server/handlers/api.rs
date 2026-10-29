@@ -15,8 +15,11 @@ use super::super::{
     ServerState, ServerStatus, UnitResponse, UnitResponseInner,
 };
 
-/// Optional JSON body extractor — returns None when no body is present or
-/// the body fails to parse as JSON.
+/// Optional JSON body extractor — `None` when no body is present.
+///
+/// A body that is present but does not parse is **refused** with 400 and the
+/// parser's reason: a malformed request must not look like an absent one, or
+/// the operator's send-back note or patch request silently disappears.
 pub struct OptionalJson<T>(pub Option<T>);
 
 impl<S, T> axum::extract::FromRequest<S> for OptionalJson<T>
@@ -27,16 +30,24 @@ where
     type Rejection = axum::response::Response;
 
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        use axum::response::IntoResponse as _;
+
         let body_bytes = match axum::body::Bytes::from_request(req, state).await {
             Ok(bytes) => bytes,
-            Err(_) => return Ok(OptionalJson(None)),
+            // The body could not be read at all (too large, connection
+            // dropped): pass axum's own rejection through.
+            Err(err) => return Err(err.into_response()),
         };
         if body_bytes.is_empty() {
             return Ok(OptionalJson(None));
         }
         match serde_json::from_slice(&body_bytes) {
             Ok(val) => Ok(OptionalJson(Some(val))),
-            Err(_) => Ok(OptionalJson(None)),
+            Err(err) => Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("request body is not valid JSON: {err}"),
+            )
+                .into_response()),
         }
     }
 }
@@ -756,4 +767,38 @@ pub async fn serve_index() -> axum::response::Html<String> {
                 "<!DOCTYPE html><html><head><title>Calxgloss</title></head><body><h1>Static frontend not found</h1></body></html>".to_string()
             })
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::FromRequest as _;
+
+    #[tokio::test]
+    async fn optional_json_reports_an_absent_body_as_absent() {
+        let req = axum::extract::Request::builder()
+            .method("POST")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let OptionalJson(body) = OptionalJson::<SendBackRequest>::from_request(req, &())
+            .await
+            .expect("an absent body is accepted");
+        assert!(body.is_none(), "no body means no request data");
+    }
+
+    #[tokio::test]
+    async fn optional_json_refuses_a_malformed_body_with_400() {
+        let req = axum::extract::Request::builder()
+            .method("POST")
+            .body(axum::body::Body::from(r#"{"reason": "#))
+            .expect("build request");
+
+        let outcome = OptionalJson::<SendBackRequest>::from_request(req, &()).await;
+        let err = match outcome {
+            Ok(_) => panic!("a malformed body must be refused, not mistaken for an absent one"),
+            Err(err) => err,
+        };
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
 }

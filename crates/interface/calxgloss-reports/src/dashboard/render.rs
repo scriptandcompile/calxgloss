@@ -102,10 +102,12 @@ fn format_status_display(status: &ReviewStatus) -> String {
 
 fn fmt_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
-    if secs < 3600 {
-        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
     } else if secs < 86400 {
-        format!("{}h", secs / 3600)
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     } else {
         format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
     }
@@ -554,5 +556,15 @@ mod tests {
         assert_eq!(format_kind(&WorkKind::DllClassification), "classify");
         assert_eq!(format_kind(&WorkKind::FunctionTranslation), "func");
         assert_eq!(format_kind(&WorkKind::ShimLayer), "shim");
+    }
+
+    #[test]
+    fn fmt_duration_under_an_hour_has_no_zero_hours_prefix() {
+        use std::time::Duration;
+
+        assert_eq!(fmt_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(fmt_duration(Duration::from_secs(120)), "2m");
+        assert_eq!(fmt_duration(Duration::from_secs(3 * 3600 + 1800)), "3h 30m");
+        assert_eq!(fmt_duration(Duration::from_secs(2 * 86400 + 3600)), "2d 1h");
     }
 }

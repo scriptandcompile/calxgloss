@@ -1720,3 +1720,25 @@ fn dashboard_graph_order_is_stable_across_input_orders() {
     assert_eq!(node_ids(&forward), node_ids(&backward));
     assert_eq!(edge_pairs(&forward), edge_pairs(&backward));
 }
+
+#[test]
+fn staleness_duration_formats_under_an_hour_without_a_zero_hours_prefix() {
+    use std::time::Duration;
+
+    assert_eq!(
+        Staleness::Stale(Duration::from_secs(45)).to_string(),
+        "stale (45s)"
+    );
+    assert_eq!(
+        Staleness::Stale(Duration::from_secs(120)).to_string(),
+        "stale (2m)"
+    );
+    assert_eq!(
+        Staleness::Critical(Duration::from_secs(3 * 3600 + 1800)).to_string(),
+        "critical (3h 30m)"
+    );
+    assert_eq!(
+        Staleness::Critical(Duration::from_secs(2 * 86400 + 3600)).to_string(),
+        "critical (2d 1h)"
+    );
+}

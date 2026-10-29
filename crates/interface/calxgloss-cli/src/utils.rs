@@ -92,22 +92,29 @@ pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path
         )));
     }
 
-    // The persisted record from a previous classify run.
+    // The live PE fact outranks every persisted answer — the same precedence
+    // the classifier uses (override > PE fact > name heuristics, ADR 0003).
+    // When the file can speak, its word is final: a record left by an earlier
+    // classify run cannot park a binary that is native today.
+    match calxgloss_analysis::file_managed_pe_fact(target) {
+        Some(true) => {
+            return Err(anyhow::anyhow!(parked_refusal(
+                binary,
+                "the file carries a COM descriptor data directory — the marker every managed PE has"
+            )));
+        }
+        Some(false) => return Ok(()),
+        // The file cannot be read or parsed here: fall through to what the
+        // workspace remembers and let the normal flow surface the read error.
+        None => {}
+    }
+
+    // The persisted record from a previous classify run, consulted only when
+    // the file itself could not answer.
     if recorded_category(workspace, binary).as_ref() == Some(&DllCategory::DotNetManaged) {
         return Err(anyhow::anyhow!(parked_refusal(
             binary,
             "its classification record says DotNetManaged"
-        )));
-    }
-
-    // The PE fact itself — the same COM-descriptor check the classifier
-    // performs, run here so a managed binary that was never classified is
-    // refused before the analysis engine loads. It wins over a stale
-    // name-heuristic record.
-    if calxgloss_analysis::file_is_managed_pe(target) {
-        return Err(anyhow::anyhow!(parked_refusal(
-            binary,
-            "the file carries a COM descriptor data directory — the marker every managed PE has"
         )));
     }
 
@@ -712,10 +719,12 @@ mod tests {
     }
 
     #[test]
-    fn guard_honors_a_parked_classification_record() {
-        // The record is the durable fact: a binary classified
-        // DotNetManaged is refused even before the PE is consulted.
-        let dir = fixture_workspace(&[("managed_app.dll", true)]);
+    fn guard_honors_a_parked_record_when_the_file_cannot_answer() {
+        // The record is what the workspace remembers, so it parks a target
+        // when the file itself cannot be inspected here.
+        let dir = fixture_workspace(&[]);
+        let target = dir.path().join("target").join("managed_app.dll");
+        std::fs::write(&target, b"not a PE at all").expect("write unparseable target");
         let classify = dir.path().join("re").join("classify");
         std::fs::create_dir_all(&classify).expect("classify dir");
         std::fs::write(
@@ -723,7 +732,6 @@ mod tests {
             r#"{"binary":"managed_app.dll","category":"DotNetManaged","strategy":"DoNotTranslate","known_runtime":false,"reason":"we do not yet decompile .NET programs"}"#,
         )
         .expect("write record");
-        let target = dir.path().join("target").join("managed_app.dll");
 
         let refusal = guard_managed_binary(dir.path(), "managed_app.dll", &target)
             .expect_err("a parked record refuses");
@@ -731,6 +739,24 @@ mod tests {
             refusal.to_string().contains("classification record"),
             "the refusal names the record, got: {refusal}"
         );
+    }
+
+    #[test]
+    fn the_live_file_fact_outranks_a_stale_managed_record() {
+        // A record left by an earlier classify run cannot park a binary that
+        // is native now — the file's own answer is consulted first.
+        let dir = fixture_workspace(&[("game_logic.dll", false)]);
+        let classify = dir.path().join("re").join("classify");
+        std::fs::create_dir_all(&classify).expect("classify dir");
+        std::fs::write(
+            classify.join("game_logic.dll.json"),
+            r#"{"binary":"game_logic.dll","category":"DotNetManaged","strategy":"DoNotTranslate","known_runtime":false,"reason":"we do not yet decompile .NET programs"}"#,
+        )
+        .expect("write stale record");
+        let target = dir.path().join("target").join("game_logic.dll");
+
+        guard_managed_binary(dir.path(), "game_logic.dll", &target)
+            .expect("a native file passes despite a stale record");
     }
 
     #[test]

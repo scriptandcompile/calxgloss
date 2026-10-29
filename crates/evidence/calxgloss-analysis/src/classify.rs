@@ -386,17 +386,25 @@ pub fn pe_is_managed(pe: &goblin::pe::PE) -> bool {
 }
 
 /// The same managed marker, read directly from a file: parse the PE, then
+/// check the COM descriptor directory. `Some(true)` when the file parses as a
+/// PE carrying the COM descriptor directory, `Some(false)` when it parses as a
+/// PE without one, and `None` when the file cannot be read or does not parse
+/// as a PE — the three-way answer callers need to tell "the file says native"
+/// apart from "the file cannot speak".
+pub fn file_managed_pe_fact(path: &std::path::Path) -> Option<bool> {
+    let bytes = std::fs::read(path).ok()?;
+    match goblin::pe::PE::parse(&bytes) {
+        Ok(pe) => Some(pe_is_managed(&pe)),
+        Err(_) => None,
+    }
+}
+
+/// The same managed marker, read directly from a file: parse the PE, then
 /// check the COM descriptor directory. A file that cannot be read, or that
 /// does not parse as a PE, reports `false`. The caller's normal path
 /// surfaces that error; the managed check never invents a failure (issue #235).
 pub fn file_is_managed_pe(path: &std::path::Path) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
-        return false;
-    };
-    match goblin::pe::PE::parse(&bytes) {
-        Ok(pe) => pe_is_managed(&pe),
-        Err(_) => false,
-    }
+    file_managed_pe_fact(path).unwrap_or(false)
 }
 
 /// Given a list of imports, returns the unique DLL names that are imported.
@@ -695,6 +703,29 @@ mod tests {
         assert_eq!(
             crate_replacement_for("Qt5Core.dll", &DllCategory::RuntimeLibrary),
             None
+        );
+    }
+
+    #[test]
+    fn test_file_managed_pe_fact_says_nothing_about_a_file_it_cannot_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("broken.dll");
+
+        assert_eq!(
+            file_managed_pe_fact(&target),
+            None,
+            "a missing file has no answer to give"
+        );
+
+        std::fs::write(&target, b"not a PE at all").expect("write junk file");
+        assert_eq!(
+            file_managed_pe_fact(&target),
+            None,
+            "a file that does not parse as a PE has no answer to give"
+        );
+        assert!(
+            !file_is_managed_pe(&target),
+            "the bool view still reports false rather than inventing a failure"
         );
     }
 }

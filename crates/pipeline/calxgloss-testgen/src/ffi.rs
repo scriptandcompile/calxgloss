@@ -789,7 +789,7 @@ fn classify_type(type_str: &str) -> (bool, Option<u32>) {
         return (true, extract_bit_width(t));
     }
 
-    // Default: signed for integer-like types
+    // Booleans: unsigned (the value is always 0 or 1)
     if t.contains("bool") || t.contains("BOOL") {
         return (false, None);
     }

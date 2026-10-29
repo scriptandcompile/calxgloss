@@ -125,8 +125,6 @@ impl<'a> DashboardBuilder<'a> {
             if parts.attempt > *existing_attempt {
                 *existing_attempt = parts.attempt;
             }
-
-            let _ = parts;
         }
 
         // 2. Scan patch records for per-attempt data

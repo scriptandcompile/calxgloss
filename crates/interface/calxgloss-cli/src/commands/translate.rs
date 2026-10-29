@@ -244,16 +244,11 @@ pub async fn handle_translate(
                 .context("Failed to commit translated code")?;
 
             if attempt.is_successful() {
-                // Merge if successful
+                // Merge if successful. A successful attempt merges straight to main —
+                // human review is not wired into this path yet.
                 let merge_result = git
                     .merge_to_main(branch_info)
                     .context("Failed to merge branch to main")?;
-
-                let accepted = true; // Auto-accept successful attempts
-                if !accepted {
-                    warn!("Translation rejected by human reviewer");
-                    continue;
-                }
 
                 last_branch = Some(branch_info.clone());
 

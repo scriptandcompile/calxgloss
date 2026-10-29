@@ -236,10 +236,12 @@ impl std::fmt::Display for Staleness {
 
 fn fmt_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
-    if secs < 3600 {
-        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
     } else if secs < 86400 {
-        format!("{}h", secs / 3600)
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     } else {
         format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
     }
