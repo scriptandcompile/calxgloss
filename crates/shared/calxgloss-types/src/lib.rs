@@ -38,6 +38,10 @@
 //! - [`retry_strategy`] — The retry-strategy closed set (`RetryStrategy`) —
 //!   how a failed attempt gets fixed, shared by the retry loop, the
 //!   reviewer overrides, and the dashboard
+//! - [`unknowns`] — Unknown records (`UnknownRecord`, `UnknownLedger`,
+//!   `UnknownResolutions`) — what a run admitted it could not establish,
+//!   with derived ids, filed per binary under the record tree, and joined
+//!   to the reviewer's settle-by-evidence / not-relevant answers
 //! - [`error`] — Unified error type (`TypesError`)
 
 // ============================================================
@@ -81,6 +85,7 @@ pub mod shim;
 pub mod test;
 pub mod token_usage;
 pub mod translation;
+pub mod unknowns;
 pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
@@ -150,6 +155,12 @@ pub use token_usage::{
     BinaryTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats, TokenUsageTrim,
 };
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
+pub use unknowns::{
+    DECLARED_UNKNOWN_KINDS, EffectiveDisposition, EffectiveLedger, JoinedUnknown,
+    UnknownActionError, UnknownDisposition, UnknownKind, UnknownLedger, UnknownOrigin,
+    UnknownRecord, UnknownResolution, UnknownResolutions, UnknownSeverity, read_unknown_ledger,
+    unknown_ledger_dir, unknown_ledger_path, unknown_resolutions_path, unknown_roster_faults,
+};
 pub use verification::{FailedTest, VerificationResult};
 
 // ============================================================
