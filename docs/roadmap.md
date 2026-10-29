@@ -123,6 +123,14 @@ and the retry-loop hypothesis ledger (P27) cheaper to ship:
 | P31 | Deepen `calxgloss doctor` — read-only, scopable (`--target/--endpoint/--config`), checking LLM endpoint reachability, config validity, PE magic, cache writability, git/cargo presence; `scope_checks` vs `informational_checks`, JSON, exit codes | interface (`calxgloss-cli`, `calxgloss-reports`) + shared (`calxgloss-config`) | — | ⬜ not started | not specced | — |
 | P32 | Contributor skill for driving the harness + doctrine — a routing-shaped SKILL.md for the 23-command CLI with per-evidence-engine references, the don't-repeat / remediation-literalism rules in `AGENTS.md`, and dated doc-claim pinning for version skew | — (docs + skills, no crate) | — | ⬜ not started | not specced | — |
 | P33 | Whole-task measurement harness — benchmark pipeline tasks end to end (tokens, RSS, ms) with an oracle independent of the implementation, counting discovery, retries, and continuations in every token claim | — (dev-side experiment harness, no crate) | — | ⬜ not started | not specced | — |
+| P40 | API-aware complexity mode reaches the prompt — `api_aware` is set by callers but no prompt builder reads it; either wire the mode in or remove it until a design exists | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | filed as issue, not specced | [#365](https://github.com/scriptandcompile/calxgloss/issues/365) |
+| P41 | Producer for the `re/analysis/` per-function artifacts — the workspace layout promises them and the web API Mapping panel reads them, but nothing writes them; persist `FunctionInfo` at analysis time or back the panel live | pipeline (`calxgloss-translator`) + interface (`calxgloss-web`) | — | ⬜ not started | filed as issue, not specced | [#366](https://github.com/scriptandcompile/calxgloss/issues/366) |
+
+**P40–P41 are product gaps found by the 2026-10-28 plain-English sweep**:
+features the docs, tests, or UI promise that the code never delivers. Each
+was verified in the code and filed as an issue before landing here; the
+sweep left honest doc notes in place describing today's behavior, and each
+track must reconcile those notes with whatever it builds.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
@@ -348,3 +356,31 @@ measurements instead of intuition — the discipline every other track's cost
 claims should stand on. Source:
 [31](rea/31-deep-native-analysis.md) steal 5,
 [35](rea/35-skills-and-agent-layer.md) (measurement discipline, :102–105).
+
+## P40 — API-aware complexity mode reaches the prompt (shared + pipeline)
+
+**A setting nothing reads.** Callers set `AnalysisOptions::api_aware` and
+the flag travels through the pipeline, but no shared prompt builder looks
+at it — every builder branches on the complexity mode only, so choosing
+"API-aware" currently changes nothing about what the model sees. Either
+give the mode a job (prompts that lean on the decompiler's API context,
+naming the OS/library calls the function makes) or delete the flag until
+there is a design for it. Whichever way, reconcile the honest note now in
+`calxgloss-types`' `complexity.rs` with what gets built. Filed as
+[#365](https://github.com/scriptandcompile/calxgloss/issues/365) during the
+2026-10-28 plain-English sweep.
+
+## P41 — Producer for the `re/analysis/` per-function artifacts (pipeline + interface)
+
+**A panel that is always empty.** The workspace layout promises
+`re/analysis/{binary}/{function}.json` and the web function-detail "API
+Mapping" panel reads exactly that path — but no production tool ever writes
+the file, so the panel 404s on every real workspace. The translate pipeline
+already assembles the right data (`FunctionInfo`, including its API
+mappings) in memory and then drops it. Either persist it at analysis time
+in the documented layout, or back the panel with a live analysis endpoint
+and retire the file-layout promise; `docs/rea/02-workspace-layout.md`, the
+web handler's provenance note, and `FunctionInfo`'s docs all need
+reconciling either way. Filed as
+[#366](https://github.com/scriptandcompile/calxgloss/issues/366) during the
+2026-10-28 plain-English sweep.
