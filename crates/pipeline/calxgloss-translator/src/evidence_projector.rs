@@ -150,14 +150,29 @@ pub trait AnalysisDoc {
     /// a bundle that read no document fills no coverage, and the
     /// section beside this row renders as it did before P19.
     fn fill_coverage(_doc: &Self::Doc, _bundle: &mut EvidenceBundle) {}
+
+    /// The loaded document's own scan-coverage record, handed to the
+    /// coverage-residue derivation beside the fold (issue #369): every
+    /// facet it stamps `partial` or `unavailable` becomes one unknown
+    /// record in the batch's ledger residue. The default `None` serves
+    /// documents that state no coverage — a pre-P19 document's absence
+    /// reads as unknown and derives nothing, and absence never produces
+    /// a gap record.
+    fn coverage(_doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        None
+    }
 }
 
 /// The fold's step for one row, with the concrete types hidden away:
 /// each engine's document is its own type, and the registered
 /// documents cannot sit unboxed in one list, so
 /// [`ProjectionRow::of`] turns the whole seam into this one function
-/// pointer for each concrete document type.
-type ProjectStep = fn(Option<&Path>, &str, &str, &mut EvidenceBundle);
+/// pointer for each concrete document type. The residue sink collects
+/// the coverage-residue records the document's own admission derives
+/// (issue #369); the fold never fails on them, exactly as it never
+/// fails on the document itself.
+type ProjectStep =
+    fn(Option<&Path>, &str, &str, &mut EvidenceBundle, &mut Vec<calxgloss_types::UnknownRecord>);
 
 /// The shared contract, written once: run one adapter's three steps
 /// against the workspace and put the document's records into
@@ -175,6 +190,7 @@ pub fn load_and_project<D: AnalysisDoc>(
     binary: &str,
     function: &str,
     bundle: &mut EvidenceBundle,
+    residue: &mut Vec<calxgloss_types::UnknownRecord>,
 ) {
     let Some(workspace) = workspace else {
         // No workspace was ever configured — there is nothing to miss.
@@ -210,6 +226,24 @@ pub fn load_and_project<D: AnalysisDoc>(
     // document can never fill the bundle's coverage field twice
     // (issue #346).
     D::fill_coverage(&doc, bundle);
+
+    // The same admission that qualifies the prompt's section beside this
+    // row's findings also derives the ledger's coverage residue: every
+    // facet the document stamps `partial` or `unavailable` for this unit
+    // becomes one unknown record, in the coverage record's own facet
+    // order (issue #369). A document stating no coverage — a pre-P19
+    // document, whose absence reads as unknown — derives nothing here
+    // and at the libmatch read alike: absence never produces a gap
+    // record.
+    if let Some(coverage) = D::coverage(&doc) {
+        residue.extend(crate::coverage_residue::coverage_residue(
+            binary,
+            D::KIND,
+            function,
+            coverage,
+            calxgloss_types::scan::now_unix_secs(),
+        ));
+    }
 
     for record in D::for_function(&doc, function) {
         D::fill(record, bundle);
@@ -255,15 +289,18 @@ impl ProjectionRow {
         }
     }
 
-    /// Run this row's projection into `bundle`.
+    /// Run this row's projection into `bundle`, collecting the coverage
+    /// residue the document's own admission derives into `residue`
+    /// (issue #369).
     pub fn project(
         &self,
         workspace: Option<&Path>,
         binary: &str,
         function: &str,
         bundle: &mut EvidenceBundle,
+        residue: &mut Vec<calxgloss_types::UnknownRecord>,
     ) {
-        (self.step)(workspace, binary, function, bundle);
+        (self.step)(workspace, binary, function, bundle, residue);
     }
 }
 
@@ -280,9 +317,10 @@ pub fn project_bundle(
     workspace: Option<&Path>,
     binary: &str,
     function: &str,
+    residue: &mut Vec<calxgloss_types::UnknownRecord>,
 ) -> EvidenceBundle {
     let mut bundle = EvidenceBundle::default();
-    project_into(rows, workspace, binary, function, &mut bundle);
+    project_into(rows, workspace, binary, function, &mut bundle, residue);
     bundle
 }
 
@@ -291,16 +329,20 @@ pub fn project_bundle(
 /// rows through it after the shared loads and before returning, so the
 /// migrated engines contribute their fields and nothing else (issue
 /// #312). Rows run in table order; a row's degradation affects only
-/// its own field.
+/// its own field. The residue sink collects every coverage-residue
+/// record the read documents' own admissions derive, in row order and
+/// then the coverage record's facet order (issue #369) — the fold's
+/// deterministic scan order the batch's ledger files.
 pub fn project_into(
     rows: &[ProjectionRow],
     workspace: Option<&Path>,
     binary: &str,
     function: &str,
     bundle: &mut EvidenceBundle,
+    residue: &mut Vec<calxgloss_types::UnknownRecord>,
 ) {
     for row in rows {
-        row.project(workspace, binary, function, bundle);
+        row.project(workspace, binary, function, bundle, residue);
     }
 }
 
@@ -635,6 +677,7 @@ mod tests {
             Some(&path),
             "stamped.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         assert_eq!(
@@ -669,6 +712,7 @@ mod tests {
             Some(&path),
             "pre-p19.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         assert_eq!(bundle.type_info.len(), 1, "the records still project");
@@ -689,12 +733,14 @@ mod tests {
             Some(&path),
             "stampedmissing.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
         let corrupt = project_bundle(
             &[ProjectionRow::of::<FakeStampedCorruptDoc>()],
             Some(&path),
             "stampedcorrupt.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         for bundle in [missing, corrupt] {
@@ -719,6 +765,242 @@ mod tests {
         );
     }
 
+    // The residue-carrying fake (issue #369): a document holding the
+    // shared coverage record verbatim — same type, same facet order —
+    // surfaced through `coverage`, the way every real adapter surfaces
+    // its metadata entry, so the fold's residue leg is pinned against
+    // the shape it actually runs on.
+
+    struct FakeResidueDoc {
+        records: Vec<FakeRecord>,
+        coverage: Option<calxgloss_types::ScanCoverage>,
+    }
+
+    thread_local! {
+        /// The coverage record stored beside a fake document's records,
+        /// keyed like the fake store — the shape the engines stamp.
+        static FAKE_RESIDUE_COVERAGE:
+            RefCell<HashMap<(&'static str, String), calxgloss_types::ScanCoverage>> =
+            HashMap::new().into();
+    }
+
+    fn fake_residue_put(
+        kind: &'static str,
+        binary: &str,
+        records: Vec<FakeRecord>,
+        coverage: Option<calxgloss_types::ScanCoverage>,
+    ) {
+        fake_put(kind, binary, records);
+        if let Some(coverage) = coverage {
+            FAKE_RESIDUE_COVERAGE.with(|store| {
+                store
+                    .borrow_mut()
+                    .insert((kind, binary.to_string()), coverage);
+            });
+        }
+    }
+
+    /// One fake residue adapter: records from the ordinary fake store,
+    /// the coverage record from the beside-store, exposed through
+    /// `coverage` exactly as the fourteen real adapters override it.
+    macro_rules! fake_residue_doc {
+        ($name:ident, $kind:literal) => {
+            struct $name;
+
+            impl AnalysisDoc for $name {
+                const KIND: &'static str = $kind;
+                type Doc = FakeResidueDoc;
+                type Record<'a> = &'a FakeRecord;
+
+                fn load(_workspace: &Path, binary: &str) -> Result<Self::Doc, DocLoadError> {
+                    let records = fake_load(Self::KIND, binary)?;
+                    let coverage = FAKE_RESIDUE_COVERAGE.with(|store| {
+                        store
+                            .borrow()
+                            .get(&(Self::KIND, binary.to_string()))
+                            .cloned()
+                    });
+                    Ok(FakeResidueDoc { records, coverage })
+                }
+
+                fn for_function<'a>(
+                    doc: &'a Self::Doc,
+                    function: &str,
+                ) -> impl Iterator<Item = Self::Record<'a>> {
+                    doc.records.iter().filter(move |r| r.function == function)
+                }
+
+                fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
+                    bundle.type_info.push(TypeInfo::from(record));
+                }
+
+                fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+                    doc.coverage.as_ref()
+                }
+            }
+        };
+    }
+
+    fake_residue_doc!(FakeResidueAdmittingDoc, "fake admitting document");
+    fake_residue_doc!(FakeResidueQuietDoc, "fake quiet document");
+    fake_residue_doc!(FakeResidueBareDoc, "fake residue bare document");
+    fake_residue_doc!(FakeResidueMissingDoc, "fake residue missing document");
+    fake_residue_doc!(FakeResidueCorruptDoc, "fake residue corrupt document");
+
+    fn facet(
+        id: &str,
+        status: calxgloss_types::CoverageStatus,
+        limitation: Option<&str>,
+    ) -> calxgloss_types::FacetCoverage {
+        calxgloss_types::FacetCoverage {
+            id: id.to_string(),
+            status,
+            limitation: limitation.map(str::to_string),
+        }
+    }
+
+    #[traced_test]
+    #[test]
+    fn an_admitting_fold_document_feeds_the_residue_sink_in_facet_order() {
+        fake_residue_put(
+            FakeResidueAdmittingDoc::KIND,
+            "residue.dll",
+            vec![record("FUN_18003ab00", "one-reading", false)],
+            Some(calxgloss_types::ScanCoverage {
+                status: calxgloss_types::CoverageStatus::Partial,
+                facets: vec![
+                    facet(
+                        "function-bodies",
+                        calxgloss_types::CoverageStatus::Complete,
+                        None,
+                    ),
+                    facet(
+                        "program-strings",
+                        calxgloss_types::CoverageStatus::Partial,
+                        Some("half the strings decoded"),
+                    ),
+                    facet(
+                        "string-xrefs",
+                        calxgloss_types::CoverageStatus::Unavailable,
+                        None,
+                    ),
+                ],
+            }),
+        );
+        fake_residue_put(
+            FakeResidueQuietDoc::KIND,
+            "residue.dll",
+            vec![record("FUN_18003ab00", "quiet-reading", false)],
+            Some(calxgloss_types::ScanCoverage {
+                status: calxgloss_types::CoverageStatus::Complete,
+                facets: vec![
+                    facet(
+                        "function-bodies",
+                        calxgloss_types::CoverageStatus::Complete,
+                        None,
+                    ),
+                    facet(
+                        "delay-imports",
+                        calxgloss_types::CoverageStatus::Unexamined,
+                        None,
+                    ),
+                ],
+            }),
+        );
+        let (_workspace, path) = temp_workspace();
+        let mut residue = Vec::new();
+
+        let bundle = project_bundle(
+            &[
+                ProjectionRow::of::<FakeResidueAdmittingDoc>(),
+                ProjectionRow::of::<FakeResidueQuietDoc>(),
+            ],
+            Some(&path),
+            "residue.dll",
+            "FUN_18003ab00",
+            &mut residue,
+        );
+
+        assert_eq!(
+            bundle.type_info.len(),
+            2,
+            "the record legs run undisturbed beside the residue leg"
+        );
+        let slots: Vec<String> = residue.iter().map(|r| r.source_slot()).collect();
+        assert_eq!(
+            slots,
+            vec![
+                "fake admitting document#program-strings",
+                "fake admitting document#string-xrefs",
+            ],
+            "only the admitting facets derive, in the coverage record's own \
+             facet order, rows in table order; a document that admitted \
+             nothing stays silent"
+        );
+        assert_eq!(residue[0].kind, calxgloss_types::UnknownKind::CoverageFacet);
+        assert_eq!(residue[0].function.as_deref(), Some("FUN_18003ab00"));
+        assert_eq!(
+            residue[0].severity,
+            calxgloss_types::UnknownSeverity::Material,
+            "partial by its own admission"
+        );
+        assert_eq!(
+            residue[1].severity,
+            calxgloss_types::UnknownSeverity::Blocking,
+            "unavailable: the evidence never arrived at all"
+        );
+    }
+
+    #[traced_test]
+    #[test]
+    fn nothing_the_fold_cannot_read_feeds_the_residue_sink() {
+        fake_residue_put(
+            FakeResidueBareDoc::KIND,
+            "residuesilent.dll",
+            vec![record("FUN_18003ab00", "pre-p19-reading", false)],
+            None,
+        );
+        fake_corrupt(FakeResidueCorruptDoc::KIND, "residuesilent.dll");
+        let (_workspace, path) = temp_workspace();
+        let mut residue = Vec::new();
+
+        let bundle = project_bundle(
+            &[
+                // A pre-P19 document: present, but stating no coverage.
+                ProjectionRow::of::<FakeResidueBareDoc>(),
+                // No document at all, and an unparseable one.
+                ProjectionRow::of::<FakeResidueMissingDoc>(),
+                ProjectionRow::of::<FakeResidueCorruptDoc>(),
+            ],
+            Some(&path),
+            "residuesilent.dll",
+            "FUN_18003ab00",
+            &mut residue,
+        );
+        assert_eq!(
+            bundle.type_info.len(),
+            1,
+            "the bare document's records still project"
+        );
+
+        // The no-workspace path: the fold never even loads, so no residue
+        // can come of it either.
+        project_into(
+            &[ProjectionRow::of::<FakeResidueAdmittingDoc>()],
+            None,
+            "residue.dll",
+            "FUN_18003ab00",
+            &mut EvidenceBundle::default(),
+            &mut residue,
+        );
+
+        assert!(
+            residue.is_empty(),
+            "absence and unreadability read as unknown, and unknown never \
+             produces a gap record: {residue:?}"
+        );
+    }
+
     #[traced_test]
     #[test]
     fn a_persisted_document_projects_only_the_functions_records_in_order() {
@@ -738,6 +1020,7 @@ mod tests {
             Some(&path),
             "persisted.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         let names: Vec<&str> = bundle.type_info.iter().map(|t| t.name.as_str()).collect();
@@ -766,6 +1049,7 @@ mod tests {
             None,
             "nowrite.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         assert!(
@@ -788,6 +1072,7 @@ mod tests {
             Some(&path),
             "missingcase.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         assert!(
@@ -822,6 +1107,7 @@ mod tests {
             Some(&path),
             "corruptcase.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         assert!(
@@ -863,6 +1149,7 @@ mod tests {
             Some(&path),
             "sharedcase.dll",
             "FUN_18003ab00",
+            &mut Vec::new(),
         );
 
         assert_eq!(
@@ -912,12 +1199,24 @@ mod tests {
             ProjectionRow::of::<FakeFirstRowDoc>(),
             ProjectionRow::of::<FakeSecondRowDoc>(),
         ];
-        let bundle = project_bundle(&rows, Some(&path), "ordered.dll", "FUN_18003ab00");
+        let bundle = project_bundle(
+            &rows,
+            Some(&path),
+            "ordered.dll",
+            "FUN_18003ab00",
+            &mut Vec::new(),
+        );
         let names: Vec<&str> = bundle.type_info.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["first-row", "second-row"]);
 
         rows.reverse();
-        let bundle = project_bundle(&rows, Some(&path), "ordered.dll", "FUN_18003ab00");
+        let bundle = project_bundle(
+            &rows,
+            Some(&path),
+            "ordered.dll",
+            "FUN_18003ab00",
+            &mut Vec::new(),
+        );
         let names: Vec<&str> = bundle.type_info.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
             names,

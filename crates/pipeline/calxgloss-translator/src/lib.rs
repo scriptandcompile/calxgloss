@@ -21,6 +21,7 @@
 
 pub mod assembly;
 pub mod carry_over;
+pub mod coverage_residue;
 pub mod error;
 pub mod evidence_projector;
 mod pipeline;

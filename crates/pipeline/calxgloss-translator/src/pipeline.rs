@@ -310,6 +310,23 @@ pub struct TranslationPipeline {
     /// really go through. Prompts never ask again; they read this stored copy.
     seam_report: Mutex<calxgloss_types::CapabilityReport>,
 
+    /// The batch's coverage residue: the unknown records the units'
+    /// evidence folds have admitted so far (issue #369).
+    ///
+    /// `None` says no unit's fold has read a document yet this batch —
+    /// the ledger writer files nothing, because nothing has been looked
+    /// at; the absence of a ledger document reads as *unknown* by
+    /// ADR-0053's absent-field rule, and a writer that filed an empty
+    /// set nobody derived would fake a known-and-none. `Some` holds the
+    /// records in first-seen scan order, deduplicated by id: re-running
+    /// a unit's fold re-derives the same ids, never a second question
+    /// for one gap. Reset at the start of every batch; the per-binary
+    /// ledger merge ([`file_unknown_ledger`](Self::file_unknown_ledger))
+    /// folds this set against the landed document at every unit
+    /// boundary, so the document is always the current derived set —
+    /// never an append log.
+    coverage_residue: Mutex<Option<Vec<calxgloss_types::UnknownRecord>>>,
+
     /// The scan phase's fan-out high-water mark: the most evidence scans
     /// that ran at the same time during the latest
     /// [`run_prebatch_scans`](Self::run_prebatch_scans), recorded as each
@@ -416,6 +433,7 @@ impl TranslationPipeline {
             carry_over_seeds: Mutex::new(HashMap::new()),
             cached_source: Mutex::new(None),
             seam_report: Mutex::new(calxgloss_types::CapabilityReport::default()),
+            coverage_residue: Mutex::new(None),
             scan_window_high_water: Arc::new(AtomicUsize::new(0)),
             refresh_cache: false,
             stop: None,
@@ -1109,12 +1127,18 @@ impl TranslationPipeline {
                 // One pass over the analyzer caches (issue #268); the
                 // call-graph lists and the in-memory control-flow result are
                 // added on top of it.
-                let mut evidence = crate::retry::helpers::gather_function_evidence(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                    &function_info.call_graph,
-                );
+                // The fold reads the filed documents through the projection
+                // seam and derives their coverage residue beside the bundle:
+                // what the engines already admitted on disk for this unit,
+                // accumulated for the batch's ledger writer (issue #369).
+                let (mut evidence, residue) =
+                    crate::retry::helpers::gather_function_evidence_residue(
+                        self.workspace.as_deref(),
+                        &function_info.binary,
+                        function,
+                        &function_info.call_graph,
+                    );
+                self.record_coverage_residue(residue);
                 evidence.call_graph_neighbors =
                     crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
                         &enriched_context,
@@ -1133,12 +1157,18 @@ impl TranslationPipeline {
             }
             ContextTier::FullModule => {
                 // FullModule context tier: whole-module context + shim layer code + PAL traits
-                let mut evidence = crate::retry::helpers::gather_function_evidence(
-                    self.workspace.as_deref(),
-                    &function_info.binary,
-                    function,
-                    &function_info.call_graph,
-                );
+                // The fold reads the filed documents through the projection
+                // seam and derives their coverage residue beside the bundle:
+                // what the engines already admitted on disk for this unit,
+                // accumulated for the batch's ledger writer (issue #369).
+                let (mut evidence, residue) =
+                    crate::retry::helpers::gather_function_evidence_residue(
+                        self.workspace.as_deref(),
+                        &function_info.binary,
+                        function,
+                        &function_info.call_graph,
+                    );
+                self.record_coverage_residue(residue);
                 evidence.call_graph_neighbors =
                     crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
                         &enriched_context,
@@ -2224,6 +2254,102 @@ impl TranslationPipeline {
             .clone()
     }
 
+    /// Record one unit's coverage residue into the batch accumulator
+    /// (issue #369): the fold's per-unit derivations arrive in scan
+    /// order, and an id already admitted is never recorded twice — the
+    /// same gap re-derived is one question, not a second opinion. The
+    /// accumulator opening to `Some` is also the writer's signal that a
+    /// fold actually looked at this batch's documents.
+    fn record_coverage_residue(&self, residue: Vec<calxgloss_types::UnknownRecord>) {
+        let mut accumulator = self.coverage_residue.lock().expect("coverage residue lock");
+        let admitted = accumulator.get_or_insert_with(Vec::new);
+        for record in residue {
+            if !admitted.iter().any(|landed| landed.id == record.id) {
+                admitted.push(record);
+            }
+        }
+    }
+
+    /// File (or re-file) the batch's per-binary unknown ledger,
+    /// `re/unknowns/<binary identity>.json` (issue #369).
+    ///
+    /// The current derived set — every coverage-residue record the batch's
+    /// folds have admitted so far — merges through the shared
+    /// [`UnknownLedger::file`](calxgloss_types::UnknownLedger::file)
+    /// revision doctrine against the landed document: a re-run lands the
+    /// same ids, a revision bumps only when a persisted field actually
+    /// changed, and a reviewer's reopen mark fires exactly once. The
+    /// document is replaced outright, so it is always the current derived
+    /// set, never an append log — a source slot that stops deriving
+    /// simply stops landing.
+    ///
+    /// The reviewer's resolutions document feeds the merge and is never
+    /// touched: it is read here, and a corrupt or absent one reads as no
+    /// reopen marks — the reviewer's own artifact, whose trouble never
+    /// stops a batch. The pipeline's own landed ledger is different: an
+    /// unreadable one fails the write loudly rather than guess past the
+    /// document this write replaces. A batch whose folds never read a
+    /// document files nothing — the ledger's absence reads as *unknown*
+    /// (ADR-0053's absent-field rule), and filing a nothing nobody looked
+    /// at would be the dishonest known-and-none.
+    fn file_unknown_ledger(&self, binary: &str) -> Result<()> {
+        let Some(workspace) = self.workspace.as_ref() else {
+            // No workspace configured: nowhere to file, nothing read.
+            return Ok(());
+        };
+        let derived = self
+            .coverage_residue
+            .lock()
+            .expect("coverage residue lock")
+            .clone();
+        let Some(derived) = derived else {
+            return Ok(());
+        };
+        let identity = calxgloss_types::BinaryIdentity::new(binary);
+        let landed = match calxgloss_types::load_json::<calxgloss_types::UnknownLedger>(
+            &calxgloss_types::unknown_ledger_path(workspace, &identity),
+        ) {
+            Ok(ledger) => Some(ledger),
+            Err(calxgloss_types::PersistError::NotFound { .. }) => None,
+            Err(source) => {
+                return Err(TranslatorError::UnknownLedger {
+                    binary: binary.to_string(),
+                    source,
+                });
+            }
+        };
+        let reopened = match calxgloss_types::load_json::<calxgloss_types::UnknownResolutions>(
+            &calxgloss_types::unknown_resolutions_path(workspace),
+        ) {
+            Ok(resolutions) => resolutions.reopened,
+            Err(calxgloss_types::PersistError::NotFound { .. }) => Default::default(),
+            Err(e) => {
+                debug!(
+                    binary,
+                    error = %e,
+                    "The reviewer's unknown resolutions are unreadable; \
+                     filing the ledger without reopen marks"
+                );
+                Default::default()
+            }
+        };
+        let ledger = calxgloss_types::UnknownLedger::file(
+            identity.clone(),
+            landed.as_ref(),
+            &derived,
+            &reopened,
+            calxgloss_types::scan::now_unix_secs(),
+        );
+        calxgloss_types::save_json(
+            &calxgloss_types::unknown_ledger_path(workspace, &identity),
+            &ledger,
+        )
+        .map_err(|source| TranslatorError::UnknownLedger {
+            binary: binary.to_string(),
+            source,
+        })
+    }
+
     /// The source that every batch user — the [`ScanJob`]s the fifteen
     /// registered scans build, the call-graph build, and the
     /// retry/escalation helpers — reads program facts from: the batch's
@@ -2651,6 +2777,11 @@ impl TranslationPipeline {
         // unit starts.
         self.refresh_carry_over_seeds(binary, &functions);
 
+        // Coverage residue (issue #369): the batch's ledger write files the
+        // current derived set, so the previous batch's accumulated set
+        // starts out gone — what this batch's folds admit replaces it.
+        *self.coverage_residue.lock().expect("coverage residue lock") = None;
+
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
@@ -2862,6 +2993,11 @@ impl TranslationPipeline {
                 true
             };
 
+            // The unit is complete — file this binary's unknown ledger so
+            // the gaps the batch's folds admitted stand on disk even if
+            // the batch stops before its last unit (issue #369).
+            self.file_unknown_ledger(binary)?;
+
             if !continue_batch {
                 info!(binary, function, "Batch stopped early by callback");
                 break;
@@ -3010,6 +3146,11 @@ impl TranslationPipeline {
         // before its first unit starts.
         let queue_names: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
         self.refresh_carry_over_seeds(binary, &queue_names);
+
+        // Coverage residue (issue #369): the batch's ledger write files the
+        // current derived set, so the previous batch's accumulated set
+        // starts out gone — what this batch's folds admit replaces it.
+        *self.coverage_residue.lock().expect("coverage residue lock") = None;
 
         let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
 
@@ -3231,8 +3372,17 @@ impl TranslationPipeline {
                 true
             };
 
+            // The unit is complete — file this binary's unknown ledger so
+            // the gaps the batch's folds admitted stand on disk even if
+            // the batch stops before its last unit (issue #369).
+            self.file_unknown_ledger(binary)?;
+
             if !continue_batch {
-                info!(binary, function = %plan_func.name, "Batch stopped early by callback");
+                info!(
+                    binary,
+                    function = %plan_func.name,
+                    "Batch stopped early by callback"
+                );
                 break;
             }
         }
@@ -5130,6 +5280,281 @@ void SetCursor(void)
             on_disk.iter().any(|i| i.name.contains("puts"))
                 && !on_disk.iter().any(|i| i.name == "sentinel_import_xyz"),
             "the refresh must rewrite the cache, not just bypass it"
+        );
+    }
+
+    // ============================================================
+    // The batch's unknown ledger from coverage residue (issue #369)
+    // ============================================================
+
+    /// The ticket's demoable run: the fixture is scanned once, and the
+    /// filed string-context document is then re-stamped so two of its
+    /// declared facets admit falling short. A one-unit batch at the
+    /// forced ModuleContext tier reads that document through the fold
+    /// and files `re/unknowns/<binary>.json`: one record per admitting
+    /// facet, kind, severity, wording, origin and function all derived
+    /// from the admission on disk. The complete facet and the unexamined
+    /// gap stay silent; a re-run lands the same ids at the same
+    /// revisions; re-wording the admission bumps exactly that record; and
+    /// the reviewer's resolutions document is never touched.
+    #[tokio::test]
+    async fn a_batch_files_the_coverage_residue_of_the_documents_it_reads() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _binary_file) = cached_pipeline(dir.path());
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        // Scan the fixture once, cold: every seam document is filed with
+        // its engine's own coverage stamp.
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        let stringctx = StringContextPersistor::new(dir.path()).path_for(PROGRAM);
+        assert!(
+            stringctx.is_file(),
+            "the string-context scan files its document over the fixture"
+        );
+
+        // The admission, written onto the filed document itself: one body
+        // facet partial with its reason spelled, one xref facet that never
+        // arrived, and the strings facet left complete.
+        let mut doc: calxgloss_stringctx::types::StringContextResult =
+            calxgloss_types::load_json(&stringctx).expect("the filed string-context document");
+        doc.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("the bodies past the size cap were not read".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "program-strings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "string-xrefs".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: None,
+                },
+            ],
+        });
+        calxgloss_types::save_json(&stringctx, &doc).expect("the admission is written back");
+
+        // Kuna lists MinGW exports with the leading underscore; the unit
+        // name is the one the queue itself would use.
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let unit = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists fixture_status")
+            .name
+            .clone();
+
+        // A reviewer's settle for the record this batch is about to file,
+        // pre-filed so the byte-unchanged rule has something to hold.
+        let bodies_id =
+            format!("{PROGRAM}/{unit}/coverage_facet/string context result#function-bodies");
+        let resolutions_path = calxgloss_types::unknown_resolutions_path(dir.path());
+        std::fs::create_dir_all(resolutions_path.parent().expect("re/review")).expect("review dir");
+        calxgloss_types::save_json(
+            &resolutions_path,
+            &calxgloss_types::UnknownResolutions {
+                resolutions: [(
+                    bodies_id.clone(),
+                    calxgloss_types::UnknownResolution {
+                        disposition: calxgloss_types::UnknownDisposition::Dismissed,
+                        reason: "the cap is a scanner limit, not a question".to_string(),
+                        expected_revision: 1,
+                        at: 1_700_000_000,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                reopened: Default::default(),
+            },
+        )
+        .expect("the reviewer's settle is filed");
+        let resolutions_before = std::fs::read(&resolutions_path).expect("filed reviewer bytes");
+
+        // Force the unit's tier: only the tiers that read the evidence
+        // documents run the fold, and forcing pins that this one does.
+        let overrides = calxgloss_types::OverrideControl::new();
+        overrides
+            .set(
+                PROGRAM,
+                &unit,
+                calxgloss_types::FunctionOverride {
+                    tier_override: Some(calxgloss_types::ContextTier::ModuleContext),
+                    ..Default::default()
+                },
+            )
+            .expect("in-memory tier override");
+        let pipeline = pipeline.with_overrides(overrides);
+
+        // The unit's own translation outcome does not matter to the
+        // ledger: the fold runs while its prompt is built, and the unit's
+        // end flushes what the batch has admitted either way.
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                std::slice::from_ref(&unit),
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("a batch over one fixture function");
+
+        let ledger_path = calxgloss_types::unknown_ledger_path(
+            dir.path(),
+            &calxgloss_types::BinaryIdentity::new(PROGRAM),
+        );
+        let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
+            .expect("the batch files its unknown ledger beside the scans");
+        assert_eq!(
+            ledger.binary,
+            calxgloss_types::BinaryIdentity::new(PROGRAM),
+            "the ledger envelope names the binary it was filed for"
+        );
+        let records = ledger
+            .records
+            .expect("a batch whose fold read documents files a current set, never an absent key");
+        let admitted: Vec<&calxgloss_types::UnknownRecord> = records
+            .iter()
+            .filter(|r| {
+                matches!(&r.origin, calxgloss_types::UnknownOrigin::Document { document, .. }
+                    if document.as_str() == "string context result")
+            })
+            .collect();
+        assert_eq!(
+            admitted
+                .iter()
+                .map(|r| r.source_slot())
+                .collect::<Vec<String>>(),
+            vec![
+                "string context result#function-bodies",
+                "string context result#string-xrefs",
+            ],
+            "the two admitting facets file in the document's own facet order; \
+             the complete facet asks nothing"
+        );
+        let bodies = admitted[0];
+        assert_eq!(bodies.id, bodies_id, "the derivation is the shared one");
+        assert_eq!(bodies.kind, calxgloss_types::UnknownKind::CoverageFacet);
+        assert_eq!(bodies.function.as_deref(), Some(unit.as_str()));
+        assert_eq!(
+            bodies.severity,
+            calxgloss_types::UnknownSeverity::Material,
+            "partial by its own admission"
+        );
+        assert_eq!(
+            bodies.question,
+            format!(
+                "What is `{unit}` really doing — string context result admitted \
+                 `the bodies past the size cap were not read` on `function-bodies`?"
+            ),
+            "the question is built on the facet's own limitation line"
+        );
+        assert_eq!(
+            bodies.required_evidence,
+            "Full `function-bodies` coverage from the string context result"
+        );
+        assert_eq!(bodies.revision, 1, "a first landing starts at revision 1");
+        let first_seen = bodies.first_seen;
+        assert_eq!(
+            admitted[1].severity,
+            calxgloss_types::UnknownSeverity::Blocking,
+            "unavailable: the evidence never arrived at all"
+        );
+        assert_eq!(
+            admitted[1].question,
+            format!(
+                "What is `{unit}` really doing — string context result admitted \
+                 `unavailable` on `string-xrefs`?"
+            ),
+            "an entry that gave no reason falls back to its bare status word"
+        );
+
+        // A second batch over the same documents: same ids, same order,
+        // same revisions — a re-run never re-numbers a diff.
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                std::slice::from_ref(&unit),
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("the ledger re-run");
+        let refiled: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the re-filed ledger");
+        let again = refiled
+            .records
+            .expect("a current set every re-file")
+            .into_iter()
+            .map(|r| (r.id, r.revision, r.first_seen))
+            .collect::<Vec<_>>();
+        let landed = records
+            .into_iter()
+            .map(|r| (r.id, r.revision, r.first_seen))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            again, landed,
+            "re-runs land the same ids at the same revisions and first-seens"
+        );
+
+        // Re-wording the admission on disk is a real change: exactly that
+        // record bumps, and only above the landed revision.
+        let mut doc: calxgloss_stringctx::types::StringContextResult =
+            calxgloss_types::load_json(&stringctx).expect("the filed string-context document");
+        doc.metadata
+            .coverage
+            .as_mut()
+            .expect("the stamped coverage")
+            .facets[0]
+            .limitation = Some("the size cap stopped half the bodies short".to_string());
+        calxgloss_types::save_json(&stringctx, &doc).expect("the re-worded admission is filed");
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                std::slice::from_ref(&unit),
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("the batch after the re-worded admission");
+        let bumped: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the ledger after the bump");
+        let bumped = bumped.records.expect("a current set");
+        let bodies = bumped
+            .iter()
+            .find(|r| r.id == bodies_id)
+            .expect("the same record, one revision up");
+        assert_eq!(
+            bodies.revision, 2,
+            "a persisted field changed — exactly one bump"
+        );
+        assert_eq!(
+            bodies.first_seen, first_seen,
+            "the bump keeps the original first-seen"
+        );
+        assert!(
+            bodies
+                .question
+                .contains("the size cap stopped half the bodies short"),
+            "the landed question carries the re-worded admission"
+        );
+
+        // The reviewer's own document stands untouched through every one
+        // of these writes.
+        assert_eq!(
+            std::fs::read(&resolutions_path).expect("the reviewer document after the writes"),
+            resolutions_before,
+            "the ledger write never touches the reviewer's resolutions document"
         );
     }
 

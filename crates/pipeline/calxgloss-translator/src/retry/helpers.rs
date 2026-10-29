@@ -161,18 +161,49 @@ pub fn gather_function_evidence(
     function: &str,
     call_graph: &[String],
 ) -> EvidenceBundle {
+    gather_function_evidence_residue(workspace, binary, function, call_graph).0
+}
+
+/// The per-unit evidence fold, additionally returning its coverage
+/// residue: the unknown records derived from every filed document the
+/// fold read that admitted a facet `partial` or `unavailable` for this
+/// unit, in the fold's deterministic scan order — the libmatch document
+/// read first, outside the seam, then the fourteen folded documents in
+/// table order and each coverage record's own facet order (issue #369).
+/// The batch accumulates these and files the per-binary ledger; nothing
+/// here files anything itself, and a document stating no coverage
+/// contributes nothing — absence never produces a gap record.
+pub fn gather_function_evidence_residue(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+    call_graph: &[String],
+) -> (EvidenceBundle, Vec<calxgloss_types::UnknownRecord>) {
     // The libmatch document is loaded once here: its findings join the live
     // call-graph neighbor list outside the projection fold — the correlation
     // is not a per-function fold row — and its coverage record, what the
     // libmatch scan admitted about the bodies it read, sits beside those
     // findings (issue #347). A document stating no coverage, or complete
     // coverage, leaves the qualification field default-empty, exactly the
-    // pre-P19 render.
+    // pre-P19 render — and derives no residue either (issue #369).
     let libmatch = load_libmatch_result(workspace, binary);
     let libmatch_coverage = libmatch
         .as_ref()
         .and_then(|document| document.metadata.coverage.as_ref())
         .map(calxgloss_prompts::CoverageInfo::from)
+        .unwrap_or_default();
+    let mut residue = libmatch
+        .as_ref()
+        .and_then(|document| document.metadata.coverage.as_ref())
+        .map(|coverage| {
+            crate::coverage_residue::coverage_residue(
+                binary,
+                crate::coverage_residue::LIBMATCH_DOCUMENT,
+                function,
+                coverage,
+                calxgloss_types::scan::now_unix_secs(),
+            )
+        })
         .unwrap_or_default();
     let mut evidence = EvidenceBundle {
         libmatch_findings: libmatch_hints_from(libmatch.as_ref(), function, call_graph),
@@ -190,8 +221,9 @@ pub fn gather_function_evidence(
         binary,
         function,
         &mut evidence,
+        &mut residue,
     );
-    evidence
+    (evidence, residue)
 }
 
 /// Extract call graph neighbor details from an enriched context list.
@@ -3764,6 +3796,139 @@ mod tests {
             bundle.recognized_algorithms.is_empty()
                 && bundle.algorithm_coverage.admission.is_empty(),
             "a corrupt algorithm document fills neither hints nor coverage"
+        );
+    }
+
+    /// The gather's residue leg (issue #369): documents admitted `partial`
+    /// and `unavailable` facets for this unit become one unknown record
+    /// each, returned in the fold's scan order — the libmatch document read
+    /// outside the seam first, then the folded rows — while the bundle
+    /// itself is exactly what the plain gather assembles. A complete facet
+    /// and a pre-P19 document derive nothing.
+    #[test]
+    fn the_gather_returns_coverage_residue_for_every_admitted_shortfall() {
+        let dir = TempDir::new().expect("temp workspace should be created");
+
+        // The algorithm document, stamped exactly as the #347 pin stamps
+        // it: one `partial` facet with a limitation line and one
+        // `unavailable` facet beside a `complete` one.
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("1 function body unreached: FUN_180070010".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "caller-edges".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: None,
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "constant-signatures".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+            ],
+        });
+        let mut result = calxgloss_algorithm::types::AlgorithmRecognitionResult::new(metadata);
+        result.hints = vec![algorithm_hint("FUN_18003ab00", "CRC-32")];
+        calxgloss_algorithm::persist::AlgorithmPersistor::new(dir.path())
+            .save(&result)
+            .expect("the stamped algorithm result should be saved");
+
+        // The libmatch document, read outside the fold but admitted by
+        // the same gather: one facet it could not examine at all.
+        let mut metadata = ScanMetadata::new("eqmain.dll");
+        metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Unavailable,
+                    limitation: Some("the matcher read no body".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "callee-signatures".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+            ],
+        });
+        let libmatch = calxgloss_libmatch::types::LibmatchResult::new(metadata);
+        calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path())
+            .save(&libmatch)
+            .expect("the stamped libmatch result should be saved");
+
+        let (bundle, residue) =
+            gather_function_evidence_residue(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(
+            bundle.recognized_algorithms.len(),
+            1,
+            "the residue leg never disturbs the bundle"
+        );
+        assert_eq!(bundle.algorithm_coverage.status, "partial");
+
+        let slots: Vec<String> = residue.iter().map(|r| r.source_slot()).collect();
+        assert_eq!(
+            slots,
+            vec![
+                // libmatch reads first, outside the seam — hence first.
+                "known-library result#function-bodies",
+                // Then the folded rows in table order, and each coverage
+                // record's own facet order.
+                "algorithm recognition result#function-bodies",
+                "algorithm recognition result#caller-edges",
+            ],
+            "the admitted shortfalls derive in the fold's scan order"
+        );
+        assert_eq!(
+            residue[0].id,
+            "eqmain.dll/FUN_18003ab00/coverage_facet/known-library result#function-bodies",
+            "the function-scoped id names the document and the facet"
+        );
+        assert_eq!(
+            residue[1].severity,
+            calxgloss_types::UnknownSeverity::Material,
+            "partial by its own admission"
+        );
+        assert_eq!(
+            residue[2].severity,
+            calxgloss_types::UnknownSeverity::Blocking,
+            "unavailable: the evidence never arrived at all"
+        );
+
+        // The plain gather sees the same bundle and keeps no residue of
+        // its own — the caller that does not want the records loses
+        // nothing.
+        let plain = gather_function_evidence(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert_eq!(plain.libmatch_coverage, bundle.libmatch_coverage);
+        assert_eq!(plain.algorithm_coverage, bundle.algorithm_coverage);
+    }
+
+    /// A pre-P19 document — no coverage entry at all — contributes no
+    /// residue: absence never produces a gap record (issue #369), at the
+    /// gather exactly as at the fold.
+    #[test]
+    fn a_gather_over_pre_p19_documents_derives_no_residue() {
+        let dir = TempDir::new().expect("temp workspace should be created");
+        persist_hints(&dir, vec![algorithm_hint("FUN_18003ab00", "CRC-32")]);
+        persist_libmatch_findings(
+            &dir,
+            vec![libmatch_finding(
+                "malloc",
+                "free",
+                calxgloss_libmatch::types::LibraryFamily::Crt,
+            )],
+        );
+
+        let (_, residue) =
+            gather_function_evidence_residue(Some(dir.path()), "eqmain.dll", "FUN_18003ab00", &[]);
+        assert!(
+            residue.is_empty(),
+            "documents stating no coverage leave nothing for the ledger to derive: {residue:?}"
         );
     }
 

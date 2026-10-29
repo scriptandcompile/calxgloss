@@ -87,6 +87,18 @@ pub enum TranslatorError {
     /// not be created).
     #[error("verifier setup failed: {0}")]
     VerifierSetup(anyhow::Error),
+
+    /// The batch's unknown-ledger write failed (issue #369): either the
+    /// landed ledger document was unreadable — the merge never guesses
+    /// past a document it is about to replace — or filing the new one
+    /// did. It is named for its binary so an operator can investigate
+    /// the artifact the way the corrupt-document doctrine asks.
+    #[error("unknown ledger for '{binary}' could not be filed: {source}")]
+    UnknownLedger {
+        binary: String,
+        #[source]
+        source: calxgloss_types::PersistError,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, TranslatorError>;

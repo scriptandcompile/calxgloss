@@ -76,6 +76,10 @@ impl AnalysisDoc for AlgorithmDoc {
             .push(calxgloss_prompts::AlgorithmInfo::from(record));
     }
 
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
+    }
+
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
         // Only a document that carries a coverage record fills one; a
         // pre-P19 document, whose field's absence reads as no record,
@@ -122,6 +126,10 @@ impl AnalysisDoc for MemoryDoc {
         bundle
             .memory_findings
             .push(calxgloss_prompts::MemoryInfo::from(record));
+    }
+
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
     }
 
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
@@ -172,6 +180,10 @@ impl AnalysisDoc for SyncDoc {
             .push(calxgloss_prompts::ConcurrencyInfo::from(record));
     }
 
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
+    }
+
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
         // Only a document that carries a coverage record fills one; a
         // pre-P19 document, whose field's absence reads as no record,
@@ -218,6 +230,10 @@ impl AnalysisDoc for StringContextDoc {
         bundle
             .string_findings
             .push(calxgloss_prompts::StringContextInfo::from(record));
+    }
+
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
     }
 
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
@@ -271,6 +287,10 @@ impl AnalysisDoc for ApiDoc {
             .push(calxgloss_prompts::ApiInfo::from(record));
     }
 
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
+    }
+
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
         // Only a document that carries a coverage record fills one; a
         // pre-P19 document, whose field's absence reads as no record,
@@ -316,6 +336,10 @@ impl AnalysisDoc for FloatsimdDoc {
         bundle
             .floatsimd_findings
             .push(calxgloss_prompts::FloatsimdInfo::from(record));
+    }
+
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
     }
 
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
@@ -417,6 +441,10 @@ impl AnalysisDoc for TypeDatabaseDoc {
         bundle.data_structures.push(structure);
     }
 
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
+    }
+
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
         // Only a document that carries a coverage record fills one; a
         // pre-P19 document, whose field's absence reads as no record,
@@ -467,6 +495,10 @@ impl AnalysisDoc for SerializationDoc {
             .push(calxgloss_prompts::SerializationInfo::from(record));
     }
 
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
+    }
+
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
         // Only a document that carries a coverage record fills one; a
         // pre-P19 document, whose field's absence reads as no record,
@@ -513,6 +545,10 @@ impl AnalysisDoc for CallbackDoc {
         bundle
             .callback_findings
             .push(calxgloss_prompts::CallbackInfo::from(record));
+    }
+
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
     }
 
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
@@ -570,6 +606,10 @@ impl AnalysisDoc for ControlFlowDoc {
             .push(calxgloss_prompts::ControlFlowInfo::from(record));
     }
 
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
+    }
+
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
         // Only a document that carries a coverage record fills one; a
         // pre-P19 document, whose field's absence reads as no record,
@@ -623,6 +663,10 @@ impl AnalysisDoc for ErrorHandlingDoc {
             .push(calxgloss_prompts::ErrhandlingInfo::from(record));
     }
 
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
+    }
+
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
         // Only a document that carries a coverage record fills one; a
         // pre-P19 document, whose field's absence reads as no record,
@@ -674,6 +718,10 @@ impl AnalysisDoc for GlobalStateDoc {
         bundle
             .global_state_findings
             .push(calxgloss_prompts::GlobalStateInfo::from(record));
+    }
+
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
     }
 
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
@@ -737,6 +785,10 @@ impl AnalysisDoc for ConstsDoc {
         bundle
             .const_findings
             .push(calxgloss_prompts::ConstInfo::from(record));
+    }
+
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
     }
 
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
@@ -809,6 +861,10 @@ impl AnalysisDoc for TypeInferDoc {
             }
             _ => {}
         }
+    }
+
+    fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {
+        doc.metadata.coverage.as_ref()
     }
 
     fn fill_coverage(doc: &Self::Doc, bundle: &mut EvidenceBundle) {
