@@ -118,7 +118,7 @@ fn show_with_no_filed_document_fails_naming_the_producing_command() {
 }
 
 #[test]
-fn a_ridden_flag_free_command_prints_the_same_report_run_and_show() {
+fn a_routed_flag_free_command_prints_the_same_report_run_and_show() {
     // One of the eleven flag-free commands moved onto the generic handler
     // (issue #340), seen here at the process seam: `controlflow` scans the
     // fixture and files its document at the row's own path, and the run's

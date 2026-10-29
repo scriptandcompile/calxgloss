@@ -1374,7 +1374,8 @@ mod tests {
     /// test pins the roster against its spelled list, so a row enters
     /// only by review; this test pins every roster row to exactly one
     /// CLI contribution. Completeness follows: the behavior suite's
-    /// walk `every_ridden_command_files_shows_rescans_and_survives_a_failed_rescan`
+    /// walks — the `walk_<cli>` end-to-end suite in
+    /// `crates/interface/calxgloss-cli/tests/scan_command.rs` —
     /// drives the very entries read here, so a green pairing means
     /// every evidence engine in the roster is pinned through the
     /// generic handler.
@@ -1666,7 +1667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_callback_riding_observes_the_cached_type_inference() {
+    async fn the_callback_scan_observes_the_cached_type_inference() {
         // The enrichment the old CLI built by hand now runs through the
         // row's own pre-scan hook: with a filed type-inference document
         // the `callback-detection` row composes real callable contracts
