@@ -53,10 +53,10 @@
 //! today — the translate/auto paths, never a scan command — so this
 //! handler never calls it.
 //!
-//! The table is complete (issue #341): all fifteen scan commands ride
-//! through [`ride`], which maps each clap variant onto its entry and
-//! flags, and one `main.rs` arm drives them all. The three last riders
-//! keep their command-specific flags in [`ScanFlags`]: the set-override
+//! The table is complete (issue #341): all fifteen scan commands route
+//! through [`route`], which maps each clap variant onto its entry and
+//! flags, and one `main.rs` arm drives them all. The three commands that carry their own
+//! flags keep them in [`ScanFlags`]: the set-override
 //! file (`algorithm --patterns`, `libmatch --signatures`) reaches the
 //! row's evidence engine build through the registry's own options
 //! record, and the type-inference write-back runs in the entry's
@@ -430,19 +430,19 @@ pub(crate) async fn handle_scan_command(
     Ok(())
 }
 
-/// The ride table (issues #339–#341): for every clap variant that
+/// The route table (issues #339–#341): for every clap variant that
 /// reaches a registry row through the generic handler, it gives the
 /// module's contribution entry and the [`ScanFlags`] read off that
 /// variant. The `main.rs` arm matches exactly these variants and hands
 /// the pair to [`handle_scan_command`]. The only variant outside the
-/// table is `bdiff`: it has no row to ride, so it keeps its dedicated
+/// table is `bdiff`: it has no row to route, so it keeps its dedicated
 /// pure-report arm. Adding a command to the table means one entry here
 /// and one variant in the arm; the suite's roster assertion below pins
 /// the two together. Adding an evidence engine means one registry row
 /// plus one small contribution entry; the pairing tests below pin the
 /// contribution table against the registry roster one-for-one, so the
 /// pair can never drift silently (issue #342).
-pub(crate) fn ride(command: &crate::cli_types::Command) -> Option<(ScanContribution, ScanFlags)> {
+pub(crate) fn route(command: &crate::cli_types::Command) -> Option<(ScanContribution, ScanFlags)> {
     use crate::cli_types::Command;
     let (entry, flags) = match command {
         Command::Typesdb {
@@ -581,7 +581,7 @@ pub(crate) fn ride(command: &crate::cli_types::Command) -> Option<(ScanContribut
                 confidence_floor: 0,
             },
         ),
-        // The three flag-carrying riders (issue #341): each variant's
+        // The three commands with their own flags (issue #341): each variant's
         // own extra flag reaches the row's evidence engine build or the
         // entry's post-scan step through the flags below, interpreted by
         // the entry alone.
@@ -673,7 +673,7 @@ mod tests {
         Settings::resolve(&layers, flags, &loaded)
     }
 
-    /// Build the `typesdb` shape of flags — the shape `ride` produces
+    /// Build the `typesdb` shape of flags — the shape `route` produces
     /// for the type-database entry.
     fn typesdb_flags(no_tag: bool) -> ScanFlags {
         ScanFlags {
@@ -687,8 +687,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_ridden_typesdb_entry_files_the_document_and_the_declarations() {
-        // The whole ride end to end: the generic command files the
+    async fn the_routed_typesdb_entry_files_the_document_and_the_declarations() {
+        // The whole route end to end: the generic command files the
         // document at the row's own `document_path`, the post-scan step
         // writes the declarations, and the run succeeds.
         let ws = fixture_workspace();
@@ -700,7 +700,7 @@ mod tests {
             &settings_over(ws.path()),
         )
         .await
-        .expect("the typesdb ride succeeds over the fixture");
+        .expect("the typesdb scan succeeds over the fixture");
 
         let row = scan_rows()
             .into_iter()
@@ -768,7 +768,7 @@ mod tests {
             &settings_over(ws.path()),
         )
         .await
-        .expect("the scan ride succeeds");
+        .expect("the scan succeeds");
         std::fs::remove_file(ws.path().join("fixture-target")).expect("target gone");
 
         handle_scan_command(
@@ -803,7 +803,7 @@ mod tests {
             &settings_over(ws.path()),
         )
         .await
-        .expect("the first ride succeeds");
+        .expect("the first run succeeds");
 
         let persistor = TypeDatabasePersistor::new(ws.path());
         let filed = persistor.path_for("fixture-target");
@@ -951,7 +951,7 @@ mod tests {
             &settings,
         )
         .await
-        .expect("the overridden algorithm ride succeeds");
+        .expect("the overridden algorithm run succeeds");
         let document = calxgloss_algorithm::persist::AlgorithmPersistor::new(ws.path())
             .load("fixture-target")
             .expect("the overridden run filed an algorithm document");
@@ -985,7 +985,7 @@ mod tests {
             &settings,
         )
         .await
-        .expect("the overridden libmatch ride succeeds");
+        .expect("the overridden libmatch run succeeds");
         let document = calxgloss_libmatch::persist::LibmatchPersistor::new(ws.path())
             .load("fixture-target")
             .expect("the overridden run filed a known-library document");
@@ -1073,7 +1073,7 @@ mod tests {
             .await
             .expect("the scan path applies the write-back under the flag");
         let document = ws.path().join("re/analysis/typeinfer/fixture-target.json");
-        assert!(document.is_file(), "the ride files at {document:?}");
+        assert!(document.is_file(), "the scan files at {document:?}");
 
         handle_scan_command(
             &entry,
@@ -1128,7 +1128,7 @@ mod tests {
             &settings,
         )
         .await
-        .expect("the plain typeinfer ride files the document");
+        .expect("the plain typeinfer run files the document");
         std::fs::remove_file(ws.path().join("fixture-target")).expect("target gone");
 
         let error = handle_scan_command(
@@ -1153,11 +1153,11 @@ mod tests {
         );
     }
 
-    /// The ride table's roster as (CLI command name, entry) pairs — the
+    /// The route table's roster as (CLI command name, entry) pairs — the
     /// behavior suite's and the pairing tests' driver. A command joining
-    /// or leaving the generic path changes here, in `ride`, and in the
+    /// or leaving the generic path changes here, in `route`, and in the
     /// `main.rs` arm together; the roster assertion below pins the three.
-    fn ridden_table() -> Vec<(&'static str, ScanContribution)> {
+    fn routed_table() -> Vec<(&'static str, ScanContribution)> {
         use crate::commands::{
             algorithm, apidetect, callback, consts, controlflow, errhandling, floatsimd,
             globalstate, libmatch, memory, serialize, stringctx, sync, typeinfer,
@@ -1183,7 +1183,7 @@ mod tests {
 
     /// The fifteen clap variants the `main.rs` arm routes, all over the
     /// fixture binary with the flags at their defaults.
-    fn ridden_commands() -> Vec<crate::cli_types::Command> {
+    fn routed_commands() -> Vec<crate::cli_types::Command> {
         use crate::cli_types::Command;
         let binary = || "fixture-target".to_string();
         vec![
@@ -1256,11 +1256,11 @@ mod tests {
     }
 
     #[test]
-    fn the_ride_table_maps_each_ridden_variant_to_its_own_entry() {
-        // The `main.rs` arm, `ride`, and the contribution modules are one
+    fn the_route_table_maps_each_routed_variant_to_its_own_entry() {
+        // The `main.rs` arm, `route`, and the contribution modules are one
         // roster: every routed variant yields its entry and its flags,
         // and the fifteen rows they serve are exactly the registry's.
-        let entries = ridden_table();
+        let entries = routed_table();
         assert_eq!(
             entries
                 .iter()
@@ -1283,31 +1283,31 @@ mod tests {
                 "known-library",
                 "type-inference",
             ],
-            "the ride roster is the fifteen scan commands"
+            "the route roster is the fifteen scan commands"
         );
-        let commands = ridden_commands();
+        let commands = routed_commands();
         assert_eq!(commands.len(), entries.len());
         for (command, (cli, entry)) in commands.iter().zip(&entries) {
-            let (ridden, flags) = ride(command).unwrap_or_else(|| panic!("{cli} must ride"));
-            assert_eq!(ridden.row, entry.row, "{cli} rides its own entry");
+            let (routed, flags) = route(command).unwrap_or_else(|| panic!("{cli} must route"));
+            assert_eq!(routed.row, entry.row, "{cli} routes to its own entry");
             assert_eq!(flags.binary, "fixture-target");
             assert!(!flags.show, "the routed variants parse show off by default");
             assert!(
                 !flags.no_tag,
-                "only the typesdb variant carries --no-tag; the others ride with it off"
+                "only the typesdb variant carries --no-tag; the others default it off"
             );
             assert!(
                 flags.set_override_file.is_none(),
                 "only the algorithm and libmatch variants carry a set override; \
-                 the others ride with it unset"
+                 the others leave it unset"
             );
             assert!(
                 !flags.write_back,
-                "only the typeinfer variant carries --write-back; the others ride without it"
+                "only the typeinfer variant carries --write-back; the others run without it"
             );
         }
 
-        // Each command's own extra flags ride along on their own
+        // Each command's own extra flags arrive on their own
         // variants: the set-override paths and the write-back pair
         // arrive on the flags exactly as clap parsed them.
         use crate::cli_types::Command;
@@ -1330,28 +1330,28 @@ mod tests {
                 "libmatch",
             ),
         ] {
-            let (_, flags) = ride(&command).unwrap_or_else(|| panic!("{named} must ride"));
+            let (_, flags) = route(&command).unwrap_or_else(|| panic!("{named} must route"));
             assert_eq!(
                 flags.set_override_file.as_deref(),
                 Some(override_path.as_path()),
-                "{named}'s set-override flag arrives on the ride flags"
+                "{named}'s set-override flag arrives on the routed flags"
             );
         }
-        let (_, flags) = ride(&Command::Typeinfer {
+        let (_, flags) = route(&Command::Typeinfer {
             binary: "fixture-target".to_string(),
             show: true,
             write_back: true,
             confidence_floor: 99,
         })
-        .expect("typeinfer rides");
+        .expect("typeinfer routes through the table");
         assert!(flags.show);
         assert!(flags.write_back);
         assert_eq!(flags.confidence_floor, 99);
 
         // Outside the table: the cross-binary diff has no registry row
-        // to ride at all, and keeps its pure-report arm.
+        // to route at all, and keeps its pure-report arm.
         assert!(
-            ride(&Command::Bdiff {
+            route(&Command::Bdiff {
                 binary: "fixture-target".to_string(),
             })
             .is_none(),
@@ -1406,7 +1406,7 @@ mod tests {
     fn the_cli_contribution_table_pairs_one_for_one_with_the_registry_roster() {
         // Fifteen entries against fifteen rows, green: both sides read
         // from their own tables' data, never a spelled list of names.
-        let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
+        let entry_rows: Vec<&str> = routed_table().iter().map(|(_, entry)| entry.row).collect();
         let roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
         assert_eq!(entry_rows.len(), 15, "one CLI entry per scan command");
         assert_eq!(
@@ -1424,11 +1424,10 @@ mod tests {
 
     #[test]
     fn the_pairing_fails_when_a_roster_row_has_no_cli_entry() {
-        // Proven in-test with a fixture row: what a new evidence
-        // engine's registry row looks like before its CLI contribution
-        // is reviewed must come back as a fault — the pin bites before
-        // any real drift.
-        let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
+        // Proven in-test with a fixture row: what a new evidence engine's
+        // registry row looks like before its CLI contribution is reviewed
+        // must come back as a fault — the pin fires before any real drift.
+        let entry_rows: Vec<&str> = routed_table().iter().map(|(_, entry)| entry.row).collect();
         let mut roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
         roster_rows.push("fixture-row-without-a-cli-entry");
 
@@ -1449,7 +1448,7 @@ mod tests {
         // naming a row the roster does not hold faults. And one-for-one
         // means exactly one — a fixture entry crowding onto a row that
         // already has its entry faults too.
-        let entry_rows: Vec<&str> = ridden_table().iter().map(|(_, entry)| entry.row).collect();
+        let entry_rows: Vec<&str> = routed_table().iter().map(|(_, entry)| entry.row).collect();
         let roster_rows: Vec<&str> = scan_rows().iter().map(|row| row.name()).collect();
 
         let mut orphaned = entry_rows.clone();
@@ -1480,7 +1479,7 @@ mod tests {
 
     /// One entry's full scenario walk. `--show` over an unscanned
     /// workspace fails, naming the exact command that would produce
-    /// the document. The scan ride succeeds and files the document at
+    /// the document. The scan succeeds and files the document at
     /// the row's own path, and the report prints on that same success
     /// path; the entry can read the document back. The re-scan
     /// replaces the filed document outright — the CLI never adopts the
@@ -1488,7 +1487,7 @@ mod tests {
     /// document in place. And a `--show` over the filed document with
     /// the target gone succeeds: the entry never loads the Kuna engine
     /// to report what it already holds.
-    async fn ride_one(cli: &'static str, entry: &ScanContribution) {
+    async fn walk_one(cli: &'static str, entry: &ScanContribution) {
         let ws = fixture_workspace();
         let settings = settings_over(ws.path());
         let flags = ScanFlags {
@@ -1526,11 +1525,11 @@ mod tests {
             "the {cli} remediation names the exact producing command, got: {error}"
         );
 
-        // Scenario: the scan ride succeeds and files the document
+        // Scenario: the scan succeeds and files the document
         // at the row's own path, readable back through the entry.
         handle_scan_command(entry, &flags, ws.path(), &settings)
             .await
-            .unwrap_or_else(|e| panic!("the {cli} ride must succeed: {e}"));
+            .unwrap_or_else(|e| panic!("the {cli} scan must succeed: {e}"));
         let row = scan_rows()
             .into_iter()
             .find(|row| row.name() == entry.row)
@@ -1595,39 +1594,39 @@ mod tests {
         .unwrap_or_else(|e| panic!("a {cli} --show over a filed document needs no engine: {e}"));
     }
 
-    /// The one entry the ride table holds for `cli`.
-    fn ridden_entry(cli: &'static str) -> ScanContribution {
-        ridden_table()
+    /// The one entry the route table holds for `cli`.
+    fn routed_entry(cli: &'static str) -> ScanContribution {
+        routed_table()
             .into_iter()
             .find(|(name, _)| *name == cli)
-            .unwrap_or_else(|| panic!("the ride table holds a {cli} entry"))
+            .unwrap_or_else(|| panic!("the route table holds a {cli} entry"))
             .1
     }
 
     /// The fifteen walk tests below and the completeness guard both
     /// expand from this one listing, so an evidence engine joining the
-    /// ride table gets its own walk test or the guard fails.
-    macro_rules! for_each_ridden_cli {
+    /// route table gets its own walk test or the guard fails.
+    macro_rules! for_each_routed_cli {
         ($f:ident) => {
-            $f!(rides_typesdb, "typesdb");
-            $f!(rides_controlflow, "controlflow");
-            $f!(rides_memory, "memory");
-            $f!(rides_sync, "sync");
-            $f!(rides_globalstate, "globalstate");
-            $f!(rides_consts, "consts");
-            $f!(rides_errhandling, "errhandling");
-            $f!(rides_floatsimd, "floatsimd");
-            $f!(rides_stringctx, "stringctx");
-            $f!(rides_apidetect, "apidetect");
-            $f!(rides_serialize, "serialize");
-            $f!(rides_callback, "callback");
-            $f!(rides_algorithm, "algorithm");
-            $f!(rides_libmatch, "libmatch");
-            $f!(rides_typeinfer, "typeinfer");
+            $f!(walk_typesdb, "typesdb");
+            $f!(walk_controlflow, "controlflow");
+            $f!(walk_memory, "memory");
+            $f!(walk_sync, "sync");
+            $f!(walk_globalstate, "globalstate");
+            $f!(walk_consts, "consts");
+            $f!(walk_errhandling, "errhandling");
+            $f!(walk_floatsimd, "floatsimd");
+            $f!(walk_stringctx, "stringctx");
+            $f!(walk_apidetect, "apidetect");
+            $f!(walk_serialize, "serialize");
+            $f!(walk_callback, "callback");
+            $f!(walk_algorithm, "algorithm");
+            $f!(walk_libmatch, "libmatch");
+            $f!(walk_typeinfer, "typeinfer");
         };
     }
 
-    // The behavior suite over the whole ride table (issues #339-#341):
+    // The behavior suite over the whole route table (issues #339-#341):
     // every entry the pairing tests pin green also runs this walk, so
     // the fifteen entries here are the whole table - every evidence
     // engine in the roster is pinned through the generic handler
@@ -1635,20 +1634,20 @@ mod tests {
     // the fifteen walks loads its own Kuna engine. As a single test
     // they would run the whole table serially - over three minutes -
     // while as separate tests the scans overlap across test threads.
-    macro_rules! define_ride_test {
+    macro_rules! define_walk_test {
         ($name:ident, $cli:literal) => {
             #[tokio::test]
             async fn $name() {
-                let entry = ridden_entry($cli);
-                ride_one($cli, &entry).await;
+                let entry = routed_entry($cli);
+                walk_one($cli, &entry).await;
             }
         };
     }
-    for_each_ridden_cli!(define_ride_test);
+    for_each_routed_cli!(define_walk_test);
 
     #[test]
-    fn every_ridden_cli_gets_its_own_walk_test() {
-        // The completeness half of splitting the suite: a ride-table
+    fn every_routed_cli_gets_its_own_walk_test() {
+        // The completeness half of splitting the suite: a route-table
         // entry the walk-test macro does not name would quietly drop out
         // of the behavior suite.
         let mut walked = Vec::new();
@@ -1657,12 +1656,12 @@ mod tests {
                 walked.push($cli);
             };
         }
-        for_each_ridden_cli!(collect_cli);
+        for_each_routed_cli!(collect_cli);
 
-        let table: Vec<&str> = ridden_table().into_iter().map(|(cli, _)| cli).collect();
+        let table: Vec<&str> = routed_table().into_iter().map(|(cli, _)| cli).collect();
         assert_eq!(
             walked, table,
-            "each ride-table CLI must get exactly one walk test, in table order"
+            "each route-table CLI must get exactly one walk test, in table order"
         );
     }
 
@@ -1696,9 +1695,9 @@ mod tests {
             &settings_over(enriched.path()),
         )
         .await
-        .expect("the type-inference ride succeeds over the fixture");
+        .expect("the type-inference scan succeeds over the fixture");
 
-        // Plain workspace: never scanned beside the callback ride.
+        // Plain workspace: never scanned beside the callback command.
         let plain = fixture_workspace();
 
         let callback_entry = crate::commands::callback::contribution();
@@ -1710,7 +1709,7 @@ mod tests {
                 &settings_over(ws.path()),
             )
             .await
-            .unwrap_or_else(|e| panic!("the callback ride must succeed: {e}"));
+            .unwrap_or_else(|e| panic!("the callback scan must succeed: {e}"));
         }
 
         // Enrichment observed over the fixture: the composed callable
@@ -1831,13 +1830,11 @@ mod tests {
             "the seam line names its family before the shared admission wording"
         );
         assert_eq!(
-            coverage_admission,
-            "unavailable — Tanglewood bridge offline",
+            coverage_admission, "unavailable — Tanglewood bridge offline",
             "the coverage admission carries no family id ahead of it"
         );
         assert_ne!(
-            coverage_admission,
-            seam_lines[0],
+            coverage_admission, seam_lines[0],
             "framed, the two byte-colliding admissions are different lines — never one shared line"
         );
         for line in &seam_lines {

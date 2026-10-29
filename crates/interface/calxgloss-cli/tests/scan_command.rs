@@ -1,5 +1,5 @@
 //! Behavior tests over the generic scan command at the process seam
-//! (issues #339–#341, spec #337). The built CLI runs a ride over the
+//! (issues #339–#341, spec #337). The built CLI runs each scan through its
 //! fixture target in a temp workspace, and the tests assert only outward
 //! results: whether the process succeeded or failed, the document filed
 //! at the row's own path, the printed report, and the failure and
@@ -57,7 +57,7 @@ fn the_typesdb_run_files_the_documents_and_prints_what_a_later_show_prints() {
         cli(ws.path()).args(["--target-dir", ".", "typesdb", "--binary", "fixture-target"]),
         ws.path(),
     );
-    assert!(ok, "the typesdb ride failed:\n{stdout}\n{stderr}");
+    assert!(ok, "the typesdb scan failed:\n{stdout}\n{stderr}");
 
     // The document sits at the row's own path, and beside it is the
     // declarations file — the entry's only side effect.
@@ -137,7 +137,7 @@ fn a_ridden_flag_free_command_prints_the_same_report_run_and_show() {
         ]),
         ws.path(),
     );
-    assert!(ok, "the controlflow ride failed:\n{stdout}\n{stderr}");
+    assert!(ok, "the controlflow scan failed:\n{stdout}\n{stderr}");
     let document = ws
         .path()
         .join("re/analysis/controlflow/fixture-target.json");
@@ -181,7 +181,7 @@ fn the_apidetect_report_prints_the_scans_admission_run_and_show_alike() {
         ]),
         ws.path(),
     );
-    assert!(ok, "the apidetect ride failed:\n{stdout}\n{stderr}");
+    assert!(ok, "the apidetect scan failed:\n{stdout}\n{stderr}");
     let document = ws.path().join("re/analysis/apidetect/fixture-target.json");
     assert!(document.is_file(), "the document is filed at {document:?}");
 
@@ -1193,10 +1193,10 @@ fn the_serialize_report_prints_the_documents_admission_line_only_when_there_is_o
 
 #[test]
 fn the_typeinfer_report_prints_the_documents_admission_line_only_when_there_is_one() {
-    // The type-inference admission line at the process seam (issue #351).
-    // The four-facet record prints, and its complete `function-bodies` facet
-    // adds nothing to admit; a complete record prints no line at all. This
-    // ride runs along the scan-and-show path the write-back ticket's own test
+    // The type-inference admission line at the process seam (issue #351). The
+    // four-facet record prints, and its complete `function-bodies` facet adds
+    // nothing to admit; a complete record prints no line at all. This test
+    // runs along the scan-and-show path the write-back ticket's own test
     // already pins. This pin only shows that the admission line prints beside
     // the counts when the filed document has one to admit.
     let ws = fixture_workspace();
@@ -1300,7 +1300,8 @@ fn the_typeinfer_report_prints_the_documents_admission_line_only_when_there_is_o
 
 #[test]
 fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_alike() {
-    // The two rides' own coverage stamps at the process seam (issue #348).
+    // The typesdb and consts scans' own coverage stamps at the process seam
+    // (issue #348).
     // Each scan files the coverage record it wrote. The run's report and a
     // later `--show` report stay byte-identical, because both are the same
     // read: the admission line when the scan owes one, silence when it does
@@ -1311,7 +1312,7 @@ fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_ali
             cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
             ws.path(),
         );
-        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+        assert!(ok, "the {command} scan failed:\n{stdout}\n{stderr}");
         let (ok, show_stdout, stderr) = run(
             cli(ws.path()).args([
                 "--target-dir",
@@ -1333,7 +1334,7 @@ fn the_typesdb_and_consts_reports_read_their_own_scans_coverage_run_and_show_ali
 }
 
 #[test]
-fn the_libmatch_and_floatsimd_rides_report_run_and_show_identically() {
+fn libmatch_and_floatsimd_coverage_reports_run_and_show_identically() {
     // The run-equals-show rule holds for both evidence engines' new coverage
     // stamps (issue #347). Whatever coverage the fixture's real scans record,
     // the run's report and a later `--show` report are the same read of the
@@ -1344,7 +1345,7 @@ fn the_libmatch_and_floatsimd_rides_report_run_and_show_identically() {
             cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
             ws.path(),
         );
-        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+        assert!(ok, "the {command} scan failed:\n{stdout}\n{stderr}");
 
         let (ok, show_stdout, stderr) = run(
             cli(ws.path()).args([
@@ -1367,9 +1368,9 @@ fn the_libmatch_and_floatsimd_rides_report_run_and_show_identically() {
 }
 
 #[test]
-fn the_controlflow_memory_and_sync_rides_report_run_and_show_identically() {
-    // The run-equals-show rule holds for the fan-out trio's own coverage
-    // stamps (issue #349). Whatever coverage the fixture's real scans record,
+fn controlflow_memory_and_sync_coverage_reports_run_and_show_identically() {
+    // The run-equals-show rule holds for the controlflow / memory / sync
+    // scans' own coverage stamps (issue #349). Whatever coverage the fixture's real scans record,
     // the run's report and a later `--show` report are the same read of the
     // same document — the admission line and all, or its absence.
     for command in ["controlflow", "memory", "sync"] {
@@ -1378,7 +1379,7 @@ fn the_controlflow_memory_and_sync_rides_report_run_and_show_identically() {
             cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
             ws.path(),
         );
-        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+        assert!(ok, "the {command} scan failed:\n{stdout}\n{stderr}");
 
         let (ok, show_stdout, stderr) = run(
             cli(ws.path()).args([
@@ -1401,15 +1402,15 @@ fn the_controlflow_memory_and_sync_rides_report_run_and_show_identically() {
 }
 
 #[test]
-fn the_globalstate_errhandling_and_callback_rides_report_run_and_show_identically() {
-    // The run-equals-show rule holds for the fan-out B trio's own coverage
-    // stamps (issue #350). Whatever coverage the fixture's real scans record,
+fn globalstate_errhandling_and_callback_coverage_reports_run_and_show_identically() {
+    // The run-equals-show rule holds for the global-state / errhandling /
+    // callback scans' own coverage stamps (issue #350). Whatever coverage the fixture's real scans record,
     // the run's report and a later `--show` report are the same read of the
     // same document — the admission line and all, or its absence.
     for command in ["global-state", "errhandling", "callback"] {
         let ws = fixture_workspace();
         if command == "callback" {
-            // The callback ride's pre-scan hook reads the type-inference
+            // The callback command's pre-scan hook reads the type-inference
             // document to enrich signatures, and it warns when that document
             // is absent. The warning is scan-side log noise on the tracing
             // stream, not report bytes. Filing the empty document through its
@@ -1426,7 +1427,7 @@ fn the_globalstate_errhandling_and_callback_rides_report_run_and_show_identicall
             cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
             ws.path(),
         );
-        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+        assert!(ok, "the {command} scan failed:\n{stdout}\n{stderr}");
 
         let (ok, show_stdout, stderr) = run(
             cli(ws.path()).args([
@@ -1449,9 +1450,9 @@ fn the_globalstate_errhandling_and_callback_rides_report_run_and_show_identicall
 }
 
 #[test]
-fn the_fan_out_c_reports_run_and_show_identically() {
-    // The run-equals-show rule holds for the fan-out C quartet's own
-    // coverage stamps (issue #351). Whatever coverage the fixture's real
+fn algorithm_stringctx_serialize_typeinfer_coverage_reports_run_and_show_identically() {
+    // The run-equals-show rule holds for the algorithm / stringctx /
+    // serialize / typeinfer scans' own coverage stamps (issue #351). Whatever coverage the fixture's real
     // scans record, the run's report and a later `--show` report are the
     // same read of the same document — the admission line and all, or its
     // absence.
@@ -1461,7 +1462,7 @@ fn the_fan_out_c_reports_run_and_show_identically() {
             cli(ws.path()).args(["--target-dir", ".", command, "--binary", "fixture-target"]),
             ws.path(),
         );
-        assert!(ok, "the {command} ride failed:\n{stdout}\n{stderr}");
+        assert!(ok, "the {command} scan failed:\n{stdout}\n{stderr}");
 
         let (ok, show_stdout, stderr) = run(
             cli(ws.path()).args([
@@ -1484,7 +1485,7 @@ fn the_fan_out_c_reports_run_and_show_identically() {
 }
 
 #[test]
-fn the_typeinfer_write_back_rides_the_scan_and_show_paths_and_prints_its_report() {
+fn the_typeinfer_write_back_walks_the_scan_and_show_paths_and_prints_its_report() {
     // The type-inference follow-on at the process seam (issue #341).
     // `--write-back --confidence-floor 0` runs through the typeinfer crate's
     // own write-back API, and its report prints after the main report.
@@ -1508,7 +1509,7 @@ fn the_typeinfer_write_back_rides_the_scan_and_show_paths_and_prints_its_report(
     );
     assert!(
         ok,
-        "the typeinfer write-back ride failed:\n{stdout}\n{stderr}"
+        "the typeinfer write-back scan failed:\n{stdout}\n{stderr}"
     );
     let document = ws.path().join("re/analysis/typeinfer/fixture-target.json");
     assert!(document.is_file(), "the document is filed at {document:?}");
@@ -1556,7 +1557,7 @@ fn the_typeinfer_write_back_rides_the_scan_and_show_paths_and_prints_its_report(
         ]),
         ws.path(),
     );
-    assert!(ok, "the plain typeinfer ride failed:\n{stdout}\n{stderr}");
+    assert!(ok, "the plain typeinfer scan failed:\n{stdout}\n{stderr}");
     assert!(
         !stdout.contains("Type Write-Back"),
         "--write-back off prints no write-back section:\n{stdout}"
@@ -1652,7 +1653,7 @@ fn the_run_report_stays_silent_of_seam_admissions_when_the_seam_declares_answera
         ]),
         ws.path(),
     );
-    assert!(ok, "the controlflow ride failed:\n{stdout}\n{stderr}");
+    assert!(ok, "the controlflow scan failed:\n{stdout}\n{stderr}");
     assert!(
         !stdout.contains("Seam:"),
         "the seam declares every family answerable — the run report admits \

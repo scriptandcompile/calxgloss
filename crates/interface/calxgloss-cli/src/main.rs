@@ -178,7 +178,7 @@ fn main() -> Result<()> {
     });
     let result = match command {
         // All fifteen scan commands listed in the scan registry use this
-        // one generic handler (issues #339–#341). The ride table in
+        // one generic handler (issues #339–#341). The route table in
         // `commands::scan_command` maps each clap variant onto its scan
         // flags, and this single match arm runs the shared handler for
         // them all. The three commands with per-engine flags
@@ -201,8 +201,8 @@ fn main() -> Result<()> {
         | Command::Libmatch { .. }
         | Command::Typeinfer { .. } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-            let (contribution, flags) = commands::scan_command::ride(&command)
-                .expect("the routed commands are exactly the ride table's keys");
+            let (contribution, flags) = commands::scan_command::route(&command)
+                .expect("the routed commands are exactly the route table's keys");
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
