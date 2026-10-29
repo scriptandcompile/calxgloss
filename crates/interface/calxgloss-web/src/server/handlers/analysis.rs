@@ -1,13 +1,18 @@
 //! Unit analysis context (issue #73): Windows API mappings and caller/callee
 //! context for the unit detail panel.
 //!
-//! Both sections are read from artifacts the pipeline already writes under
-//! `re/analysis/` — the per-function analysis artifact
+//! Both sections read artifacts filed under `re/analysis/` instead of
+//! running their own analysis: the per-binary call-graph record
+//! (`re/analysis/{binary}_call_graph.json`), which the analysis scan
+//! writes, and the per-function analysis artifact
 //! (`re/analysis/{binary}/{function}.json`, carrying the identified
-//! `windows_apis`) and the per-binary call-graph record
-//! (`re/analysis/{binary}_call_graph.json`). No new persistence is
-//! introduced; missing or corrupt artifacts degrade to empty sections rather
-//! than errors. The data comes over the shared `GET /api/units/{id}` endpoint
+//! `windows_apis`). Provenance, honestly: no shipped command files the
+//! per-function artifact today — the translate path assembles its
+//! function info in memory from the live engine — so the artifact
+//! layout is pinned only by the decomp scan's persistence test until
+//! some scan files it, and the API-mapping section stays empty in
+//! real workspaces. No new persistence is introduced; missing or
+//! corrupt artifacts degrade to empty sections rather than errors. The data comes over the shared `GET /api/units/{id}` endpoint
 //! (registered in every router) — no new route is introduced.
 
 use std::path::Path;

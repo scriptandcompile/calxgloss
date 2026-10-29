@@ -208,11 +208,13 @@ impl ContextWindowDetector {
 /// Different LLM runners use different signals. This function checks for the
 /// most common ones used by Ollama, vLLM, llama.cpp, and other local servers.
 ///
-/// Common markers:
+/// The markers it looks for (the full list lives in the code below):
 /// - `"[response truncated]"` — generic
 /// - `"[output limited]"` — vLLM
 /// - `"[maximum tokens reached]"` — Ollama
 /// - `"[generation cutoff]"` — llama.cpp
+/// - `"generation was cut off"` / `"output was truncated"` — prose cutoffs
+/// - `"[end of response]"` — end sentinel some runners append
 /// - `"<|endoftext|>"` — GPT-style EOS token leakage
 ///
 /// The check is case-insensitive.

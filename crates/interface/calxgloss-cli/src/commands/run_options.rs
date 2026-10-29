@@ -196,10 +196,11 @@ pub struct PassFlags {
 ///
 /// This is the same data move `handle_auto` performs inline on its base
 /// description (issue #325), except without the live control handles that
-/// only `auto` and `live` have. The three commands end up with
-/// descriptions built by the one settings fold, so an assembled pass
-/// honors the settings knobs identically whichever command started the
-/// run.
+/// only `auto` and `live` have. The three commands that build a pass
+/// description without live handles — `auto`, `translate`, and
+/// `batch-translate` — all end up built by the one settings fold, so an
+/// assembled pass honors the settings knobs identically whichever
+/// command started the run.
 ///
 /// When the resolved settings hold no LLM endpoint pair, this command
 /// refuses with the settings layer's "not configured" guidance — that

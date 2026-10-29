@@ -586,9 +586,11 @@ pub(crate) fn needed_pal_traits(categories: &[String]) -> Vec<PalTraitStatus> {
 }
 
 /// The workspace's per-function analysis artifact directory for one
-/// binary — the layout the analysis pipeline persists:
+/// binary — the layout the web's analysis readers read:
 /// `re/analysis/{binary}/` holding one `{function}.json` per analyzed
-/// function.
+/// function. No shipped command files these today (see the
+/// `handlers::analysis` module note), so a missing directory here is
+/// the normal case, not a fault.
 fn analysis_artifact_dir(repo_path: &Path, name: &str) -> Option<PathBuf> {
     binary_artifact_dir(repo_path, "analysis", name)
 }
