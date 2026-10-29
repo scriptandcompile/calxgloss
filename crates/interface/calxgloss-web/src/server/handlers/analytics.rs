@@ -369,8 +369,8 @@ fn filtered_token_usage(
 // ─── GET /api/token-usage/summary ──────────────────────────────────────
 
 /// Serves the summary split: total tokens consumed, broken into successful
-/// and failed attempts, over the filtered set. Measured totals only — the
-/// token-budget indicator waits on the constraints concept.
+/// and failed attempts, over the filtered set. Measured totals only: token
+/// budgets are not implemented, so there is no budget indicator to show.
 pub async fn api_get_token_usage_summary(
     State(state): State<ServerState>,
     Query(params): Query<HashMap<String, String>>,

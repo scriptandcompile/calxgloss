@@ -870,9 +870,9 @@ pub struct FaultTrendPoint {
 // ─── Token usage analytics (issue #126, W3.2) ──────────────────────────
 
 /// `GET /api/token-usage/summary` response: total tokens consumed split
-/// into successful and failed attempts, computed over the filtered
-/// retained window. No budget indicator — token budgets are a deferred
-/// constraints concept, so the summary reports measured totals only.
+/// into successful and failed attempts, computed over the filtered retained
+/// window. No budget indicator: token budgets are not implemented, so the
+/// summary reports measured totals only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageSummaryResponse {
     /// Total tokens consumed after filtering.

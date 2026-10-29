@@ -278,6 +278,9 @@ pub struct PromptVariant {
     pub complexity: FunctionComplexity,
 
     /// Whether to include API-category-specific mapping table rows.
+    ///
+    /// Set by every caller, but no prompt builder reads it today: the
+    /// API-category rows are included regardless of its value.
     pub api_aware: bool,
 
     /// Previous attempt failures to reference in the prompt.

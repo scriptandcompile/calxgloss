@@ -1,8 +1,9 @@
 //! Context-window detector for the LLM client.
 //!
 //! [`ContextWindowDetector`] inspects LLM responses and prompts and reports when
-//! the model's context window has been exceeded. This is the primary mechanism
-//! for fault detection.
+//! the model's context window has been exceeded. It is the only place an
+//! overflow is reported: the client itself maps HTTP overloads and transport
+//! failures, and nothing else looks at the size of a response or a prompt.
 //!
 //! # How it works
 //!

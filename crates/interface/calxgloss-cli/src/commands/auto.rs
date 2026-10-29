@@ -720,8 +720,6 @@ pub async fn handle_auto(
         .await?;
     }
 
-    // Release the server if we spawned it; an attached one is left running.
-
     Ok(())
 }
 

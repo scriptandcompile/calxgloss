@@ -405,8 +405,10 @@ impl LlmClient {
             let body = response.text().await?;
             error!(status, body = %body, "LLM request failed");
 
-            // Detect resource-exhaustion HTTP codes (503 Service Unavailable,
-            // 429 Too Many Requests, 507 Out of Memory)
+            // Detect resource-exhaustion HTTP codes: 429 Too Many Requests,
+            // 503 Service Unavailable, and 507 Insufficient Storage — the
+            // WebDAV code llama.cpp-style servers answer when their slot or
+            // memory is full.
             if matches!(status, 429 | 503 | 507) {
                 return Err(LlmError::ResourceExhausted {
                     kind: ResourceExhaustionKind::Overloaded,
