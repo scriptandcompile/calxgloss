@@ -1,13 +1,13 @@
-//! The scan over one program: read every kept function body once and
+//! The scan over one program: read every function body once and
 //! collect the error-handling findings (ADR-0046).
 //!
 //! [`ErrhandlingEngine`] follows the established evidence-engine
-//! shape: it borrows any [`ScanSource`], walks the function listing in
-//! order, decompiles each function once, runs the idiom detectors
-//! over the kept body, and assembles an [`ErrhandlingResult`] stamped
-//! with the scan metadata — the same loop the libmatch and globalstate
-//! engines run, with the detector set as its only difference. All
-//! findings are asserted at this seam, never inside a detector.
+//! shape: it reads through any [`ScanSource`], walks the function
+//! listing in order, decompiles each function once, runs the idiom
+//! detectors over each kept body, and assembles an [`ErrhandlingResult`]
+//! stamped with the scan metadata — the same loop the libmatch and
+//! globalstate scans run, with the detector set as its only difference.
+//! Every finding behaviour is asserted here, never inside a detector.
 
 use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
@@ -24,45 +24,45 @@ use calxgloss_types::{CoverageStatus, FacetCoverage, ScanCoverage, ScanMetadata}
 use std::time::Instant;
 use tracing::{info, warn};
 
-/// The decompiler an error-handling scan reads.
+/// The decompiler an error-handling scan reads through.
 ///
-/// The shared trait from the decompiler seam crate, re-exported here
-/// so the engine's generic shape names it where it always has;
-/// [`KunaSource`] implements it over the in-process engine, and tests
-/// implement it over canned bodies so the orchestration runs without a
-/// server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
+/// A shared trait from the decompiler seam crate, re-exported so
+/// this evidence engine's generic shape names it in one place;
+/// [`KunaSource`] implements it over the in-process analysis engine,
+/// and tests implement it over canned bodies so the whole scan runs
+/// without a server. The futures are `Send` so a scan can be driven
+/// from an orchestrating task.
 pub use calxgloss_decomp::ScanSource;
 
-/// How many unreached functions one coverage limitation line names inline
-/// before folding the remainder into a count — bounded prose beside the
+/// How many unreached functions one coverage limitation line lists by
+/// name before the rest become a count — bounded prose beside the
 /// counts, not a dump (the P19-6 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
 /// The facets an error-handling scan declares, in order — the roster
 /// the record must name exactly once each. The error-handling scan
-/// reads one facet: the decompiled bodies all six detectors share.
+/// reads one facet: the decompiled bodies the six detectors read from.
 pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
 
 /// The coverage record every error-handling scan stamps about itself
 /// (issue #350), beside the provenance and the timing.
 ///
 /// The error-handling scan has one facet: `function-bodies`, the
-/// decompiled bodies the six detectors read. The function listing is
-/// always read end to end — a failed listing aborts the run, and more
-/// than half failing to decompile trips the skip-rate breaker above —
-/// so what a finished scan can not have read is exactly the bodies it
-/// skipped along the way: a nameless listing entry, or a decompile that
-/// failed. The propagation pass reads only bodies this walk already
-/// kept, so it adds no coverage border of its own. With nothing
-/// skipped, the facet is `complete`, and that is the admission's point:
-/// a function with no idiom or code record was examined and clean,
-/// never silently unchecked. With any, the facet is `partial` and the
-/// limitation line names the unreached bodies (bounded at
-/// [`MAX_NAMED_UNREACHED`]), so silence and never-reaching are
-/// distinguishable in the filed record itself. The whole picture
-/// mirrors the single facet — there is nothing else this engine
-/// examines.
+/// decompiled bodies the six detectors read. The scan reads the
+/// function listing end to end — a failed listing aborts the run, and
+/// more than half failing to decompile trips the skip-rate breaker in
+/// the scan loop — so what a finished scan can not have read is
+/// exactly the bodies it skipped along the way: a nameless listing
+/// entry, or a decompile that failed. The cross-function pass reads
+/// only bodies this loop already kept, so it adds no coverage border
+/// of its own. With nothing skipped, the facet is `complete`, and
+/// that is the admission's point: a function with no idiom or code
+/// record was examined and clean, never silently unchecked. With any
+/// skips, the facet is `partial` and the limitation line lists the
+/// unreached bodies by name (bounded at [`MAX_NAMED_UNREACHED`]), so
+/// the filed record itself tells silence about a clean function apart
+/// from a function it never reached. The whole picture mirrors the
+/// single facet — the scan examines nothing else.
 fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
     let total = unreached.len() + nameless;
     if total == 0 {
@@ -105,32 +105,32 @@ fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
 /// spelled SEH frame, the named personality-handler thunk, the
 /// exception-API call, the direct `RaiseException` call, the
 /// goto-cleanup ladder, and the per-function failure-code reading.
-/// The SEH detectors run in rung order and
-/// **the strongest family that fires takes the function's one SEH
-/// claim** — a body showing a spelled block beside a thunk
-/// registration lands one finding at the spelled band, never a stack
-/// of duplicates for the same frame (issue #288). The `RaiseException`
-/// reading is a different fact — the function *raising*, not being
-/// guarded — and rides beside the SEH claim, and so does the
-/// `GotoCleanup` reading — the function *cleaning up on failure*,
-/// whether or not any exception mechanism is involved (issue #289).
-/// One function therefore contributes at most three idiom findings,
-/// in rung order, plus its own failure-code records: one record per
-/// distinct code, keyed to the function beside the idioms (issue
-/// #290). After the loop one pass over the whole kept set propagates
-/// those codes along the call map onto the callers that guard on or
-/// re-return a callee's return (issue #291, ADR-0047): codes travel,
-/// idioms never, and the inherited findings append after every
-/// per-function record. The engine keeps each kept body for that
-/// pass, so it costs no second decompile. Follow-up P15 bullets add
-/// detectors, not new control flow, so the scan-order, skip and
-/// breaker behaviour — the behaviour contract every evidence engine
-/// keeps — stays written in exactly one place.
-/// The engine is generic over its [`ScanSource`], so tests can run
-/// the whole orchestration over canned bodies; [`new`](Self::new)
-/// builds one over a loaded [`KunaSource`]. The SEH and raise
-/// detectors carry no state, so one instance of each serves the
-/// whole scan, and [`with_seh_frame`](Self::with_seh_frame),
+/// The SEH detectors run strongest first, and **the strongest
+/// family that fires takes the function's one SEH claim** — a body
+/// showing a spelled block beside a thunk registration lands one
+/// finding at the spelled band, never a stack of duplicates for the
+/// same frame (issue #288). The `RaiseException` reading is a
+/// different fact — the function *raising*, not being guarded — and
+/// it sits beside the SEH claim, as does the `GotoCleanup` reading —
+/// the function *cleaning up on failure*, whether or not any
+/// exception mechanism is involved (issue #289). One function
+/// therefore contributes at most three idiom findings, in
+/// strongest-first order, plus its own failure-code records: one
+/// record per distinct code, keyed to the function beside the
+/// idioms (issue #290). After the loop one cross-function pass over
+/// the whole kept set propagates those codes along the call map onto
+/// the callers that guard on or re-return a callee's return (issue
+/// #291, ADR-0047): codes travel, idioms never, and the inherited
+/// findings append after every per-function record. It keeps every
+/// body for that pass, so the pass costs no second decompile.
+/// Follow-up P15 bullets add detectors, not new control flow, so
+/// the scan-order, skip, and breaker behaviour — the behaviour
+/// contract every evidence engine keeps — stays written in exactly
+/// one place. The scan is generic over its [`ScanSource`], so tests
+/// can run the whole orchestration over canned bodies;
+/// [`new`](Self::new) builds one over a loaded [`KunaSource`]. The
+/// SEH and raise detectors carry no state, so one instance of each
+/// serves the whole scan, and [`with_seh_frame`](Self::with_seh_frame),
 /// [`with_named_handler`](Self::with_named_handler),
 /// [`with_exception_api`](Self::with_exception_api),
 /// [`with_raise_exception`](Self::with_raise_exception),
@@ -149,8 +149,8 @@ pub struct ErrhandlingEngine<S = KunaSource> {
     cross_function: CrossFunctionAnalyzer,
 }
 
-/// The detectors of a standard engine, spelled once so `new` and
-/// `with_source` cannot drift.
+/// The standard detector set, spelled once so `new` and
+/// `with_source` cannot drift apart.
 fn standard_detectors() -> (
     SehFrameDetector,
     NamedHandlerDetector,
@@ -170,10 +170,10 @@ fn standard_detectors() -> (
 }
 
 impl ErrhandlingEngine<KunaSource> {
-    /// An engine over a loaded Kuna program, detecting the SEH frame
-    /// across its three body-text families, the direct
-    /// `RaiseException` call, the goto-cleanup ladder, and recording
-    /// each function's shaped failure codes beside them.
+    /// An evidence engine over a loaded Kuna program: it detects the
+    /// SEH frame across its three body-text families, the direct
+    /// `RaiseException` call, the goto-cleanup ladder, and records
+    /// each function's shaped failure codes beside those findings.
     pub fn new(source: &KunaSource) -> ErrhandlingEngine<KunaSource> {
         let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup, error_code) =
             standard_detectors();
@@ -185,17 +185,17 @@ impl ErrhandlingEngine<KunaSource> {
             raise_exception,
             goto_cleanup,
             error_code,
-            // The propagation pass names no detectors of its own to
-            // configure — it rides the configured code reading as
-            // its argument — so it is standard in every engine
-            // (issue #291).
+            // The propagation pass has no detectors of its own to
+            // configure — the configured code reading is handed to
+            // it as its argument — so the standard analyzer serves
+            // every scan (issue #291).
             cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 }
 
 impl<S> ErrhandlingEngine<S> {
-    /// An engine whose decompiles come from `source`, scanning with
+    /// An evidence engine whose decompiles come from `source`, using
     /// the detectors' standard bands and name sets.
     pub fn with_source(source: S) -> Self {
         let (seh_frame, named_handler, exception_api, raise_exception, goto_cleanup, error_code) =
@@ -214,8 +214,8 @@ impl<S> ErrhandlingEngine<S> {
     }
 
     /// Read spelled SEH frames with `detector` instead of the
-    /// standard one — the seam the follow-up families plug their own
-    /// configured detectors into without touching the loop.
+    /// standard one — where a follow-up family can set its own
+    /// configured detector without changing the loop.
     pub fn with_seh_frame(mut self, detector: SehFrameDetector) -> Self {
         self.seh_frame = detector;
         self
@@ -243,24 +243,24 @@ impl<S> ErrhandlingEngine<S> {
     }
 
     /// Read goto-cleanup ladders with `detector` instead of the
-    /// standard one — the seam a binary's own release names plug
-    /// into through [`GotoCleanupDetector::with_releases`] without
-    /// touching the loop.
+    /// standard one — where a binary's own release names are set
+    /// through [`GotoCleanupDetector::with_releases`] without
+    /// changing the loop.
     pub fn with_goto_cleanup(mut self, detector: GotoCleanupDetector) -> Self {
         self.goto_cleanup = detector;
         self
     }
 
     /// Read per-function failure codes with `detector` instead of the
-    /// standard one — the seam a follow-up reading plugs its own
-    /// configured code detector into without touching the loop.
+    /// standard one — where a follow-up reading can set its own
+    /// configured code detector without changing the loop.
     pub fn with_error_code(mut self, detector: ErrorCodeDetector) -> Self {
         self.error_code = detector;
         self
     }
 
-    /// Replace the cross-function propagation pass. The pass carries
-    /// no detector names or bands of its own to configure — the
+    /// Replace the cross-function propagation pass. The pass has no
+    /// detector names or bands of its own to configure — the
     /// configured code reading above is handed to it as its
     /// argument — so this setter exists for tests that want to drive
     /// the propagation seam directly (issue #291).
@@ -279,15 +279,15 @@ impl<S> ErrhandlingEngine<S> {
     /// idiom's absence; only a failure of the listing itself aborts
     /// the run, since then nothing was scanned. But when more than
     /// half the listing fails to decompile, the skip-rate breaker
-    /// aborts too: that is the signature of the bridge answering from
-    /// the wrong program, and skipping on would persist a
-    /// phantom-clean record (issue #71). Findings ride in listing
-    /// order, one function's findings grouped together, so two scans
-    /// of the same program diff cleanly; the cross-function
-    /// propagation pass runs once over the whole set after the loop
-    /// and its inherited findings append after every per-function
+    /// aborts too: a high skip rate is the signature of the seam
+    /// answering about the wrong program, and skipping on would
+    /// persist a record that looks clean but is not (issue #71).
+    /// Findings land in listing order, one function's findings grouped
+    /// together, so two scans of the same program diff cleanly; after
+    /// the loop the cross-function pass runs once over the whole kept
+    /// set, and its inherited findings append after every per-function
     /// record — a caller's first-hand contract is read before its
-    /// second-hand codes ride on top (issue #291, ADR-0047).
+    /// second-hand codes are added on top (issue #291, ADR-0047).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<ErrhandlingResult>
     where
         S: ScanSource,
@@ -296,24 +296,24 @@ impl<S> ErrhandlingEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut findings: Vec<ErrhandlingFinding> = Vec::new();
-        // The kept bodies ride along for the propagation pass after
-        // the loop: the call map and every callee's code set come off
-        // this same text, so the pass costs no second decompile
+        // The kept bodies are held for the cross-function pass after
+        // the loop: the call map and every callee's code set come
+        // from this same text, so the pass costs no second decompile
         // (issue #291).
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
-        // P19-6: which bodies the scan could NOT read, named where a name
-        // exists, counted where the listing entry is nameless — the
-        // coverage record below states it, so an unmentioned function
-        // means examined-and-clean, never silently unchecked.
+        // P19-6: which bodies the scan could not read, listed by name
+        // where one exists, counted where the listing entry is
+        // nameless — the coverage record below states it, so an
+        // unmentioned function means examined-and-clean, not unchecked.
         let mut unreached: Vec<String> = Vec::new();
         let mut nameless = 0usize;
         for function in &functions {
             if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing
-                // can be said about it, so it passes unrecorded.
+                // A nameless entry would send the name lookup into
+                // some other function's body; nothing can be said
+                // about it, so it is skipped and left unrecorded.
                 warn!(
                     address = format_args!("{:#x}", function.address),
                     "Skipping function with no name"
@@ -334,9 +334,9 @@ impl<S> ErrhandlingEngine<S> {
                     decompile_failures += 1;
                     unreached.push(function.name.clone());
                     // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading a
-                    // program the engine cannot analyze, and an empty
-                    // result would persist as a phantom-clean record.
+                    // failed to decompile, the seam is answering about
+                    // the wrong program, and an empty result would
+                    // persist as a record that looks clean but is not.
                     // Abort with the counts instead of skipping on.
                     if decompile_failures * 2 > functions.len() {
                         return Err(crate::ErrhandlingError::DecompileBreaker {
@@ -348,24 +348,24 @@ impl<S> ErrhandlingEngine<S> {
                 }
             };
             // Keep the name and body for the detectors, and the
-            // whole entry for the propagation pass after the loop;
-            // the pass reads call edges and code sets off this same
-            // text, so it costs no second decompile (issue #291).
+            // whole entry for the cross-function pass after the
+            // loop; it reads call edges and code sets from this
+            // same text, so it costs no second decompile (issue #291).
             let name = decompiled.name.clone();
             let body = decompiled.body.clone();
             bodies.push(decompiled);
             // The strongest SEH family wins: the detectors run in
-            // ADR-0046's rung order — spelled frame, named handler,
-            // exception-API call — and the first that fires takes
-            // the function's one SEH claim, so a body showing a
-            // spelled block beside a thunk registration lands one
-            // finding at the spelled band, never a stack of
-            // duplicates for the same frame (issue #288). The
-            // RaiseException reading names a different fact — the
+            // ADR-0046's ladder order — spelled frame, named
+            // handler, exception-API call — and the first that
+            // fires takes the function's one SEH claim. A body
+            // showing a spelled block beside a thunk registration
+            // lands one finding at the spelled band, never a stack
+            // of duplicates for the same frame (issue #288). The
+            // RaiseException reading records a different fact — the
             // function raising, not being guarded — and the
-            // GotoCleanup reading names a third — the function
-            // cleaning up on failure, an idiom no exception
-            // mechanism is part of — and both ride beside the SEH
+            // GotoCleanup reading records a third — the function
+            // cleaning up on failure, an idiom that is part of no
+            // exception mechanism — both standing beside the SEH
             // claim (issue #289).
             for mut finding in self
                 .seh_frame
@@ -378,30 +378,30 @@ impl<S> ErrhandlingEngine<S> {
                 .chain(self.error_code.detect(&body))
                 .collect::<Vec<_>>()
             {
-                // The detectors fill no function name (they never
-                // see one); the engine owns the stamp, at the seam
+                // The detectors fill in no function name (they never
+                // see one); the scan stamps it here, at the seam
                 // where every finding behaviour is asserted.
                 finding.set_function(&name);
                 findings.push(finding);
             }
         }
 
-        // The propagation pass runs once over the whole kept set, and
-        // its records append after every per-function finding: the
-        // caller's own contract was read first-hand, the second-hand
-        // codes ride on top of it, and two scans of one program still
-        // diff cleanly (issue #291, ADR-0047).
+        // The cross-function pass runs once over the whole kept set,
+        // and its records append after every per-function finding:
+        // the caller's own contract was read first-hand, the
+        // second-hand codes come after it, and two scans of one
+        // program still diff cleanly (issue #291, ADR-0047).
         findings.extend(self.cross_function.analyze(&bodies, &self.error_code));
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna` (issue #208).
+        // The source names its analysis engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
-        // The engine admits its own coverage inside its own scan, where
-        // the truth lives — not the registry row and not the CLI (issue
-        // #350): every listed body was read by all six detectors unless
-        // the scan says which ones it could not reach. The batch scan
-        // phase and the CLI's force-rescan file the same admission
-        // through the same single definition.
+        // The scan admits its own coverage, where the truth lives —
+        // not the registry row and not the CLI (issue #350): every
+        // listed body was read by all six detectors unless the scan
+        // says which ones it could not reach. The batch scan phase
+        // and the CLI's force-rescan file the same admission through
+        // this one definition.
         metadata.coverage = Some(coverage_stamp(&unreached, nameless));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -447,8 +447,8 @@ mod tests {
     const SEH_BODY: &str = "  try {\n    work();\n  }\n  catch(...){\n    recover();\n  }\n";
 
     // A raise carrying the C++ exception code: the raise finding
-    // rides, but `0xe06d7363` itself claims no failure code — the
-    // shape floor is what makes that true — while the returned
+    // lands, but `0xe06d7363` itself records no failure code — its
+    // shape is outside the code-shape bands — while the returned
     // invalid-argument code below records as one.
     const CODED_RAISE_BODY: &str =
         "  RaiseException(0xe06d7363, 0, NULL, 0);\n  return 0x80070057;\n";
@@ -506,8 +506,8 @@ mod tests {
             Ok(String::new())
         }
 
-        // The rest of the shared trait's reads: this engine never
-        // makes them, so they answer with empty or not-found data.
+        // The rest of the shared trait's reads: this scan never
+        // makes them, so each answers with empty or not-found data.
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(result.findings[0].function(), "handler_fn");
         assert_eq!(result.findings[0].kind(), "seh_frame");
         // Only the listing read and one decompile per function: the
-        // frame comes off the kept body text, no new source reads.
+        // frame comes from the kept body text, no new source reads.
         let decompiles = source.decompiled();
         assert_eq!(decompiles.len(), 2);
         assert!(decompiles.contains(&"handler_fn".to_string()));
@@ -600,9 +600,9 @@ mod tests {
     #[tokio::test]
     async fn findings_follow_listing_order() {
         // The scan-order contract two scans rely on for diffing: one
-        // function's findings land grouped, in listing order — even
-        // when later functions find nothing, and even when earlier
-        // ones do.
+        // function's findings land grouped in listing order,
+        // whether neighbouring functions find nothing or find
+        // something.
         let source = FakeProgram {
             functions: vec![summary("first"), summary("second"), summary("third")],
             bodies: HashMap::from([
@@ -629,8 +629,8 @@ mod tests {
 
     #[tokio::test]
     async fn function_names_are_stamped_by_the_engine() {
-        // The detector fills no name (it never sees one); the engine
-        // owns the stamp — assert it at this seam.
+        // The detector fills in no name (it never sees one); the scan
+        // is what stamps it — asserted at this seam.
         let source = FakeProgram {
             functions: vec![summary("guarded")],
             bodies: HashMap::from([("guarded".to_string(), SEH_BODY.to_string())]),
@@ -645,9 +645,9 @@ mod tests {
 
     #[tokio::test]
     async fn empty_listing_yields_an_empty_scan() {
-        // An empty program is not an error — it persists as an
-        // honest empty record, the no-findings case that the skip-rate
-        // breaker exists to keep distinct from a wrong-program run.
+        // An empty program is not an error — it persists as an honest
+        // empty record. That is the no-findings case the skip-rate
+        // breaker keeps distinct from a wrong-program run.
         let source = FakeProgram::default();
         let result = ErrhandlingEngine::with_source(source.clone())
             .scan("empty.exe")
@@ -692,12 +692,12 @@ mod tests {
 
     #[tokio::test]
     async fn all_decompiles_failing_aborts_the_scan() {
-        // The skip-rate breaker, asserted at the engine seam like
-        // every contract here: every function failing to decompile
-        // is the wrong-program signature, and an empty result would
-        // persist as a phantom-clean record. The scan aborts with
-        // counts rather than skipping its way to a clean answer
-        // (issue #71).
+        // The skip-rate breaker, asserted through the scan itself
+        // like every contract here: every decompile failing is the
+        // signature of the seam answering about the wrong program,
+        // and an empty result would persist as a record that looks
+        // clean but is not. The scan aborts with the counts rather
+        // than skipping its way to a clean answer (issue #71).
         let source = FakeProgram {
             functions: vec![summary("a"), summary("b"), summary("c")],
             fail_decompiles: vec!["a".to_string(), "b".to_string(), "c".to_string()],
@@ -721,11 +721,11 @@ mod tests {
 
     #[tokio::test]
     async fn majority_decompile_failure_aborts_the_scan() {
-        // More than half failing trips the breaker; a minority is a
+        // A majority of failures trips the breaker; a minority is a
         // skippable gap. With four functions, three failures are a
-        // majority — the third failure aborts before the fourth is
-        // even attempted, the breaker cutting off the run rather
-        // than reporting after.
+        // majority — the third failure aborts the scan before the
+        // fourth is even attempted: the breaker cuts the run off
+        // rather than reporting after it.
         let source = FakeProgram {
             functions: vec![summary("a"), summary("b"), summary("c"), summary("d")],
             fail_decompiles: vec!["a".to_string(), "b".to_string(), "c".to_string()],
@@ -869,8 +869,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_named_handler_beside_an_api_call_takes_the_named_band() {
-        // The rung order inside the union's SEH kinds: thunk
-        // registration outranks the API call, one finding.
+        // The strongest-first order among the SEH detectors: the
+        // thunk registration outranks the API call — one finding.
         let body = format!("{THUNK_BODY}{API_BODY}");
         let source = FakeProgram {
             functions: vec![summary("guarded_and_querying")],
@@ -911,11 +911,11 @@ mod tests {
 
     #[tokio::test]
     async fn gs_canary_noise_claims_nothing_alone_or_beside_other_noise() {
-        // The guard rail asserted at the engine seam: the canary
+        // The guard rail asserted through the scan itself: the canary
         // family — alone, and beside a real thunk registration it
-        // must not color — yields no SEH finding. The GS body itself
-        // claims nothing; the thunk function next to it keeps its
-        // honest one finding.
+        // must not affect — yields no SEH finding. The GS body
+        // itself claims nothing; the thunk function next to it keeps
+        // its honest one finding.
         let alone = FakeProgram {
             functions: vec![summary("gs_only")],
             bodies: HashMap::from([("gs_only".to_string(), GS_BODY.to_string())]),
@@ -962,8 +962,8 @@ mod tests {
             result.findings[0].confidence().value(),
             GOTO_CLEANUP_RELEASE_CONFIDENCE
         );
-        // The finding names the join block it converged on — the label
-        // Ghidra printed — both in the record and through the accessor.
+        // The finding records the join block it converged on — the
+        // label Ghidra printed — in both record and accessor.
         match &result.findings[0] {
             ErrhandlingFinding::GotoCleanup(record) => {
                 assert_eq!(record.join_label, "LAB_140001350");
@@ -997,8 +997,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_ladder_beside_a_spelled_frame_never_outranks_it() {
-        // The AC ladder: one function, both readings fire — the spelled
-        // frame and the cleanup ladder ride beside each other as two
+        // One function, both readings fire — the spelled frame and
+        // the cleanup ladder stand beside each other as two
         // findings, and the frame's 80 stays the strongest claim.
         let body = format!("{SEH_BODY}{LADDER_BODY}");
         let source = FakeProgram {
@@ -1030,9 +1030,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_reconfigured_ladder_detector_lands_the_custom_release_band() {
-        // The extensible vocabulary at the engine seam: an engine
-        // configured with a custom release name reads a ladder whose
-        // join block releases through that name.
+        // Extensible release vocabulary, asserted through the scan
+        // itself: a scan configured with a custom release name reads
+        // a ladder whose join block releases through that name.
         let body = "  if (a) {\n    goto LAB_9;\n  }\n  if (b) {\n    goto LAB_9;\n  \
                     }\n  p = allocate();\nLAB_9:\n  MyPoolFree(p);\n  return 0;\n";
         let source = FakeProgram {
@@ -1060,10 +1060,10 @@ mod tests {
 
     #[tokio::test]
     async fn ordinary_flow_and_gs_noise_claim_no_ladder() {
-        // The guard rails at the engine seam: the canary body's single
-        // guarded forward goto has no join block behind it, and plain
-        // straight-line flow claims nothing — the ladder stays quiet
-        // where the old readings already stay quiet.
+        // The guard rails, asserted through the scan itself: the
+        // canary body's single guarded forward goto has no join block
+        // behind it, and plain straight-line flow claims nothing — the
+        // ladder stays quiet where the other readings stay quiet too.
         let source = FakeProgram {
             functions: vec![summary("gs_only"), summary("plain")],
             bodies: HashMap::from([
@@ -1082,10 +1082,10 @@ mod tests {
     #[tokio::test]
     async fn the_three_seh_bands_persist_ranked() {
         // One function per SEH family: the persisted confidences
-        // carry the bands, and rank spelled block above named
-        // handler above API call — observable through the document,
-        // which is how a reviewer (and the future prompt section)
-        // ranks what it is shown.
+        // carry the bands, ranking spelled block above named handler
+        // above API call — observable through the document, which is
+        // how a reviewer (and the future prompt section) ranks what
+        // it is shown.
         let source = FakeProgram {
             functions: vec![summary("spelled"), summary("named"), summary("api_only")],
             bodies: HashMap::from([
@@ -1129,8 +1129,8 @@ mod tests {
     #[tokio::test]
     async fn two_scans_of_one_program_diff_cleanly() {
         // The diffing contract, asserted over the grown finding set:
-        // every family in one program — a propagation pair included,
-        // so the inherited block rides the equality too (#291) —
+        // every family in one program — a propagation pair included, so
+        // the inherited block is part of the equality too (#291) —
         // scanned twice, lands the same findings in the same order.
         let source = FakeProgram {
             functions: vec![
@@ -1187,10 +1187,10 @@ mod tests {
 
     #[tokio::test]
     async fn provenance_lands_on_the_result() {
-        // Issue #208's shared rule asserted at this engine's seam:
-        // the source's engine stamp rides through to the scan
-        // result. A `ScanSource` that names its engine gets the
-        // stamp verbatim — the real Kunna-backed source names
+        // Issue #208's shared rule, asserted through this scan:
+        // the source's analysis-engine stamp reaches the scan
+        // result. A `ScanSource` that names its analysis engine gets
+        // the stamp verbatim — the real Kuna-backed source names
         // itself — and one that stays silent lands as `None`, never
         // as a guess about what read the program.
         #[derive(Default, Clone)]
@@ -1273,10 +1273,10 @@ mod tests {
 
     #[tokio::test]
     async fn one_record_per_code_at_its_strongest_site_across_a_whole_body() {
-        // The issue's dedup rule asserted at the engine seam: the
-        // same code at several sites lands once, at the site that
-        // carries the evidence most strongly; a second distinct
-        // code lands its own record beside it.
+        // The issue's one-record-per-code rule, asserted through
+        // the scan itself: the same code at several sites lands once,
+        // at the site that carries the evidence most strongly; a
+        // second distinct code lands its own record beside it.
         let source = FakeProgram {
             functions: vec![summary("coded")],
             bodies: HashMap::from([(
@@ -1320,14 +1320,14 @@ mod tests {
 
     #[tokio::test]
     async fn code_records_land_for_a_body_the_other_detectors_claim_nothing_about() {
-        // The issue's no-idiom-shape rule asserted at the engine
-        // seam: a function that hands back a shaped failure code but
+        // The issue's no-idiom-shape rule, asserted through the scan
+        // itself: a function that hands back a shaped failure code but
         // has no SEH frame, no raise, no ladder, and no cleanup
         // goto still gets its code record — the code reading stands
         // on its own — and nothing else. The returned expression
-        // carries a comparison, so the record honestly rides at the
-        // guard band: the literal names the function's failure code,
-        // the shape of the line keeps the claim modest.
+        // carries a comparison, so the record honestly lands at the
+        // guard band: the literal is the function's failure code,
+        // and the line's shape keeps the claim modest.
         let source = FakeProgram {
             functions: vec![summary("coded")],
             bodies: HashMap::from([(
@@ -1357,11 +1357,11 @@ mod tests {
 
     #[tokio::test]
     async fn codes_follow_the_listing_into_grouped_body_order() {
-        // The issue's ordering rule, asserted at the engine seam:
+        // The issue's ordering rule, asserted through the scan itself:
         // every code-bearing function's records land keyed to the
         // function in listing order, the codes within each function
-        // in body order — the property `two_scans_of_one_program_
-        // diff_cleanly` leans on, spelled out for the codes.
+        // in body order — the property
+        // `two_scans_of_one_program_diff_cleanly` relies on, for codes.
         let source = FakeProgram {
             functions: vec![summary("first"), summary("second")],
             bodies: HashMap::from([
@@ -1398,10 +1398,10 @@ mod tests {
 
     #[tokio::test]
     async fn code_records_ride_beside_idiom_findings_in_the_same_function() {
-        // The issue's grouping rule asserted at the engine seam: a
-        // function carrying an idiom finding AND its failure codes
-        // gets all of them, keyed to the function, codes in body
-        // order after the detector chain's own findings.
+        // The issue's grouping rule, asserted through the scan itself: a
+        // function carrying an idiom finding AND its failure codes gets
+        // all of them, keyed to the function, codes in body order after
+        // the detector chain's own findings.
         let source = FakeProgram {
             functions: vec![summary("raiser")],
             bodies: HashMap::from([(
@@ -1439,10 +1439,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_guard_compare_carries_the_callees_code_onto_the_caller() {
-        // Issue #291 at the seam: the caller's own guard reading stays
-        // its first-hand record, and beside it rides the inherited
-        // one — same code, the penalised band, naming the callee as
-        // its partner and the call site as its evidence.
+        // Issue #291, asserted through the scan itself: the caller's
+        // own guard reading stays its first-hand record, and beside
+        // it sits the inherited one — same code, the penalised band,
+        // the callee recorded as its partner and the call site as evidence.
         let source = FakeProgram {
             functions: vec![summary("callee"), summary("caller")],
             bodies: HashMap::from([
@@ -1547,9 +1547,9 @@ mod tests {
     #[tokio::test]
     async fn the_first_inheritance_path_claims_a_code_and_the_second_stays_quiet() {
         // Two paths would carry the same (caller, code) pair: the
-        // guard comparing a's code, and the re-return handing b's
-        // whole set back. One claim per code, first in scan order
-        // wins — the guard's partner stands, b's path adds nothing.
+        // guard comparing a's code, and the re-return handing back
+        // b's whole set. One claim per code, first in scan order
+        // wins: the record keeps a as partner, b's path adds nothing.
         let source = FakeProgram {
             functions: vec![summary("a"), summary("b"), summary("caller")],
             bodies: HashMap::from([
@@ -1586,10 +1586,10 @@ mod tests {
     #[tokio::test]
     async fn an_unread_callee_contributes_nothing_to_its_caller() {
         // A callee the scan could not decompile never enters the kept
-        // set, so it records nothing and inherits nothing follows:
-        // the caller still keeps its own first-hand guard record, the
-        // rest of the scan proceeds, and no inherited finding names
-        // the unread function.
+        // set: it records nothing, so it inherits nothing on. The
+        // caller still keeps its own first-hand guard record, the
+        // rest of the scan proceeds, and no inherited record lists
+        // the unread function as its partner.
         let source = FakeProgram {
             functions: vec![summary("caller"), summary("callee"), summary("spare")],
             bodies: HashMap::from([
@@ -1677,16 +1677,16 @@ mod tests {
     // ============================================================
 
     /// The data-level verdict of the roster pin: empty means the record
-    /// names every declared facet exactly once, and each fault spells one
-    /// drift.
+    /// names every declared facet exactly once, and each fault reports
+    /// one way the record has drifted from the declared roster.
     fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
         coverage.roster_faults(DECLARED_FACETS)
     }
 
     #[tokio::test]
     async fn a_fresh_scan_stamps_complete_bodies_coverage_and_a_clean_roster() {
-        // The stamp rides the engine's own scan, not the registry row
-        // and not the CLI — the batch scan phase and the CLI's
+        // The scan stamps its own coverage — not the registry row and
+        // not the CLI: the batch scan phase and the CLI's
         // force-rescan file the same admission through this one
         // definition. Every body was read here, so the record is
         // complete and says nothing needs admitting.
@@ -1725,7 +1725,7 @@ mod tests {
     async fn a_decompiled_failure_is_admitted_by_name_on_the_coverage_record() {
         // The whole point of the admission: a body the scan could not
         // read is named, so it is never mistaken for an examined-and-
-        // clean function the findings simply left unmentioned.
+        // clean function that the findings simply left unmentioned.
         let source = FakeProgram {
             functions: vec![summary("ok"), summary("thunk")],
             bodies: HashMap::from([("ok".to_string(), SEH_BODY.to_string())]),
