@@ -106,7 +106,7 @@ impl FamilyCapability {
     /// (issue #355).
     ///
     /// This method is the single home of the wording, mirroring the
-    /// coverage half's [`ScanCoverage::admission`]. Every consumer — a
+    /// coverage half's [`ScanCoverage::admission`](crate::scan::ScanCoverage::admission). Every consumer — a
     /// prompt section, a run report — renders this same string, so the seam
     /// admits a family in exactly one set of words end to end. An undeclared
     /// family never reaches this method: absence reads as unknown, and

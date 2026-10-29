@@ -17,7 +17,7 @@
 //! [`with_patterns`](StringClassifyEngine::with_patterns) replaces all of
 //! them at once, the way the sync detector's setters swap name sets. So
 //! tests and tuned scans can classify with their own patterns.
-//! [`infer_purpose`] turns a category into the one-line intent the prompt
+//! [`infer_purpose`](StringClassifyEngine::infer_purpose) turns a category into the one-line intent the prompt
 //! shows beside it.
 
 use crate::format_str::extract_format_hints;
@@ -250,7 +250,7 @@ impl StringClassifyEngine {
     /// [`FormatHint`] records, in argument order.
     ///
     /// This calls the documented format-string table
-    /// ([`extract_format_hints`](crate::format_str::extract_format_hints)),
+    /// ([`extract_format_hints`]),
     /// so classification and inference read specifiers the same way.
     pub fn extract_format_hints(&self, format: &str) -> Vec<FormatHint> {
         extract_format_hints(format)

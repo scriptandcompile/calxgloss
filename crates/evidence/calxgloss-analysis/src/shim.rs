@@ -9,7 +9,7 @@
 //!
 //! # Flow
 //!
-//! 1. DLL classification marks a DLL as [`CrateReplacement`] → its exports
+//! 1. DLL classification marks a DLL as `CrateReplacement` → its exports
 //!    are read through the analysis engine.
 //! 2. [`generate_shim_mappings`] builds a prompt with the DLL name, target
 //!    crate, export signatures, and crate context.
@@ -199,7 +199,7 @@ pub(crate) fn crate_context(crate_name: &str) -> CrateContext {
 ///
 /// This function sends a prompt to the LLM containing the DLL name, target crate,
 /// and all exported function signatures. The LLM responds with a JSON array of
-/// [`ShimApiMapping`] entries describing how each exported function maps to the
+/// [`ShimApiMapping`](calxgloss_types::ShimApiMapping) entries describing how each exported function maps to the
 /// target crate's API.
 ///
 /// # Arguments
@@ -220,7 +220,7 @@ pub(crate) fn crate_context(crate_name: &str) -> CrateContext {
 /// - The DLL name and target crate
 /// - All exported function signatures from the DLL
 /// - Crate context hints (description, common patterns, pitfalls)
-/// - A request to output structured JSON matching the [`ShimApiMapping`] schema
+/// - A request to output structured JSON matching the [`ShimApiMapping`](calxgloss_types::ShimApiMapping) schema
 pub async fn generate_shim_mappings(
     dll_name: &str,
     target_crate: &str,

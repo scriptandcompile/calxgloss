@@ -16,7 +16,7 @@
 //!   shape persisted under the workspace's record tree and the shape the
 //!   classification endpoints report.
 //! * [`ClassificationOverrideControl`] is the shared handle — `Arc`-backed
-//!   and cheaply cloneable, the same pattern as [`OverrideControl`] and
+//!   and cheaply cloneable, the same pattern as [`OverrideControl`](crate::overrides::OverrideControl) and
 //!   [`ScopeControl`](crate::ScopeControl). The web router's classification
 //!   endpoints change it; the analyzer reads it before dispatching a
 //!   classification strategy.

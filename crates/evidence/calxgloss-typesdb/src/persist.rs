@@ -8,9 +8,9 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A saved database also acts as a cache. [`exists`](Self::exists) is the
+//! A saved database also acts as a cache. [`exists`](TypeDatabasePersistor::exists) is the
 //! check a caller makes before deciding whether to run the scan again.
-//! [`load`](Self::load) reads the whole document back — the metadata and
+//! [`load`](TypeDatabasePersistor::load) reads the whole document back — the metadata and
 //! all three recovered sections — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};

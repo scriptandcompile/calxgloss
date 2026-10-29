@@ -23,9 +23,9 @@
 //!
 //! [`PluginDetector::detect`] runs the reading. A full
 //! load-and-resolve pair in one body is one finding at
-//! [`PLUGIN_CONFIDENCE`]. A lone resolve call or a lone entry-point
+//! `PLUGIN_CONFIDENCE`. A lone resolve call or a lone entry-point
 //! name without its partner is a fragment at
-//! [`PLUGIN_FRAGMENT_CONFIDENCE`]. A host API table passed into an
+//! `PLUGIN_FRAGMENT_CONFIDENCE`. A host API table passed into an
 //! entry point deepens the same finding instead of making a second
 //! one. A lone load call — a DLL pulled in for its exports, with no
 //! entry point resolved — says nothing about a plugin boundary and is
@@ -147,9 +147,9 @@ impl PluginDetector {
     /// first configured load call, the first configured resolve call,
     /// and the first configured entry-point call it sees. A
     /// load-and-resolve pair is the full shape: kept at
-    /// [`PLUGIN_CONFIDENCE`] with the load call's line as evidence. A
+    /// `PLUGIN_CONFIDENCE` with the load call's line as evidence. A
     /// lone resolve call or a lone entry-point name is a fragment,
-    /// kept at [`PLUGIN_FRAGMENT_CONFIDENCE`] with the lone call's
+    /// kept at `PLUGIN_FRAGMENT_CONFIDENCE` with the lone call's
     /// line. The first entry-point argument that names a plain
     /// identifier the decompiler did not mint is read as the host API
     /// table; it deepens the same finding and never makes a second

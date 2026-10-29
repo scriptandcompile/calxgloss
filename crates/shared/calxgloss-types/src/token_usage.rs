@@ -18,8 +18,8 @@
 //! The entries accumulate in a [`TokenUsageLog`], which computes aggregate
 //! statistics (total tokens, a per-DLL breakdown, and more).
 //!
-//! The [`crate::analysis::TokenUsageLogger`](crate::analysis::TokenUsageLogger)
-//! saves the log to `re/analysis/token_usage.json`.
+//! The `calxgloss-analysis` crate's `TokenUsageLogger` saves the log to
+//! `re/analysis/token_usage.json`.
 //!
 //! # Example
 //!
@@ -172,7 +172,7 @@ pub struct BinaryTokenStats {
     pub total_tokens: usize,
 }
 
-/// The saved totals of the entries dropped by the [`MAX_LOG_ENTRIES`]
+/// The saved totals of the entries dropped by the [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES)
 /// cap (issue #82).
 ///
 /// [`TokenUsageLog::add_entry`] adds each dropped entry into these totals.
@@ -250,13 +250,13 @@ impl TokenUsageTrim {
 /// statistics via [`compute_stats`](Self::compute_stats).
 ///
 /// The log is bounded. [`add_entry`](Self::add_entry) keeps at most
-/// [`MAX_LOG_ENTRIES`] of the newest entries and moves the totals of the
+/// [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES) of the newest entries and moves the totals of the
 /// dropped ones into [`trimmed`](Self::trimmed), so the aggregates still
 /// cover the whole run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsageLog {
     /// The retained entries — the newest window of at most
-    /// [`MAX_LOG_ENTRIES`] entries.
+    /// [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES) entries.
     pub entries: Vec<TokenUsageEntry>,
 
     /// Aggregate totals for entries trimmed away by the cap.
@@ -272,7 +272,7 @@ impl TokenUsageLog {
 
     /// Append an entry to the log.
     ///
-    /// The log keeps at most [`MAX_LOG_ENTRIES`] entries. Once full, each
+    /// The log keeps at most [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES) entries. Once full, each
     /// new entry drops the oldest one, which bounds the file's size and
     /// the cost of rewriting it (issue #82). The dropped entry's totals
     /// move into [`trimmed`](Self::trimmed), so the aggregates stay

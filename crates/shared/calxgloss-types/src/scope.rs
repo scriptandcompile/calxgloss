@@ -198,7 +198,7 @@ pub fn constraints_record_path(workspace: impl AsRef<Path>) -> PathBuf {
 ///
 /// When built [`with_events`](ScopeControl::with_events), every successful
 /// binary pause/resume emits a
-/// [`ProgressEvent::BinaryPauseChanged`](crate::ProgressEvent::BinaryPauseChanged)
+/// [`ProgressEvent::BinaryPauseChanged`]
 /// on the shared event channel (issue #221) — the same pattern as
 /// [`PipelineControl::with_events`](crate::PipelineControl::with_events) —
 /// so WebSocket clients re-render the binary's row without a reload. The

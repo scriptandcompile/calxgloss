@@ -200,11 +200,11 @@ impl ReferenceCountDetector {
     /// and the two recognized spellings that raised and lowered the
     /// count, and its evidence is the bump line and the drop line
     /// joined together. It also gives the shared-ownership pattern
-    /// that replaces the manual counting: [`RC_SUGGESTION`] when the
+    /// that replaces the manual counting: `RC_SUGGESTION` when the
     /// counted object stays inside this function, narrowed to
-    /// [`ARC_SUGGESTION`] when the body passes the object to one of
+    /// `ARC_SUGGESTION` when the body passes the object to one of
     /// the configured thread-spawn names. The evidence confidence is
-    /// [`COUNT_PAIR_CONFIDENCE`], or [`ARC_CONFIDENCE`] after that
+    /// `COUNT_PAIR_CONFIDENCE`, or `ARC_CONFIDENCE` after that
     /// narrowing. Records come back in bump order, so two scans of one
     /// body diff cleanly.
     pub fn detect_reference_counts(&self, func: &DecompiledFunction) -> Vec<ReferenceCount> {

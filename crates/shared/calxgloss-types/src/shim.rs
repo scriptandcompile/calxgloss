@@ -7,8 +7,8 @@
 //!
 //! # Flow
 //!
-//! 1. DLL classification marks a DLL as [`DllCategory::MicrosoftSdk`] or
-//!    [`DllCategory::KnownThirdParty`] → [`ShimLayerDeclaration`] is produced
+//! 1. DLL classification marks a DLL as [`DllCategory::MicrosoftSdk`](crate::DllCategory::MicrosoftSdk) or
+//!    [`DllCategory::KnownThirdParty`](crate::DllCategory::KnownThirdParty) → `ShimLayerDeclaration` is produced
 //!    by the dependency tracker in `calxgloss-analysis`.
 //! 2. The LLM generates [`ShimApiMapping`] entries mapping each exported
 //!    function to a target crate API with parameter transformations.
@@ -322,7 +322,7 @@ pub fn dll_to_module_name(dll_name: &str) -> String {
 
 /// Result of verifying a shim layer's behavior against baseline tests.
 ///
-/// Produced by [`calxgloss_verify::Verifier::verify_shim`] after the shim
+/// Produced by `calxgloss_verify::Verifier::verify_shim` after the shim
 /// code is compiled and tested in a sandboxed scratch project. Reports
 /// compilation status, per-mapping test results, and overall pass rate.
 #[derive(Debug, Clone, Serialize, Deserialize)]

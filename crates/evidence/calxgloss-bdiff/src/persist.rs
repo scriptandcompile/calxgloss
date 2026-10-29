@@ -13,7 +13,7 @@
 //! hashes. A stale document — one left behind by a since-replaced
 //! version — is therefore detectable twice over: it is not filed under
 //! the live hash pair, and it says which pair it was computed for. A
-//! persisted document doubles as a cache: [`exists`](Self::exists) is
+//! persisted document doubles as a cache: [`exists`](BdiffPersistor::exists) is
 //! the check a caller runs before deciding whether the pairing pass is
 //! needed at all (the auto run's trigger, #298). This adds a new
 //! directory under `re/analysis/`, so every previously persisted

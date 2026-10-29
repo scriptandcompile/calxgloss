@@ -10,7 +10,7 @@
 //!
 //! [`CrossFunctionAnalyzer::analyze`] makes the readings. Every
 //! allocation that
-//! [`open_allocations`](AllocatorTracker::open_allocations) leaves
+//! `open_allocations` leaves
 //! open ends in one of three results. It pairs: the block is handed
 //! as a plain argument to a function this scan decompiled, and that
 //! callee's body releases the parameter it arrived in. That makes one
@@ -21,7 +21,7 @@
 //! and never handed on. That makes one [`MemoryFinding::Leak`].
 //!
 //! The same escape gate reads the handles that
-//! [`open_handles`](HandleDetector::open_handles) leaves standing. An
+//! `open_handles` leaves standing. An
 //! unclosed handle that escapes is passed over. An unclosed handle
 //! that escapes nowhere leaks by its opener.
 
@@ -137,7 +137,7 @@ impl CrossFunctionAnalyzer {
     /// [`MemoryFinding::Leak`]: the block was taken and goes nowhere.
     ///
     /// The same escape gate reads the handles that
-    /// [`HandleDetector::open_handles`] leaves standing. An unclosed
+    /// `HandleDetector::open_handles` leaves standing. An unclosed
     /// handle that escapes belongs to whoever holds it now, so this
     /// reading says nothing about it. An unclosed handle that escapes
     /// nowhere leaks by its opener.

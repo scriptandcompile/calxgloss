@@ -211,14 +211,14 @@ impl AllocatorTracker {
     /// this pairing.
     ///
     /// Each pair becomes one [`MemoryHint`] naming the allocation's
-    /// family. The pairing reads as [`STACK_SUGGESTION`] when the
+    /// family. The pairing reads as `STACK_SUGGESTION` when the
     /// block is short-lived: a constant-size block from a family that
     /// never resizes it, its variable used nowhere after the release,
     /// so the block is dead at its release and its whole lifetime sits
-    /// inside the function. Otherwise it reads as [`BOX_SUGGESTION`],
-    /// or [`VEC_SUGGESTION`] for `operator new[]` storage. The
-    /// evidence confidence is [`STACK_CONFIDENCE`] for the short-lived
-    /// reading and [`PAIR_CONFIDENCE`] otherwise. The hint's evidence
+    /// inside the function. Otherwise it reads as `BOX_SUGGESTION`,
+    /// or `VEC_SUGGESTION` for `operator new[]` storage. The
+    /// evidence confidence is `STACK_CONFIDENCE` for the short-lived
+    /// reading and `PAIR_CONFIDENCE` otherwise. The hint's evidence
     /// is the allocation line and the release line joined together.
     /// Hints come back in allocation order, so two scans of one body
     /// diff cleanly.

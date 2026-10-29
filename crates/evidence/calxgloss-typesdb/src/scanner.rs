@@ -67,7 +67,7 @@ fn is_recoverable_candidate(entry: &DataTypeEntry) -> bool {
 /// The map is built from one filtered listing per classification word. A
 /// bucket is a superset: the filter matches the classification *or* the
 /// category name, so a typedef in a category named `struct.h` also appears
-/// in the struct bucket. [`KindHints::hint_for`] marks those memberships
+/// in the struct bucket. `KindHints::hint_for` marks those memberships
 /// as suspect, and the scanner confirms them with probes instead of
 /// trusting them.
 #[derive(Debug, Default)]

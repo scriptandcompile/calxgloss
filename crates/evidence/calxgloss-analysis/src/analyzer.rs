@@ -22,9 +22,9 @@ use tracing::{debug, info, instrument, warn};
 /// The strategy determined for a DLL during classification.
 ///
 /// This drives what the translation pipeline does with each DLL:
-/// - [`PalMapping`] — map Windows APIs to PAL trait methods
-/// - [`CrateReplacement`] — find a Rust crate and write a shim layer
-/// - [`ReverseEngineer`] — reverse engineer from disassembly
+/// - [`PalMapping`](Strategy::PalMapping) — map Windows APIs to PAL trait methods
+/// - [`CrateReplacement`](Strategy::CrateReplacement) — find a Rust crate and write a shim layer
+/// - [`ReverseEngineer`](Strategy::ReverseEngineer) — reverse engineer from disassembly
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Strategy {
     /// Use PAL mapping to replace Windows APIs with cross-platform Rust equivalents.
@@ -65,7 +65,7 @@ fn strategy_for_category(category: &DllCategory, crate_replacement: Option<&str>
 
 /// Classification result for a single DLL.
 ///
-/// Produced by [`Analyzer::classify_dll`] or [`Analyzer::classify_target`].
+/// Produced by [`Analyzer::classify_dll`] or `Analyzer::classify_target`.
 /// Contains the DLL's category, the recommended strategy, symbol counts,
 /// and any crate replacement name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,7 +418,7 @@ impl Analyzer {
     ///
     /// Resolves `function` to an address in the loaded program, fetches its
     /// decompilation and cross-references, then tags the Windows API calls
-    /// among its callees using [`tag_windows_apis`].
+    /// among its callees using [`tag_windows_apis`](Analyzer::tag_windows_apis).
     ///
     /// # Arguments
     ///
@@ -542,7 +542,7 @@ impl Analyzer {
     ///   `imports`; an empty string skips this extra scan.
     /// * `imports` — The list of imports for the DLL containing the function.
     ///   Ghidra reports an import as a name and an external slot with no
-    ///   module attached, so these are names rather than [`Import`] values;
+    ///   module attached, so these are names rather than [`Import`](calxgloss_types::Import) values;
     ///   the module a symbol came from is not available from the analysis
     ///   side and is not needed to look up a mapping.
     ///

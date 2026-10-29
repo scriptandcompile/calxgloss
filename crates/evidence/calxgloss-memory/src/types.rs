@@ -200,9 +200,9 @@ calxgloss_types::display_serde_label!(CountStyle {
 /// The record says the function bumps a reference count using
 /// [`increment`](Self::increment) and drops it again using
 /// [`decrement`](Self::decrement). What carries the count ties the
-/// two together: under [`CountStyle::FieldArithmetic`](CountStyle::FieldArithmetic)
+/// two together: under [`CountStyle::FieldArithmetic`]
 /// they must be on the same field of the same owner, and under
-/// [`CountStyle::ComMethods`](CountStyle::ComMethods) on the same
+/// [`CountStyle::ComMethods`] on the same
 /// object variable. The pairing reads like
 /// [`suggestion`](Self::suggestion) — the shared-ownership pattern
 /// that stands in for the manual counting: `Rc<T>` when the counted

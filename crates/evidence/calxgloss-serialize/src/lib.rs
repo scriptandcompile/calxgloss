@@ -40,7 +40,7 @@
 //!   other fields (a checksum) and a read length checked against a
 //!   buffer size or remaining count (framing). It suggests modelling
 //!   the check as a checked parse or validate step on the Rust type.
-//! - [`format`] - Serialization format inference: `FormatCombiner`
+//! - [`format`](mod@format) - Serialization format inference: `FormatCombiner`
 //!   combines the byte-swap and bit-pack readings found in one function
 //!   into a single `SerializationFormat` layout — an ordered field
 //!   sequence with wire byte orders and bitfield widths, and a

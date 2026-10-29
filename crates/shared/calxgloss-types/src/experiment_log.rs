@@ -17,8 +17,8 @@
 //! - Total attempts, successes, and failures
 //! - Per-category and per-retry-strategy aggregates
 //!
-//! The [`crate::analysis::PromptStrategyLogger`] handles persistence to
-//! `re/analysis/prompt_strategy_log.json`.
+//! The `calxgloss-analysis` crate's `PromptStrategyLogger` handles persistence
+//! to `re/analysis/prompt_strategy_log.json`.
 //!
 //! # Example
 //!
@@ -142,7 +142,7 @@ pub struct StrategyStats {
     pub pass_rate: f64,
 }
 
-/// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`]
+/// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES)
 /// cap (issue #82).
 ///
 /// [`PromptStrategyLog::add_entry`] adds each dropped entry to this
@@ -204,12 +204,12 @@ impl PromptStrategyTrim {
 /// statistics via [`compute_stats`](Self::compute_stats).
 ///
 /// The log is bounded: [`add_entry`](Self::add_entry) keeps the newest
-/// [`MAX_LOG_ENTRIES`] entries and counts the trimmed-away ones into
+/// [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES) entries and counts the trimmed-away ones into
 /// [`trimmed`](Self::trimmed), so aggregates still cover the whole run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PromptStrategyLog {
     /// The retained entries — the newest window of at most
-    /// [`MAX_LOG_ENTRIES`] entries.
+    /// [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES) entries.
     pub entries: Vec<PromptStrategyEntry>,
 
     /// Aggregate totals for entries trimmed away by the cap.
@@ -225,7 +225,7 @@ impl PromptStrategyLog {
 
     /// Append an entry to the log.
     ///
-    /// The log retains at most [`MAX_LOG_ENTRIES`] entries: once full, each
+    /// The log retains at most [`MAX_LOG_ENTRIES`](crate::MAX_LOG_ENTRIES) entries: once full, each
     /// new entry drops the oldest one, keeping the file's size and the
     /// per-entry rewrite cost bounded (issue #82). The dropped entry is
     /// counted into [`trimmed`](Self::trimmed) so aggregates stay honest.

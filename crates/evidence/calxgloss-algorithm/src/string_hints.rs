@@ -66,9 +66,9 @@ pub struct StringSignature {
     pub case_insensitive: bool,
     /// Optional per-entry confidence (0–100). It overrides the scores
     /// the detector pays — body match
-    /// ([`BODY_CONFIDENCE`](crate::confidence::BODY_CONFIDENCE)) and
+    /// ([`BODY_CONFIDENCE`]) and
     /// listing-only match
-    /// ([`LISTING_CONFIDENCE`](crate::confidence::LISTING_CONFIDENCE)).
+    /// ([`LISTING_CONFIDENCE`]).
     /// A hand-tuned signature from a
     /// [pattern database](crate::pattern_db) can therefore earn more
     /// (or less) trust than the standard set. Absent means the

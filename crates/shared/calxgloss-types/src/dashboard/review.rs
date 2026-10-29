@@ -235,7 +235,7 @@ impl ReviewDashboard {
     /// This implements Phase 4 / Step 4.4: **auto-queue unmet units**. When a
     /// dependency unit (e.g. a shim layer or DLL classification) is in a
     /// failing status (`SendBack`, `PatchRequested`), all units that transitively
-    /// depend on it are automatically marked as [`Blocked`].
+    /// depend on it are automatically marked as [`Blocked`](ReviewStatus::Blocked).
     ///
     /// # Failing statuses
     ///
@@ -251,8 +251,8 @@ impl ReviewDashboard {
     /// Blocking propagates transitively. If A depends on B and B depends on C,
     /// and C fails:
     ///
-    /// 1. C is failing → mark B as [`Blocked`]
-    /// 2. B is now failing (blocked) → mark A as [`Blocked`]
+    /// 1. C is failing → mark B as [`Blocked`](ReviewStatus::Blocked)
+    /// 2. B is now failing (blocked) → mark A as [`Blocked`](ReviewStatus::Blocked)
     ///
     /// Units already in a terminal status (`Accepted`, `Blocked`) are left
     /// unchanged — the method is idempotent. Each status rewrite also moves
@@ -261,7 +261,7 @@ impl ReviewDashboard {
     ///
     /// # Returns
     ///
-    /// The number of units that were changed to [`Blocked`].
+    /// The number of units that were changed to [`Blocked`](ReviewStatus::Blocked).
     pub fn auto_block_units(&mut self) -> usize {
         // Phase 1: identify all failing units (SendBack, PatchRequested)
         // These are the roots of the blocking cascade.

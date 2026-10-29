@@ -12,7 +12,7 @@
 //!   serde-label enums
 //! - [`function`] — Function disassembly, decompiler output, and API tagging
 //! - [`shim`] — Shim layer API contract for crate-replacement DLLs
-//! - [`test`] — Test case generation and baseline execution
+//! - [`test`](mod@test) — Test case generation and baseline execution
 //! - [`translation`] — LLM translation requests and results
 //! - [`verification`] — Compilation and behavioral verification results
 //! - [`git`] — Branch and commit tracking

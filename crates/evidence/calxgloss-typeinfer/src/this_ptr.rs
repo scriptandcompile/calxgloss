@@ -548,7 +548,7 @@ impl ThisPointerDetector {
     ///
     /// The dispatch pattern proves the parameter points to an object with
     /// a vtable, not which class owns the table, so a bare reading narrows
-    /// the parameter to an unnamed class pointer ([`UNNAMED_CLASS`]) at
+    /// the parameter to an unnamed class pointer (`UNNAMED_CLASS`) at
     /// class scope — the inference belongs to the class, not just this
     /// function. When the program names the class, the record narrows to
     /// `Class *` instead: the analyzed function carries a demangled member

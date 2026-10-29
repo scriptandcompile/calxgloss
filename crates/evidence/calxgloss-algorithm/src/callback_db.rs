@@ -148,7 +148,7 @@ pub struct CallbackPattern {
     /// Optional per-entry confidence (0–100) overriding the score the
     /// detector pays for the hints this contract makes — its standard
     /// score
-    /// ([`CALLBACK_CONFIDENCE`](crate::confidence::CALLBACK_CONFIDENCE)).
+    /// ([`CALLBACK_CONFIDENCE`]).
     /// A hand-tuned contract from a
     /// [pattern database](crate::pattern_db) can therefore claim more
     /// (or less) trust than the standard set pays. Absent means the

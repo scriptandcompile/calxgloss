@@ -181,10 +181,10 @@ impl HandleDetector {
     /// Each pair becomes one [`HandleLifecycle`]. The record names the
     /// family, the two recognized spellings that opened and closed the
     /// handle, and the guard pattern that replaces the manual close.
-    /// That pattern is [`GUARD_SUGGESTION`] at
-    /// [`HANDLE_PAIR_CONFIDENCE`] evidence confidence. Where the body
+    /// That pattern is `GUARD_SUGGESTION` at
+    /// `HANDLE_PAIR_CONFIDENCE` evidence confidence. Where the body
     /// reads the handle value after the close, it narrows to
-    /// [`SCOPED_GUARD_SUGGESTION`] at [`SCOPED_GUARD_CONFIDENCE`]. The
+    /// `SCOPED_GUARD_SUGGESTION` at `SCOPED_GUARD_CONFIDENCE`. The
     /// evidence is the open line and the close line joined together.
     /// Records come back in open order, so two scans of one body diff
     /// cleanly.

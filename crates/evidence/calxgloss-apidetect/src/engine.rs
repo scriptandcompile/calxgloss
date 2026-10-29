@@ -11,7 +11,7 @@
 //!
 //! The evidence engine is generic over the shared [`ScanSource`] plus
 //! a [`CallGraphSource`] for the built graph, so tests can run the
-//! whole orchestration over canned data. [`new`](Self::new) builds one
+//! whole orchestration over canned data. [`new`](ApiEngine::new) builds one
 //! over a loaded [`KunaSource`].
 
 use std::time::Instant;

@@ -110,10 +110,10 @@ pub struct WindowsApiCall {
 /// Category of a function in the call graph.
 ///
 /// This category decides how the translation pipeline treats the function:
-/// - [`Root`]: Entry points or runtime init functions — skipped or stubbed
-/// - [`Leaf`]: Functions calling known 3rd-party APIs — need richer context
-/// - [`Middle`]: Application logic — normal translation
-/// - [`Skip`]: Known runtime library functions — not translated
+/// - [`Root`](NodeCategory::Root): Entry points or runtime init functions — skipped or stubbed
+/// - [`Leaf`](NodeCategory::Leaf): Functions calling known 3rd-party APIs — need richer context
+/// - [`Middle`](NodeCategory::Middle): Application logic — normal translation
+/// - [`Skip`](NodeCategory::Skip): Known runtime library functions — not translated
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeCategory {
     /// Entry point or runtime init — skip or stub.

@@ -197,7 +197,7 @@ pub struct FormatStringUse {
 ///
 /// Each kind is one shape that language machinery leaves in the string
 /// listing. See
-/// [`localization`](crate::localization::LocalizationDetector::detect)
+/// `localization`
 /// for the checks that decide when each kind applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

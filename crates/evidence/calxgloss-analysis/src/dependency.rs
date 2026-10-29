@@ -4,7 +4,7 @@
 //! [`DependencyGraph`] from two sources:
 //!
 //! 1. **Shim layer declarations** — produced when a DLL is classified as
-//!    [`CrateReplacement`](calxgloss_analysis::Strategy::CrateReplacement). Each
+//!    `CrateReplacement`. Each
 //!    shim layer becomes a node that depends on its DLL classification.
 //!
 //! 2. **Call graph data** — for every function whose call graph includes

@@ -10,9 +10,9 @@
 //!     └── {binary}.toml  (derived: rendered dependency manifest, never read back)
 //! ```
 //!
-//! A persisted result is also a cache. [`exists`](Self::exists) is the
+//! A persisted result is also a cache. [`exists`](ApiPersistor::exists) is the
 //! check a caller runs before deciding whether a scan is needed.
-//! [`load`](Self::load) reads the whole document back — metadata and
+//! [`load`](ApiPersistor::load) reads the whole document back — metadata and
 //! every finding — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};

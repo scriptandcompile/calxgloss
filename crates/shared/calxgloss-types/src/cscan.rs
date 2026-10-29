@@ -300,7 +300,7 @@ pub fn strip_casts(arg: &str, is_type_word: impl Fn(&str) -> bool) -> String {
 
 /// Returns the index of the `)` that closes a leading type-cast group at
 /// `open`. Such a group holds only `*`s and identifier words that
-/// [`is_type_word`](is_type_word) accepts, and nothing else. Returns
+/// `is_type_word` accepts, and nothing else. Returns
 /// `None` when the group is not a cast.
 pub fn cast_group(bytes: &[u8], open: usize, is_type_word: impl Fn(&str) -> bool) -> Option<usize> {
     let mut i = open + 1;

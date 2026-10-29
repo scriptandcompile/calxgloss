@@ -9,9 +9,9 @@
 //!     └── {binary}.json
 //! ```
 //!
-//! A persisted result also acts as a cache. [`exists`](Self::exists) is
+//! A persisted result also acts as a cache. [`exists`](AlgorithmPersistor::exists) is
 //! the check a caller runs before deciding whether a scan is needed,
-//! and [`load`](Self::load) reads the whole document back — metadata
+//! and [`load`](AlgorithmPersistor::load) reads the whole document back — metadata
 //! and every hint — for the translation pipeline to query.
 
 use std::path::{Path, PathBuf};

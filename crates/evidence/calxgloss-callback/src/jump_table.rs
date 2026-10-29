@@ -23,7 +23,7 @@
 //! table symbol. It sizes the table from a bounds check on the index
 //! (`idx < N` → N entries, `idx <= N` → N + 1) or from the number of
 //! `SYM_caseD_*` labels the decompiler emitted. A table with a known
-//! size below [`MIN_TARGETS`] entries is an ordinary small branch, not
+//! size below `MIN_TARGETS` entries is an ordinary small branch, not
 //! a dispatch, and is not recorded.
 
 use crate::types::JumpTable;
@@ -93,11 +93,11 @@ impl JumpTableDetector {
     /// header form, once per table symbol at its first call; the
     /// findings come in that order. The table is sized from a bounds
     /// check on the index or from `SYM_caseD_*` label counts. A sized
-    /// table below [`MIN_TARGETS`] entries is a branch, not a dispatch,
+    /// table below `MIN_TARGETS` entries is a branch, not a dispatch,
     /// and is not recorded. A sized table is reported at
-    /// [`JUMP_TABLE_CONFIDENCE`] with an exact-size suggestion; an
+    /// `JUMP_TABLE_CONFIDENCE` with an exact-size suggestion; an
     /// unsized table is still reported, at
-    /// [`UNSIZED_TABLE_CONFIDENCE`], because the indexed code call is
+    /// `UNSIZED_TABLE_CONFIDENCE`, because the indexed code call is
     /// itself the evidence.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<JumpTable> {
         let mut tables = Vec::new();

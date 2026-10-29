@@ -9,7 +9,7 @@
 //! ```
 //!
 //! A saved result also acts as a cache. Before deciding whether to run a
-//! scan, a caller checks [`exists`](Self::exists). [`load`](Self::load)
+//! scan, a caller checks [`exists`](StringContextPersistor::exists). [`load`](StringContextPersistor::load)
 //! then reads the whole document back — metadata and every finding — for
 //! the translation pipeline to query.
 

@@ -277,7 +277,7 @@ fn classify_call_graph(
 /// 1. Fetches all function metadata through the scan source, via
 ///    [`CallGraphBuilder`].
 /// 2. Loads the persisted libmatch document for the binary, if any, and
-///    classifies each function through [`classify_call_graph`]: a
+///    classifies each function through `classify_call_graph`: a
 ///    known-library match at or above [`LIBMATCH_SKIP_CONFIDENCE_FLOOR`]
 ///    becomes [`Skip`](calxgloss_types::NodeCategory::Skip) ahead of the
 ///    structural [`RootDetector`] / [`LeafDetector`] cascade.

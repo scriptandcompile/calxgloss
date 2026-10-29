@@ -15,7 +15,7 @@
 //! width. A bare `bswap` says only that bytes get reversed somewhere;
 //! the entry says exactly that, `reversal_only`, and claims no wire
 //! order. The evidence confidence is fixed at
-//! [`ENDIANNESS_MAP_CONFIDENCE`], one band above the raw byte-swap floor.
+//! `ENDIANNESS_MAP_CONFIDENCE`, one band above the raw byte-swap floor.
 //! The map builds on the byte-swap findings, and a program-wide
 //! aggregation is stronger evidence than any single call site.
 

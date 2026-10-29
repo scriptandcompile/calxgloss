@@ -1,7 +1,7 @@
 //! Building the call graph from scan-source reads.
 //!
 //! The [`CallGraphBuilder`] reads function summaries, callers, and callee
-//! information through the shared [`ScanSource`](calxgloss_decomp::ScanSource)
+//! information through the shared [`ScanSource`]
 //! seam — either the loaded analysis engine or the scan read cache — and
 //! assembles the answers into a [`CallGraph`]. Every function starts out
 //! categorized as `NodeCategory::Middle`.
