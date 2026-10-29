@@ -33,7 +33,7 @@ fn the_fixture_dll_opens_and_lists_its_named_exports() {
     let names: Vec<&str> = image.exports().iter().map(|e| e.name.as_str()).collect();
     for want in calxgloss_testfixtures::EXPORT_NAMES {
         assert!(
-            names.iter().any(|n| *n == *want),
+            names.contains(want),
             "{want} is an export of the fixture image, got {names:?}"
         );
     }

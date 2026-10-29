@@ -5682,14 +5682,10 @@ mod tests {
     #[test]
     fn the_whole_track_renders_empty_findings_under_complete_and_falling_short_coverage_never_alike()
      {
-        let rows: [(
-            &str,
-            fn(&EvidenceBundle) -> String,
-            fn(&mut EvidenceBundle, CoverageInfo),
-            fn() -> calxgloss_types::ScanCoverage,
-            &str,
-            &str,
-        ); 14] = [
+        type Render = fn(&EvidenceBundle) -> String;
+        type Load = fn(&mut EvidenceBundle, CoverageInfo);
+        type Coverage = fn() -> calxgloss_types::ScanCoverage;
+        let rows: [(&str, Render, Load, Coverage, &str, &str); 14] = [
             (
                 "library-api",
                 render_escalate_full,

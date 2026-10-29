@@ -6194,7 +6194,8 @@ void SetCursor(void)
     /// whole contract, and each engine's loader holds it.
     #[test]
     fn every_engine_loads_a_pre_p19_document_as_unknown_coverage() {
-        let fixtures: [(&str, fn(&std::path::Path) -> (String, ScanMetadata)); 15] = [
+        type FixtureDoc = fn(&std::path::Path) -> (String, ScanMetadata);
+        let fixtures: [(&str, FixtureDoc); 15] = [
             ("library-api", |dir| {
                 let p = ApiPersistor::new(dir);
                 p.save(&calxgloss_apidetect::types::ApiDetectionResult::new(
@@ -7512,11 +7513,11 @@ void SetCursor(void)
         let mut methods: Vec<&str> = Vec::new();
         for (_family, family_methods) in roster {
             for method in *family_methods {
-                if !methods.contains(&method) {
+                if !methods.contains(method) {
                     methods.push(method);
                     let claims = roster
                         .iter()
-                        .filter(|(_, claimed)| claimed.contains(&method))
+                        .filter(|(_, claimed)| claimed.contains(method))
                         .count();
                     if claims > 1 {
                         faults.push(format!(

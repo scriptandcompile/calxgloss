@@ -53,10 +53,11 @@ fn listed_subcommands(help: &str) -> Vec<String> {
             if line.trim().is_empty() {
                 break;
             }
-            if line.starts_with("  ") && !line.starts_with("   ") {
-                if let Some(name) = line.trim().split_whitespace().next() {
-                    names.push(name.to_string());
-                }
+            if !line.starts_with("  ") || line.starts_with("   ") {
+                continue;
+            }
+            if let Some(name) = line.split_whitespace().next() {
+                names.push(name.to_string());
             }
         }
     }
