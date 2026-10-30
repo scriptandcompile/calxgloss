@@ -35,6 +35,14 @@ Every library crate follows the same shape:
   Domain detectors/analyzers get their own module.
 - Modules are `pub mod` unless purely internal, in which case
   `pub(crate) mod`.
+- A production module that outgrows one file splits into private submodules
+  under a directory named for it (`pipeline.rs` plus `pipeline/<seam>.rs`),
+  one submodule per seam. The struct and its constructor stay in the parent;
+  method `impl` blocks and free items move to the seam files, which pull the
+  parent in with `use super::*;`. Moved private items widen to
+  `pub(super)`, and the parent re-globs every seam (`use <seam>::*;`) so the
+  parent's own methods, the seams, and the test submodule all resolve names
+  through one scope.
 - `lib.rs` re-exports the crate's error type and `Result` alias:
   `pub use error::{Result, XxxError};`
 
