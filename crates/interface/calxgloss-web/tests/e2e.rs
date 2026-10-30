@@ -37,6 +37,8 @@ struct TestFixture {
 
 // Scenario tests split out of this file; they see the helpers below through
 // `use super::*;`.
+#[path = "e2e/analysis_artifact_contract.rs"]
+mod analysis_artifact_contract;
 #[path = "e2e/analytics_api.rs"]
 mod analytics_api;
 #[path = "e2e/attempts_api_and_analytics_views.rs"]
