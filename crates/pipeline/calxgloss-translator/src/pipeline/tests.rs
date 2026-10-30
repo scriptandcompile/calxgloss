@@ -1227,7 +1227,7 @@ async fn the_trace_fold_degrades_to_unassessed_without_one_of_its_documents() {
 
     // A captured trace with no roster: the baseline document exists,
     // apidetect never ran.
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("temp workspace");
     let pipeline = pipeline_over(Some(dir.path()));
     let first_pass = pipeline
         .generate_baseline_tests(&function_info, &[], &[])
@@ -1249,7 +1249,7 @@ async fn the_trace_fold_degrades_to_unassessed_without_one_of_its_documents() {
 
     // A roster with no saved baseline: apidetect ran, the baseline was
     // never recorded.
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("temp workspace");
     file_api_usages(dir.path(), &[("DrawPrimitive", "BitBlt", true)]);
     let pipeline = pipeline_over(Some(dir.path()));
     let tests = pipeline
@@ -1267,7 +1267,7 @@ async fn the_trace_fold_degrades_to_unassessed_without_one_of_its_documents() {
 /// already takes (#276).
 #[tokio::test]
 async fn a_corrupt_apidetect_document_leaves_the_trace_dimension_unassessed() {
-    let dir = TempDir::new().unwrap();
+    let dir = TempDir::new().expect("temp workspace");
     let doc_dir = dir.path().join("re").join("analysis").join("apidetect");
     std::fs::create_dir_all(&doc_dir).expect("apidetect dir");
     std::fs::write(doc_dir.join("game_logic.dll.json"), "not json at all")

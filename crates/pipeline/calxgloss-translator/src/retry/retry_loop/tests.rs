@@ -1066,25 +1066,23 @@ async fn a_compiling_unit_with_a_failing_suite_is_not_reported_success() {
 /// #386 criterion 3, through the seam: a baseline case whose value matches
 /// but whose ordered surface calls diverge from the captured trace fails
 /// on the trace dimension alone, and the failure routes into the next
-/// attempt's test-fix prompt naming which call was substituted. (The case's
-/// expected trace is what the baseline capture and API roster fold puts
-/// there; the attempt record's failed-test lines are the payload either
-/// way — this pins the routing carrying the divergence, end to end through
-/// the real verifier and runner.)
+/// attempt's test-fix prompt naming which call was substituted. The
+/// expected trace here is exactly the fold's shape — a baseline capture of
+/// `ReadFile → CreateFileA`, both in the API roster, spells to
+/// `read → open` — and the body reaches the captured value 7 opening
+/// before it reads: value clean, route wrong. (This pins the routing
+/// carrying the divergence, end to end through the real verifier and
+/// runner; the fold itself is pinned at the pipeline seam in
+/// `pipeline/tests.rs`.)
 #[tokio::test]
 async fn a_trace_divergent_failed_test_routes_the_divergence_into_the_next_fix_prompt() {
     let ws = tempfile::TempDir::new().expect("temp workspace");
-    // The body reaches 7 through the verify PAL surface, but presents
-    // before it blits; the folded expectation from the baseline capture
-    // demands blit first. The return value is clean — only the route is
-    // wrong.
     const BODY: &str = r#"
 pub fn call_no_params() -> serde_json::Value {
-    let mut device = GraphicsDeviceStub::default();
-    let texture = device.create_texture(2, 2);
-    let mut target = device.create_render_target(2, 2);
-    device.present();
-    device.blit(&texture, &mut target);
+    let fs = FileSystemStub::default();
+    let handle = fs.open("pin_trace.txt", FileMode::Read).expect("the stub open always works");
+    let mut buf = [0u8; 8];
+    let _ = fs.read(&handle, &mut buf);
     serde_json::Value::from(7)
 }
 "#;
@@ -1101,12 +1099,7 @@ pub fn call_no_params() -> serde_json::Value {
             inputs: serde_json::json!(null),
             expected_return: serde_json::json!(7),
             expected_side_effects: Vec::new(),
-            expected_api_calls: vec![
-                "create_texture".to_string(),
-                "create_render_target".to_string(),
-                "blit".to_string(),
-                "present".to_string(),
-            ],
+            expected_api_calls: vec!["read".to_string(), "open".to_string()],
         }],
         call_graph: Vec::new(),
         disassembly_hints: Vec::new(),
@@ -1184,13 +1177,11 @@ pub fn call_no_params() -> serde_json::Value {
     };
     let prompt = &sent[&2];
     assert!(
-        prompt.contains("API-call trace divergence at position 2"),
+        prompt.contains("API-call trace divergence at position 0"),
         "the next attempt's fix prompt carries the trace divergence:\n{prompt}"
     );
     assert!(
-        prompt.contains(
-            "expected [create_texture, create_render_target, blit, present], got [create_texture, create_render_target, present, blit]"
-        ),
+        prompt.contains("expected [read, open], got [open, read]"),
         "and it names exactly which call was substituted:\n{prompt}"
     );
 }

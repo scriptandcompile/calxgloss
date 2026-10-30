@@ -195,23 +195,32 @@ impl TranslationPipeline {
             // alongside (#276).
             let roster = self.api_scope_roster(&function_info.binary, &function_info.name);
             if !roster.is_empty() {
-                let baseline = calxgloss_testgen::TestGenerator::new(workspace)
-                    .load_baseline(&function_info.binary, &function_info.name);
-                if let Ok(captures) = baseline {
-                    for test in &mut tests {
-                        let inputs = test.inputs.to_string();
-                        if let Some(capture) = captures
-                            .iter()
-                            .find(|record| record.test_case.inputs.to_string() == inputs)
-                        {
-                            test.expected_api_calls = capture
-                                .actual_api_calls
+                match calxgloss_testgen::TestGenerator::new(workspace)
+                    .load_baseline(&function_info.binary, &function_info.name)
+                {
+                    Ok(captures) => {
+                        for test in &mut tests {
+                            if let Some(capture) = captures
                                 .iter()
-                                .filter(|name| roster.iter().any(|api| api == *name))
-                                .filter_map(|name| api_surface_name(name))
-                                .map(str::to_string)
-                                .collect();
+                                .find(|record| record.test_case.inputs == test.inputs)
+                            {
+                                test.expected_api_calls = capture
+                                    .actual_api_calls
+                                    .iter()
+                                    .filter(|name| roster.iter().any(|api| api == *name))
+                                    .filter_map(|name| api_surface_name(name))
+                                    .map(str::to_string)
+                                    .collect();
+                            }
                         }
+                    }
+                    Err(e) => {
+                        debug!(
+                            binary = &*function_info.binary,
+                            function = %function_info.name,
+                            error = %e,
+                            "No saved baseline document to fold captured api-call traces from; the trace dimension stays unassessed for this unit"
+                        );
                     }
                 }
             }
