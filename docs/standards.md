@@ -99,7 +99,14 @@ Every library crate follows the same shape:
 ## Testing
 
 - Unit tests live in `#[cfg(test)] mod tests` at the bottom of the file they
-  test. Cross-module / end-to-end flows go in `tests/integration_tests.rs`.
+  test. Once a test module outgrows the file it tests, move its body to a
+  sibling submodule: `#[cfg(test)] mod tests;` in the file, the tests in
+  `src/<file-stem>/tests.rs` (the crate root's go in `src/tests.rs`).
+- Cross-module / end-to-end flows go in `tests/integration_tests.rs`. A test
+  binary that outgrows one file keeps its fixture helpers in its root and
+  splits its scenarios into modules under a directory named for it
+  (`tests/e2e.rs` plus `tests/e2e/<scenario>.rs`, wired with `#[path]`),
+  which reach the helpers through `use super::*;`.
 - Tests that need a live external service (an LLM endpoint) are kept in
   separate files (e.g. `tests/live.rs`) so they can be run independently of
   the offline suite. The analysis engine needs no external service: Kuna

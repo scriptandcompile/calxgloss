@@ -18,7 +18,7 @@
 //! what an assembled pass honors is pinned by the seam's behavior suite in
 //! the sibling file `tests/assembly.rs`, and what the attempt seam does is
 //! pinned by the loop's behavior suite in `retry/attempt.rs` and
-//! `retry/retry_loop.rs`. Each retry pin below also names how it fails
+//! `retry/retry_loop/tests.rs`. Each retry pin below also names how it fails
 //! against the pre-deepening shape — the pins are not vacuous.
 
 use std::path::{Path, PathBuf};
@@ -49,7 +49,10 @@ fn crates_dir() -> PathBuf {
 
 /// Every `.rs` file living under a `src` directory anywhere in `root`,
 /// as paths relative to `root`. Integration tests (`tests/`), build
-/// scripts, and benches are not production modules and stay out of the scan.
+/// scripts, and benches are not production modules and stay out of the
+/// scan — and so does every `tests.rs` submodule file (`docs/standards.md`:
+/// `#[cfg(test)] mod tests;` with the body in `src/<file-stem>/tests.rs`),
+/// which carries no `#[cfg(test)]` line of its own for the region cut below.
 fn source_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     collect(root, root, false, &mut out);
@@ -62,7 +65,10 @@ fn collect(root: &Path, dir: &Path, in_src: bool, out: &mut Vec<PathBuf>) {
         if path.is_dir() {
             let in_src = in_src || path.file_name().is_some_and(|name| name == "src");
             collect(root, &path, in_src, out);
-        } else if in_src && path.extension().is_some_and(|ext| ext == "rs") {
+        } else if in_src
+            && path.extension().is_some_and(|ext| ext == "rs")
+            && path.file_name().is_some_and(|name| name != "tests.rs")
+        {
             out.push(
                 path.strip_prefix(root)
                     .expect("relative path")

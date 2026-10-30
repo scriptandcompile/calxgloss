@@ -1,0 +1,1562 @@
+// Tests for the module above, split out of the file they test.
+use super::*;
+use crate::callback_db::CallbackPattern;
+use crate::pattern_db::PatternDatabase;
+use crate::types::{
+    AlgorithmCategory, AlgorithmHint, AlgorithmPattern, Confidence, DetectionMethod,
+};
+use calxgloss_decomp::{
+    DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
+    Result, StringLiteral, StructLayout, Symbol, Xref,
+};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+fn summary(name: &str, address: u64) -> FunctionSummary {
+    FunctionSummary {
+        name: name.to_string(),
+        address,
+    }
+}
+
+fn literal(address: u64, value: &str) -> StringLiteral {
+    StringLiteral {
+        address,
+        value: value.to_string(),
+    }
+}
+
+fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
+    DecompiledFunction {
+        name: name.to_string(),
+        signature: signature.to_string(),
+        body: format!("{signature}\n\n{{\n{body}}}\n"),
+    }
+}
+
+const AB00: u64 = 0x1800_3ab00;
+const E750: u64 = 0x1800_3e750;
+const A12A0: u64 = 0x1800_412a0;
+
+/// State shared by every clone of a [`FakeProgram`], so a test can
+/// still read what the scan did after the scan has taken the
+/// program as its source.
+#[derive(Debug, Default)]
+struct Stats {
+    decompiles: Mutex<Vec<String>>,
+    string_fetches: AtomicUsize,
+    caller_fetches: Mutex<Vec<u64>>,
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+}
+
+/// A canned program implementing [`ScanSource`], so the whole
+/// orchestration runs without a server.
+#[derive(Clone)]
+struct FakeProgram {
+    listing: Vec<FunctionSummary>,
+    bodies: HashMap<String, DecompiledFunction>,
+    literals: Vec<StringLiteral>,
+    callers: HashMap<u64, Vec<String>>,
+    fail_listing: bool,
+    fail_strings: bool,
+    fail_decompiles: Vec<String>,
+    fail_callers: Vec<u64>,
+    /// Hold each decompile open across an await so several are
+    /// genuinely in flight at once — what proves the scan's
+    /// concurrency cap is a real window, not a sequential walk.
+    slow_decompiles: bool,
+    stats: Arc<Stats>,
+}
+
+impl FakeProgram {
+    fn empty() -> Self {
+        Self {
+            listing: Vec::new(),
+            bodies: HashMap::new(),
+            literals: Vec::new(),
+            callers: HashMap::new(),
+            fail_listing: false,
+            fail_strings: false,
+            fail_decompiles: Vec::new(),
+            fail_callers: Vec::new(),
+            slow_decompiles: false,
+            stats: Arc::new(Stats::default()),
+        }
+    }
+
+    fn decompiled(&self) -> Vec<String> {
+        self.stats.decompiles.lock().unwrap().clone()
+    }
+
+    fn string_fetches(&self) -> usize {
+        self.stats.string_fetches.load(Ordering::SeqCst)
+    }
+
+    fn caller_fetches(&self) -> Vec<u64> {
+        self.stats.caller_fetches.lock().unwrap().clone()
+    }
+
+    /// The most decompiles the scan ever had in flight at once.
+    fn max_in_flight(&self) -> usize {
+        self.stats.max_in_flight.load(Ordering::SeqCst)
+    }
+}
+
+impl ScanSource for FakeProgram {
+    async fn functions(&self) -> Result<Vec<FunctionSummary>> {
+        if self.fail_listing {
+            return Err(EngineError::Reported {
+                message: "the engine is busy".into(),
+            });
+        }
+        Ok(self.listing.clone())
+    }
+
+    async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
+        self.stats.decompiles.lock().unwrap().push(name.to_string());
+        let in_flight = self.stats.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.stats
+            .max_in_flight
+            .fetch_max(in_flight, Ordering::SeqCst);
+        if self.slow_decompiles {
+            tokio::task::yield_now().await;
+        }
+        self.stats.in_flight.fetch_sub(1, Ordering::SeqCst);
+        if self.fail_decompiles.iter().any(|f| f == name) {
+            return Err(EngineError::NotFound {
+                kind: "function",
+                query: name.to_string(),
+            });
+        }
+        self.bodies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| EngineError::NotFound {
+                kind: "function",
+                query: name.to_string(),
+            })
+    }
+
+    async fn strings(&self) -> Result<Vec<StringLiteral>> {
+        self.stats.string_fetches.fetch_add(1, Ordering::SeqCst);
+        if self.fail_strings {
+            return Err(EngineError::Reported {
+                message: "the engine is busy".into(),
+            });
+        }
+        Ok(self.literals.clone())
+    }
+
+    async fn callers(&self, address: u64) -> Result<Vec<String>> {
+        self.stats.caller_fetches.lock().unwrap().push(address);
+        if self.fail_callers.contains(&address) {
+            return Err(EngineError::Reported {
+                message: "the engine is busy".into(),
+            });
+        }
+        Ok(self.callers.get(&address).cloned().unwrap_or_default())
+    }
+
+    // The rest of the shared trait's reads: this scan never makes
+    // them, so they answer with empty or not-found data.
+    async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
+        Ok(Vec::new())
+    }
+
+    async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        Ok(Vec::new())
+    }
+
+    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        Err(EngineError::NotFound {
+            kind: "struct",
+            query: name.to_string(),
+        })
+    }
+
+    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        Err(EngineError::NotFound {
+            kind: "enum",
+            query: name.to_string(),
+        })
+    }
+
+    async fn data_items(&self) -> Result<Vec<DataItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn imports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn exports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn image_base(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+}
+
+/// A decompiled bubble sort: the outer pass, the inner pass, the
+/// ordering comparison, and the swap through `iVar4` — the shape
+/// the standard control flow set reads as a comparison sort.
+fn sort_body() -> String {
+    [
+        "  int iVar2;",
+        "  uint uVar3;",
+        "  int iVar4;",
+        "  ",
+        "  uVar3 = 0;",
+        "  while (uVar3 < (uint)param_2) {",
+        "    iVar2 = 0;",
+        "    while (iVar2 < param_2 - 1) {",
+        "      if (param_1[iVar2] < param_1[iVar2 + 1]) {",
+        "        iVar4 = param_1[iVar2];",
+        "        param_1[iVar2] = param_1[iVar2 + 1];",
+        "        param_1[iVar2 + 1] = iVar4;",
+        "      }",
+        "      iVar2 = iVar2 + 1;",
+        "    }",
+        "    uVar3 = uVar3 + 1;",
+        "  }",
+        "  return;",
+    ]
+    .join("\n")
+}
+
+/// A decompiled CRC loop: the byte-at-a-time fold through
+/// `crc_table` — the spelling the standard string set reads as crc.
+fn crc_body() -> String {
+    [
+        "  uint uVar1;",
+        "  ",
+        "  uVar1 = 0;",
+        "  while (*param_1 != '\\0') {",
+        "    uVar1 = (uVar1 ^ (ulong)(byte)*param_1) & 0xff;",
+        "    uVar1 = (uVar1 >> 8) ^ crc_table[uVar1];",
+        "    param_1 = param_1 + 1;",
+        "  }",
+        "  return uVar1;",
+    ]
+    .join("\n")
+}
+
+/// A decompiled compare callback: the two parameters compared
+/// against each other — the shape the qsort contract demands.
+fn compare_body() -> String {
+    [
+        "  if (*param_1 < *param_2) {",
+        "    return -1;",
+        "  }",
+        "  if (*param_2 < *param_1) {",
+        "    return 1;",
+        "  }",
+        "  return 0;",
+    ]
+    .join("\n")
+}
+
+/// The canned program: a sort the control flow set recognizes, a CRC
+/// loop the string set reads from the body, and a compare callback
+/// `qsort` reaches — plus a program-wide listing string carrying a
+/// `CRC32` marker no body spells.
+fn program() -> FakeProgram {
+    let mut program = FakeProgram::empty();
+    program.listing = vec![
+        summary("FUN_18003ab00", AB00),
+        summary("FUN_18003e750", E750),
+        summary("FUN_1800412a0", A12A0),
+    ];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "void FUN_18003ab00(int *param_1,int param_2)",
+            &sort_body(),
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined4 FUN_18003e750(char *param_1)",
+            &crc_body(),
+        ),
+    );
+    program.bodies.insert(
+        "FUN_1800412a0".into(),
+        function(
+            "FUN_1800412a0",
+            "int FUN_1800412a0(int *param_1,int *param_2)",
+            &compare_body(),
+        ),
+    );
+    program.literals = vec![literal(0x1801_29350, "CRC32 verification failed")];
+    program.callers.insert(AB00, vec!["FUN_180001900".into()]);
+    program.callers.insert(A12A0, vec!["qsort".into()]);
+    program
+}
+
+/// A program whose bodies call each other: a recursive split that
+/// halves its range, and a library sort that hands the host the
+/// comparator sitting beside it in the listing. The default
+/// relationship set reads both correlations from the call map the
+/// scan already holds.
+fn correlated_program() -> FakeProgram {
+    let mut program = FakeProgram::empty();
+    program.listing = vec![
+        summary("FUN_180050000", 0x1800_50000),
+        summary("FUN_180050100", 0x1800_50100),
+        summary("FUN_1800412a0", A12A0),
+    ];
+    program.bodies.insert(
+        "FUN_180050000".into(),
+        function(
+            "FUN_180050000",
+            "void FUN_180050000(int *param_1,int param_2)",
+            &[
+                "  if (param_2 < 2) {",
+                "    return;",
+                "  }",
+                "  FUN_180050000(param_1,param_2 / 2);",
+                "  FUN_180050000(param_1 + (param_2 / 2),param_2 / 2);",
+                "  return;",
+            ]
+            .join("\n"),
+        ),
+    );
+    program.bodies.insert(
+        "FUN_180050100".into(),
+        function(
+            "FUN_180050100",
+            "void FUN_180050100(int *param_1,int param_2)",
+            &["  qsort(param_1,param_2,4,FUN_1800412a0);", "  return;"].join("\n"),
+        ),
+    );
+    program.bodies.insert(
+        "FUN_1800412a0".into(),
+        function(
+            "FUN_1800412a0",
+            "int FUN_1800412a0(int *param_1,int *param_2)",
+            &[
+                "  if (*param_1 < *param_2) {",
+                "    return -1;",
+                "  }",
+                "  return 1;",
+            ]
+            .join("\n"),
+        ),
+    );
+    program
+}
+
+/// A program whose only call relationship is one no built-in
+/// relationship names: a custom host `my_sort` handed the comparator
+/// sitting beside it in the listing. The built-in set reads nothing
+/// here — it knows `qsort`, not this host — so a file that names the
+/// host is the only way the scan sees the relationship.
+fn custom_host_program() -> FakeProgram {
+    let mut program = FakeProgram::empty();
+    program.listing = vec![
+        summary("FUN_180050200", 0x1800_50200),
+        summary("FUN_1800412a0", A12A0),
+    ];
+    program.bodies.insert(
+        "FUN_180050200".into(),
+        function(
+            "FUN_180050200",
+            "void FUN_180050200(int *param_1,int param_2)",
+            &["  my_sort(param_1,param_2,4,FUN_1800412a0);", "  return;"].join("\n"),
+        ),
+    );
+    program.bodies.insert(
+        "FUN_1800412a0".into(),
+        function(
+            "FUN_1800412a0",
+            "int FUN_1800412a0(int *param_1,int *param_2)",
+            &[
+                "  if (*param_1 < *param_2) {",
+                "    return -1;",
+                "  }",
+                "  return 1;",
+            ]
+            .join("\n"),
+        ),
+    );
+    program
+}
+
+/// A listing of `count` plain functions — wide enough to outstrip
+/// the scan's in-flight cap, which is the shape the concurrency
+/// tests need. The bodies carry no algorithm shape, so the scan
+/// claims nothing and the tests read only the fetch accounting.
+fn wide_program(count: usize) -> FakeProgram {
+    let mut program = FakeProgram::empty();
+    program.listing = (0..count)
+        .map(|i| summary(&format!("FUN_wide{i:04}"), 0x1800_60000 + i as u64))
+        .collect();
+    for entry in &program.listing {
+        program.bodies.insert(
+            entry.name.clone(),
+            function(
+                &entry.name,
+                &format!("void {}(void)", entry.name),
+                "  return;\n",
+            ),
+        );
+    }
+    program
+}
+
+async fn scan(program: FakeProgram) -> AlgorithmRecognitionResult {
+    AlgorithmEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan")
+}
+
+fn finding<'a>(
+    result: &'a AlgorithmRecognitionResult,
+    function: &str,
+    method: DetectionMethod,
+) -> &'a AlgorithmHint {
+    result
+        .for_function(function)
+        .find(|hint| hint.method == method)
+        .expect("record from that detector")
+}
+
+#[tokio::test]
+async fn scan_collects_hints_from_all_three_detectors() {
+    let result = scan(program()).await;
+
+    assert_eq!(result.metadata.binary, "eqmain.dll");
+    assert!(result.metadata.scanned_at > 0);
+
+    let cfg = finding(&result, "FUN_18003ab00", DetectionMethod::CfgPattern);
+    assert_eq!(cfg.algorithm, "comparison_sort");
+    assert_eq!(cfg.category, AlgorithmCategory::Sorting);
+
+    // The CRC loop's own text carries the marker, so the body match
+    // wins the hint over the program-wide listing.
+    let string_hint = finding(&result, "FUN_18003e750", DetectionMethod::StringHint);
+    assert_eq!(string_hint.algorithm, "crc");
+    assert_eq!(string_hint.category, AlgorithmCategory::Checksum);
+    assert_eq!(string_hint.confidence, Confidence::new(60));
+
+    let callback = finding(&result, "FUN_1800412a0", DetectionMethod::CallbackPattern);
+    assert_eq!(callback.algorithm, "qsort_compare");
+    assert_eq!(callback.category, AlgorithmCategory::Sorting);
+    assert_eq!(callback.evidence, "qsort");
+}
+
+#[tokio::test]
+async fn the_listing_string_reaches_every_function_as_program_wide_evidence() {
+    // A marker only the listing carries ties the algorithm to the
+    // program, not to any one function, so it stands as a weaker
+    // hint beside the function's own readings.
+    let result = scan(program()).await;
+    let crc = finding(&result, "FUN_18003ab00", DetectionMethod::StringHint);
+    assert_eq!(crc.algorithm, "crc");
+    assert_eq!(crc.confidence, Confidence::new(30));
+    assert_eq!(crc.evidence, "CRC32 verification failed");
+}
+
+#[tokio::test]
+async fn hints_follow_the_listing_and_detector_order() {
+    // The sort function carries a control flow match and a
+    // listing-only string hint: within the function the cfg match
+    // stands before the string hint, and the function's own place
+    // in the listing order is kept.
+    let result = scan(program()).await;
+    let methods: Vec<DetectionMethod> = result
+        .for_function("FUN_18003ab00")
+        .map(|hint| hint.method)
+        .collect();
+    assert_eq!(
+        methods,
+        [DetectionMethod::CfgPattern, DetectionMethod::StringHint]
+    );
+
+    let mut functions: Vec<&str> = result.hints.iter().map(|h| h.function.as_str()).collect();
+    functions.dedup();
+    assert_eq!(
+        functions,
+        vec!["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"]
+    );
+}
+
+#[tokio::test]
+async fn scan_decompiles_each_function_exactly_once() {
+    // The three detectors share one fetch per function; a scan that
+    // asked each detector for its own copy would triple the wall
+    // time.
+    let program = program();
+    let result = scan(program.clone()).await;
+    assert!(!result.is_empty());
+    assert_eq!(
+        program.decompiled(),
+        vec!["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"],
+        "one decompile per function, in listing order"
+    );
+}
+
+#[tokio::test]
+async fn scan_fetches_the_string_listing_once() {
+    // The listing is program-wide evidence read by every function;
+    // pulling it per function would re-page the whole program.
+    let program = program();
+    scan(program.clone()).await;
+    assert_eq!(program.string_fetches(), 1);
+}
+
+#[tokio::test]
+async fn callers_are_fetched_only_where_a_contract_could_fit() {
+    // The standard contracts all take two parameters; the CRC loop
+    // takes one, so no contract fits it however it is used and its
+    // callers are never asked for.
+    let program = program();
+    scan(program.clone()).await;
+    assert_eq!(program.caller_fetches(), vec![AB00, A12A0]);
+}
+
+#[tokio::test]
+async fn a_function_that_will_not_decompile_is_skipped() {
+    // The decompiler cannot produce a body for every function; one bad entry
+    // point must not cost the whole program its scan.
+    let mut program = program();
+    program.fail_decompiles = vec!["FUN_18003ab00".into()];
+    let result = scan(program.clone()).await;
+
+    assert!(result.for_function("FUN_18003ab00").next().is_none());
+    assert_eq!(
+        program.decompiled(),
+        vec!["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"]
+    );
+}
+
+#[tokio::test]
+async fn a_scan_where_every_decompile_fails_aborts() {
+    // The 2026-10-08 incident: the bridge answered the listing from
+    // one program and the decompiles from another, every decompile
+    // failed, and the scan nearly persisted a phantom-clean record
+    // under the target's name. The skip-rate breaker aborts with
+    // the counts instead, so nothing is persisted.
+    let mut program = program();
+    program.fail_decompiles = vec![
+        "FUN_18003ab00".into(),
+        "FUN_18003e750".into(),
+        "FUN_1800412a0".into(),
+    ];
+    let result = AlgorithmEngine::with_source(program.clone())
+        .scan("eqmain.dll")
+        .await;
+
+    // The breaker is a circuit breaker, not a post-mortem: it trips
+    // the moment most of the listing has failed, so the third
+    // decompile is never issued.
+    assert!(matches!(
+        result,
+        Err(crate::AlgorithmError::DecompileBreaker {
+            failed: 2,
+            total: 3
+        })
+    ));
+    assert_eq!(
+        program.decompiled(),
+        vec!["FUN_18003ab00", "FUN_18003e750"],
+        "the scan stopped once the breaker tripped"
+    );
+}
+
+#[tokio::test]
+async fn the_breaker_aborts_a_concurrent_run_with_the_right_counts() {
+    // A listing wider than the scan's in-flight cap, every decompile
+    // failing: the breaker counts failures across the concurrent
+    // pass, aborts with those counts, and stops issuing decompiles
+    // once it trips — the functions past the trip are never read
+    // at all (issue #156).
+    let mut program = wide_program(12);
+    program.fail_decompiles = program.listing.iter().map(|f| f.name.clone()).collect();
+    let result = AlgorithmEngine::with_source(program.clone())
+        .scan("eqmain.dll")
+        .await;
+
+    // The breaker trips at the first failure count that is most of
+    // the listing: 7 of 12.
+    assert!(matches!(
+        result,
+        Err(crate::AlgorithmError::DecompileBreaker {
+            failed: 7,
+            total: 12
+        })
+    ));
+    let names: Vec<String> = (0..12).map(|i| format!("FUN_wide{i:04}")).collect();
+    assert_eq!(
+        program.decompiled(),
+        names[..7],
+        "the pass stopped issuing decompiles once the breaker tripped"
+    );
+}
+
+#[tokio::test]
+async fn decompiles_run_concurrently_but_never_exceed_the_cap() {
+    // The parallel pass exists to overlap work; the cap exists so
+    // the bridge is never overloaded. With every decompile held
+    // open, the fake's accounting proves the window: more than one
+    // in flight at a time, never more than the cap, and still
+    // exactly one decompile per function (issue #156).
+    let mut program = wide_program(20);
+    program.slow_decompiles = true;
+    let result = scan(program.clone()).await;
+    assert!(result.hints.is_empty(), "plain bodies claim nothing");
+    assert_eq!(
+        program.decompiled().len(),
+        20,
+        "each function still decompiled exactly once"
+    );
+    let max = program.max_in_flight();
+    assert!(max >= 2, "the pass really overlaps decompiles");
+    assert!(
+        max <= MAX_IN_FLIGHT_DECOMPILES,
+        "in-flight decompiles never exceed the cap"
+    );
+}
+
+#[tokio::test]
+async fn the_concurrent_pass_produces_the_hint_list_of_the_sequential_walk() {
+    // The cap reorders nothing. With every decompile held open,
+    // the assembled hints still arrive function by function in
+    // listing order, detector by detector — byte for byte what the
+    // same program produces when each read lands before the next
+    // is issued.
+    let mut slow = program();
+    slow.slow_decompiles = true;
+    let concurrent = scan(slow).await;
+    let sequential = scan(program()).await;
+    assert_eq!(concurrent.hints, sequential.hints);
+}
+
+#[tokio::test]
+async fn a_nameless_listing_entry_is_skipped() {
+    // A lookup on an empty name could land in an arbitrary
+    // function's body, so the entry passes without a decompile.
+    let mut program = program();
+    program.listing.insert(0, summary("", 0x1800_00000));
+    let result = scan(program.clone()).await;
+
+    assert_eq!(
+        program.decompiled(),
+        vec!["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"]
+    );
+    assert!(!result.is_empty());
+}
+
+#[tokio::test]
+async fn a_failing_listing_fails_the_whole_run() {
+    // With the listing gone nothing was scanned, so the run aborts
+    // rather than returning a result that looks empty by accident.
+    let mut program = program();
+    program.fail_listing = true;
+    let result = AlgorithmEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::AlgorithmError::Engine(EngineError::Reported { .. }))
+    ));
+}
+
+#[tokio::test]
+async fn a_failing_string_listing_fails_the_whole_run() {
+    // Every function's string-guided evidence comes from this one
+    // fetch; a result assembled without it would silently lack a
+    // whole evidence class, so the run aborts.
+    let mut program = program();
+    program.fail_strings = true;
+    let result = AlgorithmEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::AlgorithmError::Engine(EngineError::Reported { .. }))
+    ));
+}
+
+#[tokio::test]
+async fn a_failing_caller_fetch_keeps_the_other_hints() {
+    // The call graph read only feeds the callback detector; when it
+    // fails the function keeps its control flow and string hints and
+    // only its callback readings drop.
+    let mut program = program();
+    program.fail_callers = vec![A12A0];
+    let result = scan(program).await;
+
+    let methods = methods_for(&result, "FUN_1800412a0");
+    assert!(
+        !methods.contains(&DetectionMethod::CallbackPattern),
+        "the callback reading dropped with the failed fetch"
+    );
+    assert!(
+        methods.contains(&DetectionMethod::StringHint),
+        "the function keeps the hints that did not need the call graph"
+    );
+    assert!(!result.for_function("FUN_18003ab00").next().is_none());
+}
+
+fn methods_for(result: &AlgorithmRecognitionResult, function: &str) -> Vec<DetectionMethod> {
+    result
+        .for_function(function)
+        .map(|hint| hint.method)
+        .collect()
+}
+
+#[tokio::test]
+async fn an_empty_program_yields_an_empty_result() {
+    let result = scan(FakeProgram::empty()).await;
+    assert!(result.is_empty());
+    assert_eq!(result.metadata.binary, "eqmain.dll");
+    assert!(result.metadata.scanned_at > 0);
+}
+
+#[tokio::test]
+async fn configuration_reaches_every_detector() {
+    // Emptying a detector's set silences exactly that detector: the
+    // sort loses its cfg hint, the CRC loop its string hint, and the
+    // compare callback its contract match — with no contract
+    // configured, no caller is ever fetched.
+    let program = program();
+    let result = AlgorithmEngine::with_source(program.clone())
+        .with_matcher(CfgPatternMatcher::new())
+        .with_string_engine(StringHintEngine::new())
+        .with_callback_db(CallbackPatternDb::new())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    assert!(result.is_empty());
+    assert!(program.caller_fetches().is_empty());
+}
+
+#[tokio::test]
+async fn a_configured_detector_scans_with_its_own_set() {
+    // Swapping in a custom set changes what the scan recognizes: a
+    // matcher carrying only a recursion signature reads the CRC
+    // loop's self-call and nothing else from the cfg side.
+    let mut program = program();
+    let crc = program.bodies.get("FUN_18003e750").unwrap().clone();
+    let recursive = DecompiledFunction {
+        body: format!("{}\n  FUN_18003e750(param_1 + 1);\n", crc.body),
+        ..crc
+    };
+    program.bodies.insert("FUN_18003e750".into(), recursive);
+
+    let matcher = CfgPatternMatcher::with_patterns(
+        crate::cfg_patterns::default_patterns()
+            .into_iter()
+            .filter(|p| p.name == "recursion"),
+    );
+    let result = AlgorithmEngine::with_source(program)
+        .with_matcher(matcher)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let cfg = finding(&result, "FUN_18003e750", DetectionMethod::CfgPattern);
+    assert_eq!(cfg.algorithm, "recursion");
+    let sort_function_methods = methods_for(&result, "FUN_18003ab00");
+    assert!(
+        !sort_function_methods.contains(&DetectionMethod::CfgPattern),
+        "the custom set carries no sort signature"
+    );
+}
+
+#[tokio::test]
+async fn one_algorithm_claimed_by_two_detectors_reports_once_with_the_stronger_evidence() {
+    // A callback contract naming `crc` reaches the sort function
+    // through its caller at 75, while the program-wide listing
+    // claims `crc` there at 30: the scan reports crc once, carrying
+    // the callback's stronger reading.
+    let db = CallbackPatternDb::with_patterns([CallbackPattern::new(
+        "crc",
+        AlgorithmCategory::Checksum,
+        ["FUN_180001900"],
+        2,
+    )]);
+    let result = AlgorithmEngine::with_source(program())
+        .with_callback_db(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let crc: Vec<&AlgorithmHint> = result
+        .for_function("FUN_18003ab00")
+        .filter(|hint| hint.algorithm == "crc")
+        .collect();
+    assert_eq!(crc.len(), 1, "one claim per algorithm per function");
+    assert_eq!(crc[0].method, DetectionMethod::CallbackPattern);
+    assert_eq!(crc[0].confidence, Confidence::new(75));
+    assert_eq!(crc[0].evidence, "FUN_180001900");
+}
+
+#[tokio::test]
+async fn a_tie_between_detectors_keeps_the_claim_the_scan_surfaced_first() {
+    // A control flow signature and the string set's body match both
+    // read the CRC loop as `crc` at 60; the scan surfaces the
+    // control flow match first, so that claim stands.
+    let matcher = CfgPatternMatcher::with_patterns([AlgorithmPattern::new(
+        "crc",
+        AlgorithmCategory::Checksum,
+        ["crc_table"],
+    )]);
+    let result = AlgorithmEngine::with_source(program())
+        .with_matcher(matcher)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let crc: Vec<&AlgorithmHint> = result
+        .for_function("FUN_18003e750")
+        .filter(|hint| hint.algorithm == "crc")
+        .collect();
+    assert_eq!(crc.len(), 1);
+    assert_eq!(crc[0].method, DetectionMethod::CfgPattern);
+    assert_eq!(crc[0].evidence, "uVar1 = (uVar1 >> 8) ^ crc_table[uVar1];");
+}
+
+#[tokio::test]
+async fn the_surviving_claim_stands_where_the_algorithm_first_appeared() {
+    // For the sort function the scan surfaces the listing's crc
+    // claim (30) before the callback contract's stronger crc claim
+    // (75), with the http listing claim surfacing in between: the
+    // surviving crc stands at the position crc first appeared, not
+    // where its stronger claim arrived — and the different
+    // algorithms beside it all coexist.
+    let mut program = program();
+    program
+        .literals
+        .push(literal(0x1801_29400, "HTTP/1.1 200 OK"));
+    let db = CallbackPatternDb::with_patterns([CallbackPattern::new(
+        "crc",
+        AlgorithmCategory::Checksum,
+        ["FUN_180001900"],
+        2,
+    )]);
+    let result = AlgorithmEngine::with_source(program)
+        .with_callback_db(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<(&str, DetectionMethod)> = result
+        .for_function("FUN_18003ab00")
+        .map(|hint| (hint.algorithm.as_str(), hint.method))
+        .collect();
+    assert_eq!(
+        claims,
+        [
+            ("comparison_sort", DetectionMethod::CfgPattern),
+            ("crc", DetectionMethod::CallbackPattern),
+            ("http", DetectionMethod::StringHint),
+        ],
+        "the crc winner stands where crc first appeared, and different algorithms coexist"
+    );
+}
+
+#[tokio::test]
+async fn a_program_whose_bodies_call_each_other_yields_cross_function_hints() {
+    // Both built-in relationships read the correlation: the
+    // recursive split claims divide_and_conquer on the caller
+    // itself, and the library sort claims comparison_sort because
+    // the comparator it names compares its two arguments. Each
+    // hint's evidence is the body line naming the partner.
+    let result = scan(correlated_program()).await;
+
+    let split = finding(&result, "FUN_180050000", DetectionMethod::CrossFunction);
+    assert_eq!(split.algorithm, "divide_and_conquer");
+    assert_eq!(split.category, AlgorithmCategory::Recursion);
+    assert_eq!(split.confidence, Confidence::new(70));
+    assert_eq!(split.evidence, "FUN_180050000(param_1,param_2 / 2);");
+
+    let sort = finding(&result, "FUN_180050100", DetectionMethod::CrossFunction);
+    assert_eq!(sort.algorithm, "comparison_sort");
+    assert_eq!(sort.category, AlgorithmCategory::Sorting);
+    assert_eq!(sort.confidence, Confidence::new(70));
+    assert_eq!(sort.evidence, "qsort(param_1,param_2,4,FUN_1800412a0);");
+
+    assert!(
+        result.for_function("FUN_1800412a0").next().is_none(),
+        "the comparator carries no relationship of its own"
+    );
+}
+
+#[tokio::test]
+async fn the_call_map_adds_no_extra_program_reads() {
+    // The correlation pass reads the bodies the scan already
+    // fetched: emptying the cross detector changes which hints
+    // appear but not how many times the program was read.
+    let correlated = correlated_program();
+    scan(correlated.clone()).await;
+    let stripped = correlated_program();
+    let result = AlgorithmEngine::with_source(stripped.clone())
+        .with_cross_detector(CrossFunctionDetector::new())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    assert!(
+        !methods_for(&result, "FUN_180050100").contains(&DetectionMethod::CrossFunction),
+        "the empty detector claims nothing"
+    );
+    assert_eq!(correlated.decompiled(), stripped.decompiled());
+    assert_eq!(correlated.string_fetches(), stripped.string_fetches());
+    assert_eq!(correlated.caller_fetches(), stripped.caller_fetches());
+}
+
+#[tokio::test]
+async fn a_correlated_claim_wins_resolution_against_a_weaker_body_match() {
+    // A control flow signature naming the library host claims
+    // comparison_sort at the standard body-match score of 60; the
+    // correlation reads the same function at 70. Resolution keeps
+    // the stronger claim, and the scan reports the algorithm once.
+    let matcher = CfgPatternMatcher::with_patterns([AlgorithmPattern {
+        min_lines: 4,
+        ..AlgorithmPattern::new(
+            "comparison_sort",
+            AlgorithmCategory::Sorting,
+            [r"\bqsort\s*\("],
+        )
+    }]);
+    let result = AlgorithmEngine::with_source(correlated_program())
+        .with_matcher(matcher)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<&AlgorithmHint> = result
+        .for_function("FUN_180050100")
+        .filter(|hint| hint.algorithm == "comparison_sort")
+        .collect();
+    assert_eq!(claims.len(), 1, "one claim per algorithm per function");
+    assert_eq!(claims[0].method, DetectionMethod::CrossFunction);
+    assert_eq!(claims[0].confidence, Confidence::new(70));
+}
+
+#[tokio::test]
+async fn the_minimum_confidence_filter_applies_to_correlated_hints() {
+    // Correlated hints sit at 70: a floor of 70 keeps them — the
+    // filter drops below the threshold, not at it — while a floor
+    // of 75, the callback contract's score, drops them.
+    let kept = AlgorithmEngine::with_source(correlated_program())
+        .with_min_confidence(70)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    assert!(methods_for(&kept, "FUN_180050000").contains(&DetectionMethod::CrossFunction));
+    assert!(methods_for(&kept, "FUN_180050100").contains(&DetectionMethod::CrossFunction));
+
+    let dropped = AlgorithmEngine::with_source(correlated_program())
+        .with_min_confidence(75)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    assert!(
+        !dropped
+            .hints
+            .iter()
+            .any(|hint| hint.method == DetectionMethod::CrossFunction),
+        "a floor above 70 drops every correlated hint"
+    );
+}
+
+#[tokio::test]
+async fn a_pattern_database_silences_the_correlation_detector_too() {
+    // The whole-swap contract reaches the fourth detector: the
+    // document omits the correlation section, so a scan configured
+    // from a file correlates nothing — the file is exactly what the
+    // scan knows, and a file that retires the built-in qsort shape
+    // never keeps a built-in correlation.
+    let result = AlgorithmEngine::with_source(correlated_program())
+        .with_pattern_database(PatternDatabase::default())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    assert!(
+        result.is_empty(),
+        "the file leaves every detector nothing to read"
+    );
+}
+
+#[tokio::test]
+async fn the_minimum_confidence_filter_drops_hints_below_the_threshold() {
+    // The listing-only crc claims (30) fall below a floor of 40
+    // while body matches (60) and the callback contract (75) stand.
+    // The floor applies after resolution: the sort function's crc
+    // claim was first surfaced at 30 but the contract strengthens
+    // it to 75, so it clears a floor the raw listing claim could
+    // not.
+    let db = CallbackPatternDb::with_patterns([CallbackPattern::new(
+        "crc",
+        AlgorithmCategory::Checksum,
+        ["FUN_180001900"],
+        2,
+    )]);
+    let result = AlgorithmEngine::with_source(program())
+        .with_callback_db(db)
+        .with_min_confidence(40)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let sort: Vec<(&str, u8)> = result
+        .for_function("FUN_18003ab00")
+        .map(|hint| (hint.algorithm.as_str(), hint.confidence.value()))
+        .collect();
+    assert_eq!(sort, [("comparison_sort", 60), ("crc", 75)]);
+    assert_eq!(
+        result
+            .for_function("FUN_18003e750")
+            .next()
+            .expect("the body match stands")
+            .confidence
+            .value(),
+        60
+    );
+    assert!(
+        result.for_function("FUN_1800412a0").next().is_none(),
+        "the compare callback's only claim was the listing-only crc at 30"
+    );
+}
+
+#[tokio::test]
+async fn the_threshold_keeps_hints_at_exactly_its_value() {
+    // A floor of 30 keeps the listing-only claims sitting exactly
+    // on it — the filter drops below the threshold, not at it.
+    let result = AlgorithmEngine::with_source(program())
+        .with_min_confidence(30)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let listing_claim = result
+        .for_function("FUN_18003ab00")
+        .find(|hint| hint.algorithm == "crc")
+        .expect("the listing-only crc claim survives at exactly the floor");
+    assert_eq!(listing_claim.confidence, Confidence::new(30));
+}
+
+/// Parse a pattern-file document, for the tests that configure a
+/// scan from a database. The documents are spelled as file contents
+/// on purpose: these tests pin the file format at the scan seam.
+fn database_document(json: &str) -> PatternDatabase {
+    serde_json::from_str(json).expect("the database document parses")
+}
+
+#[tokio::test]
+async fn a_scan_configured_from_a_pattern_database_recognizes_a_shape_only_the_file_carries() {
+    // A database document teaches the scan a shape no built-in set
+    // knows: the crc32 variant reads on the CRC loop, at the
+    // standard control flow score. And the swap is whole — the
+    // file replaces the standard sets, so the built-in sort shape
+    // is gone.
+    let db = database_document(
+        r#"{
+                "control_flow": [{
+                    "name": "crc32_variant",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5
+                }]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(program())
+        .with_pattern_database(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let variant: Vec<&AlgorithmHint> = result
+        .for_function("FUN_18003e750")
+        .filter(|hint| hint.algorithm == "crc32_variant")
+        .collect();
+    assert_eq!(variant.len(), 1);
+    assert_eq!(variant[0].method, DetectionMethod::CfgPattern);
+    assert_eq!(variant[0].confidence.value(), 60);
+    assert_eq!(
+        variant[0].evidence,
+        "uVar1 = (uVar1 >> 8) ^ crc_table[uVar1];"
+    );
+    assert!(
+        methods_for(&result, "FUN_18003ab00").is_empty(),
+        "the file replaces the standard sets whole — the built-in sort claim is gone"
+    );
+}
+
+#[tokio::test]
+async fn a_per_entry_confidence_in_the_database_outweighs_a_standard_score_claim() {
+    // The file's string signature claims `crc` at 90 while its
+    // control flow signature claims the same algorithm at the
+    // standard 60; resolution keeps the stronger per-entry
+    // reading, standing where crc first appeared in scan order.
+    let db = database_document(
+        r#"{
+                "control_flow": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5
+                }],
+                "string_signatures": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "markers": ["crc_table"],
+                    "confidence": 90
+                }]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(program())
+        .with_pattern_database(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<(DetectionMethod, u8)> = result
+        .for_function("FUN_18003e750")
+        .map(|hint| (hint.method, hint.confidence.value()))
+        .collect();
+    assert_eq!(
+        claims,
+        [(DetectionMethod::StringHint, 90)],
+        "one claim for crc, the per-entry confidence wins resolution"
+    );
+}
+
+#[tokio::test]
+async fn a_per_entry_confidence_below_the_standard_score_loses_resolution() {
+    // A file entry that distrusts itself — the crc string
+    // signature at 20 — still loses to the control flow claim at
+    // the standard 60: the override moves the entry's score, it
+    // does not privilege the entry.
+    let db = database_document(
+        r#"{
+                "control_flow": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5
+                }],
+                "string_signatures": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "markers": ["crc_table"],
+                    "confidence": 20
+                }]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(program())
+        .with_pattern_database(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<(DetectionMethod, u8)> = result
+        .for_function("FUN_18003e750")
+        .map(|hint| (hint.method, hint.confidence.value()))
+        .collect();
+    assert_eq!(claims, [(DetectionMethod::CfgPattern, 60)]);
+}
+
+#[tokio::test]
+async fn a_database_entry_with_an_uncompilable_regex_claims_nothing_and_vetoes_nothing() {
+    // The detectors' lenient semantics survive the file: an entry
+    // whose required regex will not compile makes no claim, and an
+    // entry carrying an uncompilable exclusion is vetoed by nothing
+    // — one bad entry never corrupts the rest of the scan.
+    let db = database_document(
+        r#"{
+                "control_flow": [
+                    {
+                        "name": "broken_claim",
+                        "category": "checksum",
+                        "match_patterns": ["crc_table\\[", "("],
+                        "min_lines": 5
+                    },
+                    {
+                        "name": "crc32_variant",
+                        "category": "checksum",
+                        "match_patterns": ["crc_table\\["],
+                        "exclude_patterns": ["("],
+                        "min_lines": 5
+                    }
+                ]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(program())
+        .with_pattern_database(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<&str> = result
+        .for_function("FUN_18003e750")
+        .map(|hint| hint.algorithm.as_str())
+        .collect();
+    assert_eq!(claims, ["crc32_variant"]);
+}
+
+#[tokio::test]
+async fn the_name_placeholder_is_substituted_in_database_entries() {
+    // `{name}` in a file entry speaks of the scanned function
+    // itself, exactly as in the built-ins: the entry reads the
+    // signature line carrying the function's own name, and every
+    // function of the program fits it. Unsubstituted, the literal
+    // `{name}(` would match nothing.
+    let db = database_document(
+        r#"{
+                "control_flow": [{
+                    "name": "names_itself",
+                    "category": "recursion",
+                    "match_patterns": ["{name}\\("],
+                    "min_lines": 5
+                }]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(program())
+        .with_pattern_database(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<&str> = result
+        .hints
+        .iter()
+        .map(|hint| hint.algorithm.as_str())
+        .collect();
+    assert_eq!(
+        claims,
+        ["names_itself", "names_itself", "names_itself"],
+        "one hint per function, each from the substituted placeholder"
+    );
+}
+
+#[tokio::test]
+async fn a_per_entry_confidence_in_the_database_outweighs_a_built_in_claim() {
+    // The acceptance criterion in its literal shape: a file entry
+    // at 90 outweighs a built-in entry at the standard 60. The
+    // database carries the crc control flow shape at a per-entry
+    // 90, and the built-in string set is configured back in on top
+    // of the swap, so the same algorithm is claimed from both sides
+    // on the CRC loop — resolution keeps the file's stronger
+    // reading, standing where crc first appeared in scan order.
+    let db = database_document(
+        r#"{
+                "control_flow": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5,
+                    "confidence": 90
+                }]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(program())
+        .with_pattern_database(db)
+        .with_string_engine(StringHintEngine::with_default_signatures())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<(DetectionMethod, u8)> = result
+        .for_function("FUN_18003e750")
+        .filter(|hint| hint.algorithm == "crc")
+        .map(|hint| (hint.method, hint.confidence.value()))
+        .collect();
+    assert_eq!(
+        claims,
+        [(DetectionMethod::CfgPattern, 90)],
+        "the built-in body claim at 60 and the file claim at 90 merge into one, at 90"
+    );
+}
+
+#[tokio::test]
+async fn a_correlation_section_teaches_the_scan_a_relationship_only_the_file_carries() {
+    // The fourth section in action: a custom host `my_sort` handing
+    // the scan's comparator its callback is a relationship no
+    // built-in relationship names — the default scan sees nothing —
+    // while a file naming the host and the partner's comparison
+    // shape claims the sort at the standard correlation score,
+    // evidenced by the line naming the partner.
+    let plain = scan(custom_host_program()).await;
+    assert!(plain.is_empty(), "no built-in relationship names this host");
+
+    let db = database_document(
+        r#"{
+                "correlation_patterns": [{
+                    "name": "library_sort",
+                    "category": "sorting",
+                    "body_patterns": ["\\bmy_sort\\s*\\("],
+                    "partner_patterns": ["[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]"],
+                    "min_lines": 4
+                }]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(custom_host_program())
+        .with_pattern_database(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let hint = finding(&result, "FUN_180050200", DetectionMethod::CrossFunction);
+    assert_eq!(hint.algorithm, "library_sort");
+    assert_eq!(hint.category, AlgorithmCategory::Sorting);
+    assert_eq!(hint.confidence.value(), 70);
+    assert_eq!(hint.evidence, "my_sort(param_1,param_2,4,FUN_1800412a0);");
+}
+
+#[tokio::test]
+async fn a_correlation_section_replaces_the_built_in_relationships_whole() {
+    // The section swaps the relationship set whole, like every
+    // other section: the file names the qsort/comparator shape under
+    // a new name, and the built-in set it replaces carries neither
+    // `comparison_sort` nor `divide_and_conquer` — the recursive
+    // split the built-ins claimed goes unclaimed, and the sort
+    // stands under the file's name alone.
+    let db = database_document(
+        r#"{
+                "correlation_patterns": [{
+                    "name": "library_sort",
+                    "category": "sorting",
+                    "body_patterns": ["\\bqsort\\s*\\("],
+                    "partner_patterns": ["[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]"],
+                    "min_lines": 4
+                }]
+            }"#,
+    );
+    let result = AlgorithmEngine::with_source(correlated_program())
+        .with_pattern_database(db)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let claims: Vec<(&str, &str)> = result
+        .hints
+        .iter()
+        .map(|hint| (hint.function.as_str(), hint.algorithm.as_str()))
+        .collect();
+    assert_eq!(
+        claims,
+        [("FUN_180050100", "library_sort")],
+        "the file's set is the whole set — no built-in claim survives beside it"
+    );
+}
+
+// ============================================================
+// Admitted scan coverage (issue #351)
+// ============================================================
+
+/// The data-level verdict of the roster pin: empty means the record
+/// names every declared facet exactly once, and each fault spells one
+/// drift.
+fn roster_faults(coverage: &ScanCoverage) -> Vec<String> {
+    coverage.roster_faults(DECLARED_FACETS)
+}
+
+/// The named facet with the given id, for asserting its status and
+/// limitation line.
+fn facet<'a>(coverage: &'a ScanCoverage, id: &str) -> &'a FacetCoverage {
+    coverage
+        .facets
+        .iter()
+        .find(|facet| facet.id == id)
+        .unwrap_or_else(|| panic!("{id} is named"))
+}
+
+#[tokio::test]
+async fn a_fresh_scan_stamps_complete_coverage_and_a_clean_roster() {
+    // The coverage stamp is written by the evidence engine's own
+    // scan, not by the registry row and not by the CLI — the batch
+    // scan phase and the CLI's force-rescan file the same
+    // admission through this one definition. Every body and every
+    // caller edge was read here, so the record is complete and
+    // says nothing needs admitting.
+    let result = scan(program()).await;
+    let coverage = result
+        .metadata
+        .coverage
+        .expect("a fresh algorithm scan states its coverage");
+    assert_eq!(coverage.status, CoverageStatus::Complete);
+    assert!(
+        roster_faults(&coverage).is_empty(),
+        "a fresh document must name every declared facet exactly once"
+    );
+    assert_eq!(
+        facet(&coverage, "function-bodies").status,
+        CoverageStatus::Complete
+    );
+    assert_eq!(facet(&coverage, "function-bodies").limitation, None);
+    assert_eq!(
+        facet(&coverage, "caller-edges").status,
+        CoverageStatus::Complete
+    );
+    assert_eq!(facet(&coverage, "caller-edges").limitation, None);
+}
+
+#[tokio::test]
+async fn an_unreached_body_and_an_unreadable_caller_edge_are_admitted_by_name() {
+    // The whole point of the admission: the two ways this scan
+    // falls short — a body the decompiler never produced and a
+    // caller fetch that never answered — are each named, on their
+    // own facet, so silence is never mistaken for a clean read.
+    let mut program = program();
+    program.fail_decompiles = vec!["FUN_18003e750".into()];
+    program.fail_callers = vec![A12A0];
+    let result = scan(program).await;
+    let coverage = result
+        .metadata
+        .coverage
+        .expect("a partial algorithm scan states its coverage too");
+    assert_eq!(
+        coverage.status,
+        CoverageStatus::Partial,
+        "either facet falling short makes the whole picture partial"
+    );
+    assert!(
+        roster_faults(&coverage).is_empty(),
+        "a partial scan still names every declared facet exactly once"
+    );
+    assert_eq!(
+        facet(&coverage, "function-bodies").limitation.as_deref(),
+        Some("1 function body unreached: FUN_18003e750"),
+        "the unreached body is named, and only the unreached body"
+    );
+    assert_eq!(
+        facet(&coverage, "caller-edges").limitation.as_deref(),
+        Some("1 caller edge unreadable: FUN_1800412a0"),
+        "the function whose caller fetch failed is named, and only it — \
+             the edges the scan did read say nothing"
+    );
+}
+
+#[tokio::test]
+async fn the_bodies_line_is_capped_at_five_names_and_counts_the_nameless() {
+    // Bounded prose beside the counts: six decompile failures name
+    // five inline and put the sixth into a count, and a nameless
+    // listing entry counts toward the total without taking a name
+    // slot.
+    let names: Vec<String> = (0..12).map(|i| format!("FUN_body_{i:04}")).collect();
+    let mut program = FakeProgram::empty();
+    for (index, name) in names.iter().enumerate() {
+        program
+            .listing
+            .push(summary(name, 0x0001_8006_0000 + index as u64));
+        if index >= 6 {
+            program.bodies.insert(
+                name.clone(),
+                function(name, "void test(void)", "  return;\n"),
+            );
+        }
+    }
+    program.fail_decompiles = names[..6].to_vec();
+    program.listing.push(summary("", 0x0001_8006_0100));
+    let result = scan(program).await;
+    let coverage = result
+        .metadata
+        .coverage
+        .expect("a partial algorithm scan states its coverage");
+    let bodies = facet(&coverage, "function-bodies");
+    assert_eq!(bodies.status, CoverageStatus::Partial);
+    assert_eq!(
+        bodies.limitation.as_deref(),
+        Some(
+            "7 function bodies unreached: FUN_body_0000, FUN_body_0001, \
+                 FUN_body_0002, FUN_body_0003, FUN_body_0004, +2 more"
+        ),
+        "six named failures plus one nameless entry: five names, the \
+             rest counted, the count covering both"
+    );
+}
+
+#[tokio::test]
+async fn the_caller_edge_line_is_capped_at_five_names_and_counts_the_rest() {
+    // Six functions of contract arity, every caller fetch failing:
+    // five named inline, the sixth put into a count. Bodies all
+    // decompile, so only the edge facet speaks.
+    let mut program = FakeProgram::empty();
+    for index in 0..12u64 {
+        let name = format!("FUN_edge_{index:04}");
+        let address = 0x0001_8007_0000 + index * 0x10;
+        program.listing.push(summary(&name, address));
+        program.bodies.insert(
+            name.clone(),
+            function(&name, &format!("void {name}(int a,int b)"), "  return;\n"),
+        );
+        if index < 6 {
+            program.fail_callers.push(address);
+        }
+    }
+    let result = scan(program).await;
+    let coverage = result
+        .metadata
+        .coverage
+        .expect("a partial algorithm scan states its coverage");
+    let edges = facet(&coverage, "caller-edges");
+    assert_eq!(edges.status, CoverageStatus::Partial);
+    assert_eq!(
+        edges.limitation.as_deref(),
+        Some(
+            "6 caller edges unreadable: FUN_edge_0000, FUN_edge_0001, \
+                 FUN_edge_0002, FUN_edge_0003, FUN_edge_0004, +1 more"
+        ),
+        "six failed fetches: five names, the sixth counted"
+    );
+    assert_eq!(
+        facet(&coverage, "function-bodies").status,
+        CoverageStatus::Complete,
+        "a failed caller fetch costs no body its decompile"
+    );
+}
+
+#[test]
+fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
+    let mut coverage = coverage_stamp(&[], 0, &[]);
+    coverage.facets.retain(|facet| facet.id != "caller-edges");
+    assert_eq!(
+        roster_faults(&coverage),
+        ["declared facet `caller-edges` is missing from the record"],
+        "an engine quietly dropping one of its facets fails loudly"
+    );
+}
+
+#[test]
+fn the_roster_pin_fails_when_a_facet_is_doubled() {
+    let mut coverage = coverage_stamp(&[], 0, &["FUN_1800412a0".to_string()]);
+    coverage.facets.push(coverage.facets[1].clone());
+    assert_eq!(
+        roster_faults(&coverage),
+        ["declared facet `caller-edges` appears 2 times in the record"],
+        "a facet crowded into two entries fails loudly"
+    );
+}
+
+#[test]
+fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
+    let mut coverage = coverage_stamp(&[], 0, &[]);
+    coverage.facets.push(FacetCoverage {
+        id: "program-strings".to_string(),
+        status: CoverageStatus::Complete,
+        limitation: None,
+    });
+    assert_eq!(
+        roster_faults(&coverage),
+        ["record names `program-strings`, a facet the engine never declared"],
+        "an entry outside the declared roster fails loudly — a failed \
+             string listing aborts the run, so a finished scan never left \
+             it unread"
+    );
+}
