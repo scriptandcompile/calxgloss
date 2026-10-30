@@ -13,10 +13,10 @@ mod unknown_actions;
 
 pub use self::actions::*;
 pub use self::handlers::*;
-pub use self::unknown_actions::*;
 pub use self::lifecycle::{LifecycleError, LogLevel, LogLevelControl};
 pub use self::llm_io_log::{LlmIoEntry, LlmIoEntryType, LlmIoLog, MAX_LLM_IO_ENTRIES};
 pub use self::types::*;
+pub use self::unknown_actions::*;
 pub use events::{EventsBridge, SessionManager, UnitPhaseMessage, WebSocketHandler, WsMessage};
 
 use axum::{

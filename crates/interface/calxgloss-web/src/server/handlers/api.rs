@@ -632,10 +632,9 @@ pub async fn api_reopen_unknown(
     Path((unit_id, unknown_id)): Path<(String, String)>,
 ) -> Result<Json<ActionResponse>, ServerError> {
     let actions = unknown_actions_backend(&combined)?;
-    let result =
-        super::super::unknown_actions::reopen_unknown(actions, &unit_id, &unknown_id)
-            .await
-            .map_err(action_error)?;
+    let result = super::super::unknown_actions::reopen_unknown(actions, &unit_id, &unknown_id)
+        .await
+        .map_err(action_error)?;
     Ok(Json(ActionResponse {
         unit_id: result.unit_id,
         action: result.action,

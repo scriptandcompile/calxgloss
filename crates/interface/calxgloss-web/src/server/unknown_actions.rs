@@ -276,7 +276,10 @@ async fn settle_unknown(
             expected_revision,
         } => {
             resolutions.resolve(&record, reason, expected_revision, now_unix_secs())?;
-            ("resolve", format!("unknown {unknown_id} resolved — {reason}"))
+            (
+                "resolve",
+                format!("unknown {unknown_id} resolved — {reason}"),
+            )
         }
         Disposition::Dismiss {
             reason,
@@ -354,8 +357,8 @@ mod tests {
         git.create_branch("game_logic.dll", "DrawSprite", 1, None)
             .expect("create v1 branch");
 
-        let branch =
-            calxgloss_types::GitBranch::new("game_logic.dll", "DrawSprite", 1).expect("branch name");
+        let branch = calxgloss_types::GitBranch::new("game_logic.dll", "DrawSprite", 1)
+            .expect("branch name");
         std::fs::create_dir_all(dir.path().join("src").join("modules")).expect("src dir");
         std::fs::write(
             dir.path().join("src").join("modules").join("game_logic.rs"),
@@ -409,8 +412,11 @@ mod tests {
     }
 
     fn load_ledger(repo: &std::path::Path) -> UnknownLedger {
-        load_json(&unknown_ledger_path(repo, &BinaryIdentity::new("game_logic.dll")))
-            .expect("the filed ledger document parses")
+        load_json(&unknown_ledger_path(
+            repo,
+            &BinaryIdentity::new("game_logic.dll"),
+        ))
+        .expect("the filed ledger document parses")
     }
 
     fn load_resolutions(repo: &std::path::Path) -> UnknownResolutions {
@@ -526,7 +532,8 @@ mod tests {
     // ── unit scope and the ledger's absence rule ─────────────────────
 
     #[tokio::test]
-    async fn a_record_naming_another_function_or_the_binary_itself_is_out_of_a_unit_actions_reach() {
+    async fn a_record_naming_another_function_or_the_binary_itself_is_out_of_a_unit_actions_reach()
+    {
         let dir = make_repo_with_unit();
         let foreign = record(Some("FUN_zzz"), "call graph");
         let binary_level = record(None, "exports");
@@ -667,10 +674,24 @@ mod tests {
         let resolve_state = state.clone();
         let dismiss_state = state.clone();
         let resolve = tokio::spawn(async move {
-            resolve_unknown(&resolve_state, UNIT, &id_resolve, "resolved on the evidence", 1).await
+            resolve_unknown(
+                &resolve_state,
+                UNIT,
+                &id_resolve,
+                "resolved on the evidence",
+                1,
+            )
+            .await
         });
         let dismiss = tokio::spawn(async move {
-            dismiss_unknown(&dismiss_state, UNIT, &id_dismiss, "dismissed as irrelevant", 1).await
+            dismiss_unknown(
+                &dismiss_state,
+                UNIT,
+                &id_dismiss,
+                "dismissed as irrelevant",
+                1,
+            )
+            .await
         });
         tokio::task::yield_now().await; // both tasks capture and queue on the lock
         drop(guard);
@@ -730,9 +751,8 @@ mod tests {
         let id_resolve = settled.id.clone();
         let reopen_state = state.clone();
         let resolve_state = state.clone();
-        let reopen = tokio::spawn(async move {
-            reopen_unknown(&reopen_state, UNIT, &id_reopen).await
-        });
+        let reopen =
+            tokio::spawn(async move { reopen_unknown(&reopen_state, UNIT, &id_reopen).await });
         let resolve = tokio::spawn(async move {
             resolve_unknown(
                 &resolve_state,
@@ -762,9 +782,7 @@ mod tests {
             "the reopen-vs-resolve pairing needs the seam's re-check: {conflict}"
         );
         assert!(
-            conflict
-                .to_string()
-                .contains("open at record revision 1"),
+            conflict.to_string().contains("open at record revision 1"),
             "the loser names the state the reopen left landed: {conflict}"
         );
 
@@ -854,15 +872,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_resolution_survives_every_dashboard_rebuild_and_a_later_batch_run_that_reworded_the_admission()
-    {
+     {
         let dir = make_repo_with_unit();
         let settled = record(Some("DrawSprite"), "function-bodies");
         stage_ledger(dir.path(), vec![settled.clone()]);
         let state = ActionsState::new(dir.path().to_path_buf(), spec_without_llm());
 
-        resolve_unknown(&state, UNIT, &settled.id, "the answer landed in the type database", 1)
-            .await
-            .expect("the resolution lands");
+        resolve_unknown(
+            &state,
+            UNIT,
+            &settled.id,
+            "the answer landed in the type database",
+            1,
+        )
+        .await
+        .expect("the resolution lands");
 
         // Dashboard rebuilds never touch reviewer intent.
         for _ in 0..2 {
@@ -971,8 +995,7 @@ mod tests {
         // The branch was never touched, merged or otherwise.
         let git = GitManager::open(dir.path()).expect("open git");
         assert!(
-            !git
-                .is_branch_merged_into_main("re/game_logic.dll/DrawSpritev1")
+            !git.is_branch_merged_into_main("re/game_logic.dll/DrawSpritev1")
                 .expect("merged check"),
             "a disposition never merges a branch"
         );
@@ -999,8 +1022,7 @@ mod tests {
             server: ServerState::new(dir.to_path_buf()),
             manager: None,
             bridge: None,
-            actions: with_actions
-                .then(|| ActionsState::new(dir.to_path_buf(), spec_without_llm())),
+            actions: with_actions.then(|| ActionsState::new(dir.to_path_buf(), spec_without_llm())),
             progress: None,
         }
     }
@@ -1043,7 +1065,8 @@ mod tests {
             State(combined_with(dir.path(), true)),
             Path((
                 UNIT.to_string(),
-                "game_logic.dll/DrawSprite/coverage_facet/memory lifecycle result#function-bodies".to_string(),
+                "game_logic.dll/DrawSprite/coverage_facet/memory lifecycle result#function-bodies"
+                    .to_string(),
             )),
             Json(UnknownSettleRequest {
                 reason: "stale view of the record".to_string(),
@@ -1062,7 +1085,8 @@ mod tests {
             State(combined_with(dir.path(), true)),
             Path((
                 UNIT.to_string(),
-                "game_logic.dll/DrawSprite/coverage_facet/memory lifecycle result#function-bodies".to_string(),
+                "game_logic.dll/DrawSprite/coverage_facet/memory lifecycle result#function-bodies"
+                    .to_string(),
             )),
         )
         .await
@@ -1076,7 +1100,8 @@ mod tests {
             State(combined_with(dir.path(), true)),
             Path((
                 UNIT.to_string(),
-                "game_logic.dll/DrawSprite/coverage_facet/memory lifecycle result#absent-facet".to_string(),
+                "game_logic.dll/DrawSprite/coverage_facet/memory lifecycle result#absent-facet"
+                    .to_string(),
             )),
             Json(UnknownSettleRequest {
                 reason: "no such record".to_string(),

@@ -1536,7 +1536,11 @@ impl TranslationPipeline {
         // never exercised, and "translated" must not read as "proven"
         // about it. The counters are read after the walk, never back into
         // which rung comes next, and a walk whose cases ran opens nothing.
-        if !result.attempts.iter().any(|attempt| attempt.tests_total > 0) {
+        if !result
+            .attempts
+            .iter()
+            .any(|attempt| attempt.tests_total > 0)
+        {
             self.record_unknown_residue(vec![crate::verification_residue::zero_case_residue(
                 binary,
                 function,
@@ -5688,8 +5692,7 @@ void SetCursor(void)
     /// family the posture never re-asks all stay silent; a re-run lands
     /// the same id at the same revision.
     #[tokio::test]
-    async fn a_unit_filing_the_seams_unavailable_families_lands_one_record_per_re_asked_gap(
-    ) {
+    async fn a_unit_filing_the_seams_unavailable_families_lands_one_record_per_re_asked_gap() {
         let dir = TempDir::new().expect("temp workspace");
         let (pipeline, _binary_file) = cached_pipeline(dir.path());
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
@@ -5791,7 +5794,10 @@ void SetCursor(void)
             .filter(|r| r.kind == calxgloss_types::UnknownKind::AnalysisFamily)
             .collect();
         assert_eq!(
-            seams.iter().map(|r| r.source_slot()).collect::<Vec<String>>(),
+            seams
+                .iter()
+                .map(|r| r.source_slot())
+                .collect::<Vec<String>>(),
             vec!["decompilation"],
             "one record for the one re-asked family the report admits — the \
              answerable `strings` family asks nothing, the undeclared \
@@ -5831,8 +5837,7 @@ void SetCursor(void)
             "the question is built on the entry's own admission line"
         );
         assert_eq!(
-            seam.required_evidence,
-            "Full `decompilation` answers from the analysis engine",
+            seam.required_evidence, "Full `decompilation` answers from the analysis engine",
             "the required evidence names the family that could not answer"
         );
         assert_eq!(seam.revision, 1, "a first landing starts at revision 1");
@@ -6137,7 +6142,10 @@ void SetCursor(void)
             "a re-run adds only the refused step's own question, at revision 1"
         );
         assert_eq!(
-            records.iter().filter(|r| r.kind == calxgloss_types::UnknownKind::RetryPruned).count(),
+            records
+                .iter()
+                .filter(|r| r.kind == calxgloss_types::UnknownKind::RetryPruned)
+                .count(),
             1,
             "two escalate prunes, one standing question"
         );
@@ -6203,7 +6211,10 @@ void SetCursor(void)
             .await
             .expect("the canned LLM answers every attempt");
         assert!(
-            result.attempts.iter().all(|attempt| attempt.tests_total == 0),
+            result
+                .attempts
+                .iter()
+                .all(|attempt| attempt.tests_total == 0),
             "nothing ever compiled, so nothing ever verified: zero baseline cases ran"
         );
         pipeline
@@ -6275,7 +6286,10 @@ void SetCursor(void)
             .collect::<Vec<_>>();
         assert_eq!(again.len(), 1, "the re-walk re-derives, never duplicates");
         assert_eq!(again[0].id, zero.id, "the same id every re-derivation");
-        assert_eq!(again[0].revision, 1, "the unchanged record keeps its revision");
+        assert_eq!(
+            again[0].revision, 1,
+            "the unchanged record keeps its revision"
+        );
         assert_eq!(again[0].first_seen, first_seen, "and its first-seen");
     }
 

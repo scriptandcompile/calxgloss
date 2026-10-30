@@ -193,10 +193,7 @@ pub fn file_tier_refusal(
 
 /// The accumulator's own fold rule: records are keyed by their derived
 /// id and the first filing stands.
-fn fold_by_id(
-    residue: &mut Vec<UnknownRecord>,
-    records: impl IntoIterator<Item = UnknownRecord>,
-) {
+fn fold_by_id(residue: &mut Vec<UnknownRecord>, records: impl IntoIterator<Item = UnknownRecord>) {
     for record in records {
         if !residue.iter().any(|filed| filed.id == record.id) {
             residue.push(record);
@@ -242,10 +239,17 @@ mod tests {
     #[test]
     fn a_pruned_escalate_derives_one_record_per_blocked_family_with_the_pinned_shape() {
         let records = residue(
-            &[("decompilation", Some("Zanthoxylum builds never produce a body"))],
+            &[(
+                "decompilation",
+                Some("Zanthoxylum builds never produce a body"),
+            )],
             1_700_000_000,
         );
-        assert_eq!(records.len(), 1, "one blocked family, one standing question");
+        assert_eq!(
+            records.len(),
+            1,
+            "one blocked family, one standing question"
+        );
         let record = &records[0];
 
         assert_eq!(record.kind, UnknownKind::RetryPruned);
@@ -269,8 +273,7 @@ mod tests {
             "the pruned path's question is that family's question — the slot is the family id"
         );
         assert_eq!(
-            record.id,
-            "game_logic.dll/DrawSprite/retry_pruned/decompilation",
+            record.id, "game_logic.dll/DrawSprite/retry_pruned/decompilation",
             "the derivation is the shared one, and the kind segment keeps it apart from the \
              seam's analysis_family record on the same family"
         );
@@ -286,7 +289,10 @@ mod tests {
             "Full `decompilation` answers the pruned escalate would have re-asked",
             "the required evidence names what the blocked re-ask could not carry"
         );
-        assert_eq!(record.revision, 1, "a fresh derivation starts at revision 1");
+        assert_eq!(
+            record.revision, 1,
+            "a fresh derivation starts at revision 1"
+        );
         assert_eq!(record.first_seen, 1_700_000_000);
         assert_eq!(record.last_seen, 1_700_000_000);
     }
@@ -305,7 +311,10 @@ mod tests {
                 .iter()
                 .map(|r| r.source_slot())
                 .collect::<Vec<String>>(),
-            vec!["function-inventory".to_string(), "decompilation".to_string()],
+            vec![
+                "function-inventory".to_string(),
+                "decompilation".to_string()
+            ],
             "one question per family the pruned escalate would have re-asked, in the \
              roster's own blocked order"
         );
@@ -355,8 +364,7 @@ mod tests {
             "the refused step is the origin, naming the tier the ladder refused to step onto"
         );
         assert_eq!(
-            record.id,
-            "game_logic.dll/DrawSprite/tier_refused/module_context",
+            record.id, "game_logic.dll/DrawSprite/tier_refused/module_context",
             "one refused step is one question, whoever many families held it"
         );
         assert_eq!(
@@ -388,10 +396,16 @@ mod tests {
             first[0].id, second[0].id,
             "the id is the shared derivation, never the prune event"
         );
-        let refused_first =
-            refused(ContextTier::ModuleContext, &[("decompilation", None)], 1_700_000_000);
-        let refused_second =
-            refused(ContextTier::ModuleContext, &[("decompilation", None)], 1_700_000_500);
+        let refused_first = refused(
+            ContextTier::ModuleContext,
+            &[("decompilation", None)],
+            1_700_000_000,
+        );
+        let refused_second = refused(
+            ContextTier::ModuleContext,
+            &[("decompilation", None)],
+            1_700_000_500,
+        );
         assert_eq!(refused_first.id, refused_second.id);
         assert!(
             refused_first.content_matches(&refused_second),
@@ -413,8 +427,14 @@ mod tests {
         // a genuinely new family widens the set; the held family does not
         file_escalate_prune(&mut residue, "game_logic.dll", "DrawSprite", &later);
         assert_eq!(
-            residue.iter().map(|r| r.source_slot()).collect::<Vec<String>>(),
-            vec!["decompilation".to_string(), "function-inventory".to_string()],
+            residue
+                .iter()
+                .map(|r| r.source_slot())
+                .collect::<Vec<String>>(),
+            vec![
+                "decompilation".to_string(),
+                "function-inventory".to_string()
+            ],
             "folded by derived id, in first-filing order"
         );
         file_tier_refusal(

@@ -130,8 +130,7 @@ mod tests {
             "the same unit's next zero-case walk re-derives this slot — the #368 pin"
         );
         assert_eq!(
-            record.id,
-            "game_logic.dll/F/baseline_never_run/cases-F",
+            record.id, "game_logic.dll/F/baseline_never_run/cases-F",
             "the derivation is the shared one, the unit as subject, the case set as slot"
         );
         assert_eq!(
@@ -141,11 +140,13 @@ mod tests {
             "the question states the admitted fact on the track's own frame"
         );
         assert_eq!(
-            record.required_evidence,
-            "Baseline cases run against `F`",
+            record.required_evidence, "Baseline cases run against `F`",
             "the required evidence names the input vector that would have exercised the unit"
         );
-        assert_eq!(record.revision, 1, "a fresh derivation starts at revision 1");
+        assert_eq!(
+            record.revision, 1,
+            "a fresh derivation starts at revision 1"
+        );
         assert_eq!(record.first_seen, 1_700_000_000);
         assert_eq!(record.last_seen, 1_700_000_000);
     }
@@ -173,8 +174,7 @@ mod tests {
             "the case set that never called the export is the origin"
         );
         assert_eq!(
-            record.id,
-            "game_logic.dll/-/export_uncovered/export-DrawSprite",
+            record.id, "game_logic.dll/-/export_uncovered/export-DrawSprite",
             "the #368 derivation: no function slot, the export named in the source slot"
         );
         assert_eq!(
@@ -184,8 +184,7 @@ mod tests {
             "the question states the admitted fact on the track's own frame"
         );
         assert_eq!(
-            record.required_evidence,
-            "A filed baseline document calling `DrawSprite`",
+            record.required_evidence, "A filed baseline document calling `DrawSprite`",
             "the required evidence names the input vector that would have exercised the export"
         );
     }
@@ -198,7 +197,10 @@ mod tests {
         // may already have answered.
         let unit_first = zero_case_residue("game_logic.dll", "F", 1_700_000_000);
         let unit_again = zero_case_residue("game_logic.dll", "F", 1_700_000_500);
-        assert_eq!(unit_first.id, unit_again.id, "the id is the shared derivation");
+        assert_eq!(
+            unit_first.id, unit_again.id,
+            "the id is the shared derivation"
+        );
         let export_first = uncovered_export_residue("game_logic.dll", "DrawSprite", 1_700_000_000);
         let export_again = uncovered_export_residue("game_logic.dll", "DrawSprite", 1_700_000_500);
         assert_eq!(export_first.id, export_again.id);

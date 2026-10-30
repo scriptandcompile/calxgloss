@@ -2349,8 +2349,7 @@ mod tests {
         assert_eq!(run.result.unknown_residue.len(), 1);
         let record = &run.result.unknown_residue[0];
         assert_eq!(
-            record.id,
-            "game_logic.dll/DrawSprite/retry_pruned/decompilation",
+            record.id, "game_logic.dll/DrawSprite/retry_pruned/decompilation",
             "the ladder-residue kind, the shared derivation"
         );
         assert_eq!(
@@ -2361,7 +2360,9 @@ mod tests {
             "the retry decision is the origin, naming the family the prune stood against"
         );
         assert!(
-            record.question.contains("Zanthoxylum builds never produce a body"),
+            record
+                .question
+                .contains("Zanthoxylum builds never produce a body"),
             "the record names the unavailable reason beside the family: {}",
             record.question
         );
@@ -2425,7 +2426,9 @@ mod tests {
             "the refused step is the origin, naming the tier held"
         );
         assert!(
-            refused.question.contains("Zanthoxylum builds never produce a body"),
+            refused
+                .question
+                .contains("Zanthoxylum builds never produce a body"),
             "the refused step's record names the family and its reason: {}",
             refused.question
         );

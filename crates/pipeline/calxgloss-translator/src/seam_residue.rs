@@ -210,8 +210,7 @@ mod tests {
              single-home wording — not a coverage-shaped restatement"
         );
         assert_eq!(
-            record.required_evidence,
-            "Full `decompilation` answers from the analysis engine",
+            record.required_evidence, "Full `decompilation` answers from the analysis engine",
             "the required evidence names the family that could not answer"
         );
         assert_eq!(
@@ -387,7 +386,9 @@ mod tests {
             .collect();
         let faults = unknown_roster_faults(DECLARED_UNKNOWN_KINDS, &produced);
         assert!(
-            faults.iter().all(|fault| !fault.contains("analysis_family")),
+            faults
+                .iter()
+                .all(|fault| !fault.contains("analysis_family")),
             "the seam-residue write site pairs with the roster: {faults:?}"
         );
     }
