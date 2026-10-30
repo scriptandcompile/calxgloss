@@ -147,6 +147,18 @@ impl ActionsState {
         let guard = self.action_lock.lock().await;
         (captured, guard)
     }
+
+    /// Takes the same action lock for an unknown disposition action
+    /// (issue #374): resolve, dismiss, and reopen never write the unit's
+    /// action record, so there is no persisted review state to capture and
+    /// re-check — but they are review actions too, and their whole
+    /// read-ledger → read-resolutions → settle → save sequence must stay
+    /// atomic against racing actions on the unit. The revision guard in the
+    /// shared resolutions type then does the cross-process staleness check
+    /// the captured state does for accept / send-back / patch.
+    pub(crate) async fn begin_unknown_action(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.action_lock.lock().await
+    }
 }
 
 // ============================================================
@@ -805,7 +817,7 @@ pub struct ActionResult {
 }
 
 /// Look up a unit of work from the dashboard data on disk.
-fn lookup_unit(
+pub(crate) fn lookup_unit(
     state: &ActionsState,
     unit_id: &str,
 ) -> Result<calxgloss_types::UnitOfWork, anyhow::Error> {

@@ -12,7 +12,7 @@ use super::super::PatchRequest;
 use super::super::{
     ActionResponse, CombinedState, HealthResponse, LifecycleStatus, LogLevelRequest,
     LogLevelResponse, PipelineStatus, SendBackRequest, ServerError, ServerLifecycleResponse,
-    ServerState, ServerStatus, UnitResponse, UnitResponseInner,
+    ServerState, ServerStatus, UnitResponse, UnitResponseInner, UnknownSettleRequest,
 };
 
 /// Optional JSON body extractor — `None` when no body is present.
@@ -333,12 +333,29 @@ pub async fn api_get_unit(
 
 /// Maps a review-action failure to a status: a conflict with the unit's
 /// persisted action state becomes a 409 naming the current state (issue #86);
-/// everything else stays a 500.
+/// an unknown disposition refused because the record changed underneath the
+/// reviewer becomes a 409 naming the landed state, and a reasonless settle a
+/// 400 the reviewer can fix (issue #374); a record that is not in this unit's
+/// reach reads as a 404 — the ledger's unknown reading included, never a
+/// false zero; everything else stays a 500.
 fn action_error(e: anyhow::Error) -> ServerError {
-    match e.downcast_ref::<super::super::actions::ActionConflictError>() {
-        Some(conflict) => ServerError::Conflict(conflict.to_string()),
-        None => ServerError::internal(&e.to_string()),
+    if let Some(conflict) = e.downcast_ref::<super::super::actions::ActionConflictError>() {
+        return ServerError::Conflict(conflict.to_string());
     }
+    if let Some(conflict) = e.downcast_ref::<calxgloss_types::UnknownActionError>() {
+        return match conflict {
+            calxgloss_types::UnknownActionError::ChangedUnderneath { .. } => {
+                ServerError::Conflict(conflict.to_string())
+            }
+            calxgloss_types::UnknownActionError::EmptyReason { .. } => {
+                ServerError::BadRequest(conflict.to_string())
+            }
+        };
+    }
+    if let Some(missing) = e.downcast_ref::<super::super::unknown_actions::UnknownReviewError>() {
+        return ServerError::not_found(&missing.to_string());
+    }
+    ServerError::internal(&e.to_string())
 }
 
 /// Accepts a unit of work: merges its Git branch into `main` and records the acceptance.
@@ -535,6 +552,113 @@ pub async fn api_request_patch(
         message: result.message,
         rejection_path: result.rejection_path,
     }))
+}
+
+// ─── POST /api/units/:id/unknowns/:unknown_id/{resolve,dismiss,reopen} ──
+
+/// Settles one of the unit's open unknown records as *resolved* (issue
+/// #374): the reviewer established the fact the filed record asks about,
+/// on the grounds the body's reason line states. The settlement lands in
+/// the reviewer's own resolutions document under the same action lock the
+/// unit actions take; the pipeline's ledger is never written here, and the
+/// unit's review status, verdict, and branch stay exactly as they were —
+/// resolving an unknown is deliberately not a review status. A settle
+/// against a record that changed underneath the reviewer loses with a 409
+/// naming the landed state.
+pub async fn api_resolve_unknown(
+    State(combined): State<super::super::CombinedState>,
+    Path((unit_id, unknown_id)): Path<(String, String)>,
+    Json(request): Json<UnknownSettleRequest>,
+) -> Result<Json<ActionResponse>, ServerError> {
+    let actions = unknown_actions_backend(&combined)?;
+    let result = super::super::unknown_actions::resolve_unknown(
+        actions,
+        &unit_id,
+        &unknown_id,
+        &request.reason,
+        request.expected_revision,
+    )
+    .await
+    .map_err(action_error)?;
+    Ok(Json(ActionResponse {
+        unit_id: result.unit_id,
+        action: result.action,
+        merge_hash: result.merge_hash,
+        branch_name: result.branch_name,
+        message: result.message,
+        rejection_path: result.rejection_path,
+    }))
+}
+
+/// Settles one of the unit's open unknown records as *dismissed* (issue
+/// #374): the reviewer judged the question irrelevant and says so with a
+/// reason. A dismissed record is still visible as dismissed — the
+/// disposition records what was decided, never pretends the gap was never
+/// there — and the revision guard and document discipline are exactly the
+/// resolve ones.
+pub async fn api_dismiss_unknown(
+    State(combined): State<super::super::CombinedState>,
+    Path((unit_id, unknown_id)): Path<(String, String)>,
+    Json(request): Json<UnknownSettleRequest>,
+) -> Result<Json<ActionResponse>, ServerError> {
+    let actions = unknown_actions_backend(&combined)?;
+    let result = super::super::unknown_actions::dismiss_unknown(
+        actions,
+        &unit_id,
+        &unknown_id,
+        &request.reason,
+        request.expected_revision,
+    )
+    .await
+    .map_err(action_error)?;
+    Ok(Json(ActionResponse {
+        unit_id: result.unit_id,
+        action: result.action,
+        merge_hash: result.merge_hash,
+        branch_name: result.branch_name,
+        message: result.message,
+        rejection_path: result.rejection_path,
+    }))
+}
+
+/// Takes a settled unknown record back to open (issue #374): a resolution
+/// is a revision, never a deletion. The reopen appends a durable mark in
+/// the reviewer's document naming the revision the settlement was taken
+/// back from — the pipeline's next ledger write appends one revision above
+/// the landed one at that mark — and an unsettled record refuses with a
+/// 409 naming the landed open state.
+pub async fn api_reopen_unknown(
+    State(combined): State<super::super::CombinedState>,
+    Path((unit_id, unknown_id)): Path<(String, String)>,
+) -> Result<Json<ActionResponse>, ServerError> {
+    let actions = unknown_actions_backend(&combined)?;
+    let result =
+        super::super::unknown_actions::reopen_unknown(actions, &unit_id, &unknown_id)
+            .await
+            .map_err(action_error)?;
+    Ok(Json(ActionResponse {
+        unit_id: result.unit_id,
+        action: result.action,
+        merge_hash: result.merge_hash,
+        branch_name: result.branch_name,
+        message: result.message,
+        rejection_path: result.rejection_path,
+    }))
+}
+
+/// The disposition endpoints ride the actions backend for its action lock —
+/// the same one accept, send-back, and patch serialize on. A server built
+/// without one refuses honestly instead of racing an unlocked
+/// read-modify-write of the reviewer's resolutions document (issue #374),
+/// exactly as the patch endpoint names its missing backend.
+fn unknown_actions_backend(
+    combined: &super::super::CombinedState,
+) -> Result<&super::super::ActionsState, ServerError> {
+    combined.actions.as_ref().ok_or_else(|| {
+        ServerError::internal(
+            "unknown dispositions need the actions backend — this server was built without one",
+        )
+    })
 }
 
 // ─── GET /api/graph ──────────────────────────────────────────────────

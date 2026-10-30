@@ -696,6 +696,19 @@ pub struct PatchRequest {
     pub issue: String,
 }
 
+/// Request body for the unknown resolve and dismiss endpoints (issue #374).
+/// The reason is required — an answer that never states its grounds is
+/// refused — and `expected_revision` is the unknown record's revision as the
+/// reviewer had read it, the write guard the shared resolutions type checks
+/// before the settlement lands.
+#[derive(Debug, Deserialize)]
+pub struct UnknownSettleRequest {
+    /// The reviewer's bounded reason line.
+    pub reason: String,
+    /// The record revision the reviewer acted against.
+    pub expected_revision: u32,
+}
+
 /// Request body for the batch review-action endpoints (issue #78). The same
 /// shape serves accept, send-back, and skip — only send-back reads `reason`.
 #[derive(Debug, Deserialize)]

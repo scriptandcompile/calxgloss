@@ -9,9 +9,11 @@ mod lifecycle;
 mod llm_io_log;
 mod metrics;
 mod types;
+mod unknown_actions;
 
 pub use self::actions::*;
 pub use self::handlers::*;
+pub use self::unknown_actions::*;
 pub use self::lifecycle::{LifecycleError, LogLevel, LogLevelControl};
 pub use self::llm_io_log::{LlmIoEntry, LlmIoEntryType, LlmIoLog, MAX_LLM_IO_ENTRIES};
 pub use self::types::*;
@@ -886,6 +888,24 @@ fn shared_routes() -> Router<CombinedState> {
             post(handlers::api_send_back_unit),
         )
         .route("/api/units/{id}/patch", post(handlers::api_request_patch))
+        // Reviewer dispositions over P21 unknown records (issue #374):
+        // resolve/dismiss/reopen settle one filed record in the reviewer's
+        // own resolutions document — persisted intent, never live pipeline
+        // state and never the pipeline's ledger — so they ride the shared
+        // routes beside the other unit actions, and need the settings-backed
+        // actions backend like the patch request does.
+        .route(
+            "/api/units/{id}/unknowns/{unknown_id}/resolve",
+            post(handlers::api_resolve_unknown),
+        )
+        .route(
+            "/api/units/{id}/unknowns/{unknown_id}/dismiss",
+            post(handlers::api_dismiss_unknown),
+        )
+        .route(
+            "/api/units/{id}/unknowns/{unknown_id}/reopen",
+            post(handlers::api_reopen_unknown),
+        )
         // Batch review actions (issue #78): apply the per-unit accept/
         // send-back/skip logic to a set of units, reporting per-item
         // results. Registered in every router, like the per-unit actions.
