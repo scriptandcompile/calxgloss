@@ -70,8 +70,17 @@ Every library crate follows the same shape:
 - Every file starts with a `//!` module doc saying what the module is for.
 - Every public item — and every enum variant — gets a `///` doc comment.
 - Docs explain *why* and the behavior contract (ordering guarantees, tie
-  rules, what gets persisted), not just restate the signature. Prose is plain
-  and specific. Jargon from the domain glossary is allowed.
+  rules, what gets persisted), not just restate the signature.
+- Write in plain English: short, direct sentences describing what the code
+  does and when, the way you would explain it to a colleague new to the
+  project. No clever phrasing, no stacked technical adjectives.
+- When a doc names a domain concept, use the exact term from that context's
+  glossary (`GLOSSARY-MAP.md` → `crates/<context>/GLOSSARY.md`), and use the
+  same word consistently across doc comments, log messages, and error text —
+  never a synonym or invented variant. Follow the map's word-ownership and
+  banned-word rules (bare "engine" is banned: say *evidence engine* or
+  *analysis engine*). Plain English is preferred everywhere a glossary term
+  is not actually needed.
 
 ## API & construction style
 
