@@ -6440,6 +6440,351 @@ void SetCursor(void)
         );
     }
 
+    // ---- #375: the track sweep pinning the unknown-kind roster ------------
+    //
+    // ADR-0053's engine-stamps/roster-pins doctrine, one level up: one
+    // sweep over the real batch path pairs `DECLARED_UNKNOWN_KINDS`
+    // against what the four producers — the coverage fold, the seam
+    // residue, the verification signal, and the ladder — actually file,
+    // in one failure report naming every offender (the #352 and #359
+    // sweeps' pattern, aimed at kinds). A fifth producer (the future
+    // masked-byte search, P28) adds one kind string and one write site:
+    // forgetting either half fails here, at once.
+
+    /// The sweep's run: one real batch over the fixture target, staged
+    /// exactly as each producer's own filing test (#369, #371, #372, #373)
+    /// stages its fact, so every producer writes on the batch path —
+    ///
+    /// * the filed string-context document admits one body facet fell
+    ///   short, and the unit's tier is forced onto the fold that reads
+    ///   it → one `coverage_facet` record (the complete facet asks nothing);
+    /// * the held seam report declares `decompilation` unavailable, so the
+    ///   re-asking posture files `analysis_family`, and the nine-attempt
+    ///   climb prunes its escalate rungs and holds its next module-tier
+    ///   step → `retry_pruned` and `tier_refused`;
+    /// * the canned code never compiles, so the walk never ran a baseline
+    ///   case → `baseline_never_run`, and no filed baseline document
+    ///   covers any fixture export → one `export_uncovered` per export.
+    ///
+    /// Offline throughout: Kuna loads in-process, the LLM side is the
+    /// canned broken-alternating server. Exactly one unit walks: the swept
+    /// pairing keys on (kind, source slot), and a second unit reading the
+    /// same admitted facet would fold to one pair produced twice — the
+    /// field must read clean to be honest. Returns the records the batch
+    /// really filed, read back off the ledger document it filed.
+    async fn unknown_sweep_batch_records(
+        dir: &std::path::Path,
+    ) -> Vec<calxgloss_types::UnknownRecord> {
+        let verifier = calxgloss_verify::Verifier::new(dir).expect("verifier over temp dir");
+        let llm =
+            LlmClient::from_url(&broken_alternating_llm().await, "qwen3").expect("llm config");
+        let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
+        let binary_file = dir.join(calxgloss_testfixtures::TARGET_FILE_NAME);
+        std::fs::copy(fixture.path(), &binary_file).expect("fixture copied into the workspace");
+        let pipeline = TranslationPipeline::new(fixture_kuna(), llm, ApiMappings::default())
+            .with_workspace(dir.to_path_buf())
+            .with_binary_path(&binary_file);
+
+        // Kuna lists MinGW exports with the leading underscore; the unit
+        // name is the one the queue itself would use.
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let unit = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists fixture_status")
+            .name
+            .clone();
+
+        // Force the unit's tier: only the tiers that read the evidence
+        // documents run the fold, and forcing pins that this one does.
+        let overrides = calxgloss_types::OverrideControl::new();
+        overrides
+            .set(
+                PROGRAM,
+                &unit,
+                calxgloss_types::FunctionOverride {
+                    tier_override: Some(calxgloss_types::ContextTier::ModuleContext),
+                    ..Default::default()
+                },
+            )
+            .expect("in-memory tier override");
+        let pipeline = pipeline.with_overrides(overrides);
+
+        // An empty batch queues nothing but opens the batch path: the cold
+        // scans file every seam document with its engine's own coverage
+        // stamp, and the batch's export check lands `export_uncovered`
+        // against the binary's ledger before the queue even starts.
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("the batch that opens the path and runs the scans");
+
+        // The coverage admission, written onto the filed document itself
+        // exactly as #369 stamps it: one body facet partial with its
+        // reason spelled, one facet left complete.
+        let stringctx = StringContextPersistor::new(dir).path_for(PROGRAM);
+        let mut doc: calxgloss_stringctx::types::StringContextResult =
+            calxgloss_types::load_json(&stringctx).expect("the filed string-context document");
+        doc.metadata.coverage = Some(calxgloss_types::ScanCoverage {
+            status: calxgloss_types::CoverageStatus::Partial,
+            facets: vec![
+                calxgloss_types::FacetCoverage {
+                    id: "function-bodies".to_string(),
+                    status: calxgloss_types::CoverageStatus::Partial,
+                    limitation: Some("the bodies past the size cap were not read".to_string()),
+                },
+                calxgloss_types::FacetCoverage {
+                    id: "program-strings".to_string(),
+                    status: calxgloss_types::CoverageStatus::Complete,
+                    limitation: None,
+                },
+            ],
+        });
+        calxgloss_types::save_json(&stringctx, &doc).expect("the admission is written back");
+
+        // The seam admission, on the batch's held copy exactly as #371
+        // stamps it — stamped after the batch's source opened, since
+        // opening the source is what fetches the declaration. The ladder's
+        // own residue follows from walking against the same report.
+        let degraded = calxgloss_types::CapabilityReport {
+            families: vec![calxgloss_types::FamilyCapability {
+                id: "decompilation".to_string(),
+                status: calxgloss_types::AvailabilityStatus::Unavailable,
+                reason: Some("the engine never produced a body".to_string()),
+            }],
+        };
+        *pipeline
+            .seam_report
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = degraded;
+
+        // The unit walks the batch's own unit path — the retry wrapper the
+        // queue puts every queued function through. The nine-attempt
+        // climb is #372's walk, whose escalate prunes and
+        // tier holds file the ladder's standing questions, and whose
+        // zero-case fact the verification signal files beside them.
+        let climbing = retry::RetryConfig {
+            max_attempts: 9,
+            ..retry::RetryConfig::default()
+        };
+        pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &climbing, &verifier)
+            .await
+            .expect("the canned LLM answers every attempt");
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("the batch's ledger filing call");
+
+        let ledger_path = calxgloss_types::unknown_ledger_path(
+            dir,
+            &calxgloss_types::BinaryIdentity::new(PROGRAM),
+        );
+        let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
+            .expect("the sweep's batch files its unknown ledger through the real path");
+        ledger
+            .records
+            .expect("a batch whose producers wrote files a current set, never an absent key")
+    }
+
+    /// The field the sweep pairs: what the producers filed, as the shared
+    /// checker takes it — one `(kind label, source slot)` pair per record
+    /// the batch actually landed. Nothing re-spells the roster: the labels
+    /// are the records' own serde wording and the slots their own origins,
+    /// so the sweep cannot drift from what was filed (#352's rule).
+    fn swept_pairs(records: &[calxgloss_types::UnknownRecord]) -> Vec<(String, String)> {
+        records
+            .iter()
+            .map(|record| (record.kind.to_string(), record.source_slot()))
+            .collect()
+    }
+
+    /// The sweep's verdict: the declared roster read against the field
+    /// through the shared checker — one pass, one report naming every
+    /// offender, exactly as the seam sweep's `seam_sweep_faults` reports.
+    fn unknown_sweep_faults(pairs: &[(String, String)]) -> Vec<String> {
+        let field: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(kind, slot)| (kind.as_str(), slot.as_str()))
+            .collect();
+        calxgloss_types::unknown_roster_faults(calxgloss_types::DECLARED_UNKNOWN_KINDS, &field)
+    }
+
+    /// The sweep itself (issue #375): the real batch path's producers pair
+    /// one-for-one against the declared unknown kinds — every declared
+    /// kind has exactly one producer standing behind it on the batch path,
+    /// every producer names a declared kind, and the shared checker's
+    /// verdict is empty. The per-kind counts pin the shape underneath:
+    /// an empty field can never pass for a pairing, because each of the
+    /// four producers really writes.
+    #[tokio::test]
+    async fn the_unknown_sweep_pairs_the_roster_against_the_real_producers_one_for_one() {
+        let dir = TempDir::new().expect("temp workspace");
+        let records = unknown_sweep_batch_records(dir.path()).await;
+        let faults = unknown_sweep_faults(&swept_pairs(&records));
+        assert!(
+            faults.is_empty(),
+            "the real batch path's producers must pair one-for-one against the \
+             declared unknown kinds, and these drifted:\n{}",
+            faults.join("\n")
+        );
+        let filed = |kind: calxgloss_types::UnknownKind| {
+            records.iter().filter(|record| record.kind == kind).count()
+        };
+        assert!(
+            filed(calxgloss_types::UnknownKind::CoverageFacet) >= 1,
+            "the coverage fold files one question per admitting facet, at every \
+             `{{document}}#{{facet}}` slot the engines admitted short"
+        );
+        assert_eq!(
+            filed(calxgloss_types::UnknownKind::AnalysisFamily),
+            1,
+            "the held seam report files the one unavailable family the posture re-asks"
+        );
+        assert_eq!(
+            filed(calxgloss_types::UnknownKind::BaselineNeverRun),
+            1,
+            "the zero-case walk files one standing question against the unit"
+        );
+        assert!(
+            filed(calxgloss_types::UnknownKind::ExportUncovered) >= 1,
+            "the batch's export check files every export no baseline document covered"
+        );
+        assert_eq!(
+            filed(calxgloss_types::UnknownKind::RetryPruned),
+            1,
+            "two escalate prunes file one standing question, as #372 pinned"
+        );
+        assert_eq!(
+            filed(calxgloss_types::UnknownKind::TierRefused),
+            1,
+            "the held tier step files its own standing question"
+        );
+        assert!(
+            swept_pairs(&records).contains(&(
+                "coverage_facet".to_string(),
+                "string context result#function-bodies".to_string(),
+            )),
+            "the bodies facet the helper stamped partial on the filed document is \
+             among the gaps the fold read off disk"
+        );
+    }
+
+    /// A declared kind with no producer behind it (issue #375): drop the
+    /// ladder's refused-step record from the swept field and the sweep
+    /// fails, naming the kind. This is the P28 half — a future masked-byte
+    /// search that adds its kind string to the roster but no write site
+    /// fails here, at once.
+    #[tokio::test]
+    async fn the_sweep_fails_a_declared_kind_that_no_producer_files() {
+        let dir = TempDir::new().expect("temp workspace");
+        let records = unknown_sweep_batch_records(dir.path()).await;
+        let mut pairs = swept_pairs(&records);
+        pairs.retain(|(kind, _)| kind != "tier_refused");
+        assert_eq!(
+            unknown_sweep_faults(&pairs),
+            ["declared kind `tier_refused` has no producer"],
+            "a roster entry whose write site went missing fails loudly, naming itself"
+        );
+    }
+
+    /// A producer naming an undeclared kind (issue #375): the masked-byte
+    /// pair below stands for P28's future write site arriving with its
+    /// half-second omission — the write site without a roster string. It
+    /// fails the same sweep at once, naming the kind it invented.
+    #[tokio::test]
+    async fn the_sweep_fails_a_producer_naming_an_undeclared_kind() {
+        let dir = TempDir::new().expect("temp workspace");
+        let records = unknown_sweep_batch_records(dir.path()).await;
+        let mut pairs = swept_pairs(&records);
+        pairs.push((
+            "masked_byte_search".to_string(),
+            "masked-byte result#pattern-bodies".to_string(),
+        ));
+        assert_eq!(
+            unknown_sweep_faults(&pairs),
+            ["producer files `masked_byte_search`, a kind the roster never declared"],
+            "a producer admitting a gap the roster never named fails loudly, naming itself"
+        );
+    }
+
+    /// One kind produced twice from one source slot (issue #375): a second
+    /// write site claiming the seam's own family slot — the same standing
+    /// question filed from two places, never a second opinion. The sweep
+    /// names the kind and the slot it doubled on.
+    #[tokio::test]
+    async fn the_sweep_fails_a_kind_produced_twice_from_one_source_slot() {
+        let dir = TempDir::new().expect("temp workspace");
+        let records = unknown_sweep_batch_records(dir.path()).await;
+        let mut pairs = swept_pairs(&records);
+        let seam = pairs
+            .iter()
+            .find(|(kind, slot)| kind == "analysis_family" && slot == "decompilation")
+            .expect("the seam's own pair stands in the swept field")
+            .clone();
+        pairs.push(seam);
+        assert_eq!(
+            unknown_sweep_faults(&pairs),
+            ["kind `analysis_family` is produced twice from source slot `decompilation`"],
+            "one slot claimed by two write sites fails loudly, naming kind and slot"
+        );
+    }
+
+    /// Missing, orphaned, and doubled in one field (issue #375): the
+    /// sweep's single verdict carries all three offenders in one pass,
+    /// naming each — the #359 one-report doctrine, one level up. A
+    /// contributor fixing the drift sees the whole damage at once.
+    #[tokio::test]
+    async fn one_unknown_sweep_report_names_every_offender_at_once() {
+        let dir = TempDir::new().expect("temp workspace");
+        let records = unknown_sweep_batch_records(dir.path()).await;
+        let mut pairs = swept_pairs(&records);
+        pairs.retain(|(kind, _)| kind != "tier_refused");
+        pairs.push((
+            "masked_byte_search".to_string(),
+            "masked-byte result#pattern-bodies".to_string(),
+        ));
+        let seam = pairs
+            .iter()
+            .find(|(kind, slot)| kind == "analysis_family" && slot == "decompilation")
+            .expect("the seam's own pair stands in the swept field")
+            .clone();
+        pairs.push(seam);
+        let faults = unknown_sweep_faults(&pairs);
+        assert_eq!(
+            faults.len(),
+            3,
+            "missing, orphaned, and doubled offenders name themselves at once:\n{}",
+            faults.join("\n")
+        );
+        assert!(
+            faults.iter().any(|fault| fault.contains("tier_refused")),
+            "the kind whose producer went missing is named:\n{}",
+            faults.join("\n")
+        );
+        assert!(
+            faults
+                .iter()
+                .any(|fault| fault.contains("masked_byte_search")),
+            "the kind no roster declared is named:\n{}",
+            faults.join("\n")
+        );
+        assert!(
+            faults
+                .iter()
+                .any(|fault| fault.contains("analysis_family") && fault.contains("twice")),
+            "the slot claimed twice is named:\n{}",
+            faults.join("\n")
+        );
+    }
+
     /// Drain every `BatchProgress` beat seen since the last drain.
     fn drain_beats(rx: &mut tokio::sync::broadcast::Receiver<ProgressEvent>) -> Vec<ProgressEvent> {
         std::iter::from_fn(|| rx.try_recv().ok())
