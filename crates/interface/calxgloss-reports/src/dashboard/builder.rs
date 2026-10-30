@@ -27,8 +27,9 @@ use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewSkips, ReviewStatus, Staleness, UnitOfWork, WorkKind,
 };
 use calxgloss_types::{
-    BinaryIdentity, ClassificationOverrides, classification_override_records_path,
-    work_kind_for_prefix,
+    BinaryIdentity, ClassificationOverrides, EffectiveLedger, UnitUnknowns, UnknownRecord,
+    UnknownResolutions, classification_override_records_path, read_unknown_ledger,
+    read_unknown_resolutions, work_kind_for_prefix,
 };
 use chrono::Utc;
 
@@ -136,6 +137,25 @@ impl<'a> DashboardBuilder<'a> {
         // 2c. Read the reviewer's skip set (issue #75)
         let skipped_keys = self.read_skips();
 
+        // 2c'. Read the unknown ledgers and the reviewer's resolutions
+        // document (issue #376) so open records ride the derived model the
+        // way parking reasons do. A ledger that was never filed, carries no
+        // `records` key, or failed to parse leaves its units *unknown* —
+        // never an honest zero — and a corrupt resolutions document makes
+        // every unit's settled state unknown too. Both degrade with a
+        // warning here, on this derived surface; the resolve/dismiss
+        // endpoints still fail loudly on the same corrupt documents.
+        let unknown_resolutions = match read_unknown_resolutions(&self.repo_path) {
+            Ok(resolutions) => Some(resolutions),
+            Err(err) => {
+                eprintln!(
+                    "  [unknowns] resolutions document unreadable, open-unknown state unknown: {err}"
+                );
+                None
+            }
+        };
+        let mut ledger_cache: HashMap<String, Option<Vec<UnknownRecord>>> = HashMap::new();
+
         // 2d. Read the classification records and the operator's
         // classification overrides, and use them to build the set of
         // *parked* binaries — those whose in-force category is
@@ -170,6 +190,17 @@ impl<'a> DashboardBuilder<'a> {
         // 4. Determine the *latest* attempt for each key and build units
         for (key, latest_attempt) in &seen_keys {
             let mut unit = self.build_unit(&branches, key, *latest_attempt, &patch_records);
+
+            // Open unknown records ride the unit the way parking reasons
+            // ride below (issue #376): scoped by the unit's own function —
+            // a functionless unit carries the records filed against the
+            // binary itself — then joined to the reviewer's resolutions at
+            // read time, never from a stored copy of the join.
+            unit.unknowns = derive_unit_unknowns(
+                self.ledger_records(&mut ledger_cache, unit.binary.as_str()),
+                unknown_resolutions.as_ref(),
+                unit.function.as_deref(),
+            );
 
             // The baseline map keys `{file}/{func}` verbatim. The unit
             // key also ends with the attempt, so only that part is
@@ -230,7 +261,8 @@ impl<'a> DashboardBuilder<'a> {
         // branches. A parked (.NET managed) binary's synthetic classify
         // unit is *not* auto-accepted — it takes the derived
         // do-not-translate status so the parking stays visible
-        // (issue #235).
+        // (issue #235). Unknowns filed against the binary itself belong
+        // to this unit (issue #376).
         for cls in &classified {
             let key = format!("classify/{}", cls.binary);
             if !seen_keys.contains_key(&key) {
@@ -265,6 +297,11 @@ impl<'a> DashboardBuilder<'a> {
                     updated_at: cls.classified_at,
                     known_gaps,
                     stale: Staleness::Fresh,
+                    unknowns: derive_unit_unknowns(
+                        self.ledger_records(&mut ledger_cache, &cls.binary),
+                        unknown_resolutions.as_ref(),
+                        None,
+                    ),
                 };
                 units_by_key.entry(key).or_default().push(unit);
             }
@@ -383,6 +420,35 @@ impl<'a> DashboardBuilder<'a> {
             Err(_) => ReviewSkips::default(),
         };
         skips.skipped.into_iter().collect()
+    }
+
+    /// One binary's ledger records, read once per build and cached. The
+    /// cache carries the honesty reading: `None` means unknown — the
+    /// ledger was never filed, carries no `records` key, or failed to
+    /// parse — and only `Some(records)`, filed with an explicit list,
+    /// speaks. A corrupt document degrades to unknown *here*, on the
+    /// derived surface, with a warning; the resolve/dismiss endpoints
+    /// still fail loudly on the same document.
+    fn ledger_records<'c>(
+        &self,
+        cache: &'c mut HashMap<String, Option<Vec<UnknownRecord>>>,
+        binary: &str,
+    ) -> Option<&'c Vec<UnknownRecord>> {
+        cache
+            .entry(binary.to_string())
+            .or_insert_with(|| {
+                match read_unknown_ledger(&self.repo_path, &BinaryIdentity::from(binary)) {
+                    Ok(EffectiveLedger::Filed(records)) => Some(records),
+                    Ok(EffectiveLedger::Unknown) => None,
+                    Err(err) => {
+                        eprintln!(
+                            "  [unknowns] {binary}: ledger unreadable, open-unknown state unknown: {err}"
+                        );
+                        None
+                    }
+                }
+            })
+            .as_ref()
     }
 
     /// Reads every send-back record under
@@ -665,8 +731,33 @@ impl<'a> DashboardBuilder<'a> {
             updated_at,
             known_gaps: vec![],
             stale,
+            unknowns: UnitUnknowns::unknown(),
         }
     }
+}
+
+/// The unit's open unknown records, scoped by the unit's own function and
+/// joined to the reviewer's resolutions at read time (issue #376) — the
+/// same scoping rule the resolve/dismiss endpoint applies: functionless
+/// records belong to the binary itself and ride its classification unit.
+///
+/// Honesty rides through untouched: `None` ledger (never filed, no
+/// `records` key, unreadable) and an unreadable resolutions document both
+/// leave the unit *unknown*, never an honest zero.
+fn derive_unit_unknowns(
+    records: Option<&Vec<UnknownRecord>>,
+    resolutions: Option<&UnknownResolutions>,
+    function: Option<&str>,
+) -> UnitUnknowns {
+    let (Some(records), Some(resolutions)) = (records, resolutions) else {
+        return UnitUnknowns::unknown();
+    };
+    let scoped: Vec<UnknownRecord> = records
+        .iter()
+        .filter(|record| record.function.as_deref() == function)
+        .cloned()
+        .collect();
+    UnitUnknowns::from_joined(&resolutions.join(&scoped))
 }
 
 fn unit_key(parts: &BranchParts) -> String {
@@ -1254,5 +1345,302 @@ mod tests {
             "the parked reason is gone once the override releases the binary, got: {:?}",
             unit.known_gaps
         );
+    }
+
+    // ─── Open unknown records on the derived model (issue #376) ────────
+
+    /// One ledger record with the smallest fields the pins need.
+    fn unknown_record(
+        id: &str,
+        function: Option<&str>,
+        severity: calxgloss_types::UnknownSeverity,
+    ) -> UnknownRecord {
+        UnknownRecord {
+            id: id.to_string(),
+            binary: BinaryIdentity::from("game_logic.dll"),
+            function: function.map(str::to_string),
+            kind: calxgloss_types::UnknownKind::CoverageFacet,
+            severity,
+            question: format!("What is {id} really?"),
+            required_evidence: "call-site survey".to_string(),
+            origin: calxgloss_types::UnknownOrigin::CaseSet {
+                case_set: "cs-1".to_string(),
+            },
+            first_seen: 1,
+            last_seen: 1,
+            revision: 1,
+        }
+    }
+
+    /// Files `re/unknowns/game_logic.dll.json` with the given reading:
+    /// `None` writes the document without a `records` key (the keyless
+    /// reading), `Some` files the list — empty or not — under the key.
+    fn write_ledger(dir: &std::path::Path, records: Option<Vec<UnknownRecord>>) {
+        let dir_path = dir.join("re").join("unknowns");
+        std::fs::create_dir_all(&dir_path).expect("unknowns dir");
+        let doc = serde_json::json!({ "binary": "game_logic.dll", "filed_at": 1 });
+        let mut doc = doc;
+        if let Some(records) = records {
+            doc["records"] = serde_json::to_value(&records).expect("records serialize");
+        }
+        std::fs::write(dir_path.join("game_logic.dll.json"), doc.to_string()).expect("file ledger");
+    }
+
+    /// A unit's branch the unknowns can ride on.
+    fn one_unit_repo(dir: &std::path::Path) -> GitManager {
+        let git = init_test_repo(dir);
+        git.create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+            .expect("translation branch");
+        git
+    }
+
+    #[test]
+    fn unit_with_a_filed_ledger_carries_its_open_records_and_severity_counts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(
+            dir.path(),
+            Some(vec![
+                unknown_record(
+                    "u-a",
+                    Some("DrawPrimitive"),
+                    calxgloss_types::UnknownSeverity::Blocking,
+                ),
+                unknown_record(
+                    "u-b",
+                    Some("DrawPrimitive"),
+                    calxgloss_types::UnknownSeverity::Notable,
+                ),
+            ]),
+        );
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        let open = unit
+            .unknowns
+            .open
+            .as_ref()
+            .expect("filed ledger reads open");
+        assert_eq!(open.len(), 2, "both filed records ride the unit");
+        assert_eq!(
+            unit.unknowns.open_count(),
+            Some(2),
+            "the unit carries its open count"
+        );
+        let by_severity = &unit.unknowns.open_by_severity;
+        assert_eq!(
+            by_severity.get(&calxgloss_types::UnknownSeverity::Blocking),
+            Some(&1)
+        );
+        assert_eq!(
+            by_severity.get(&calxgloss_types::UnknownSeverity::Notable),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn records_scoped_to_another_function_never_ride_the_unit() {
+        // The same scoping rule the resolve/dismiss endpoint applies:
+        // a record function-scoped to `OtherFunction` belongs to that
+        // function's unit, not this one.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(
+            dir.path(),
+            Some(vec![unknown_record(
+                "u-x",
+                Some("OtherFunction"),
+                calxgloss_types::UnknownSeverity::Blocking,
+            )]),
+        );
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert_eq!(
+            unit.unknowns.open.as_deref(),
+            Some(&[][..]),
+            "a filed ledger scoped to nobody here is the honest known-and-none, not unknown"
+        );
+        assert_eq!(unit.unknowns.open_count(), Some(0));
+    }
+
+    #[test]
+    fn functionless_records_are_scoped_away_from_function_units() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(
+            dir.path(),
+            Some(vec![unknown_record(
+                "u-bin",
+                None,
+                calxgloss_types::UnknownSeverity::Material,
+            )]),
+        );
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert_eq!(unit.unknowns.open_count(), Some(0));
+    }
+
+    #[test]
+    fn no_ledger_at_all_leaves_the_unit_unknown_never_zero() {
+        // The first reading: nobody ever filed a ledger. The unit says
+        // *unknown* — `None` open, no counts — and the surfaces render
+        // it as unknown, never as an innocent 0.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert!(unit.unknowns.open.is_none(), "absent ledger is unknown");
+        assert_eq!(unit.unknowns.open_count(), None);
+    }
+
+    #[test]
+    fn filed_ledger_without_a_records_key_is_unknown_too() {
+        // The second reading: the document exists but never spoke — the
+        // `records` key is absent (the ADR-0053 absent-field rule), so it
+        // must not be laundered into known-and-none.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(dir.path(), None);
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert!(unit.unknowns.open.is_none(), "keyless ledger is unknown");
+    }
+
+    #[test]
+    fn filed_empty_ledger_is_the_honest_known_and_none() {
+        // The third reading, kept distinct from both others all the way
+        // to the model: a filed, explicitly empty list says nobody has
+        // anything open — and only that says it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(dir.path(), Some(vec![]));
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert_eq!(unit.unknowns.open_count(), Some(0), "known-and-none");
+        assert!(unit.unknowns.open.is_some());
+    }
+
+    #[test]
+    fn corrupt_ledger_degrades_to_unknown_but_never_fails_the_build() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        let ledger_dir = dir.path().join("re").join("unknowns");
+        std::fs::create_dir_all(&ledger_dir).expect("unknowns dir");
+        std::fs::write(ledger_dir.join("game_logic.dll.json"), "{ not json")
+            .expect("corrupt ledger");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("a corrupt ledger never fails the derived build");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert!(unit.unknowns.open.is_none(), "unreadable ledger is unknown");
+    }
+
+    #[test]
+    fn corrupt_resolutions_document_makes_every_unit_unknown_not_empty() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(
+            dir.path(),
+            Some(vec![unknown_record(
+                "u-a",
+                Some("DrawPrimitive"),
+                calxgloss_types::UnknownSeverity::Blocking,
+            )]),
+        );
+        let review_dir = dir.path().join("re").join("review");
+        std::fs::create_dir_all(&review_dir).expect("review dir");
+        std::fs::write(review_dir.join("unknown_resolutions.json"), "{{ broken")
+            .expect("corrupt resolutions");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("a corrupt resolutions document never fails the derived build");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert!(
+            unit.unknowns.open.is_none(),
+            "with unreadable resolutions nobody can say open from settled — unknown, never the raw ledger list"
+        );
+    }
+
+    #[test]
+    fn settled_records_read_as_settled_not_open() {
+        // The join rides apart: the reviewer resolved one record and
+        // dismissed another; what remains open is only the unsetled
+        // remainder, and the settled counts stand beside it — visibly
+        // distinct from open, without the model storing its own copy
+        // of the join.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        let rec_a = unknown_record(
+            "u-a",
+            Some("DrawPrimitive"),
+            calxgloss_types::UnknownSeverity::Blocking,
+        );
+        let rec_b = unknown_record(
+            "u-b",
+            Some("DrawPrimitive"),
+            calxgloss_types::UnknownSeverity::Material,
+        );
+        let rec_c = unknown_record(
+            "u-c",
+            Some("DrawPrimitive"),
+            calxgloss_types::UnknownSeverity::Notable,
+        );
+        write_ledger(
+            dir.path(),
+            Some(vec![rec_a.clone(), rec_b.clone(), rec_c.clone()]),
+        );
+
+        let mut resolutions = UnknownResolutions::default();
+        resolutions
+            .resolve(&rec_a, "evidence arrived", 1, 5)
+            .expect("resolve");
+        resolutions
+            .dismiss(&rec_b, "not a gap", 1, 6)
+            .expect("dismiss");
+        let review_dir = dir.path().join("re").join("review");
+        std::fs::create_dir_all(&review_dir).expect("review dir");
+        std::fs::write(
+            review_dir.join("unknown_resolutions.json"),
+            serde_json::to_string(&resolutions).expect("serialize resolutions"),
+        )
+        .expect("file resolutions");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        let open = unit.unknowns.open.as_ref().expect("ledger is filed");
+        assert_eq!(open.len(), 1, "only the unsetled record is open");
+        assert_eq!(open[0].id, "u-c");
+        assert_eq!(unit.unknowns.resolved, 1);
+        assert_eq!(unit.unknowns.dismissed, 1);
     }
 }

@@ -53,6 +53,7 @@ pub async fn api_get_next_unit(
         status: u.status.to_string(),
         stale: u.stale.to_string(),
         blocked: matches!(u.status, ReviewStatus::Blocked),
+        unknowns: u.unknowns.clone(),
     })))
 }
 
@@ -416,6 +417,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             known_gaps: vec![],
             stale: calxgloss_types::dashboard::Staleness::Fresh,
+            unknowns: calxgloss_types::UnitUnknowns::unknown(),
         }
     }
 

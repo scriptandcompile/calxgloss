@@ -95,6 +95,7 @@ fn dashboard_sorts_by_dependencies() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "unit_1".into(),
@@ -117,6 +118,7 @@ fn dashboard_sorts_by_dependencies() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "unit_2".into(),
@@ -139,6 +141,7 @@ fn dashboard_sorts_by_dependencies() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ];
 
@@ -278,6 +281,7 @@ fn make_unit(id: &str, status: ReviewStatus, dependencies: Vec<String>) -> UnitO
         updated_at: Utc::now(),
         known_gaps: vec![],
         stale: Staleness::Fresh,
+        unknowns: crate::UnitUnknowns::unknown(),
     }
 }
 
@@ -462,6 +466,7 @@ fn recent_activity_is_ordered_newest_first_and_deterministic() {
             updated_at: ts,
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         }
     }
 
@@ -508,6 +513,7 @@ fn dashboard_accepts_units_into_recent_activity() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "unit_2".into(),
@@ -530,6 +536,7 @@ fn dashboard_accepts_units_into_recent_activity() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ];
 
@@ -611,6 +618,7 @@ fn pending_in_dependency_order() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "unit_1".into(),
@@ -633,6 +641,7 @@ fn pending_in_dependency_order() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "unit_2".into(),
@@ -655,6 +664,7 @@ fn pending_in_dependency_order() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ];
 
@@ -1163,6 +1173,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1185,6 +1196,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ]);
 
@@ -1237,6 +1249,7 @@ fn auto_block_noop_when_all_deps_accepted() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1259,6 +1272,7 @@ fn auto_block_noop_when_all_deps_accepted() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ]);
 
@@ -1297,6 +1311,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "pal_graphics".into(),
@@ -1319,6 +1334,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1341,6 +1357,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ]);
 
@@ -1379,6 +1396,7 @@ fn auto_block_propagates_transitively() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "shim_wgpu".into(),
@@ -1401,6 +1419,7 @@ fn auto_block_propagates_transitively() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1423,6 +1442,7 @@ fn auto_block_propagates_transitively() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "integrate".into(),
@@ -1445,6 +1465,7 @@ fn auto_block_propagates_transitively() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ]);
 
@@ -1490,6 +1511,7 @@ fn auto_block_respects_terminal_statuses() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1512,6 +1534,7 @@ fn auto_block_respects_terminal_statuses() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ]);
 
@@ -1559,6 +1582,7 @@ fn auto_block_patch_requested_blocks_dependents() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "func_present".into(),
@@ -1581,6 +1605,7 @@ fn auto_block_patch_requested_blocks_dependents() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ]);
 
@@ -1619,6 +1644,7 @@ fn auto_block_idempotent() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1641,6 +1667,7 @@ fn auto_block_idempotent() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         },
     ]);
 
@@ -1677,6 +1704,7 @@ fn dashboard_graph_order_is_stable_across_input_orders() {
             updated_at: Utc::now(),
             known_gaps: vec![],
             stale: Staleness::Fresh,
+            unknowns: crate::UnitUnknowns::unknown(),
         }
     }
 

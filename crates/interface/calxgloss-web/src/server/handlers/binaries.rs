@@ -69,6 +69,10 @@ struct FunctionCounts {
     total: usize,
     done: usize,
     failed: usize,
+    /// Open unknown records across this binary's units — `None` when any
+    /// unit's ledger state is unknown, never a collapsed zero (issue
+    /// #376).
+    unknowns_open: Option<usize>,
 }
 
 impl FunctionCounts {
@@ -114,6 +118,19 @@ fn function_counts_by_binary<'a>(
         } else if is_failing(&unit.status) {
             entry.failed += 1;
         }
+        // Open unknowns fold like the tallies do, with one honesty rule
+        // (issue #376): any unit whose ledger state is unknown leaves the
+        // binary's open count unknown — never summed past, never shown as
+        // zero. The first unit of a binary seeds the reading; from then on
+        // an unknown in either hand poisons the sum for good.
+        entry.unknowns_open = if entry.total == 1 {
+            unit.unknowns.open_count()
+        } else {
+            match (entry.unknowns_open, unit.unknowns.open_count()) {
+                (Some(sum), Some(open)) => Some(sum + open),
+                _ => None,
+            }
+        };
     }
     counts
 }
@@ -237,6 +254,7 @@ fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> 
                 functions_done: tally.done,
                 functions_queued: tally.queued(),
                 functions_failed: tally.failed,
+                unknowns_open: tally.unknowns_open,
                 tokens_used: tokens.get(&name.to_ascii_lowercase()).copied().unwrap_or(0),
             }
         })
@@ -277,6 +295,7 @@ fn functions_for_binary(
             function: unit.function.unwrap_or_else(|| unit.name.clone()),
             attempt: unit.attempt,
             status: unit.status,
+            unknowns_open: unit.unknowns.open_count(),
         })
         .collect();
     rows.sort_by(|a, b| a.function.cmp(&b.function).then(a.attempt.cmp(&b.attempt)));
@@ -770,7 +789,59 @@ mod tests {
             updated_at: chrono::Utc::now(),
             known_gaps: Vec::new(),
             stale: calxgloss_types::dashboard::Staleness::Fresh,
+            unknowns: calxgloss_types::UnitUnknowns::unknown(),
         }
+    }
+
+    #[test]
+    fn unknowns_fold_sums_known_units_and_unknown_poisons_the_total() {
+        // Issue #376: the binary's open count sums its units' open counts —
+        // but any unit whose ledger reading is unknown leaves the whole
+        // binary unknown. The fold never sums past an unknown, and the row
+        // never renders an unknown as 0.
+        let mut open_one = make_unit(
+            "game_logic.dll",
+            WorkKind::FunctionTranslation,
+            ReviewStatus::Queued,
+        );
+        open_one.unknowns = calxgloss_types::UnitUnknowns {
+            open: Some(vec![calxgloss_types::UnitUnknown {
+                id: "u-a".to_string(),
+                kind: calxgloss_types::UnknownKind::CoverageFacet,
+                severity: calxgloss_types::UnknownSeverity::Blocking,
+                question: "What does it really do?".to_string(),
+                required_evidence: "call-site survey".to_string(),
+                revision: 1,
+            }]),
+            ..calxgloss_types::UnitUnknowns::unknown()
+        };
+        let mut known_none = make_unit(
+            "game_logic.dll",
+            WorkKind::FunctionTranslation,
+            ReviewStatus::Accepted,
+        );
+        known_none.unknowns = calxgloss_types::UnitUnknowns {
+            open: Some(vec![]),
+            ..calxgloss_types::UnitUnknowns::unknown()
+        };
+        let unknown = make_unit(
+            "game_logic.dll",
+            WorkKind::FunctionTranslation,
+            ReviewStatus::PendingReview,
+        );
+
+        let counts = function_counts_by_binary(&[open_one.clone(), known_none]);
+        assert_eq!(
+            counts["game_logic.dll"].unknowns_open,
+            Some(1),
+            "known readings sum"
+        );
+
+        let counts = function_counts_by_binary(&[open_one, unknown]);
+        assert_eq!(
+            counts["game_logic.dll"].unknowns_open, None,
+            "any unknown unit flips the binary total to unknown, never a partial sum"
+        );
     }
 
     #[test]

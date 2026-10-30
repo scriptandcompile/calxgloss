@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use calxgloss_git::GitManager;
+use calxgloss_types::UnitUnknowns;
 use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewStatus, Staleness, StatusCounts, UnitOfWork, WorkKind,
 };
@@ -290,7 +291,7 @@ fn render_status_summary(counts: &StatusCounts) {
 
 fn render_queue_table(units: &[UnitOfWork]) {
     println_content(
-        "  #   Kind       Function                        Status      Tests    Attempt",
+        "  #   Kind       Function                        Status      Unk   Tests    Attempt",
     );
     hsep();
 
@@ -308,18 +309,97 @@ fn render_queue_table(units: &[UnitOfWork]) {
         let attempt_str = format!("v{}", unit.attempt);
 
         let line = format!(
-            "{}{}  {}  {}  {}  {}  {}",
+            "{}{}  {}  {}  {}  {:<3}  {}  {}",
             row_prefix,
             bold(&format!("{:<3}", idx + 1)),
             format_dim(&format!("{:<8}", kind_str)),
             format_dim(&format!("{:<30}", name)),
             status_str,
+            format_open_count(&unit.unknowns),
             "\t\t—\t\t",
             attempt_str,
         );
         println!("{}", line);
     }
     hsep();
+}
+
+/// The open-unknown cell of a queue row (issue #376). `?` is the unknown
+/// reading — the ledger was never filed, carries no `records` key, or
+/// failed to parse — and never collapses to `0`; only the honest
+/// known-and-none reads as `0`.
+fn format_open_count(unknowns: &UnitUnknowns) -> String {
+    match unknowns.open_count() {
+        None => "?".to_string(),
+        Some(open) => open.to_string(),
+    }
+}
+
+/// The unit view's Unknown records block (issue #376) — the same state the
+/// web review surface reads from the same model: open records listed with
+/// their question, severity, and required evidence; settled records
+/// alongside, visibly distinct from open; and the unknown reading spelled
+/// out rather than hidden as zero.
+fn unknowns_view_lines(unknowns: &UnitUnknowns) -> Vec<String> {
+    let settled = if unknowns.resolved + unknowns.dismissed == 0 {
+        None
+    } else {
+        Some(format!(
+            "{} resolved, {} dismissed",
+            unknowns.resolved, unknowns.dismissed
+        ))
+    };
+    let mut lines = Vec::new();
+    match unknowns.open.as_ref() {
+        None => {
+            lines.push(yellow_bold(
+                "    Unknown records: unknown — ledger unreadable",
+            ));
+        }
+        Some(open) if open.is_empty() => {
+            let head = "    Unknown records: none open".to_string();
+            lines.push(match &settled {
+                Some(s) => format!("{head} ({s})"),
+                None => head,
+            });
+        }
+        Some(open) => {
+            let severities: Vec<String> = unknowns
+                .open_by_severity
+                .iter()
+                .rev()
+                .map(|(s, n)| format!("{n} {}", severity_label(s)))
+                .collect();
+            let head = format!(
+                "    Unknown records: {} open ({})",
+                open.len(),
+                severities.join(", ")
+            );
+            lines.push(yellow_bold(&head));
+            for record in open {
+                lines.push(format!(
+                    "      • [{}] {} — needs: {}",
+                    severity_label(&record.severity),
+                    record.question,
+                    record.required_evidence
+                ));
+            }
+        }
+    }
+    if let Some(s) = settled {
+        lines.push(format!("      ({s})"));
+    }
+    lines
+}
+
+/// Severity label for the terminal — the same closed scale the ledgers
+/// and the web surface speak.
+fn severity_label(severity: &calxgloss_types::UnknownSeverity) -> &'static str {
+    match severity {
+        calxgloss_types::UnknownSeverity::Notable => "notable",
+        calxgloss_types::UnknownSeverity::Material => "material",
+        calxgloss_types::UnknownSeverity::Blocking => "blocking",
+    }
 }
 
 /// Renders the dashboard in "follow" mode, refreshing periodically.
@@ -394,6 +474,14 @@ pub fn render_unit_view(data: &UnitViewData) {
             for gap in &unit.known_gaps {
                 println_content(format!("      • {}", gap));
             }
+        }
+        // Unknown records ride the same derived model the web review
+        // surface reads (issue #376): open records with their question,
+        // severity, and required evidence; settled records read as
+        // settled, visibly distinct from open; and an unreadable ledger
+        // reads as unknown, never as zero.
+        for line in unknowns_view_lines(&unit.unknowns) {
+            println_content(line);
         }
     }
 
@@ -566,5 +654,83 @@ mod tests {
         assert_eq!(fmt_duration(Duration::from_secs(120)), "2m");
         assert_eq!(fmt_duration(Duration::from_secs(3 * 3600 + 1800)), "3h 30m");
         assert_eq!(fmt_duration(Duration::from_secs(2 * 86400 + 3600)), "2d 1h");
+    }
+
+    #[test]
+    fn open_unknown_cell_keeps_unknown_and_zero_distinct() {
+        // Issue #376 honesty rule, pinned at the terminal cell: `?` is
+        // never collapsed to `0`, and only the honest known-and-none
+        // reads as `0`.
+        assert_eq!(format_open_count(&UnitUnknowns::unknown()), "?");
+        let known_none = UnitUnknowns {
+            open: Some(vec![]),
+            ..UnitUnknowns::unknown()
+        };
+        assert_eq!(format_open_count(&known_none), "0");
+        let one_open = UnitUnknowns {
+            open: Some(vec![calxgloss_types::UnitUnknown {
+                id: "u-1".to_string(),
+                kind: calxgloss_types::UnknownKind::CoverageFacet,
+                severity: calxgloss_types::UnknownSeverity::Blocking,
+                question: "What does the reset path actually do?".to_string(),
+                required_evidence: "call-site survey".to_string(),
+                revision: 1,
+            }]),
+            ..UnitUnknowns::unknown()
+        };
+        assert_eq!(format_open_count(&one_open), "1");
+    }
+
+    #[test]
+    fn unreadable_ledger_reads_unknown_in_the_unit_view_never_zero() {
+        let lines = unknowns_view_lines(&UnitUnknowns::unknown());
+        let text = lines.join("\n");
+        assert!(text.contains("unknown — ledger unreadable"), "{text}");
+        assert!(!text.contains("none open"), "{text}");
+        assert!(!text.contains(" 0 open"), "{text}");
+    }
+
+    #[test]
+    fn known_and_none_reads_honestly_and_settled_ride_apart() {
+        let known_none = UnitUnknowns {
+            open: Some(vec![]),
+            resolved: 2,
+            dismissed: 1,
+            ..UnitUnknowns::unknown()
+        };
+        let text = unknowns_view_lines(&known_none).join("\n");
+        assert!(text.contains("none open"), "{text}");
+        assert!(text.contains("2 resolved, 1 dismissed"), "{text}");
+    }
+
+    #[test]
+    fn open_records_list_question_severity_and_required_evidence() {
+        let open = calxgloss_types::UnitUnknown {
+            id: "u-1".to_string(),
+            kind: calxgloss_types::UnknownKind::CoverageFacet,
+            severity: calxgloss_types::UnknownSeverity::Blocking,
+            question: "What does the reset path actually do?".to_string(),
+            required_evidence: "call-site survey".to_string(),
+            revision: 1,
+        };
+        let unknowns = UnitUnknowns {
+            open: Some(vec![open]),
+            open_by_severity: std::collections::BTreeMap::from([(
+                calxgloss_types::UnknownSeverity::Blocking,
+                1,
+            )]),
+            resolved: 1,
+            ..UnitUnknowns::unknown()
+        };
+        let text = unknowns_view_lines(&unknowns).join("\n");
+        assert!(text.contains("1 open"), "{text}");
+        assert!(text.contains("1 blocking"), "{text}");
+        assert!(
+            text.contains("What does the reset path actually do?"),
+            "{text}"
+        );
+        assert!(text.contains("needs: call-site survey"), "{text}");
+        // Settled reads as settled, visibly alongside but distinct from open.
+        assert!(text.contains("1 resolved"), "{text}");
     }
 }

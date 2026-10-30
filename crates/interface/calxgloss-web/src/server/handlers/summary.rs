@@ -241,6 +241,7 @@ mod tests {
                 updated_at: chrono::Utc::now(),
                 known_gaps: Vec::new(),
                 stale: calxgloss_types::dashboard::Staleness::Fresh,
+                unknowns: calxgloss_types::UnitUnknowns::unknown(),
             }
         }
         let summary = compute_quality_summary(&[

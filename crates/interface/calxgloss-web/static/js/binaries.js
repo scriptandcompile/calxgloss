@@ -85,6 +85,11 @@ function renderBinaries(binaries) {
             <td class="token-col-rate">${b.functions_done}</td>
             <td class="token-col-rate">${b.functions_queued}</td>
             <td class="token-col-rate">${b.functions_failed}</td>
+            <td class="token-col-rate ${b.unknowns_open == null ? "unknowns-cell-unknown" : b.unknowns_open > 0 ? "unknowns-cell-open" : ""}"
+                title="${b.unknowns_open == null
+                    ? "Open unknown records: unknown — a ledger could not be read. Never shown as zero."
+                    : `${b.unknowns_open} open unknown record${b.unknowns_open === 1 ? "" : "s"} across this binary's units`}"
+                >${b.unknowns_open == null ? "?" : b.unknowns_open}</td>
             <td class="token-col-rate">${(b.tokens_used || 0).toLocaleString("en-US")}</td>
         </tr>
     `).join("");
@@ -156,10 +161,14 @@ function renderDetail(d) {
             <td class="fault-col-binary">${escapeHtml(f.function)}</td>
             <td class="token-col-rate">v${f.attempt}</td>
             <td><span class="binaries-fn-status" data-status="${escapeHtml(f.status)}">${escapeHtml(f.status)}</span></td>
+            <td class="token-col-rate ${f.unknowns_open == null ? "unknowns-cell-unknown" : f.unknowns_open > 0 ? "unknowns-cell-open" : ""}"
+                title="${f.unknowns_open == null
+                    ? "Open unknown records: unknown — the ledger could not be read"
+                    : `${f.unknowns_open} open unknown record${f.unknowns_open === 1 ? "" : "s"} on this unit`}">${f.unknowns_open == null ? "?" : f.unknowns_open}</td>
         </tr>
     `).join("");
     const fnBody = fnRows ||
-        `<tr><td colspan="3" class="binaries-detail-empty">No function-translation units recorded for this binary yet.</td></tr>`;
+        `<tr><td colspan="4" class="binaries-detail-empty">No function-translation units recorded for this binary yet.</td></tr>`;
 
     return `
         <div class="binaries-detail">
@@ -175,7 +184,7 @@ function renderDetail(d) {
                         title="Review and override this binary's classification (POST /api/binaries/{name}/classification)">Override classification</button>
             </div>
             <table class="binaries-detail-functions">
-                <thead><tr><th>Function</th><th>Attempt</th><th>Review status</th></tr></thead>
+                <thead><tr><th>Function</th><th>Attempt</th><th>Review status</th><th>Unk</th></tr></thead>
                 <tbody>${fnBody}</tbody>
             </table>
             <div class="binaries-detail-shim" data-binary="${escapeHtml(d.binary)}">

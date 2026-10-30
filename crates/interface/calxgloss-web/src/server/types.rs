@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use calxgloss_types::{
     BinaryIdentity, BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress,
     PhaseRecord, PipelinePhase, PipelineState, ReviewDashboard, ReviewStatus, TokenUsageEntry,
-    TranslationPhase, UnitOfWork,
+    TranslationPhase, UnitOfWork, UnitUnknowns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -162,6 +162,12 @@ pub struct UnitResponseInner {
     pub updated_at: String,
     /// Known gaps or caveats that could not be verified.
     pub known_gaps: Vec<String>,
+    /// This unit's open unknown records with severity counts and settled
+    /// counts, carried straight from the derived dashboard model (issue
+    /// #376). `open: null` is the unknown reading — never a zero; only
+    /// `open: []` is the honest known-and-none.
+    #[serde(default)]
+    pub unknowns: UnitUnknowns,
     /// Staleness indicator: "fresh", "stale (2d 3h)", etc.
     pub stale: String,
     /// Git diff summary between this unit's branch and main.
@@ -568,6 +574,12 @@ pub struct QueueEntry {
     /// Whether this unit is blocked by unmet dependencies.
     #[serde(default)]
     pub blocked: bool,
+    /// This unit's open unknown records, with severity counts and settled
+    /// counts, riding straight from the derived dashboard model (issue
+    /// #376). `open: null` on the wire is the unknown reading — never a
+    /// zero; only `open: []` is the honest known-and-none.
+    #[serde(default)]
+    pub unknowns: UnitUnknowns,
 }
 
 impl QueueResponse {
@@ -588,6 +600,7 @@ impl QueueResponse {
                 status: u.status.to_string(),
                 stale: u.stale.to_string(),
                 blocked: matches!(u.status, ReviewStatus::Blocked),
+                unknowns: u.unknowns.clone(),
             })
             .collect();
 
@@ -1121,6 +1134,9 @@ pub struct BinariesListResponse {
 /// review dashboard's function-translation units for this binary —
 /// `functions_total = functions_done + functions_queued + functions_failed`
 /// always holds, so no unit hides in an unshown bucket.
+///
+/// P21 #376: the row also carries the binary's open unknown record count,
+/// summed across its units; unknown renders as unknown, never as 0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinarySummaryRow {
     /// The binary identity — the filename verbatim, as the classification
@@ -1148,6 +1164,11 @@ pub struct BinarySummaryRow {
     /// Units a reviewer or the run left failing — sent back or awaiting
     /// a patch.
     pub functions_failed: usize,
+    /// Open unknown records this binary's units carry, summed across the
+    /// units (P21 #376). `None` is unknown — some unit's ledger could not
+    /// be read — and renders as unknown, never as 0.
+    #[serde(default)]
+    pub unknowns_open: Option<usize>,
     /// Tokens the token-usage log recorded for this binary — 0 when the
     /// log holds no attempts for it.
     pub tokens_used: usize,
@@ -1211,6 +1232,10 @@ pub struct BinaryFunctionRow {
     pub attempt: u32,
     /// The unit's review status (e.g. "Accepted", "PendingReview").
     pub status: calxgloss_types::ReviewStatus,
+    /// Open unknown records this unit carries (P21 #376) — `None` is
+    /// unknown, `Some(0)` is known-and-none.
+    #[serde(default)]
+    pub unknowns_open: Option<usize>,
 }
 
 // ─── Binary shim tracker (issue #133, W4.3) ────────────────────────────

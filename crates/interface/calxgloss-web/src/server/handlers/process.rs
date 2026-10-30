@@ -361,6 +361,7 @@ mod tests {
             dependencies: Vec::new(),
             known_gaps: Vec::new(),
             stale: calxgloss_types::dashboard::Staleness::Fresh,
+            unknowns: calxgloss_types::UnitUnknowns::unknown(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };

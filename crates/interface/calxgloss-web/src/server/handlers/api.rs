@@ -154,6 +154,7 @@ pub async fn api_get_dashboard(
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 known_gaps: Vec::new(),
+                unknowns: calxgloss_types::UnitUnknowns::unknown(),
                 stale: calxgloss_types::dashboard::Staleness::Fresh,
             });
         }
@@ -271,6 +272,7 @@ pub async fn api_get_unit(
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 known_gaps: Vec::new(),
+                unknowns: calxgloss_types::UnitUnknowns::unknown(),
                 stale: calxgloss_types::dashboard::Staleness::Fresh,
             });
         }
@@ -318,6 +320,7 @@ pub async fn api_get_unit(
             created_at: unit.created_at.to_rfc3339(),
             updated_at: unit.updated_at.to_rfc3339(),
             known_gaps: unit.known_gaps.clone(),
+            unknowns: unit.unknowns.clone(),
             stale: unit.stale.to_string(),
             diff_summary,
             attempt_history,

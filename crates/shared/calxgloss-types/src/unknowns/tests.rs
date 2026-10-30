@@ -1074,3 +1074,35 @@ fn the_two_documents_land_at_their_named_record_tree_locations() {
         unknown_ledger_path("/ws", &BinaryIdentity::new("eqmain.dll"))
     );
 }
+
+#[test]
+fn the_three_ledger_readings_stay_distinct_on_the_unit_model_wire() {
+    // Issue #376 honesty rule, pinned at the wire: unknown serializes as
+    // `open: null` and never as an empty list; only the honest
+    // known-and-none serializes the empty list; and a payload with no
+    // `open` field at all deserializes to unknown, never zero.
+    let unknown = UnitUnknowns::unknown();
+    let json = serde_json::to_value(&unknown).expect("serialize unknown");
+    assert!(json["open"].is_null(), "unknown rides as null");
+    assert_eq!(json["open_by_severity"], serde_json::json!({}));
+
+    let known_none = UnitUnknowns {
+        open: Some(vec![]),
+        ..UnitUnknowns::unknown()
+    };
+    let json = serde_json::to_value(&known_none).expect("serialize known-none");
+    assert_eq!(json["open"], serde_json::json!([]), "none open rides as []");
+
+    let back: UnitUnknowns = serde_json::from_str("{}").expect("bare object deserializes");
+    assert!(
+        back.open.is_none(),
+        "absent open field is unknown, not zero"
+    );
+    assert_eq!(back.open_count(), None);
+
+    let back: UnitUnknowns = serde_json::from_str(r#"{"open": null}"#).expect("null reads");
+    assert!(
+        back.open.is_none(),
+        "an explicit null is the same unknown reading"
+    );
+}

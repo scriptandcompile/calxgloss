@@ -1046,6 +1046,9 @@ async fn test_binaries_list_api_exact_json_from_fixture() {
                     "functions_done": 1,
                     "functions_queued": 0,
                     "functions_failed": 0,
+                    // Issue #376: no unknown ledger is filed in this
+                    // fixture — the honest reading is unknown, never 0.
+                    "unknowns_open": null,
                     "tokens_used": 75,
                 },
                 {
@@ -1061,6 +1064,8 @@ async fn test_binaries_list_api_exact_json_from_fixture() {
                     "functions_done": 2,
                     "functions_queued": 1,
                     "functions_failed": 0,
+                    // Issue #376: no ledger filed — unknown, never 0.
+                    "unknowns_open": null,
                     "tokens_used": 175,
                 },
             ],
@@ -1140,7 +1145,7 @@ async fn test_binaries_detail_api_exact_json_from_fixture() {
             "exports_count": 100,
             "imports_count": 5,
             "functions": [
-                { "function": "wgpu", "attempt": 1, "status": "Accepted" },
+                { "function": "wgpu", "attempt": 1, "status": "Accepted", "unknowns_open": null },
             ],
         }),
         "the override-in-force decision exactly as the analyzer would act \
@@ -1164,9 +1169,9 @@ async fn test_binaries_detail_api_exact_json_from_fixture() {
             "exports_count": 24,
             "imports_count": 12,
             "functions": [
-                { "function": "DrawPrimitive", "attempt": 1, "status": "Accepted" },
-                { "function": "DrawPrimitive", "attempt": 2, "status": "PendingReview" },
-                { "function": "UpdateScene", "attempt": 1, "status": "Accepted" },
+                { "function": "DrawPrimitive", "attempt": 1, "status": "Accepted", "unknowns_open": null },
+                { "function": "DrawPrimitive", "attempt": 2, "status": "PendingReview", "unknowns_open": null },
+                { "function": "UpdateScene", "attempt": 1, "status": "Accepted", "unknowns_open": null },
             ],
         }),
         "the recorded decision with the per-function review statuses"

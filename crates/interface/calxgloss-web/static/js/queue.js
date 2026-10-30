@@ -60,6 +60,22 @@ export function renderFullQueue(dashboard, selectedId = null) {
                 : "Parked — .NET managed binary") + " — set a classification override to release it"
             : "";
 
+        // Open unknown records (issue #376): the same open-unknown state
+        // the unit detail and the terminal dashboard read off the derived
+        // model. `?` is the unknown reading — a ledger that was never
+        // filed, carries no records key, or could not be parsed — and is
+        // never collapsed to a zero; a plain 0 is the honest known-and-none.
+        const unk = u.unknowns || {};
+        const openUnknowns = unk.open == null ? null : unk.open.length;
+        const sevParts = Object.entries(unk.open_by_severity || {})
+            .map(([sev, n]) => `${n} ${sev}`);
+        const unkTitle = openUnknowns === null
+            ? "Unknown records: unknown — the ledger could not be read"
+            : openUnknowns === 0
+                ? "No open unknown records — the ledger was read and nothing stands open"
+                : `${openUnknowns} open unknown record${openUnknowns === 1 ? "" : "s"}` +
+                  (sevParts.length ? ` (${sevParts.join(", ")})` : "");
+
         return `
             <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}" draggable="true">
                 <div class="queue-item-icon ${iconClass}"></div>
@@ -71,6 +87,8 @@ export function renderFullQueue(dashboard, selectedId = null) {
                     aria-label="${isParked ? "Parked (do not translate)" : isSkipped ? "Unskip" : "Skip"} ${u.id}">
                 <div class="qi-name" title="${u.id}">${name}</div>
                 <div class="qi-priority prio-${priority}" title="Priority: ${priority.toUpperCase()} — click to change">${priority.toUpperCase()}</div>
+                <div class="qi-unknowns ${openUnknowns === null ? "unknown" : openUnknowns > 0 ? "open" : "clear"}"
+                    title="${escapeHtml(unkTitle)}">${openUnknowns === null ? "?" : openUnknowns}</div>
                 <div class="qi-status ${iconClass}"${isParked ? ` title="${escapeHtml(parkNote)}"` : ""}>${STATUS_LABELS[u.status] || u.status}</div>
                 <div class="qi-attempt">v${u.attempt}</div>
                 <div class="qi-effort" title="Estimated time per attempt">${effortText}</div>
@@ -572,8 +590,66 @@ function renderDetailOverview(u) {
             </div>
         ` : ""}
 
+        ${renderUnknownsSection(u)}
+
         ${renderProcessSections(u)}
         ${renderAnalysisSections(u)}
+    `;
+}
+
+// Unknown records section (issue #376): the unit's open unknown records
+// read straight off the derived model. The ledger's three readings stay
+// distinct through to the render — `open: null` is the unknown reading
+// (the ledger was never filed, carries no records key, or could not be
+// parsed) and is spelled out, never collapsed to a zero; an empty list is
+// the honest known-and-none; a filed list renders each open record with
+// its question, severity, and required evidence. Resolved and dismissed
+// records read as settled — beside the open ones, visibly distinct.
+function renderUnknownsSection(u) {
+    const unk = u.unknowns;
+    if (!unk) return "";
+    if (unk.open === null || unk.open === undefined) {
+        return `
+            <div class="detail-section">
+                <div class="detail-section-title">Unknown Records</div>
+                <div class="unknowns-state unknowns-unknown">
+                    Unknown — the ledger could not be read. This is never shown as zero.
+                </div>
+            </div>
+        `;
+    }
+    const open = unk.open || [];
+    const settled = (unk.resolved || 0) + (unk.dismissed || 0);
+    if (open.length === 0 && settled === 0) {
+        return `
+            <div class="detail-section">
+                <div class="detail-section-title">Unknown Records</div>
+                <div class="unknowns-state unknowns-none">
+                    None open — the ledger was read and nothing stands open.
+                </div>
+            </div>
+        `;
+    }
+    const items = open.map(r => `
+        <div class="unknown-item">
+            <div class="unknown-item-head">
+                <span class="unknown-severity sev-${escapeHtml(r.severity)}">${escapeHtml(r.severity)}</span>
+                <span class="unknown-kind">${escapeHtml(r.kind)}</span>
+            </div>
+            <div class="unknown-question">${escapeHtml(r.question)}</div>
+            <div class="unknown-evidence">Needs: ${escapeHtml(r.required_evidence)}</div>
+        </div>
+    `).join("");
+    const sevParts = Object.entries(unk.open_by_severity || {})
+        .map(([sev, n]) => `${n} ${sev}`);
+    return `
+        <div class="detail-section">
+            <div class="detail-section-title">Unknown Records (${open.length} open${sevParts.length ? `, ${sevParts.join(", ")}` : ""})</div>
+            ${items}
+            ${settled > 0
+                ? `<div class="unknowns-settled">${unk.resolved || 0} resolved · ${unk.dismissed || 0} dismissed</div>`
+                : ""}
+        </div>
     `;
 }
 

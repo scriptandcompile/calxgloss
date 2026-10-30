@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::types::{ReviewStatus, Staleness, WorkKind};
 use crate::identity::BinaryIdentity;
+use crate::unknowns::UnitUnknowns;
 
 /// A single item in the review dashboard.
 ///
@@ -57,4 +58,17 @@ pub struct UnitOfWork {
     ///
     /// Set by the dashboard builder based on `updated_at` vs. the current time.
     pub stale: Staleness,
+    /// This unit's open unknown records, with their severity counts and the
+    /// settled records alongside (issue #376) — filled by the dashboard
+    /// builder the way parking reasons ride, read by the web unit detail,
+    /// the review queue's tallies, and the terminal dashboard alike.
+    ///
+    /// The ledger's three readings ride through untouched: absent or
+    /// unreadable reads as *unknown* — never zero — and only a filed,
+    /// explicitly empty reading is the honest known-and-none. The join
+    /// itself is never stored here twice: the builder recomputes it from
+    /// the pipeline's ledger and the reviewer's resolutions document on
+    /// every build.
+    #[serde(default)]
+    pub unknowns: UnitUnknowns,
 }

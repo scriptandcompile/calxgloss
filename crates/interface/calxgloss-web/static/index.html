@@ -682,13 +682,14 @@
                                 <th>Done</th>
                                 <th>Queued</th>
                                 <th>Failed</th>
+                                <th>Unk</th>
                                 <th>Tokens</th>
                             </tr>
                         </thead>
                         <tbody id="binaries-table-body"></tbody>
                     </table>
                 </div>
-                <p class="llm-metrics-note">Rows come from persisted history only — classification records with the override layer applied, the review dashboard's function units, and the token-usage log — so this view reads the same under plain <code>serve</code> as under <code>calxgloss live</code>. Done / Queued / Failed always add up to Functions; Queued covers everything still waiting, including blocked and skipped.</p>
+                <p class="llm-metrics-note">Rows come from persisted history only — classification records with the override layer applied, the review dashboard's function units, and the token-usage log — so this view reads the same under plain <code>serve</code> as under <code>calxgloss live</code>. Done / Queued / Failed always add up to Functions; Queued covers everything still waiting, including blocked and skipped. Unk shows each binary's open unknown records — <code>?</code> when a ledger could not be read, never a zero.</p>
             </div>
         </section>
     </main>

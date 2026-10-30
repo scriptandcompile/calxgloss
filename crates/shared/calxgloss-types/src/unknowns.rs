@@ -126,7 +126,7 @@ pub const DECLARED_UNKNOWN_KINDS: &[&str] = &[
 /// The serde labels are the persisted wire format, so they are a
 /// compatibility contract. Every level names an honest criterion a producer
 /// can apply at the point the gap is admitted; none is a catch-all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownSeverity {
     /// The gap qualifies what was established but leaves the subject
@@ -765,6 +765,113 @@ impl UnknownResolutions {
     }
 }
 
+/// One unit's open record, as the review surface lists it: the question,
+/// its severity, and the evidence that would close it — not the whole
+/// joined record. The model carries the state a reviewer reads, never its
+/// own copy of the join; the id is the same deterministic key the
+/// reviewer's resolve and dismiss actions bind to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitUnknown {
+    /// The record's deterministic identity.
+    pub id: String,
+    /// The kind of gap, from the closed declared roster.
+    pub kind: UnknownKind,
+    /// How much the open gap matters, from the closed severity scale.
+    pub severity: UnknownSeverity,
+    /// One bounded question line, verbatim from the ledger.
+    pub question: String,
+    /// One bounded line naming the evidence that would close the record.
+    pub required_evidence: String,
+    /// The record's landed revision — the guard the reviewer's settle is
+    /// checked against.
+    pub revision: u32,
+}
+
+impl From<&UnknownRecord> for UnitUnknown {
+    fn from(record: &UnknownRecord) -> Self {
+        Self {
+            id: record.id.clone(),
+            kind: record.kind,
+            severity: record.severity,
+            question: record.question.clone(),
+            required_evidence: record.required_evidence.clone(),
+            revision: record.revision,
+        }
+    }
+}
+
+/// One unit of work's open unknown records, with their severity counts and
+/// the settled records alongside — carried on the derived dashboard model
+/// so the web unit detail, the review queue's tallies, and the terminal
+/// dashboard all render the same open-unknown state (issue #376).
+///
+/// The shape is recomputed at build time from the pipeline's ledger and
+/// the reviewer's resolutions document, exactly as
+/// [`UnknownResolutions::join`] recomputes the joined readings; nothing
+/// stores a second copy of the join.
+///
+/// The ledger's three readings ride through untouched: `open: None` is
+/// *unknown* — no ledger document, a filed document whose `records` key is
+/// absent, or a document that failed to parse — while `open: Some([])` is
+/// the only honest known-and-none. Unknown never renders as zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitUnknowns {
+    /// This unit's open records, scoped to the unit; `None` when the
+    /// ledger's reading is unknown.
+    #[serde(default)]
+    pub open: Option<Vec<UnitUnknown>>,
+    /// Open counts per severity, derived from `open` — empty while the
+    /// state is unknown, never standing in for the records themselves.
+    #[serde(default)]
+    pub open_by_severity: BTreeMap<UnknownSeverity, usize>,
+    /// This unit's records the reviewer settled as resolved. A resolved or
+    /// dismissed record reads as settled — visibly distinct from open —
+    /// and a later re-derivation re-binds it by the record's deterministic
+    /// id.
+    #[serde(default)]
+    pub resolved: usize,
+    /// This unit's records the reviewer dismissed.
+    #[serde(default)]
+    pub dismissed: usize,
+}
+
+impl UnitUnknowns {
+    /// The unknown reading: the ledger was never filed, carries no
+    /// `records` key, or failed to parse. This is also the `Default` —
+    /// a unit nobody filed against is unknown, never zero.
+    pub fn unknown() -> Self {
+        Self::default()
+    }
+
+    /// The honest reading for a unit's records already joined to their
+    /// dispositions: the open ones ride with their severity counts, the
+    /// settled ones land in their counts.
+    pub fn from_joined(joined: &[JoinedUnknown]) -> Self {
+        let mut unit = Self {
+            open: Some(Vec::new()),
+            ..Self::default()
+        };
+        for joined_unknown in joined {
+            match joined_unknown.disposition {
+                EffectiveDisposition::Open => {
+                    let unknown = UnitUnknown::from(&joined_unknown.record);
+                    *unit.open_by_severity.entry(unknown.severity).or_insert(0) += 1;
+                    unit.open.as_mut().unwrap().push(unknown);
+                }
+                EffectiveDisposition::Resolved => unit.resolved += 1,
+                EffectiveDisposition::Dismissed => unit.dismissed += 1,
+            }
+        }
+        unit
+    }
+
+    /// This unit's open count; `None` means unknown and must never render
+    /// as zero.
+    pub fn open_count(&self) -> Option<usize> {
+        self.open.as_ref().map(|open| open.len())
+    }
+}
+
 /// One ledger record as the reviewer sees it: the record, the joined
 /// disposition, and the reviewer's answer when one binds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -787,6 +894,20 @@ pub fn unknown_resolutions_path(workspace: impl AsRef<Path>) -> PathBuf {
         .join("re")
         .join("review")
         .join("unknown_resolutions.json")
+}
+
+/// Read the reviewer's resolutions document: a document that was never
+/// written reads as nobody settled anything — the empty [`Default`], the
+/// same reading the skip set and the queue overlay keep — while a corrupt
+/// document stays corrupt: a [`PersistError::Json`], never an empty
+/// reading, and it fails loudly.
+pub fn read_unknown_resolutions(
+    workspace: impl AsRef<Path>,
+) -> Result<UnknownResolutions, PersistError> {
+    match load_json::<UnknownResolutions>(&unknown_resolutions_path(workspace)) {
+        Err(PersistError::NotFound { .. }) => Ok(UnknownResolutions::default()),
+        result => result,
+    }
 }
 
 // ============================================================

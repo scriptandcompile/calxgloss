@@ -744,6 +744,113 @@ svg {
     opacity: 0.55;
 }
 
+/* Open unknown records on the queue row (issue #376): the count rides the
+   same derived model the unit detail and the terminal dashboard read.
+   `?` is the unknown reading — never a collapsed zero — and it is styled
+   louder than a plain 0, which is the honest known-and-none. */
+.queue-item-full .qi-unknowns {
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+}
+
+.queue-item-full .qi-unknowns.open {
+    color: var(--accent-yellow, var(--accent-red));
+    border-color: var(--accent-yellow, var(--accent-red));
+}
+
+.queue-item-full .qi-unknowns.unknown {
+    color: var(--accent-red);
+    border-color: var(--accent-red);
+}
+
+/* Unknown records in the unit detail (issue #376): open records render
+   with their question, severity, and required evidence; settled records
+   read as settled, beside the open ones and visibly distinct; and the
+   unknown ledger reading says so plainly instead of showing a zero. */
+.queue-detail-body .unknowns-state {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.queue-detail-body .unknowns-state.unknowns-unknown {
+    color: var(--accent-red);
+    font-weight: 600;
+}
+
+.queue-detail-body .unknown-item {
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 6px 0;
+}
+
+.queue-detail-body .unknown-item-head {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.queue-detail-body .unknown-severity {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+}
+
+.queue-detail-body .unknown-severity.sev-blocking {
+    color: var(--accent-red);
+    border-color: var(--accent-red);
+}
+
+.queue-detail-body .unknown-severity.sev-material {
+    color: var(--accent-yellow, var(--accent-red));
+    border-color: var(--accent-yellow, var(--accent-red));
+}
+
+.queue-detail-body .unknown-question {
+    font-size: 13px;
+}
+
+.queue-detail-body .unknown-evidence {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 3px;
+}
+
+.queue-detail-body .unknown-kind {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.queue-detail-body .unknowns-settled {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    font-style: italic;
+}
+
+/* Per-binary and per-function open-unknown cells in the Binaries view
+   (issue #376): ? is unknown, never zero, and an open count stands out. */
+td.unknowns-cell-open {
+    color: var(--accent-yellow, var(--accent-red));
+    font-weight: 600;
+}
+
+td.unknowns-cell-unknown {
+    color: var(--accent-red);
+    font-weight: 700;
+}
+
 /* Drag-and-drop reordering (issue #74). */
 .queue-item-full.dragging {
     opacity: 0.45;
