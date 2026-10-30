@@ -135,6 +135,18 @@ _Avoid_: bare "strategy" — classification strategy belongs to Evidence
 **Evidence bundle**:
 One unit's gathered evidence, built from the evidence engines' per-binary documents. It is the single input rendered into the bundle-fed prompt templates. The bundle itself crosses the seam — not already-rendered strings. When evidence is missing, its sections are simply left out; a prompt never fails.
 
+### Unknown residue
+
+**Unknown record**:
+A gap the batch admitted from data already on disk, shaped as the shared record at the point of admission, by one of four producers: the coverage fold (a facet that fell short), the held capability report (a family declared unavailable, against units whose retry posture re-asks it), the verification signal (a unit that ran zero baseline cases; an export no filed baseline document covers), and the ladder's own pruned escalate and refused tier step. A record states what is not known — never what to do about it.
+
+**Unknown ledger**:
+The pipeline's own filing of what a batch admitted: one document per target binary, in deterministic scan order; each batch's filing replaces the last.
+_Avoid_: audit ledger — the printed report is Interface's word
+
+**Reviewer resolution**:
+The reviewer's recorded answer to an unknown record. Pipeline only reads it: *resolved* and *dismissed* records fold out of the fed prompts, a reopened one rides back in. Settling a question is Interface's act.
+
 ### History
 
 **Archive**:

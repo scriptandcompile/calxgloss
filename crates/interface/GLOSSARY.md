@@ -48,6 +48,13 @@ The CLI's act of composing resolved settings into the pipeline's pass descriptio
 The reviewer's act on a unit — *accept*, *send back*, *request patch* — each with its git effect. The verdicts are Pipeline's words; the buttons are this context's.
 _Avoid_: reject — the CLI subcommand that carried the old word; retire it from every surface
 
+**Unknown record**:
+The open question a unit carries for the reviewer to see: listed on the web unit detail and queue tallies and on the terminal dashboard, each with its severity, its question, and the evidence that would close it. Settled records are counted apart from open ones.
+
+**Reviewer resolution**:
+The reviewer's act on one open unknown record: *resolve* it — the fact is established, with a stated reason; *dismiss* it — the question is judged irrelevant and stays visible as dismissed; or *reopen* a settled one. It rides the existing review-action seam with the same conflict discipline, and it is not a review verdict: it never accepts a unit, touches a branch, or changes a review status.
+_Avoid_: resolve as a verdict — settling a question is not accepting a unit
+
 **Reviewer intent**:
 What the operator has decided and persisted: ordering, priorities, skips, overrides. It lives in its own records. It is never derived from artifacts, and no derived rebuild may edit it.
 
@@ -96,6 +103,9 @@ The start/restart form's choices: which phase runs, against which targets, over 
 
 **Terminal dashboard**:
 The text review board built from branch state and the persisted records. The web renders the same model.
+
+**Unknown ledger**:
+The per-target-binary statement the run close and the dashboard print: what was never established, at what severity, with the evidence that would have closed it — and what review already settled and what it deliberately dismissed, counted apart.
 
 **Analytics on demand**:
 Numbers computed at request time from the persisted logs. There are no stored rollups, because a second copy of the truth would drift.

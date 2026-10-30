@@ -46,6 +46,16 @@ What sort of tracked work a row is. Only function translation is a *unit of work
 **Confidence**:
 The shared record type holds the 0–100 integer of evidence confidence. Unit confidence is Pipeline's separate scale and does not travel through this type.
 
+**Unknown record**:
+The one shared shape for an unanswered question about a target binary — plus the function, where the gap is function-specific: a kind from a closed roster, a severity from a closed scale, one bounded question line, one bounded required-evidence line, the origin it was derived from, and a revision every write is checked against. Consumers render its stored wording; they do not restate it.
+_Avoid_: gap — *known gaps* is Pipeline's free-text limitations carrier, a different thing; hole, concern
+
+**Unknown ledger**:
+The pipeline's per-target-binary document of unknown records, `re/unknowns/<binary identity>.json`. Its filing envelope — the binary it speaks for and when it was filed — is how a reader tells a filed ledger from a stray document.
+
+**Reviewer resolution**:
+The reviewer's answer to one unknown record, bound to the record's id: a disposition — *resolved* or *dismissed* — a bounded reason, and the revision it was written against. It persists in the reviewer's own resolutions document and survives every derived rebuild; a reopen is a durable mark, not a deletion.
+
 ### Settings
 
 **Settings layers**:
@@ -64,4 +74,4 @@ Settings named after their file section — one variable per key; set-but-empty 
 A misspelled setting fails loudly at parse time, naming the bad key, rather than surfacing later as mysterious default behavior.
 
 **Record tree**:
-The effort's on-disk memory under the workspace's `re/` — classification, analysis documents, reviewer intent, patches, and the caches each owner writes. Each owner names its own location. No one reads another owner's files by guessing paths.
+The effort's on-disk memory under the workspace's `re/` — classification, analysis documents, reviewer intent, patches, and the caches each owner writes. Each owner names its own location, and each document has exactly one owner: the unknown ledgers under `re/unknowns/` are the pipeline's documents, the reviewer's resolutions at `re/review/unknown_resolutions.json` are the reviewer's. No one reads another owner's files by guessing paths.

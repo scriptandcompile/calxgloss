@@ -29,15 +29,16 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 **Tracks P19–P33 are the feature ideas collected by the [REA
 comparison](research/rea/README.md) (`docs/research/rea/`, each chapter's
-"Steal ideas"). P19 (admitted semantics) and P20 (seam capability report +
-engine-identity cache key) shipped and left this matrix per the rule above
-(ADR-0053–ADR-0055), so P21 is unblocked and P26's data side is in place.**
+"Steal ideas"). P19 (admitted semantics), P20 (seam capability report +
+engine-identity cache key), and P21 (first-class unknown records) shipped
+and left this matrix per the rule above
+(ADR-0053–ADR-0056), so the verdict tracks P26 and P27 are unblocked on
+their record side.**
 **Table order is dependency order** — no track appears before another track
 that blocks it (each summary below names which tracks block it and which
 tracks it blocks). Among tracks that do not block each other, the order is
 by how far each one moves calxgloss toward **complete end-to-end
-restitching from binaries**: first, honest records of what the evidence
-engines could not determine (P21); then a verification gate wide enough to
+restitching from binaries**: first, a verification gate wide enough to
 cover what restitching can actually get wrong (P22–P24); then the durable
 receipts and the fail-closed ledger that finally make "this binary is
 done" a checkable claim instead of "the pipeline stopped with nobody
@@ -47,7 +48,6 @@ it.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P21 | First-class unknown records — for each function, record what the evidence engines could not determine and what evidence would close the gap; the review UI resolves these records, `escalate` retries use them, and the run ends with an audit ledger | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
 | P22 | Differential API-call trace in the gate — record the ordered Win32/PAL API-call sequence on both the original-DLL baseline and the restitched Rust, and compare the order; this catches PAL-mapping errors that reach the right result by the wrong path, which value tests miss | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + integrations (`calxgloss-pal`) + evidence (`calxgloss-apidetect`) | — | ⬜ not started | not specced | — |
 | P23 | Real inputs for the baseline — argument vectors mined from hooked export entries, plus Windows minidump crash records replayed as concrete reproduction tests; this closes the blind spot of invented inputs | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-cli`) | — | ⬜ not started | not specced | — |
 | P24 | Scenario-capture baseline for EXE targets — a declared scenario contract (scripted interactions, filesystem observation, exit disposition) with a five-dimension compare, as the EXE-level verification signal FFI cannot reach | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
@@ -93,27 +93,6 @@ pre-designs P24's scenario contract, and trace-armed blame ranking extends
 P27's send-back decision.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## P21 — First-class unknown records (shared + pipeline + interface)
-
-**Silent gaps today, audit ledger tomorrow.** When the evidence engines
-cannot determine something — an ambiguous vtable target, an unresolved
-this-pointer, an export no baseline ever calls — the fact disappears
-entirely. Make each function's unanswered question a first-class unknown
-record, in REA's record/update/verify shape: each record holds a question,
-a severity, and `required_evidence` naming what would close it, with a
-lifecycle guarded by revisions. The review UI surfaces these records and
-lets reviewers resolve them, and `escalate` retries use them as prompt
-input. The run then ends with an auditable ledger of what was never
-established, instead of a queue that simply went quiet. It builds directly
-on P19's coverage fields (the gap must be visible in the data before it can
-be recorded) and P20's seam capability report (not observed is not the
-same as observed absent). The capstone P26 ledger reads it: an open unknown
-must block a "DLL complete" verdict. Source:
-[33](research/rea/33-reconstruction-evidence-workflow.md) steal 1, README #1.
-Blocked by: P20 (shipped with the seam-capability track,
-ADR-0054–ADR-0055) and P19 (data side shipped with the admitted-semantics
-track, ADR-0053) — unblocked. Blocks: P26, P27.
 
 ## P22 — Differential API-call trace in the gate (pipeline + integrations + evidence)
 
@@ -210,7 +189,9 @@ pass. So the dashboard grows a real conformance verdict — the definition of
 complete end-to-end restitching, made checkable. Source:
 [33](research/rea/33-reconstruction-evidence-workflow.md) steals 2–3, README #2.
 Blocked by: P19 (data side — shipped, ADR-0053; the `unknown` value the
-verdict reads is in place), P21, P25 (hard); P22–P24 (shape — the verdict
+verdict reads is in place), P21 (shipped, ADR-0056; the open,
+severity-carrying, evidence-demanding record the verdict gates on exists),
+P25 (hard); P22–P24 (shape — the verdict
 should stand on the widest gate and on a lane for EXEs). Blocks: nothing —
 this is the capstone.
 
@@ -234,8 +215,9 @@ template: arm a stack capture at the failing address and rank suspect units
 unverified-before-verified — today the unit to send back is only a human
 guess. Source:
 [34](research/rea/34-runtime-observation.md) steal 4,
-[36](research/kraken/36-rewrite-pipeline.md) steal 9. Blocked by: P21 (the
-unknown), P24 (the runtime dimensions to correlate against, and the
+[36](research/kraken/36-rewrite-pipeline.md) steal 9. Blocked by: P21
+(shipped, ADR-0056 — the named unknown to declare against), P24 (the
+runtime dimensions to correlate against, and the
 scenario failures to blame against).
 
 ## P28 — Masked byte search at the seam (integrations + evidence)
