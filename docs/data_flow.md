@@ -721,6 +721,10 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 │   │   │   └── {binary}-{old-sha256}-{new-sha256}.json
 │   │   │        ←   keyed by the hash triple; the document names both
 │   │   │            hashes so a stale pairing is detectable, never trusted
+│   │   ├── {binary}/{function}.json ← per-function analysis artifact:
+│   │   │        ←   the tagged windows_apis list the translate path
+│   │   │            files per translated unit (issue #379), read by
+│   │   │            the web review UI's API Mapping panel
 │   │   ├── {binary}_call_graph.json ← enriched call graph
 │   │   ├── unit_overrides.json      ← reviewer per-unit overrides
 │   │   ├── token_usage.json         ← per-attempt token log

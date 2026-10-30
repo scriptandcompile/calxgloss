@@ -174,6 +174,7 @@ The on-disk memory of an effort is the **record tree** under the workspace's
 | per-engine scan documents (+ rendered `.rs`/`.toml` for typesdb/consts/apidetect) | `re/analysis/{engine}/{binary}.json` | each engine's own *persistor* |
 | version-pairing documents | `re/analysis/bdiff/{binary}-{old}-{new}-sha256.json` | `bdiff` |
 | call graph | `re/analysis/{binary}_call_graph.json` | analysis warmup |
+| per-function analysis artifact (tagged `windows_apis`) | `re/analysis/{binary}/{function}.json` | the translate path, per translated unit (issue #379) |
 | run logs (fault, token usage, prompt strategy, LLM I/O) | `re/analysis/{fault_log,token_usage,prompt_strategy_log}.json`, `re/analysis/llm_io/log.jsonl` | translator + `calxgloss-llm` |
 | scan read cache | `re/cache/{identity}/{sha256}/` | the seam |
 | reviewer intent (skips, queue order/priority, unit + classification overrides) | `re/review/skips.json`, `re/review/queue_overlay.json`, `re/analysis/unit_overrides.json`, `re/analysis/classification_overrides.json` | web / CLI overlays (ADR-0003) |
@@ -305,9 +306,13 @@ closure digest (P26); **hypothesis ledger** for stuck retries (P27);
 **masked byte search** and **ad-hoc call-path/def-use** at the seam
 (P28/P29); **PE artifact intelligence** (P30); **deep `doctor`** with JSON +
 exit codes (P31); contributor **skill/manual** (P32); **whole-task
-measurement** (P33). P40/P41 are verified product gaps: `api_aware` is set
-but never reaches a prompt; the `re/analysis/` per-function artifacts the web
-Mapping panel reads have no producer (issues #365/#366). Shipped since the
+measurement** (P33). P40 is a verified product gap: `api_aware` is set
+but never reaches a prompt. P41's producer has since landed: the
+translate path files the per-function artifact at
+`re/analysis/{binary}/{function}.json` for every unit it translates —
+the tagged `windows_apis` list the web Mapping panel reads (issue #379);
+the full `FunctionInfo` record and the rest of the layout reconciliation
+stay open (#366). Shipped since the
 REA set, worth noting for comparison freshness: scan registry (ADR-0052),
 projector/bundle/templates (ADR-0048/0049), pipeline assembly (ADR-0050),
 attempt seam (ADR-0051), coverage honesty (ADR-0053), seam capability +

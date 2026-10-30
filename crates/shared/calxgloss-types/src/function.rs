@@ -130,7 +130,11 @@ pub enum NodeCategory {
 ///
 /// Collects the function's disassembly, decompiler output, the Windows API
 /// calls found in it, and its call graph neighbors. This record is the main
-/// input to the translation pipeline.
+/// input to the translation pipeline. The identified API list is not just
+/// in-memory: the translate path files each translated unit's tagged
+/// `windows_apis` as the per-function analysis artifact at
+/// `re/analysis/{binary}/{function}.json` (issue #379). No other field of
+/// the record is written to disk — only that API list is serialized.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionInfo {
     /// The function's exported or internal name.
