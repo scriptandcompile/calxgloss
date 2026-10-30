@@ -80,6 +80,9 @@ The sequence of API names one baseline case recorded, in call order — delibera
 **IAT interposer**:
 The generated harness's mechanism for observing the original's API calls: every slot in the target's import address table is replaced — scoped API names with a recording trampoline that tail-jumps to the real routine, all other imports with the real routines themselves. x86-64 only; elsewhere it degrades to running unhooked.
 
+**In-scope API roster**:
+The API set one unit is scoped to: every API the apidetect document records for its function — used directly or reached through callees — de-duplicated in first-seen order. It scopes the fold of captured traces onto the generated suite's cases; no document means no roster, and the trace dimension stays unassessed.
+
 **Scratch project**:
 A sandboxed throwaway build project that each verification compiles and tests in.
 

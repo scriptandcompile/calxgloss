@@ -1078,6 +1078,219 @@ async fn baseline_test_expectations_name_globals_with_the_typed_kinds() {
     );
 }
 
+// ─── API scope roster and captured-trace fold (issue #386, P22) ────
+
+/// File an apidetect document for `game_logic.dll` holding these
+/// per-function API usage findings (function, API, directness).
+fn file_api_usages(dir: &std::path::Path, usages: &[(&str, &str, bool)]) {
+    let mut result =
+        calxgloss_apidetect::types::ApiDetectionResult::new(ScanMetadata::new("game_logic.dll"));
+    result.findings = usages
+        .iter()
+        .map(|(function, api, direct)| {
+            calxgloss_apidetect::types::ApiFinding::ApiUsage(calxgloss_apidetect::types::ApiUsage {
+                function: (*function).to_string(),
+                api: (*api).to_string(),
+                library: "gdi32.dll".to_string(),
+                rust_crate: "windows".to_string(),
+                category: None,
+                features: Vec::new(),
+                direct: *direct,
+                confidence: calxgloss_types::Confidence::new(if *direct { 80 } else { 60 }),
+                evidence: format!("{function} → {api}"),
+            })
+        })
+        .collect();
+    calxgloss_apidetect::persist::ApiPersistor::new(dir)
+        .save(&result)
+        .expect("apidetect document should file");
+}
+
+/// File a baseline document for `game_logic.dll`'s `DrawPrimitive` holding
+/// one captured case per (inputs, captured trace) pair — the shape
+/// `collect_results` saves, where the trace rides both the case's
+/// expectations and the result's actuals.
+fn file_baseline_captures(dir: &std::path::Path, captures: &[(serde_json::Value, &[&str])]) {
+    let results: Vec<calxgloss_types::TestResult> = captures
+        .iter()
+        .map(|(inputs, trace)| {
+            let trace: Vec<String> = trace.iter().map(|name| name.to_string()).collect();
+            calxgloss_types::TestResult {
+                test_case: TestCase {
+                    inputs: inputs.clone(),
+                    expected_return: serde_json::Value::Null,
+                    expected_side_effects: Vec::new(),
+                    expected_api_calls: trace.clone(),
+                },
+                actual_return: serde_json::Value::Null,
+                actual_side_effects: Vec::new(),
+                actual_api_calls: trace,
+                passed: true,
+                error: None,
+            }
+        })
+        .collect();
+    calxgloss_testgen::TestGenerator::new(dir)
+        .save_baseline("game_logic.dll", "DrawPrimitive", &results)
+        .expect("baseline document should file");
+}
+
+/// A unit's `DrawPrimitive` fixture info, the same one the global-state
+/// fold tests drive.
+fn roster_fixture_function() -> FunctionInfo {
+    FunctionInfo {
+        name: "DrawPrimitive".to_string(),
+        address: 0x1000,
+        binary: "game_logic.dll".to_string().into(),
+        disassembly: "cmp eax, 0\nje 0x1010".to_string(),
+        decompiler_output:
+            "void DrawPrimitive(void) { BitBlt(hdc, 0, 0, 1, 1, hdc2, 0, 0, SRCCOPY); }".to_string(),
+        windows_apis: Vec::new(),
+        call_graph: Vec::new(),
+        disassembly_hints: Vec::new(),
+    }
+}
+
+/// #386 (P22): the trace a saved baseline captured for a case becomes that
+/// case's expectation — scoped to the in-scope API roster the apidetect
+/// document records for the function (direct uses and through callees)
+/// and spelled onto the verify PAL surface. Out-of-roster names and names
+/// the surface stands in for nothing drop out of the expectation: the
+/// fold never manufactures an expectation the gate can never satisfy.
+#[tokio::test]
+async fn baseline_tests_fold_captured_traces_scoped_to_the_api_roster() {
+    let dir = TempDir::new().unwrap();
+    let pipeline = pipeline_over(Some(dir.path()));
+    let function_info = roster_fixture_function();
+
+    // The unit's roster: BitBlt used directly, CreateFileA through a
+    // callee (transitive findings join the roster too), and GetLastError
+    // in the roster but spelled for nothing on the verify surface. Sleep
+    // belongs to another function, so it is out of this unit's scope —
+    // even though it has a surface spelling.
+    file_api_usages(
+        dir.path(),
+        &[
+            ("DrawPrimitive", "BitBlt", true),
+            ("DrawPrimitive", "CreateFileA", false),
+            ("DrawPrimitive", "GetLastError", true),
+            ("UpdateScene", "Sleep", true),
+        ],
+    );
+
+    // Take the generated suite's own inputs for the baseline document,
+    // so the first capture matches the first generated case exactly.
+    let first_pass = pipeline
+        .generate_baseline_tests(&function_info, &[], &[])
+        .await
+        .expect("test inputs generate");
+    assert!(
+        !first_pass.is_empty(),
+        "the fixture generates cases to fold onto"
+    );
+
+    // The captured trace, in recorded order: roster names with a surface
+    // spelling, an out-of-roster name, an unspellable roster name, and a
+    // repeated call — repetitions and order ride through.
+    file_baseline_captures(
+        dir.path(),
+        &[(
+            first_pass[0].inputs.clone(),
+            &["BitBlt", "Sleep", "CreateFileA", "GetLastError", "BitBlt"],
+        )],
+    );
+
+    let tests = pipeline
+        .generate_baseline_tests(&function_info, &[], &[])
+        .await
+        .expect("test inputs generate");
+    assert_eq!(
+        tests[0].expected_api_calls,
+        vec!["blit", "open", "blit"],
+        "the captured trace folds onto the matching case spelled onto the verify PAL surface, in recorded order, out-of-roster and unspellable names dropped"
+    );
+    for test in &tests[1..] {
+        assert!(
+            test.expected_api_calls.is_empty(),
+            "a case the baseline document has no capture for stays trace-unassessed"
+        );
+    }
+}
+
+/// #386's honest-degradation half: the fold needs both artifacts. A saved
+/// baseline with no apidetect roster (the scan never ran) files no
+/// expectations, and a roster with no saved baseline folds nothing — the
+/// same shape the global-state expectations take (#276).
+#[tokio::test]
+async fn the_trace_fold_degrades_to_unassessed_without_one_of_its_documents() {
+    let function_info = roster_fixture_function();
+
+    // A captured trace with no roster: the baseline document exists,
+    // apidetect never ran.
+    let dir = TempDir::new().unwrap();
+    let pipeline = pipeline_over(Some(dir.path()));
+    let first_pass = pipeline
+        .generate_baseline_tests(&function_info, &[], &[])
+        .await
+        .expect("test inputs generate");
+    assert!(!first_pass.is_empty());
+    file_baseline_captures(
+        dir.path(),
+        &[(first_pass[0].inputs.clone(), &["BitBlt", "BitBlt"])],
+    );
+    let tests = pipeline
+        .generate_baseline_tests(&function_info, &[], &[])
+        .await
+        .expect("test inputs generate");
+    assert!(
+        tests.iter().all(|t| t.expected_api_calls.is_empty()),
+        "without the apidetect roster the captured trace is no expectation"
+    );
+
+    // A roster with no saved baseline: apidetect ran, the baseline was
+    // never recorded.
+    let dir = TempDir::new().unwrap();
+    file_api_usages(dir.path(), &[("DrawPrimitive", "BitBlt", true)]);
+    let pipeline = pipeline_over(Some(dir.path()));
+    let tests = pipeline
+        .generate_baseline_tests(&function_info, &[], &[])
+        .await
+        .expect("test inputs generate");
+    assert!(
+        tests.iter().all(|t| t.expected_api_calls.is_empty()),
+        "without a saved capture there is no trace to fold"
+    );
+}
+
+/// A corrupt apidetect document leaves the trace dimension unassessed
+/// rather than failing the unit — the degradation the global-state fold
+/// already takes (#276).
+#[tokio::test]
+async fn a_corrupt_apidetect_document_leaves_the_trace_dimension_unassessed() {
+    let dir = TempDir::new().unwrap();
+    let doc_dir = dir.path().join("re").join("analysis").join("apidetect");
+    std::fs::create_dir_all(&doc_dir).expect("apidetect dir");
+    std::fs::write(doc_dir.join("game_logic.dll.json"), "not json at all")
+        .expect("corrupt document filed");
+
+    let pipeline = pipeline_over(Some(dir.path()));
+    let function_info = roster_fixture_function();
+    let first_pass = pipeline
+        .generate_baseline_tests(&function_info, &[], &[])
+        .await
+        .expect("test inputs generate");
+    file_baseline_captures(dir.path(), &[(first_pass[0].inputs.clone(), &["BitBlt"])]);
+
+    let tests = pipeline
+        .generate_baseline_tests(&function_info, &[], &[])
+        .await
+        .expect("a corrupt apidetect document must not sink suite generation");
+    assert!(
+        tests.iter().all(|t| t.expected_api_calls.is_empty()),
+        "a corrupt roster leaves the trace dimension unassessed"
+    );
+}
+
 /// Run `translate` far enough to watch the suite it generates and
 /// report the count the `TestsGenerated` event carries. The LLM step
 /// is unreachable offline, so each run ends in failure at the call —

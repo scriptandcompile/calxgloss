@@ -1063,6 +1063,138 @@ async fn a_compiling_unit_with_a_failing_suite_is_not_reported_success() {
     );
 }
 
+/// #386 criterion 3, through the seam: a baseline case whose value matches
+/// but whose ordered surface calls diverge from the captured trace fails
+/// on the trace dimension alone, and the failure routes into the next
+/// attempt's test-fix prompt naming which call was substituted. (The case's
+/// expected trace is what the baseline capture and API roster fold puts
+/// there; the attempt record's failed-test lines are the payload either
+/// way — this pins the routing carrying the divergence, end to end through
+/// the real verifier and runner.)
+#[tokio::test]
+async fn a_trace_divergent_failed_test_routes_the_divergence_into_the_next_fix_prompt() {
+    let ws = tempfile::TempDir::new().expect("temp workspace");
+    // The body reaches 7 through the verify PAL surface, but presents
+    // before it blits; the folded expectation from the baseline capture
+    // demands blit first. The return value is clean — only the route is
+    // wrong.
+    const BODY: &str = r#"
+pub fn call_no_params() -> serde_json::Value {
+    let mut device = GraphicsDeviceStub::default();
+    let texture = device.create_texture(2, 2);
+    let mut target = device.create_render_target(2, 2);
+    device.present();
+    device.blit(&texture, &mut target);
+    serde_json::Value::from(7)
+}
+"#;
+
+    let translation = Translation {
+        binary: "game_logic.dll".to_string().into(),
+        function: "RestitchTrace".to_string(),
+        function_address: None,
+        rust_code: BODY.to_string(),
+        prompt_used: "prompt".to_string(),
+        model: "test-model".to_string(),
+        tokens_used: Some(10),
+        baseline_tests: vec![calxgloss_types::TestCase {
+            inputs: serde_json::json!(null),
+            expected_return: serde_json::json!(7),
+            expected_side_effects: Vec::new(),
+            expected_api_calls: vec![
+                "create_texture".to_string(),
+                "create_render_target".to_string(),
+                "blit".to_string(),
+                "present".to_string(),
+            ],
+        }],
+        call_graph: Vec::new(),
+        disassembly_hints: Vec::new(),
+        context_tier: calxgloss_types::ContextTier::Signature,
+        call_graph_context: Vec::new(),
+    };
+
+    // The canned LLM answers both calls with this body; max_attempts 2
+    // keeps the run inside the streak threshold whatever the code.
+    let llm_base = same_code_llm(BODY).await;
+    let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+    let target = calxgloss_testfixtures::load_target().expect("fixture target");
+    let kuna = calxgloss_kuna::KunaSource::load(target.path())
+        .expect("the fixture must load for scanning with Kuna");
+    let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
+    let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+    let events = calxgloss_types::TranslationEvents::new(64);
+    let mut rx = events.subscribe();
+
+    let config = RetryConfig {
+        max_attempts: 2,
+        retry_strategy: RetryStrategy::TestFix,
+        escalate_on_failure: false,
+        max_context_tier: None,
+    };
+    let seam_report = calxgloss_types::CapabilityReport::default();
+    let ctx = RetryLoopCtx {
+        verifier: &verifier,
+        llm: &llm,
+        source: &source,
+        config: &config,
+        workspace: Some(ws.path()),
+        events: Some(&events),
+        resource_detector: None,
+        fault_logger: None,
+        reviewer_hints: &[],
+        seam_report: &seam_report,
+    };
+
+    let result = try_translate_with_retry(translation, &ctx).await;
+
+    assert!(
+        !result.success,
+        "a value-matching unit whose call route diverges is not done"
+    );
+    let first = &result.attempts[0];
+    assert!(first.compiled, "the body compiles in the scratch project");
+    assert_eq!(first.tests_total, 1, "the folded case ran as the suite");
+    let divergence = first
+        .failed_tests
+        .iter()
+        .find(|line| line.contains("API-call trace divergence"));
+    assert!(
+        divergence.is_some(),
+        "the value-clean case failing on the trace dimension records the divergence: {:?}",
+        first.failed_tests
+    );
+
+    // Attempt 2's prompt — the test-fix one built from that verdict —
+    // carries which call was substituted.
+    let sent: std::collections::BTreeMap<u32, String> = {
+        let mut captured = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            captured.push(ev);
+        }
+        captured
+            .iter()
+            .filter_map(|ev| match ev {
+                ProgressEvent::LlmRequest {
+                    attempt, prompt, ..
+                } => Some((*attempt, prompt.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let prompt = &sent[&2];
+    assert!(
+        prompt.contains("API-call trace divergence at position 2"),
+        "the next attempt's fix prompt carries the trace divergence:\n{prompt}"
+    );
+    assert!(
+        prompt.contains(
+            "expected [create_texture, create_render_target, blit, present], got [create_texture, create_render_target, present, blit]"
+        ),
+        "and it names exactly which call was substituted:\n{prompt}"
+    );
+}
+
 /// #334 criterion 2, pinned through the captured request bodies: once
 /// attempt N has failed, attempt N+1's prompt names N's OWN code and
 /// quotes N's OWN failure evidence — the initial translation is no longer

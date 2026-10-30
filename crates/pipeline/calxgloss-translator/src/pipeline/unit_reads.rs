@@ -178,9 +178,78 @@ impl TranslationPipeline {
                     test.expected_side_effects.clone_from(&expectations);
                 }
             }
+
+            // The API-call trace dimension (#386, P22): the trace the
+            // saved baseline captured for a case becomes that case's
+            // expectation — scoped to the in-scope API roster the
+            // apidetect document records for this function (direct uses
+            // and through callees alike) and spelled onto the verify PAL
+            // surface the gate's recorder names. A recorded name outside
+            // the roster (chatter the unit merely passes through) or
+            // spelled for nothing on the surface drops out of the
+            // expectation: the fold never manufactures an expectation
+            // the restitched body can be failed for without cause. A
+            // case with no matching capture, or a missing or corrupt
+            // apidetect document, leaves the trace dimension unassessed
+            // — the honest degradation the side-effect expectations take
+            // alongside (#276).
+            let roster = self.api_scope_roster(&function_info.binary, &function_info.name);
+            if !roster.is_empty() {
+                let baseline = calxgloss_testgen::TestGenerator::new(workspace)
+                    .load_baseline(&function_info.binary, &function_info.name);
+                if let Ok(captures) = baseline {
+                    for test in &mut tests {
+                        let inputs = test.inputs.to_string();
+                        if let Some(capture) = captures
+                            .iter()
+                            .find(|record| record.test_case.inputs.to_string() == inputs)
+                        {
+                            test.expected_api_calls = capture
+                                .actual_api_calls
+                                .iter()
+                                .filter(|name| roster.iter().any(|api| api == *name))
+                                .filter_map(|name| api_surface_name(name))
+                                .map(str::to_string)
+                                .collect();
+                        }
+                    }
+                }
+            }
         }
 
         Ok(tests)
+    }
+
+    /// The in-scope API roster for one unit (#386, P22): every API the
+    /// apidetect document credits the function with — used directly or
+    /// through callees it reaches — de-duplicated in first-seen order.
+    /// No document, or a corrupt one, means no roster, and the trace
+    /// fold leaves the dimension unassessed.
+    fn api_scope_roster(&self, binary: &str, function: &str) -> Vec<String> {
+        let Some(workspace) = self.workspace.as_deref() else {
+            return Vec::new();
+        };
+        let result = match calxgloss_apidetect::persist::ApiPersistor::new(workspace).load(binary) {
+            Ok(result) => result,
+            Err(e) => {
+                debug!(
+                    binary,
+                    function,
+                    error = %e,
+                    "No usable apidetect result; the API-call trace dimension stays unassessed for this unit"
+                );
+                return Vec::new();
+            }
+        };
+        let mut roster: Vec<String> = Vec::new();
+        for finding in result.for_function(function) {
+            if let calxgloss_apidetect::types::ApiFinding::ApiUsage(usage) = finding {
+                if !roster.iter().any(|api| api == &usage.api) {
+                    roster.push(usage.api.clone());
+                }
+            }
+        }
+        roster
     }
 
     /// Send a prompt to the LLM and take the Rust code out of the response.
@@ -333,4 +402,46 @@ impl TranslationPipeline {
 
         Ok(response)
     }
+}
+
+/// Spell a captured Win32 import name onto the verify PAL surface method
+/// it stands in for (#386, P22).
+///
+/// The baseline capture records each call by the name the binary's import
+/// table carries; the gate's recorder names calls by the verify PAL
+/// surface. The roster scopes the fold, and this table spells the
+/// surviving names where restitched code can actually satisfy them: when
+/// the surface stands in for a name at all, the call drops out of the
+/// expectation rather than forcing an `expected [GetLastError], got []`
+/// failure no repair could answer. The keys are real DLL imports; the
+/// values are exactly the names the verify stubs hand to
+/// `record_api_call`.
+fn api_surface_name(api: &str) -> Option<&'static str> {
+    Some(match api {
+        // Drawing into a device context, as the graphics surface stands in for it.
+        "BitBlt" | "StretchBlt" => "blit",
+        "CreateDIBSection" => "create_texture",
+        "TextOutA" | "TextOutW" | "DrawTextA" | "DrawTextW" => "draw_text",
+        "FillRect" => "draw_rect",
+        "MoveToEx" | "LineTo" => "draw_line",
+        // The window shell and the message pump.
+        "CreateWindowExA" | "CreateWindowExW" => "create_window",
+        "ShowWindow" => "show",
+        "DestroyWindow" => "destroy_window",
+        "GetMessageA" | "GetMessageW" | "PeekMessageA" | "PeekMessageW" => "process_events",
+        // Files through the kernel32 handles the storage surface wraps.
+        "CreateFileA" | "CreateFileW" => "open",
+        "ReadFile" => "read",
+        "WriteFile" => "write",
+        "CloseHandle" => "close",
+        "CreateDirectoryA" | "CreateDirectoryW" => "create_dir",
+        "DeleteFileA" | "DeleteFileW" => "delete",
+        // Threads as the concurrency surface names them.
+        "Sleep" => "sleep",
+        "CreateThread" => "spawn",
+        "WaitForSingleObject" => "join",
+        // Audio playback.
+        "PlaySoundA" | "PlaySoundW" | "sndPlaySoundA" | "sndPlaySoundW" => "play_sample",
+        _ => return None,
+    })
 }
