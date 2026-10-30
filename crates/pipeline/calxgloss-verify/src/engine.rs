@@ -152,6 +152,8 @@ impl Verifier {
                 tests_passed: 0,
                 tests_total: baseline_tests.len(),
                 failed_tests: Vec::new(),
+                // Nothing ran, so the trace dimension assessed nothing.
+                trace_assessed_tests: 0,
             });
         }
 
@@ -165,7 +167,7 @@ impl Verifier {
             .await
             .unwrap_or_else(|e| format!("Test execution failed: {}", e));
 
-        let (tests_passed, tests_total, failed_tests) =
+        let (tests_passed, tests_total, failed_tests, trace_assessed_tests) =
             parse::parse_test_results(&test_output, baseline_tests);
 
         info!(
@@ -173,6 +175,7 @@ impl Verifier {
             function,
             passed = tests_passed,
             total = tests_total,
+            trace_assessed = trace_assessed_tests,
             "Verification complete"
         );
 
@@ -182,6 +185,7 @@ impl Verifier {
             tests_passed,
             tests_total,
             failed_tests,
+            trace_assessed_tests,
         })
     }
 
@@ -230,7 +234,7 @@ include!("stub_content.rs");
         let project_dir = self.create_scratch_dir(binary, function);
 
         let cargo_toml = format!(
-            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n",
+            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\nserde_json = \"1\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n",
             sanitize_crate_name(binary),
             sanitize_identifier(function),
         );
@@ -265,7 +269,7 @@ include!("stub_content.rs");
         let project_dir = self.create_scratch_dir(binary, function);
 
         let cargo_toml = format!(
-            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\nserde_json = \"1\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}_runner\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}_runner\"\npath = \"src/main.rs\"\n",
             sanitize_crate_name(binary),
             sanitize_identifier(function),
             sanitize_identifier(function),
@@ -331,6 +335,35 @@ include!("stub_content.rs");
 
         code.push_str(
             r#"// Test runner for behavioral verification
+//
+// A case passes only when BOTH dimensions match: the return value equals the
+// baseline value, and — when the baseline case carries a recorded API-call
+// trace — the ordered verify-PAL-surface call sequence equals it exactly, in
+// order. An empty expected trace leaves the trace dimension unassessed: the
+// value verdict stands alone, and silence never counts as a trace pass.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct TestCaseInput {
+    inputs: Value,
+    expected_return: Value,
+    #[serde(default)]
+    expected_api_calls: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TestResult {
+    test_index: usize,
+    expected: Value,
+    actual: Value,
+    passed: bool,
+    error: Option<String>,
+    expected_api_calls: Vec<String>,
+    actual_api_calls: Vec<String>,
+    trace_divergence_index: Option<usize>,
+    trace_assessed: bool,
+}
 
 fn main() {
     let baseline_raw = std::fs::read_to_string("baseline.json")
@@ -339,37 +372,62 @@ fn main() {
         .expect("Failed to parse baseline.json");
 
     let results: Vec<TestResult> = tests.iter().enumerate().map(|(i, t)| {
+        pal::begin_api_trace();
         let output = call_function(&t.inputs);
-        TestResult {
-            test_index: i,
-            expected: t.expected_return.clone(),
-            actual: output.clone(),
-            passed: t.expected_return == output,
-            error: if t.expected_return == output { None } else { Some(format!("expected {}, got {}", t.expected_return, output)) },
-        }
+        let actual_api_calls = pal::take_api_trace();
+        judge(i, t, output, actual_api_calls)
     }).collect();
 
     println!("{}", serde_json::to_string(&results).unwrap());
+}
+
+fn judge(i: usize, t: &TestCaseInput, output: Value, actual_api_calls: Vec<String>) -> TestResult {
+    let trace_assessed = !t.expected_api_calls.is_empty();
+    let trace_divergence_index = if trace_assessed {
+        let positions = t.expected_api_calls.len().max(actual_api_calls.len());
+        (0..positions).find(|k| t.expected_api_calls.get(*k) != actual_api_calls.get(*k))
+    } else {
+        None
+    };
+    let value_error = if t.expected_return == output {
+        None
+    } else {
+        Some(format!("expected {}, got {}", t.expected_return, output))
+    };
+    let trace_error = trace_divergence_index.map(|pos| format!(
+        "API-call trace divergence at position {}: expected [{}], got [{}]",
+        pos,
+        t.expected_api_calls.join(", "),
+        actual_api_calls.join(", "),
+    ));
+    let error = match (value_error, trace_error) {
+        (None, None) => None,
+        (Some(value), None) => Some(value),
+        (None, Some(trace)) => Some(trace),
+        (Some(value), Some(trace)) => Some(format!("{} — {}", value, trace)),
+    };
+    TestResult {
+        test_index: i,
+        expected: t.expected_return.clone(),
+        actual: output,
+        passed: error.is_none(),
+        error,
+        expected_api_calls: t.expected_api_calls.clone(),
+        actual_api_calls,
+        trace_divergence_index,
+        trace_assessed,
+    }
 }
 
 fn call_function(inputs: &Value) -> Value {
 "#,
         );
 
-        // Generate input pattern match arms
+        // Generate input pattern match arms (these close the match with
+        // their own unmatched-pattern fallback, so only the fn closes here).
         code.push_str(&self.generate_input_patterns(baseline_tests));
 
-        code.push_str(
-            r#"        _ => {
-            // Could not match input pattern
-            Value::Object(serde_json::Map::from_iter([
-                ("error".into(), Value::String("input pattern not matched for this function signature".into())),
-            ]))
-        }
-    }
-}
-"#,
-        );
+        code.push_str("}\n");
 
         code
     }
@@ -383,26 +441,30 @@ fn call_function(inputs: &Value) -> Value {
             let inputs = &test.inputs;
 
             // Try to extract typed literals from the JSON
+            // Patterns are qualified with `Value::`: the runner imports
+            // `serde_json::Value` but not `Value::*`, so a bare `Null` arm
+            // would compile as a *binding* matching everything (or, with a
+            // `(n)` subpattern, not compile at all — E0170).
             match inputs {
                 serde_json::Value::Null => {
-                    code.push_str("        Null => call_no_params(),\n");
+                    code.push_str("        Value::Null => call_no_params(),\n");
                 }
                 serde_json::Value::Number(n) => {
                     if let Some(v) = n.as_i64() {
                         code.push_str(&format!(
-                            "        Number(n) if n.as_i64() == Some({}) => call_single_int({}),\n",
+                            "        Value::Number(n) if n.as_i64() == Some({}) => call_single_int({}),\n",
                             v, v
                         ));
                     } else if let Some(v) = n.as_u64() {
-                        code.push_str(&format!("        Number(n) if n.as_u64() == Some({}) => call_single_uint({}),\n", v, v));
+                        code.push_str(&format!("        Value::Number(n) if n.as_u64() == Some({}) => call_single_uint({}),\n", v, v));
                     } else if let Some(v) = n.as_f64() {
-                        code.push_str(&format!("        Number(n) if n.as_f64() == Some({}) => call_single_float({}),\n", v, v));
+                        code.push_str(&format!("        Value::Number(n) if n.as_f64() == Some({}) => call_single_float({}),\n", v, v));
                     } else {
-                        code.push_str("        Number(_) => call_single_int(0),\n");
+                        code.push_str("        Value::Number(_) => call_single_int(0),\n");
                     }
                 }
                 serde_json::Value::Array(arr) if arr.len() == 2 => {
-                    code.push_str("        Array(arr) if arr.len() == 2 && arr.iter().all(|v| v.is_number()) => {\n");
+                    code.push_str("        Value::Array(arr) if arr.len() == 2 && arr.iter().all(|v| v.is_number()) => {\n");
                     code.push_str("            if let (Some(a), Some(b)) = (arr[0].as_i64(), arr[1].as_i64()) {\n");
                     code.push_str("                call_two_ints(a as i32, b as i32)\n");
                     code.push_str("            } else {\n");
@@ -410,7 +472,7 @@ fn call_function(inputs: &Value) -> Value {
                     code.push_str("            }\n        }\n");
                 }
                 serde_json::Value::Array(arr) if arr.len() == 3 => {
-                    code.push_str("        Array(arr) if arr.len() == 3 && arr.iter().all(|v| v.is_number()) => {\n");
+                    code.push_str("        Value::Array(arr) if arr.len() == 3 && arr.iter().all(|v| v.is_number()) => {\n");
                     code.push_str("            if let (Some(a), Some(b), Some(c)) = (arr[0].as_i64(), arr[1].as_i64(), arr[2].as_u64()) {\n");
                     code.push_str(
                         "                call_three_ints(a as i32, b as i32, c as u32)\n",
@@ -421,13 +483,13 @@ fn call_function(inputs: &Value) -> Value {
                 }
                 serde_json::Value::Array(arr) => {
                     code.push_str(&format!(
-                        "        Array(_) if arr.len() == {} => {{",
+                        "        Value::Array(arr) if arr.len() == {} => {{",
                         arr.len()
                     ));
                     code.push_str(" Value::String(format!(\"array of length {} not supported\", arr.len()))\n        }}\n");
                 }
                 serde_json::Value::Object(_) => {
-                    code.push_str("        Object(_) => {\n");
+                    code.push_str("        Value::Object(_) => {\n");
                     code.push_str("            Value::String(\"named parameters not supported in MVP\".into())\n");
                     code.push_str("        }\n");
                 }
@@ -789,10 +851,11 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
         }];
-        let (passed, total, failed) = parse_test_results("", &baseline);
+        let (passed, total, failed, trace_assessed) = parse_test_results("", &baseline);
         assert_eq!(passed, 0);
         assert_eq!(total, 1);
         assert!(failed.is_empty());
+        assert_eq!(trace_assessed, 0);
     }
 
     #[test]
@@ -803,10 +866,12 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
         }];
-        let (passed, total, failed) = parse_test_results("SKIPPED: no baseline file", &baseline);
+        let (passed, total, failed, trace_assessed) =
+            parse_test_results("SKIPPED: no baseline file", &baseline);
         assert_eq!(passed, 0);
         assert_eq!(total, 1);
         assert!(failed.is_empty());
+        assert_eq!(trace_assessed, 0, "a skipped run assesses nothing");
     }
 
     #[test]
@@ -828,12 +893,16 @@ error[E0308]: mismatched types
             },
         ];
 
-        let (passed, total, failed) = parse_test_results(json, &baseline);
+        let (passed, total, failed, trace_assessed) = parse_test_results(json, &baseline);
         assert_eq!(passed, 1);
         assert_eq!(total, 2);
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].test_index, 1);
         assert_eq!(failed[0].error, "expected 100, got 99");
+        assert_eq!(
+            trace_assessed, 0,
+            "results without the trace dimension read as unassessed"
+        );
     }
 
     #[test]
@@ -861,13 +930,48 @@ error[E0308]: mismatched types
             expected_api_calls: vec![],
         }];
 
-        let (passed, _total, failed) = parse_test_results(json, &baseline);
+        let (passed, _total, failed, _trace_assessed) = parse_test_results(json, &baseline);
         assert_eq!(passed, 0);
         assert_eq!(failed.len(), 1);
         assert_eq!(
             failed[0].expected_side_effects, baseline[0].expected_side_effects,
             "the failure carries the typed expectations through"
         );
+    }
+
+    #[test]
+    fn test_parse_test_results_carries_the_trace_divergence_as_typed_data() {
+        // A failed case whose runner report carries the ordered traces and
+        // the named divergence position lands on the FailedTest as typed
+        // data, not only inside the prose error string.
+        let json = r#"[{"test_index":0,"expected":7,"actual":7,"passed":false,"error":"API-call trace divergence at position 1: expected [blit, present], got [present, blit]","expected_api_calls":["blit","present"],"actual_api_calls":["present","blit"],"trace_divergence_index":1,"trace_assessed":true}]"#;
+
+        let baseline = vec![TestCase {
+            inputs: serde_json::json!(null),
+            expected_return: serde_json::json!(7),
+            expected_side_effects: vec![],
+            expected_api_calls: vec!["blit".to_string(), "present".to_string()],
+        }];
+
+        let (passed, _total, failed, trace_assessed) = parse_test_results(json, &baseline);
+        assert_eq!(passed, 0, "a matching value on a diverging path fails");
+        assert_eq!(trace_assessed, 1, "the dimension was assessed");
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0].error,
+            "API-call trace divergence at position 1: expected [blit, present], got [present, blit]",
+            "the failure names the trace divergence at the position"
+        );
+        assert_eq!(
+            failed[0].actual_api_calls,
+            ["present".to_string(), "blit".to_string()],
+            "the actual trace travels beside the expected one"
+        );
+        assert_eq!(
+            failed[0].expected_api_calls,
+            ["blit".to_string(), "present".to_string()]
+        );
+        assert_eq!(failed[0].trace_divergence_index, Some(1));
     }
 
     #[test]

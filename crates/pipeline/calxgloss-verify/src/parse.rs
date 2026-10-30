@@ -39,16 +39,22 @@ pub fn parse_cargo_output(output: &str) -> (bool, Vec<String>, Vec<String>) {
 }
 
 /// Parse test runner output for pass/fail results.
+///
+/// Returns `(tests_passed, tests_total, failed_tests, trace_assessed_tests)`,
+/// where `trace_assessed_tests` counts the cases whose expected API-call
+/// trace was recorded and therefore compared — a trace-assessed pass is
+/// distinguishable from a trace-unassessed one, and a run that never
+/// assessed any trace counts zero.
 pub fn parse_test_results(
     output: &str,
     baseline_tests: &[calxgloss_types::TestCase],
-) -> (usize, usize, Vec<FailedTest>) {
+) -> (usize, usize, Vec<FailedTest>, usize) {
     if output.contains("SKIPPED")
         || output.contains("no baseline file")
         || output.contains("baseline.json not found")
     {
         warn!("Behavioral tests were skipped");
-        return (0, baseline_tests.len(), Vec::new());
+        return (0, baseline_tests.len(), Vec::new(), 0);
     }
 
     // Try to parse test results from JSON output
@@ -59,8 +65,19 @@ pub fn parse_test_results(
     {
         let mut failed = Vec::new();
         let mut passed = 0;
+        let mut trace_assessed = 0;
 
         for (i, result) in results.iter().enumerate() {
+            // The runner assessed the trace dimension for this case exactly
+            // when it carried a non-empty expected trace; the count rides
+            // even on passing cases, where no failure record exists.
+            if result
+                .get("trace_assessed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                trace_assessed += 1;
+            }
             if let Some(passed_val) = result.get("passed").and_then(|v| v.as_bool()) {
                 if passed_val {
                     passed += 1;
@@ -85,35 +102,47 @@ pub fn parse_test_results(
                             .get(i)
                             .map(|t| t.expected_side_effects.clone())
                             .unwrap_or_default(),
-                        // The expected API-call trace travels beside the
-                        // expected side effects. The actual trace and the
-                        // named divergence position arrive with the trace
-                        // comparison itself; until then the dimension
-                        // stays unassessed on the failure record.
+                        // The expected and actual API-call traces travel
+                        // side by side as typed sequences, and a trace
+                        // divergence names its first position — so a reviewer
+                        // reads "wrong path" apart from "wrong value" without
+                        // parsing prose. The runner reports both; the expected
+                        // also rides the baseline case for redundancy.
                         expected_api_calls: baseline_tests
                             .get(i)
                             .map(|t| t.expected_api_calls.clone())
                             .unwrap_or_default(),
-                        actual_api_calls: Vec::new(),
-                        trace_divergence_index: None,
+                        actual_api_calls: result
+                            .get("actual_api_calls")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        trace_divergence_index: result
+                            .get("trace_divergence_index")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize),
                     });
                 }
             }
         }
 
-        return (passed, results.len(), failed);
+        return (passed, results.len(), failed, trace_assessed);
     }
 
     // Fallback: if we couldn't parse structured output, assume tests ran
     // but produced no verifiable results
     let trimmed = output.trim();
     if trimmed.is_empty() {
-        return (0, baseline_tests.len(), Vec::new());
+        return (0, baseline_tests.len(), Vec::new(), 0);
     }
 
     // If cargo run succeeded without errors but we couldn't parse results,
     // the runner may have produced output we don't understand
-    (0, baseline_tests.len(), Vec::new())
+    (0, baseline_tests.len(), Vec::new(), 0)
 }
 
 /// Parse `cargo test` output for shim test results.

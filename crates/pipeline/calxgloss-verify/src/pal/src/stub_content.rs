@@ -195,17 +195,31 @@ impl GraphicsDevice for GraphicsDeviceStub {
     type RenderTarget = RenderTarget;
 
     fn create_texture(&mut self, _width: u32, _height: u32) -> Self::Texture {
+        record_api_call("create_texture");
         Texture::default()
     }
-    fn blit(&mut self, _src: &Self::Texture, _dest: &mut Self::RenderTarget) {}
-    fn present(&mut self) {}
-    fn draw_line(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _color: Color) {}
-    fn draw_rect(&mut self, _x: f32, _y: f32, _w: f32, _h: f32, _color: Color) {}
-    fn draw_text(&mut self, _x: f32, _y: f32, _text: &str, _font: &Font, _color: Color) {}
+    fn blit(&mut self, _src: &Self::Texture, _dest: &mut Self::RenderTarget) {
+        record_api_call("blit");
+    }
+    fn present(&mut self) {
+        record_api_call("present");
+    }
+    fn draw_line(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _color: Color) {
+        record_api_call("draw_line");
+    }
+    fn draw_rect(&mut self, _x: f32, _y: f32, _w: f32, _h: f32, _color: Color) {
+        record_api_call("draw_rect");
+    }
+    fn draw_text(&mut self, _x: f32, _y: f32, _text: &str, _font: &Font, _color: Color) {
+        record_api_call("draw_text");
+    }
     fn create_render_target(&mut self, _width: u32, _height: u32) -> Self::RenderTarget {
+        record_api_call("create_render_target");
         RenderTarget
     }
-    fn destroy_texture(&mut self, _texture: Self::Texture) {}
+    fn destroy_texture(&mut self, _texture: Self::Texture) {
+        record_api_call("destroy_texture");
+    }
 }
 
 // ============================================================
@@ -220,21 +234,27 @@ pub struct AudioDeviceStub {
 
 impl AudioDevice for AudioDeviceStub {
     fn play_sample(&mut self, _sample: &Sample) {
+        record_api_call("play_sample");
         self.playing = true;
     }
     fn stop(&mut self) {
+        record_api_call("stop");
         self.playing = false;
     }
     fn set_volume(&mut self, volume: f32) {
+        record_api_call("set_volume");
         self.volume = volume.max(0.0).min(1.0);
     }
     fn pause(&mut self) {
+        record_api_call("pause");
         self.playing = false;
     }
     fn resume(&mut self) {
+        record_api_call("resume");
         self.playing = true;
     }
     fn is_playing(&self) -> bool {
+        record_api_call("is_playing");
         self.playing
     }
 }
@@ -250,6 +270,7 @@ impl FileSystem for FileSystemStub {
     type Handle = FileHandle;
 
     fn open(&self, path: &str, mode: FileMode) -> Result<Self::Handle, String> {
+        record_api_call("open");
         Ok(FileHandle {
             path: path.to_string(),
             mode,
@@ -257,6 +278,7 @@ impl FileSystem for FileSystemStub {
     }
 
     fn read(&self, handle: &Self::Handle, buf: &mut [u8]) -> Result<usize, String> {
+        record_api_call("read");
         if !std::path::Path::new(&handle.path).exists() {
             return Ok(0);
         }
@@ -271,21 +293,26 @@ impl FileSystem for FileSystemStub {
     }
 
     fn write(&self, handle: &Self::Handle, data: &[u8]) -> Result<usize, String> {
+        record_api_call("write");
         std::fs::write(&handle.path, data)
             .map(|_| data.len())
             .map_err(|e| e.to_string())
     }
 
     fn close(&self, _handle: Self::Handle) -> Result<(), String> {
+        record_api_call("close");
         Ok(())
     }
     fn create_dir(&self, path: &str) -> Result<(), String> {
+        record_api_call("create_dir");
         std::fs::create_dir_all(path).map_err(|e| e.to_string())
     }
     fn exists(&self, path: &str) -> bool {
+        record_api_call("exists");
         std::path::Path::new(path).exists()
     }
     fn delete(&self, path: &str) -> Result<(), String> {
+        record_api_call("delete");
         std::fs::remove_file(path).map_err(|e| e.to_string())
     }
 }
@@ -308,21 +335,31 @@ impl WindowManager for WindowManagerStub {
         _width: u32,
         _height: u32,
     ) -> Result<Self::Window, String> {
+        record_api_call("create_window");
         self.windows.push(WindowHandle);
         Ok(WindowHandle)
     }
-    fn show(&self, _window: &Self::Window) {}
-    fn hide(&self, _window: &Self::Window) {}
+    fn show(&self, _window: &Self::Window) {
+        record_api_call("show");
+    }
+    fn hide(&self, _window: &Self::Window) {
+        record_api_call("hide");
+    }
     fn process_events(&mut self) -> Vec<WindowEvent> {
+        record_api_call("process_events");
         Vec::new()
     }
     fn get_client_size(&self, _window: &Self::Window) -> Result<(u32, u32), String> {
+        record_api_call("get_client_size");
         Ok((800, 600))
     }
     fn destroy_window(&mut self, _window: Self::Window) {
+        record_api_call("destroy_window");
         self.windows.clear();
     }
-    fn set_title(&self, _window: &Self::Window, _title: &str) {}
+    fn set_title(&self, _window: &Self::Window, _title: &str) {
+        record_api_call("set_title");
+    }
 }
 
 // ============================================================
@@ -344,6 +381,7 @@ impl Thread for ThreadStub {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
+        record_api_call("spawn");
         // The actual work runs in the original thread; we spawn a wrapper
         // that joins it and returns () so the handle type is uniform.
         let handle = std::thread::spawn(f);
@@ -354,6 +392,7 @@ impl Thread for ThreadStub {
     }
 
     fn join(handle: Self::Handle) -> Result<(), String> {
+        record_api_call("join");
         handle
             .0
             .join()
@@ -361,10 +400,12 @@ impl Thread for ThreadStub {
     }
 
     fn sleep(duration_ms: u64) {
+        record_api_call("sleep");
         std::thread::sleep(std::time::Duration::from_millis(duration_ms));
     }
 
     fn current_id() -> u64 {
+        record_api_call("current_id");
         // std::thread::current().id().as_u64() is gated behind the
         // `thread_id_value` unstable feature.  Process ID is stable and
         // serves as a unique-enough identifier for stub usage.
@@ -373,8 +414,51 @@ impl Thread for ThreadStub {
 }
 
 // ============================================================
+// API-call trace recorder (P22)
+// ============================================================
+
+// The ordered API-call trace of the baseline case being run. The generated
+// test runner arms the recorder before calling the translated entry point
+// and reads the log after it returns: begin_api_trace, then take_api_trace.
+// Every verify PAL surface entry appends its own name through
+// record_api_call; calls that never reach the surface (std paths, CRT
+// internals) are out of scope by construction and record nothing.
+static CALX_API_TRACE: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// Arm per-case API-call recording for the baseline case about to run.
+pub fn begin_api_trace() {
+    if let Ok(mut slot) = CALX_API_TRACE.lock() {
+        *slot = Some(Vec::new());
+    }
+}
+
+/// End recording and return the ordered API names logged since begin_api_trace.
+/// An unarmed recorder yields an empty trace, which reads as unassessed.
+pub fn take_api_trace() -> Vec<String> {
+    CALX_API_TRACE
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+        .unwrap_or_default()
+}
+
+/// Append one verify PAL surface entry name to the case's trace.
+/// A no-op while no case is recording.
+pub fn record_api_call(name: &str) {
+    if let Ok(mut log) = CALX_API_TRACE.lock() {
+        if let Some(log) = log.as_mut() {
+            log.push(name.to_string());
+        }
+    }
+}
+
+// ============================================================
 // Common Windows-internal extern shims
 // ============================================================
+
+// These shims are CRT and DLL-internal entry points, not API routes: they
+// are out of the trace's scope by the comparison rule (imports outside the
+// unit's in-scope roster never join the trace), so they record nothing.
 
 /// Initializes the security cookie used by /GS buffer-overflow protection.
 ///

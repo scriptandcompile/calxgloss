@@ -296,6 +296,38 @@ mod tests {
     }
 
     #[test]
+    fn test_verification_result_trace_assessed_tests_round_trip() {
+        // A trace-assessed verification pass must be distinguishable from an
+        // unassessed one in the record itself. A verification result saved
+        // before the dimension existed loads as fully unassessed — reading
+        // the old record never invents assessed traces.
+        let result = VerificationResult {
+            compiled: true,
+            compilation_errors: vec![],
+            tests_passed: 2,
+            tests_total: 2,
+            failed_tests: vec![],
+            trace_assessed_tests: 1,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: VerificationResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.trace_assessed_tests, 1,
+            "the assessed count round-trips"
+        );
+
+        let old = r#"{
+            "compiled": true, "compilation_errors": [],
+            "tests_passed": 2, "tests_total": 2, "failed_tests": []
+        }"#;
+        let deserialized: VerificationResult = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            deserialized.trace_assessed_tests, 0,
+            "a pre-trace verification result loads with nothing assessed"
+        );
+    }
+
+    #[test]
     fn test_side_effect_kind_serialization() {
         let kind = SideEffectKind::FileWrite;
         let json = serde_json::to_string(&kind).unwrap();

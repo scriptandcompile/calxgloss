@@ -60,8 +60,10 @@ pub struct FailedTest {
     /// Zero-based position in the sequences where the expected and actual
     /// API-call traces first diverge, when the failure is a trace
     /// divergence — the call the reviewer reads as substituted, inserted,
-    /// or reordered. `None` means the trace dimension is unassessed for
-    /// this case, not that the traces matched.
+    /// or reordered. Whether the dimension was assessed for this case is
+    /// read from `expected_api_calls` being non-empty; a `None` here simply
+    /// names no divergence, so a value-only failure with matching traces
+    /// also carries `None`.
     #[serde(default)]
     pub trace_divergence_index: Option<usize>,
 }
@@ -86,4 +88,19 @@ pub struct VerificationResult {
 
     /// Detailed information about each test that failed.
     pub failed_tests: Vec<FailedTest>,
+
+    /// How many baseline cases carried the API-call trace dimension as
+    /// *assessed* — a case whose expected trace was recorded (non-empty)
+    /// and was therefore compared, not merely run for its value.
+    ///
+    /// This is what makes a trace-assessed verification pass distinguishable
+    /// from a trace-unassessed one: `trace_assessed_tests == tests_total`
+    /// with every test passing means the ordered call paths matched too,
+    /// while `trace_assessed_tests == 0` means the gate only ever read the
+    /// values. Silence never counts as a pass: an empty or missing expected
+    /// trace leaves this count untouched, and a run whose tests never
+    /// executed assesses nothing. `#[serde(default)]` keeps verification
+    /// results saved before the dimension existed readable as unassessed.
+    #[serde(default)]
+    pub trace_assessed_tests: usize,
 }

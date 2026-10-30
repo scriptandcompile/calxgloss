@@ -293,6 +293,7 @@ pub async fn handle_translate(
                         tests_passed: attempt.tests_passed,
                         tests_total: attempt.tests_total,
                         failed_tests: Vec::new(),
+                        trace_assessed_tests: 0,
                     },
                 );
                 last_branch = Some(branch_info.clone());
