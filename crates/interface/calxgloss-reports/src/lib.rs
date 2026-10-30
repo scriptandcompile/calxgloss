@@ -696,6 +696,9 @@ mod tests {
             actual: serde_json::json!(7),
             error: "expected 6, got 7".to_string(),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
+            actual_api_calls: vec![],
+            trace_divergence_index: None,
         };
         assert_eq!(failed.test_index, 0);
         assert_eq!(failed.error, "expected 6, got 7");

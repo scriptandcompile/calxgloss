@@ -38,6 +38,32 @@ pub struct FailedTest {
     /// keeps verification results saved before the field existed readable.
     #[serde(default)]
     pub expected_side_effects: Vec<SideEffect>,
+
+    /// The ordered API-call trace the baseline case expected, beside the
+    /// expected return value.
+    ///
+    /// A trace divergence is reported by naming the position, not just the
+    /// prose: `expected_api_calls` and `actual_api_calls` travel together
+    /// as typed, machine-comparable sequences, and
+    /// `trace_divergence_index` names where they first part. Empty traces
+    /// mean the dimension is *unassessed* for this case, never a pass.
+    /// `#[serde(default)]` keeps verification results saved before the
+    /// dimension existed readable.
+    #[serde(default)]
+    pub expected_api_calls: Vec<String>,
+
+    /// The ordered API-call trace the Rust translation actually made,
+    /// beside the actual return value. See `expected_api_calls`.
+    #[serde(default)]
+    pub actual_api_calls: Vec<String>,
+
+    /// Zero-based position in the sequences where the expected and actual
+    /// API-call traces first diverge, when the failure is a trace
+    /// divergence — the call the reviewer reads as substituted, inserted,
+    /// or reordered. `None` means the trace dimension is unassessed for
+    /// this case, not that the traces matched.
+    #[serde(default)]
+    pub trace_divergence_index: Option<usize>,
 }
 
 /// Result of compiling and verifying a translated function.

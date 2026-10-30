@@ -1080,9 +1080,11 @@ mod tests {
                     inputs: serde_json::json!({"x": 1}),
                     expected_return: serde_json::json!(1),
                     expected_side_effects: vec![],
+                    expected_api_calls: vec![],
                 },
                 actual_return: serde_json::json!(1),
                 actual_side_effects: vec![],
+                actual_api_calls: vec![],
                 passed: p,
                 error: None,
             })

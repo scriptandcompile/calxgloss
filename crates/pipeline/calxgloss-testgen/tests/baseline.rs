@@ -59,6 +59,7 @@ fn test_case(p1: i64, p2: i32) -> TestCase {
         inputs: json!({ "param_1": p1, "param_2": p2 }),
         expected_return: Value::Null,
         expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
     }
 }
 
@@ -175,6 +176,7 @@ fn baseline_reaches_memory_accessing_functions() {
         inputs: buffer,
         expected_return: Value::Null,
         expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
     };
     let report = r
         .run(
@@ -243,18 +245,21 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
             inputs: json!({ "param_1": { "__alloc": { "size": "0x400", "fill": "0xff" } } }),
             expected_return: Value::Null,
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         },
         // Faults: a null pointer.
         TestCase {
             inputs: json!({ "param_1": null }),
             expected_return: Value::Null,
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         },
         // Valid again, to prove the batch continued past the fault.
         TestCase {
             inputs: json!({ "param_1": { "__alloc": { "size": "0x400", "fill": 0 } } }),
             expected_return: Value::Null,
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         },
     ];
 
@@ -444,6 +449,7 @@ async fn baseline_runner_reports_a_mismatch_against_the_expectation() {
         inputs: json!({ "param_1": 0, "param_2": 0 }),
         expected_return: json!(33),
         expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
     }];
 
     let results = runner
@@ -480,6 +486,7 @@ async fn baseline_runner_reports_a_missing_dll_without_touching_wine() {
         inputs: json!({ "param_1": 0, "param_2": 0 }),
         expected_return: Value::Null,
         expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
     }];
 
     let results = runner

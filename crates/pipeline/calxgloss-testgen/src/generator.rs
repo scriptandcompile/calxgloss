@@ -489,12 +489,14 @@ mod tests {
             inputs: serde_json::json!({"x": 10, "y": 20}),
             expected_return: serde_json::json!(100),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         };
 
         let result = TestResult {
             test_case,
             actual_return: serde_json::json!(100),
             actual_side_effects: Vec::new(),
+            actual_api_calls: Vec::new(),
             passed: true,
             error: None,
         };

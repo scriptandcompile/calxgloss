@@ -215,6 +215,7 @@ fn the_full_walk_files_a_baseline_for_one_real_fixture_export() {
             test_case: case,
             actual_return: json!(0),
             actual_side_effects: Vec::new(),
+            actual_api_calls: Vec::new(),
             passed: true,
             error: None,
         })
@@ -246,9 +247,11 @@ fn result(inputs: serde_json::Value, actual: serde_json::Value) -> TestResult {
             inputs,
             expected_return: serde_json::Value::Null,
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         },
         actual_return: actual,
         actual_side_effects: Vec::new(),
+        actual_api_calls: Vec::new(),
         passed: true,
         error: None,
     }

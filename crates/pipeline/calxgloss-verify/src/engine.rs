@@ -787,6 +787,7 @@ error[E0308]: mismatched types
             inputs: serde_json::json!({}),
             expected_return: serde_json::json!(0),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
         }];
         let (passed, total, failed) = parse_test_results("", &baseline);
         assert_eq!(passed, 0);
@@ -800,6 +801,7 @@ error[E0308]: mismatched types
             inputs: serde_json::json!({}),
             expected_return: serde_json::json!(0),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
         }];
         let (passed, total, failed) = parse_test_results("SKIPPED: no baseline file", &baseline);
         assert_eq!(passed, 0);
@@ -816,11 +818,13 @@ error[E0308]: mismatched types
                 inputs: serde_json::json!({"x": 10}),
                 expected_return: serde_json::json!(42),
                 expected_side_effects: vec![],
+                expected_api_calls: vec![],
             },
             TestCase {
                 inputs: serde_json::json!({"x": 20}),
                 expected_return: serde_json::json!(100),
                 expected_side_effects: vec![],
+                expected_api_calls: vec![],
             },
         ];
 
@@ -854,6 +858,7 @@ error[E0308]: mismatched types
                     detail: "g_counter".to_string(),
                 },
             ],
+            expected_api_calls: vec![],
         }];
 
         let (passed, _total, failed) = parse_test_results(json, &baseline);
@@ -885,11 +890,13 @@ error[E0308]: mismatched types
                 inputs: serde_json::json!([10, 20]),
                 expected_return: serde_json::json!(30),
                 expected_side_effects: vec![],
+                expected_api_calls: vec![],
             },
             TestCase {
                 inputs: serde_json::json!([0, 0]),
                 expected_return: serde_json::json!(0),
                 expected_side_effects: vec![],
+                expected_api_calls: vec![],
             },
         ];
 
@@ -912,6 +919,7 @@ error[E0308]: mismatched types
             inputs: serde_json::json!([1, 2, 3]),
             expected_return: serde_json::json!(6),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
         }];
 
         let patterns = verifier.generate_input_patterns(&tests);
@@ -932,6 +940,7 @@ error[E0308]: mismatched types
             inputs: serde_json::Value::Null,
             expected_return: serde_json::json!(0),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
         }];
 
         let patterns = verifier.generate_input_patterns(&tests);
@@ -952,6 +961,7 @@ error[E0308]: mismatched types
             inputs: serde_json::json!(42),
             expected_return: serde_json::json!(42),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
         }];
 
         let patterns = verifier.generate_input_patterns(&tests);
@@ -1053,6 +1063,7 @@ error[E0308]: mismatched types
             inputs: serde_json::json!([1, 2]),
             expected_return: serde_json::json!(3),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
         }];
 
         let project = verifier

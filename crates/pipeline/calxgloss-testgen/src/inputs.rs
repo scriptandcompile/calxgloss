@@ -392,6 +392,7 @@ fn generate_signature_tests(
             inputs: json!({}),
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         });
         return tests;
     }
@@ -418,6 +419,7 @@ fn generate_signature_tests(
                 inputs: json!(inputs),
                 expected_return: json!(null),
                 expected_side_effects: Vec::new(),
+                expected_api_calls: Vec::new(),
             });
         }
     }
@@ -432,6 +434,7 @@ fn generate_signature_tests(
             inputs: json!(inputs),
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         });
     }
 
@@ -444,6 +447,7 @@ fn generate_signature_tests(
         inputs: json!(inputs),
         expected_return: json!(null),
         expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
     });
 
     // Generate a "max value" test for the first integer param
@@ -460,6 +464,7 @@ fn generate_signature_tests(
             inputs: json!(inputs),
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         });
     }
 
@@ -509,6 +514,7 @@ fn generate_disassembly_tests(
             inputs: json!(inputs),
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         });
     }
 
@@ -534,6 +540,7 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
             inputs: json!(inputs),
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         });
     }
 
@@ -728,6 +735,7 @@ fn branch_case_for_signature(
         inputs: json!(inputs),
         expected_return: json!(null),
         expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
     })
 }
 
@@ -765,6 +773,7 @@ fn branch_case_generic(site: &BranchSite, probe: &Probe) -> Option<TestCase> {
         inputs: json!(inputs),
         expected_return: json!(null),
         expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
     })
 }
 
@@ -1146,7 +1155,10 @@ mod tests {
         // inventory the same signature and disassembly must produce suites
         // byte-identical to the ones recorded before that parameter existed —
         // over the signature+disassembly, signature-only, and
-        // disassembly-only paths.
+        // disassembly-only paths. The goldens were re-recorded once when the
+        // API-call trace dimension (#383) joined the record shape: the empty
+        // `expected_api_calls` is the only difference from the prior goldens,
+        // and the inventory-parameter guarantee still holds.
         const GOLDEN_SIG_DIS: &str =
             include_str!("../tests/golden/testgen_empty_inventory_sig_dis.json");
         const GOLDEN_SIG_ONLY: &str =

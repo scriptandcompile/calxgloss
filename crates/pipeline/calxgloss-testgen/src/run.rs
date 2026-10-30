@@ -159,6 +159,7 @@ impl BaselineRunner {
                 test_case: test.clone(),
                 actual_return: Value::Null,
                 actual_side_effects: Vec::new(),
+                actual_api_calls: Vec::new(),
                 passed: false,
                 error: Some(format!(
                     "Original DLL '{binary}' not found — baseline cannot be executed. DLL path must be provided to run_baseline_tests.",
@@ -213,6 +214,7 @@ fn collect_results(
                     test_case: test.clone(),
                     actual_return: Value::Null,
                     actual_side_effects: Vec::new(),
+                    actual_api_calls: Vec::new(),
                     passed: false,
                     error: Some("the harness produced no result for this test case".to_string()),
                 };
@@ -237,6 +239,7 @@ fn collect_results(
                 // and reports its return value, and reading back whatever the
                 // call mutated would need a per-type view of the arguments.
                 actual_side_effects: Vec::new(),
+                actual_api_calls: Vec::new(),
                 passed: outcome.ok && agrees,
                 error: outcome.error.clone().or(mismatch),
             }
@@ -265,6 +268,7 @@ mod tests {
             inputs,
             expected_return: expected,
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         }
     }
 

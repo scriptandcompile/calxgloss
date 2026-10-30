@@ -1223,6 +1223,7 @@ mod tests {
             inputs: serde_json::json!(5),
             expected_return: serde_json::json!(4),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         }]
     }
 

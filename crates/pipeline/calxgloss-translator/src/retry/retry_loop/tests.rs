@@ -965,6 +965,7 @@ async fn a_compiling_unit_with_a_failing_suite_is_not_reported_success() {
             inputs: serde_json::json!([5]),
             expected_return: serde_json::json!(4),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         }],
         call_graph: Vec::new(),
         disassembly_hints: Vec::new(),

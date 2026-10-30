@@ -85,6 +85,17 @@ pub fn parse_test_results(
                             .get(i)
                             .map(|t| t.expected_side_effects.clone())
                             .unwrap_or_default(),
+                        // The expected API-call trace travels beside the
+                        // expected side effects. The actual trace and the
+                        // named divergence position arrive with the trace
+                        // comparison itself; until then the dimension
+                        // stays unassessed on the failure record.
+                        expected_api_calls: baseline_tests
+                            .get(i)
+                            .map(|t| t.expected_api_calls.clone())
+                            .unwrap_or_default(),
+                        actual_api_calls: Vec::new(),
+                        trace_divergence_index: None,
                     });
                 }
             }
@@ -172,6 +183,9 @@ pub fn parse_shim_test_results(
                         actual: serde_json::json!(false),
                         error,
                         expected_side_effects: Vec::new(),
+                        expected_api_calls: Vec::new(),
+                        actual_api_calls: Vec::new(),
+                        trace_divergence_index: None,
                     });
                 }
             } else {
@@ -189,6 +203,9 @@ pub fn parse_shim_test_results(
                         actual: serde_json::json!(false),
                         error,
                         expected_side_effects: Vec::new(),
+                        expected_api_calls: Vec::new(),
+                        actual_api_calls: Vec::new(),
+                        trace_divergence_index: None,
                     });
                 }
             }

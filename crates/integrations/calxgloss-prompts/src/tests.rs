@@ -27,11 +27,13 @@ fn sample_request() -> TranslationRequest {
                 inputs: json!({"x": 10, "y": 20}),
                 expected_return: json!(30),
                 expected_side_effects: vec![],
+                expected_api_calls: vec![],
             },
             TestCase {
                 inputs: json!({"x": 0, "y": 0}),
                 expected_return: json!(0),
                 expected_side_effects: vec![],
+                expected_api_calls: vec![],
             },
         ],
     }

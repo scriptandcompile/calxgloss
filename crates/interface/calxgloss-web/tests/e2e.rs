@@ -369,9 +369,11 @@ fn baseline_result(
             inputs,
             expected_return: expected.clone(),
             expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
         },
         actual_return: expected,
         actual_side_effects: Vec::new(),
+        actual_api_calls: Vec::new(),
         passed,
         error: None,
     }

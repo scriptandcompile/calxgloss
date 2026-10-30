@@ -228,11 +228,71 @@ mod tests {
             inputs: serde_json::json!({"x": 10, "y": 20}),
             expected_return: serde_json::json!(30),
             expected_side_effects: vec![],
+            expected_api_calls: vec![],
         };
         let json = serde_json::to_string(&test_case).unwrap();
         let deserialized: TestCase = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.inputs["x"], 10);
         assert_eq!(deserialized.expected_return, 30);
+    }
+
+    #[test]
+    fn test_test_case_expected_api_calls_round_trip() {
+        // The API-call trace dimension: a baseline test case carries the
+        // ordered sequence of API calls the original binary made. A
+        // baseline document saved before this dimension existed must load
+        // with the trace absent — unassessed, never empty-and-passing.
+        let test_case = TestCase {
+            inputs: serde_json::json!({"x": 10}),
+            expected_return: serde_json::json!(42),
+            expected_side_effects: vec![],
+            expected_api_calls: vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()],
+        };
+        let json = serde_json::to_string(&test_case).unwrap();
+        let deserialized: TestCase = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, test_case, "the ordered trace round-trips");
+
+        let old = r#"{"inputs": {"x": 10}, "expected_return": 42, "expected_side_effects": []}"#;
+        let deserialized: TestCase = serde_json::from_str(old).unwrap();
+        assert!(
+            deserialized.expected_api_calls.is_empty(),
+            "a pre-trace baseline document loads with the trace unassessed"
+        );
+    }
+
+    #[test]
+    fn test_test_result_actual_api_calls_round_trip() {
+        // The baseline test result carries the actual API-call trace beside
+        // the return value, so the captured ground truth records the call
+        // path, not just the value. A document saved before the dimension
+        // existed loads with the trace unassessed.
+        let result = TestResult {
+            test_case: TestCase {
+                inputs: serde_json::json!({"x": 10}),
+                expected_return: serde_json::json!(42),
+                expected_side_effects: vec![],
+                expected_api_calls: vec!["GetTickCount".to_string()],
+            },
+            actual_return: serde_json::json!(42),
+            actual_side_effects: vec![],
+            actual_api_calls: vec!["GetTickCount".to_string(), "puts".to_string()],
+            passed: true,
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: TestResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, result, "the actual ordered trace round-trips");
+
+        let old = r#"{
+            "test_case": {"inputs": null, "expected_return": 42, "expected_side_effects": []},
+            "actual_return": 42, "actual_side_effects": [], "passed": true, "error": null
+        }"#;
+        let deserialized: TestResult = serde_json::from_str(old).unwrap();
+        assert!(
+            deserialized.actual_api_calls.is_empty()
+                && deserialized.test_case.expected_api_calls.is_empty(),
+            "a pre-trace baseline result loads with both traces unassessed"
+        );
     }
 
     #[test]
@@ -315,6 +375,9 @@ mod tests {
                 kind: SideEffectKind::GlobalWrite,
                 detail: "DAT_180064e80".to_string(),
             }],
+            expected_api_calls: vec![],
+            actual_api_calls: vec![],
+            trace_divergence_index: None,
         };
         let json = serde_json::to_string(&failed).unwrap();
         let deserialized: FailedTest = serde_json::from_str(&json).unwrap();
@@ -323,6 +386,43 @@ mod tests {
         let old = r#"{"test_index": 0, "inputs": null, "expected": 1, "actual": 2, "error": "off by one"}"#;
         let deserialized: FailedTest = serde_json::from_str(old).unwrap();
         assert!(deserialized.expected_side_effects.is_empty());
+    }
+
+    #[test]
+    fn test_failed_test_carries_trace_divergence() {
+        // A trace failure names the first divergence position and carries
+        // the expected and actual API-call sequences side by side as typed
+        // data, so a reviewer and the retry loop can compare the paths
+        // without parsing prose. A verification result saved before the
+        // dimension existed loads with the traces unassessed and no named
+        // divergence position.
+        let failed = FailedTest {
+            test_index: 0,
+            inputs: serde_json::json!({"x": 1}),
+            expected: serde_json::json!(42),
+            actual: serde_json::json!(42),
+            error: "trace divergence at call 1: expected OutputDebugStringA, got GetTickCount"
+                .to_string(),
+            expected_side_effects: vec![],
+            expected_api_calls: vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()],
+            actual_api_calls: vec!["OutputDebugStringA".to_string(), "GetTickCount".to_string()],
+            trace_divergence_index: Some(1),
+        };
+        let json = serde_json::to_string(&failed).unwrap();
+        let deserialized: FailedTest = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized, failed,
+            "the traces and the divergence position round-trip"
+        );
+
+        let old = r#"{"test_index": 0, "inputs": null, "expected": 1, "actual": 2, "error": "off by one"}"#;
+        let deserialized: FailedTest = serde_json::from_str(old).unwrap();
+        assert!(
+            deserialized.expected_api_calls.is_empty()
+                && deserialized.actual_api_calls.is_empty()
+                && deserialized.trace_divergence_index.is_none(),
+            "a pre-trace verification result loads with the trace dimension unassessed"
+        );
     }
 
     #[test]

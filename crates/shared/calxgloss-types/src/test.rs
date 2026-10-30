@@ -91,7 +91,7 @@ pub struct SideEffect {
 ///
 /// Each test case specifies controlled inputs and the expected return value
 /// and side effects observed when the original function is invoked.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestCase {
     /// The test inputs as a JSON value. Parameters are serialized according to
     /// their types (integers, strings, booleans, or null for pointers).
@@ -102,6 +102,17 @@ pub struct TestCase {
 
     /// Expected side effects the function produces when called with these inputs.
     pub expected_side_effects: Vec<SideEffect>,
+
+    /// The ordered API-call trace: the sequence of API calls the original
+    /// binary made when the baseline run captured this case, by API name.
+    ///
+    /// The trace is compared by order, not membership — the same calls in a
+    /// different order are a divergence. `#[serde(default)]` keeps baseline
+    /// documents saved before this dimension existed readable; an empty
+    /// trace means the dimension is *unassessed* for the case, never a
+    /// demand that the translation make no calls.
+    #[serde(default)]
+    pub expected_api_calls: Vec<String>,
 }
 
 /// The result of executing a single baseline test case.
@@ -109,7 +120,7 @@ pub struct TestCase {
 /// Captures both the actual return value and side effects, along with
 /// pass/fail status and an optional error message if the test diverged
 /// from expected behavior.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestResult {
     /// The test case that was executed.
     pub test_case: TestCase,
@@ -119,6 +130,15 @@ pub struct TestResult {
 
     /// The actual side effects observed during execution.
     pub actual_side_effects: Vec<SideEffect>,
+
+    /// The ordered API-call trace observed during this case: the sequence
+    /// of API calls actually made, by API name, beside the return value.
+    ///
+    /// `#[serde(default)]` keeps baseline documents saved before this
+    /// dimension existed readable; an empty trace means the capture is
+    /// *unassessed* for the case, not that no call was made.
+    #[serde(default)]
+    pub actual_api_calls: Vec<String>,
 
     /// Whether the test passed (true if actual matches expected).
     pub passed: bool,
