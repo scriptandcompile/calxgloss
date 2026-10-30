@@ -6,7 +6,7 @@
  * the Kuna engine tests assert against, and the fixture crate's smoke test
  * enforces it:
  *
- *   * four named exports,
+ *   * five named exports,
  *   * imports from KERNEL32.dll and msvcrt.dll,
  *   * string literals the engine's string scan must find,
  *   * a switch the compiler lowers to a jump table: a run of 4-byte
@@ -87,4 +87,15 @@ EXPORT unsigned int fixture_tick(void)
 {
     puts(kTag);
     return GetTickCount();
+}
+
+/* Ordered-imports probe for the P22 trace gate: GetTickCount first, then
+ * OutputDebugStringA with a data dependency on the first result, so the
+ * two calls cannot be reordered. The `probe` dereference lets a null
+ * argument fault, supplying a crash case for isolation-retry tests. */
+EXPORT unsigned int fixture_ordered(int *probe)
+{
+    DWORD tick = GetTickCount();
+    OutputDebugStringA(tick ? kGreeting : kTag);
+    return (unsigned int)*probe;
 }

@@ -56,6 +56,7 @@ use encode::decode_value;
 pub use encode::encode_test_case;
 use harness::HARNESS_CRASH_EXIT;
 pub use harness::generate_harness;
+pub(crate) use types::is_trace_shim_name;
 pub use types::{
     FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,
     ScalarKind, UNIT_SEPARATOR, locator_for_function, locator_for_va,
@@ -212,6 +213,7 @@ impl WineRunner {
                     && let Some(batch) = report.results.iter().find(|b| b.index == index)
                 {
                     single.results[0].returned = batch.returned.clone();
+                    single.results[0].trace = batch.trace.clone();
                 }
                 isolated.append(&mut single.results);
             }
@@ -263,6 +265,14 @@ impl WineRunner {
             // since the harness numbers results by input line position.
             Some(index) => payload.get(index).cloned().unwrap_or_default(),
             None => payload.join("\n"),
+        };
+        // Every case is one terminated line, so a parameterless case — whose
+        // payload is the empty string — still arrives as a real line instead
+        // of vanishing into an empty write.
+        let stdin_payload = if payload.is_empty() {
+            stdin_payload
+        } else {
+            format!("{stdin_payload}\n")
         };
 
         debug!(
@@ -415,10 +425,19 @@ fn parse_results(stdout: &str) -> Vec<HarnessTestResult> {
     stdout
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(3, '\t');
+            // `<index>\t<status>\t<payload>[\t<trace>]`; the trace field is
+            // optional so old-shaped lines still parse (as unassessed).
+            let mut parts = line.splitn(4, '\t');
             let index = parts.next()?.trim().parse::<usize>().ok()?;
             let status = parts.next()?.trim();
             let payload = parts.next().unwrap_or("").trim();
+            let trace = parts
+                .next()
+                .unwrap_or("")
+                .split(';')
+                .filter(|name| !name.is_empty())
+                .map(String::from)
+                .collect();
             Some(match status {
                 "ok" => HarnessTestResult {
                     index,
@@ -426,6 +445,7 @@ fn parse_results(stdout: &str) -> Vec<HarnessTestResult> {
                     returned: decode_value(payload),
                     error: None,
                     crashed: false,
+                    trace,
                 },
                 other => HarnessTestResult {
                     index,
@@ -433,6 +453,7 @@ fn parse_results(stdout: &str) -> Vec<HarnessTestResult> {
                     returned: serde_json::Value::Null,
                     error: Some(format!("harness reported '{other}': {payload}")),
                     crashed: false,
+                    trace,
                 },
             })
         })
@@ -459,6 +480,7 @@ fn crashed_results(
             returned: serde_json::Value::Null,
             error: Some(detail.to_string()),
             crashed: true,
+            trace: Vec::new(),
         })
         .collect()
 }
@@ -480,6 +502,7 @@ fn failed_all(
             returned: serde_json::Value::Null,
             error: Some(detail.clone()),
             crashed: true,
+            trace: Vec::new(),
         })
         .collect()
 }
@@ -533,4 +556,75 @@ fn sanitize(label: &str) -> String {
 fn terminating_signal(status: &std::process::ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
     status.signal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_results_reads_the_trace_field_in_order() {
+        // The harness reports each case's observed import calls as a fourth
+        // tab-separated field, ';'-joined, in call order (P22).
+        let results = parse_results("0\tok\ti64:7\tGetTickCount;OutputDebugStringA\n");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].returned, json!(7));
+        assert_eq!(
+            results[0].trace,
+            ["GetTickCount".to_string(), "OutputDebugStringA".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_results_repeats_an_api_once_per_call() {
+        let results = parse_results("0\tok\ti32:1\tputs;puts;puts\n");
+        assert_eq!(
+            results[0].trace.len(),
+            3,
+            "one entry per call, not per name"
+        );
+    }
+
+    #[test]
+    fn parse_results_without_a_trace_field_is_unassessed() {
+        // Old-shaped lines, or a harness whose interposer could not attach,
+        // carry no trace: empty means "not observed", never "called nothing".
+        let results = parse_results("0\tok\ti64:7\n");
+        assert_eq!(results[0].returned, json!(7));
+        assert!(results[0].trace.is_empty());
+    }
+
+    #[test]
+    fn parse_results_empty_trace_field_is_empty_vec() {
+        let results = parse_results("0\tok\ti64:7\t\n");
+        assert!(results[0].trace.is_empty());
+    }
+
+    #[test]
+    fn parse_results_keeps_error_cases_with_their_trace() {
+        // A call that *returns* an error still carries the calls it made on
+        // the way there; the isolation retry merges these back in. A hard
+        // crash is different: the harness's crash handler terminates the
+        // process before any line is written, so that case comes back with
+        // no trace at all — unassessed, not "called nothing".
+        let results = parse_results("1\terr\tfault at 0x0\tGetTickCount\n");
+        assert!(!results[0].ok);
+        assert_eq!(results[0].trace, ["GetTickCount".to_string()]);
+    }
+
+    #[test]
+    fn crashed_placeholders_record_an_unassessed_trace() {
+        // Cases the harness never reported (crash-handler path) are filled in
+        // as crashed with an *empty* trace: the wire carried nothing for
+        // them, so the report must read as unassessed — never as a claim
+        // that the target called nothing, and never with an invented trace.
+        let filled = crashed_results(&[], &["f".into(), "g".into()], None, "harness died");
+        assert_eq!(filled.len(), 2);
+        assert!(
+            filled
+                .iter()
+                .all(|r| r.crashed && !r.ok && r.trace.is_empty())
+        );
+    }
 }

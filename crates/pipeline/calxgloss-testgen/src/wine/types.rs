@@ -2,6 +2,7 @@
 
 use crate::Machine;
 use anyhow::{Context, Result};
+use tracing::warn;
 
 use crate::ffi::{ParsedSignature, decompiler_type_to_rust};
 
@@ -154,6 +155,23 @@ pub struct HarnessSpec {
     pub return_kind: ScalarKind,
     /// How the DLL should be loaded.
     pub load_mode: LoadMode,
+    /// The target's architecture, which the generated code must match.
+    pub machine: Machine,
+    /// API names the generated harness should observe at the target's import
+    /// table, in first-seen order (P22: the ordered API-call trace).
+    ///
+    /// Empty means no interposition at all: the harness behaves exactly as it
+    /// did before the trace gate existed.
+    pub trace_apis: Vec<String>,
+}
+
+/// Whether `name` can become a generated recording shim: the shims embed the
+/// name as an assembly label and index it as an identifier, so only plain
+/// identifier spellings survive (P22).
+pub(crate) fn is_trace_shim_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 impl HarnessSpec {
@@ -207,7 +225,34 @@ impl HarnessSpec {
             params,
             return_kind,
             load_mode: LoadMode::NoResolve,
+            machine,
+            trace_apis: Vec::new(),
         })
+    }
+
+    /// Ask the generated harness to observe these API names at the target's
+    /// import table (P22: the ordered API-call trace).
+    ///
+    /// Names that cannot be identifiers are dropped with a warning, because
+    /// the generated recording shims embed them as assembly labels, and
+    /// duplicates collapse to one entry each.
+    #[must_use]
+    pub fn with_trace_scope(mut self, names: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        for name in names {
+            let name = name.as_ref();
+            if !is_trace_shim_name(name) {
+                warn!(
+                    function = %self.function_label,
+                    name,
+                    "dropping trace-scope entry that is not an identifier"
+                );
+                continue;
+            }
+            if !self.trace_apis.contains(&name.to_string()) {
+                self.trace_apis.push(name.to_string());
+            }
+        }
+        self
     }
 
     /// The Rust type of the generated function pointer, e.g. `fn(i64, i32) -> i64`.
@@ -257,6 +302,11 @@ pub struct HarnessTestResult {
     pub error: Option<String>,
     /// True when the harness process died on this case.
     pub crashed: bool,
+    /// In-scope API names observed at the target's import table while this
+    /// case ran, in call order (P22: the ordered API-call trace). Empty when
+    /// no interposition scope was active — an empty trace is *unassessed*,
+    /// never a claim that the target called nothing.
+    pub trace: Vec<String>,
 }
 
 /// Everything one harness invocation produced.

@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 
+use crate::Machine;
 use crate::wine::types::HarnessSpec;
 
 use std::fmt::Write as _;
@@ -25,6 +26,7 @@ pub fn generate_invoke(spec: &HarnessSpec) -> Result<String> {
     writeln!(
         out,
         "/// Call the function under test with the arguments supplied on the wire.\n\
+         fn invoke(addr: usize, fields: &[&str]) -> Result<String, String> {{\n\
          \x20   if fields.len() != {expected} {{\n\
          \x20       return Err(format!(\"expected {expected} arguments, got {{}}\", fields.len()));\n\
          \x20   }}"
@@ -320,13 +322,19 @@ fn main() {
         die(4, &format!("base 0x{base_addr:x} lacks an MZ header (read 0x{mz:04x})"));
     }
 
+    __INTERPOSE__
+
     let addr = match kind {
         0 => match parse_hex(&value) {
             Ok(rva) => base_addr + rva as usize,
             Err(e) => die(2, &e),
         },
         1 => {
-            let p = unsafe { GetProcAddress(base, value.as_ptr()) };
+            // GetProcAddress wants a NUL-terminated name; a Rust `&str`
+            // is not one, so append the terminator rather than pass `as_ptr`.
+            let mut name = value.clone().into_bytes();
+            name.push(0);
+            let p = unsafe { GetProcAddress(base, name.as_ptr()) };
             if p.is_null() {
                 die(5, &format!("export '{value}' not found"));
             }
@@ -363,9 +371,10 @@ fn main() {
             None => offset,
         };
         let fields: Vec<&str> = line.split(US).filter(|f| !f.trim().is_empty()).collect();
+        __BEGIN_TRACE__
         let result = match invoke(addr, &fields) {
-            Ok(value) => format!("{index}\tok\t{}", clean(&value)),
-            Err(message) => format!("{index}\terr\t{}", clean(&message)),
+            Ok(value) => ok_line(index, &clean(&value)),
+            Err(message) => err_line(index, &clean(&message)),
         };
         if writeln!(out, "{result}").is_err() || out.flush().is_err() {
             // The reader has gone away; nothing useful is left to do.
@@ -381,11 +390,417 @@ fn main() {
 /// runner and the harness it launches cannot drift apart.
 pub const HARNESS_CRASH_EXIT: u32 = 133;
 
+/// The result-line helpers for a harness with no trace scope.
+///
+/// Without a scope the harness reports exactly the three-field result lines it
+/// did before the trace gate existed, so existing baselines are unaffected.
+const HARNESS_UNTRACED: &str = r##"
+fn ok_line(index: usize, value: &str) -> String {
+    format!("{index}\tok\t{value}")
+}
+
+fn err_line(index: usize, message: &str) -> String {
+    format!("{index}\terr\t{message}")
+}
+
+"##;
+
+/// The result-line helpers plus a stub interposer for a trace scope on a
+/// target whose architecture has no recording shims.
+///
+/// The harness still runs the target; it just reports on stderr that the
+/// trace could not be captured, rather than pretending an empty trace means
+/// the target called nothing.
+const HARNESS_TRACING_UNAVAILABLE: &str = r##"
+fn begin_case_trace() {}
+
+fn case_trace() -> String {
+    String::new()
+}
+
+fn ok_line(index: usize, value: &str) -> String {
+    format!("{index}\tok\t{value}\t{}", case_trace())
+}
+
+fn err_line(index: usize, message: &str) -> String {
+    format!("{index}\terr\t{message}\t{}", case_trace())
+}
+
+fn interpose_imports(_base: usize) {
+    eprintln!(
+        "harness: import interposition unavailable: \
+         recording shims exist only for x86-64 targets"
+    );
+}
+
+"##;
+
+/// Generate the API-trace machinery for an x86-64 target: an IAT interposer
+/// plus `global_asm!` recording shims, one per in-scope import.
+///
+/// Each shim preserves the incoming argument registers (the four integer
+/// registers and the six leading XMM registers; further arguments live on the
+/// stack and are already in place for a tail jump) plus `rax` — a variadic
+/// call site's XMM register count rides in `al` — calls the recorder, then
+/// tail-jumps to the real routine installed by the interposer.
+fn generate_interposer(trace_apis: &[String]) -> Result<String> {
+    use std::fmt::Write as _;
+
+    let n = trace_apis.len();
+    let names = trace_apis
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut asm = String::new();
+    asm.push_str(".text\n");
+    for i in 0..n {
+        // Intel syntax: rustc's asm dialect is Intel for Windows x86 targets,
+        // even the GNU-flavoured ones. Stack layout: rsp is 16-byte aligned
+        // after the frame, so a `call` lands the callee on a proper boundary.
+        // `rax` is saved and restored too: variadic call sites pass the number
+        // of XMM registers in `al`, and the real routine must see the caller's
+        // value, so the jump target reaches the callee through `r11` instead.
+        writeln!(
+            asm,
+            ".p2align 4\n\
+             calx_tr_{i}:\n\
+             \x20sub rsp, 168\n\
+             \x20mov [rsp], rax\n\
+             \x20mov [rsp+32], rcx\n\
+             \x20mov [rsp+40], rdx\n\
+             \x20mov [rsp+48], r8\n\
+             \x20mov [rsp+56], r9\n\
+             \x20movaps [rsp+64], xmm0\n\
+             \x20movaps [rsp+80], xmm1\n\
+             \x20movaps [rsp+96], xmm2\n\
+             \x20movaps [rsp+112], xmm3\n\
+             \x20movaps [rsp+128], xmm4\n\
+             \x20movaps [rsp+144], xmm5\n\
+             \x20mov rcx, {i}\n\
+             \x20call calx_record_api\n\
+             \x20mov r11, [rip + CALX_REALS + {o}]\n\
+             \x20mov rax, [rsp]\n\
+             \x20mov rcx, [rsp+32]\n\
+             \x20mov rdx, [rsp+40]\n\
+             \x20mov r8, [rsp+48]\n\
+             \x20mov r9, [rsp+56]\n\
+             \x20movaps xmm0, [rsp+64]\n\
+             \x20movaps xmm1, [rsp+80]\n\
+             \x20movaps xmm2, [rsp+96]\n\
+             \x20movaps xmm3, [rsp+112]\n\
+             \x20movaps xmm4, [rsp+128]\n\
+             \x20movaps xmm5, [rsp+144]\n\
+             \x20add rsp, 168\n\
+             \x20jmp r11",
+            o = i * 8
+        )?;
+    }
+    asm.push_str(".data\n.globl CALX_TRAMP\nCALX_TRAMP:\n");
+    for i in 0..n {
+        writeln!(asm, ".quad calx_tr_{i}")?;
+    }
+
+    let block = HARNESS_INTERPOSER
+        .replace("__N__", &n.to_string())
+        .replace("__NAMES__", &names)
+        .replace("__ASM__", &asm);
+    Ok(block)
+}
+
+/// The x86-64 API-trace machinery, with `__N__`, `__NAMES__` and `__ASM__`
+/// filled in by [`generate_interposer`] — the same placeholder style as
+/// `__CRASH_EXIT__`, so the source stays readable and needs no escaping.
+const HARNESS_INTERPOSER: &str = r##"// ---- API trace (P22): generated IAT interposer and recording shims ----
+
+/// The in-scope API names, in table order; a name's index is its recording id.
+static TRACED_NAMES: [&str; __N__] = [__NAMES__];
+
+/// For each in-scope import, the real routine the interposer installed before
+/// the first case ran; the shims tail-jump through these.
+#[no_mangle]
+static mut CALX_REALS: [usize; __N__] = [0; __N__];
+
+/// The in-scope APIs observed during the current case, in call order.
+static mut CASE_TRACE: Vec<&'static str> = Vec::new();
+
+/// Record one API call. The shims enter with the table index in %rcx.
+#[no_mangle]
+extern "C" fn calx_record_api(id: u64) {
+    if let Some(name) = TRACED_NAMES.get(id as usize) {
+        unsafe { CASE_TRACE.push(name) };
+    }
+}
+
+fn begin_case_trace() {
+    unsafe { CASE_TRACE.clear() };
+}
+
+/// The current case's trace, ';'-joined, for the result line.
+fn case_trace() -> String {
+    unsafe { CASE_TRACE.iter().copied().collect::<Vec<_>>().join(";") }
+}
+
+fn ok_line(index: usize, value: &str) -> String {
+    format!("{index}\tok\t{value}\t{}", case_trace())
+}
+
+fn err_line(index: usize, message: &str) -> String {
+    format!("{index}\terr\t{message}\t{}", case_trace())
+}
+
+std::arch::global_asm!(
+    r#"__ASM__"#
+);
+
+extern "C" {
+    /// Trampoline address per table slot, emitted alongside the shims.
+    static CALX_TRAMP: [usize; __N__];
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn LoadLibraryA(name: *const u8) -> Hmodule;
+    fn VirtualProtect(addr: *mut c_void, size: usize, protect: u32, old: *mut u32) -> i32;
+}
+
+const PAGE_READWRITE: u32 = 0x04;
+
+unsafe fn read_u16(at: usize) -> u16 { std::ptr::read_unaligned(at as *const u16) }
+unsafe fn read_u32(at: usize) -> u32 { std::ptr::read_unaligned(at as *const u32) }
+unsafe fn read_u64(at: usize) -> u64 { std::ptr::read_unaligned(at as *const u64) }
+
+/// Read a NUL-terminated UTF-8 string from the mapped image.
+unsafe fn cstr_at(at: usize) -> String {
+    let mut end = at;
+    while *(end as *const u8) != 0 {
+        end += 1;
+    }
+    String::from_utf8_lossy(std::slice::from_raw_parts(at as *const u8, end - at)).into_owned()
+}
+
+/// The table slot for an import name, when that name is in scope.
+fn scoped_slot(name: &str) -> Option<usize> {
+    TRACED_NAMES.iter().position(|entry| *entry == name)
+}
+
+/// Write one IAT slot, lifting its protection first and restoring it after.
+unsafe fn patch_slot(slot: usize, target: usize) -> bool {
+    let mut old = 0u32;
+    if VirtualProtect(slot as *mut c_void, 8, PAGE_READWRITE, &mut old) == 0 {
+        return false;
+    }
+    std::ptr::write_unaligned(slot as *mut usize, target);
+    let mut ignored = 0u32;
+    let _ = VirtualProtect(slot as *mut c_void, 8, old, &mut ignored);
+    true
+}
+
+/// Walk the mapped target's import directory: in-scope imports are pointed at
+/// the recording shims, every other import is bound to its real routine.
+///
+/// Binding matters because the default load mode maps the image *without*
+/// resolving imports: an unbound call would jump at an import thunk. A target
+/// with no import table, or whose imports cannot be bound, is reported on
+/// stderr and left alone — the run continues, it just records no trace.
+unsafe fn interpose_imports(base: usize) {
+    let nt = base + read_u32(base + 0x3c) as usize;
+    if read_u32(nt) != 0x0000_4550 {
+        eprintln!("harness: import interposition unavailable: no PE header at the mapped base");
+        return;
+    }
+    let magic = read_u16(nt + 24);
+    // The import directory is data directory entry 1; its offset inside the
+    // optional header depends on PE32 versus PE32+.
+    let dd = match magic {
+        0x20b => nt + 24 + 112,
+        0x10b => nt + 24 + 96,
+        _ => {
+            eprintln!("harness: import interposition unavailable: optional header magic 0x{magic:x}");
+            return;
+        }
+    };
+    let import_rva = read_u32(dd + 8);
+    if import_rva == 0 {
+        eprintln!("harness: import interposition unavailable: the target has no import directory");
+        return;
+    }
+    let mut desc = base + import_rva as usize;
+    loop {
+        let original_thunks = read_u32(desc);
+        let name_rva = read_u32(desc + 12);
+        let first_thunk_rva = read_u32(desc + 16);
+        if name_rva == 0 && first_thunk_rva == 0 {
+            break;
+        }
+        let dll_name = (base + name_rva as usize) as *const u8;
+        // The hint/name table describes the imports; the IAT itself may have
+        // been overwritten once resolved, so prefer the original copy.
+        let thunks_rva = if original_thunks != 0 { original_thunks } else { first_thunk_rva };
+        let module = LoadLibraryA(dll_name);
+        if module.is_null() {
+            eprintln!(
+                "harness: import interposition: could not load '{}' for its imports; continuing",
+                cstr_at(base + name_rva as usize)
+            );
+            desc += 20;
+            continue;
+        }
+        let mut idx = 0usize;
+        loop {
+            let entry = read_u64(base + thunks_rva as usize + idx * 8);
+            if entry == 0 {
+                break;
+            }
+            let slot = base + first_thunk_rva as usize + idx * 8;
+            let by_ordinal = entry & (1u64 << 63) != 0;
+            let real = if by_ordinal {
+                GetProcAddress(module, (entry & 0xffff) as usize as *const u8)
+            } else {
+                // Hint/Name: two hint bytes, then the NUL-terminated name.
+                GetProcAddress(module, (base + (entry as u32 & 0x7fff_ffff) as usize + 2) as *const u8)
+            };
+            if real.is_null() {
+                eprintln!("harness: import interposition: could not resolve an import; continuing");
+            } else if by_ordinal {
+                // No name to match on, so this import is only bound, never recorded.
+                let _ = patch_slot(slot, real as usize);
+            } else {
+                let name = cstr_at(base + (entry as u32 & 0x7fff_ffff) as usize + 2);
+                match scoped_slot(&name) {
+                    Some(i) => {
+                        CALX_REALS[i] = real as usize;
+                        if !patch_slot(slot, CALX_TRAMP[i]) {
+                            eprintln!("harness: import interposition: IAT slot for '{name}' is not writable; continuing");
+                        }
+                    }
+                    None => {
+                        let _ = patch_slot(slot, real as usize);
+                    }
+                }
+            }
+            idx += 1;
+        }
+        desc += 20;
+    }
+}
+"##;
+
 /// Generate the complete harness source for a spec.
 pub fn generate_harness(spec: &HarnessSpec) -> Result<String> {
-    let mut src = String::with_capacity(8 * 1024);
+    let tracing = if spec.trace_apis.is_empty() {
+        HARNESS_UNTRACED.to_string()
+    } else if spec.machine == Machine::X86_64 {
+        generate_interposer(&spec.trace_apis)?
+    } else {
+        HARNESS_TRACING_UNAVAILABLE.to_string()
+    };
+    let interpose = if spec.trace_apis.is_empty() {
+        ""
+    } else {
+        "unsafe { interpose_imports(base_addr); }"
+    };
+    let begin_trace = if spec.trace_apis.is_empty() {
+        ""
+    } else {
+        "begin_case_trace();"
+    };
+    let suffix = HARNESS_SUFFIX
+        .replace("__INTERPOSE__", interpose)
+        .replace("__BEGIN_TRACE__", begin_trace);
+
+    let mut src = String::with_capacity(16 * 1024);
     src.push_str(&HARNESS_PREFIX.replace("__CRASH_EXIT__", &HARNESS_CRASH_EXIT.to_string()));
     src.push_str(&generate_invoke(spec)?);
-    src.push_str(HARNESS_SUFFIX);
+    src.push_str(&tracing);
+    src.push_str(&suffix);
     Ok(src)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse_signature;
+    use crate::wine::types::FunctionLocator;
+
+    fn spec(machine: Machine) -> HarnessSpec {
+        HarnessSpec::new(
+            "FUN_18008ed50",
+            FunctionLocator::Rva(0x10),
+            &parse_signature("int F(int a)").unwrap(),
+            machine,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn no_trace_scope_means_no_interposer_in_the_harness() {
+        // A harness nobody asked to trace must come out exactly as before:
+        // the existing eqmain baseline cannot be perturbed by this feature.
+        let src = generate_harness(&spec(Machine::X86_64)).unwrap();
+        assert!(!src.contains("calx_tr_"));
+        assert!(!src.contains("CALX_TRAMP"));
+        assert!(!src.contains("VirtualProtect"));
+        assert!(!src.contains("global_asm"));
+    }
+
+    #[test]
+    fn generated_invoke_is_a_complete_function() {
+        // Pinned after a regression left the generated body without its
+        // signature; only a real cross-compile of the output catches this,
+        // so the shape is asserted here as a cheap early tripwire.
+        let src = generate_harness(&spec(Machine::X86_64)).unwrap();
+        assert!(
+            src.contains("fn invoke(addr: usize, fields: &[&str]) -> Result<String, String> {"),
+            "the generated invoke must open its function header:\n{src}"
+        );
+    }
+
+    #[test]
+    fn a_trace_scope_emits_interposition_for_64_bit_targets() {
+        let scoped = spec(Machine::X86_64).with_trace_scope(["puts", "GetTickCount"]);
+        let src = generate_harness(&scoped).unwrap();
+        assert!(
+            src.contains("CALX_TRAMP"),
+            "trampoline table must exist:\n{src}"
+        );
+        assert!(src.contains("global_asm"));
+        assert!(src.contains("\"puts\""));
+        assert!(src.contains("\"GetTickCount\""));
+        assert!(src.contains("calx_record_api"));
+        // main() must attach the interposer after mapping and hand the trace
+        // back on the result line.
+        assert!(src.contains("interpose_imports"));
+        assert!(src.contains("case_trace"));
+    }
+
+    #[test]
+    fn a_trace_scope_on_a_32_bit_target_degrades_with_a_log() {
+        // The recording shims are x86-64 machine code. A 32-bit target still
+        // gets a working harness — it just reports that tracing is unavailable
+        // instead of silently claiming an empty trace.
+        let scoped = spec(Machine::X86).with_trace_scope(["puts"]);
+        let src = generate_harness(&scoped).unwrap();
+        assert!(!src.contains("global_asm"));
+        assert!(!src.contains("CALX_TRAMP"));
+        assert!(src.contains("interposition unavailable"));
+    }
+
+    #[test]
+    fn scope_names_that_are_not_identifiers_are_dropped() {
+        // Scope names become asm labels; anything that is not an identifier
+        // could break the generated source, so it is rejected at build time.
+        let scoped = spec(Machine::X86_64).with_trace_scope(["puts", "evil;name", "9lives", ""]);
+        assert_eq!(scoped.trace_apis, ["puts"]);
+        let src = generate_harness(&scoped).unwrap();
+        assert!(!src.contains("evil"));
+        assert!(!src.contains("9lives"));
+    }
+
+    #[test]
+    fn duplicate_scope_names_collapse_to_one_slot() {
+        let scoped = spec(Machine::X86_64).with_trace_scope(["puts", "puts", "free"]);
+        assert_eq!(scoped.trace_apis, ["puts", "free"]);
+    }
 }

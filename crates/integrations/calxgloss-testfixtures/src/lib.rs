@@ -35,12 +35,20 @@ use goblin::pe::section_table::IMAGE_SCN_MEM_EXECUTE;
 /// File name of the built fixture inside the build script's `OUT_DIR`.
 pub const TARGET_FILE_NAME: &str = "fixture_target.dll";
 
+/// File name of the zero-import fixture, also built into `OUT_DIR`.
+///
+/// `fixtures/fixture_plain.c` compiles with `-nostdlib`, so the image has
+/// exports but no import table — the shape a harness interposer must
+/// survive without failing or hanging (P22).
+pub const PLAIN_TARGET_FILE_NAME: &str = "fixture_plain.dll";
+
 /// The named exports the fixture must have.
 pub const EXPORT_NAMES: &[&str] = &[
     "fixture_init",
     "fixture_status",
     "fixture_describe",
     "fixture_tick",
+    "fixture_ordered",
 ];
 
 /// The DLLs the fixture must import from, as spelled in the import table.
@@ -80,6 +88,22 @@ pub const MIN_JUMP_TABLE_ENTRIES: usize = 16;
 /// function reports [`TestFixturesError::ToolchainMissing`] naming the fix.
 pub fn fixture_target_path() -> Result<PathBuf> {
     let path = Path::new(env!("OUT_DIR")).join(TARGET_FILE_NAME);
+    if !path.exists() {
+        return Err(TestFixturesError::ToolchainMissing {
+            compiler: option_env!("CALXGLOSS_FIXTURE_CC")
+                .unwrap_or("x86_64-w64-mingw32-gcc")
+                .to_string(),
+        });
+    }
+    Ok(path)
+}
+
+/// Path to the built zero-import fixture.
+///
+/// Same shape as [`fixture_target_path`]: if the cross-compiler was missing
+/// at build time, the file is absent and the error names the fix.
+pub fn plain_target_path() -> Result<PathBuf> {
+    let path = Path::new(env!("OUT_DIR")).join(PLAIN_TARGET_FILE_NAME);
     if !path.exists() {
         return Err(TestFixturesError::ToolchainMissing {
             compiler: option_env!("CALXGLOSS_FIXTURE_CC")

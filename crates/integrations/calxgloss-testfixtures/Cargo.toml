@@ -11,3 +11,7 @@ repository.workspace = true
 [dependencies]
 goblin = { workspace = true }
 thiserror = { workspace = true }
+
+# The smoke test inspects the plain fixture's import table directly.
+[dev-dependencies]
+goblin = { workspace = true }

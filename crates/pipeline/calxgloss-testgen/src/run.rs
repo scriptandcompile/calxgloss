@@ -124,7 +124,11 @@ impl BaselineRunner {
         let parsed = parse_signature(signature)
             .with_context(|| format!("Could not parse the signature of '{function}'"))?;
         let spec = HarnessSpec::new(function, locator, &parsed, machine)
-            .with_context(|| format!("Could not build a harness for '{function}'"))?;
+            .with_context(|| format!("Could not build a harness for '{function}'"))?
+            // The baseline run is where ground truth is recorded, and the
+            // ordered API-call trace is part of it (P22): scope the harness's
+            // IAT interposer to the target's own named imports.
+            .with_trace_scope(trace_scope(image.imports()));
 
         let runner = WineRunner::new(&self.work_dir);
         runner.preflight_wine()?;
@@ -190,6 +194,24 @@ fn values_match(expected: &Value, actual: &Value) -> bool {
     }
 }
 
+/// The API names the baseline harness should watch at the target's import
+/// table: every named import, deduplicated in first-seen order.
+///
+/// Ordinal-only imports have no name to match, and names that cannot become
+/// recording shims are left out (P22).
+fn trace_scope(imports: &[crate::pe::ImportEntry]) -> Vec<String> {
+    let mut scope: Vec<String> = Vec::new();
+    for entry in imports {
+        if entry.is_unnamed() || !crate::wine::is_trace_shim_name(&entry.function) {
+            continue;
+        }
+        if !scope.contains(&entry.function) {
+            scope.push(entry.function.clone());
+        }
+    }
+    scope
+}
+
 /// Turn harness outcomes into [`TestResult`]s, one per test case.
 ///
 /// `passed` means the call completed and, where the test case states an
@@ -232,14 +254,24 @@ fn collect_results(
                 ))
             };
 
+            // A captured trace is ground truth from the original: record it as
+            // what the case did (actual) and as the expectation later runs are
+            // held to. No capture means no claim — an empty trace stays
+            // unassessed rather than asserting the target called nothing.
+            let trace = outcome.trace.clone();
+            let mut test_case = test.clone();
+            if !trace.is_empty() {
+                test_case.expected_api_calls = trace.clone();
+            }
+
             TestResult {
-                test_case: test.clone(),
+                test_case,
                 actual_return: outcome.returned.clone(),
                 // Side effects are not observed: the harness calls the target
                 // and reports its return value, and reading back whatever the
                 // call mutated would need a per-type view of the arguments.
                 actual_side_effects: Vec::new(),
-                actual_api_calls: Vec::new(),
+                actual_api_calls: trace,
                 passed: outcome.ok && agrees,
                 error: outcome.error.clone().or(mismatch),
             }
@@ -260,6 +292,7 @@ mod tests {
             returned,
             error: None,
             crashed: false,
+            trace: Vec::new(),
         }
     }
 
@@ -330,6 +363,7 @@ mod tests {
             returned: Value::Null,
             error: Some("the function under test faulted".to_string()),
             crashed: true,
+            trace: Vec::new(),
         }];
 
         let results = collect_results(&outcomes, &tests);
@@ -353,5 +387,76 @@ mod tests {
         assert_eq!(results.len(), 3);
         assert!(!results[0].passed && !results[2].passed);
         assert!(results[1].passed);
+    }
+
+    #[test]
+    fn test_captured_trace_becomes_actual_and_expected() {
+        // The baseline run's captured trace is ground truth: it is recorded as
+        // what the original did AND as the expectation later runs are held to.
+        let tests = vec![case(json!({ "a": 1 }), Value::Null)];
+        let mut observed = outcome(0, json!(4));
+        observed.trace = vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()];
+
+        let results = collect_results(&[observed], &tests);
+        assert_eq!(
+            results[0].actual_api_calls,
+            ["GetTickCount".to_string(), "OutputDebugStringA".to_string()]
+        );
+        assert_eq!(
+            results[0].test_case.expected_api_calls,
+            results[0].actual_api_calls
+        );
+    }
+
+    #[test]
+    fn test_an_uncaptured_trace_leaves_the_case_unassessed() {
+        // No capture means no claim: the trace fields stay empty instead of
+        // asserting the target called nothing (P22: empty means unassessed).
+        let tests = vec![case(json!({ "a": 1 }), Value::Null)];
+        let results = collect_results(&[outcome(0, json!(4))], &tests);
+        assert!(results[0].actual_api_calls.is_empty());
+        assert!(results[0].test_case.expected_api_calls.is_empty());
+    }
+
+    #[test]
+    fn test_a_preexisting_expectation_survives_an_uncaptured_trace() {
+        // If a case already states an expected trace, a run that captures
+        // nothing must not erase it.
+        let mut test = case(json!({ "a": 1 }), Value::Null);
+        test.expected_api_calls = vec!["puts".to_string()];
+        let results = collect_results(&[outcome(0, json!(4))], &[test]);
+        assert_eq!(
+            results[0].test_case.expected_api_calls,
+            ["puts".to_string()]
+        );
+        assert!(results[0].actual_api_calls.is_empty());
+    }
+
+    #[test]
+    fn trace_scope_keeps_named_identifier_imports_once_each() {
+        use crate::pe::ImportEntry;
+        let imports = [
+            ImportEntry {
+                binary: "msvcrt.dll".into(),
+                function: "puts".into(),
+            },
+            ImportEntry {
+                binary: "msvcrt.dll".into(),
+                function: "puts".into(),
+            },
+            ImportEntry {
+                binary: "ws2_32.dll".into(),
+                function: "ORDINAL 5".into(),
+            },
+            ImportEntry {
+                binary: "x.dll".into(),
+                function: "evil name".into(),
+            },
+            ImportEntry {
+                binary: "kernel32.dll".into(),
+                function: "GetTickCount".into(),
+            },
+        ];
+        assert_eq!(trace_scope(&imports), ["puts", "GetTickCount"]);
     }
 }

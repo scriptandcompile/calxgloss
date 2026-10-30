@@ -74,6 +74,12 @@ A unit that compiles and passes its baseline tests.
 **Baseline test**:
 A test capturing the original binary's observable behavior, run against the original implementation as ground truth.
 
+**Ordered API-call trace**:
+The sequence of API names one baseline case recorded, in call order — deliberately nothing else: no arguments, counts, or thread attribution. A missing or empty trace reads as *unassessed*, never as "the target called nothing".
+
+**IAT interposer**:
+The generated harness's mechanism for observing the original's API calls: every slot in the target's import address table is replaced — scoped API names with a recording trampoline that tail-jumps to the real routine, all other imports with the real routines themselves. x86-64 only; elsewhere it degrades to running unhooked.
+
 **Scratch project**:
 A sandboxed throwaway build project that each verification compiles and tests in.
 

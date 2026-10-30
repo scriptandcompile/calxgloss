@@ -476,6 +476,235 @@ async fn baseline_runner_reports_a_mismatch_against_the_expectation() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The shared-fixture targets (`calxgloss-testfixtures`), which need only Wine
+// and the windows-gnu target — no external DLL. These pin the ordered
+// API-call trace end to end: the harness interposes the import address table,
+// records every scoped call in execution order, and the report carries the
+// trace from the wire all the way into a saved baseline.
+// ---------------------------------------------------------------------------
+
+/// Build and run a harness for one fixture export and return the per-case
+/// results. `WineRunner::run` compiles the harness itself and retries a batch
+/// that dies partway case by case, which is exactly the isolation path the
+/// trace tests need.
+fn run_one(
+    work: &Path,
+    dll: &Path,
+    export: &str,
+    signature: &str,
+    inputs_json: &[Value],
+    scope: &[&str],
+) -> Vec<calxgloss_testgen::HarnessTestResult> {
+    let image = PeImage::parse(dll).expect("fixture target should parse as a PE image");
+    let signature = parse_signature(signature).expect("signature should parse");
+    let spec = HarnessSpec::new(
+        export,
+        FunctionLocator::ExportName(export.to_string()),
+        &signature,
+        image.machine(),
+    )
+    .expect("spec should build")
+    .with_trace_scope(scope.iter().copied());
+
+    let cases: Vec<TestCase> = inputs_json
+        .iter()
+        .map(|inputs| TestCase {
+            inputs: inputs.clone(),
+            expected_return: Value::Null,
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+        })
+        .collect();
+
+    let runner = WineRunner::new(work);
+    runner
+        .preflight_wine()
+        .expect("wine should be installed to run these tests");
+    let report = runner
+        .run(&spec, dll, &cases, image.machine())
+        .expect("the fixture harness should run");
+    assert_eq!(
+        report.results.len(),
+        cases.len(),
+        "every case must come back; stderr: {}",
+        report.stderr
+    );
+    report.results
+}
+
+/// `fixture_tick` calls `puts` and then `GetTickCount`, in that statement
+/// order; the report must carry exactly that ordered trace — not a sorted or
+/// deduplicated set.
+#[test]
+#[ignore = "needs Wine and the windows-gnu Rust target"]
+fn fixture_tick_reports_its_ordered_api_trace() {
+    let work = tempfile::tempdir().expect("tempdir");
+    let target =
+        calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+    let results = run_one(
+        work.path(),
+        &target,
+        "fixture_tick",
+        "unsigned int fixture_tick(void)",
+        &[json!({})],
+        &["puts", "GetTickCount"],
+    );
+    assert_eq!(results.len(), 1);
+    let r = &results[0];
+    assert!(!r.crashed, "fixture_tick crashed: {:?}", r.error);
+    assert!(r.ok, "fixture_tick failed: {:?}", r.error);
+    assert_eq!(
+        r.trace,
+        vec!["puts".to_string(), "GetTickCount".to_string()],
+        "the trace must be the ordered sequence of interposed calls"
+    );
+}
+
+/// `fixture_ordered`'s imports are data-dependent — `OutputDebugStringA`'s
+/// buffer is built from `GetTickCount`'s return — so the recorded order can
+/// only come from the call sites, not from the import table's layout.
+#[test]
+#[ignore = "needs Wine and the windows-gnu Rust target"]
+fn fixture_ordered_records_a_data_dependent_trace_in_call_order() {
+    let work = tempfile::tempdir().expect("tempdir");
+    let target =
+        calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+    let results = run_one(
+        work.path(),
+        &target,
+        "fixture_ordered",
+        "unsigned int fixture_ordered(int *param_1)",
+        &[json!({ "param_1": { "__alloc": { "size": 4, "fill": 1 } } })],
+        &["GetTickCount", "OutputDebugStringA"],
+    );
+    assert_eq!(results.len(), 1);
+    let r = &results[0];
+    assert!(!r.crashed, "fixture_ordered crashed: {:?}", r.error);
+    assert!(r.ok, "fixture_ordered failed: {:?}", r.error);
+    assert_eq!(
+        r.trace,
+        vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()],
+        "the trace must follow call-site order, not the import table's order"
+    );
+}
+
+/// A batch with one faulting case retries each case in its own process run;
+/// every result must carry *its own* trace, never an earlier case's — and the
+/// faulting case must still come back (an empty trace is *unassessed*, never
+/// a claim that the target called nothing).
+#[test]
+#[ignore = "needs Wine and the windows-gnu Rust target"]
+fn fixture_isolation_scopes_the_trace_per_case() {
+    let work = tempfile::tempdir().expect("tempdir");
+    let target =
+        calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+    let buffer = json!({ "param_1": { "__alloc": { "size": 4, "fill": 1 } } });
+    let results = run_one(
+        work.path(),
+        &target,
+        "fixture_ordered",
+        "unsigned int fixture_ordered(int *param_1)",
+        &[buffer.clone(), json!({ "param_1": null }), buffer.clone()],
+        &["GetTickCount", "OutputDebugStringA"],
+    );
+    assert_eq!(results.len(), 3, "every case must come back");
+    let expected = vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()];
+    assert_eq!(results[0].index, 0);
+    assert_eq!(results[1].index, 1);
+    assert_eq!(results[2].index, 2);
+    assert!(
+        results[0].ok && results[2].ok,
+        "the good cases must pass: {:?} {:?}",
+        results[0].error,
+        results[2].error
+    );
+    assert!(
+        results[1].crashed || !results[1].ok,
+        "the null-deref case must be reported as a fault, got {:?}",
+        results[1]
+    );
+    assert_eq!(results[0].trace, expected, "case 0's trace");
+    assert!(
+        results[1].trace.is_empty(),
+        "the faulting case's trace must not leak a previous case's: {:?}",
+        results[1].trace
+    );
+    assert_eq!(
+        results[2].trace, expected,
+        "case 2 must re-record its own trace"
+    );
+}
+
+/// A target with exports but no import directory is not an error: the
+/// interposer degrades, the call still runs, and the trace stays empty —
+/// which the pipeline must read as *unassessed*, never as "called nothing".
+#[test]
+#[ignore = "needs Wine and the windows-gnu Rust target"]
+fn fixture_without_imports_yields_an_empty_trace_and_completes() {
+    let work = tempfile::tempdir().expect("tempdir");
+    let plain =
+        calxgloss_testfixtures::plain_target_path().expect("plain fixture target should be built");
+    let results = run_one(
+        work.path(),
+        &plain,
+        "plain_add",
+        "int plain_add(int a, int b)",
+        &[json!({ "a": 1, "b": 2 })],
+        &["GetTickCount"],
+    );
+    assert_eq!(results.len(), 1);
+    let r = &results[0];
+    assert!(!r.crashed, "plain_add crashed: {:?}", r.error);
+    assert!(r.ok, "plain_add failed: {:?}", r.error);
+    assert!(
+        r.trace.is_empty(),
+        "a target with no import table records no trace, got {:?}",
+        r.trace
+    );
+}
+
+/// `BaselineRunner::run` derives the trace scope from the target's own
+/// imports, so the caller never passes a scope, and the trace lands in the
+/// report (capture + case expectation) that the pipeline saves as the
+/// baseline.
+#[tokio::test]
+#[ignore = "needs Wine and the windows-gnu Rust target"]
+async fn baseline_runner_records_fixture_tick_trace_into_the_report() {
+    let work = tempfile::tempdir().expect("tempdir");
+    let target =
+        calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+    let runner = BaselineRunner::new(work.path());
+    let inputs = json!({});
+    let results = runner
+        .run(
+            "fixture_target.dll",
+            "fixture_tick",
+            "unsigned int fixture_tick(void)",
+            &[TestCase {
+                inputs: inputs.clone(),
+                expected_return: Value::Null,
+                expected_side_effects: Vec::new(),
+                expected_api_calls: Vec::new(),
+            }],
+            &target,
+        )
+        .await
+        .expect("the fixture harness should run");
+    let r = &results[0];
+    assert!(r.passed, "fixture_tick failed: {:?}", r.error);
+    assert_eq!(
+        r.actual_api_calls,
+        vec!["puts".to_string(), "GetTickCount".to_string()],
+        "the runner must derive the trace scope from the target's imports"
+    );
+    assert_eq!(r.test_case.inputs, inputs);
+    assert_eq!(
+        r.test_case.expected_api_calls, r.actual_api_calls,
+        "the saved baseline's expected trace must carry the capture"
+    );
+}
+
 /// A missing DLL is a reportable condition, not a panic or a silent pass.
 #[tokio::test]
 async fn baseline_runner_reports_a_missing_dll_without_touching_wine() {

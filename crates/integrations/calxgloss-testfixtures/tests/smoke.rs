@@ -8,8 +8,9 @@
 //! stops producing that shape.
 
 use calxgloss_testfixtures::{
-    EXPORT_NAMES, IMPORT_DLL_NAMES, IMPORT_FUNCTIONS, MIN_JUMP_TABLE_ENTRIES, STRING_LITERALS,
-    TARGET_FILE_NAME, fixture_target_path, load_target,
+    EXPORT_NAMES, IMPORT_DLL_NAMES, IMPORT_FUNCTIONS, MIN_JUMP_TABLE_ENTRIES,
+    PLAIN_TARGET_FILE_NAME, STRING_LITERALS, TARGET_FILE_NAME, fixture_target_path, load_target,
+    plain_target_path,
 };
 
 #[test]
@@ -83,4 +84,25 @@ fn fixture_target_has_a_jump_table() {
         table.entries
     );
     assert!(table.rva > 0, "jump table should have a mapped RVA");
+}
+
+#[test]
+fn plain_fixture_target_has_exports_but_no_import_table() {
+    // The P22 trace gate needs a target with nothing to interpose on, to
+    // prove an absent import table is a reported, survivable condition.
+    let path = plain_target_path().expect("build script should have compiled the plain fixture");
+    assert!(path.ends_with(PLAIN_TARGET_FILE_NAME));
+    let bytes = std::fs::read(&path).expect("plain fixture should be readable");
+    let pe = goblin::pe::PE::parse(&bytes).expect("plain fixture should be a PE");
+    assert!(pe.is_lib, "plain fixture should be a DLL");
+    assert!(
+        pe.imports.is_empty(),
+        "plain fixture must not import anything: {:?}",
+        pe.imports.iter().map(|i| &i.name).collect::<Vec<_>>()
+    );
+    let exports: Vec<&str> = pe.exports.iter().filter_map(|e| e.name).collect();
+    assert!(
+        exports.contains(&"plain_add"),
+        "plain fixture should export plain_add: {exports:?}"
+    );
 }
