@@ -872,6 +872,30 @@ impl UnitUnknowns {
     }
 }
 
+/// One target binary's audit ledger as the run close and the dashboard
+/// read it: the binary's whole ledger — every record filed against it,
+/// function-scoped or binary-scoped — joined to the reviewer's resolutions
+/// (issue #377). This is the same derived join [`UnitUnknowns`] carries per
+/// unit, un-scoped: the run close prints it as the audit-ledger section,
+/// and the terminal dashboard renders the identical section from the
+/// builder's copy of the model, so the two readers never disagree.
+///
+/// The honesty rule rides through untouched: `unknowns.open` is `None`
+/// when the ledger was never filed, carries no `records` key, or failed to
+/// parse — what is open on this binary is *unknown*, and every surface
+/// prints that as unknown, never as a clean run. The open, resolved, and
+/// dismissed counts never fold into one another.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryUnknownLedger {
+    /// The binary identity the ledger speaks for, verbatim.
+    pub binary: String,
+    /// The joined state of every record in this binary's ledger: open
+    /// records with their severity counts, and the counts the reviewer's
+    /// resolutions settled.
+    #[serde(default)]
+    pub unknowns: UnitUnknowns,
+}
+
 /// One ledger record as the reviewer sees it: the record, the joined
 /// disposition, and the reviewer's answer when one binds.
 #[derive(Debug, Clone, PartialEq, Eq)]

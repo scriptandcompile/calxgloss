@@ -10,10 +10,15 @@
 //! - [`builder`] — [`DashboardBuilder`], [`parse_branch_name`], [`branch_matches`]
 //! - [`render`] — [`render_dashboard`], [`render_dashboard_follow`], [`render_unit_view`]
 
+pub mod audit;
 pub mod builder;
 pub mod render;
 pub mod view;
 
+pub use audit::{
+    AUDIT_LEDGER_BOUND, audit_ledger_header, audit_ledger_lines, binary_unknown_ledger,
+    derive_binary_unknown_ledgers, print_run_audit_ledger,
+};
 pub use builder::{DashboardBuilder, branch_matches, parse_branch_name};
 pub use render::{render_dashboard, render_dashboard_follow, render_unit_view};
 pub use view::{AttemptInfo, DiffSummary, UnitViewData, ViewTarget};

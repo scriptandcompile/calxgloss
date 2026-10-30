@@ -156,11 +156,11 @@ pub use token_usage::{
 };
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use unknowns::{
-    DECLARED_UNKNOWN_KINDS, EffectiveDisposition, EffectiveLedger, JoinedUnknown, UnitUnknown,
-    UnitUnknowns, UnknownActionError, UnknownDisposition, UnknownKind, UnknownLedger,
-    UnknownOrigin, UnknownRecord, UnknownResolution, UnknownResolutions, UnknownSeverity,
-    read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir, unknown_ledger_path,
-    unknown_resolutions_path, unknown_roster_faults,
+    BinaryUnknownLedger, DECLARED_UNKNOWN_KINDS, EffectiveDisposition, EffectiveLedger,
+    JoinedUnknown, UnitUnknown, UnitUnknowns, UnknownActionError, UnknownDisposition, UnknownKind,
+    UnknownLedger, UnknownOrigin, UnknownRecord, UnknownResolution, UnknownResolutions,
+    UnknownSeverity, read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir,
+    unknown_ledger_path, unknown_resolutions_path, unknown_roster_faults,
 };
 pub use verification::{FailedTest, VerificationResult};
 

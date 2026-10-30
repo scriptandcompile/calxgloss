@@ -18,7 +18,7 @@
 //! gates `create_branch` on. So when a shim or classification is sent
 //! back, everything translating on top of it shows as blocked.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use calxgloss_git::{DependencyChecker, GitManager};
@@ -27,11 +27,13 @@ use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewSkips, ReviewStatus, Staleness, UnitOfWork, WorkKind,
 };
 use calxgloss_types::{
-    BinaryIdentity, ClassificationOverrides, EffectiveLedger, UnitUnknowns, UnknownRecord,
-    UnknownResolutions, classification_override_records_path, read_unknown_ledger,
-    read_unknown_resolutions, work_kind_for_prefix,
+    BinaryIdentity, BinaryUnknownLedger, ClassificationOverrides, EffectiveLedger, UnitUnknowns,
+    UnknownRecord, UnknownResolutions, classification_override_records_path, read_unknown_ledger,
+    read_unknown_resolutions, unknown_ledger_dir, work_kind_for_prefix,
 };
 use chrono::Utc;
+
+use super::audit::binary_unknown_ledger;
 
 /// Parses a git branch name like `re/game_logic.dll/DrawSpritev1` or
 /// `re/classify/game_logic.dllv1` into its components. Delegates to
@@ -376,7 +378,40 @@ impl<'a> DashboardBuilder<'a> {
             }
         }
 
+        // Issue #377: the per-binary unknown audit ledger, on the model and
+        // derived exactly the way the run close prints it — one join over
+        // the pipeline's filed ledgers, so the terminal and the close can
+        // never disagree. Every binary the worklist named gets a row, and
+        // every ledger filed under `re/unknowns/` gets one too, so a binary
+        // with a filed ledger but no branch is still named at the close.
+        let mut ledger_binaries: BTreeSet<String> = units
+            .iter()
+            .map(|unit| unit.binary.as_str().to_string())
+            .collect();
+        if let Ok(entries) = std::fs::read_dir(unknown_ledger_dir(&self.repo_path)) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                    && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                {
+                    ledger_binaries.insert(stem.to_string());
+                }
+            }
+        }
+        let unknown_ledgers: Vec<BinaryUnknownLedger> = ledger_binaries
+            .iter()
+            .map(|binary| {
+                binary_unknown_ledger(
+                    binary,
+                    self.ledger_records(&mut ledger_cache, binary)
+                        .map(|records| &records[..]),
+                    unknown_resolutions.as_ref(),
+                )
+            })
+            .collect();
+
         let mut dashboard = ReviewDashboard::new(units);
+        dashboard.unknown_ledgers = unknown_ledgers;
 
         let blocked = dashboard.auto_block_units();
         if blocked > 0 {
@@ -1642,5 +1677,190 @@ mod tests {
         assert_eq!(open[0].id, "u-c");
         assert_eq!(unit.unknowns.resolved, 1);
         assert_eq!(unit.unknowns.dismissed, 1);
+    }
+
+    // ─── Per-binary unknown audit ledger on the model (issue #377) ──────
+
+    use super::super::audit;
+
+    fn find_ledger<'a>(
+        dashboard: &'a ReviewDashboard,
+        binary: &str,
+    ) -> &'a calxgloss_types::BinaryUnknownLedger {
+        dashboard
+            .unknown_ledgers
+            .iter()
+            .find(|ledger| ledger.binary == binary)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{binary} must be named in the audit ledgers, got {:?}",
+                    dashboard
+                        .unknown_ledgers
+                        .iter()
+                        .map(|l| &l.binary)
+                        .collect::<Vec<_>>()
+                )
+            })
+    }
+
+    #[test]
+    fn the_model_carries_a_per_binary_ledger_with_settles_kept_apart() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        let rec_a = unknown_record(
+            "u-a",
+            Some("DrawPrimitive"),
+            calxgloss_types::UnknownSeverity::Blocking,
+        );
+        let rec_b = unknown_record(
+            "u-b",
+            Some("OtherFunction"),
+            calxgloss_types::UnknownSeverity::Material,
+        );
+        let rec_c = unknown_record("u-c", None, calxgloss_types::UnknownSeverity::Notable);
+        write_ledger(
+            dir.path(),
+            Some(vec![rec_a.clone(), rec_b.clone(), rec_c.clone()]),
+        );
+        let mut resolutions = UnknownResolutions::default();
+        resolutions
+            .resolve(&rec_a, "evidence arrived", 1, 5)
+            .expect("resolve");
+        resolutions
+            .dismiss(&rec_b, "not a gap", 1, 6)
+            .expect("dismiss");
+        let review_dir = dir.path().join("re").join("review");
+        std::fs::create_dir_all(&review_dir).expect("review dir");
+        std::fs::write(
+            review_dir.join("unknown_resolutions.json"),
+            serde_json::to_string(&resolutions).expect("serialize resolutions"),
+        )
+        .expect("file resolutions");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let ledger = find_ledger(&dashboard, "game_logic.dll");
+
+        // The binary row is the binary-level ledger: every filed record for
+        // the binary is counted, whatever unit it scopes to.
+        let open = ledger.unknowns.open.as_ref().expect("filed ledger");
+        assert_eq!(
+            open.len(),
+            1,
+            "only the unsetled record is open at binary level"
+        );
+        assert_eq!(open[0].id, "u-c");
+        assert_eq!(ledger.unknowns.resolved, 1);
+        assert_eq!(ledger.unknowns.dismissed, 1);
+        assert_eq!(
+            ledger
+                .unknowns
+                .open_by_severity
+                .get(&calxgloss_types::UnknownSeverity::Notable),
+            Some(&1),
+            "the open severity counts are the open ones"
+        );
+    }
+
+    #[test]
+    fn an_unfiled_ledger_names_the_binary_as_unknown_not_clean() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let ledger = find_ledger(&dashboard, "game_logic.dll");
+
+        assert!(ledger.unknowns.open.is_none(), "absent ledger is unknown");
+        let text = audit::audit_ledger_lines(ledger).join("\n");
+        assert!(
+            text.contains("unknown"),
+            "the section reads unknown: {text}"
+        );
+        assert!(
+            !text.contains("none open"),
+            "unknown never launders to clean: {text}"
+        );
+    }
+
+    #[test]
+    fn a_filed_ledger_binary_with_no_unit_is_still_named_at_the_close() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        let ledger_dir = dir.path().join("re").join("unknowns");
+        std::fs::create_dir_all(&ledger_dir).expect("unknowns dir");
+        std::fs::write(
+            ledger_dir.join("engine_helpers.dll.json"),
+            r#"{"binary": "engine_helpers.dll", "filed_at": 1, "records": []}"#,
+        )
+        .expect("file second ledger");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let ledger = find_ledger(&dashboard, "engine_helpers.dll");
+
+        assert_eq!(
+            ledger.unknowns.open.as_deref(),
+            Some(&[][..]),
+            "the filed empty ledger reads honest-none at the close"
+        );
+        assert!(
+            dashboard
+                .review_queue
+                .iter()
+                .all(|unit| unit.binary.as_str() != "engine_helpers.dll"),
+            "the binary is named for its ledger, not for any unit of work"
+        );
+    }
+
+    #[test]
+    fn the_model_ledgers_and_the_run_close_derivation_print_identically() {
+        // The agreement pin: the terminal renders the model's ledgers with
+        // `audit_ledger_lines`; the run close derives its own from the same
+        // documents and prints with the same function. Same documents in,
+        // byte-identical lines out — the two readers cannot disagree.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(
+            dir.path(),
+            Some(vec![
+                unknown_record(
+                    "u-a",
+                    Some("DrawPrimitive"),
+                    calxgloss_types::UnknownSeverity::Blocking,
+                ),
+                unknown_record("u-b", None, calxgloss_types::UnknownSeverity::Material),
+            ]),
+        );
+        let ledger_dir = dir.path().join("re").join("unknowns");
+        std::fs::write(
+            ledger_dir.join("keyless_engine.dll.json"),
+            r#"{"binary": "keyless_engine.dll", "filed_at": 1}"#,
+        )
+        .expect("file keyless ledger");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let binaries: Vec<String> = dashboard
+            .unknown_ledgers
+            .iter()
+            .map(|ledger| ledger.binary.clone())
+            .collect();
+        let run_close = audit::derive_binary_unknown_ledgers(dir.path(), &binaries);
+
+        assert_eq!(run_close.len(), dashboard.unknown_ledgers.len());
+        for (model, close) in dashboard.unknown_ledgers.iter().zip(&run_close) {
+            assert_eq!(model.binary, close.binary);
+            assert_eq!(
+                audit::audit_ledger_lines(model),
+                audit::audit_ledger_lines(close),
+                "{}: the close and the terminal must print the same lines",
+                model.binary
+            );
+        }
     }
 }

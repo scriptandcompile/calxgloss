@@ -617,6 +617,11 @@ pub async fn handle_auto(
     pass_spec.refresh_cache = refresh_cache;
     run_controls.apply(&mut pass_spec);
 
+    // Issue #377: the binaries this run targets, captured where the queue is
+    // handed over, so the run close can name each target's unknown audit
+    // ledger.
+    let close_targets: Vec<String>;
+
     if continue_mode {
         // W2.5: the operator's binary scope filters the queue before the
         // plan is published — an excluded binary never enters the queue,
@@ -658,6 +663,7 @@ pub async fn handle_auto(
             spec: pass_spec.clone(),
             run: &run_controls,
         };
+        close_targets = classified.clone();
         run_binary_worklist(classified, &run_controls, |binary| {
             let target_dir = target_dir.clone();
             let pass_plumbing = pass_plumbing.clone();
@@ -697,6 +703,7 @@ pub async fn handle_auto(
         }
 
         let binary = &classified[choice - 1];
+        close_targets = vec![binary.clone()];
         println!();
         println!(
             "  {} Translating functions from {}…",
@@ -719,6 +726,14 @@ pub async fn handle_auto(
         )
         .await?;
     }
+
+    // Issue #377: the run close is a claim list, not a quiet queue. Every
+    // binary this run translated closes with its unknown audit ledger —
+    // open records named by severity, the reviewer's settled rides counted
+    // beside them, and a ledger never filed or unreadable printed as
+    // *unknown*, never as a clean run. The terminal dashboard's audit
+    // section prints the same lines from the same derivation.
+    calxgloss_reports::dashboard::print_run_audit_ledger(&workspace, &close_targets);
 
     Ok(())
 }
@@ -1524,5 +1539,87 @@ mod tests {
             ]
         );
         assert!(scope.focused_binary().is_none());
+    }
+
+    // ─── The run close names its claims (issue #377) ───────────────────
+
+    /// Stage a classification record so the binary reads as classified.
+    fn stage_classification(workspace: &std::path::Path, binary: &str) {
+        let dir = workspace.join("re").join("classify");
+        std::fs::create_dir_all(&dir).expect("classify dir");
+        std::fs::write(dir.join(format!("{binary}.json")), "{}").expect("record");
+    }
+
+    #[tokio::test]
+    async fn the_auto_run_reaches_its_close_and_hands_the_targets_to_the_ledger() {
+        // The whole handler runs: both binaries read as classified, the
+        // worklist never starts a pass (the stop signal is already stopped
+        // at the first queue boundary — no scan, no LLM), and the run close
+        // runs the audit-ledger derivation over both named targets. With no
+        // ledger filed the derivation degrades every binary to unknown and
+        // never fails the close; the section's own lines are pinned in the
+        // reports crate's audit tests.
+        let ws = temp_workspace();
+        stage_classification(ws.path(), "game_logic.dll");
+        stage_classification(ws.path(), "no_ledger.dll");
+        calxgloss_types::save_json(
+            &calxgloss_types::unknown_ledger_path(
+                ws.path(),
+                &calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+            ),
+            &calxgloss_types::UnknownLedger {
+                binary: calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+                filed_at: 1_700_000_000,
+                records: Some(Vec::new()),
+            },
+        )
+        .expect("file empty ledger");
+
+        let settings = {
+            let layers = calxgloss_config::Layers {
+                file: calxgloss_config::FileConfig {
+                    llm: calxgloss_config::LlmSection {
+                        url: Some("http://127.0.0.1:9/v1".into()),
+                        model: Some("test-model".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let loaded = calxgloss_config::LoadedConfig {
+                file: layers.file.clone(),
+                path: None,
+                searched: vec![std::path::PathBuf::from("calxgloss.toml")],
+            };
+            crate::Settings::resolve(&layers, calxgloss_config::FileConfig::default(), &loaded)
+        };
+
+        let stop = calxgloss_types::StopSignal::new();
+        stop.stop();
+
+        handle_auto(
+            AutoRunOptions {
+                target: Some(ws.path().to_path_buf()),
+                binaries_arg: Some("game_logic.dll,no_ledger.dll".to_string()),
+                all_functions: false,
+                classify_only: false,
+                continue_mode: true,
+                skip_git: true,
+                settings: &settings,
+                workspace: ws.path().to_path_buf(),
+                no_callgraph: true,
+                callgraph_cache: None,
+                callgraph_verbose: false,
+                refresh_cache: false,
+            },
+            RunControls {
+                stop: Some(&stop),
+                ..RunControls::default()
+            },
+            None,
+        )
+        .await
+        .expect("the run reaches its close, ledger degradation and all");
     }
 }

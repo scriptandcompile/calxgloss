@@ -8,6 +8,7 @@ use super::graph::DependencyGraph;
 use super::status::StatusCounts;
 use super::types::{ReviewStatus, WorkLevel};
 use super::work_unit::UnitOfWork;
+use crate::unknowns::BinaryUnknownLedger;
 
 /// A dashboard view of all units of work and their status.
 ///
@@ -26,6 +27,19 @@ pub struct ReviewDashboard {
     pub recent_activity: Vec<UnitOfWork>,
     /// Total counts by status.
     pub status_counts: StatusCounts,
+    /// The per-binary unknown audit ledger (issue #377): every target
+    /// binary the model knows about, with its whole ledger joined to the
+    /// reviewer's resolutions — open records with severity counts, and
+    /// settled counts that never fold into the open ones. The builder
+    /// fills this from the ledger documents and the resolutions document;
+    /// the terminal dashboard renders the audit-ledger section from it,
+    /// and the run close prints the same section from the same derivation
+    /// over the same documents. An empty list means the model knows no
+    /// binaries at all — a binary the model knows but whose ledger was
+    /// never filed rides here with an *unknown* reading, never as a
+    /// clean run.
+    #[serde(default)]
+    pub unknown_ledgers: Vec<BinaryUnknownLedger>,
 }
 
 impl ReviewDashboard {
@@ -136,6 +150,11 @@ impl ReviewDashboard {
             review_queue: queue,
             recent_activity: recent,
             status_counts: counts,
+            // The audit ledger is a builder concern: a hand-built dashboard
+            // knows no binaries, so it files no ledgers — empty here is
+            // honest only because the list names no binary whose ledger
+            // went unread.
+            unknown_ledgers: Vec::new(),
         }
     }
 

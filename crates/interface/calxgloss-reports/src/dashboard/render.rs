@@ -12,6 +12,7 @@ use calxgloss_types::dashboard::{
 };
 use chrono::Utc;
 
+use super::audit::{audit_ledger_header, audit_ledger_lines};
 use super::builder::DashboardBuilder;
 use super::view::UnitViewData;
 
@@ -43,7 +44,7 @@ fn red_bold(text: &str) -> String {
     format!("{}{}{}{}", ANSI_BOLD, ANSI_RED, text, ANSI_RESET)
 }
 
-fn yellow_bold(text: &str) -> String {
+pub(crate) fn yellow_bold(text: &str) -> String {
     format!("{}{}{}{}", ANSI_BOLD, ANSI_YELLOW, text, ANSI_RESET)
 }
 
@@ -137,7 +138,7 @@ fn hsep_bold() {
     println!("  {}", "═".repeat(SEP_WIDTH));
 }
 
-fn println_content(content: impl AsRef<str>) {
+pub(crate) fn println_content(content: impl AsRef<str>) {
     let s = content.as_ref();
     let visible: String = s.chars().filter(|c| !c.is_control()).collect();
     let padded = if visible.len() < SEP_WIDTH {
@@ -262,6 +263,22 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
             ));
         }
         println_content("");
+    }
+
+    // The unknown audit ledger (issue #377): what the run never
+    // established, per target binary, with the evidence that would close
+    // it. The section prints from the same derived join the run close
+    // prints, and an unfilled ledger reads as unknown right here — the
+    // quiet queue is never allowed to look like a clean run.
+    if !dashboard.unknown_ledgers.is_empty() {
+        println_content(audit_ledger_header());
+        println_content("");
+        for ledger in &dashboard.unknown_ledgers {
+            for line in audit_ledger_lines(ledger) {
+                println_content(line);
+            }
+            println_content("");
+        }
     }
 
     println_content(format!("  {} branches found in re/*", total));
@@ -394,7 +411,7 @@ fn unknowns_view_lines(unknowns: &UnitUnknowns) -> Vec<String> {
 
 /// Severity label for the terminal — the same closed scale the ledgers
 /// and the web surface speak.
-fn severity_label(severity: &calxgloss_types::UnknownSeverity) -> &'static str {
+pub(crate) fn severity_label(severity: &calxgloss_types::UnknownSeverity) -> &'static str {
     match severity {
         calxgloss_types::UnknownSeverity::Notable => "notable",
         calxgloss_types::UnknownSeverity::Material => "material",
