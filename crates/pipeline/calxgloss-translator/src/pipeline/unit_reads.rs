@@ -252,10 +252,10 @@ impl TranslationPipeline {
         };
         let mut roster: Vec<String> = Vec::new();
         for finding in result.for_function(function) {
-            if let calxgloss_apidetect::types::ApiFinding::ApiUsage(usage) = finding {
-                if !roster.iter().any(|api| api == &usage.api) {
-                    roster.push(usage.api.clone());
-                }
+            if let calxgloss_apidetect::types::ApiFinding::ApiUsage(usage) = finding
+                && !roster.iter().any(|api| api == &usage.api)
+            {
+                roster.push(usage.api.clone());
             }
         }
         roster
