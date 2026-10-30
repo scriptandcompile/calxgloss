@@ -1529,6 +1529,21 @@ impl TranslationPipeline {
             self.record_unknown_residue(result.unknown_residue.clone());
         }
 
+        // Verification residue (issue #373): a unit that reached review
+        // having run zero baseline cases files its standing question
+        // against the unit — the walk's own verification counters (no
+        // attempt ever moved `tests_total`) say this unit's behavior was
+        // never exercised, and "translated" must not read as "proven"
+        // about it. The counters are read after the walk, never back into
+        // which rung comes next, and a walk whose cases ran opens nothing.
+        if !result.attempts.iter().any(|attempt| attempt.tests_total > 0) {
+            self.record_unknown_residue(vec![crate::verification_residue::zero_case_residue(
+                binary,
+                function,
+                calxgloss_types::scan::now_unix_secs(),
+            )]);
+        }
+
         if result.success {
             self.emit(ProgressEvent::TranslationCompleted {
                 binary: binary.to_string().into(),
@@ -2309,6 +2324,48 @@ impl TranslationPipeline {
         }
     }
 
+    /// File the batch's export-coverage residue (issue #373): one
+    /// `export_uncovered` record for every export in the listing that no
+    /// filed baseline document covers — the document testgen's own
+    /// `re/baseline/<binary>/<export>/baseline.json` layout names. The
+    /// check is the already-checkable fact, no new evidence work: a
+    /// covered export asks nothing, and an export listing that never came
+    /// back (a target that is not a PE, a target whose bytes went away)
+    /// reads *unknown* and files nothing — the ledger's absence keeps
+    /// the honest reading, exactly like the seam's undeclared family. No
+    /// workspace means nowhere to look for documents and nowhere to
+    /// file, so the check does not run at all.
+    async fn record_export_residue(&self, binary: &str) {
+        let Some(workspace) = self.workspace.as_deref() else {
+            return;
+        };
+        let generator = TestGenerator::new(workspace);
+        let exports = match self.scan_source().exports().await {
+            Ok(exports) => exports,
+            Err(source) => {
+                warn!(
+                    binary,
+                    error = %source,
+                    "The export listing never came back — the export-coverage check \
+                     reads unknown and files nothing"
+                );
+                return;
+            }
+        };
+        let now = calxgloss_types::scan::now_unix_secs();
+        let residue: Vec<calxgloss_types::UnknownRecord> = exports
+            .iter()
+            .filter(|export| !export.name.is_empty())
+            .filter(|export| !generator.baseline_path(binary, &export.name).is_file())
+            .map(|export| {
+                crate::verification_residue::uncovered_export_residue(binary, &export.name, now)
+            })
+            .collect();
+        if !residue.is_empty() {
+            self.record_unknown_residue(residue);
+        }
+    }
+
     /// File (or re-file) the batch's per-binary unknown ledger,
     /// `re/unknowns/<binary identity>.json` (issue #369).
     ///
@@ -2823,6 +2880,13 @@ impl TranslationPipeline {
         // admit replaces it.
         *self.unknown_residue.lock().expect("unknown residue lock") = None;
 
+        // Verification residue (issue #373): every export no filed
+        // baseline document covers files its standing question ahead of
+        // the queue, so the binary-level facts lead the ledger's derived
+        // order and re-file a batch after covering an export simply stops
+        // landing that entry.
+        self.record_export_residue(binary).await;
+
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
@@ -3193,6 +3257,12 @@ impl TranslationPipeline {
         // accumulated set starts out gone — what this batch's producers
         // admit replaces it.
         *self.unknown_residue.lock().expect("unknown residue lock") = None;
+
+        // Verification residue (issue #373): the export-coverage check
+        // runs ahead of the queue here too — every export no filed
+        // baseline document covers files its standing question into the
+        // same accumulator the ladder and seam residues land in.
+        self.record_export_residue(binary).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
 
@@ -6047,8 +6117,11 @@ void SetCursor(void)
         // The re-run re-derives, never re-numbers: every record run one
         // landed keeps its id, revision, and first-seen; the only new
         // entry is the refused step's own question. And the walk filed
-        // only ladder and seam records — the fixture's complete scans
-        // still admit no facet residue.
+        // ladder, seam, and verification records — the fixture's
+        // complete scans still admit no facet residue, while the canned
+        // code never compiled, so the unit reached review having run
+        // zero baseline cases (#373) and files that standing question
+        // too, re-derived whole in run two.
         let again: Vec<(String, u32, u64)> = records
             .iter()
             .map(|r| (r.id.clone(), r.revision, r.first_seen))
@@ -6075,6 +6148,295 @@ void SetCursor(void)
                 .count(),
             1,
             "the seam's posture record (#371) rides the same ledger, untouched"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| r.kind == calxgloss_types::UnknownKind::BaselineNeverRun)
+                .count(),
+            1,
+            "the canned code never compiled, so no case ever ran: the unit's zero-case \
+             question (#373) rides the same ledger, one standing question at one id"
+        );
+    }
+
+    /// The ticket's demoable run for the zero-cases fact (issue #373): the
+    /// canned LLM's broken code never compiles, so the fixture unit's walk
+    /// never runs a baseline case — and the unit files a `baseline_never_run`
+    /// record against itself, origin its own verification case set, at the
+    /// Blocking level the shared severity docs name for exactly this fact.
+    /// A second walk re-derives the same standing question whole: same id,
+    /// same revision, same first-seen.
+    #[tokio::test]
+    async fn a_unit_that_never_ran_a_baseline_case_files_its_zero_case_record() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+        let llm =
+            LlmClient::from_url(&broken_alternating_llm().await, "qwen3").expect("llm config");
+        let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
+        let binary_file = dir.path().join(calxgloss_testfixtures::TARGET_FILE_NAME);
+        std::fs::copy(fixture.path(), &binary_file).expect("fixture copied into the workspace");
+        let pipeline = TranslationPipeline::new(fixture_kuna(), llm, ApiMappings::default())
+            .with_workspace(dir.path().to_path_buf())
+            .with_binary_path(&binary_file);
+
+        // Kuna lists MinGW exports with the leading underscore; the unit
+        // name is the one the queue itself would use.
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let unit = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists fixture_status")
+            .name
+            .clone();
+
+        let capped = retry::RetryConfig {
+            max_attempts: 6,
+            retry_strategy: retry::RetryStrategy::CompileFix,
+            escalate_on_failure: true,
+            max_context_tier: Some(calxgloss_types::ContextTier::Signature),
+        };
+        let result = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &capped, &verifier)
+            .await
+            .expect("the canned LLM answers every attempt");
+        assert!(
+            result.attempts.iter().all(|attempt| attempt.tests_total == 0),
+            "nothing ever compiled, so nothing ever verified: zero baseline cases ran"
+        );
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("the filing call");
+        let ledger_path = calxgloss_types::unknown_ledger_path(
+            dir.path(),
+            &calxgloss_types::BinaryIdentity::new(PROGRAM),
+        );
+        let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
+            .expect("a zero-case walk files its unknown ledger like every other residue");
+        let records = ledger
+            .records
+            .expect("a walk whose case set never ran files a current set, never an absent key");
+        let zero: Vec<&calxgloss_types::UnknownRecord> = records
+            .iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::BaselineNeverRun)
+            .collect();
+        assert_eq!(zero.len(), 1, "one unit, one zero-case standing question");
+        let zero = zero[0];
+        assert_eq!(
+            zero.id,
+            format!("{PROGRAM}/{unit}/baseline_never_run/cases-{unit}"),
+            "the shared derivation, the unit as subject, the unit's own case set as slot"
+        );
+        assert_eq!(
+            zero.origin,
+            calxgloss_types::UnknownOrigin::CaseSet {
+                case_set: format!("cases-{unit}"),
+            },
+            "the verification case set is the origin"
+        );
+        assert_eq!(
+            zero.severity,
+            calxgloss_types::UnknownSeverity::Blocking,
+            "zero baseline cases ever run is the Blocking level's own written criterion"
+        );
+        assert_eq!(zero.function.as_deref(), Some(unit.as_str()));
+        assert!(
+            zero.question.contains("zero baseline cases"),
+            "the question states the admitted fact: {}",
+            zero.question
+        );
+        assert!(
+            zero.required_evidence.contains(&unit),
+            "the required evidence names the input vector that would have exercised the unit: {}",
+            zero.required_evidence
+        );
+        assert_eq!(zero.revision, 1);
+
+        // Run two: the same unit walks again, again without a single case
+        // — the same standing question, re-derived whole, never a second
+        // opinion and never a re-numbered diff.
+        let first_seen = zero.first_seen;
+        let _ = pipeline
+            .try_translate_with_retry(PROGRAM, &unit, &capped, &verifier)
+            .await
+            .expect("the canned LLM answers every attempt");
+        pipeline
+            .file_unknown_ledger(PROGRAM)
+            .expect("the second filing call");
+        let refiled: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the re-filed ledger");
+        let again = refiled
+            .records
+            .expect("a current set every re-file")
+            .into_iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::BaselineNeverRun)
+            .collect::<Vec<_>>();
+        assert_eq!(again.len(), 1, "the re-walk re-derives, never duplicates");
+        assert_eq!(again[0].id, zero.id, "the same id every re-derivation");
+        assert_eq!(again[0].revision, 1, "the unchanged record keeps its revision");
+        assert_eq!(again[0].first_seen, first_seen, "and its first-seen");
+    }
+
+    /// The ticket's demoable run for the uncovered-exports fact (issue #373):
+    /// a batch over the fixture with no baseline document filed anywhere
+    /// files one `export_uncovered` record per export in the binary's
+    /// ledger — no function slot, the export named in the source slot. A
+    /// re-run lands the same ids at the same revisions, and filing a real
+    /// baseline document for one export makes exactly that export's record
+    /// stop landing: "translated" and "proven" never read the same again,
+    /// and a covered export asks nothing.
+    #[tokio::test]
+    async fn a_batch_files_a_record_for_every_export_no_baseline_document_covered() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _binary_file) = cached_pipeline(dir.path());
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+            .await
+            .expect("fixture function listing");
+        let unit = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+            .expect("the fixture lists fixture_status")
+            .name
+            .clone();
+
+        // The export listing the check itself reads — the fixture's four
+        // named exports — so the pinned slots are the listing's own names.
+        let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+            .await
+            .expect("fixture export listing");
+        assert!(!exports.is_empty(), "the fixture serves its named exports");
+
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                std::slice::from_ref(&unit),
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("a batch over one fixture function");
+        let ledger_path = calxgloss_types::unknown_ledger_path(
+            dir.path(),
+            &calxgloss_types::BinaryIdentity::new(PROGRAM),
+        );
+        let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
+            .expect("a batch files its unknown ledger beside the scans");
+        let records = ledger
+            .records
+            .expect("a current derived set, never an absent key");
+        let uncovered: Vec<&calxgloss_types::UnknownRecord> = records
+            .iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::ExportUncovered)
+            .collect();
+        assert_eq!(
+            uncovered
+                .iter()
+                .map(|r| r.source_slot())
+                .collect::<Vec<String>>(),
+            exports
+                .iter()
+                .filter(|export| !export.name.is_empty())
+                .map(|export| format!("export-{}", export.name))
+                .collect::<Vec<String>>(),
+            "one record per export, in the listing's own order — no baseline document \
+             was filed for any of them"
+        );
+        for record in &uncovered {
+            assert_eq!(
+                record.function, None,
+                "the export is the subject the slot names, not a function"
+            );
+            assert_eq!(
+                record.severity,
+                calxgloss_types::UnknownSeverity::Blocking,
+                "no filed baseline document for an export is the Blocking criterion's \
+                 own written wording"
+            );
+            assert_eq!(
+                record.id,
+                format!("{PROGRAM}/-/export_uncovered/{}", record.source_slot()),
+                "the #368 derivation: no function slot, the export named in the slot"
+            );
+            assert!(
+                matches!(&record.origin,
+                    calxgloss_types::UnknownOrigin::CaseSet { case_set }
+                        if case_set == &record.source_slot()),
+                "the case set that never called the export is the origin"
+            );
+        }
+        let landed: Vec<(String, u32, u64)> = uncovered
+            .iter()
+            .map(|r| (r.id.clone(), r.revision, r.first_seen))
+            .collect();
+
+        // Run two, still nothing filed: the same ids at the same revisions
+        // and first-seens — a re-run never re-numbers a diff.
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                std::slice::from_ref(&unit),
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("the ledger re-run");
+        let refiled: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the re-filed ledger");
+        let again: Vec<(String, u32, u64)> = refiled
+            .records
+            .expect("a current set every re-file")
+            .iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::ExportUncovered)
+            .map(|r| (r.id.clone(), r.revision, r.first_seen))
+            .collect();
+        assert_eq!(
+            again, landed,
+            "re-runs land the same ids at the same revisions and first-seens"
+        );
+
+        // Cover one export the way the testgen writer itself files a
+        // baseline document, and re-batch: exactly that export's record
+        // stops landing — the ledger stays the current derived set.
+        let covered = exports
+            .iter()
+            .last()
+            .expect("the fixture lists at least one export");
+        calxgloss_testgen::TestGenerator::new(dir.path())
+            .save_baseline(PROGRAM, &covered.name, &[])
+            .expect("a baseline document filed through the real writer");
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                std::slice::from_ref(&unit),
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("the batch after the baseline document is filed");
+        let covered_now: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the ledger after the covering");
+        let slots: Vec<String> = covered_now
+            .records
+            .expect("a current set")
+            .iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::ExportUncovered)
+            .map(|r| r.source_slot())
+            .collect();
+        assert_eq!(
+            slots,
+            exports
+                .iter()
+                .filter(|export| export.name != covered.name)
+                .map(|export| format!("export-{}", export.name))
+                .collect::<Vec<String>>(),
+            "the covered export asks nothing; its record stops landing, the others stand"
         );
     }
 

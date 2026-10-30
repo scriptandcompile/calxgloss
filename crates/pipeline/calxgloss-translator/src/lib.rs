@@ -32,6 +32,7 @@ pub mod scan_registry;
 pub mod seam_residue;
 mod translator;
 pub mod triage;
+pub mod verification_residue;
 mod version_pairing;
 
 pub mod batch;
