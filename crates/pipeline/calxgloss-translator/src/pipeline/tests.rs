@@ -1242,6 +1242,98 @@ async fn persisted_branch_inventory_reaches_baseline_generation_through_translat
     );
 }
 
+// ─── Per-function analysis artifact (issue #379) ─────────────────
+
+/// `translate` files the unit's tagged Windows APIs as the per-function
+/// analysis artifact — `re/analysis/{binary}/{function}.json`, the
+/// document the web review UI's Windows API mappings panel reads — and
+/// the tagging is body-scoped. The fixture binary's `fixture_tick`
+/// body names `puts` and `GetTickCount`; `OutputDebugStringA` is an
+/// import of the same binary that this body never names. With both
+/// `GetTickCount` and `OutputDebugStringA` in the run's mapping table,
+/// the artifact must carry exactly the API the body references: the
+/// mapped-but-unnamed import stays out.
+#[tokio::test]
+async fn translate_files_the_body_scoped_analysis_artifact() {
+    let dir = TempDir::new().expect("temp workspace");
+    let mappings = calxgloss_pal::ApiMappings::from_custom(vec![
+        calxgloss_pal::ApiMapping::new(
+            "GetTickCount",
+            calxgloss_types::ApiCategory::Win32Core,
+            "std::time::Instant",
+            "test-only mapping",
+        ),
+        calxgloss_pal::ApiMapping::new(
+            "OutputDebugStringA",
+            calxgloss_types::ApiCategory::Win32Gui,
+            "log::info!",
+            "test-only mapping",
+        ),
+    ]);
+    // The LLM URL points at a closed port: the run fails at the LLM
+    // call, but the artifact is filed at step 2, before any prompt is
+    // built, so it is on disk either way.
+    let llm = LlmClient::from_url("http://127.0.0.1:1/v1", "qwen3").expect("llm config");
+    let pipeline = TranslationPipeline::new(fixture_kuna(), llm, mappings)
+        .with_workspace(dir.path().to_path_buf());
+
+    let _ = pipeline
+        .translate(calxgloss_testfixtures::TARGET_FILE_NAME, "fixture_tick")
+        .await;
+
+    let artifact = calxgloss_types::analysis_dir(dir.path())
+        .join(calxgloss_testfixtures::TARGET_FILE_NAME)
+        .join("fixture_tick.json");
+    let document: serde_json::Value =
+        calxgloss_types::load_json(&artifact).expect("the artifact is filed");
+
+    // The shape the web reader deserializes: a `windows_apis` array
+    // whose entries carry name, category, and pal_mapping.
+    let apis = document["windows_apis"]
+        .as_array()
+        .expect("the artifact carries a windows_apis array");
+    assert_eq!(
+        apis.iter()
+            .map(|api| api["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec![Some("GetTickCount")],
+        "the artifact names exactly the APIs the function's body references"
+    );
+    assert_eq!(
+        apis[0]["category"], "Win32Core",
+        "the category round-trips as its plain name, the way the web reader reads it"
+    );
+    assert_eq!(
+        apis[0]["pal_mapping"], "std::time::Instant",
+        "the mapping table's PAL target rides through with no conversion"
+    );
+}
+
+/// A failed artifact write must not stop the translation: the artifact
+/// is panel context, never pipeline input. Making `re` a plain file in
+/// the workspace leaves the artifact's parent directory chain
+/// unconstructable; `translate` must still run to the LLM call like any
+/// other offline run, and the write failure must not surface as the
+/// run's error.
+#[tokio::test]
+async fn a_failed_analysis_artifact_write_does_not_stop_translation() {
+    let dir = TempDir::new().expect("temp workspace");
+    std::fs::write(dir.path().join("re"), "not a directory").expect("blocking file for `re`");
+
+    let llm = LlmClient::from_url("http://127.0.0.1:1/v1", "qwen3").expect("llm config");
+    let pipeline = TranslationPipeline::new(fixture_kuna(), llm, ApiMappings::default())
+        .with_workspace(dir.path().to_path_buf());
+
+    let error = pipeline
+        .translate(calxgloss_testfixtures::TARGET_FILE_NAME, "fixture_tick")
+        .await
+        .expect_err("the run still reaches the closed-port LLM");
+    assert!(
+        matches!(error, TranslatorError::Llm(_)),
+        "the failure should be the unreachable LLM, not the artifact write: {error}"
+    );
+}
+
 // ─── Type-inference completion latch (issue #238) ────────────────
 
 /// A named row out of a fresh table — descriptors are not `Clone`,

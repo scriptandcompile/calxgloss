@@ -476,15 +476,16 @@ impl Analyzer {
             .collect();
 
         // Tag Windows API calls among the names the decompiled body calls,
-        // kept to the names that are also program imports — only the calls
-        // the analysis engine can see are worth tagging.
+        // limited to names that are also program imports — only the calls
+        // the analysis engine can see are worth tagging. The body itself
+        // is the scan text, so tagging stays scoped to this function.
         let callees = calxgloss_decomp::parse::callees_from_decompiled(&decompiled.body);
         let called_imports: Vec<String> = callees
             .iter()
             .filter(|callee| import_names.iter().any(|i| i == *callee))
             .cloned()
             .collect();
-        let tagged_apis = self.tag_windows_apis("", &called_imports)?;
+        let tagged_apis = self.tag_windows_apis(&decompiled.body, &called_imports)?;
 
         // The seam has no call-graph endpoint. Callers come from the
         // cross-references to this function; callees are read from the
@@ -523,28 +524,31 @@ impl Analyzer {
         Ok(analysis)
     }
 
-    /// Tags Windows API calls found in the imports list and the
-    /// disassembly text.
+    /// Tags the Windows API calls named in a function's own body.
     ///
-    /// Each import name is looked up in the PAL mapping table. For each
-    /// name that matches a known Windows API, records the API name, its
-    /// category, and the PAL mapping target. Table entries whose names
-    /// also appear in the disassembly text are tagged too, even when they
-    /// are not imports.
+    /// Tagging is scoped to the function: an API is tagged only when its
+    /// name appears in `body`. An import that the function never names is
+    /// left out, even when the mapping table has a row for it — a DLL-wide
+    /// import list would otherwise tag every API the binary could call,
+    /// not the ones this function calls. Besides the imports whose names
+    /// appear in the body, table entries named anywhere in the body are
+    /// tagged too, catching APIs reached without an import entry (a
+    /// dynamic `LoadLibrary`/`GetProcAddress` load, say).
     ///
     /// This function is pure: it reads no analysis engine at all. It
     /// works with the provided text and import list.
     ///
     /// # Arguments
     ///
-    /// * `disassembly` — The function's listing text. A mapped API name
-    ///   that appears in this text is tagged even when it is not in
-    ///   `imports`; an empty string skips this extra scan.
-    /// * `imports` — The list of imports for the DLL containing the function.
-    ///   Ghidra reports an import as a name and an external slot with no
-    ///   module attached, so these are names rather than [`Import`](calxgloss_types::Import) values;
-    ///   the module a symbol came from is not available from the analysis
-    ///   side and is not needed to look up a mapping.
+    /// * `body` — The function's body text: the pseudo-C the analysis
+    ///   engine decompiled for it (or a disassembly listing, when the
+    ///   caller has one). An empty string tags nothing.
+    /// * `imports` — The list of imports for the target binary containing
+    ///   the function. The analysis engine reports an import as a name and
+    ///   external slot with no module attached, so these are names rather
+    ///   than [`Import`](calxgloss_types::Import) values; the module a
+    ///   symbol came from is not available from the analysis side and is
+    ///   not needed to look up a mapping.
     ///
     /// # Example
     ///
@@ -558,29 +562,36 @@ impl Analyzer {
     /// );
     /// let analyzer = Analyzer::new(source, ApiMappings::default());
     ///
+    /// let body = "CreateFileA(0, 0, 0, 0, 0, 0); ReadFile(3, buf, 16, 0);";
     /// let imports = vec!["CreateFileA".to_string(), "ReadFile".to_string()];
     ///
-    /// let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
+    /// let tagged = analyzer.tag_windows_apis(body, &imports).unwrap();
     /// assert_eq!(tagged.len(), 2);
     /// assert_eq!(tagged[0].name, "CreateFileA");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn tag_windows_apis(
-        &self,
-        disassembly: &str,
-        imports: &[String],
-    ) -> Result<Vec<WindowsApiCall>> {
+    pub fn tag_windows_apis(&self, body: &str, imports: &[String]) -> Result<Vec<WindowsApiCall>> {
         debug!(imports_count = imports.len(), "Tagging Windows APIs");
 
         // `seen` guards duplicate tagging: each API is tagged once.
         let mut tagged = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        // Tag APIs found in the imports
+        // Tagging reads the body once, lowercased, so both scans below
+        // match API names without caring about case.
+        let body_lower = body.to_lowercase();
+
+        // Tag the imports whose names the function's body mentions.
         for api_name in imports {
             // Skip if we've already tagged this API
             if seen.contains(api_name.as_str()) {
+                continue;
+            }
+
+            // Tagging is body-scoped: an import this function never
+            // names is not one of its API calls.
+            if !body_lower.contains(&api_name.to_lowercase()) {
                 continue;
             }
 
@@ -595,13 +606,12 @@ impl Analyzer {
             }
         }
 
-        // Also scan the disassembly for known API names that might not be in imports
-        // (e.g., dynamically loaded via LoadLibrary/GetProcAddress)
-        if !disassembly.is_empty() {
-            let dis_lower = disassembly.to_lowercase();
+        // Also scan the body for known API names that might not be in
+        // imports (e.g., dynamically loaded via LoadLibrary/GetProcAddress)
+        if !body.is_empty() {
             for mapping in self.api_mappings.iter() {
                 let api_lower = mapping.windows_api.to_lowercase();
-                if dis_lower.contains(&api_lower) && seen.insert(mapping.windows_api.to_string()) {
+                if body_lower.contains(&api_lower) && seen.insert(mapping.windows_api.to_string()) {
                     tagged.push(WindowsApiCall {
                         name: mapping.windows_api.to_string(),
                         category: mapping.category.clone(),
@@ -896,8 +906,11 @@ mod tests {
     fn test_tag_windows_apis_kernel32() {
         let analyzer = test_analyzer();
         let imports = vec!["CreateFileA".to_string(), "ReadFile".to_string()];
+        let body = "CreateFileA(0, 0, 0, 0, 0, 0);\nReadFile(3, buf, 16, 0);";
 
-        let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
+        let tagged = analyzer
+            .tag_windows_apis(body, &imports)
+            .expect("tagging the two body-named imports should succeed");
         assert_eq!(tagged.len(), 2);
         assert_eq!(tagged[0].name, "CreateFileA");
         assert_eq!(tagged[1].name, "ReadFile");
@@ -907,8 +920,11 @@ mod tests {
     fn test_tag_windows_apis_deduplication() {
         let analyzer = test_analyzer();
         let imports = vec!["CreateFileA".to_string(), "CreateFileA".to_string()];
+        let body = "CreateFileA(0, 0, 0, 0, 0, 0);";
 
-        let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
+        let tagged = analyzer
+            .tag_windows_apis(body, &imports)
+            .expect("tagging a repeated import should succeed");
         assert_eq!(tagged.len(), 1);
     }
 
@@ -916,8 +932,11 @@ mod tests {
     fn test_tag_windows_apis_unrecognized() {
         let analyzer = test_analyzer();
         let imports = vec!["UnknownFunction".to_string()];
+        let body = "UnknownFunction(1);";
 
-        let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
+        let tagged = analyzer
+            .tag_windows_apis(body, &imports)
+            .expect("tagging an unrecognized import should succeed");
         assert!(tagged.is_empty());
     }
 
@@ -929,19 +948,45 @@ mod tests {
     }
 
     #[test]
-    fn test_tag_windows_apis_disassembly_scan() {
+    fn test_tag_windows_apis_body_scan() {
         let analyzer = test_analyzer();
         let imports: Vec<String> = vec![];
 
-        // Disassembly contains a known API name that's not in imports
-        let disassembly = r"
+        // The body names a known API that's not in the imports list.
+        let body = r"
             0x00401000: call LoadLibraryA
             0x00401005: mov eax, [esp+0x4]
         ";
 
-        let tagged = analyzer.tag_windows_apis(disassembly, &imports).unwrap();
+        let tagged = analyzer
+            .tag_windows_apis(body, &imports)
+            .expect("scanning the body for unimported APIs should succeed");
         assert!(!tagged.is_empty());
         assert!(tagged.iter().any(|api| api.name == "LoadLibraryA"));
+    }
+
+    /// The body scope of issue #379: an import that is PAL-mapped but
+    /// never named in the function's body is not one of this function's
+    /// API calls, and stays out of the tagged list.
+    #[test]
+    fn test_tag_windows_apis_skips_mapped_imports_the_body_never_names() {
+        let analyzer = test_analyzer();
+        let imports = vec![
+            "CreateFileA".to_string(),
+            "ReadFile".to_string(),
+            "WriteFile".to_string(),
+        ];
+        let body = "CreateFileA(0, 0, 0, 0, 0, 0);";
+
+        let tagged = analyzer
+            .tag_windows_apis(body, &imports)
+            .expect("body-scoped tagging should succeed");
+        let names: Vec<&str> = tagged.iter().map(|api| api.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["CreateFileA"],
+            "only the API the body names is tagged"
+        );
     }
 
     #[test]

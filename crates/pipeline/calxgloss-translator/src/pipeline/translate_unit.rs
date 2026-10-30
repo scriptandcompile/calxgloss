@@ -89,9 +89,12 @@ impl TranslationPipeline {
             disassembly_lines: function_info.disassembly.lines().count(),
         });
 
-        // Step 2: read the imports and tag the Windows APIs
+        // Step 2: read the imports and tag the Windows APIs. The scan
+        // fetch leaves `disassembly` empty — the analysis engine answers
+        // in pseudo-C — so the decompiler's body is the text tagging
+        // scopes to.
         let imports = self.fetch_imports(binary).await?;
-        let tagged_apis = self.tag_windows_apis(&function_info.disassembly, &imports)?;
+        let tagged_apis = self.tag_windows_apis(&function_info.decompiler_output, &imports)?;
         info!(
             binary,
             function,
@@ -105,6 +108,12 @@ impl TranslationPipeline {
             function: function.to_string(),
             tagged_apis: tagged_apis.len(),
         });
+
+        // File the tagged list as the unit's per-function analysis
+        // artifact, so the web review UI's Windows API mappings panel
+        // reads the same tagging this unit ran with (issue #379). The
+        // batch path gets this for free: it reuses `translate`.
+        self.file_analysis_artifact(binary, function, &tagged_apis);
 
         // Step 3: generate the baseline test's inputs. The control-flow
         // document loads once here and serves both users: its branch-site

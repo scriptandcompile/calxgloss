@@ -6,13 +6,16 @@
 //! (`re/analysis/{binary}_call_graph.json`), which the analysis scan
 //! writes, and the per-function analysis artifact
 //! (`re/analysis/{binary}/{function}.json`, carrying the identified
-//! `windows_apis`). Provenance, honestly: no shipped command files the
-//! per-function artifact today — the translate path assembles its
-//! function info in memory from the live engine — so the artifact
-//! layout is pinned only by the decomp scan's persistence test until
-//! some scan files it, and the API-mapping section stays empty in
-//! real workspaces. No new persistence is introduced; missing or
-//! corrupt artifacts degrade to empty sections rather than errors. The data comes over the shared `GET /api/units/{id}` endpoint
+//! `windows_apis`). Provenance, honestly: the translate path files the
+//! artifact for each unit it translates (issue #379), tagging its
+//! APIs against the function's own body — so the API-mapping section
+//! is fed in workspaces that have run a translation. The
+//! `decompiler_output` and `function_name` fields the decomp handler
+//! reads from the same path are still unfed in production; their
+//! layout stays pinned by the decomp scan's persistence test. This
+//! handler introduces no persistence of its own; missing or corrupt
+//! artifacts degrade to empty sections rather than errors. The data
+//! comes over the shared `GET /api/units/{id}` endpoint
 //! (registered in every router) — no new route is introduced.
 
 use std::path::Path;

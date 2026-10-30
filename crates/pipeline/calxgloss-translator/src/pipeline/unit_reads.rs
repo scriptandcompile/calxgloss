@@ -85,21 +85,55 @@ impl TranslationPipeline {
             })
     }
 
-    /// Tag Windows API calls in the function's disassembly and imports.
+    /// Tag the Windows API calls the function's body names, from the
+    /// binary's import list.
     pub(super) fn tag_windows_apis(
         &self,
-        disassembly: &str,
+        body: &str,
         imports: &[String],
     ) -> Result<Vec<calxgloss_types::WindowsApiCall>> {
         // Use the analyzer that was built with the pipeline, so its tagging runs
         let tagged = self
             .analyzer
-            .tag_windows_apis(disassembly, imports)
+            .tag_windows_apis(body, imports)
             .map_err(|e| TranslatorError::TestGen(anyhow::anyhow!("API tagging failed: {e}")))?;
 
         // The analyzer already writes the shared `WindowsApiCall` values, so
         // its tagged list is the prompt's list — no conversion needed.
         Ok(tagged)
+    }
+
+    /// File the unit's tagged Windows APIs as the per-function analysis
+    /// artifact: `re/analysis/{binary}/{function}.json`, the document the
+    /// web review UI's Windows API mappings panel reads. The document
+    /// carries just the `windows_apis` array, in the shape the panel's
+    /// reader deserializes.
+    ///
+    /// Nothing to file when the pipeline has no workspace. The artifact is
+    /// panel context, never pipeline input, so a failed write is logged
+    /// and never fails the translation.
+    pub(super) fn file_analysis_artifact(
+        &self,
+        binary: &str,
+        function: &str,
+        windows_apis: &[calxgloss_types::WindowsApiCall],
+    ) {
+        let Some(workspace) = self.workspace.as_deref() else {
+            return;
+        };
+        let path = calxgloss_types::analysis_dir(workspace)
+            .join(binary)
+            .join(format!("{function}.json"));
+        let document = serde_json::json!({ "windows_apis": windows_apis });
+        if let Err(error) = calxgloss_types::save_json(&path, &document) {
+            warn!(
+                binary,
+                function,
+                error = %error,
+                "Failed to file the per-function analysis artifact; the Windows API \
+                 mappings panel will show no mappings for this unit"
+            );
+        }
     }
 
     /// Generate the baseline test's inputs for a function, aimed at the
