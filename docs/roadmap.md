@@ -61,7 +61,7 @@ it.
 | P32 | Contributor skill for driving the harness + doctrine — a routing-shaped SKILL.md for the 23-command CLI with per-evidence-engine references, the don't-repeat / remediation-literalism rules in `AGENTS.md`, and dated doc-claim pinning for version skew | — (docs + skills, no crate) | — | ⬜ not started | not specced | — |
 | P33 | Whole-task measurement harness — benchmark pipeline tasks end to end (tokens, RSS, ms) with an oracle independent of the implementation, counting discovery, retries, and continuations in every token claim | — (dev-side experiment harness, no crate) | — | ⬜ not started | not specced | — |
 | P40 | API-aware complexity mode reaches the prompt — `api_aware` is set by callers but no prompt builder reads it; either wire the mode in or remove it until a design exists | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | filed as issue, not specced | [#365](https://github.com/scriptandcompile/calxgloss/issues/365) |
-| P41 | Producer for the `re/analysis/` per-function artifacts — the workspace layout promised them and the web API Mapping panel reads them, but nothing wrote them; the fix: the translate path files the API list during translation, in the documented layout | pipeline (`calxgloss-translator`) + interface (`calxgloss-web`) | — | 🔶 in progress | tracer landed (#379): the translate path files the body-scoped `windows_apis` artifact, contract pinned e2e (#380); the full `FunctionInfo` record and layout reconciliation stay open | [#366](https://github.com/scriptandcompile/calxgloss/issues/366) |
+| P41 | Producer for the `re/analysis/` per-function artifacts — the workspace layout promised them and the web API Mapping panel reads them, but nothing wrote them; the fix: the translate path files the API list during translation, in the documented layout | pipeline (`calxgloss-translator`) + interface (`calxgloss-web`) | — | 🔶 in progress | tracer landed (#379): the translate path files the body-scoped `windows_apis` artifact, contract pinned e2e (#380), stale notes retired and layout filed in the docs (#381); the full `FunctionInfo` record stays open | [#366](https://github.com/scriptandcompile/calxgloss/issues/366) |
 | P42 | CI foundation — calxgloss has no CI at all (no `.github/` anywhere); build, clippy, workspace tests, and the fixture-DLL e2e on every PR, the substrate every scored-eval and drift-check gate in this block runs on | — (infra, no crate) | — | ⬜ not started | not specced | — |
 | P43 | Fail-closed sandbox for model output — port KRAKEN's `kraken-confine` vocabulary (read-only system paths, one read-write run dir, rlimits, network denied, refuse-to-spawn when confinement cannot be enforced) around `calxgloss-verify` scratch projects and `testgen`'s Wine runs, replacing the scratch-dir convention | pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | not specced | — |
 | P44 | Baseline capture provenance + live-oracle hybrid — stamp `baseline.json` with DLL sha256, the `preflight_wine` Wine version, the harness load base, and the target triple; on a failing test re-run the Wine capture on demand and diff against `baseline.json`, telling "translation broke" from "recording rotted" for one Wine process per case | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + shared (`calxgloss-types`) | — | ⬜ not started | not specced | — |
@@ -340,10 +340,11 @@ the file, so the panel was empty on every real workspace. Issue #379
 chose the persist option: the translate path now files the artifact for
 each unit it translates, with its Windows API calls tagged against the
 function's own body, and the panel reads it (#380 pins that contract end
-to end). What stays open is the rest of the record — the artifact carries
-only the tagged `windows_apis`, so the `decompiler_output` and
-`function_name` the decomp handler reads from the same path are still
-unfed — and keeping the layout record in the workspace docs current.
+to end). The stale no-producer notes are retired and the layout is filed
+in the workspace docs (#381). What stays open is the rest of the record —
+the artifact carries only the tagged `windows_apis`, so the
+`decompiler_output` and `function_name` the decomp handler reads from the
+same path are still unfed.
 Filed as
 [#366](https://github.com/scriptandcompile/calxgloss/issues/366) during the
 2026-10-28 plain-English sweep.
