@@ -338,9 +338,12 @@ include!("stub_content.rs");
 //
 // A case passes only when BOTH dimensions match: the return value equals the
 // baseline value, and — when the baseline case carries a recorded API-call
-// trace — the ordered verify-PAL-surface call sequence equals it exactly, in
-// order. An empty expected trace leaves the trace dimension unassessed: the
-// value verdict stands alone, and silence never counts as a trace pass.
+// trace — the expected names appear in order, repetitions intact, inside the
+// ordered verify-PAL-surface call sequence as a subsequence (ordered
+// containment). Extra surface entries never fail: they are entries the
+// capture vocabulary cannot speak. An empty expected trace leaves the trace
+// dimension unassessed: the value verdict stands alone, and silence never
+// counts as a trace pass.
 
 use serde::{Deserialize, Serialize};
 
@@ -384,8 +387,25 @@ fn main() {
 fn judge(i: usize, t: &TestCaseInput, output: Value, actual_api_calls: Vec<String>) -> TestResult {
     let trace_assessed = !t.expected_api_calls.is_empty();
     let trace_divergence_index = if trace_assessed {
-        let positions = t.expected_api_calls.len().max(actual_api_calls.len());
-        (0..positions).find(|k| t.expected_api_calls.get(*k) != actual_api_calls.get(*k))
+        // Greedy containment walk: each expected name must be found in the
+        // actual route at or after the position where the previous one
+        // matched. The divergence index names where the search gave up its
+        // hunt for the first unhonoured expected call: 0 when the very first
+        // was never found, the position just after the last honoured call
+        // for a later one, and the route's own length when the search ran
+        // off its end.
+        let mut cursor = 0usize;
+        let mut divergence = None;
+        for expected in &t.expected_api_calls {
+            match actual_api_calls[cursor..].iter().position(|actual| actual == expected) {
+                Some(hit) => cursor += hit + 1,
+                None => {
+                    divergence = Some(cursor);
+                    break;
+                }
+            }
+        }
+        divergence
     } else {
         None
     };

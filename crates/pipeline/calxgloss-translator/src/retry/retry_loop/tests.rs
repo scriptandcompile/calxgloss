@@ -1177,7 +1177,7 @@ pub fn call_no_params() -> serde_json::Value {
     };
     let prompt = &sent[&2];
     assert!(
-        prompt.contains("API-call trace divergence at position 0"),
+        prompt.contains("API-call trace divergence at position 2"),
         "the next attempt's fix prompt carries the trace divergence:\n{prompt}"
     );
     assert!(
