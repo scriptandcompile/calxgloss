@@ -30,16 +30,17 @@ Test counts in the archive are indicative targets, not exact requirements.
 **Tracks P19–P33 are the feature ideas collected by the [REA
 comparison](research/rea/README.md) (`docs/research/rea/`, each chapter's
 "Steal ideas"). P19 (admitted semantics), P20 (seam capability report +
-engine-identity cache key), and P21 (first-class unknown records) shipped
-and left this matrix per the rule above
-(ADR-0053–ADR-0056), so the verdict tracks P26 and P27 are unblocked on
-their record side.**
+engine-identity cache key), P21 (first-class unknown records), and P22
+(the API-call trace dimension in the gate) shipped and left this matrix
+per the rule above (ADR-0053–ADR-0057), so the verdict tracks P26 and
+P27 are unblocked on their record side.**
 **Table order is dependency order** — no track appears before another track
 that blocks it (each summary below names which tracks block it and which
 tracks it blocks). Among tracks that do not block each other, the order is
 by how far each one moves calxgloss toward **complete end-to-end
 restitching from binaries**: first, a verification gate wide enough to
-cover what restitching can actually get wrong (P22–P24); then the durable
+cover what restitching can actually get wrong (P23–P24, after P22's trace
+dimension shipped); then the durable
 receipts and the fail-closed ledger that finally make "this binary is
 done" a checkable claim instead of "the pipeline stopped with nobody
 complaining" (P25–P26). P27–P33 resolve stuck functions, strengthen
@@ -48,7 +49,6 @@ it.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P22 | Differential API-call trace in the gate — record the ordered Win32/PAL API-call sequence on both the original-DLL baseline and the restitched Rust, and compare the order; this catches PAL-mapping errors that reach the right result by the wrong path, which value tests miss | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + integrations (`calxgloss-pal`) + evidence (`calxgloss-apidetect`) | — | ✅ done | all four slices landed: record shape (#383), original-side IAT interposer capture (#384), verify-side trace compare at the verdict seam (#385), and the roster + trace fold through the gate and fix prompt (#386); the #387 vocabulary gap resolved at the comparator — the trace verdict now judges ordered containment (#388, landed in #389) | [#382](https://github.com/scriptandcompile/calxgloss/issues/382) |
 | P23 | Real inputs for the baseline — argument vectors mined from hooked export entries, plus Windows minidump crash records replayed as concrete reproduction tests; this closes the blind spot of invented inputs | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-cli`) | — | ⬜ not started | not specced | — |
 | P24 | Scenario-capture baseline for EXE targets — a declared scenario contract (scripted interactions, filesystem observation, exit disposition) with a five-dimension compare, as the EXE-level verification signal FFI cannot reach | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
 | P25 | Verification receipts — every verification pass persists a digest-paired md+json receipt on the attempt branch (commands, case counts, dimensions, timings); the receipt is durable and diffable between attempts | pipeline (`calxgloss-verify`, `calxgloss-git`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
@@ -93,23 +93,6 @@ pre-designs P24's scenario contract, and trace-armed blame ranking extends
 P27's send-back decision.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
-
-## P22 — Differential API-call trace in the gate (pipeline + integrations + evidence)
-
-**Right bytes via the wrong path pass today.** The FFI baseline compares
-values only. So it accepts a restitched function that computes the correct
-result through the wrong GDI/DirectX route — a PAL-mapping error. Record
-the ordered Win32/PAL API-call sequence on both sides: an IAT interposer
-around the original DLL in the testgen harness, and PAL wrapper
-instrumentation on the Rust side. Store the sequence as an extra baseline
-dimension and compare *order*, not membership. `calxgloss-apidetect`
-already supplies the expected call shape per function, so this runs fully
-automatically with no hand-written driving — keeping exactly the property
-REA's observation lanes cannot offer (nobody authors a scenario). This
-widens the restitch gate itself, so it must ship before the receipts and
-the ledger fix the gate's verdicts in place. Source:
-[34](research/rea/34-runtime-observation.md) steal 1, README #5. Blocks: P25, P26
-(gate shape).
 
 ## P23 — Real inputs for the baseline (pipeline + interface)
 
@@ -165,12 +148,13 @@ between attempts, so a reviewer sees exactly what changed between a failure
 and its fix. The digest-pairing is what makes the receipt citable
 authority: P26's obligation ledger records each unit's status together with
 its verifier's receipt digest, so a green claim without a matching receipt
-is an input error, not a pass. It is deliberately placed after P22–P24:
-receipts fix the gate's verdicts in place, so they should record the gate's
-widest agreed shape (values + API trace + mined inputs + scenarios) from
-day one, rather than being made again later. Source:
+is an input error, not a pass. It is deliberately placed after P23–P24
+(the trace gate, P22, already shipped — ADR-0057): receipts fix the gate's
+verdicts in place, so they should record the gate's widest agreed shape
+(values + API trace + mined inputs + scenarios) from day one, rather than
+being made again later. Source:
 [33](research/rea/33-reconstruction-evidence-workflow.md) steal 5. Blocked by
-(shape): P22, P23, P24. Blocks: P26.
+(shape): P23, P24 (P22 shipped, ADR-0057). Blocks: P26.
 
 ## P26 — Fail-closed restitch conformance: obligation ledger + closure digest (pipeline + interface)
 
@@ -191,8 +175,9 @@ complete end-to-end restitching, made checkable. Source:
 Blocked by: P19 (data side — shipped, ADR-0053; the `unknown` value the
 verdict reads is in place), P21 (shipped, ADR-0056; the open,
 severity-carrying, evidence-demanding record the verdict gates on exists),
-P25 (hard); P22–P24 (shape — the verdict
-should stand on the widest gate and on a lane for EXEs). Blocks: nothing —
+P25 (hard); P23, P24 (shape — the verdict
+should stand on the widest gate and on a lane for EXEs; P22 shipped,
+ADR-0057). Blocks: nothing —
 this is the capstone.
 
 ## P27 — Hypothesis ledger for the retry loop (pipeline + interface)
