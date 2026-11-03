@@ -49,11 +49,11 @@ it.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P23 | Real inputs for the baseline — argument vectors mined from hooked export entries, plus Windows minidump crash records replayed as concrete reproduction tests; this closes the blind spot of invented inputs | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-cli`) | — | ⬜ not started | not specced | — |
-| P24 | Scenario-capture baseline for EXE targets — a declared scenario contract (scripted interactions, filesystem observation, exit disposition) with a five-dimension compare, as the EXE-level verification signal FFI cannot reach | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
-| P25 | Verification receipts — every verification pass persists a digest-paired md+json receipt on the attempt branch (commands, case counts, dimensions, timings); the receipt is durable and diffable between attempts | pipeline (`calxgloss-verify`, `calxgloss-git`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
-| P26 | Fail-closed restitch conformance — a per-unit obligation ledger (owner = attempt-branch digest, required case kinds, verifier receipt) and a whole-binary closure verdict sealed by a digest; skipped, parked, overridden, or un-reviewed units never add up to complete | pipeline (`calxgloss-git`, `calxgloss-translator`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | not specced | — |
-| P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not specced | — |
+| P23 | Real inputs for the baseline — argument vectors mined from hooked export entries, plus Windows minidump crash records replayed as concrete reproduction tests; this closes the blind spot of invented inputs | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-cli`) + shared (`calxgloss-types`) | — | ⬜ not started | not ticketed | [#390](https://github.com/scriptandcompile/calxgloss/issues/390) |
+| P24 | Scenario-capture baseline for EXE targets — a declared scenario contract (scripted interactions, filesystem observation, exit disposition) with a five-dimension compare, as the EXE-level verification signal FFI cannot reach | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not ticketed | [#391](https://github.com/scriptandcompile/calxgloss/issues/391) |
+| P25 | Verification receipts — every verification pass persists a digest-paired md+json receipt on the attempt branch (commands, case counts, dimensions, timings); the receipt is durable and diffable between attempts | pipeline (`calxgloss-verify`, `calxgloss-git`) + interface (`calxgloss-reports`) | — | ⬜ not started | not ticketed | [#393](https://github.com/scriptandcompile/calxgloss/issues/393) |
+| P26 | Fail-closed restitch conformance — a per-unit obligation ledger (owner = attempt-branch digest, required case kinds, verifier receipt) and a whole-binary closure verdict sealed by a digest; skipped, parked, overridden, or un-reviewed units never add up to complete | pipeline (`calxgloss-git`, `calxgloss-translator`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | not ticketed | [#392](https://github.com/scriptandcompile/calxgloss/issues/392) |
+| P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
 | P28 | Masked byte search at the seam — `search_bytes(pattern, mask)` with wildcard hex and a bit mask, giving the `consts`/`serialize` magic-number scans real matches instead of guesses | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + evidence (`calxgloss-consts`, `calxgloss-serialize`) | — | ⬜ not started | not specced | — |
 | P29 | Ad-hoc call-path / def-use primitive at the seam — trace "how does this value reach this call" over the kept bodies on demand, so `escalate` retries get targeted answers without a full re-scan | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P30 | PE artifact-intelligence pass — block-entropy and debug-directory/note triage turn packing classification into measured evidence, per-subject content digests, and a before/after PE inventory diff as a restitch equivalence tripwire | evidence (`calxgloss-analysis`) + shared (`calxgloss-types`) + pipeline (`calxgloss-verify`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
@@ -154,7 +154,9 @@ verdicts in place, so they should record the gate's widest agreed shape
 (values + API trace + mined inputs + scenarios) from day one, rather than
 being made again later. Source:
 [33](research/rea/33-reconstruction-evidence-workflow.md) steal 5. Blocked by
-(shape): P23, P24 (P22 shipped, ADR-0057). Blocks: P26.
+(shape): P23, P24 (P22 shipped, ADR-0057). Blocks: P26. Specced as
+[#393](https://github.com/scriptandcompile/calxgloss/issues/393), ready for
+ticketing.
 
 ## P26 — Fail-closed restitch conformance: obligation ledger + closure digest (pipeline + interface)
 
@@ -203,7 +205,12 @@ guess. Source:
 [36](research/kraken/36-rewrite-pipeline.md) steal 9. Blocked by: P21
 (shipped, ADR-0056 — the named unknown to declare against), P24 (the
 runtime dimensions to correlate against, and the
-scenario failures to blame against).
+scenario failures to blame against). Specced as
+[#394](https://github.com/scriptandcompile/calxgloss/issues/394), ready
+for ticketing: the DLL lane — declared mappings correlating the baseline
+values and the ordered API-call trace (P22) against the filed static
+evidence — is specced now; the `exit`/`filesystem` correlation and the
+blame ranking wait on P24 and are held out of the spec's scope.
 
 ## P28 — Masked byte search at the seam (integrations + evidence)
 
