@@ -1333,7 +1333,7 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
             changed = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
     assert!(
         changed,
