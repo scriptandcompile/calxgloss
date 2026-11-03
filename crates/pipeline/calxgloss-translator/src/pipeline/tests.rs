@@ -3046,16 +3046,191 @@ async fn a_batch_files_a_record_for_every_export_no_baseline_document_covered() 
     );
 }
 
+/// The #396 closure, on the mined lane: a standing `export_uncovered`
+/// record closes at the next ledger write once the record-and-replay
+/// fold's mined replay files a suite for that export. No Wine in sight —
+/// the fold's fake seam decides the replay outcome; the filed-baseline
+/// seam and the batch ledger write are the real writers.
+#[tokio::test]
+async fn a_mined_replay_filing_a_suite_closes_a_standing_export_gap() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+        .await
+        .expect("fixture function listing");
+    let unit = listed
+        .iter()
+        .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+        .expect("the fixture lists fixture_status")
+        .name
+        .clone();
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+
+    // Run one: every export stands uncovered.
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            std::slice::from_ref(&unit),
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the first batch");
+    let ledger_path = calxgloss_types::unknown_ledger_path(
+        dir.path(),
+        &calxgloss_types::BinaryIdentity::new(PROGRAM),
+    );
+    let standing: Vec<String> = {
+        let ledger: calxgloss_types::UnknownLedger =
+            calxgloss_types::load_json(&ledger_path).expect("the first batch files its ledger");
+        ledger
+            .records
+            .expect("a current derived set")
+            .iter()
+            .filter(|r| r.kind == calxgloss_types::UnknownKind::ExportUncovered)
+            .map(|r| r.source_slot())
+            .collect()
+    };
+    assert!(!standing.is_empty(), "the batch names the standing gaps");
+
+    // The fold mines one captured event for one listed export — a
+    // zero-argument vector the void signature can hold — and the fake
+    // seam's replay observation lands a filed suite through the real
+    // baseline writer. A second entry carries a float the fold refuses
+    // by name, and its record lands in the ledger beside the batch's.
+    let closed = exports
+        .iter()
+        .find(|export| export.name.trim_start_matches('_') == "fixture_init")
+        .expect("the fixture lists fixture_init");
+    let fold_exports = [calxgloss_types::Export {
+        name: closed.name.clone(),
+        address: 0,
+        signature: "int __cdecl fixture_init(void)".to_string(),
+    }];
+    let generator = calxgloss_testgen::TestGenerator::new(dir.path());
+    let log = serde_json::json!({
+        "capture_id": "cap-close",
+        "entries": [
+            {
+                "binary": PROGRAM,
+                "export": closed.name,
+                "lane": "baseline_hook",
+                "evidence": {"run_event": {"capture_id": "cap-close", "event_sequence": 1}},
+                "arguments": []
+            },
+            {
+                "binary": PROGRAM,
+                "export": closed.name,
+                "lane": "baseline_hook",
+                "evidence": {"run_event": {"capture_id": "cap-close", "event_sequence": 2}},
+                "arguments": [{"scalar": {"tag": "f64", "value": 1.5}}]
+            }
+        ]
+    });
+    let seam =
+        |_: &str, _: &calxgloss_types::TestCase| calxgloss_testgen::ReplayOutcome::Observed {
+            returned: serde_json::json!(1),
+            side_effects: Vec::new(),
+            api_calls: Vec::new(),
+        };
+    let folded = calxgloss_testgen::fold_capture_event_log(
+        &generator,
+        PROGRAM,
+        &fold_exports,
+        &log,
+        &calxgloss_testgen::Replay::Fake(&seam),
+    )
+    .await
+    .expect("the fold over the fixture listing");
+    assert_eq!(
+        folded.report.cases_mined, 1,
+        "the mined event replays cleanly"
+    );
+    assert_eq!(
+        folded.report.refusals.len(),
+        1,
+        "the float entry is refused by name"
+    );
+    assert!(
+        generator.baseline_path(PROGRAM, &closed.name).is_file(),
+        "the fold filed the suite through the real baseline writer"
+    );
+    let prior: calxgloss_types::UnknownLedger =
+        calxgloss_types::load_json(&ledger_path).expect("the first batch's ledger, pre-refusal");
+    let prior_count = prior.records.map_or(0, |records| records.len());
+    let landed =
+        calxgloss_testgen::file_capture_records(dir.path(), PROGRAM, &folded.unknown_records)
+            .expect("the refusal record lands beside the batch's records");
+    assert_eq!(
+        landed,
+        prior_count + 1,
+        "the named refusal files its one record beside the batch's standing set"
+    );
+
+    // The next ledger write — a re-batch — closes that export's standing
+    // record: its slot stops landing, every other gap stands.
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            std::slice::from_ref(&unit),
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch after the mined filing");
+    let after: calxgloss_types::UnknownLedger =
+        calxgloss_types::load_json(&ledger_path).expect("the re-filed ledger");
+    let current = after.records.expect("a current set");
+    let slots: Vec<String> = current
+        .iter()
+        .filter(|r| r.kind == calxgloss_types::UnknownKind::ExportUncovered)
+        .map(|r| r.source_slot())
+        .collect();
+    assert!(
+        !slots.contains(&format!("export-{}", closed.name)),
+        "the mined replay filed a suite: the standing gap closes at the next ledger write"
+    );
+    assert_eq!(
+        slots,
+        standing
+            .iter()
+            .filter(|slot| slot.as_str() != format!("export-{}", closed.name))
+            .cloned()
+            .collect::<Vec<String>>(),
+        "every other export's gap stands untouched"
+    );
+
+    // The capture's named refusal stands through the batch write too:
+    // a record the fold filed at capture time is never silently dropped
+    // by a later batch that does not re-derive it.
+    let capture_slots: Vec<String> = current
+        .iter()
+        .filter(|r| r.kind == calxgloss_types::UnknownKind::CaptureRefused)
+        .map(|r| r.source_slot())
+        .collect();
+    assert_eq!(
+        capture_slots,
+        vec!["cap-close#2".to_string()],
+        "the capture refusal survives the batch that never re-derives it"
+    );
+}
+
 // ---- #375: the track sweep pinning the unknown-kind roster ------------
 //
 // ADR-0053's engine-stamps/roster-pins doctrine, one level up: one
-// sweep over the real batch path pairs `DECLARED_UNKNOWN_KINDS`
-// against what the four producers — the coverage fold, the seam
-// residue, the verification signal, and the ladder — actually file,
-// in one failure report naming every offender (the #352 and #359
-// sweeps' pattern, aimed at kinds). A fifth producer (the future
-// masked-byte search, P28) adds one kind string and one write site:
-// forgetting either half fails here, at once.
+// sweep over the real paths pairs `DECLARED_UNKNOWN_KINDS` against
+// what the producers — the coverage fold, the seam residue, the
+// verification signal, the ladder, and the record-and-replay fold
+// (#396) — actually file, in one failure report naming every offender
+// (the #352 and #359 sweeps' pattern, aimed at kinds). A further
+// producer (the future masked-byte search, P28) adds one kind string
+// and one write site: forgetting either half fails here, at once.
 
 /// The sweep's run: one real batch over the fixture target, staged
 /// exactly as each producer's own filing test (#369, #371, #372, #373)
@@ -3070,14 +3245,21 @@ async fn a_batch_files_a_record_for_every_export_no_baseline_document_covered() 
 ///   step → `retry_pruned` and `tier_refused`;
 /// * the canned code never compiles, so the walk never ran a baseline
 ///   case → `baseline_never_run`, and no filed baseline document
-///   covers any fixture export → one `export_uncovered` per export.
+///   covers any fixture export → one `export_uncovered` per export;
+/// * the record-and-replay fold (#396) then ingests a fixture capture
+///   log through the real fold: one entry replays clean, one replays
+///   faulted → `crash_reproduction`, one carries a float slot →
+///   `capture_refused`, and the fold's own filing helper lands those
+///   records beside the batch's.
 ///
 /// Offline throughout: Kuna loads in-process, the LLM side is the
-/// canned broken-alternating server. Exactly one unit walks: the swept
+/// canned broken-alternating server, and the fold's replay runs on the
+/// fake seam — no Wine in sight. Exactly one unit walks: the swept
 /// pairing keys on (kind, source slot), and a second unit reading the
 /// same admitted facet would fold to one pair produced twice — the
 /// field must read clean to be honest. Returns the records the batch
-/// really filed, read back off the ledger document it filed.
+/// and the fold really filed, read back off the ledger document they
+/// filed.
 async fn unknown_sweep_batch_records(dir: &std::path::Path) -> Vec<calxgloss_types::UnknownRecord> {
     let verifier = calxgloss_verify::Verifier::new(dir).expect("verifier over temp dir");
     let llm = LlmClient::from_url(&broken_alternating_llm().await, "qwen3").expect("llm config");
@@ -3186,6 +3368,60 @@ async fn unknown_sweep_batch_records(dir: &std::path::Path) -> Vec<calxgloss_typ
         .file_unknown_ledger(PROGRAM)
         .expect("the batch's ledger filing call");
 
+    // The record-and-replay fold's producers (#396), on their real path:
+    // the fold ingests a fixture capture log — one entry replays clean
+    // and files a suite, one replays faulted, one carries a float slot
+    // the signature cannot hold — and the fold's own filing helper
+    // lands the records it named beside the batch's. Offline: the fake
+    // seam decides replay outcomes per case, no Wine in sight.
+    let sweep_exports = vec![
+        calxgloss_types::Export {
+            name: "fixture_status".to_string(),
+            address: 0,
+            signature: "int __stdcall fixture_status(int status)".to_string(),
+        },
+        calxgloss_types::Export {
+            name: "fixture_tick".to_string(),
+            address: 0,
+            signature: "int __stdcall fixture_tick(void)".to_string(),
+        },
+    ];
+    let sweep_replay = |name: &str, _: &calxgloss_types::TestCase| match name {
+        "fixture_tick" => calxgloss_testgen::ReplayOutcome::Faulted {
+            detail: "the replayed call faulted inside the original".to_string(),
+        },
+        _ => calxgloss_testgen::ReplayOutcome::Observed {
+            returned: serde_json::json!(1),
+            side_effects: Vec::new(),
+            api_calls: Vec::new(),
+        },
+    };
+    let generator = calxgloss_testgen::TestGenerator::new(dir);
+    let folded = calxgloss_testgen::fold_capture_event_log(
+        &generator,
+        PROGRAM,
+        &sweep_exports,
+        &serde_json::json!({
+            "capture_id": "cap-sweep",
+            "entries": [
+                {"binary": PROGRAM, "export": "fixture_status", "lane": "baseline_hook",
+                 "evidence": {"run_event": {"capture_id": "cap-sweep", "event_sequence": 1}},
+                 "arguments": [{"scalar": {"tag": "i32", "value": 3}}]},
+                {"binary": PROGRAM, "export": "fixture_tick", "lane": "baseline_hook",
+                 "evidence": {"run_event": {"capture_id": "cap-sweep", "event_sequence": 2}},
+                 "arguments": []},
+                {"binary": PROGRAM, "export": "fixture_status", "lane": "baseline_hook",
+                 "evidence": {"run_event": {"capture_id": "cap-sweep", "event_sequence": 3}},
+                 "arguments": [{"scalar": {"tag": "f64", "value": 1.5}}]},
+            ],
+        }),
+        &calxgloss_testgen::Replay::Fake(&sweep_replay),
+    )
+    .await
+    .expect("the sweep's fold replays through the fake seam");
+    calxgloss_testgen::file_capture_records(dir, PROGRAM, &folded.unknown_records)
+        .expect("the fold's ledger filing call");
+
     let ledger_path =
         calxgloss_types::unknown_ledger_path(dir, &calxgloss_types::BinaryIdentity::new(PROGRAM));
     let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
@@ -3218,13 +3454,13 @@ fn unknown_sweep_faults(pairs: &[(String, String)]) -> Vec<String> {
     calxgloss_types::unknown_roster_faults(calxgloss_types::DECLARED_UNKNOWN_KINDS, &field)
 }
 
-/// The sweep itself (issue #375): the real batch path's producers pair
+/// The sweep itself (issue #375): the real paths' producers pair
 /// one-for-one against the declared unknown kinds — every declared
-/// kind has exactly one producer standing behind it on the batch path,
-/// every producer names a declared kind, and the shared checker's
-/// verdict is empty. The per-kind counts pin the shape underneath:
-/// an empty field can never pass for a pairing, because each of the
-/// four producers really writes.
+/// kind has exactly one producer standing behind it, every producer
+/// names a declared kind, and the shared checker's verdict is empty.
+/// The per-kind counts pin the shape underneath: an empty field can
+/// never pass for a pairing, because each of the sweep's producers
+/// really writes.
 #[tokio::test]
 async fn the_unknown_sweep_pairs_the_roster_against_the_real_producers_one_for_one() {
     let dir = TempDir::new().expect("temp workspace");
@@ -3232,7 +3468,7 @@ async fn the_unknown_sweep_pairs_the_roster_against_the_real_producers_one_for_o
     let faults = unknown_sweep_faults(&swept_pairs(&records));
     assert!(
         faults.is_empty(),
-        "the real batch path's producers must pair one-for-one against the \
+        "the real paths' producers must pair one-for-one against the \
              declared unknown kinds, and these drifted:\n{}",
         faults.join("\n")
     );
@@ -3267,6 +3503,16 @@ async fn the_unknown_sweep_pairs_the_roster_against_the_real_producers_one_for_o
         filed(calxgloss_types::UnknownKind::TierRefused),
         1,
         "the held tier step files its own standing question"
+    );
+    assert_eq!(
+        filed(calxgloss_types::UnknownKind::CaptureRefused),
+        1,
+        "the record-and-replay fold files the one capture entry its refusal named (#396)"
+    );
+    assert_eq!(
+        filed(calxgloss_types::UnknownKind::CrashReproduction),
+        1,
+        "the replay fault files the one crash-reproduction record naming the event (#396)"
     );
     assert!(
         swept_pairs(&records).contains(&(

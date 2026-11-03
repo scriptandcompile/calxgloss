@@ -467,6 +467,43 @@ pub(super) enum Command {
         binary: String,
     },
 
+    /// Ingest a captured call event log into the record-and-replay fold
+    /// (P23.2, issue #396).
+    ///
+    /// Every captured argument vector a listed export's signature can
+    /// hold is replayed against the original binary through the baseline
+    /// harness, and what the replay observed is filed as a baseline case
+    /// under `re/baseline/{binary}/{function}/baseline.json` — mined
+    /// cases carry the mined-hook origin naming the capture id and event
+    /// sequence. Entries the fold cannot replay are refused with a named
+    /// reason and land a `capture_refused` record in the binary's
+    /// unknown ledger; a replay that faults lands a `crash_reproduction`
+    /// record naming the event and files no case. The command prints the
+    /// count report — events seen, cases mined, twins deduplicated,
+    /// refusals named, truncations stated — and the next batch run
+    /// closes the standing `export_uncovered` record for any export the
+    /// fold filed a suite for.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — Binary the capture was taken from, e.g. `eqmain.dll`.
+    /// * `--ingest` — The capture event log to ingest, a `capture-log-v1` JSON file.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss capture --binary eqmain.dll --ingest capture-logs/run-7.json
+    /// ```
+    Capture {
+        /// Binary the capture was taken from, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// The capture event log to ingest, a `capture-log-v1` JSON file
+        #[arg(long, required = true)]
+        ingest: PathBuf,
+    },
+
     /// Detect concurrency constructs (mutex/lock pairings, atomic
     /// operations, thread spawns) for a binary.
     ///

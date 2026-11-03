@@ -94,6 +94,18 @@ pub enum UnknownKind {
     /// unavailable: the context that tier would have carried never reached
     /// the prompt (P20's ladder residue).
     TierRefused,
+    /// The record-and-replay fold refused a captured argument vector the
+    /// harness cannot replay — a float argument, an export with no
+    /// parseable signature, a pointer-bearing vector, a truncated capture,
+    /// or an argument shape the signature does not carry — and named its
+    /// reason in the question line. Refused-and-recorded, never a silent
+    /// drop (P23's mining residue).
+    CaptureRefused,
+    /// A replayed mined case faulted under the harness: the original
+    /// crashed on this real argument vector, which is not yet an
+    /// expressible baseline expectation. Filed naming the event the crash
+    /// was replayed from (P23's crash-reproduction record).
+    CrashReproduction,
 }
 
 display_serde_label!(UnknownKind {
@@ -103,6 +115,8 @@ display_serde_label!(UnknownKind {
     ExportUncovered => "export_uncovered",
     RetryPruned => "retry_pruned",
     TierRefused => "tier_refused",
+    CaptureRefused => "capture_refused",
+    CrashReproduction => "crash_reproduction",
 });
 
 /// The declared roster of unknown kinds — the closed set every producer is
@@ -119,6 +133,8 @@ pub const DECLARED_UNKNOWN_KINDS: &[&str] = &[
     "export_uncovered",
     "retry_pruned",
     "tier_refused",
+    "capture_refused",
+    "crash_reproduction",
 ];
 
 /// How much an open unknown matters — the closed severity scale.
@@ -177,6 +193,16 @@ pub enum UnknownOrigin {
     /// the family it would have re-asked) or the refused tier step (naming
     /// the tier the ladder refused to step onto).
     RetryDecision { decision: String },
+    /// Derived from the record-and-replay fold working on one capture
+    /// event: the capture id and the event's position within it. Absent
+    /// event sequence is the capture as a whole — a log that stopped at
+    /// its event budget names its truncation against the capture, not one
+    /// event (P23's mining residue).
+    Capture {
+        capture_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_sequence: Option<u64>,
+    },
 }
 
 impl UnknownOrigin {
@@ -194,6 +220,18 @@ impl UnknownOrigin {
             UnknownOrigin::Family { family } => family.clone(),
             UnknownOrigin::CaseSet { case_set } => case_set.clone(),
             UnknownOrigin::RetryDecision { decision } => decision.clone(),
+            // One capture event is one gap: the slot names the capture and
+            // the event position within it, so two refused events of one
+            // capture are two questions and a re-ingested log re-derives
+            // each under the same id.
+            UnknownOrigin::Capture {
+                capture_id,
+                event_sequence: Some(sequence),
+            } => format!("{capture_id}#{sequence}"),
+            UnknownOrigin::Capture {
+                capture_id,
+                event_sequence: None,
+            } => format!("{capture_id}#capture"),
         }
     }
 }

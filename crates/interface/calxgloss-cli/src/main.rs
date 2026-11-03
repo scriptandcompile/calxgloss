@@ -69,6 +69,7 @@ use commands::auto::handle_auto;
 use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
 use commands::bdiff::handle_bdiff;
+use commands::capture_command::handle_capture;
 use commands::classify::handle_classify;
 use commands::dashboard::{
     handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
@@ -285,6 +286,18 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_bdiff(&binary, &workspace, &settings))
+        }
+
+        // The capture ingest (issue #396) has no scan registry row either:
+        // it folds a capture event log through the record-and-replay lane
+        // and keeps its own report-only match arm beside `bdiff`.
+        Command::Capture { binary, ingest } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_capture(&binary, &ingest, &workspace, &settings))
         }
 
         Command::Verify {

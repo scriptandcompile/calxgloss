@@ -83,6 +83,15 @@ The shared record of one such call as it really arrived at an export entry: bina
 **Case origin**:
 The stamp every baseline case carries on how it came to exist: *generated* (testgen invented it — the read default for documents saved before the stamp existed) or *mined* from a captured call entry, naming its capture id and event sequence, or its dump digest and faulting thread. The strongest claim a passing case supports is read off the origin at read time, never stored beside it — there is no second field that can rot against the first.
 
+**Record-and-replay fold**:
+The testgen path that turns a *capture event log* into filed baseline cases: each captured call entry whose argument vector the export's signature can hold is replayed against the original binary, and what the replay observed is filed as a *mined input*'s case. Authority rests on the replay, never on the capture. An entry the signature cannot hold is refused with a named reason and files a `capture_refused` unknown record; a replay that faults files a *crash-reproduction record* and no case. A mined case dedups against the generated suite on exact input-vector equality — the collision keeps the mined origin — and mined cases stand outside the per-function generation cap: the cap bounds invention, and captured events are evidence.
+
+**Capture event log**:
+One capture session's (or minidump's) captured call entries stored on disk as capture order, capture id, and — when the capture ran out of event budget — a stated dropped-event count. Truncation is stated, never silent; the count folds into the ingest report beside the refusals.
+
+**Crash-reproduction record**:
+The unknown record a replay fault files, naming the capture and the event whose inputs faulted at the original binary. The capture is trusted to name inputs, never to promise the target survived: the fault is established by the replay, and no baseline case is filed for that entry.
+
 **Ordered API-call trace**:
 The sequence of API names one baseline case recorded, in call order — deliberately nothing else: no arguments, counts, or thread attribution. A missing or empty trace reads as *unassessed*, never as "the target called nothing".
 

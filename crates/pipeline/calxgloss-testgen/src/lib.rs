@@ -63,6 +63,7 @@ mod ffi;
 mod generator;
 mod inputs;
 mod pe;
+mod record_replay;
 mod run;
 mod wine;
 
@@ -74,6 +75,10 @@ pub use ffi::{
 pub use generator::TestGenerator;
 pub use inputs::{DisassemblyEdgeCases, EdgeCaseSource, generate_test_inputs};
 pub use pe::{ExportEntry, ImportEntry, Machine, PeImage};
+pub use record_replay::{
+    Folded, MineReport, Refusal, RefusalReason, Replay, ReplayOutcome, file_capture_records,
+    fold_capture_event_log,
+};
 pub use run::{BaselineRunner, TestContext};
 pub use wine::{
     FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,

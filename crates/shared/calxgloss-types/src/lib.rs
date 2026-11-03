@@ -97,7 +97,9 @@ pub mod verification;
 pub use capability::{
     AvailabilityStatus, CapabilityReport, EffectiveAvailability, FamilyCapability,
 };
-pub use capture::{ArgumentDescriptor, CaptureEvidence, CaptureLane, CapturedCallEntry, ScalarTag};
+pub use capture::{
+    ArgumentDescriptor, CaptureEventLog, CaptureEvidence, CaptureLane, CapturedCallEntry, ScalarTag,
+};
 pub use classification_overrides::{
     BinaryClassificationOverride, ClassificationOverrideControl, ClassificationOverrides,
     classification_override_records_path,

@@ -968,7 +968,7 @@ fn the_declared_roster_is_exactly_the_labels_the_kind_set_serde_writes() {
     }
     assert_eq!(
         DECLARED_UNKNOWN_KINDS.len(),
-        6,
+        8,
         "one kind per gap family — grow the set with a producer, never ahead of one"
     );
 }
@@ -982,6 +982,8 @@ fn the_roster_pairs_clean_against_a_clean_producer_set() {
         ("export_uncovered", "export-DrawSprite"),
         ("retry_pruned", "escalate#decompilation"),
         ("tier_refused", "tier#module_context"),
+        ("capture_refused", "cap-a#3"),
+        ("crash_reproduction", "cap-a#7"),
     ];
     assert_eq!(
         unknown_roster_faults(DECLARED_UNKNOWN_KINDS, &produced),
@@ -1002,6 +1004,8 @@ fn a_declared_kind_with_no_producer_fails_naming_itself() {
             "declared kind `export_uncovered` has no producer",
             "declared kind `retry_pruned` has no producer",
             "declared kind `tier_refused` has no producer",
+            "declared kind `capture_refused` has no producer",
+            "declared kind `crash_reproduction` has no producer",
         ],
         "every dead kind appears, each naming itself"
     );

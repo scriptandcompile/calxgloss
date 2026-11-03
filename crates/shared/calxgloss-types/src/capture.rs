@@ -113,13 +113,39 @@ pub struct CapturedCallEntry {
     pub arguments: Vec<ArgumentDescriptor>,
 }
 
+/// One instrumented run's captured call entries, as the record-and-replay
+/// fold receives them (glossary: *capture event log*).
+///
+/// The entry array is the first-seen capture order: the fold files mined
+/// cases in exactly this order, so the same log always produces the same
+/// filed suite. A run that stopped at its event budget states what it left
+/// out through `events_dropped` — a truncation is never silent, and the
+/// fold refuses what never arrived with the reason `truncated-capture`
+/// rather than guessing the log was complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureEventLog {
+    /// The capture's id — the run event every `run_event` evidence in this
+    /// log names this id beside its event sequence.
+    pub capture_id: String,
+    /// The captured call entries, in first-seen capture order.
+    pub entries: Vec<CapturedCallEntry>,
+    /// Events the instrumented run recorded past its budget and never
+    /// wrote into this log. Absent means the budget never fired: this log
+    /// is what the run saw, whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_dropped: Option<u64>,
+}
+
 // ============================================================
 // Tests
 // ============================================================
 
 #[cfg(test)]
 mod tests {
-    use crate::{ArgumentDescriptor, CaptureEvidence, CaptureLane, CapturedCallEntry, ScalarTag};
+    use crate::{
+        ArgumentDescriptor, CaptureEventLog, CaptureEvidence, CaptureLane, CapturedCallEntry,
+        ScalarTag,
+    };
 
     /// A captured call entry round-trips through JSON with the export,
     /// lane, capture evidence, and the ordered argument vector all intact:
@@ -208,5 +234,53 @@ mod tests {
             serde_json::from_str::<ArgumentDescriptor>(double_scalar).is_err(),
             "nor a double"
         );
+    }
+
+    /// A capture event log round-trips with its entries in first-seen
+    /// order and its dropped-events budget stated: an event budget that
+    /// fired never leaves the omission to be guessed at, and a log that
+    /// saw everything whole never writes the field at all.
+    #[test]
+    fn a_capture_event_log_round_trips_with_its_budget_stated() {
+        let entry = |seq: u64| CapturedCallEntry {
+            binary: "game_logic.dll".to_string().into(),
+            export: "DrawSprite".to_string(),
+            lane: CaptureLane::BaselineHook,
+            evidence: CaptureEvidence::RunEvent {
+                capture_id: "cap-a".to_string(),
+                event_sequence: seq,
+            },
+            arguments: vec![ArgumentDescriptor::Scalar {
+                tag: ScalarTag::I32,
+                value: serde_json::json!(seq as i64),
+            }],
+        };
+        let truncated = CaptureEventLog {
+            capture_id: "cap-a".to_string(),
+            entries: vec![entry(1), entry(2)],
+            events_dropped: Some(118),
+        };
+        let wire = r#"{"capture_id":"cap-a","entries":[{"binary":"game_logic.dll","export":"DrawSprite","lane":"baseline_hook","evidence":{"run_event":{"capture_id":"cap-a","event_sequence":1}},"arguments":[{"scalar":{"tag":"i32","value":1}}]},{"binary":"game_logic.dll","export":"DrawSprite","lane":"baseline_hook","evidence":{"run_event":{"capture_id":"cap-a","event_sequence":2}},"arguments":[{"scalar":{"tag":"i32","value":2}}]}],"events_dropped":118}"#;
+        let parsed: CaptureEventLog =
+            serde_json::from_str(wire).expect("the log shape parses from its wire form");
+        assert_eq!(parsed, truncated, "the budget lands beside the entries");
+        assert_eq!(
+            serde_json::to_string(&truncated).unwrap(),
+            wire,
+            "the log re-saves byte-for-byte, entries in first-seen order"
+        );
+
+        let whole = CaptureEventLog {
+            capture_id: "cap-b".to_string(),
+            entries: Vec::new(),
+            events_dropped: None,
+        };
+        let whole_wire = serde_json::to_string(&whole).unwrap();
+        assert!(
+            !whole_wire.contains("events_dropped"),
+            "an unbudgeted log states no omission: {whole_wire}"
+        );
+        let back: CaptureEventLog = serde_json::from_str(&whole_wire).expect("parses back");
+        assert_eq!(back.events_dropped, None, "and reads back as none");
     }
 }

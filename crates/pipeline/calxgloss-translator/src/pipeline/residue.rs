@@ -96,7 +96,7 @@ impl TranslationPipeline {
             .lock()
             .expect("unknown residue lock")
             .clone();
-        let Some(derived) = derived else {
+        let Some(mut derived) = derived else {
             return Ok(());
         };
         let identity = calxgloss_types::BinaryIdentity::new(binary);
@@ -127,6 +127,25 @@ impl TranslationPipeline {
                 Default::default()
             }
         };
+        // A record the record-and-replay fold named at capture time is
+        // never silently dropped by a batch that does not re-derive it
+        // (issue #396): the walk's residue closes by the source slot
+        // disappearing from its own derivation, but a capture-origin record
+        // is a named fact about one capture event — nothing in the walk
+        // re-derives it, so it is carried into the derived set and stands
+        // until its question closes. Content unchanged, the revision
+        // doctrine keeps it un-numbered; only its last-seen refreshes.
+        if let Some(landed_doc) = landed.as_ref() {
+            for record in landed_doc.records.iter().flatten() {
+                if matches!(
+                    record.origin,
+                    calxgloss_types::UnknownOrigin::Capture { .. }
+                ) && !derived.iter().any(|mine| mine.id == record.id)
+                {
+                    derived.push(record.clone());
+                }
+            }
+        }
         let ledger = calxgloss_types::UnknownLedger::file(
             identity.clone(),
             landed.as_ref(),

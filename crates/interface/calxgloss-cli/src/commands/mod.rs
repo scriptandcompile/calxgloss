@@ -7,6 +7,7 @@ pub mod auto_shim;
 pub mod batch_translate;
 pub mod bdiff;
 pub mod callback;
+pub mod capture_command;
 pub mod classify;
 pub mod consts;
 pub mod controlflow;
