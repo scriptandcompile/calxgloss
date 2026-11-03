@@ -58,7 +58,7 @@ use harness::HARNESS_CRASH_EXIT;
 pub use harness::generate_harness;
 pub(crate) use types::is_trace_shim_name;
 pub use types::{
-    FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,
+    EntryHook, FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,
     ScalarKind, UNIT_SEPARATOR, locator_for_function, locator_for_va,
 };
 
@@ -185,6 +185,7 @@ impl WineRunner {
             .collect::<Result<Vec<_>>>()?;
 
         let mut report = self.invoke(spec, &exe, &wine_dll, &payload, None);
+        let mut events = std::mem::take(&mut report.entry_events);
 
         // `results` is padded with placeholder crashed entries when the harness
         // dies, so its length can reach the full count even though the run
@@ -201,8 +202,14 @@ impl WineRunner {
                 "Harness exited early; re-running each case in isolation"
             );
             let mut isolated = Vec::with_capacity(tests.len());
+            // The crashed batch's events recorded calls in a process that
+            // died mid-run; the isolation re-runs are the authoritative
+            // record of every case, so the batch's events step aside rather
+            // than leaving the same calls in the log twice.
+            events.clear();
             for index in 0..tests.len() {
                 let mut single = self.invoke(spec, &exe, &wine_dll, &payload, Some(index));
+                events.append(&mut single.entry_events);
                 // A case that succeeds in isolation may have succeeded in the
                 // batch too; when both agree, keep the batch's value, since it
                 // came from a process with the same runtime state as the rest.
@@ -229,6 +236,15 @@ impl WineRunner {
                 expected = tests.len(),
                 "Some test cases produced no result even in isolation"
             );
+        }
+
+        if !spec.entry_hooks.is_empty() {
+            report.capture_log = Some(assemble_capture_log(
+                &spec.function_label,
+                dll_path,
+                events,
+                &report.notes,
+            ));
         }
         Ok(report)
     }
@@ -354,7 +370,10 @@ impl WineRunner {
             results,
             reported,
             module_base: parse_module_base(&stderr),
-            stderr,
+            stderr: stderr.clone(),
+            entry_events: parse_entry_events(&stdout),
+            notes: hook_notes(&stderr),
+            capture_log: None,
         }
     }
 
@@ -418,6 +437,204 @@ impl WineRunner {
             bail!("Harness compiled but {} was not produced", exe.display());
         }
         Ok(exe)
+    }
+}
+
+/// Pull the armed harness's entry events out of its stdout.
+///
+/// The recorder prints each captured call as one `EVENT\t{json}` line before
+/// the real entry runs; result lines start with the case index, so these
+/// lines ride the same stream without disturbing it. A line whose payload
+/// is not the promised `{"export": …, "args": […]}` shape is dropped and
+/// named on the notes — a half-parsed event never enters the log.
+fn parse_entry_events(stdout: &str) -> Vec<serde_json::Value> {
+    let mut events = Vec::new();
+    for line in stdout.lines() {
+        let Some(payload) = line.strip_prefix("EVENT\t") else {
+            continue;
+        };
+        match serde_json::from_str::<serde_json::Value>(payload) {
+            Ok(event)
+                if event.get("export").and_then(|e| e.as_str()).is_some()
+                    && event.get("args").and_then(|a| a.as_array()).is_some() =>
+            {
+                events.push(event);
+            }
+            Ok(_) => warn!("entry event line carried an unexpected shape and was dropped"),
+            Err(e) => warn!(error = %e, "entry event line is not JSON and was dropped"),
+        }
+    }
+    events
+}
+
+/// Whether a harness stderr line states what the entry hooks could not do —
+/// an arm-scope refusal, a degrade notice, or a recorded event the harness
+/// itself dropped (a line the event budget could not carry: truncation is
+/// stated, never silent).
+fn is_hook_note(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("harness: entry hook")
+        || line.starts_with("harness: entry event")
+        || line.starts_with("entry hooks: unavailable")
+}
+
+/// The harness stderr lines that state what the entry hooks could not do.
+/// They ride into the capture log as notes so a reader of the log sees the
+/// run's own account of its limits.
+fn hook_notes(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter(|line| is_hook_note(line))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Turn the harness's recorded events into a `capture-log-v1` document —
+/// the vocabulary the `capture --ingest` fold consumes (#397, #398).
+///
+/// The runner, not the harness, owns the numbers: each event gets its place
+/// in this run (`event_sequence`, first-seen order across the batch run and
+/// any isolation retries) and the run's own capture id. The binary is named
+/// as the host sees it (the harness only knows its Wine-side path), and each
+/// harness wire argument becomes the fold's argument descriptor: the scalar
+/// tags the entry hooks recorded are exactly the capture vocabulary's tags,
+/// and a recorded pointer is re-sized under the capture bound with
+/// [`ArgumentDescriptor::captured_pointer`] — the one rule every lane shares.
+fn assemble_capture_log(
+    function: &str,
+    dll_path: &Path,
+    events: Vec<serde_json::Value>,
+    notes: &[String],
+) -> serde_json::Value {
+    let binary = dll_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dll_path.to_string_lossy().into_owned());
+    // A deterministic, traceable capture id for this armed run: the binary,
+    // the function this run drives, and the hook lane. One baseline run per
+    // function means the id separates every run's evidence, and the fold's
+    // evidence names it verbatim.
+    let capture_id = format!("baseline-hook:{binary}:{function}");
+
+    // A hook whose signature carries only plain integer or pointer arguments
+    // is recorded by the harness, so its entry events all fold; any other
+    // note about the entry hooks leaves what the run recorded short of that
+    // promise, and the fold deserves to hear it.
+    let all_plain = notes.iter().all(|note| {
+        !note.contains("not armed") && !note.contains("dropped") && !note.contains("unavailable")
+    });
+
+    let entries: Vec<serde_json::Value> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(sequence, event)| {
+            let export = event.get("export")?.as_str()?;
+            let args = event.get("args")?.as_array()?;
+            let arguments = args
+                .iter()
+                .filter_map(harness_argument_to_descriptor)
+                .collect::<Vec<_>>();
+            // A dropped argument means the vector is incomplete; filing a
+            // partial vector would misname it against the signature, so the
+            // whole event leaves the log and the reason rides a note.
+            if arguments.len() != args.len() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "binary": binary,
+                "export": export,
+                "lane": "baseline_hook",
+                "evidence": {
+                    "run_event": {
+                        "capture_id": capture_id,
+                        "event_sequence": (sequence + 1) as u64,
+                    }
+                },
+                "arguments": arguments,
+            }))
+        })
+        .collect();
+
+    let mut dropped_notes: Vec<String> = events
+        .iter()
+        .filter(|event| {
+            event
+                .get("args")
+                .and_then(|a| a.as_array())
+                .is_some_and(|args| {
+                    args.iter()
+                        .any(|arg| harness_argument_to_descriptor(arg).is_none())
+                })
+        })
+        .map(|event| {
+            format!(
+                "entry event for '{}' was dropped: an argument the runner could not name",
+                event
+                    .get("export")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("<unknown>")
+            )
+        })
+        .collect();
+    dropped_notes.extend(notes.iter().cloned());
+    if !all_plain {
+        dropped_notes.push(
+            "the run named entry hooks it could not fully arm or record; the log may be short of \
+             the calls that arrived"
+                .to_string(),
+        );
+    }
+
+    let mut log = serde_json::json!({
+        "schema": "capture-log-v1",
+        "capture_id": capture_id,
+        "entries": entries,
+    });
+    if !dropped_notes.is_empty() {
+        log["notes"] = serde_json::json!(dropped_notes);
+    }
+    log
+}
+
+/// One harness-recorded event argument as the fold's argument descriptor.
+///
+/// A scalar rides its harness tag verbatim — the entry hooks only arm
+/// integer and pointer arguments, so the tag is always in the capture
+/// vocabulary. A recorded pointer is re-sized under the capture bound; an
+/// empty capture (the probe refused the address) is a zero-size descriptor,
+/// which the fold refuses with a reason rather than materializing.
+/// `None` means the argument is not in the vocabulary at all — a float the
+/// hooks were never meant to arm, or a line the harness mis-wrote — and the
+/// runner drops the whole event with a note rather than filing half a vector.
+fn harness_argument_to_descriptor(arg: &serde_json::Value) -> Option<serde_json::Value> {
+    match arg.get("kind").and_then(|k| k.as_str()) {
+        Some("scalar") => {
+            let tag = arg.get("tag").and_then(|t| t.as_str())?;
+            let value = arg.get("value")?;
+            if !matches!(
+                tag,
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+            ) || !value.is_i64() && !value.is_u64()
+            {
+                return None;
+            }
+            Some(serde_json::json!({"scalar": {"tag": tag, "value": value}}))
+        }
+        Some("pointer") => {
+            let bytes = arg.get("bytes").and_then(|b| b.as_array())?;
+            let bytes: Vec<u8> = bytes
+                .iter()
+                .map(|b| b.as_u64().and_then(|v| u8::try_from(v).ok()))
+                .collect::<Option<_>>()?;
+            let observed = arg.get("captured_size").and_then(|s| s.as_u64())?;
+            let descriptor =
+                calxgloss_types::ArgumentDescriptor::captured_pointer(observed, &bytes);
+            // Serialization of the descriptor cannot fail in practice; if it
+            // somehow did, the event leaves the log with a note rather than
+            // panicking the run.
+            serde_json::to_value(&descriptor).ok()
+        }
+        _ => None,
     }
 }
 
@@ -625,6 +842,153 @@ mod tests {
             filled
                 .iter()
                 .all(|r| r.crashed && !r.ok && r.trace.is_empty())
+        );
+    }
+
+    #[test]
+    fn entry_event_lines_are_harvested_without_disturbing_results() {
+        // The harness reports entry events as `EVENT\t{json}` lines beside the
+        // result lines (#398): the harvest takes the events, and the result
+        // parser must ignore the event lines exactly as before.
+        let stdout = "0\tok\ti32:7\tputs\n\
+                      EVENT\t{\"export\":\"fixture_status\",\"args\":[{\"kind\":\"scalar\",\"tag\":\"i32\",\"value\":9}]}\n";
+        assert_eq!(parse_results(stdout).len(), 1);
+        let events = parse_entry_events(stdout);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["export"], "fixture_status");
+        // Malformed or shapeless event lines are dropped with a warning —
+        // the log never carries half-parsed claims.
+        assert!(parse_entry_events("EVENT\tnot json\nEVENT\t{\"nope\":1}\n").is_empty());
+    }
+
+    #[test]
+    fn harness_scalar_arguments_carry_their_capture_tags_verbatim() {
+        let desc = harness_argument_to_descriptor(&json!({"kind":"scalar","tag":"i32","value":9}))
+            .unwrap();
+        assert_eq!(desc, json!({"scalar": {"tag": "i32", "value": 9}}));
+        // A float argument was never armable, so it is not in the vocabulary:
+        // it drops (and takes its event with it) rather than mis-encoding.
+        assert!(
+            harness_argument_to_descriptor(&json!({"kind":"scalar","tag":"f32","value":1.5}))
+                .is_none()
+        );
+        // A malformed pointer line drops too — the runner files no half-read.
+        assert!(harness_argument_to_descriptor(&json!({"kind":"pointer"})).is_none());
+    }
+
+    #[test]
+    fn recorded_pointers_are_sized_under_the_capture_bound() {
+        // The shared capture-bound rule is the only resizing a recorded
+        // pointer gets (issue #398 honors #397's POINTER_CAPTURE_BOUND).
+        use calxgloss_types::POINTER_CAPTURE_BOUND;
+        let kept = vec![0x41u8; POINTER_CAPTURE_BOUND as usize + 8];
+        let observed = kept.len() as u64 + 100;
+        let desc = harness_argument_to_descriptor(
+            &json!({"kind":"pointer","bytes":kept,"captured_size":observed}),
+        )
+        .unwrap();
+        let pointer = &desc["pointer"];
+        assert_eq!(
+            pointer["bytes"].as_array().unwrap().len(),
+            POINTER_CAPTURE_BOUND as usize,
+            "bytes over the bound never enter the record"
+        );
+        assert_eq!(pointer["captured_size"], observed);
+        assert_eq!(pointer["truncated"], true, "the truncation is stamped");
+        // A refused address (no bytes observed) is a zero-size descriptor,
+        // which the fold refuses with a reason rather than materializing.
+        let refused =
+            harness_argument_to_descriptor(&json!({"kind":"pointer","bytes":[],"captured_size":0}))
+                .unwrap();
+        assert_eq!(refused["pointer"]["captured_size"], 0);
+        assert_eq!(refused["pointer"]["bytes"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn an_armed_run_numbers_its_events_under_one_capture_id() {
+        // The runner owns the numbers: first-seen order through this run,
+        // and a deterministic capture id an ingest can trace evidence to.
+        let log = assemble_capture_log(
+            "fixture_status",
+            Path::new("/any/dir/fixture_target.dll"),
+            vec![
+                json!({"export":"fixture_status","args":[{"kind":"scalar","tag":"i32","value":5}]}),
+                json!({"export":"fixture_status","args":[{"kind":"scalar","tag":"i32","value":6}]}),
+            ],
+            &[],
+        );
+        assert_eq!(
+            log["capture_id"],
+            "baseline-hook:fixture_target.dll:fixture_status"
+        );
+        let entries = log["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["binary"], "fixture_target.dll", "host-side name");
+        assert_eq!(entries[0]["lane"], "baseline_hook");
+        for (i, entry) in entries.iter().enumerate() {
+            assert_eq!(
+                entry["evidence"]["run_event"]["capture_id"],
+                "baseline-hook:fixture_target.dll:fixture_status"
+            );
+            assert_eq!(
+                entry["evidence"]["run_event"]["event_sequence"],
+                (i + 1) as u64
+            );
+        }
+        // The whole log parses as the fold's capture vocabulary — the ingest
+        // path consumes it with no further translation.
+        let parsed: calxgloss_types::CaptureEventLog = serde_json::from_value(log).unwrap();
+        assert_eq!(
+            parsed.capture_id,
+            "baseline-hook:fixture_target.dll:fixture_status"
+        );
+        assert_eq!(parsed.entries.len(), 2);
+    }
+
+    #[test]
+    fn a_harness_dropped_event_rides_the_log_as_a_note() {
+        // Truncation is stated, never silent: an event line the harness's
+        // own budget could not carry must surface in the log's notes, and
+        // the fold must hear that the run is short of the calls that arrived.
+        let stderr = "harness: entry event for 'fixture_status' dropped: \
+                      the argument vector overflows the event line budget\n";
+        let notes = hook_notes(stderr);
+        assert_eq!(notes.len(), 1, "the drop notice is a hook note");
+        let log = assemble_capture_log(
+            "fixture_status",
+            Path::new("/x/fixture_target.dll"),
+            Vec::new(),
+            &notes,
+        );
+        let notes = log["notes"].as_array().expect("the log carries notes");
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str().is_some_and(|note| note.contains("short of"))),
+            "a dropped event marks the log as short of what arrived: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn an_event_with_an_unnameable_argument_leaves_the_log_with_a_note() {
+        // Filing half an argument vector would misname it against the
+        // signature, so the event drops whole and the reason rides a note.
+        let log = assemble_capture_log(
+            "fixture_ordered",
+            Path::new("/x/fixture_target.dll"),
+            vec![json!({
+                "export": "fixture_ordered",
+                "args": [{"kind":"scalar","tag":"i32","value":4}, {"kind":"scalar","tag":"f64","value":1.0}]
+            })],
+            &[],
+        );
+        assert_eq!(log["entries"].as_array().unwrap().len(), 0);
+        let notes = log["notes"].as_array().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.as_str().unwrap().contains("could not name")),
+            "the reason for the drop is stated: {notes:?}"
         );
     }
 }

@@ -38,6 +38,9 @@ pub struct TestGenerator {
     /// Baselines are written to
     /// `{target_dir}/re/baseline/{binary}/{function}/baseline.json`.
     target_dir: PathBuf,
+    /// Arm entry recording on the baseline runs this generator starts;
+    /// see [`TestGenerator::with_entry_capture`].
+    entry_capture: bool,
 }
 
 impl TestGenerator {
@@ -50,7 +53,22 @@ impl TestGenerator {
     pub fn new(target_dir: &Path) -> Self {
         Self {
             target_dir: target_dir.to_path_buf(),
+            entry_capture: false,
         }
+    }
+
+    /// Arm entry recording on the baseline runs started through this
+    /// generator (issue #398).
+    ///
+    /// Each run whose function-under-test is a named export entry files an
+    /// entry-event log next to its report — see
+    /// [`BaselineRunner::with_entry_capture`], which this setting forwards
+    /// to. Un-armed generators behave exactly as before, so replay folds
+    /// never arm by accident.
+    #[must_use]
+    pub fn with_entry_capture(mut self, armed: bool) -> Self {
+        self.entry_capture = armed;
+        self
     }
 
     /// Generate an FFI binding for a function.
@@ -168,7 +186,7 @@ impl TestGenerator {
     ) -> Result<Vec<TestResult>> {
         debug!(binary, function, "Running baseline tests");
 
-        let runner = BaselineRunner::new(&self.target_dir);
+        let runner = BaselineRunner::new(&self.target_dir).with_entry_capture(self.entry_capture);
         let results = runner
             .run(binary, function, signature, tests, dll_path)
             .await?;

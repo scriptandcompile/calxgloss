@@ -344,6 +344,8 @@ fn main() {
         die(4, &format!("base 0x{base_addr:x} lacks an MZ header (read 0x{mz:04x})"));
     }
 
+    __ARM_ENTRY__
+
     __INTERPOSE__
 
     let addr = match kind {
@@ -457,14 +459,636 @@ fn interpose_imports(_base: usize) {
 
 "##;
 
-/// Generate the API-trace machinery for an x86-64 target: an IAT interposer
-/// plus `global_asm!` recording shims, one per in-scope import.
+/// The stub arm for an entry-hook scope on a target whose architecture has
+/// no recording shims.
 ///
-/// Each shim preserves the incoming argument registers (the four integer
-/// registers and the six leading XMM registers; further arguments live on the
-/// stack and are already in place for a tail jump) plus `rax` — a variadic
-/// call site's XMM register count rides in `al` — calls the recorder, then
-/// tail-jumps to the real routine installed by the interposer.
+/// The run proceeds exactly uninstrumented; the note on stderr names the
+/// degradation (ADR-0057) rather than leaving an empty event log to look
+/// like an un-called binary. Entry events are never faked.
+const HARNESS_ENTRY_UNAVAILABLE: &str = r##"
+fn arm_entry_hooks(_base: usize, _dll: &str) {
+    eprintln!(
+        "harness: entry hooks unavailable: \
+         recording shims exist only for x86-64 targets"
+    );
+}
+
+"##;
+
+/// Generate the entry-hook machinery for an x86-64 target: `global_asm!`
+/// recording shims, one per in-scope export, plus the arm pass that patches
+/// the mapped module's export address table so every later `GetProcAddress`
+/// — including this harness's own locator — resolves the export to its
+/// recording trampoline.
+///
+/// Each shim preserves the incoming register arguments (`rcx`, `rdx`, `r8`,
+/// `r9` — floats are never armed) and the slot `rax` holds, calls the
+/// recorder with the table index and a pointer to the saved arguments, then
+/// tail-jumps to the real entry installed by the arm pass through
+/// `CALX_EX_REALS`.
+fn generate_entry_hooks(hooks: &[crate::wine::types::EntryHook]) -> Result<String> {
+    use std::fmt::Write as _;
+
+    let n = hooks.len();
+    let names = hooks
+        .iter()
+        .map(|h| format!("\"{}\"", h.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Fixed four columns, padded with "" past the export's arity: the
+    // recorder reads the kinds straight off this table, and every kind is
+    // one of the harness's own scalar tags (`p` for a probeable pointer).
+    let kinds = hooks
+        .iter()
+        .map(|h| {
+            let mut cols = ["\"\""; 4];
+            for (slot, kind) in cols.iter_mut().zip(&h.arg_kinds) {
+                *slot = match kind.tag() {
+                    "" => "\"\"",
+                    tag => Box::leak(format!("\"{tag}\"").into_boxed_str()),
+                };
+            }
+            format!("[{}]", cols.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut asm = String::new();
+    asm.push_str(".text\n");
+    for i in 0..n {
+        // Intel syntax, as rustc's asm dialect for Windows x86 targets. The
+        // save slots sit at `[rsp+40..rsp+80]` of a `sub rsp, 104` frame:
+        // above the 32-byte shadow space the recorder's `call` makes legal
+        // for itself (a recorder that spills into its shadow would otherwise
+        // overwrite the saved arguments and run the real entry on garbage),
+        // and the frame size keeps the `call` and the tail `jmp` on
+        // 16-byte boundaries. The args reach the recorder as (table index,
+        // pointer to the slots) and are fully restored before the tail jump
+        // through `r11`.
+        writeln!(
+            asm,
+            ".p2align 4\n\
+             calx_ex_tr_{i}:\n\
+             \x20sub rsp, 104\n\
+             \x20mov [rsp+40], rcx\n\
+             \x20mov [rsp+48], rdx\n\
+             \x20mov [rsp+56], r8\n\
+             \x20mov [rsp+64], r9\n\
+             \x20mov [rsp+72], rax\n\
+             \x20lea rdx, [rsp+40]\n\
+             \x20mov rcx, {i}\n\
+             \x20call calx_ex_record\n\
+             \x20mov rcx, [rsp+40]\n\
+             \x20mov rdx, [rsp+48]\n\
+             \x20mov r8, [rsp+56]\n\
+             \x20mov r9, [rsp+64]\n\
+             \x20mov rax, [rsp+72]\n\
+             \x20mov r11, [rip + CALX_EX_REALS + {o}]\n\
+             \x20add rsp, 104\n\
+             \x20jmp r11",
+            o = i * 8
+        )?;
+    }
+    asm.push_str(".data\n.globl CALX_EX_TRAMP\nCALX_EX_TRAMP:\n");
+    for i in 0..n {
+        writeln!(asm, ".quad calx_ex_tr_{i}")?;
+    }
+
+    let block = HARNESS_ENTRY_HOOK
+        .replace("__EX_N__", &n.to_string())
+        .replace("__EX_NAMES__", &names)
+        .replace("__EX_KINDS__", &kinds)
+        .replace(
+            "__EX_BOUND__",
+            &calxgloss_types::POINTER_CAPTURE_BOUND.to_string(),
+        )
+        .replace("__EX_ASM__", &asm);
+    Ok(block)
+}
+
+/// The x86-64 entry-hook machinery, with `__EX_N__`, `__EX_NAMES__`,
+/// `__EX_KINDS__` and `__EX_ASM__` filled in by [`generate_entry_hooks`].
+const HARNESS_ENTRY_HOOK: &str = r##"// ---- entry hooks (P23.4): export-entry recording trampolines ----
+
+/// The in-scope export names, in table order; a name's index is its hook id.
+static CALX_EX_NAMES: [&str; __EX_N__] = [__EX_NAMES__];
+
+/// Each hook's register-argument kinds, padded with "" past the arity —
+/// harness encode tags, `p` for a pointer whose target the recorder probes.
+static CALX_EX_TAGS: [[&str; 4]; __EX_N__] = [__EX_KINDS__];
+
+/// For each armed export, the real entry the arm pass found in the export
+/// table; the shims tail-jump through these.
+#[no_mangle]
+static mut CALX_EX_REALS: [usize; __EX_N__] = [0; __EX_N__];
+
+/// The register arguments as they arrived, saved by a recording shim.
+#[repr(C)]
+struct CalxExSaves {
+    rcx: u64,
+    rdx: u64,
+    r8: u64,
+    r9: u64,
+    rax: u64,
+}
+
+std::arch::global_asm!(
+    r#"__EX_ASM__"#
+);
+
+extern "C" {
+    /// Shim address per table slot, emitted alongside the shims.
+    static CALX_EX_TRAMP: [usize; __EX_N__];
+}
+
+#[repr(C)]
+struct CalxExMbi {
+    base_addr: *mut c_void,
+    allocation_base: *mut c_void,
+    allocation_protect: u32,
+    region_size: usize,
+    state: u32,
+    protect: u32,
+    atype: u32,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    #[link_name = "VirtualQuery"]
+    fn calx_ex_virtual_query(addr: *const c_void, buf: *mut CalxExMbi, len: usize) -> usize;
+    #[link_name = "VirtualAlloc"]
+    fn calx_ex_virtual_alloc(
+        addr: *mut c_void,
+        size: usize,
+        alloc_type: u32,
+        protect: u32,
+    ) -> *mut c_void;
+    #[link_name = "VirtualProtect"]
+    fn calx_ex_virtual_protect(addr: *mut c_void, size: usize, protect: u32, old: *mut u32) -> i32;
+    #[link_name = "VirtualFree"]
+    fn calx_ex_virtual_free(addr: *mut c_void, size: usize, free_type: u32) -> i32;
+    #[link_name = "GetModuleHandleA"]
+    fn calx_ex_get_module_handle_a(name: *const u8) -> *mut c_void;
+    #[link_name = "LoadLibraryA"]
+    fn calx_ex_load_library_a(name: *const u8) -> *mut c_void;
+}
+
+const CALX_EX_MEM_COMMIT: u32 = 0x0000_1000;
+const CALX_EX_MEM_RESERVE: u32 = 0x0000_2000;
+const CALX_EX_MEM_RELEASE: u32 = 0x0000_8000;
+const CALX_EX_PAGE_EXECUTE_READWRITE: u32 = 0x40;
+const CALX_EX_PAGE_READWRITE: u32 = 0x04;
+
+/// The capture bound, spelled from the shared protocol constant at codegen:
+/// one pointer argument's target is captured to at most this many bytes, and
+/// a capture that runs out stamps the truncation on the record.
+const CALX_EX_CAPTURE_BOUND: u64 = __EX_BOUND__;
+
+unsafe fn ex_read_u16(at: usize) -> u16 {
+    std::ptr::read_unaligned(at as *const u16)
+}
+unsafe fn ex_read_u32(at: usize) -> u32 {
+    std::ptr::read_unaligned(at as *const u32)
+}
+unsafe fn ex_read_u64(at: usize) -> u64 {
+    std::ptr::read_unaligned(at as *const u64)
+}
+unsafe fn ex_write_u32(at: usize, value: u32) {
+    std::ptr::write_unaligned(at as *mut u32, value);
+}
+
+/// The line budget for one recorded event, sized at codegen from the table:
+/// the bound leaves room for the probe's JSON framing, so a vector that
+/// could overflow the budget is caught by the framing check in the recorder,
+/// never by a half-written line.
+const CALX_EX_LINE_MAX: usize = (__EX_BOUND__ as usize) * 5 + 1024;
+
+/// Read a value under the table's tag: the register holds the full 64 bits,
+/// so each width is cut back to what the signature declared before it is
+/// named — never a guess at a wider reading.
+fn ex_tagged(tag: &str, raw: u64) -> String {
+    match tag {
+        "i8" => format!("{}", (raw as u8) as i8),
+        "i16" => format!("{}", (raw as u16) as i16),
+        "i32" => format!("{}", (raw as u32) as i32),
+        "i64" => format!("{}", raw as i64),
+        "u8" => format!("{}", raw as u8),
+        "u16" => format!("{}", raw as u16),
+        "u32" => format!("{}", raw as u32),
+        "u64" => format!("{raw}"),
+        other => other.to_string(),
+    }
+}
+
+/// Read a pointer argument's target out of this process: VirtualQuery first,
+/// because a recorder that faults takes the whole run down, and only bytes
+/// inside a committed readable region are ever touched. The observed size is
+/// the region's extent from the pointer — a region is all the probe can see,
+/// and it states that honestly — and the capture never exceeds
+/// [`CALX_EX_CAPTURE_BOUND`], stamping the truncation whenever it did.
+///
+/// An address the probe rejects (null, guard, uncommitted, unwritable-to-
+/// read) is an empty capture with size zero: the fold refuses it with a
+/// reason rather than materializing a buffer that never existed.
+unsafe fn ex_probe(addr: u64) -> String {
+    use std::fmt::Write as _;
+    if addr == 0 {
+        return String::from("{\"kind\":\"pointer\",\"bytes\":[],\"captured_size\":0,\"truncated\":false}");
+    }
+    let mut mbi = std::mem::zeroed::<CalxExMbi>();
+    if calx_ex_virtual_query(addr as *const c_void, &mut mbi, std::mem::size_of::<CalxExMbi>()) == 0
+    {
+        return String::from("{\"kind\":\"pointer\",\"bytes\":[],\"captured_size\":0,\"truncated\":false}");
+    }
+    if mbi.state != CALX_EX_MEM_COMMIT || mbi.protect & 0x100 != 0 {
+        // Uncommitted, or a guard page: never readable.
+        return String::from("{\"kind\":\"pointer\",\"bytes\":[],\"captured_size\":0,\"truncated\":false}");
+    }
+    let readable = mbi.protect & (0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80) != 0;
+    if !readable {
+        return String::from("{\"kind\":\"pointer\",\"bytes\":[],\"captured_size\":0,\"truncated\":false}");
+    }
+    let region_start = mbi.base_addr as u64;
+    let observed = (region_start + mbi.region_size as u64).saturating_sub(addr);
+    let kept = observed.min(CALX_EX_CAPTURE_BOUND);
+    let truncated = kept < observed;
+    let mut bytes = String::new();
+    for offset in 0..kept {
+        if offset > 0 {
+            bytes.push(',');
+        }
+        let byte = unsafe { *((addr + offset) as *const u8) };
+        let _ = write!(bytes, "{byte}");
+    }
+    format!(
+        "{{\"kind\":\"pointer\",\"bytes\":[{bytes}],\"captured_size\":{observed},\"truncated\":{truncated}}}"
+    )
+}
+
+/// Record one call as it arrived at an export entry, printing it to stdout
+/// as an `EVENT` line the runner numbers into the capture log later — the
+/// harness never invents a capture id or an event sequence. The line is
+/// flushed before the real entry runs, so the event survives even the case
+/// that faults inside this export.
+///
+/// The shims enter with the table index in %rcx and the saved arguments at
+/// %rdx.
+#[no_mangle]
+extern "C" fn calx_ex_record(id: u64, saves: *const CalxExSaves) {
+    let Some(name) = CALX_EX_NAMES.get(id as usize) else {
+        return;
+    };
+    if saves.is_null() {
+        return;
+    }
+    let saves = unsafe { &*saves };
+    let registers = [saves.rcx, saves.rdx, saves.r8, saves.r9];
+    let tags = CALX_EX_TAGS[id as usize];
+    let mut args = String::new();
+    for (slot, tag) in tags.iter().enumerate() {
+        if tag.is_empty() {
+            break;
+        }
+        if !args.is_empty() {
+            args.push(',');
+        }
+        if *tag == "p" {
+            args.push_str(&unsafe { ex_probe(registers[slot]) });
+        } else {
+            args.push_str(&format!(
+                "{{\"kind\":\"scalar\",\"tag\":\"{tag}\",\"value\":{}}}",
+                ex_tagged(tag, registers[slot])
+            ));
+        }
+    }
+    if args.len() + 256 > CALX_EX_LINE_MAX {
+        // The line budget was sized at codegen; a vector that overflows it
+        // drops the whole event with the reason named on stderr — never a
+        // half-written event, and never a faked one.
+        eprintln!(
+            "harness: entry event for '{name}' dropped: the argument vector overflows the event line budget"
+        );
+        return;
+    }
+    use std::io::Write as _;
+    let mut out = std::io::stdout();
+    if writeln!(out, "EVENT\t{{\"export\":\"{name}\",\"args\":[{args}]}}").is_err()
+        || out.flush().is_err()
+    {
+        die(7, "could not write entry events to stdout");
+    }
+}
+
+/// Complete the import resolution the `DONT_RESOLVE_DLL_REFERENCES` mapping
+/// deliberately skipped. A hooked run reaches the real entry, and a real
+/// entry calls imported APIs through IAT slots the file image left holding
+/// hint/name RVAs — jumping through one of those would fabricate a fault the
+/// binary never had a chance to produce. Every import thunk is resolved
+/// against its owner module (already loaded, or loaded honestly the way the
+/// real loader would) and the function address is written into the IAT slot.
+/// Anything that cannot be honestly resolved stops the arming entirely: an
+/// entry never runs over a half-bound import table.
+unsafe fn ex_bind_imports(base: usize) -> Result<(), String> {
+    let nt = base + ex_read_u32(base + 0x3c) as usize;
+    let magic = ex_read_u16(nt + 24);
+    let dd = match magic {
+        0x20b => nt + 24 + 112,
+        0x10b => nt + 24 + 96,
+        _ => return Ok(()),
+    };
+    let import_rva = ex_read_u32(dd + 8);
+    if import_rva == 0 {
+        return Ok(());
+    }
+    let mut desc = base + import_rva as usize;
+    loop {
+        let ilt_rva = ex_read_u32(desc);
+        let name_rva = ex_read_u32(desc + 12);
+        let iat_rva = ex_read_u32(desc + 16);
+        if name_rva == 0 || iat_rva == 0 {
+            break;
+        }
+        let mut name: Vec<u8> = Vec::new();
+        let mut at = base + name_rva as usize;
+        loop {
+            let byte = *(at as *const u8);
+            at += 1;
+            if byte == 0 || name.len() > 512 {
+                break;
+            }
+            name.push(byte);
+        }
+        name.push(0);
+        if name.len() < 2 {
+            return Err(format!("the import directory at 0x{import_rva:x} is malformed"));
+        }
+        let module_name = String::from_utf8_lossy(&name[..name.len() - 1]).into_owned();
+        let owner = {
+            let loaded = calx_ex_get_module_handle_a(name.as_ptr());
+            if loaded.is_null() {
+                calx_ex_load_library_a(name.as_ptr())
+            } else {
+                loaded
+            }
+        };
+        if owner.is_null() {
+            return Err(format!("import module '{module_name}' cannot be resolved"));
+        }
+        let lookup = if ilt_rva != 0 {
+            base + ilt_rva as usize
+        } else {
+            base + iat_rva as usize
+        };
+        let mut slot_index = 0usize;
+        loop {
+            let thunk = ex_read_u64(lookup + slot_index * 8);
+            if thunk == 0 {
+                break;
+            }
+            let func = if thunk & 0x8000_0000_0000_0000 != 0 {
+                GetProcAddress(owner, (thunk & 0xFFFF) as usize as *const u8)
+            } else {
+                // The two hint bytes precede the NUL-terminated symbol name.
+                GetProcAddress(owner, (base + thunk as usize + 2) as *const u8)
+            };
+            if func.is_null() {
+                let symbol = std::ffi::CStr::from_ptr((base + thunk as usize + 2) as *const i8)
+                    .to_string_lossy()
+                    .into_owned();
+                return Err(format!(
+                    "import '{symbol}' from module '{module_name}' cannot be resolved"
+                ));
+            }
+            let slot = base + iat_rva as usize + slot_index * 8;
+            let mut old = 0u32;
+            if calx_ex_virtual_protect(slot as *mut c_void, 8, CALX_EX_PAGE_READWRITE, &mut old)
+                == 0
+            {
+                return Err(format!("the import table at 0x{iat_rva:x} is not writable"));
+            }
+            std::ptr::write_unaligned(slot as *mut u64, func as u64);
+            let mut done = 0u32;
+            let _ = calx_ex_virtual_protect(slot as *mut c_void, 8, old, &mut done);
+            slot_index += 1;
+        }
+        desc += 20;
+    }
+    Ok(())
+}
+
+/// Patch the mapped module's export address table: each in-scope export's
+/// entry is rewritten to the rva of its recording trampoline, so every
+/// later `GetProcAddress` — this harness's own locator included — resolves
+/// the export through the shim.
+///
+/// Every step that cannot be honored names its reason on stderr and leaves
+/// that export real: an import the process cannot bind (arming first
+/// completes the import resolution the mapped load skipped — a real entry
+/// faulting through an unbound IAT slot would invent a fault the binary
+/// never produced), forwarded exports (the entry belongs to another
+/// module's body), a table or trampoline page that will not cooperate, and
+/// a `GetProcAddress` that still answers with the real address (the loader
+/// read the table some other way). The run continues uninstrumented for
+/// whatever was refused — hooks are never half-installed, and events are
+/// never faked.
+unsafe fn arm_entry_hooks(base: usize, dll: &str) {
+    let nt = base + ex_read_u32(base + 0x3c) as usize;
+    if ex_read_u32(nt) != 0x0000_4550 {
+        eprintln!("harness: entry hooks unavailable: no PE header at the mapped base");
+        return;
+    }
+    let magic = ex_read_u16(nt + 24);
+    // The export directory is data directory entry 0; its offset inside the
+    // optional header depends on PE32 versus PE32+.
+    let dd = match magic {
+        0x20b => nt + 24 + 112,
+        0x10b => nt + 24 + 96,
+        _ => {
+            eprintln!(
+                "harness: entry hooks unavailable: optional header magic 0x{magic:x} \
+                 is not a 64-bit image"
+            );
+            return;
+        }
+    };
+    let export_rva = ex_read_u32(dd);
+    let export_size = ex_read_u32(dd + 4);
+    if export_rva == 0 {
+        eprintln!("harness: entry hooks unavailable: the module has no export directory");
+        return;
+    }
+    if let Err(why) = ex_bind_imports(base) {
+        eprintln!("harness: entry hooks not armed: {why}");
+        return;
+    }
+    let dir = base + export_rva as usize;
+    let n_names = ex_read_u32(dir + 24) as usize;
+    let functions_rva = ex_read_u32(dir + 28) as usize;
+    let names_rva = ex_read_u32(dir + 32) as usize;
+    let ords_rva = ex_read_u32(dir + 36) as usize;
+
+    // The trampoline slots must live at an rva of this module — the patched
+    // table entries are 32-bit rvas — so the region is allocated around the
+    // module and kept within a 2 GB rva of it.
+    let slot_bytes = std::mem::size_of::<usize>() * CALX_EX_NAMES.len();
+    let mut region = std::ptr::null_mut();
+    let mut region_rva = 0usize;
+    for stride in 1..=16usize {
+        for guess in [
+            base.wrapping_add(stride * 0x0400_0000),
+            base.wrapping_sub(stride * 0x0400_0000),
+        ] {
+            let attempt =
+                calx_ex_virtual_alloc(guess as *mut c_void, slot_bytes, CALX_EX_MEM_COMMIT | CALX_EX_MEM_RESERVE, CALX_EX_PAGE_EXECUTE_READWRITE);
+            if attempt.is_null() {
+                continue;
+            }
+            let rva = attempt as usize - base;
+            if rva != 0 && rva < 0x7FFF_0000 {
+                region = attempt;
+                region_rva = rva;
+                break;
+            }
+        }
+        if !region.is_null() {
+            break;
+        }
+    }
+    if region.is_null() {
+        eprintln!(
+            "harness: entry hooks unavailable: no allocation within the module's rva range \
+             could hold the trampolines"
+        );
+        return;
+    }
+
+    for i in 0..CALX_EX_NAMES.len() {
+        let name = CALX_EX_NAMES[i];
+        let mut name_bytes = name.as_bytes().to_vec();
+        name_bytes.push(0);
+        // Walk the export name table for this hook's name.
+        let mut found_slot = 0usize;
+        let mut found_rva = 0u32;
+        for entry in 0..n_names {
+            let name_rva = ex_read_u32(base + names_rva + entry * 4) as usize;
+            let at = base + name_rva;
+            let mut matches = true;
+            for (offset, byte) in name_bytes.iter().enumerate() {
+                if *((at + offset) as *const u8) != *byte {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                let ordinal = ex_read_u16(base + ords_rva + entry * 2) as usize;
+                found_slot = base + functions_rva + ordinal * 4;
+                found_rva = ex_read_u32(found_slot);
+                break;
+            }
+        }
+        if found_slot == 0 {
+            eprintln!("harness: entry hook for '{name}' was not armed: the export table has no such name");
+            continue;
+        }
+        if (found_rva as usize) >= export_rva as usize
+            && (found_rva as usize) < (export_rva + export_size) as usize
+        {
+            // A forwarder: the entry's body belongs to another module, so
+            // patching this table would misroute a call this module never
+            // owns. It stays real, with the reason named.
+            eprintln!("harness: entry hook for '{name}' was not armed: it forwards to another module");
+            continue;
+        }
+        let tramp_rva = region_rva + i * 16;
+        let tramp = base + tramp_rva;
+        // jmp [rip+0]: six bytes of opcode+disp, and the 8-byte absolute
+        // target stored in the six bytes right after the instruction.
+        std::ptr::write_bytes(tramp as *mut u8, 0, 16);
+        *(tramp as *mut u8) = 0xff;
+        *((tramp + 1) as *mut u8) = 0x25;
+        *((tramp + 6) as *mut u64) = CALX_EX_TRAMP[i] as u64;
+        let mut old = 0u32;
+        if calx_ex_virtual_protect(found_slot as *mut c_void, 4, CALX_EX_PAGE_READWRITE, &mut old) == 0 {
+            eprintln!("harness: entry hook for '{name}' was not armed: the export table is not writable");
+            continue;
+        }
+        ex_write_u32(found_slot, tramp_rva as u32);
+        let mut ignored = 0u32;
+        let _ = calx_ex_virtual_protect(found_slot as *mut c_void, 4, old, &mut ignored);
+        // Prove the hook took: the loader must answer with the trampoline.
+        // If it still hands out the real entry, the patch is put back and
+        // the export runs uninstrumented — an honest miss, never a fake.
+        // The query uses the same NUL-terminated name bytes the harness's
+        // own locator passes, so it proves the very lookup that follows.
+        let answered = GetProcAddress(base as *mut c_void, name_bytes.as_ptr()) as usize;
+        if answered != tramp {
+            let mut back = 0u32;
+            if calx_ex_virtual_protect(found_slot as *mut c_void, 4, CALX_EX_PAGE_READWRITE, &mut back) != 0 {
+                ex_write_u32(found_slot, found_rva);
+                let mut done = 0u32;
+                let _ = calx_ex_virtual_protect(found_slot as *mut c_void, 4, old, &mut done);
+            }
+            eprintln!(
+                "harness: entry hook for '{name}' was not armed: \
+                 GetProcAddress still answers with the real entry"
+            );
+            continue;
+        }
+        CALX_EX_REALS[i] = base + found_rva as usize;
+        eprintln!("harness: entry hook armed for '{name}' (dll {dll})");
+    }
+}
+"##;
+
+/// Generate the complete harness source for a spec.
+pub fn generate_harness(spec: &HarnessSpec) -> Result<String> {
+    let tracing = if spec.trace_apis.is_empty() {
+        HARNESS_UNTRACED.to_string()
+    } else if spec.machine == Machine::X86_64 {
+        generate_interposer(&spec.trace_apis)?
+    } else {
+        HARNESS_TRACING_UNAVAILABLE.to_string()
+    };
+    let entry_hooks = if spec.entry_hooks.is_empty() {
+        String::new()
+    } else if spec.machine == Machine::X86_64 {
+        generate_entry_hooks(&spec.entry_hooks)?
+    } else {
+        HARNESS_ENTRY_UNAVAILABLE.to_string()
+    };
+    let interpose = if spec.trace_apis.is_empty() {
+        ""
+    } else {
+        "unsafe { interpose_imports(base_addr); }"
+    };
+    let arm_entry = if spec.entry_hooks.is_empty() {
+        ""
+    } else {
+        // The comment rides with the call so an un-armed harness carries no
+        // entry-hook text at all: it is exactly the harness it was before.
+        "// The arm pass first completes the module's import binding, and only\n        // then does the interposer replace the scoped slots with trace shims —\n        // the reverse order would let the binding overwrite installed shims.\n        unsafe { arm_entry_hooks(base_addr, &binary); }"
+    };
+    let begin_trace = if spec.trace_apis.is_empty() {
+        ""
+    } else {
+        "begin_case_trace();"
+    };
+    let suffix = HARNESS_SUFFIX
+        .replace("__INTERPOSE__", interpose)
+        .replace("__ARM_ENTRY__", arm_entry)
+        .replace("__BEGIN_TRACE__", begin_trace);
+
+    let mut src = String::with_capacity(16 * 1024);
+    src.push_str(&HARNESS_PREFIX.replace("__CRASH_EXIT__", &HARNESS_CRASH_EXIT.to_string()));
+    src.push_str(&generate_invoke(spec)?);
+    src.push_str(&tracing);
+    src.push_str(&entry_hooks);
+    src.push_str(&suffix);
+    Ok(src)
+}
+
+/// The x86-64 API-trace machinery — the same placeholder style as
+/// `__CRASH_EXIT__`, so the source stays readable and needs no escaping.
 fn generate_interposer(trace_apis: &[String]) -> Result<String> {
     use std::fmt::Write as _;
 
@@ -709,42 +1333,13 @@ unsafe fn interpose_imports(base: usize) {
 }
 "##;
 
-/// Generate the complete harness source for a spec.
-pub fn generate_harness(spec: &HarnessSpec) -> Result<String> {
-    let tracing = if spec.trace_apis.is_empty() {
-        HARNESS_UNTRACED.to_string()
-    } else if spec.machine == Machine::X86_64 {
-        generate_interposer(&spec.trace_apis)?
-    } else {
-        HARNESS_TRACING_UNAVAILABLE.to_string()
-    };
-    let interpose = if spec.trace_apis.is_empty() {
-        ""
-    } else {
-        "unsafe { interpose_imports(base_addr); }"
-    };
-    let begin_trace = if spec.trace_apis.is_empty() {
-        ""
-    } else {
-        "begin_case_trace();"
-    };
-    let suffix = HARNESS_SUFFIX
-        .replace("__INTERPOSE__", interpose)
-        .replace("__BEGIN_TRACE__", begin_trace);
-
-    let mut src = String::with_capacity(16 * 1024);
-    src.push_str(&HARNESS_PREFIX.replace("__CRASH_EXIT__", &HARNESS_CRASH_EXIT.to_string()));
-    src.push_str(&generate_invoke(spec)?);
-    src.push_str(&tracing);
-    src.push_str(&suffix);
-    Ok(src)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parse_signature;
+    use crate::wine::types::EntryHook;
     use crate::wine::types::FunctionLocator;
+    use crate::wine::types::ScalarKind;
 
     fn spec(machine: Machine) -> HarnessSpec {
         HarnessSpec::new(
@@ -840,5 +1435,183 @@ mod tests {
     fn duplicate_scope_names_collapse_to_one_slot() {
         let scoped = spec(Machine::X86_64).with_trace_scope(["puts", "puts", "free"]);
         assert_eq!(scoped.trace_apis, ["puts", "free"]);
+    }
+
+    /// A hook over plain register arguments: shims, table, and arm call all
+    /// land in the generated harness.
+    fn armed(machine: Machine) -> HarnessSpec {
+        spec(machine).with_entry_hooks([EntryHook {
+            name: "fixture_init".to_string(),
+            arg_kinds: vec![ScalarKind::I32, ScalarKind::Ptr],
+        }])
+    }
+
+    #[test]
+    fn an_armed_spec_emits_entry_shims_and_the_arm_call() {
+        let src = generate_harness(&armed(Machine::X86_64)).unwrap();
+        assert!(src.contains("calx_ex_tr_0"), "one recording shim per hook");
+        assert!(src.contains("CALX_EX_TRAMP"), "the shim address table");
+        assert!(
+            src.contains("CALX_EX_NAMES"),
+            "the hook table names its export"
+        );
+        assert!(
+            src.contains("\"fixture_init\""),
+            "the export name rides the table"
+        );
+        assert!(
+            src.contains("arm_entry_hooks(base_addr, &binary)"),
+            "the arm pass runs right after the module is mapped, before the locator"
+        );
+    }
+
+    #[test]
+    fn an_armed_run_binds_imports_before_it_hooks() {
+        // A real entry calls imported APIs through IAT slots that a
+        // DONT_RESOLVE_DLL_REFERENCES load leaves holding hint/name RVAs;
+        // the armed run completes that binding first, or it would
+        // fabricate a fault the binary never produced.
+        let src = generate_harness(&armed(Machine::X86_64)).unwrap();
+        assert!(
+            src.contains("ex_bind_imports(base)"),
+            "the arm pass resolves the module's imports before patching"
+        );
+        assert!(
+            src.contains("entry hooks not armed"),
+            "an import the process cannot resolve stops the arming entirely"
+        );
+    }
+
+    #[test]
+    fn the_arm_pass_lands_before_the_interposer() {
+        // The interposer overwrites scoped IAT slots with trace shims;
+        // the arm pass writes real addresses into that same table, so the
+        // binding must run first — never after the shims are installed.
+        let both = armed(Machine::X86_64).with_trace_scope(["puts"]);
+        let src = generate_harness(&both).unwrap();
+        let arm = src
+            .find("arm_entry_hooks(base_addr, &binary)")
+            .expect("the arm call is generated");
+        let interpose = src
+            .find("interpose_imports(base_addr)")
+            .expect("the interposer call is generated");
+        assert!(
+            arm < interpose,
+            "import binding precedes trace shim installation"
+        );
+    }
+
+    #[test]
+    fn an_unarmed_harness_carries_no_entry_hook_machinery() {
+        // The un-armed baseline comes out exactly as it does today: no
+        // shims, no arm call, no probe or allocator imports.
+        let src = generate_harness(&spec(Machine::X86_64)).unwrap();
+        assert!(!src.contains("calx_ex_tr_"));
+        assert!(!src.contains("CALX_EX_"));
+        assert!(!src.contains("arm_entry_hooks"));
+        assert!(!src.contains("VirtualAlloc"));
+        assert!(!src.contains("VirtualQuery"));
+    }
+
+    #[test]
+    fn entry_hooks_on_a_32_bit_target_degrade_with_a_note() {
+        // ADR-0057: the run proceeds uninstrumented and says so. The
+        // x86-64 shims are never emitted for a target that cannot run
+        // them, and no events are faked.
+        let src = generate_harness(&armed(Machine::X86)).unwrap();
+        assert!(!src.contains("calx_ex_tr_"), "no shims on a 32-bit target");
+        assert!(!src.contains("global_asm"), "no assembly at all");
+        assert!(
+            src.contains("entry hooks unavailable"),
+            "the degrade note rides the binary"
+        );
+        assert!(
+            src.contains("arm_entry_hooks"),
+            "the note still speaks from the run"
+        );
+    }
+
+    #[test]
+    fn entry_hook_names_that_are_not_identifiers_are_dropped() {
+        // Hook names become asm labels and table indices; a name that is
+        // not an identifier could break the generated source, so it never
+        // reaches the table.
+        let armed = spec(Machine::X86_64).with_entry_hooks([
+            EntryHook {
+                name: "fixture_init".to_string(),
+                arg_kinds: vec![],
+            },
+            EntryHook {
+                name: "9bad".to_string(),
+                arg_kinds: vec![],
+            },
+            EntryHook {
+                name: "not an ident".to_string(),
+                arg_kinds: vec![],
+            },
+        ]);
+        assert_eq!(
+            armed
+                .entry_hooks
+                .iter()
+                .map(|h| h.name.as_str())
+                .collect::<Vec<_>>(),
+            ["fixture_init"]
+        );
+        let src = generate_harness(&armed).unwrap();
+        assert!(
+            !src.contains("9bad"),
+            "a rejected name never enters the generated table"
+        );
+    }
+
+    #[test]
+    fn hooks_the_recorder_cannot_honor_are_dropped() {
+        // Floats would mis-arrive at replay, stack arguments live where the
+        // shims do not read, and duplicate names collapse to one slot.
+        let armed = spec(Machine::X86_64).with_entry_hooks([
+            EntryHook {
+                name: "over_four".to_string(),
+                arg_kinds: vec![ScalarKind::I32; 5],
+            },
+            EntryHook {
+                name: "floaty".to_string(),
+                arg_kinds: vec![ScalarKind::F64],
+            },
+            EntryHook {
+                name: "kept".to_string(),
+                arg_kinds: vec![ScalarKind::U64, ScalarKind::Ptr],
+            },
+            EntryHook {
+                name: "kept".to_string(),
+                arg_kinds: vec![ScalarKind::U64, ScalarKind::Ptr],
+            },
+        ]);
+        assert_eq!(
+            armed
+                .entry_hooks
+                .iter()
+                .map(|h| h.name.as_str())
+                .collect::<Vec<_>>(),
+            ["kept"],
+            "only a hook the recorder can honor whole survives"
+        );
+    }
+
+    #[test]
+    fn the_capture_bound_is_spelled_from_the_protocol_constant() {
+        // One rule for every lane (#397): the bound in the generated probe
+        // is the shared constant, and a capture that runs out stamps its
+        // truncation on the record rather than silently going short.
+        let src = generate_harness(&armed(Machine::X86_64)).unwrap();
+        let bound = calxgloss_types::POINTER_CAPTURE_BOUND;
+        assert!(
+            src.contains(&format!("CALX_EX_CAPTURE_BOUND: u64 = {bound};")),
+            "the probe honors the shared capture bound"
+        );
+        assert!(
+            src.contains("truncated\\\":{truncated}"),
+            "the truncation rides the record"
+        );
     }
 }

@@ -773,3 +773,235 @@ async fn baseline_runner_reports_a_missing_dll_without_touching_wine() {
         results[0].error
     );
 }
+// --- armed entry recording (P23.4, issue #398) ------------------------------
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod live_entry_hook {
+    //! Arm a recording trampoline on a real fixture export, run it under
+    //! Wine, and fold what was recorded through the existing `--ingest`
+    //! path. What only this Wine-gated run can prove: the patched export
+    //! address table really redirects every `GetProcAddress` — including
+    //! the harness's own locator — into a recorded call that still reaches
+    //! the real entry, and the folded events replay through the baseline
+    //! harness into a filed case.
+
+    use super::*;
+    use calxgloss_testgen::{EntryHook, Replay, ScalarKind, TestGenerator, fold_capture_event_log};
+    use calxgloss_types::CaseOrigin;
+
+    /// The armed run of `fixture_status(int code)` records the call as it
+    /// arrived at the export entry, the armed run's own result is unchanged
+    /// from the uninstrumented run, and folding the recorded log through
+    /// the harness replay path files one mined-hook case.
+    #[tokio::test]
+    #[ignore = "needs Wine and the windows-gnu Rust target"]
+    async fn an_entry_hooked_run_records_the_call_and_its_replay_files_a_case() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let store = tempfile::tempdir().expect("tempdir");
+        let dll =
+            calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+        let image = PeImage::parse(&dll).expect("fixture target should parse as a PE image");
+        let signature = parse_signature("int fixture_status(int code)")
+            .expect("fixture signature should parse");
+
+        let cases = [TestCase {
+            inputs: json!({ "code": 7 }),
+            expected_return: Value::Null,
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+            origin: CaseOrigin::Generated,
+        }];
+
+        let plain_spec = HarnessSpec::new(
+            "fixture_status",
+            FunctionLocator::ExportName("fixture_status".to_string()),
+            &signature,
+            image.machine(),
+        )
+        .expect("spec should build");
+
+        let runner = WineRunner::new(work.path());
+        runner
+            .preflight_wine()
+            .expect("wine should be installed to run these tests");
+
+        // The uninstrumented run first: today's suite is the standard.
+        let plain = runner
+            .run(&plain_spec, &dll, &cases, image.machine())
+            .expect("the un-armed fixture harness should run");
+        assert_eq!(plain.results.len(), 1);
+        assert!(plain.results[0].ok, "{:?}", plain.results[0].error);
+
+        // Armed: the run's own export entry gets the recording trampoline.
+        let armed_spec = plain_spec.clone().with_entry_hooks([EntryHook {
+            name: "fixture_status".to_string(),
+            arg_kinds: vec![ScalarKind::I32],
+        }]);
+        let armed = runner
+            .run(&armed_spec, &dll, &cases, image.machine())
+            .expect("the entry-hooked fixture harness should run");
+        assert!(
+            !armed.results[0].crashed,
+            "the hooked call crashed: {:?}; stderr: {}",
+            armed.results[0].error, armed.stderr
+        );
+        assert_eq!(
+            armed.results[0].returned, plain.results[0].returned,
+            "the hook records the call, it does not change it"
+        );
+
+        // The run recorded the entry it made: the argument vector as it
+        // arrived, numbered under this run's capture id.
+        let log = armed
+            .capture_log
+            .as_ref()
+            .expect("an armed run leaves a capture log");
+        let entries = log["entries"].as_array().expect("entries array");
+        assert!(
+            !entries.is_empty(),
+            "the entry-hooked run recorded at least one entry event; stderr: {}",
+            armed.stderr
+        );
+        let entry = &entries[0];
+        assert_eq!(entry["export"], "fixture_status");
+        assert_eq!(entry["binary"], "fixture_target.dll");
+        assert_eq!(
+            entry["arguments"][0],
+            json!({"scalar": {"tag": "i32", "value": 7}}),
+            "the scalar argument is recorded as it arrived"
+        );
+
+        // The recorded events replay through the baseline harness and file
+        // a case — the existing `capture --ingest` fold, unchanged.
+        let generator = TestGenerator::new(store.path());
+        let exports = [calxgloss_types::Export {
+            name: "fixture_status".to_string(),
+            address: 0,
+            signature: "int fixture_status(int code)".to_string(),
+        }];
+        let folded = fold_capture_event_log(
+            &generator,
+            "fixture_target.dll",
+            &exports,
+            log,
+            &Replay::Harness { dll_path: &dll },
+        )
+        .await
+        .expect("the fold should run");
+        assert_eq!(folded.report.events_seen, entries.len());
+        assert!(
+            folded.report.cases_mined >= 1,
+            "a replayed entry event files a case; refusals: {:?}",
+            folded.report.refusals
+        );
+        let rows = generator
+            .load_baseline("fixture_target.dll", "fixture_status")
+            .expect("a filed baseline suite");
+        assert!(
+            rows.iter().any(|row| matches!(
+                &row.test_case.origin,
+                CaseOrigin::MinedHook { capture_id, event_sequence }
+                    if capture_id == "baseline-hook:fixture_target.dll:fixture_status"
+                        && *event_sequence >= 1
+            )),
+            "the filed case's evidence names the baseline hook run: {:?}",
+            rows.iter()
+                .map(|row| row.test_case.origin.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A pointer argument is recorded as bytes read out of the running
+    /// process — only from VirtualQuery-verified committed memory, so the
+    /// recorder never faults — and the recorded buffer starts with exactly
+    /// what the harness had written there.
+    #[test]
+    #[ignore = "needs Wine and the windows-gnu Rust target"]
+    fn a_hooked_run_reads_a_pointer_argument_out_of_the_target_process() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let dll =
+            calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+        let image = PeImage::parse(&dll).expect("fixture target should parse as a PE image");
+        let signature = parse_signature("unsigned int fixture_ordered(int *probe)")
+            .expect("fixture signature should parse");
+
+        let cases = [TestCase {
+            inputs: json!({ "probe": { "__alloc": { "size": 4, "bytes": "44556677" } } }),
+            expected_return: Value::Null,
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+            origin: CaseOrigin::Generated,
+        }];
+
+        let spec = HarnessSpec::new(
+            "fixture_ordered",
+            FunctionLocator::ExportName("fixture_ordered".to_string()),
+            &signature,
+            image.machine(),
+        )
+        .expect("spec should build")
+        .with_entry_hooks([EntryHook {
+            name: "fixture_ordered".to_string(),
+            arg_kinds: vec![ScalarKind::Ptr],
+        }]);
+
+        let runner = WineRunner::new(work.path());
+        runner
+            .preflight_wine()
+            .expect("wine should be installed to run these tests");
+        let report = runner
+            .run(&spec, &dll, &cases, image.machine())
+            .expect("the entry-hooked fixture harness should run");
+
+        // The hooked call still returns what the real entry returns: the
+        // captured bytes read back little-endian.
+        assert_eq!(
+            report.results[0].returned.as_u64(),
+            Some(0x7766_5544),
+            "the hook records the call, it does not change it; stderr: {}\n\
+             result: ok={} error={:?} crashed={}",
+            report.stderr,
+            report.results[0].ok,
+            report.results[0].error,
+            report.results[0].crashed,
+        );
+
+        let log = report
+            .capture_log
+            .expect("an armed run leaves a capture log");
+        let entries = log["entries"].as_array().expect("entries array");
+        assert!(
+            !entries.is_empty(),
+            "the entry-hooked run recorded at least one entry event; stderr: {}",
+            report.stderr
+        );
+        // The recorded arguments speak the fold's wire vocabulary: one
+        // externally tagged descriptor per argument. The probe's pointer
+        // descriptor carries the captured bytes read out of committed
+        // memory inside the target process.
+        let pointer = entries
+            .iter()
+            .flat_map(|entry| entry["arguments"].as_array().cloned().unwrap_or_default())
+            .find_map(|argument| argument.get("pointer").cloned())
+            .expect("the hooked run recorded a pointer capture argument");
+        let bytes = pointer["bytes"].as_array().expect("bytes array");
+        assert!(
+            bytes.len() >= 4,
+            "the probe read the buffer it was pointed at"
+        );
+        assert_eq!(
+            bytes[..4],
+            [json!(0x44), json!(0x55), json!(0x66), json!(0x77)],
+            "the recorded bytes are what the harness had written there"
+        );
+        assert!(
+            pointer["captured_size"].is_number() && pointer["truncated"].is_boolean(),
+            "the capture states its observed size and truncation stamp"
+        );
+        // Whether the region extent runs past the capture bound is the
+        // target's business; either way the record states it, and the
+        // fold's refusal vocabulary for a truncation is pinned by fold's
+        // own tests. What this proves is the probe's honesty: bytes only
+        // from verified committed memory, never a fault, never an invention.
+    }
+}

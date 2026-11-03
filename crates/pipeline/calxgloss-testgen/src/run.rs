@@ -71,6 +71,10 @@ pub struct TestContext {
 pub struct BaselineRunner {
     /// Base directory for temporary test projects.
     work_dir: PathBuf,
+    /// Whether the run arms export entries with recording trampolines
+    /// (P23.4: the baseline run's entry capture). Off by default: an
+    /// un-armed run produces exactly the suite it produces today.
+    entry_capture: bool,
 }
 
 impl BaselineRunner {
@@ -79,7 +83,23 @@ impl BaselineRunner {
     /// Test projects are created under `{work_dir}/calxgloss_baseline/`.
     pub fn new(work_dir: &Path) -> Self {
         let base = work_dir.join("calxgloss_baseline");
-        Self { work_dir: base }
+        Self {
+            work_dir: base,
+            entry_capture: false,
+        }
+    }
+
+    /// Arm the run's harness with entry-recording trampolines (P23.4).
+    ///
+    /// The armed harness records every call that arrives at an export entry
+    /// the run can name, and the run assembles those events into a
+    /// `capture-log-v1` document beside the project — the input of the
+    /// `capture --ingest` fold. The flag adds capture to the same baseline
+    /// run; it never changes the generated suite or the outcomes.
+    #[must_use]
+    pub fn with_entry_capture(mut self, armed: bool) -> Self {
+        self.entry_capture = armed;
+        self
     }
 
     /// Run baseline tests for a function.
@@ -129,6 +149,18 @@ impl BaselineRunner {
             // ordered API-call trace is part of it (P22): scope the harness's
             // IAT interposer to the target's own named imports.
             .with_trace_scope(trace_scope(image.imports()));
+        // Armed (P23.4): the run's own export entry, when the function is a
+        // named export, is plantable and its signature is the one this run
+        // already parsed — so it is the honest arm scope of a baseline run.
+        // `with_entry_hooks` refuses any hook it cannot honor (floats, stack
+        // arguments, names that are not identifiers), and an unarmed run
+        // stays exactly the run it is today.
+        let spec = if self.entry_capture {
+            let hooks = entry_hooks_for_run(&image, function, &spec);
+            spec.with_entry_hooks(hooks)
+        } else {
+            spec
+        };
 
         let runner = WineRunner::new(&self.work_dir);
         runner.preflight_wine()?;
@@ -136,6 +168,20 @@ impl BaselineRunner {
         let report = runner
             .run(&spec, dll_path, tests, machine)
             .with_context(|| format!("Baseline execution failed for '{function}'"))?;
+
+        // The armed run leaves its capture log (P23.4: the `capture --ingest`
+        // fold's input) beside the harness project, named by the run so an
+        // operator can find it and a reviewer can trace its evidence.
+        if let Some(log) = &report.capture_log {
+            let log_path = self.work_dir.join(format!("{function}.entry-events.json"));
+            std::fs::write(&log_path, serde_json::to_string_pretty(log)?)
+                .with_context(|| format!("could not write the capture log for '{function}'"))?;
+            info!(
+                path = %log_path.display(),
+                entries = log.get("entries").and_then(|e| e.as_array()).map_or(0, |a| a.len()),
+                "Entry capture recorded"
+            );
+        }
 
         let results = collect_results(&report.results, tests);
 
@@ -192,6 +238,31 @@ fn values_match(expected: &Value, actual: &Value) -> bool {
         },
         _ => expected == actual,
     }
+}
+
+/// The arm scope of an armed baseline run: the function's own export entry,
+/// with the register-argument kinds the run already parsed for it.
+///
+/// A function found by RVA has no export entry to plant, so an armed run of
+/// one records nothing — honestly, not silently. A forwarder's entry belongs
+/// to another module's body, so it is left real (the harness names the
+/// refusal on stderr when asked to plant one anyway).
+fn entry_hooks_for_run(
+    image: &PeImage,
+    function: &str,
+    spec: &HarnessSpec,
+) -> Vec<crate::wine::EntryHook> {
+    let is_export = image
+        .exports()
+        .iter()
+        .any(|entry| entry.name == function && !entry.is_forwarder);
+    if !is_export {
+        return Vec::new();
+    }
+    vec![crate::wine::EntryHook {
+        name: function.to_string(),
+        arg_kinds: spec.params.iter().map(|p| p.kind).collect(),
+    }]
 }
 
 /// The API names the baseline harness should watch at the target's import
@@ -282,8 +353,54 @@ fn collect_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pe::Machine;
+    use crate::wine::FunctionLocator;
     use crate::wine::HarnessTestResult;
+    use crate::wine::ScalarKind;
     use serde_json::json;
+
+    #[test]
+    fn an_armed_baseline_run_arms_only_its_own_named_export_entry() {
+        // The arm scope of a baseline run is the function under test, and
+        // only when that function *is* an export entry (#398): there is no
+        // honest scope beyond the call the run itself makes.
+        let path = calxgloss_testfixtures::fixture_target_path()
+            .expect("the fixture crate builds its target dll for tests");
+        let image = PeImage::parse(&path).expect("the fixture target dll parses");
+
+        let spec = HarnessSpec::new(
+            "fixture_status",
+            FunctionLocator::ExportName("fixture_status".to_string()),
+            &parse_signature("int fixture_status(int code)").expect("a plain int signature parses"),
+            Machine::X86_64,
+        )
+        .expect("an export-name locator is honored");
+        let hooks = entry_hooks_for_run(&image, "fixture_status", &spec);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].name, "fixture_status");
+        assert_eq!(hooks[0].arg_kinds, vec![ScalarKind::I32]);
+
+        // A function located by RVA has no export entry to plant: the armed
+        // run records nothing, and says so rather than faking it.
+        let rva_spec = HarnessSpec::new(
+            "FUN_1800014d0",
+            FunctionLocator::Rva(0x14d0),
+            &parse_signature("int FUN_1800014d0(void)").unwrap(),
+            Machine::X86_64,
+        )
+        .unwrap();
+        assert!(entry_hooks_for_run(&image, "FUN_1800014d0", &rva_spec).is_empty());
+
+        // A name the binary does not export at all is likewise unarmable.
+        let stranger = HarnessSpec::new(
+            "not_exported",
+            FunctionLocator::ExportName("not_exported".to_string()),
+            &parse_signature("int not_exported(void)").unwrap(),
+            Machine::X86_64,
+        )
+        .unwrap();
+        assert!(entry_hooks_for_run(&image, "not_exported", &stranger).is_empty());
+    }
 
     fn outcome(index: usize, returned: Value) -> HarnessTestResult {
         HarnessTestResult {

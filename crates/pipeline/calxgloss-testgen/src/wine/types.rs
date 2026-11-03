@@ -163,6 +163,27 @@ pub struct HarnessSpec {
     /// Empty means no interposition at all: the harness behaves exactly as it
     /// did before the trace gate existed.
     pub trace_apis: Vec<String>,
+    /// Export entries the generated harness arms with recording trampolines,
+    /// in first-seen order (P23.4: the baseline run's entry capture).
+    ///
+    /// Empty means no arming at all: the harness behaves exactly as an
+    /// un-armed run does today.
+    pub entry_hooks: Vec<EntryHook>,
+}
+
+/// One export entry armed with an entry-recording trampoline (P23.4: the
+/// baseline run's captured call entries).
+///
+/// The hook knows the export's register-argument kinds so the recorder can
+/// tell a probeable pointer from a plain scalar; only kinds the capture
+/// vocabulary can carry are armed at all — a float would mis-arrive at
+/// replay, so a signature with one is never armed (P23 parent scope).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryHook {
+    /// The export name, as the binary's export table spells it.
+    pub name: String,
+    /// The register arguments' kinds, in arrival order (at most four).
+    pub arg_kinds: Vec<ScalarKind>,
 }
 
 /// Whether `name` can become a generated recording shim: the shims embed the
@@ -227,6 +248,7 @@ impl HarnessSpec {
             load_mode: LoadMode::NoResolve,
             machine,
             trace_apis: Vec::new(),
+            entry_hooks: Vec::new(),
         })
     }
 
@@ -250,6 +272,54 @@ impl HarnessSpec {
             }
             if !self.trace_apis.contains(&name.to_string()) {
                 self.trace_apis.push(name.to_string());
+            }
+        }
+        self
+    }
+
+    /// Ask the generated harness to arm these export entries with recording
+    /// trampolines (P23.4: the baseline run's entry capture).
+    ///
+    /// A hook survives arm-scope only when it can be honored honestly:
+    /// export names that cannot become shim labels are dropped, and so is
+    /// any hook whose signature leaves a register argument outside the
+    /// capture vocabulary — a float would mis-arrive at replay, more than
+    /// four arguments live on the stack the shims do not read, and a kind
+    /// the harness cannot name would mis-record the vector. Duplicates
+    /// collapse to one entry each.
+    #[must_use]
+    pub fn with_entry_hooks(mut self, hooks: impl IntoIterator<Item = EntryHook>) -> Self {
+        for hook in hooks {
+            if !is_trace_shim_name(&hook.name) {
+                warn!(
+                    function = %self.function_label,
+                    name = %hook.name,
+                    "dropping entry hook whose export name is not an identifier"
+                );
+                continue;
+            }
+            if hook.arg_kinds.len() > 4 {
+                warn!(
+                    function = %self.function_label,
+                    name = %hook.name,
+                    "dropping entry hook with stack arguments the shims cannot read"
+                );
+                continue;
+            }
+            if hook
+                .arg_kinds
+                .iter()
+                .any(|kind| matches!(kind, ScalarKind::F32 | ScalarKind::F64 | ScalarKind::Unit))
+            {
+                warn!(
+                    function = %self.function_label,
+                    name = %hook.name,
+                    "dropping entry hook over a float argument: it would mis-arrive at replay"
+                );
+                continue;
+            }
+            if !self.entry_hooks.iter().any(|h| h.name == hook.name) {
+                self.entry_hooks.push(hook);
             }
         }
         self
@@ -323,6 +393,17 @@ pub struct HarnessReport {
     pub module_base: Option<u64>,
     /// Diagnostics the harness printed to stderr.
     pub stderr: String,
+    /// Entry events the armed harness recorded (P23.4), in arrival order,
+    /// each shaped `{"export": name, "args": [wire values]}`. Empty when the
+    /// run was not armed with entry hooks.
+    pub entry_events: Vec<serde_json::Value>,
+    /// Honest notes from the harness: arm-scope refusals, degrade notices,
+    /// dropped events — what the run could not do, in its own words.
+    pub notes: Vec<String>,
+    /// The assembled `capture-log-v1` document for an armed run (P23.4):
+    /// the entry events numbered into the wire vocabulary the `--ingest`
+    /// fold consumes. `None` for un-armed runs.
+    pub capture_log: Option<serde_json::Value>,
 }
 
 /// Field separator between arguments on the wire (ASCII unit separator).
