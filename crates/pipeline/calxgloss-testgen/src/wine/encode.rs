@@ -9,7 +9,9 @@ use crate::wine::types::{HarnessSpec, ScalarKind};
 const MAX_ALLOC: usize = 256 * 1024 * 1024;
 
 /// Key used in a test case's JSON to request a harness-allocated buffer.
-const ALLOC_KEY: &str = "__alloc";
+/// The record-and-replay fold spells captured buffers with this same key,
+/// so one vocabulary covers invented and mined allocation requests alike.
+pub(crate) const ALLOC_KEY: &str = "__alloc";
 
 /// Encode a test case's inputs into the wire format the harness reads.
 ///
@@ -108,11 +110,13 @@ fn encode_value(kind: ScalarKind, name: &str, value: &Value) -> Result<String> {
         ScalarKind::Ptr => match value {
             Value::Null => "null".to_string(),
             Value::Number(_) | Value::String(_) => as_int(value)?.to_string(),
-            // An explicit request for a harness-allocated buffer.
+            // An explicit request for a harness-allocated buffer, empty, filled,
+            // or carrying exact content.
             Value::Object(spec) if spec.contains_key(ALLOC_KEY) => encode_alloc(name, spec)?,
             other => bail!(
                 "'{name}' must be null, an address, or an allocation request \
-                 ({{\"{ALLOC_KEY}\": {{\"size\": N}}}}), got {other}"
+                 ({{\"{ALLOC_KEY}\": {{\"size\": N[, \"fill\": F][, \"bytes\": \"<hex>\"]}}}}), \
+                 got {other}"
             ),
         },
         ScalarKind::Unit => {
@@ -164,33 +168,59 @@ fn encode_alloc(name: &str, spec: &serde_json::Map<String, Value>) -> Result<Str
         bail!("'{name}': refusing to allocate {size} bytes; the limit is {MAX_ALLOC}");
     }
 
-    let fill = match request.get("fill") {
+    // Explicit content wins over a fill: a captured buffer replays with exactly
+    // the bytes the record saw, and a stated fill beside it sets nothing.
+    let bytes = match request.get("bytes") {
         None | Some(Value::Null) => String::new(),
-        Some(Value::Number(n)) => {
-            let byte = n
-                .as_u64()
-                .filter(|b| *b <= u8::MAX as u64)
-                .with_context(|| format!("'{name}': allocation fill must be 0..=255, got {n}"))?;
-            format!(",{byte:02x}")
-        }
         Some(Value::String(s)) => {
-            let t = s.trim();
-            let hex = t
-                .strip_prefix("0x")
-                .or_else(|| t.strip_prefix("0X"))
-                .unwrap_or(t);
-            // Two hex digits is one byte; anything longer is an error worth reporting.
-            if hex.len() > 2 {
+            let hex = s.trim();
+            if hex.len() != usize::try_from(size).unwrap_or(usize::MAX) * 2
+                || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+                || hex.len() % 2 != 0
+            {
                 bail!(
-                    "'{name}': allocation fill '{s}' is more than one byte; fill sets every byte"
+                    "'{name}': allocation bytes '{s}' must be exactly {size} bytes of hex \
+                     ({size} pairs of hex digits)"
                 );
             }
-            format!(",{hex:0>2}")
+            format!("={hex}")
         }
-        Some(other) => bail!("'{name}': allocation fill must be a byte, got {other}"),
+        Some(other) => bail!("'{name}': allocation bytes must be a hex string, got {other}"),
     };
 
-    Ok(format!("@{size}{fill}"))
+    let fill = if bytes.is_empty() {
+        match request.get("fill") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::Number(n)) => {
+                let byte = n
+                    .as_u64()
+                    .filter(|b| *b <= u8::MAX as u64)
+                    .with_context(|| {
+                        format!("'{name}': allocation fill must be 0..=255, got {n}")
+                    })?;
+                format!(",{byte:02x}")
+            }
+            Some(Value::String(s)) => {
+                let t = s.trim();
+                let hex = t
+                    .strip_prefix("0x")
+                    .or_else(|| t.strip_prefix("0X"))
+                    .unwrap_or(t);
+                // Two hex digits is one byte; anything longer is an error worth reporting.
+                if hex.len() > 2 {
+                    bail!(
+                        "'{name}': allocation fill '{s}' is more than one byte; fill sets every byte"
+                    );
+                }
+                format!(",{hex:0>2}")
+            }
+            Some(other) => bail!("'{name}': allocation fill must be a byte, got {other}"),
+        }
+    } else {
+        String::new()
+    };
+
+    Ok(format!("@{size}{bytes}{fill}"))
 }
 
 /// Decode one `<kind>:<value>` payload into JSON.
@@ -232,4 +262,74 @@ fn parse_hex(s: &str) -> Result<u64, String> {
     u64::from_str_radix(t, 16)
         .with_context(|| format!("'{t}' is not a hex value"))
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ffi::ParsedSignature;
+    use crate::parse_signature;
+    use crate::wine::types::FunctionLocator;
+    use serde_json::json;
+
+    fn ptr_sig() -> ParsedSignature {
+        // The parameter name in the spec is what the input field is keyed by.
+        parse_signature("int __stdcall f(char *buffer)").unwrap()
+    }
+
+    fn encode(inputs: serde_json::Value) -> anyhow::Result<String> {
+        let spec = HarnessSpec::new(
+            "f",
+            FunctionLocator::ExportName("f".into()),
+            &ptr_sig(),
+            crate::Machine::X86_64,
+        )
+        .unwrap();
+        let test = TestCase {
+            inputs,
+            expected_return: Value::Null,
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+            origin: Default::default(),
+        };
+        encode_test_case(&spec, &test)
+    }
+
+    #[test]
+    fn an_allocation_with_bytes_encodes_the_exact_content() {
+        // A mined capture materialises with the bytes the record saw.
+        let wire =
+            encode(json!({"buffer": {"__alloc": {"size": 4, "bytes": "deadbeef"}}})).unwrap();
+        assert_eq!(wire, "p:@4=deadbeef");
+    }
+
+    #[test]
+    fn a_fill_only_allocation_still_encodes_the_fill_form() {
+        let wire = encode(json!({"buffer": {"__alloc": {"size": 4, "fill": 1}}})).unwrap();
+        assert_eq!(wire, "p:@4,01");
+        let wire = encode(json!({"buffer": {"__alloc": {"size": 8}}})).unwrap();
+        assert_eq!(wire, "p:@8");
+    }
+
+    #[test]
+    fn explicit_bytes_lose_nothing_to_a_stated_fill() {
+        // Explicit content wins over a fill: the wire carries the content
+        // form alone, never a content form the harness would refuse.
+        let wire =
+            encode(json!({"buffer": {"__alloc": {"size": 4, "bytes": "deadbeef", "fill": 1}}}))
+                .unwrap();
+        assert_eq!(wire, "p:@4=deadbeef");
+    }
+
+    #[test]
+    fn allocation_bytes_that_disagree_with_the_size_are_refused() {
+        let err = encode(json!({"buffer": {"__alloc": {"size": 5, "bytes": "deadbeef"}}}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exactly 5 bytes of hex"), "{err}");
+        let err = encode(json!({"buffer": {"__alloc": {"size": 2, "bytes": "abc"}}}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exactly 2 bytes of hex"), "{err}");
+    }
 }

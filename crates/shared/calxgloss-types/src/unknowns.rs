@@ -96,7 +96,8 @@ pub enum UnknownKind {
     TierRefused,
     /// The record-and-replay fold refused a captured argument vector the
     /// harness cannot replay — a float argument, an export with no
-    /// parseable signature, a pointer-bearing vector, a truncated capture,
+    /// parseable signature, an unmaterializable pointer with no captured
+    /// bytes, a truncated capture,
     /// or an argument shape the signature does not carry — and named its
     /// reason in the question line. Refused-and-recorded, never a silent
     /// drop (P23's mining residue).

@@ -28,12 +28,20 @@ fn exports() -> Vec<Export> {
             address: 0x200,
             signature: "int __stdcall fixture_status(int code)".to_string(),
         },
+        Export {
+            name: "fixture_ptr".to_string(),
+            address: 0x300,
+            signature: "int __stdcall fixture_ptr(int *probe)".to_string(),
+        },
     ]
 }
 
 /// One capture log: two mined-hook events for `fixture_check` (one twin of a
-/// pre-filed generated case, one fresh), a float entry, a pointer entry, an
-/// event for an unlisted export, and a faulting entry on `fixture_status`.
+/// pre-filed generated case, one fresh), a float entry, a pointer entry
+/// refused on argument shape, an event for an unlisted export, a mined
+/// pointer buffer on `fixture_ptr` (the capture bound materialises it as a
+/// fresh allocation), a faulting entry on `fixture_status`, and a pointer
+/// capture over the bound refused naming the bound.
 fn capture_log() -> Value {
     json!({
         "capture_id": "cap-e2e",
@@ -78,10 +86,40 @@ fn capture_log() -> Value {
             },
             {
                 "binary": "game.dll",
-                "export": "fixture_status",
+                "export": "fixture_ptr",
                 "lane": "baseline_hook",
                 "evidence": {"run_event": {"capture_id": "cap-e2e", "event_sequence": 6}},
+                "arguments": [
+                    {
+                        "pointer": {
+                            "bytes": [222, 173, 190, 239],
+                            "captured_size": 4,
+                            "truncated": false
+                        }
+                    }
+                ]
+            },
+            {
+                "binary": "game.dll",
+                "export": "fixture_status",
+                "lane": "baseline_hook",
+                "evidence": {"run_event": {"capture_id": "cap-e2e", "event_sequence": 7}},
                 "arguments": [{"scalar": {"tag": "i32", "value": 11}}]
+            },
+            {
+                "binary": "game.dll",
+                "export": "fixture_ptr",
+                "lane": "baseline_hook",
+                "evidence": {"run_event": {"capture_id": "cap-e2e", "event_sequence": 8}},
+                "arguments": [
+                    {
+                        "pointer": {
+                            "bytes": [0],
+                            "captured_size": 65_537,
+                            "truncated": true
+                        }
+                    }
+                ]
             }
         ]
     })
@@ -106,6 +144,28 @@ async fn a_captured_log_fills_the_filed_baseline_suite_and_the_unknown_ledger() 
                     origin: calxgloss_types::CaseOrigin::Generated,
                 },
                 actual_return: json!(9),
+                actual_side_effects: Vec::new(),
+                actual_api_calls: Vec::new(),
+                passed: true,
+                error: None,
+            }],
+        )
+        .unwrap();
+    // And a generated row on disk for `fixture_ptr`, so the pointer-mined
+    // case lands in a merged suite the golden pins byte-for-byte.
+    generator
+        .save_baseline(
+            "game.dll",
+            "fixture_ptr",
+            &[calxgloss_types::TestResult {
+                test_case: TestCase {
+                    inputs: json!({"param_0": 0}),
+                    expected_return: Value::Null,
+                    expected_side_effects: Vec::new(),
+                    expected_api_calls: Vec::new(),
+                    origin: calxgloss_types::CaseOrigin::Generated,
+                },
+                actual_return: json!(0),
                 actual_side_effects: Vec::new(),
                 actual_api_calls: Vec::new(),
                 passed: true,
@@ -138,20 +198,21 @@ async fn a_captured_log_fills_the_filed_baseline_suite_and_the_unknown_ledger() 
     .await
     .unwrap();
 
-    // The count report: six events seen, one case mined, the twin
-    // deduplicated, three refusals named, the truncation stated.
-    assert_eq!(folded.report.events_seen, 6);
-    assert_eq!(folded.report.cases_mined, 1);
+    // The count report: eight events seen, two cases mined (the fresh
+    // `fixture_check` vector and the materialised `fixture_ptr` buffer), the
+    // twin deduplicated, five refusals named, two truncations stated.
+    assert_eq!(folded.report.events_seen, 8);
+    assert_eq!(folded.report.cases_mined, 2);
     assert_eq!(folded.report.cases_deduplicated, 1);
-    assert_eq!(folded.report.refusals.len(), 4);
+    assert_eq!(folded.report.refusals.len(), 5);
     assert_eq!(folded.report.events_dropped, Some(3));
     let summary = folded.report.summary();
     for fact in [
-        "6 events seen",
-        "1 cases mined",
+        "8 events seen",
+        "2 cases mined",
         "1 twin deduplicated",
-        "4 refusals named",
-        "1 truncation stated",
+        "5 refusals named",
+        "2 truncations stated",
     ] {
         assert!(summary.contains(fact), "{summary} lacks {fact:?}");
     }
@@ -219,31 +280,49 @@ async fn a_captured_log_fills_the_filed_baseline_suite_and_the_unknown_ledger() 
             .is_file()
     );
 
-    // The named refusals and the fault land in the unknown ledger.
+    // The merged suite for the pointer-argument export, byte-for-byte: the
+    // generated row first, then the mined case whose parameter carries the
+    // captured buffer as a fresh `__alloc` allocation. A shape this exact
+    // only arrives from a captured pointer's bytes.
+    const GOLDEN_POINTER_MINED: &str = include_str!("golden/merged_suite_pointer_mined.json");
+    assert_eq!(
+        std::fs::read_to_string(
+            dir.path()
+                .join("re/baseline/game.dll/fixture_ptr/baseline.json")
+        )
+        .unwrap()
+        .trim_end(),
+        GOLDEN_POINTER_MINED.trim_end(),
+        "the filed merged suite must stay byte-identical"
+    );
+
+    // The named refusals and the fault land in the unknown ledger: four entry
+    // refusals, the capture-level truncation named by the log's dropped-event
+    // count, and the fault's crash reproduction.
     let landed = file_capture_records(dir.path(), "game.dll", &folded.unknown_records).unwrap();
-    assert_eq!(landed, 5); // 3 refusals + 1 truncation + 1 crash reproduction
+    assert_eq!(landed, 6);
     let ledger = load_json::<UnknownLedger>(&unknown_ledger_path(
         dir.path(),
         &BinaryIdentity::new("game.dll"),
     ))
     .unwrap();
     let records = ledger.records.unwrap();
-    assert_eq!(records.len(), 5);
+    assert_eq!(records.len(), 6);
     assert_eq!(
         records
             .iter()
             .filter(|r| r.kind == UnknownKind::CaptureRefused)
             .count(),
-        4,
-        "three entry refusals plus the stated truncation"
+        5,
+        "four entry refusals plus the capture-level truncation marker"
     );
     let crash = records
         .iter()
         .find(|r| r.kind == UnknownKind::CrashReproduction)
         .expect("the faulting replay names a crash_reproduction record");
     assert_eq!(crash.function.as_deref(), Some("fixture_status"));
-    assert!(crash.question.contains("#6"), "{}", crash.question);
-    assert!(crash.id.ends_with("crash_reproduction/cap-e2e#6"));
+    assert!(crash.question.contains("#7"), "{}", crash.question);
+    assert!(crash.id.ends_with("crash_reproduction/cap-e2e#7"));
     let questions: Vec<&str> = records
         .iter()
         .filter(|r| r.kind == UnknownKind::CaptureRefused)
@@ -251,7 +330,7 @@ async fn a_captured_log_fills_the_filed_baseline_suite_and_the_unknown_ledger() 
         .collect();
     for reason in [
         "float-argument",
-        "pointer-bearing-vector",
+        "argument-shape-not-in-signature",
         "no-parseable-signature",
         "truncated-capture",
     ] {
@@ -260,6 +339,16 @@ async fn a_captured_log_fills_the_filed_baseline_suite_and_the_unknown_ledger() 
             "no refusal names {reason:?}: {questions:?}"
         );
     }
+    // The over-the-bound capture's refusal names the capture bound itself, so
+    // the ledger says how far the read could go, not just that it fell short.
+    let bound_refusal = questions
+        .iter()
+        .find(|q| q.contains("truncated-capture") && q.contains("65537"))
+        .expect("the over-the-bound capture refuses as truncated-capture");
+    assert!(
+        bound_refusal.contains("capture bound") && bound_refusal.contains("65536"),
+        "the refusal must name the capture bound: {bound_refusal}"
+    );
 
     // A re-ingest of the same log is byte-stable: no new filed rows, no new
     // ledger records, no re-numbered revisions.
@@ -274,19 +363,12 @@ async fn a_captured_log_fills_the_filed_baseline_suite_and_the_unknown_ledger() 
     .await
     .unwrap();
     assert_eq!(again.report.cases_mined, 0);
-    assert_eq!(again.report.cases_deduplicated, 2);
-    let _ = TestCase {
-        inputs: Value::Null,
-        expected_return: Value::Null,
-        expected_side_effects: Vec::new(),
-        expected_api_calls: Vec::new(),
-        origin: calxgloss_types::CaseOrigin::Generated,
-    };
+    assert_eq!(again.report.cases_deduplicated, 3);
     assert!(again.filed.is_empty());
     assert_eq!(std::fs::read(&baseline).unwrap(), before);
     let landed_again =
         file_capture_records(dir.path(), "game.dll", &again.unknown_records).unwrap();
-    assert_eq!(landed_again, 5);
+    assert_eq!(landed_again, 6);
     let ledger = load_json::<UnknownLedger>(&unknown_ledger_path(
         dir.path(),
         &BinaryIdentity::new("game.dll"),

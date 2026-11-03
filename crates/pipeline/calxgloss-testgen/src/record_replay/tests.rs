@@ -211,7 +211,7 @@ async fn every_refusal_names_its_reason_and_files_a_capture_refused_record() {
         ),
         // A truncated capture flag on a pointer descriptor.
         captured(2, "fixture_check", vec![pointer(vec![7], 512, true)]),
-        // A pointer-bearing vector.
+        // A materializable pointer fed to a parameter that is not one.
         captured(
             3,
             "fixture_check",
@@ -272,7 +272,9 @@ async fn every_refusal_names_its_reason_and_files_a_capture_refused_record() {
         [
             "float-argument",
             "truncated-capture",
-            "pointer-bearing-vector",
+            // The captured bytes are materializable, but a pointer
+            // descriptor cannot feed a plain int parameter.
+            "argument-shape-not-in-signature",
             "no-parseable-signature",
             "no-parseable-signature",
             "argument-shape-not-in-signature",
@@ -640,6 +642,174 @@ async fn a_dump_thread_entry_files_a_mined_minidump_origin_from_its_own_evidence
             thread_id: 3812,
         }
     );
+}
+
+#[tokio::test]
+async fn a_captured_pointer_buffer_replays_as_a_fresh_allocation_holding_the_captured_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let generator = TestGenerator::new(dir.path());
+    // The replay seam receives the vector with the pointer spelled as a
+    // harness-allocated buffer carrying exactly the captured bytes — the
+    // replay materializes the target, it never points at a captured address.
+    let seam = |_: &str, case: &TestCase| {
+        assert_eq!(
+            case.inputs,
+            json!({"buffer": {"__alloc": {"size": 5, "bytes": "48656c6c6f"}}}),
+            "a captured pointer replays as a fresh allocation holding the captured bytes"
+        );
+        observed(json!(7), vec![])
+    };
+    let mut exports = exports();
+    exports.push(export(
+        "fixture_buffer",
+        "int __stdcall fixture_buffer(char* buffer)",
+    ));
+    let folded = fold_capture_event_log(
+        &generator,
+        "game.dll",
+        &exports,
+        &log(
+            "cap-a",
+            vec![captured(
+                1,
+                "fixture_buffer",
+                vec![pointer(vec![72, 101, 108, 108, 111], 5, false)],
+            )],
+        ),
+        &Replay::Fake(&seam),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(folded.report.cases_mined, 1);
+    assert!(folded.report.refusals.is_empty());
+    assert!(folded.unknown_records.is_empty());
+    let rows = generator
+        .load_baseline("game.dll", "fixture_buffer")
+        .unwrap();
+    assert_eq!(
+        rows[0].test_case.inputs,
+        json!({"buffer": {"__alloc": {"size": 5, "bytes": "48656c6c6f"}}})
+    );
+    match &rows[0].test_case.origin {
+        CaseOrigin::MinedHook { event_sequence, .. } => assert_eq!(*event_sequence, 1),
+        other => panic!("a mined pointer row keeps its mined origin: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_pointer_with_no_captured_bytes_refuses_as_unmaterializable() {
+    let dir = tempfile::tempdir().unwrap();
+    let generator = TestGenerator::new(dir.path());
+    let seam = |f: &str, c: &TestCase| panic!("replayed {f} {}", c.inputs);
+    let folded = fold_capture_event_log(
+        &generator,
+        "game.dll",
+        &exports(),
+        &log(
+            "cap-a",
+            vec![captured(
+                1,
+                "fixture_check",
+                vec![pointer(Vec::new(), 0, false)],
+            )],
+        ),
+        &Replay::Fake(&seam),
+    )
+    .await
+    .unwrap();
+    // The earlier slice's refusal still fires: a pointer the replay has no
+    // bytes to materialize is refused-and-recorded, never pointed at an
+    // address the harness cannot honor.
+    assert_eq!(folded.report.refusals.len(), 1);
+    assert_eq!(
+        folded.report.refusals[0].reason.as_str(),
+        "unmaterializable-pointer"
+    );
+    assert_eq!(folded.unknown_records.len(), 1);
+    assert!(
+        folded.unknown_records[0]
+            .question
+            .contains("no captured bytes")
+    );
+    assert!(
+        generator
+            .load_baseline("game.dll", "fixture_check")
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_descriptor_over_the_capture_bound_refuses_naming_the_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let generator = TestGenerator::new(dir.path());
+    let seam = |f: &str, c: &TestCase| panic!("replayed {f} {}", c.inputs);
+    // A record-time capture can never carry more than the bound: a
+    // descriptor that does states a truncation it never stamped, so the
+    // fold refuses it rather than reconstruct an over-bound buffer.
+    let over = vec![7u8; calxgloss_types::POINTER_CAPTURE_BOUND as usize + 1];
+    let folded = fold_capture_event_log(
+        &generator,
+        "game.dll",
+        &exports(),
+        &log(
+            "cap-a",
+            vec![captured(
+                1,
+                "fixture_check",
+                vec![pointer(over.clone(), over.len() as u64, false)],
+            )],
+        ),
+        &Replay::Fake(&seam),
+    )
+    .await
+    .unwrap();
+    assert_eq!(folded.report.refusals.len(), 1);
+    assert_eq!(
+        folded.report.refusals[0].reason.as_str(),
+        "truncated-capture"
+    );
+    let record = &folded.unknown_records[0];
+    assert!(
+        record.question.contains("capture bound"),
+        "{}",
+        record.question
+    );
+    assert!(record.question.contains("65537"), "{}", record.question);
+}
+
+#[tokio::test]
+async fn an_unstated_short_capture_refuses_naming_the_sizes() {
+    let dir = tempfile::tempdir().unwrap();
+    let generator = TestGenerator::new(dir.path());
+    let seam = |f: &str, c: &TestCase| panic!("replayed {f} {}", c.inputs);
+    // bytes under the bound but short of the observed size with
+    // truncated=false: the record claims a full capture it never made.
+    let folded = fold_capture_event_log(
+        &generator,
+        "game.dll",
+        &exports(),
+        &log(
+            "cap-a",
+            vec![captured(
+                1,
+                "fixture_check",
+                vec![pointer(vec![1, 2], 4, false)],
+            )],
+        ),
+        &Replay::Fake(&seam),
+    )
+    .await
+    .unwrap();
+    assert_eq!(folded.report.refusals.len(), 1);
+    assert_eq!(
+        folded.report.refusals[0].reason.as_str(),
+        "truncated-capture"
+    );
+    let record = &folded.unknown_records[0];
+    assert!(record.question.contains("truncated"), "{}", record.question);
+    assert!(record.question.contains("4"), "{}", record.question);
+    assert!(record.question.contains("2"), "{}", record.question);
 }
 
 #[test]

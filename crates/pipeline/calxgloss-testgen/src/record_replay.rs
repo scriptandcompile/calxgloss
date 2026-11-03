@@ -37,9 +37,13 @@
 //! - Filed order is stable — generated cases first, then mined cases in
 //!   first-seen capture order — so a repeated ingest is byte-stable.
 //! - Truncation is stated, never silent: a log that dropped events because
-//!   its budget ran out names one capture-level refusal and says so.
-//! - Initial scope is scalar arguments: a vector carrying a pointer — or a
-//!   capture that truncated an argument — is refused, never synthesized.
+//!   its budget ran out names one capture-level refusal and says so, and a
+//!   pointer descriptor over the *capture bound* — or short of its own
+//!   stated size — refuses with the truncation named in its detail.
+//! - Pointer arguments replay as fresh allocations holding the captured
+//!   bytes ([`calxgloss_types::POINTER_CAPTURE_BOUND`] caps what capture
+//!   may record); a pointer with no captured bytes to materialize is
+//!   refused, never pointed at an address the harness cannot honor.
 
 use std::collections::HashSet;
 
@@ -54,6 +58,7 @@ use serde_json::{Map, Value};
 
 use crate::ffi::{ParsedSignature, parse_signature};
 use crate::generator::TestGenerator;
+use crate::wine::encode::ALLOC_KEY;
 
 /// A capture event log as stored on disk, staged raw: entries stay raw
 /// JSON values so a single unshaped entry refuses itself by name instead
@@ -115,10 +120,11 @@ pub enum RefusalReason {
     /// The named export is not in the listing, or its signature does not
     /// parse — the vector cannot be named against anything.
     NoParseableSignature,
-    /// The argument vector carries a pointer; the initial scalar replay
-    /// cannot carry it.
-    PointerBearingVector,
-    /// The capture truncated an argument, or dropped events at its budget;
+    /// The vector carries a pointer with no captured bytes to materialize;
+    /// the replay cannot honor an address the capture never recorded.
+    UnmaterializablePointer,
+    /// The capture truncated an argument, dropped events at its budget, or
+    /// carries a pointer descriptor the capture bound says cannot be whole;
     /// the vector it describes is incomplete, not small.
     TruncatedCapture,
     /// The entry is not a shaped vector, or the vector does not fit the
@@ -133,7 +139,7 @@ impl RefusalReason {
         match self {
             RefusalReason::FloatArgument => "float-argument",
             RefusalReason::NoParseableSignature => "no-parseable-signature",
-            RefusalReason::PointerBearingVector => "pointer-bearing-vector",
+            RefusalReason::UnmaterializablePointer => "unmaterializable-pointer",
             RefusalReason::TruncatedCapture => "truncated-capture",
             RefusalReason::ArgumentShapeNotInSignature => "argument-shape-not-in-signature",
         }
@@ -361,35 +367,76 @@ pub async fn fold_capture_event_log(
             continue;
         }
 
-        // A truncated capture flag refuses by name before anything else:
-        // the vector it describes is incomplete, not small.
-        if entry.arguments.iter().any(|argument| {
-            matches!(
-                argument,
+        // A stated truncation refuses by name before anything else: the
+        // vector it describes is incomplete, not small. The record says
+        // how much really arrived against the capture bound.
+        if let Some((observed, captured)) =
+            entry.arguments.iter().find_map(|argument| match argument {
                 ArgumentDescriptor::Pointer {
+                    bytes,
+                    captured_size,
                     truncated: true,
-                    ..
-                }
-            )
-        }) {
+                } => Some((*captured_size, bytes.len())),
+                _ => None,
+            })
+        {
+            let bound = calxgloss_types::POINTER_CAPTURE_BOUND;
             ingest.refuse(
                 event,
                 Some(&entry.export),
                 RefusalReason::TruncatedCapture,
-                "the capture truncated an argument of this event",
+                &format!(
+                    "the capture truncated an argument of this event — {observed} bytes \
+                     observed, {captured} captured at the {bound}-byte capture bound"
+                ),
             );
             continue;
         }
+        // A pointer with no captured bytes is the one pointer shape the
+        // replay can never honor: there is nothing to materialize.
         if entry
             .arguments
             .iter()
-            .any(|argument| matches!(argument, ArgumentDescriptor::Pointer { .. }))
+            .any(|argument| matches!(argument, ArgumentDescriptor::Pointer { bytes, .. } if bytes.is_empty()))
         {
             ingest.refuse(
                 event,
                 Some(&entry.export),
-                RefusalReason::PointerBearingVector,
-                "the argument vector carries a pointer this replay cannot carry",
+                RefusalReason::UnmaterializablePointer,
+                "the descriptor names a pointer with no captured bytes to materialize",
+            );
+            continue;
+        }
+        // A record-time capture can never carry more than the capture
+        // bound, and an untruncated descriptor must carry exactly the size
+        // it observed. Either half failing means the record states a full
+        // buffer the capture cannot have delivered — the truncation gets
+        // named here rather than silently reconstructed whole at replay.
+        if let Some((observed, captured)) =
+            entry.arguments.iter().find_map(|argument| match argument {
+                ArgumentDescriptor::Pointer {
+                    bytes,
+                    captured_size,
+                    ..
+                } if u64::max(*captured_size, bytes.len() as u64)
+                    > calxgloss_types::POINTER_CAPTURE_BOUND
+                    || bytes.len() as u64 != *captured_size =>
+                {
+                    Some((*captured_size, bytes.len()))
+                }
+                _ => None,
+            })
+        {
+            let bound = calxgloss_types::POINTER_CAPTURE_BOUND;
+            ingest.refuse(
+                event,
+                Some(&entry.export),
+                RefusalReason::TruncatedCapture,
+                &format!(
+                    "the descriptor claims {captured} captured bytes against {observed} \
+                     observed — the {bound}-byte capture bound cannot deliver that whole, \
+                     a truncation the record left unstated"
+                ),
             );
             continue;
         }
@@ -741,18 +788,37 @@ fn decode_case(entry: &CapturedCallEntry, parsed: &ParsedSignature) -> Option<Te
     let mut inputs = Map::new();
     for (index, (argument, parameter)) in entry.arguments.iter().zip(&parsed.parameters).enumerate()
     {
-        let ArgumentDescriptor::Scalar { tag, value } = argument else {
-            return None;
-        };
-        if !tag_feeds_parameter(*tag, value, parameter) {
-            return None;
-        }
         let name = parameter
             .name
             .clone()
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| format!("param_{}", index + 1));
-        inputs.insert(name, value.clone());
+        match argument {
+            ArgumentDescriptor::Scalar { tag, value } => {
+                if !tag_feeds_parameter(*tag, value, parameter) {
+                    return None;
+                }
+                inputs.insert(name, value.clone());
+            }
+            // A captured pointer becomes a request for a fresh harness
+            // allocation holding exactly the captured bytes — the replay
+            // never points the target at an address from the captured
+            // process. Only a pointer parameter can hold the request.
+            ArgumentDescriptor::Pointer {
+                bytes,
+                captured_size,
+                ..
+            } => {
+                if !parameter.is_pointer {
+                    return None;
+                }
+                let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                inputs.insert(
+                    name,
+                    serde_json::json!({ALLOC_KEY: {"size": captured_size, "bytes": hex}}),
+                );
+            }
+        }
     }
     let origin = match &entry.evidence {
         CaptureEvidence::RunEvent {

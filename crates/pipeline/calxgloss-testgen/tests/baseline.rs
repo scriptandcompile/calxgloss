@@ -582,10 +582,16 @@ fn fixture_ordered_records_a_data_dependent_trace_in_call_order() {
         &target,
         "fixture_ordered",
         "unsigned int fixture_ordered(int *param_1)",
-        &[json!({ "param_1": { "__alloc": { "size": 4, "fill": 1 } } })],
+        &[
+            json!({ "param_1": { "__alloc": { "size": 4, "fill": 1 } } }),
+            // A captured buffer materialises as a fresh allocation holding
+            // exactly the captured bytes (P23.3): the bytes the record saw,
+            // not a fill pattern.
+            json!({ "param_1": { "__alloc": { "size": 4, "bytes": "deadbeef" } } }),
+        ],
         &["GetTickCount", "OutputDebugStringA"],
     );
-    assert_eq!(results.len(), 1);
+    assert_eq!(results.len(), 2);
     let r = &results[0];
     assert!(!r.crashed, "fixture_ordered crashed: {:?}", r.error);
     assert!(r.ok, "fixture_ordered failed: {:?}", r.error);
@@ -593,6 +599,24 @@ fn fixture_ordered_records_a_data_dependent_trace_in_call_order() {
         r.trace,
         vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()],
         "the trace must follow call-site order, not the import table's order"
+    );
+    // The exact-content allocation reached the target intact: the u32 read
+    // back from the fresh buffer is the captured bytes little-endian.
+    let captured = &results[1];
+    assert!(
+        !captured.crashed,
+        "captured-bytes case crashed: {:?}",
+        captured.error
+    );
+    assert!(
+        captured.ok,
+        "captured-bytes case failed: {:?}",
+        captured.error
+    );
+    assert_eq!(
+        captured.returned.as_u64(),
+        Some(0xefbe_adde),
+        "the fresh allocation must hold the captured bytes"
     );
 }
 

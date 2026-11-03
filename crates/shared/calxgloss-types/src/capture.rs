@@ -69,6 +69,16 @@ pub enum ScalarTag {
     U64,
 }
 
+/// The capture bound: the protocol constant that caps how many bytes one
+/// argument's target may have captured (issue #397 — "no huge buffer
+/// balloons a capture"). The same constant is honored at record time,
+/// where [ArgumentDescriptor::captured_pointer] sizes the capture, and at
+/// replay time, where the record-and-replay fold refuses a descriptor that
+/// claims more than the bound could ever have captured. A capture over
+/// the bound always states the truncation on the descriptor — a truncated
+/// buffer never silently becomes a full one at replay.
+pub const POINTER_CAPTURE_BOUND: u64 = 64 * 1024;
+
 /// One argument as it arrived at the export entry, in arrival order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +103,27 @@ pub enum ArgumentDescriptor {
         captured_size: u64,
         truncated: bool,
     },
+}
+
+impl ArgumentDescriptor {
+    /// Size a pointer capture at record time under the *capture bound*
+    /// ([`POINTER_CAPTURE_BOUND`]): the recorded bytes never exceed the
+    /// bound, the descriptor states the size the target was observed to
+    /// have, and truncation is stamped whenever the capture did not deliver
+    /// everything the bound allowed — never left for replay to guess at.
+    /// This is the one capture-sizing rule every lane (export-entry hook,
+    /// recording proxy, minidump reader) shares.
+    pub fn captured_pointer(observed_size: u64, read: &[u8]) -> Self {
+        // The descriptor never keeps more than the observation itself: bytes
+        // past the observed size were never part of the argument.
+        let observed = usize::try_from(observed_size).unwrap_or(usize::MAX);
+        let kept = &read[..read.len().min(observed).min(POINTER_CAPTURE_BOUND as usize)];
+        ArgumentDescriptor::Pointer {
+            bytes: kept.to_vec(),
+            captured_size: observed_size,
+            truncated: (kept.len() as u64) < observed_size,
+        }
+    }
 }
 
 /// One call as it really arrived at one export entry: which target binary's
@@ -146,6 +177,96 @@ mod tests {
         ArgumentDescriptor, CaptureEventLog, CaptureEvidence, CaptureLane, CapturedCallEntry,
         ScalarTag,
     };
+
+    /// The capture bound caps a pointer capture at record time: bytes over
+    /// the bound are left out of the record, the observed size is stated in
+    /// full, and the truncation rides the descriptor — the record never
+    /// pretends a huge buffer arrived whole.
+    #[test]
+    fn the_capture_bound_caps_a_pointer_capture_at_record_time() {
+        use crate::POINTER_CAPTURE_BOUND;
+        let bound = POINTER_CAPTURE_BOUND;
+
+        // A read over the bound: the record keeps exactly the bound's
+        // worth of bytes and says the rest never arrived.
+        let huge = vec![0xABu8; POINTER_CAPTURE_BOUND as usize + 4096];
+        let over = ArgumentDescriptor::captured_pointer(huge.len() as u64, &huge);
+        match over {
+            ArgumentDescriptor::Pointer {
+                bytes,
+                captured_size,
+                truncated,
+            } => {
+                assert_eq!(
+                    bytes.len(),
+                    POINTER_CAPTURE_BOUND as usize,
+                    "the bound caps the recorded bytes"
+                );
+                assert_eq!(
+                    captured_size,
+                    huge.len() as u64,
+                    "the observed size is stated in full, bound or no bound"
+                );
+                assert!(truncated, "what the bound left out is stated, never silent");
+            }
+            other => panic!("a pointer capture stays a pointer descriptor: {other:?}"),
+        }
+
+        // A lane that hands over only the bound's worth of bytes against
+        // an over-bound target still names the truncation: the record
+        // never implies the buffer arrived whole.
+        let capped_read =
+            ArgumentDescriptor::captured_pointer(huge.len() as u64, &huge[..bound as usize]);
+        assert!(
+            matches!(
+                capped_read,
+                ArgumentDescriptor::Pointer {
+                    truncated: true,
+                    ..
+                }
+            ),
+            "an over-bound target read to the bound is still truncated"
+        );
+
+        // A read under the bound, whole: nothing was left out, so nothing
+        // is truncated — the replay may reconstruct the buffer in full.
+        let whole = ArgumentDescriptor::captured_pointer(5, b"Hello");
+        match whole {
+            ArgumentDescriptor::Pointer {
+                bytes,
+                captured_size,
+                truncated,
+            } => {
+                assert_eq!(bytes, b"Hello");
+                assert_eq!(captured_size, 5);
+                assert!(
+                    !truncated,
+                    "a whole capture under the bound is honest as full"
+                );
+            }
+            other => panic!("a pointer capture stays a pointer descriptor: {other:?}"),
+        }
+
+        // A read longer than the observation keeps only what the argument
+        // really was: the record never holds bytes past the observed size,
+        // and the size it does hold arrived whole.
+        let overshoot = ArgumentDescriptor::captured_pointer(3, b"Hello");
+        match overshoot {
+            ArgumentDescriptor::Pointer {
+                bytes,
+                captured_size,
+                truncated,
+            } => {
+                assert_eq!(bytes, b"Hel", "no bytes past the observed size");
+                assert_eq!(captured_size, 3);
+                assert!(
+                    !truncated,
+                    "the observed part arrived whole, so nothing was left out"
+                );
+            }
+            other => panic!("a pointer capture stays a pointer descriptor: {other:?}"),
+        }
+    }
 
     /// A captured call entry round-trips through JSON with the export,
     /// lane, capture evidence, and the ordered argument vector all intact:

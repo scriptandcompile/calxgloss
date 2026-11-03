@@ -226,7 +226,14 @@ fn ptr_arg(raw: &str, expect: &str, arena: &mut Vec<Vec<u8>>) -> Result<*mut u8,
     }
 
     if let Some(spec) = value.strip_prefix('@') {
-        let (size_text, fill_text) = spec.split_once(',').unwrap_or((spec, ""));
+        // `@size` empty, `@size,fill` filled, or `@size=<hex bytes>` with exact
+        // content (a captured buffer replaying with the bytes the record saw).
+        let (size_text, rest) = spec.split_once('=').unwrap_or((spec, ""));
+        let (size_text, fill_text) = if spec.contains('=') {
+            (size_text, "")
+        } else {
+            size_text.split_once(',').unwrap_or((size_text, ""))
+        };
         let size: usize = size_text
             .trim()
             .parse()
@@ -236,6 +243,21 @@ fn ptr_arg(raw: &str, expect: &str, arena: &mut Vec<Vec<u8>>) -> Result<*mut u8,
                 "refusing to allocate {size} bytes; the limit is {}",
                 MAX_ALLOC
             ));
+        }
+        if !rest.is_empty() {
+            if rest.len() != size * 2 || !rest.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "allocation bytes must be exactly {size} pairs of hex digits"
+                ));
+            }
+            let bytes: Result<Vec<u8>, String> = (0..size)
+                .map(|i| {
+                    u8::from_str_radix(&rest[i * 2..i * 2 + 2], 16)
+                        .map_err(|e| format!("allocation bytes: {e}"))
+                })
+                .collect();
+            arena.push(bytes?);
+            return Ok(arena.last_mut().expect("just pushed").as_mut_ptr());
         }
         let fill: u8 = if fill_text.trim().is_empty() {
             0
@@ -754,6 +776,22 @@ mod tests {
         assert!(
             src.contains("fn invoke(addr: usize, fields: &[&str]) -> Result<String, String> {"),
             "the generated invoke must open its function header:\n{src}"
+        );
+    }
+
+    #[test]
+    fn the_generated_ptr_arg_understands_exact_content() {
+        // A mined capture materialises as `p:<size>=<hex>`; the generated
+        // harness must decode that form into a buffer holding those bytes,
+        // not only the empty/fill spellings (P23.3).
+        let src = generate_harness(&spec(Machine::X86_64)).unwrap();
+        assert!(
+            src.contains("spec.split_once('=')"),
+            "the generated ptr_arg must split an exact-content spec:\n{src}"
+        );
+        assert!(
+            src.contains("pairs of hex digits"),
+            "the generated ptr_arg must police the hex-pair length:\n{src}"
         );
     }
 

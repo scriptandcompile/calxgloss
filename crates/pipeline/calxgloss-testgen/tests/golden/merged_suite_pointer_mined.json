@@ -1,0 +1,58 @@
+[
+  {
+    "test_case": {
+      "inputs": {
+        "param_0": 0
+      },
+      "expected_return": null,
+      "expected_side_effects": [],
+      "expected_api_calls": [],
+      "origin": "generated"
+    },
+    "actual_return": 0,
+    "actual_side_effects": [],
+    "actual_api_calls": [],
+    "passed": true,
+    "error": null
+  },
+  {
+    "test_case": {
+      "inputs": {
+        "probe": {
+          "__alloc": {
+            "bytes": "deadbeef",
+            "size": 4
+          }
+        }
+      },
+      "expected_return": null,
+      "expected_side_effects": [
+        {
+          "kind": "WindowUpdate",
+          "detail": "redrew the status panel"
+        }
+      ],
+      "expected_api_calls": [
+        "GetLastError"
+      ],
+      "origin": {
+        "mined_hook": {
+          "capture_id": "cap-e2e",
+          "event_sequence": 6
+        }
+      }
+    },
+    "actual_return": 42,
+    "actual_side_effects": [
+      {
+        "kind": "WindowUpdate",
+        "detail": "redrew the status panel"
+      }
+    ],
+    "actual_api_calls": [
+      "GetLastError"
+    ],
+    "passed": true,
+    "error": null
+  }
+]

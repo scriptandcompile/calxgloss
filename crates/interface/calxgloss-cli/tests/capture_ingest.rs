@@ -37,9 +37,10 @@ fn capture_ingest_reports_named_refusals_and_replays_nothing() {
     let ws = dir.path();
     std::fs::copy(&fixture, ws.join("fixture-target")).expect("copy fixture into workspace");
 
-    // An all-refused log: a float tag, a pointer-bearing vector, an
-    // export the listing does not carry, and a stated truncation. Nothing
-    // survives to the replay seam, so no Wine is ever asked for.
+    // An all-refused log: a float tag, a pointer with no captured bytes,
+    // an export the listing does not carry, and a stated over-the-bound
+    // truncation. Nothing survives to the replay seam, so no Wine is ever
+    // asked for.
     std::fs::write(
         ws.join("capture-log.json"),
         r#"{
@@ -52,11 +53,16 @@ fn capture_ingest_reports_named_refusals_and_replays_nothing() {
                 {"binary": "fixture-target", "export": "fixture_ordered", "lane": "baseline_hook",
                  "evidence": {"run_event": {"capture_id": "cap-cli", "event_sequence": 2}},
                  "arguments": [
-                     {"pointer": {"bytes": [1, 2, 3, 4], "captured_size": 4, "truncated": false}}
+                     {"pointer": {"bytes": [], "captured_size": 0, "truncated": false}}
                  ]},
                 {"binary": "fixture-target", "export": "ghost_export", "lane": "baseline_hook",
                  "evidence": {"run_event": {"capture_id": "cap-cli", "event_sequence": 3}},
-                 "arguments": [{"scalar": {"tag": "i32", "value": 7}}]}
+                 "arguments": [{"scalar": {"tag": "i32", "value": 7}}]},
+                {"binary": "fixture-target", "export": "fixture_ordered", "lane": "baseline_hook",
+                 "evidence": {"run_event": {"capture_id": "cap-cli", "event_sequence": 4}},
+                 "arguments": [
+                     {"pointer": {"bytes": [1, 2, 3, 4], "captured_size": 99999, "truncated": true}}
+                 ]}
             ]
         }"#,
     )
@@ -78,13 +84,13 @@ fn capture_ingest_reports_named_refusals_and_replays_nothing() {
 
     // The count report the command owes: every dimension named, every
     // refusal with its reason.
-    assert!(stdout.contains("3 events seen"), "{stdout}");
+    assert!(stdout.contains("4 events seen"), "{stdout}");
     assert!(stdout.contains("0 cases mined"), "{stdout}");
-    assert!(stdout.contains("4 refusals named"), "{stdout}");
-    assert!(stdout.contains("1 truncation stated"), "{stdout}");
+    assert!(stdout.contains("5 refusals named"), "{stdout}");
+    assert!(stdout.contains("2 truncations stated"), "{stdout}");
     for reason in [
         "float-argument",
-        "pointer-bearing-vector",
+        "unmaterializable-pointer",
         "no-parseable-signature",
         "truncated-capture",
     ] {
@@ -99,7 +105,13 @@ fn capture_ingest_reports_named_refusals_and_replays_nothing() {
     // to the capture.
     let ledger = std::fs::read_to_string(ws.join("re/unknowns/fixture-target.json"))
         .expect("the fold files its named records in the unknown ledger");
-    for slot in ["cap-cli#1", "cap-cli#2", "cap-cli#3", "cap-cli#capture"] {
+    for slot in [
+        "cap-cli#1",
+        "cap-cli#2",
+        "cap-cli#3",
+        "cap-cli#4",
+        "cap-cli#capture",
+    ] {
         assert!(ledger.contains(slot), "ledger lacks {slot:?}: {ledger}");
     }
     assert!(

@@ -89,6 +89,9 @@ The testgen path that turns a *capture event log* into filed baseline cases: eac
 **Capture event log**:
 One capture session's (or minidump's) captured call entries stored on disk as capture order, capture id, and — when the capture ran out of event budget — a stated dropped-event count. Truncation is stated, never silent; the count folds into the ingest report beside the refusals.
 
+**Capture bound**:
+The one shared protocol constant — 64 KiB — that caps how far a capture's pointer read may go, honored at both ends of the *record-and-replay fold*: at record time it sizes a captured pointer descriptor (anything past it is stored truncated, and the descriptor says so), and at replay time it bounds what a descriptor may claim — a pointer whose bytes fall short of the size it observed, or that claims more than the bound can have delivered, is refused as a truncation naming the bound, never silently reconstructed whole. A pointer descriptor with no captured bytes at all is the one shape no replay can honor: an *unmaterializable pointer*, refused by name.
+
 **Crash-reproduction record**:
 The unknown record a replay fault files, naming the capture and the event whose inputs faulted at the original binary. The capture is trusted to name inputs, never to promise the target survived: the fault is established by the replay, and no baseline case is filed for that entry.
 
