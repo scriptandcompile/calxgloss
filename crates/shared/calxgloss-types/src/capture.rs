@@ -1,0 +1,212 @@
+//! The captured call entry — what a mining lane records about one call
+//! that really arrived at one export entry (glossary: *captured call
+//! entry*).
+//!
+//! Every capture lane — the baseline-run hook, the reference-app run, the
+//! minidump reader — hands the same record to the record-and-replay fold.
+//! The record alone is never authority: it proves a real caller passed
+//! these values; only the replay against the original binary observes what
+//! the binary does with them.
+
+use serde::{Deserialize, Serialize};
+
+use crate::identity::BinaryIdentity;
+
+/// The instrumented run shape a captured call entry rode in on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureLane {
+    /// Recorded at an export-entry trampoline armed during a baseline run.
+    BaselineHook,
+    /// Recorded by a recording proxy while the operator's reference
+    /// application called into it.
+    ReferenceApp,
+    /// Reconstructed from one faulting thread of a Windows minidump.
+    Minidump,
+}
+
+/// Where to trace a capture back to: the run and event position that
+/// recorded it, or the exact crash it was reconstructed from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureEvidence {
+    /// From an instrumented run: the capture's id and the event's position
+    /// within it.
+    RunEvent {
+        capture_id: String,
+        event_sequence: u64,
+    },
+    /// From a minidump: the dump's content digest and the faulting
+    /// thread's id.
+    DumpThread { dump_digest: String, thread_id: u32 },
+}
+
+/// The harness's encode tag for a scalar the FFI boundary can marshal —
+/// spelled exactly as the Wine harness's own wire tag spells it (the
+/// `ScalarKind::tag` vocabulary of `calxgloss-testgen`), minus the floats.
+///
+/// `f32`/`f64` sit outside the capture vocabulary on purpose: a captured
+/// float argument is refused-with-reason at the fold, never re-encoded
+/// into some other shape that would mis-arrive at replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScalarTag {
+    /// Signed 8-bit integer.
+    I8,
+    /// Signed 16-bit integer.
+    I16,
+    /// Signed 32-bit integer.
+    I32,
+    /// Signed 64-bit integer.
+    I64,
+    /// Unsigned 8-bit integer.
+    U8,
+    /// Unsigned 16-bit integer.
+    U16,
+    /// Unsigned 32-bit integer.
+    U32,
+    /// Unsigned 64-bit integer.
+    U64,
+}
+
+/// One argument as it arrived at the export entry, in arrival order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArgumentDescriptor {
+    /// A scalar integer value, carried with its harness encode tag so the
+    /// fold can marshal it across the FFI boundary unchanged.
+    Scalar {
+        tag: ScalarTag,
+        /// An integer number under that tag's width; never a float — a
+        /// float argument cannot enter this vocabulary at all
+        /// ([`ScalarTag`] carries no float).
+        value: serde_json::Value,
+    },
+    /// A pointer-like argument whose target was read out of the captured
+    /// process: the bytes actually captured, the size the target was
+    /// observed to have, and whether the capture ran out before that size.
+    /// Replay materializes a fresh buffer from the captured bytes; a
+    /// truncated capture the replay cannot use refuses the case with
+    /// reason — a truncated buffer never silently becomes a full one.
+    Pointer {
+        bytes: Vec<u8>,
+        captured_size: u64,
+        truncated: bool,
+    },
+}
+
+/// One call as it really arrived at one export entry: which target binary's
+/// export, through which lane and backed by which evidence the call was
+/// recorded, and the argument vector in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapturedCallEntry {
+    /// The binary whose export entry received the call — identity verbatim,
+    /// as everywhere else in the harness.
+    pub binary: BinaryIdentity,
+    /// The export name as the binary exports it.
+    pub export: String,
+    /// Which instrumented run shape recorded it.
+    pub lane: CaptureLane,
+    /// The run event or crash the reviewer can trace this entry back to.
+    pub evidence: CaptureEvidence,
+    /// The argument vector in declaration order — the order it arrived.
+    pub arguments: Vec<ArgumentDescriptor>,
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use crate::{ArgumentDescriptor, CaptureEvidence, CaptureLane, CapturedCallEntry, ScalarTag};
+
+    /// A captured call entry round-trips through JSON with the export,
+    /// lane, capture evidence, and the ordered argument vector all intact:
+    /// scalars carrying the harness's encode tags, pointer-like arguments
+    /// carrying captured bytes, captured size, and the truncation flag.
+    #[test]
+    fn a_captured_call_entry_round_trips_with_its_ordered_arguments() {
+        let wire = r#"{"binary":"game_logic.dll","export":"DrawSprite","lane":"baseline_hook","evidence":{"run_event":{"capture_id":"cap-2026-11-02-a","event_sequence":7}},"arguments":[{"scalar":{"tag":"i32","value":42}},{"scalar":{"tag":"u64","value":18446744073709551615}},{"pointer":{"bytes":[72,101,108,108,111],"captured_size":512,"truncated":true}}]}"#;
+        let entry: CapturedCallEntry =
+            serde_json::from_str(wire).expect("the record shape parses from its wire form");
+        assert_eq!(entry.binary, "game_logic.dll");
+        assert_eq!(entry.export, "DrawSprite");
+        assert_eq!(entry.lane, CaptureLane::BaselineHook);
+        assert_eq!(
+            entry.evidence,
+            CaptureEvidence::RunEvent {
+                capture_id: "cap-2026-11-02-a".to_string(),
+                event_sequence: 7,
+            }
+        );
+        assert_eq!(
+            entry.arguments,
+            vec![
+                ArgumentDescriptor::Scalar {
+                    tag: ScalarTag::I32,
+                    value: serde_json::json!(42),
+                },
+                ArgumentDescriptor::Scalar {
+                    tag: ScalarTag::U64,
+                    value: serde_json::json!(18446744073709551615u64),
+                },
+                ArgumentDescriptor::Pointer {
+                    bytes: vec![72, 101, 108, 108, 111],
+                    captured_size: 512,
+                    truncated: true,
+                },
+            ],
+            "the argument order is the arrival order — preserved through the round-trip"
+        );
+        assert_eq!(
+            serde_json::to_string(&entry).unwrap(),
+            wire,
+            "the record re-saves byte-for-byte"
+        );
+    }
+
+    /// The minidump lane names its crash: dump digest plus faulting thread.
+    #[test]
+    fn the_minidump_lane_carries_the_dump_digest_and_faulting_thread() {
+        let entry = CapturedCallEntry {
+            binary: "eqgame.exe".into(),
+            export: "HandlePacket".to_string(),
+            lane: CaptureLane::Minidump,
+            evidence: CaptureEvidence::DumpThread {
+                dump_digest: "sha256:2f2a9c".to_string(),
+                thread_id: 3812,
+            },
+            arguments: vec![ArgumentDescriptor::Pointer {
+                bytes: vec![0u8; 8],
+                captured_size: 8,
+                truncated: false,
+            }],
+        };
+        let back: CapturedCallEntry =
+            serde_json::from_str(&serde_json::to_string(&entry).unwrap()).expect("parses back");
+        assert_eq!(
+            back, entry,
+            "the crash evidence rides the round-trip intact"
+        );
+    }
+
+    /// Float arguments sit outside the capture vocabulary: the closed tag
+    /// set never accepts an `f32`/`f64` tag, so a captured float never
+    /// enters as a mis-encoded other shape — the value carried under a tag
+    /// is validated by the later fold, where a refused float names its
+    /// reason.
+    #[test]
+    fn a_float_argument_tag_never_enters_the_capture_vocabulary() {
+        let float_scalar = r#"{"scalar":{"tag":"f32","value":1.5}}"#;
+        assert!(
+            serde_json::from_str::<ArgumentDescriptor>(float_scalar).is_err(),
+            "the tag vocabulary has no float — the descriptor cannot carry one"
+        );
+        let double_scalar = r#"{"scalar":{"tag":"f64","value":1.5}}"#;
+        assert!(
+            serde_json::from_str::<ArgumentDescriptor>(double_scalar).is_err(),
+            "nor a double"
+        );
+    }
+}

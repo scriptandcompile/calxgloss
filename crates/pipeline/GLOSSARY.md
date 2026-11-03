@@ -74,6 +74,15 @@ A unit that compiles and passes its baseline tests.
 **Baseline test**:
 A test capturing the original binary's observable behavior, run against the original implementation as ground truth.
 
+**Mined input**:
+An argument vector a real caller actually passed to an export entry, captured there and replayed against the original binary to fold a case into the filed baseline suite. Call testgen's inputs today are signature-derived guesses; mining is additive — the invented suite stays exactly as it is.
+
+**Captured call entry**:
+The shared record of one such call as it really arrived at an export entry: binary identity, export name, capture lane (baseline-run hook, reference-app run, or minidump), the run event or crash a reviewer can trace it back to, and ordered argument descriptors — scalars carried with the harness's own encode tags, pointer-like arguments with captured bytes, captured size, and a truncation flag. Float arguments cannot enter this vocabulary; such entries are refused with a named reason, never mis-encoded. The record proves a real caller passed the values; only the replay against the original is authority.
+
+**Case origin**:
+The stamp every baseline case carries on how it came to exist: *generated* (testgen invented it — the read default for documents saved before the stamp existed) or *mined* from a captured call entry, naming its capture id and event sequence, or its dump digest and faulting thread. The strongest claim a passing case supports is read off the origin at read time, never stored beside it — there is no second field that can rot against the first.
+
 **Ordered API-call trace**:
 The sequence of API names one baseline case recorded, in call order — deliberately nothing else: no arguments, counts, or thread attribution. A missing or empty trace reads as *unassessed*, never as "the target called nothing".
 

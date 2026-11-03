@@ -28,12 +28,14 @@ fn sample_request() -> TranslationRequest {
                 expected_return: json!(30),
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
+                origin: calxgloss_types::CaseOrigin::Generated,
             },
             TestCase {
                 inputs: json!({"x": 0, "y": 0}),
                 expected_return: json!(0),
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
+                origin: calxgloss_types::CaseOrigin::Generated,
             },
         ],
     }

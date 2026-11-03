@@ -23,6 +23,15 @@
 //! harness per function, cross-compiles it for the DLL's own architecture, and
 //! runs it under Wine. See the `run` module for the details.
 //!
+//! An honest note on test-input generation: the inputs generated today are
+//! signature-derived guesses — a real caller's argument vector never enters
+//! the suite. The P23 mining lane adds *mined inputs* captured at export
+//! entries and replayed through the same ground-truth walk (the shared
+//! `CapturedCallEntry` record lives in `calxgloss_types::capture`); mining
+//! is additive, and this crate's invented suite stays exactly as it is
+//! unless capture has been run. See the Pipeline glossary for *mined
+//! input*, *captured call entry*, and *case origin*.
+//!
 //! Global side-effect expectations are not captured from the Wine run — the
 //! harness reports return values only. They come from the global-state scan
 //! instead: [`global_state_expectations`] turns the function's access records

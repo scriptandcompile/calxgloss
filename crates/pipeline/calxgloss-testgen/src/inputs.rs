@@ -393,6 +393,7 @@ fn generate_signature_tests(
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         });
         return tests;
     }
@@ -420,6 +421,7 @@ fn generate_signature_tests(
                 expected_return: json!(null),
                 expected_side_effects: Vec::new(),
                 expected_api_calls: Vec::new(),
+                origin: calxgloss_types::CaseOrigin::Generated,
             });
         }
     }
@@ -435,6 +437,7 @@ fn generate_signature_tests(
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         });
     }
 
@@ -448,6 +451,7 @@ fn generate_signature_tests(
         expected_return: json!(null),
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     });
 
     // Generate a "max value" test for the first integer param
@@ -465,6 +469,7 @@ fn generate_signature_tests(
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         });
     }
 
@@ -515,6 +520,7 @@ fn generate_disassembly_tests(
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         });
     }
 
@@ -541,6 +547,7 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         });
     }
 
@@ -736,6 +743,7 @@ fn branch_case_for_signature(
         expected_return: json!(null),
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     })
 }
 
@@ -774,6 +782,7 @@ fn branch_case_generic(site: &BranchSite, probe: &Probe) -> Option<TestCase> {
         expected_return: json!(null),
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     })
 }
 

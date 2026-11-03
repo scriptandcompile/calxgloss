@@ -1081,6 +1081,7 @@ mod tests {
                     expected_return: serde_json::json!(1),
                     expected_side_effects: vec![],
                     expected_api_calls: vec![],
+                    origin: calxgloss_types::CaseOrigin::Generated,
                 },
                 actual_return: serde_json::json!(1),
                 actual_side_effects: vec![],

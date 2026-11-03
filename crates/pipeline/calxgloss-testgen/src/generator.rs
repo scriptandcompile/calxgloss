@@ -490,6 +490,7 @@ mod tests {
             expected_return: serde_json::json!(100),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         };
 
         let result = TestResult {
@@ -508,6 +509,89 @@ mod tests {
         let loaded = generator.load_baseline("test.dll", "TestFunc").unwrap();
         assert_eq!(loaded.len(), 1);
         assert!(loaded[0].passed);
+    }
+
+    #[test]
+    fn a_filed_baseline_document_round_trips_case_origins() {
+        // P23.1: the filed baseline document carries the case origin.
+        // Generated cases read back generated, and mined cases ride
+        // save/load with their evidence payload — capture id plus event
+        // sequence, dump digest plus faulting thread — intact.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let generator = TestGenerator::new(temp_dir.path());
+
+        let result = |origin: calxgloss_types::CaseOrigin| TestResult {
+            test_case: TestCase {
+                inputs: serde_json::json!({"x": 10}),
+                expected_return: serde_json::json!(100),
+                expected_side_effects: Vec::new(),
+                expected_api_calls: Vec::new(),
+                origin,
+            },
+            actual_return: serde_json::json!(100),
+            actual_side_effects: Vec::new(),
+            actual_api_calls: Vec::new(),
+            passed: true,
+            error: None,
+        };
+        let suite = vec![
+            result(calxgloss_types::CaseOrigin::Generated),
+            result(calxgloss_types::CaseOrigin::MinedHook {
+                capture_id: "cap-7f3a".to_string(),
+                event_sequence: 12,
+            }),
+            result(calxgloss_types::CaseOrigin::MinedMinidump {
+                dump_digest: "sha256:2f2a9c".to_string(),
+                thread_id: 3812,
+            }),
+        ];
+        generator
+            .save_baseline("test.dll", "TestFunc", &suite)
+            .unwrap();
+        let loaded = generator.load_baseline("test.dll", "TestFunc").unwrap();
+        assert_eq!(
+            loaded, suite,
+            "every origin and its evidence payload ride the filed document intact"
+        );
+    }
+
+    #[test]
+    fn a_hand_stamped_filed_baseline_document_reads_unchanged() {
+        // The verify-untouched contract at the document level: a baseline
+        // document hand-stamped with a mined origin parses through the
+        // existing reader with no reader change, and a document saved
+        // before the origin field existed reads as generated.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let generator = TestGenerator::new(temp_dir.path());
+        let baseline_dir = temp_dir.path().join("re/baseline/test.dll/TestFunc");
+        std::fs::create_dir_all(&baseline_dir).unwrap();
+        std::fs::write(
+            baseline_dir.join("baseline.json"),
+            r#"[
+              {"test_case": {"inputs": {"x": 1}, "expected_return": 1, "expected_side_effects": [], "origin": {"mined_hook": {"capture_id": "cap-1", "event_sequence": 3}}},
+               "actual_return": 1, "actual_side_effects": [], "passed": true, "error": null},
+              {"test_case": {"inputs": {"x": 2}, "expected_return": 2, "expected_side_effects": []},
+               "actual_return": 2, "actual_side_effects": [], "passed": true, "error": null}
+            ]"#,
+        )
+        .unwrap();
+
+        let loaded = generator
+            .load_baseline("test.dll", "TestFunc")
+            .expect("the hand-stamped document loads through the existing reader");
+        assert_eq!(
+            loaded[0].test_case.origin,
+            calxgloss_types::CaseOrigin::MinedHook {
+                capture_id: "cap-1".to_string(),
+                event_sequence: 3,
+            },
+            "the hand-stamped mined origin arrives unchanged"
+        );
+        assert_eq!(
+            loaded[1].test_case.origin,
+            calxgloss_types::CaseOrigin::Generated,
+            "a pre-origin document reads as generated"
+        );
     }
 
     #[test]

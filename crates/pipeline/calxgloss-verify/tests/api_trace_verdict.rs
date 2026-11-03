@@ -44,6 +44,7 @@ fn case_with_trace(expected_trace: &[&str]) -> TestCase {
             .iter()
             .map(|name| (*name).to_string())
             .collect(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     }
 }
 

@@ -248,6 +248,7 @@ fn result(inputs: serde_json::Value, actual: serde_json::Value) -> TestResult {
             expected_return: serde_json::Value::Null,
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         },
         actual_return: actual,
         actual_side_effects: Vec::new(),

@@ -424,6 +424,7 @@ fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
             expected_side_effects: serde_json::from_value(tc.side_effects.clone())
                 .unwrap_or_default(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         })
         .collect();
 

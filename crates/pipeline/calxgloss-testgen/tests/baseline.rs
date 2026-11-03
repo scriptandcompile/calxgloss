@@ -60,6 +60,7 @@ fn test_case(p1: i64, p2: i32) -> TestCase {
         expected_return: Value::Null,
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     }
 }
 
@@ -177,6 +178,7 @@ fn baseline_reaches_memory_accessing_functions() {
         expected_return: Value::Null,
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     };
     let report = r
         .run(
@@ -246,6 +248,7 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
             expected_return: Value::Null,
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         },
         // Faults: a null pointer.
         TestCase {
@@ -253,6 +256,7 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
             expected_return: Value::Null,
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         },
         // Valid again, to prove the batch continued past the fault.
         TestCase {
@@ -260,6 +264,7 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
             expected_return: Value::Null,
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         },
     ];
 
@@ -450,6 +455,7 @@ async fn baseline_runner_reports_a_mismatch_against_the_expectation() {
         expected_return: json!(33),
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     }];
 
     let results = runner
@@ -514,6 +520,7 @@ fn run_one(
             expected_return: Value::Null,
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
         })
         .collect();
 
@@ -686,6 +693,7 @@ async fn baseline_runner_records_fixture_tick_trace_into_the_report() {
                 expected_return: Value::Null,
                 expected_side_effects: Vec::new(),
                 expected_api_calls: Vec::new(),
+                origin: calxgloss_types::CaseOrigin::Generated,
             }],
             &target,
         )
@@ -716,6 +724,7 @@ async fn baseline_runner_reports_a_missing_dll_without_touching_wine() {
         expected_return: Value::Null,
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
     }];
 
     let results = runner

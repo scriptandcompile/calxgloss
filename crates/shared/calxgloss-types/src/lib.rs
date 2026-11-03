@@ -12,6 +12,9 @@
 //!   serde-label enums
 //! - [`function`] — Function disassembly, decompiler output, and API tagging
 //! - [`shim`] — Shim layer API contract for crate-replacement DLLs
+//! - [`capture`] — The captured call entry record (`CapturedCallEntry`,
+//!   `CaptureLane`, `CaptureEvidence`, `ArgumentDescriptor`) — one call as
+//!   it really arrived at an export entry, handed over by a capture lane
 //! - [`test`](mod@test) — Test case generation and baseline execution
 //! - [`translation`] — LLM translation requests and results
 //! - [`verification`] — Compilation and behavioral verification results
@@ -59,6 +62,7 @@
 pub const MAX_LOG_ENTRIES: usize = 10_000;
 
 pub mod capability;
+pub mod capture;
 pub mod classification_overrides;
 pub mod complexity;
 pub mod confidence;
@@ -93,6 +97,7 @@ pub mod verification;
 pub use capability::{
     AvailabilityStatus, CapabilityReport, EffectiveAvailability, FamilyCapability,
 };
+pub use capture::{ArgumentDescriptor, CaptureEvidence, CaptureLane, CapturedCallEntry, ScalarTag};
 pub use classification_overrides::{
     BinaryClassificationOverride, ClassificationOverrideControl, ClassificationOverrides,
     classification_override_records_path,
@@ -150,7 +155,7 @@ pub use shim::{
     ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,
     ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,
 };
-pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};
+pub use test::{CaseAuthority, CaseOrigin, SideEffect, SideEffectKind, TestCase, TestResult};
 pub use token_usage::{
     BinaryTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats, TokenUsageTrim,
 };
@@ -229,6 +234,7 @@ mod tests {
             expected_return: serde_json::json!(30),
             expected_side_effects: vec![],
             expected_api_calls: vec![],
+            origin: CaseOrigin::Generated,
         };
         let json = serde_json::to_string(&test_case).unwrap();
         let deserialized: TestCase = serde_json::from_str(&json).unwrap();
@@ -247,6 +253,7 @@ mod tests {
             expected_return: serde_json::json!(42),
             expected_side_effects: vec![],
             expected_api_calls: vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()],
+            origin: CaseOrigin::Generated,
         };
         let json = serde_json::to_string(&test_case).unwrap();
         let deserialized: TestCase = serde_json::from_str(&json).unwrap();
@@ -257,6 +264,11 @@ mod tests {
         assert!(
             deserialized.expected_api_calls.is_empty(),
             "a pre-trace baseline document loads with the trace unassessed"
+        );
+        assert_eq!(
+            deserialized.origin,
+            CaseOrigin::Generated,
+            "a pre-trace baseline document loads with the origin reading generated"
         );
     }
 
@@ -272,6 +284,7 @@ mod tests {
                 expected_return: serde_json::json!(42),
                 expected_side_effects: vec![],
                 expected_api_calls: vec!["GetTickCount".to_string()],
+                origin: CaseOrigin::Generated,
             },
             actual_return: serde_json::json!(42),
             actual_side_effects: vec![],
