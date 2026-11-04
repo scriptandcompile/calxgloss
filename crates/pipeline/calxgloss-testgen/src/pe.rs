@@ -99,6 +99,7 @@ pub struct PeImage {
     size_of_image: u32,
     image_end: u32,
     is_dll: bool,
+    time_date_stamp: u32,
     exports: Vec<ExportEntry>,
     exports_by_name: HashMap<String, u32>,
     exports_by_ordinal: HashMap<u32, u32>,
@@ -206,6 +207,7 @@ impl PeImage {
             size_of_image,
             image_end,
             is_dll: pe.is_lib,
+            time_date_stamp: pe.header.coff_header.time_date_stamp,
             exports: exports.clone(),
             exports_by_name: HashMap::new(),
             exports_by_ordinal: HashMap::new(),
@@ -262,6 +264,12 @@ impl PeImage {
     /// True when the image is flagged as a DLL.
     pub fn is_dll(&self) -> bool {
         self.is_dll
+    }
+
+    /// The COFF header's TimeDateStamp — one of the two identity stamps a
+    /// crash dump's module record carries beside the mapped size.
+    pub fn time_date_stamp(&self) -> u32 {
+        self.time_date_stamp
     }
 
     /// All exported symbols, in export-table order.

@@ -36,9 +36,14 @@ pub enum CaptureEvidence {
         capture_id: String,
         event_sequence: u64,
     },
-    /// From a minidump: the dump's content digest and the faulting
-    /// thread's id.
-    DumpThread { dump_digest: String, thread_id: u32 },
+    /// From a minidump: the dump's content digest, the faulting
+    /// thread's id, and the address the fault happened at.
+    DumpThread {
+        dump_digest: String,
+        thread_id: u32,
+        #[serde(default)]
+        fault_address: u64,
+    },
 }
 
 /// The harness's encode tag for a scalar the FFI boundary can marshal —
@@ -323,6 +328,7 @@ mod tests {
             evidence: CaptureEvidence::DumpThread {
                 dump_digest: "sha256:2f2a9c".to_string(),
                 thread_id: 3812,
+                fault_address: 0x1400_1234,
             },
             arguments: vec![ArgumentDescriptor::Pointer {
                 bytes: vec![0u8; 8],

@@ -561,6 +561,7 @@ mod tests {
             result(calxgloss_types::CaseOrigin::MinedMinidump {
                 dump_digest: "sha256:2f2a9c".to_string(),
                 thread_id: 3812,
+                fault_address: 0,
             }),
         ];
         generator

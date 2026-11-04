@@ -640,6 +640,7 @@ async fn a_dump_thread_entry_files_a_mined_minidump_origin_from_its_own_evidence
         CaseOrigin::MinedMinidump {
             dump_digest: "sha256:2f2a9c".to_string(),
             thread_id: 3812,
+            fault_address: 0,
         }
     );
 }

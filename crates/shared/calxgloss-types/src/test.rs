@@ -152,7 +152,14 @@ pub enum CaseOrigin {
     /// Mined from a Windows minidump: the crash's argument vector
     /// reconstructed at an export entry, by dump digest and faulting
     /// thread id.
-    MinedMinidump { dump_digest: String, thread_id: u32 },
+    MinedMinidump {
+        dump_digest: String,
+        thread_id: u32,
+        /// The address the fault happened at — the case names the
+        /// crash it was mined from down to the instruction pointer.
+        #[serde(default)]
+        fault_address: u64,
+    },
 }
 
 /// The strongest claim a passing case supports — read off the case origin
@@ -271,6 +278,7 @@ mod tests {
             origin: CaseOrigin::MinedMinidump {
                 dump_digest: "sha256:2f2a9c".to_string(),
                 thread_id: 3812,
+                fault_address: 0x1400_1234,
             },
         };
         let back: TestCase =
@@ -303,6 +311,7 @@ mod tests {
             CaseOrigin::MinedMinidump {
                 dump_digest: "sha256:ab".to_string(),
                 thread_id: 7,
+                fault_address: 0,
             }
             .authority(),
             CaseAuthority::ControlledReplayAtObserved

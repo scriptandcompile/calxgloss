@@ -21,6 +21,7 @@ pub mod init;
 pub mod libmatch;
 pub mod live;
 pub mod memory;
+pub mod minidump_command;
 pub mod run_options;
 pub mod scan_command;
 pub mod serialize;

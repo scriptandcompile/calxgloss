@@ -86,6 +86,9 @@ The stamp every baseline case carries on how it came to exist: *generated* (test
 **Record-and-replay fold**:
 The testgen path that turns a *capture event log* into filed baseline cases: each captured call entry whose argument vector the export's signature can hold is replayed against the original binary, and what the replay observed is filed as a *mined input*'s case. Authority rests on the replay, never on the capture. An entry the signature cannot hold is refused with a named reason and files a `capture_refused` unknown record; a replay that faults files a *crash-reproduction record* and no case. A mined case dedups against the generated suite on exact input-vector equality — the collision keeps the mined origin — and mined cases stand outside the per-function generation cap: the cap bounds invention, and captured events are evidence.
 
+**Minidump lane**:
+The testgen path that folds Windows crash dumps through the *record-and-replay fold*. A dump proves a call happened but never which export received it, so the lane claims a *captured call entry* only where both halves line up: the dump's module matches the target by *binary identity*, and the fault address lands exactly on a listed export entry — a near miss or an identity mismatch claims nothing and is stated as an unclaimed mapping candidate. The faulting thread's machine context plus the x64 calling convention reconstruct the argument vector, pointer targets read from the dump's captured memory under the *capture bound*; the dump's content digest serves as the capture id and the faulting thread's id as the event sequence. ELF cores are out of scope.
+
 **Capture event log**:
 One capture session's (or minidump's) captured call entries stored on disk as capture order, capture id, and — when the capture ran out of event budget — a stated dropped-event count. Truncation is stated, never silent; the count folds into the ingest report beside the refusals.
 
@@ -114,7 +117,7 @@ The directory a *reference-app run* stands the target in: the real module parked
 The one shared protocol constant — 64 KiB — that caps how far a capture's pointer read may go, honored at both ends of the *record-and-replay fold*: at record time it sizes a captured pointer descriptor (anything past it is stored truncated, and the descriptor says so), and at replay time it bounds what a descriptor may claim — a pointer whose bytes fall short of the size it observed, or that claims more than the bound can have delivered, is refused as a truncation naming the bound, never silently reconstructed whole. A pointer descriptor with no captured bytes at all is the one shape no replay can honor: an *unmaterializable pointer*, refused by name.
 
 **Crash-reproduction record**:
-The unknown record a replay fault files, naming the capture and the event whose inputs faulted at the original binary. The capture is trusted to name inputs, never to promise the target survived: the fault is established by the replay, and no baseline case is filed for that entry.
+The unknown record a *replay seam* files when a replay of a *mined input* faults, naming the capture and the event whose inputs faulted at the original binary — for a *capture event log*, its capture id and event sequence; for the *minidump lane*, the dump digest as capture id and the faulting thread's id as the event sequence. The capture is trusted to name inputs, never to promise the target survived: the fault is established by the replay, and no baseline case is filed for that entry.
 
 **Ordered API-call trace**:
 The sequence of API names one baseline case recorded, in call order — deliberately nothing else: no arguments, counts, or thread attribution. A missing or empty trace reads as *unassessed*, never as "the target called nothing".

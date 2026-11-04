@@ -548,6 +548,46 @@ pub(super) enum Command {
         max_log_bytes: Option<u64>,
     },
 
+    /// File crash reproductions from Windows minidumps (P23.7, issue
+    /// #401): parse each `--dumps` crash dump, match it to the target
+    /// binary by module identity, and reconstruct the faulting thread's
+    /// call vector where the fault lands exactly on a listed export
+    /// entry. Each reconstructed vector folds through the same
+    /// record-and-replay fold as `capture --ingest` — dedup and filed
+    /// order included — replaying against the original binary and
+    /// filing what the replay observes as a baseline case; a replay
+    /// that faults files a `crash_reproduction` record naming the
+    /// dump digest and the faulting thread. Vectors the dump cannot
+    /// express (an unmaterializable pointer, a truncated stack, a
+    /// float argument, a shape the signature does not carry) are
+    /// refused with the reason named. A near-miss fault or a module
+    /// that does not match the target by identity claims nothing and
+    /// is counted as an unclaimed mapping candidate. ELF cores are
+    /// out of scope; managed PEs stay parked per ADR-0044.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — The target binary the dumps crashed in, e.g.
+    ///   `eqmain.dll`. Its current bytes carry the identity and the
+    ///   export listing the dumps are matched against.
+    /// * `--dumps` — Crash dump files to fold, `.dmp`; repeatable, and
+    ///   the fold order is exactly this order.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss minidump --binary eqmain.dll --dumps crash-1.dmp --dumps crash-2.dmp
+    /// ```
+    Minidump {
+        /// Binary the dumps crashed in, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Crash dump files to fold, repeatable; folded in this order
+        #[arg(long, required = true)]
+        dumps: Vec<PathBuf>,
+    },
+
     /// Detect concurrency constructs (mutex/lock pairings, atomic
     /// operations, thread spawns) for a binary.
     ///

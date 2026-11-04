@@ -23,6 +23,7 @@
 //!   `ImportedFunction` and `JumpTable` records.
 
 pub mod error;
+pub mod minidump;
 
 pub use error::{Result, TestFixturesError};
 

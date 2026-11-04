@@ -79,6 +79,7 @@ use commands::doctor::handle_doctor;
 use commands::gc::handle_gc;
 use commands::init::handle_init;
 use commands::live::handle_live;
+use commands::minidump_command::handle_minidump;
 use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use commands::scan_command::handle_scan_command;
 use commands::serve::handle_serve;
@@ -319,6 +320,18 @@ fn main() -> Result<()> {
                     &workspace,
                     &settings,
                 ))
+        }
+
+        // The minidump lane (issue #401) keeps its own report-only match
+        // arm beside `capture`: it folds crash dumps through the same
+        // record-and-replay fold and files crash reproductions.
+        Command::Minidump { binary, dumps } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_minidump(&binary, &dumps, &workspace, &settings))
         }
 
         Command::Verify {

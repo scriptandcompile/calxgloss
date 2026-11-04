@@ -37,7 +37,6 @@ use calxgloss_testgen::{
     CaptureBudgets, PeImage, Replay, TestGenerator, WineRunner, derive_proxy_slots,
     file_capture_records, fold_capture_event_log,
 };
-use calxgloss_types::Export;
 use tracing::info;
 
 use crate::Settings;
@@ -90,32 +89,11 @@ pub async fn handle_capture(
 
     // The listing the fold checks each event against — and, in the run
     // shape, the table the recording proxy's slots are read from: every
-    // named export of the current bytes, with the prototype line Kuna's
-    // decompiler renders for it. An export whose prototype Kuna will not
-    // render enters the listing with no signature — the fold then refuses
-    // any event naming it with the `no-parseable-signature` reason, and
-    // the proxy just forwards it, naming the gap instead of guessing.
-    let source = load_kuna_at(settings, &dll_path)?;
-    let mut exports: Vec<Export> = Vec::new();
-    for symbol in source
-        .list_exports()
-        .await
-        .context("The export listing never came back from Kuna")?
-    {
-        if symbol.imported || symbol.name.is_empty() {
-            continue;
-        }
-        let signature = source
-            .decompile_function(&symbol.name)
-            .await
-            .map(|decompiled| decompiled.signature)
-            .unwrap_or_default();
-        exports.push(Export {
-            name: symbol.name,
-            address: symbol.address,
-            signature,
-        });
-    }
+    // named export of the current bytes, with Kuna's prototype lines.
+    // An export whose prototype Kuna will not render enters with no
+    // signature, and the proxy just forwards it, naming the gap
+    // instead of guessing.
+    let exports = kuna_export_listing(settings, &dll_path).await?;
     info!(binary, exports = exports.len(), "Capture listing loaded");
 
     let log = match (ingest, run) {

@@ -69,6 +69,7 @@ mod expectations;
 mod ffi;
 mod generator;
 mod inputs;
+mod minidump;
 mod pe;
 mod record_replay;
 mod run;
@@ -81,6 +82,10 @@ pub use ffi::{
 };
 pub use generator::TestGenerator;
 pub use inputs::{DisassemblyEdgeCases, EdgeCaseSource, generate_test_inputs};
+pub use minidump::{
+    AMD64, Minidump, MinidumpException, MinidumpFolded, MinidumpModule, MinidumpThread, X64Context,
+    fold_minidumps,
+};
 pub use pe::{ExportEntry, ImportEntry, Machine, PeImage};
 pub use record_replay::{
     Folded, MineReport, Refusal, RefusalReason, Replay, ReplayOutcome, file_capture_records,

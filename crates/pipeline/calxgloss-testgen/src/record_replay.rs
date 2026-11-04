@@ -337,6 +337,21 @@ pub async fn fold_capture_event_log(
         let export_name = raw.get("export").and_then(Value::as_str);
         let event = raw_event(raw);
 
+        // A capture that states its own truncation refuses by name at
+        // the raw level, before any typed decode: the vector it
+        // describes stops short of its argument slots, and a stack
+        // cut off mid-frame has no later arguments to guess at.
+        if raw.get("truncated_stack").and_then(Value::as_bool) == Some(true) {
+            ingest.refuse(
+                event,
+                export_name,
+                RefusalReason::TruncatedCapture,
+                "the capture of this event's stack stopped before its argument slots — \
+                 the later arguments never arrived",
+            );
+            continue;
+        }
+
         // Float tags live at the raw level: a typed decode would refuse
         // them at parse time and name no reason.
         if raw_has_float(raw) {
@@ -831,9 +846,11 @@ fn decode_case(entry: &CapturedCallEntry, parsed: &ParsedSignature) -> Option<Te
         CaptureEvidence::DumpThread {
             dump_digest,
             thread_id,
+            fault_address,
         } => CaseOrigin::MinedMinidump {
             dump_digest: dump_digest.clone(),
             thread_id: *thread_id,
+            fault_address: *fault_address,
         },
     };
     Some(TestCase {

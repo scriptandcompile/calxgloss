@@ -35,6 +35,41 @@ pub(super) fn load_kuna_at(
         .with_context(|| format!("Failed to load {} with the Kuna engine", path.display()))
 }
 
+/// The export listing the mining lanes check captured calls against —
+/// the capture fold (issue #396) and the minidump lane (issue #401):
+/// every named export of the current bytes, with the prototype line
+/// Kuna's decompiler renders for it. An export whose prototype Kuna
+/// will not render enters the listing with no signature — the fold
+/// then refuses any event naming it with the `no-parseable-signature`
+/// reason, and a lane that needs a signature names nothing for it.
+pub(super) async fn kuna_export_listing(
+    settings: &crate::Settings,
+    dll_path: &Path,
+) -> Result<Vec<calxgloss_types::Export>> {
+    let source = load_kuna_at(settings, dll_path)?;
+    let mut exports = Vec::new();
+    for symbol in source
+        .list_exports()
+        .await
+        .context("The export listing never came back from Kuna")?
+    {
+        if symbol.imported || symbol.name.is_empty() {
+            continue;
+        }
+        let signature = source
+            .decompile_function(&symbol.name)
+            .await
+            .map(|decompiled| decompiled.signature)
+            .unwrap_or_default();
+        exports.push(calxgloss_types::Export {
+            name: symbol.name,
+            address: symbol.address,
+            signature,
+        });
+    }
+    Ok(exports)
+}
+
 /// Resolve the workspace: `--workspace` flag > settings > CWD.
 ///
 /// This is the single point of resolution for commands that use the
