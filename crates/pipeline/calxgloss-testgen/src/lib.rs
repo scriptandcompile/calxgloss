@@ -87,6 +87,10 @@ pub use record_replay::{
     fold_capture_event_log,
 };
 pub use run::{BaselineRunner, TestContext};
+pub use wine::capture::{
+    BudgetStop, CAPTURE_LOG_NAME, CaptureBudgets, CaptureRun, derive_proxy_slots,
+};
+pub use wine::owned::{OwnedProcess, OwnershipToken, Stopped};
 pub use wine::proxy::{
     ProxyGeneration, ProxySlot, REFERENCE_APP_CAPTURE_PREFIX, RecordedSlot,
     generate_recording_proxy, px_notes, px_real_name, px_stderr_notes,

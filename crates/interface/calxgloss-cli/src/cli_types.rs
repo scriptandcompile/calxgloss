@@ -467,31 +467,55 @@ pub(super) enum Command {
         binary: String,
     },
 
-    /// Ingest a captured call event log into the record-and-replay fold
-    /// (P23.2, issue #396).
+    /// Capture baseline evidence from real calls (P23.2 + P23.6, issues
+    /// #396 and #400): either **run** a reference application against the
+    /// target under Wine — scaffolding an instrumented run dir with the
+    /// recording proxy in front of the real target, launching the
+    /// application with the run dir on the DLL search path, and stopping
+    /// at the capture budgets — or **ingest** a `capture-log-v1` event
+    /// log taken earlier or on another machine, folding it without
+    /// re-running anything.
     ///
-    /// Every captured argument vector a listed export's signature can
-    /// hold is replayed against the original binary through the baseline
-    /// harness, and what the replay observed is filed as a baseline case
-    /// under `re/baseline/{binary}/{function}/baseline.json` — mined
-    /// cases carry the mined-hook origin naming the capture id and event
-    /// sequence. Entries the fold cannot replay are refused with a named
-    /// reason and land a `capture_refused` record in the binary's
-    /// unknown ledger; a replay that faults lands a `crash_reproduction`
-    /// record naming the event and files no case. The command prints the
-    /// count report — events seen, cases mined, twins deduplicated,
-    /// refusals named, truncations stated — and the next batch run
-    /// closes the standing `export_uncovered` record for any export the
-    /// fold filed a suite for.
+    /// In both shapes every captured argument vector a listed export's
+    /// signature can hold is replayed against the original binary through
+    /// the baseline harness, and what the replay observed is filed as a
+    /// baseline case under `re/baseline/{binary}/{function}/baseline.json`
+    /// — mined cases carry the mined-hook origin naming the capture id
+    /// and event sequence. Entries the fold cannot replay are refused
+    /// with a named reason and land a `capture_refused` record in the
+    /// binary's unknown ledger; a replay that faults lands a
+    /// `crash_reproduction` record naming the event and files no case.
+    /// The run prints its stop and every truncation its budgets state,
+    /// then the command prints the count report — events seen, cases
+    /// mined, twins deduplicated, refusals named, truncations stated —
+    /// and the next batch run closes the standing `export_uncovered`
+    /// record for any export the fold filed a suite for.
+    ///
+    /// A finished or interrupted run never leaves the recording proxy
+    /// standing over the real target: the run dir always ends holding
+    /// the real module under its own binary identity beside the finished
+    /// event log.
     ///
     /// # Arguments
     ///
-    /// * `--binary` — Binary the capture was taken from, e.g. `eqmain.dll`.
-    /// * `--ingest` — The capture event log to ingest, a `capture-log-v1` JSON file.
+    /// * `--binary` — Binary the capture is taken from, e.g. `eqmain.dll`.
+    /// * `--app` — Reference application to run under Wine, relative to
+    ///   the target directory. Exactly one of `--app`/`--ingest`.
+    /// * `--ingest` — The capture event log to ingest, a `capture-log-v1`
+    ///   JSON file. A separate fold step: it re-runs nothing.
+    /// * `--run-dir` — Instrumented run dir for `--app` (default
+    ///   `re/capture/{binary}` under the workspace; created fresh).
+    /// * `--max-events` — Capture budget: stop once this many events are
+    ///   recorded (the run truncates, stating the drop).
+    /// * `--max-duration-secs` — Capture budget: stop after this many
+    ///   seconds (default 300 under `--app`).
+    /// * `--max-log-bytes` — Capture budget: hold the event log at or
+    ///   under this many bytes (trailing entries trimmed, each stated).
     ///
     /// # Examples
     ///
     /// ```text
+    /// calxgloss capture --binary game_logic.dll --app game.exe --max-events 2000
     /// calxgloss capture --binary eqmain.dll --ingest capture-logs/run-7.json
     /// ```
     Capture {
@@ -499,9 +523,29 @@ pub(super) enum Command {
         #[arg(long, required = true)]
         binary: String,
 
+        /// Reference application to run against the target under Wine
+        #[arg(long)]
+        app: Option<PathBuf>,
+
         /// The capture event log to ingest, a `capture-log-v1` JSON file
-        #[arg(long, required = true)]
-        ingest: PathBuf,
+        #[arg(long)]
+        ingest: Option<PathBuf>,
+
+        /// Instrumented run dir (default: re/capture/{binary} in the workspace)
+        #[arg(long)]
+        run_dir: Option<PathBuf>,
+
+        /// Capture budget: stop once this many events are recorded
+        #[arg(long)]
+        max_events: Option<u64>,
+
+        /// Capture budget: stop the run after this many seconds (default 300)
+        #[arg(long)]
+        max_duration_secs: Option<u64>,
+
+        /// Capture budget: hold the event log at or under this many bytes
+        #[arg(long)]
+        max_log_bytes: Option<u64>,
     },
 
     /// Detect concurrency constructs (mutex/lock pairings, atomic

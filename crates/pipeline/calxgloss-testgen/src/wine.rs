@@ -62,8 +62,10 @@ pub use types::{
     ScalarKind, UNIT_SEPARATOR, locator_for_function, locator_for_va,
 };
 
+pub mod capture;
 pub mod encode;
 pub mod harness;
+pub mod owned;
 pub mod proxy;
 pub mod types;
 
@@ -454,23 +456,32 @@ impl WineRunner {
 /// is not the promised `{"export": …, "args": […]}` shape is dropped and
 /// named on the notes — a half-parsed event never enters the log.
 fn parse_entry_events(stdout: &str) -> Vec<serde_json::Value> {
-    let mut events = Vec::new();
-    for line in stdout.lines() {
-        let Some(payload) = line.strip_prefix("EVENT\t") else {
-            continue;
-        };
-        match serde_json::from_str::<serde_json::Value>(payload) {
-            Ok(event)
-                if event.get("export").and_then(|e| e.as_str()).is_some()
-                    && event.get("args").and_then(|a| a.as_array()).is_some() =>
-            {
-                events.push(event);
-            }
-            Ok(_) => warn!("entry event line carried an unexpected shape and was dropped"),
-            Err(e) => warn!(error = %e, "entry event line is not JSON and was dropped"),
+    stdout.lines().filter_map(parse_entry_event_line).collect()
+}
+
+/// Harvest one stdout line for an entry event: an `EVENT\t{json}` wire
+/// line whose payload carries an `export` name and an `args` array parses;
+/// anything else is not an event line (a warn names a malformed payload).
+/// Lines that are not events at all return quietly — they belong to the
+/// application's own stdout, not to the capture.
+pub(crate) fn parse_entry_event_line(line: &str) -> Option<serde_json::Value> {
+    let payload = line.strip_prefix("EVENT\t")?;
+    match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(event)
+            if event.get("export").and_then(|e| e.as_str()).is_some()
+                && event.get("args").and_then(|a| a.as_array()).is_some() =>
+        {
+            Some(event)
+        }
+        Ok(_) => {
+            warn!("entry event line carried an unexpected shape and was dropped");
+            None
+        }
+        Err(e) => {
+            warn!(error = %e, "entry event line is not JSON and was dropped");
+            None
         }
     }
-    events
 }
 
 /// Whether a harness stderr line states what the entry hooks could not do —

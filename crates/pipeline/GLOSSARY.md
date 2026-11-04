@@ -101,6 +101,15 @@ A generated stand-in DLL wearing the target's binary identity — its file name 
 **Reference-app run**:
 A capture session in which a caller outside the harness reaches the target — the reference application of the P23 parent's real-caller quest — and the calls that arrive are recorded through a *recording proxy*. Its *captured call entries* carry the `reference_app` lane and the capture id `reference-app:{binary}`: the lane states what it proves — the argument vectors came from a real caller, but which case prompted them is unknown — and only the *record-and-replay fold*'s replay makes a filed case authoritative.
 
+**Capture budget**:
+One of the three caps — max events, duration, event-log size — that stop a *reference-app run* from outrunning the operator's intent; an unbudgeted duration defaults to 300 seconds. Whichever budget fires, the run stops through one signal path and the truncation is stated in the *capture event log*'s notes and the command's count report — never silently. The size budget additionally trims trailing entries until the written document, annotations included, fits the cap, counting every trim as a drop beside the drops the run itself counted.
+
+**Ownership token**:
+A launched process's identity — its pid plus the OS start stamp behind that pid — bound at launch and rechecked before every termination signal. A PID that no longer answers to the identity it was bound to (the process exited, or a stranger reused the number) is signaled not at all: owned-process discipline is never a bare-PID kill, and it prefigures the scenario contract P24 makes of it.
+
+**Instrumented run dir**:
+The directory a *reference-app run* stands the target in: the real module parked inside under its real file name, and the *recording proxy* wearing the target's binary identity in front of it, with the run dir on the launched application's DLL search path. Whatever how the run ends — finished, budget-stopped, errored — the run dir's finalize takes the proxy out and puts the real module back under its own identity, the finished *capture event log* staying beside it: the application tree can never keep resolving through a recorder.
+
 **Capture bound**:
 The one shared protocol constant — 64 KiB — that caps how far a capture's pointer read may go, honored at both ends of the *record-and-replay fold*: at record time it sizes a captured pointer descriptor (anything past it is stored truncated, and the descriptor says so), and at replay time it bounds what a descriptor may claim — a pointer whose bytes fall short of the size it observed, or that claims more than the bound can have delivered, is refused as a truncation naming the bound, never silently reconstructed whole. A pointer descriptor with no captured bytes at all is the one shape no replay can honor: an *unmaterializable pointer*, refused by name.
 
