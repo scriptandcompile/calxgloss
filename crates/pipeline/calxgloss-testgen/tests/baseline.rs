@@ -1005,3 +1005,311 @@ mod live_entry_hook {
         // from verified committed memory, never a fault, never an invention.
     }
 }
+// --- recording proxy (P23.5, issue #399) ------------------------------------
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod live_recording_proxy {
+    //! Point a generated caller harness at a recording proxy wearing a
+    //! real DLL's binary identity, and show the reference-app run records
+    //! the calls that really arrive at the proxy and folds them through
+    //! the `--ingest` fold into filed cases. What only this Wine-gated run
+    //! can prove: the caller really lands on the proxy's exports, a
+    //! recorded call still reaches the real entry — the return value says
+    //! so — and live memory is captured under the capture bound.
+
+    use super::*;
+    use calxgloss_testgen::{
+        ProxySlot, Replay, ScalarKind, TestGenerator, fold_capture_event_log,
+        generate_recording_proxy, px_real_name, px_stderr_notes,
+    };
+    use calxgloss_types::{CaseOrigin, Export};
+    use std::fs;
+
+    /// Generate and cargo-build the proxy under the fixture's binary
+    /// identity, laid out as the caller run needs it: the proxy owns the
+    /// identity, the real DLL sits beside it under its real name.
+    fn lay_proxy(
+        runner: &WineRunner,
+        dll: &Path,
+        build: &Path,
+        run_dir: &Path,
+        recorded: &str,
+        kinds: &[ScalarKind],
+    ) -> PathBuf {
+        std::fs::create_dir_all(run_dir).expect("run dir");
+        let image = PeImage::parse(dll).expect("fixture target should parse as a PE image");
+        let slots: Vec<ProxySlot> = image
+            .exports()
+            .iter()
+            .filter(|e| !e.name.is_empty() && !e.is_forwarder)
+            .map(|e| {
+                if e.name == recorded {
+                    ProxySlot::recorded(&e.name, kinds.to_vec())
+                } else {
+                    ProxySlot::forwarding(&e.name)
+                }
+            })
+            .collect();
+        let generation =
+            generate_recording_proxy("fixture_target.dll", &slots, Some(image.machine()))
+                .expect("the proxy should generate for an x86-64 target");
+        fs::create_dir_all(build.join(".cargo")).expect("cargo dir");
+        let def = build.join("px_fixture_target.def");
+        fs::write(&def, &generation.def).expect("def file");
+        fs::write(
+            build.join(".cargo/config.toml"),
+            format!(
+                "[build]\nrustflags = [\"-C\", \"link-arg=-Wl,{}\"]\n",
+                def.display()
+            ),
+        )
+        .expect("cargo config");
+        let proxy_path = runner
+            .build_recording_proxy("fixture_target.dll", &generation, image.machine(), run_dir)
+            .expect("the proxy should cargo-build under wine");
+        assert_eq!(
+            proxy_path,
+            run_dir.join("fixture_target.dll"),
+            "the proxy wears the identity it was generated for"
+        );
+        fs::copy(dll, run_dir.join(px_real_name("fixture_target.dll")))
+            .expect("the real dll sits beside the proxy");
+        proxy_path
+    }
+
+    /// The fixture built as a caller: the harness's own calls are the
+    /// arriving calls the proxy must record and forward. The run loads
+    /// full, not `DONT_RESOLVE_DLL_REFERENCES`: the proxy is a real module
+    /// whose `DllMain` and TLS must attach for its capture machinery to
+    /// work, exactly like the real target's full-load mode.
+    fn caller_spec(dll: &Path, function: &str, signature: &str) -> HarnessSpec {
+        let image = PeImage::parse(dll).expect("fixture target should parse as a PE image");
+        let signature = parse_signature(signature).expect("fixture signature should parse");
+        let mut spec = HarnessSpec::new(
+            function,
+            FunctionLocator::ExportName(function.to_string()),
+            &signature,
+            image.machine(),
+        )
+        .expect("spec should build");
+        spec.load_mode = LoadMode::Full;
+        spec
+    }
+
+    /// A caller run through the proxy records its arriving calls, forwards
+    /// them transparently, and the recording folds into filed cases under
+    /// the reference-app capture id.
+    #[tokio::test]
+    #[ignore = "needs Wine and the windows-gnu Rust target"]
+    async fn a_reference_app_run_through_the_proxy_folds_into_filed_cases() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let store = tempfile::tempdir().expect("tempdir");
+        let build = work.path().join("px_build");
+        let run = work.path().join("px_run");
+        fs::create_dir_all(&run).expect("run dir");
+        let dll =
+            calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+        let image = PeImage::parse(&dll).expect("fixture target should parse as a PE image");
+        let runner = WineRunner::new(work.path());
+        runner
+            .preflight_wine()
+            .expect("wine should be installed to run these tests");
+
+        // The uninstrumented caller first: the plain fixture run is the
+        // standard the transparent proxy has to answer to.
+        let plain_spec = caller_spec(&dll, "fixture_status", "int fixture_status(int code)");
+        let cases = [TestCase {
+            inputs: json!({ "code": 7 }),
+            expected_return: Value::Null,
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+            origin: CaseOrigin::Generated,
+        }];
+        let plain = runner
+            .run(&plain_spec, &dll, &cases, image.machine())
+            .expect("the plain caller run should complete");
+        assert!(plain.results[0].ok, "{:?}", plain.results[0].error);
+
+        let proxy_dll = lay_proxy(
+            &runner,
+            &dll,
+            &build,
+            &run,
+            "fixture_status",
+            &[ScalarKind::I32],
+        );
+        assert_ne!(
+            fs::read(&proxy_dll).expect("proxy bytes"),
+            fs::read(&dll).expect("real dll bytes"),
+            "the proxy is its own module, not a copy of the real one"
+        );
+
+        let caller = runner
+            .run(&plain_spec, &proxy_dll, &cases, image.machine())
+            .expect("the caller run against the proxy should complete");
+        assert!(
+            !caller.results[0].crashed,
+            "the caller should survive the proxy: {:?}; stderr: {}",
+            caller.results[0].error, caller.stderr
+        );
+        let notes = px_stderr_notes(&caller.stderr);
+        assert!(
+            notes.is_empty(),
+            "the proxy should run clean, noted: {notes:?}"
+        );
+        assert_eq!(
+            caller.results[0].returned, plain.results[0].returned,
+            "the proxy forwards transparently: the recorded call reaches the real entry"
+        );
+
+        // The proxy's entry events ride the harness's own event protocol;
+        // they assemble into a capture event log under the reference-app
+        // capture id.
+        let log = runner.px_capture_log("fixture_target.dll", &caller.entry_events, &notes);
+        assert_eq!(log["schema"], json!("capture-log-v1"));
+        assert_eq!(log["capture_id"], json!("reference-app:fixture_target.dll"));
+        let entries = log["entries"].as_array().expect("entries array");
+        assert!(
+            !entries.is_empty(),
+            "the proxy records the call that arrived; stderr: {}\nrun: (results: {:?}, \
+             reported: {})\nentries: {:#?}",
+            caller.stderr,
+            caller.results,
+            caller.reported,
+            log
+        );
+        let entry = entries
+            .iter()
+            .find(|entry| entry["export"] == json!("fixture_status"))
+            .expect("the armed export's arriving call is recorded");
+        assert_eq!(entry["binary"], json!("fixture_target.dll"));
+        assert_eq!(
+            entry["arguments"][0],
+            json!({"scalar": {"tag": "i32", "value": 7}}),
+            "the argument vector is recorded as it arrived"
+        );
+
+        // The fold: the proxy's capture log files cases through the very
+        // `capture --ingest` fold, under the reference-app capture id.
+        let exports = vec![Export {
+            name: "fixture_status".to_string(),
+            address: 0,
+            signature: "int fixture_status(int code)".to_string(),
+        }];
+        let generator = TestGenerator::new(store.path());
+        let folded = fold_capture_event_log(
+            &generator,
+            "fixture_target.dll",
+            &exports,
+            &log,
+            &Replay::Harness { dll_path: &dll },
+        )
+        .await
+        .expect("the proxy capture log should fold");
+        assert_eq!(folded.report.events_seen, entries.len());
+        assert!(
+            folded.report.cases_mined >= 1,
+            "a recorded proxy call files a case; refusals: {:?}",
+            folded.report.refusals
+        );
+        let rows = generator
+            .load_baseline("fixture_target.dll", "fixture_status")
+            .expect("a filed baseline suite");
+        assert!(
+            rows.iter().any(|row| matches!(
+                &row.test_case.origin,
+                CaseOrigin::MinedHook { capture_id, event_sequence }
+                    if capture_id == "reference-app:fixture_target.dll" && *event_sequence >= 1
+            )),
+            "the filed case's evidence names the reference-app run: {:?}",
+            rows.iter()
+                .map(|row| row.test_case.origin.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry["export"] == json!("fixture_status"))
+                .expect("the armed export's entry")["lane"],
+            json!("reference_app"),
+            "the recorded calls are stamped as arriving on the reference-app lane"
+        );
+    }
+
+    /// The capture bound applies to what a proxy really records: a pointer
+    /// argument becomes a pointer capture out of live memory, and the call
+    /// still reaches the real entry.
+    #[test]
+    #[ignore = "needs Wine and the windows-gnu Rust target"]
+    fn the_proxy_records_a_live_pointer_capture_and_still_forwards() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let build = work.path().join("px_build");
+        let run = work.path().join("px_run");
+        fs::create_dir_all(&run).expect("run dir");
+        let dll =
+            calxgloss_testfixtures::fixture_target_path().expect("fixture target should be built");
+        let image = PeImage::parse(&dll).expect("fixture target should parse as a PE image");
+        let runner = WineRunner::new(work.path());
+        runner
+            .preflight_wine()
+            .expect("wine should be installed to run these tests");
+
+        let proxy_dll = lay_proxy(
+            &runner,
+            &dll,
+            &build,
+            &run,
+            "fixture_ordered",
+            &[ScalarKind::Ptr],
+        );
+
+        let spec = caller_spec(
+            &dll,
+            "fixture_ordered",
+            "unsigned int fixture_ordered(int *probe)",
+        );
+        let cases = [TestCase {
+            inputs: json!({ "probe": { "__alloc": { "size": 4, "bytes": "44556677" } } }),
+            expected_return: Value::Null,
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+            origin: CaseOrigin::Generated,
+        }];
+        let caller = runner
+            .run(&spec, &proxy_dll, &cases, image.machine())
+            .expect("the caller run against the proxy should complete");
+        assert!(
+            !caller.results[0].crashed,
+            "the caller should survive the proxy: {:?}",
+            caller.results[0].error
+        );
+        assert_eq!(
+            caller.results[0].returned.as_u64(),
+            Some(0x7766_5544),
+            "the recorded call reaches the real entry — it reads the caller's \
+             own buffer back little-endian; stderr: {}",
+            caller.stderr
+        );
+        let log = runner.px_capture_log("fixture_target.dll", &caller.entry_events, &[]);
+        let entries = log["entries"].as_array().expect("entries array");
+        let pointer = entries
+            .iter()
+            .flat_map(|entry| entry["arguments"].as_array().cloned().unwrap_or_default())
+            .find_map(|argument| argument.get("pointer").cloned())
+            .expect("the proxy recorded a pointer capture; log: {log}");
+        let bytes = pointer["bytes"].as_array().expect("bytes array");
+        assert!(
+            bytes.len() >= 4,
+            "the pointer capture reaches into the caller's buffer"
+        );
+        assert_eq!(
+            bytes[..4],
+            [json!(0x44), json!(0x55), json!(0x66), json!(0x77)],
+            "the recorded bytes are a faithful copy of the caller's live memory"
+        );
+        assert!(
+            pointer["captured_size"].is_number() && pointer["truncated"].is_boolean(),
+            "the capture states its observed size and truncation stamp"
+        );
+    }
+}

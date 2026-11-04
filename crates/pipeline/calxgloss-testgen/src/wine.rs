@@ -64,6 +64,7 @@ pub use types::{
 
 pub mod encode;
 pub mod harness;
+pub mod proxy;
 pub mod types;
 
 // ============================================================
@@ -245,6 +246,11 @@ impl WineRunner {
                 events,
                 &report.notes,
             ));
+        } else {
+            // A recording proxy run has no entry hooks, but its exported slots
+            // record arrivals the same way — hand the harvested events back to
+            // the caller instead of dropping them with the isolation scaffolding.
+            report.entry_events = events;
         }
         Ok(report)
     }

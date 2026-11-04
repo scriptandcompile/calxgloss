@@ -33,7 +33,11 @@
 //! `calxgloss_types::capture`); mining is additive, and an un-armed baseline
 //! run emits exactly the suite this crate invented. See the Pipeline glossary
 //! for *mined input*, *captured call entry*, *entry hook*, *entry event*,
-//! and *case origin*.
+//! *recording proxy*, *reference-app run*, and *case origin*. The recording
+//! proxy (the `wine::proxy` module) is the P23.5 collector: a generated DLL
+//! that wears a target's binary identity, exports its full export name set,
+//! records the calls that arrive through it, and forwards them transparently
+//! to the real module.
 //!
 //! Global side-effect expectations are not captured from the Wine run — the
 //! harness reports return values only. They come from the global-state scan
@@ -83,6 +87,10 @@ pub use record_replay::{
     fold_capture_event_log,
 };
 pub use run::{BaselineRunner, TestContext};
+pub use wine::proxy::{
+    ProxyGeneration, ProxySlot, REFERENCE_APP_CAPTURE_PREFIX, RecordedSlot,
+    generate_recording_proxy, px_notes, px_real_name, px_stderr_notes,
+};
 pub use wine::{
     EntryHook, FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,
     ScalarKind, WineRunner, encode_test_case, generate_harness, locator_for_function,
