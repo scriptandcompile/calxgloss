@@ -805,6 +805,7 @@ name = "calxgloss-testfixtures"
 version = "0.5.0"
 dependencies = [
  "goblin",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

@@ -8,18 +8,28 @@
 //! assert against: named exports, imports from two DLLs, string literals,
 //! and a switch the compiler turns into a jump table.
 //!
+//! Beside the DLLs stands a fixture console EXE
+//! (`fixtures/fixture_console.c` → `fixture_console.exe`): a console
+//! program that consumes stdin lines, writes and deletes observable files
+//! under its run dir, and ends on declared exit codes — from `exit <code>`
+//! on stdin or `--exit-code N` on argv. The scenario lane (P24) runs it
+//! for real; nothing scenario-specific lives in the program itself.
+//!
 //! [`load_target`] parses the built DLL and fails with a named error the
 //! moment the fixture stops having that shape, so this crate's smoke test
 //! catches a broken fixture before an analysis engine test fails deep
-//! inside itself with it. The Integrations integration tests and the web
-//! e2e harness can reach the fixture as a dev-dependency; both keep a
-//! reachability test, so the fixture stays reachable from each.
+//! inside itself with it. [`load_console_target`] draws the same line for
+//! the console EXE's PE identity. The Integrations integration tests and
+//! the web e2e harness can reach the fixture as a dev-dependency; both
+//! keep a reachability test, so the fixture stays reachable from each.
 //!
 //! # Architecture
 //!
 //! - `error.rs` — `TestFixturesError` and the crate-wide `Result` alias.
 //! - root — the fixture shape constants, `fixture_target_path` /
-//!   `load_target`, and the parsed `FixtureTarget` view with its
+//!   `plain_target_path` / `console_target_path`, the loaders
+//!   [`load_target`] / [`load_console_target`], and the parsed
+//!   `FixtureTarget` / `ConsoleTarget` views with their
 //!   `ImportedFunction` and `JumpTable` records.
 
 pub mod error;
@@ -42,6 +52,13 @@ pub const TARGET_FILE_NAME: &str = "fixture_target.dll";
 /// exports but no import table — the shape a harness interposer must
 /// survive without failing or hanging (P22).
 pub const PLAIN_TARGET_FILE_NAME: &str = "fixture_plain.dll";
+
+/// File name of the fixture console EXE, also built into `OUT_DIR`.
+///
+/// `fixtures/fixture_console.c` links as a plain x86-64 Windows console
+/// program (no `-shared`): the console shape the scenario lane (P24)
+/// runs against — stdin-reading, file-writing, declared exit codes.
+pub const CONSOLE_TARGET_FILE_NAME: &str = "fixture_console.exe";
 
 /// The named exports the fixture must have.
 pub const EXPORT_NAMES: &[&str] = &[
@@ -82,13 +99,12 @@ pub const STRING_LITERALS: &[&str] = &[
 /// occur by accident in a DLL this small.
 pub const MIN_JUMP_TABLE_ENTRIES: usize = 16;
 
-/// Path to the built fixture target binary.
+/// Path to a fixture binary the build script compiles into `OUT_DIR`.
 ///
-/// The build script compiles the fixture into `OUT_DIR`. If the
-/// cross-compiler was missing at build time, the file is absent and this
-/// function reports [`TestFixturesError::ToolchainMissing`] naming the fix.
-pub fn fixture_target_path() -> Result<PathBuf> {
-    let path = Path::new(env!("OUT_DIR")).join(TARGET_FILE_NAME);
+/// If the cross-compiler was missing at build time, the file is absent
+/// and this reports [`TestFixturesError::ToolchainMissing`] naming the fix.
+fn built_fixture_path(file_name: &str) -> Result<PathBuf> {
+    let path = Path::new(env!("OUT_DIR")).join(file_name);
     if !path.exists() {
         return Err(TestFixturesError::ToolchainMissing {
             compiler: option_env!("CALXGLOSS_FIXTURE_CC")
@@ -99,20 +115,133 @@ pub fn fixture_target_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Path to the built fixture target binary.
+///
+/// The build script compiles the fixture into `OUT_DIR`. If the
+/// cross-compiler was missing at build time, the file is absent and this
+/// function reports [`TestFixturesError::ToolchainMissing`] naming the fix.
+pub fn fixture_target_path() -> Result<PathBuf> {
+    built_fixture_path(TARGET_FILE_NAME)
+}
+
 /// Path to the built zero-import fixture.
 ///
 /// Same shape as [`fixture_target_path`]: if the cross-compiler was missing
 /// at build time, the file is absent and the error names the fix.
 pub fn plain_target_path() -> Result<PathBuf> {
-    let path = Path::new(env!("OUT_DIR")).join(PLAIN_TARGET_FILE_NAME);
-    if !path.exists() {
-        return Err(TestFixturesError::ToolchainMissing {
-            compiler: option_env!("CALXGLOSS_FIXTURE_CC")
-                .unwrap_or("x86_64-w64-mingw32-gcc")
-                .to_string(),
+    built_fixture_path(PLAIN_TARGET_FILE_NAME)
+}
+
+/// Path to the built fixture console EXE.
+///
+/// Same toolchain rule as [`fixture_target_path`]: if the cross-compiler
+/// was missing at build time, the file is absent and the error names the
+/// fix.
+pub fn console_target_path() -> Result<PathBuf> {
+    built_fixture_path(CONSOLE_TARGET_FILE_NAME)
+}
+
+/// The identity literals the fixture console EXE must carry in its image
+/// — the facts a reviewer (and a later scenario capture's pairing stamp)
+/// names this fixture by, exactly like the DLL fixture's string literals.
+pub const CONSOLE_IDENTITY_LITERALS: &[&str] = &[
+    "calxgloss-fixture-console-v1",
+    "calxgloss fixture console ready",
+];
+
+/// The Windows console subsystem the fixture console EXE must declare.
+pub const CONSOLE_SUBSYSTEM: u16 = goblin::pe::subsystem::IMAGE_SUBSYSTEM_WINDOWS_CUI;
+
+/// The fixture console EXE, parsed and checked against the console-exe
+/// identity the scenario lane runs against.
+#[derive(Debug, Clone)]
+pub struct ConsoleTarget {
+    path: PathBuf,
+    image_base: u64,
+    subsystem: u16,
+    strings: Vec<String>,
+}
+
+impl ConsoleTarget {
+    /// Path to the EXE on disk.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Preferred image base recorded in the optional header.
+    pub fn image_base(&self) -> u64 {
+        self.image_base
+    }
+
+    /// The subsystem the image declares; [`CONSOLE_SUBSYSTEM`] is the
+    /// shape the scenario lane launches against.
+    pub fn subsystem(&self) -> u16 {
+        self.subsystem
+    }
+
+    /// The identity literals found in the image.
+    pub fn strings(&self) -> &[String] {
+        &self.strings
+    }
+}
+
+/// Load the fixture console EXE and check its PE identity.
+///
+/// Every failure is a named [`TestFixturesError`] variant that names the
+/// broken element: a DLL where an exe belongs, a non-console subsystem,
+/// a missing identity literal. So a broken fixture says what broke
+/// instead of a scenario test failing deep inside itself.
+pub fn load_console_target() -> Result<ConsoleTarget> {
+    let path = console_target_path()?;
+    let bytes = std::fs::read(&path).map_err(|source| TestFixturesError::Unreadable {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let pe = PE::parse(&bytes).map_err(TestFixturesError::NotPe)?;
+
+    if pe.header.coff_header.machine != COFF_MACHINE_X86_64 {
+        return Err(TestFixturesError::NotX8664Exe {
+            machine: pe.header.coff_header.machine,
         });
     }
-    Ok(path)
+    if pe.is_lib {
+        return Err(TestFixturesError::DeclaredDllNotExe);
+    }
+
+    let subsystem = pe
+        .header
+        .optional_header
+        .map(|header| header.windows_fields.subsystem)
+        .unwrap_or(0);
+    if subsystem != CONSOLE_SUBSYSTEM {
+        return Err(TestFixturesError::NotConsoleSubsystem { subsystem });
+    }
+
+    let strings: Vec<String> = CONSOLE_IDENTITY_LITERALS
+        .iter()
+        .filter(|literal| contains_subslice(&bytes, literal.as_bytes()))
+        .map(|literal| (*literal).to_string())
+        .collect();
+    for literal in CONSOLE_IDENTITY_LITERALS {
+        if !strings.iter().any(|found| found == literal) {
+            return Err(TestFixturesError::MissingStringLiteral {
+                literal: (*literal).to_string(),
+            });
+        }
+    }
+
+    let image_base = pe
+        .header
+        .optional_header
+        .map(|header| header.windows_fields.image_base)
+        .unwrap_or(0);
+
+    Ok(ConsoleTarget {
+        path,
+        image_base,
+        subsystem,
+        strings,
+    })
 }
 
 /// A single named import, as the analysis engine tests see it.

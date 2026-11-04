@@ -2,12 +2,13 @@
 
 use thiserror::Error;
 
-/// Ways the fixture target binary can be missing or the wrong shape.
+/// Ways a built fixture — a DLL target or the console EXE — can be missing
+/// or the wrong shape.
 ///
 /// Each shape variant names the fixture element that an analysis engine
-/// test relies on. So when the fixture stops compiling to the expected
-/// shape, the failure names the missing element, instead of an analysis
-/// engine test failing with an opaque parse error.
+/// or scenario test relies on. So when a fixture stops compiling to the
+/// expected shape, the failure names the missing element, instead of a
+/// test failing deep inside itself with an opaque parse error.
 #[derive(Debug, Error)]
 pub enum TestFixturesError {
     /// The cross-compiler was not on PATH when the build script ran, so the
@@ -41,6 +42,24 @@ pub enum TestFixturesError {
     NotX8664Dll {
         /// The machine the image actually declares.
         machine: u16,
+    },
+    /// The built console fixture is not an x86-64 image.
+    #[error("fixture console exe is not x86-64 (machine {machine:#06x})")]
+    NotX8664Exe {
+        /// The machine the image actually declares.
+        machine: u16,
+    },
+    /// The built console fixture declares itself a DLL, not an exe.
+    #[error("fixture console exe declares itself a DLL, not a console exe")]
+    DeclaredDllNotExe,
+    /// The built console fixture is not on the console subsystem.
+    #[error(
+        "fixture console exe declares subsystem {subsystem:#04x}, \
+         not the Windows console subsystem"
+    )]
+    NotConsoleSubsystem {
+        /// The subsystem the image actually declares.
+        subsystem: u16,
     },
     /// A named export the analysis engine tests assert against is absent.
     #[error("fixture target is missing expected export `{name}`")]
