@@ -60,7 +60,7 @@ use calxgloss_web::LogLevelControl;
 use clap::Parser;
 use tracing::{debug, error, info};
 
-use cli_types::{Cli, Command, DashboardSubcommand};
+use cli_types::{Cli, Command, DashboardSubcommand, ScenarioAction};
 use settings::Settings;
 use utils::*;
 
@@ -82,6 +82,7 @@ use commands::live::handle_live;
 use commands::minidump_command::handle_minidump;
 use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use commands::scan_command::handle_scan_command;
+use commands::scenario_command::{ScenarioDeclareOptions, handle_scenario_declare};
 use commands::serve::handle_serve;
 use commands::translate::handle_translate;
 use commands::verify::handle_verify;
@@ -156,6 +157,11 @@ fn main() -> Result<()> {
     if let Some(ref target) = cli.command {
         match target {
             Command::Config | Command::Doctor { .. } | Command::Gc { .. } => {}
+            // Scenario declaring is authoring, not running: nothing
+            // loads a target binary, so target_dir is not required —
+            // a contract can be declared before the program exists.
+            // (issue #402)
+            Command::Scenario { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -333,6 +339,65 @@ fn main() -> Result<()> {
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_minidump(&binary, &dumps, &workspace, &settings))
         }
+
+        // The scenario lane (P24.1, issue #402) opens with authorship:
+        // declaring a contract validates and files the interface-owned
+        // document — no process, no Wine, no tokio runtime needed.
+        Command::Scenario { action } => match *action {
+            ScenarioAction::Declare {
+                binary,
+                scenario,
+                working_dir,
+                env,
+                argv,
+                inputs,
+                secrets,
+                resizes,
+                signals,
+                observe,
+                cols,
+                rows,
+                idle_timeout_ms,
+                max_run_ms,
+                finalization_grace_ms,
+                max_output_bytes,
+                normalize_version,
+                normalize_literals,
+                normalize_ports,
+            } => {
+                let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+                let validation_root = settings
+                    .target_dir
+                    .as_ref()
+                    .map(|resolved| PathBuf::from(&resolved.value))
+                    .unwrap_or_else(|| workspace.clone());
+                handle_scenario_declare(
+                    &binary,
+                    &ScenarioDeclareOptions {
+                        scenario,
+                        working_dir,
+                        env,
+                        argv,
+                        inputs,
+                        secrets,
+                        resizes,
+                        signals,
+                        observe,
+                        cols,
+                        rows,
+                        idle_timeout_ms,
+                        max_run_ms,
+                        finalization_grace_ms,
+                        max_output_bytes,
+                        normalize_version,
+                        normalize_literals,
+                        normalize_ports,
+                    },
+                    &workspace,
+                    &validation_root,
+                )
+            }
+        },
 
         Command::Verify {
             binary,

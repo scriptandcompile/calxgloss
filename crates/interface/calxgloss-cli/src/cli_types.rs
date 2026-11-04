@@ -588,6 +588,72 @@ pub(super) enum Command {
         dumps: Vec<PathBuf>,
     },
 
+    /// Author scenario contracts for EXE target binaries (P24.1, issue
+    /// #402): the declare path files a **scenario contract** in the
+    /// record tree as one owned document per binary identity under
+    /// `re/scenarios/{binary}.json` — the interface-owned document that
+    /// later scenario slices capture against and replay. Declaring is
+    /// authoring: nothing runs, no target file needs to exist yet.
+    ///
+    /// A declaration is validated at declare time — an unresolvable
+    /// working dir, an observation path escaping the run dir, or an
+    /// absurd timing value is refused naming the offending field, and
+    /// nothing files on a refusal. Re-declaring a scenario replaces its
+    /// contract; several scenarios per target binary coexist. Sensitive
+    /// scripted inputs (`--secret-at`) never persist their text: they
+    /// file as byte-count placeholders.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — Target binary identity the contract is declared
+    ///   for, e.g. `eqgame.exe`. Keys the contract document.
+    /// * `--scenario` — Scenario name, unique per target binary.
+    /// * `--working-dir` — Working dir the scenario run starts in
+    ///   (default `.`; relative to the target directory when set, else
+    ///   the workspace). Must resolve to an existing directory.
+    /// * `--env` — `KEY=VALUE`, repeatable; the run's explicit
+    ///   environment — nothing is inherited.
+    /// * `--arg` — One argv entry the scenario run receives, repeatable.
+    /// * `--input-at` — `MS:TEXT`, repeatable; type TEXT at MS ms into
+    ///   the run.
+    /// * `--secret-at` — `MS:TEXT`, repeatable; like `--input-at` but
+    ///   sensitive: only the byte count is filed, never the text.
+    /// * `--resize-at` — `MS:COLSxROWS`, repeatable; resize the console
+    ///   at MS ms.
+    /// * `--signal-at` — `MS:interrupt|break`, repeatable; signal the
+    ///   scenario run at MS ms (never a bare-PID kill).
+    /// * `--observe` — Filesystem path relative to the run dir to
+    ///   observe before and after the run, repeatable; paths that
+    ///   escape the run dir are refused.
+    /// * `--cols` / `--rows` — Console geometry the run starts with
+    ///   (default 80x24).
+    /// * `--idle-timeout-ms` — Idle window that ends a silent run
+    ///   (default 30000).
+    /// * `--max-run-ms` — Max run duration that ends any run (default
+    ///   120000).
+    /// * `--finalization-grace-ms` — SIGTERM→SIGKILL grace (default
+    ///   5000).
+    /// * `--max-output-bytes` — Terminal output cap (default 1 MiB); a
+    ///   capped capture states its cap.
+    /// * `--normalize-version` — Version of the normalization rules in
+    ///   force (default `norm-v1`); comparisons never pair across
+    ///   versions.
+    /// * `--normalize-literal` — `FROM=TO`, repeatable; a literal
+    ///   output replacement declared for comparison.
+    /// * `--normalize-port` — Port-number pattern masked out of
+    ///   comparison, repeatable.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss scenario declare --binary eqgame.exe --scenario boot --working-dir game --observe save/out.dat
+    /// calxgloss scenario declare --binary eqgame.exe --scenario login --secret-at 900:s3cr3t --signal-at 1500:interrupt
+    /// ```
+    Scenario {
+        #[command(subcommand)]
+        action: Box<ScenarioAction>,
+    },
+
     /// Detect concurrency constructs (mutex/lock pairings, atomic
     /// operations, thread spawns) for a binary.
     ///
@@ -1259,5 +1325,96 @@ pub(super) enum DashboardSubcommand {
         /// send-back units.
         #[arg(long, short)]
         all: bool,
+    },
+}
+
+/// Subactions of the `scenario` command family (P24.1, issue #402).
+#[derive(Subcommand, Debug)]
+pub(super) enum ScenarioAction {
+    /// Declare a scenario contract for a target binary and file it in
+    /// the record tree
+    ///
+    /// Validates the declaration — unresolvable working dir, observation
+    /// path escaping the run dir, absurd timing values: each refused
+    /// naming the offending field, nothing filed — then files (or
+    /// replaces) the scenario inside the binary's one contract document
+    /// at `re/scenarios/{binary}.json`.
+    Declare {
+        /// Target binary identity, e.g. `eqgame.exe`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Scenario name, unique per target binary
+        #[arg(long, required = true)]
+        scenario: String,
+
+        /// Working dir the scenario run starts in (default `.`)
+        #[arg(long, default_value = ".")]
+        working_dir: String,
+
+        /// `KEY=VALUE` environment entry, repeatable; nothing is inherited
+        #[arg(long = "env")]
+        env: Vec<String>,
+
+        /// One argv entry the scenario run receives, repeatable
+        #[arg(long = "arg", allow_hyphen_values = true)]
+        argv: Vec<String>,
+
+        /// `MS:TEXT` — type TEXT into the run at MS ms, repeatable
+        #[arg(long = "input-at")]
+        inputs: Vec<String>,
+
+        /// `MS:TEXT` — sensitive input typed at MS ms; only the byte
+        /// count is ever filed
+        #[arg(long = "secret-at")]
+        secrets: Vec<String>,
+
+        /// `MS:COLSxROWS` — resize the console at MS ms, repeatable
+        #[arg(long = "resize-at")]
+        resizes: Vec<String>,
+
+        /// `MS:interrupt|break` — signal the run at MS ms, repeatable
+        #[arg(long = "signal-at")]
+        signals: Vec<String>,
+
+        /// Observation path relative to the run dir, repeatable
+        #[arg(long = "observe")]
+        observe: Vec<String>,
+
+        /// Console columns the run starts with
+        #[arg(long, default_value = "80")]
+        cols: u16,
+
+        /// Console rows the run starts with
+        #[arg(long, default_value = "24")]
+        rows: u16,
+
+        /// Idle window that ends a silent run, in ms
+        #[arg(long, default_value = "30000")]
+        idle_timeout_ms: u64,
+
+        /// Max run duration that ends any run, in ms
+        #[arg(long, default_value = "120000")]
+        max_run_ms: u64,
+
+        /// SIGTERM→SIGKILL finalization grace, in ms
+        #[arg(long, default_value = "5000")]
+        finalization_grace_ms: u64,
+
+        /// Terminal output cap, in bytes
+        #[arg(long, default_value = "1048576")]
+        max_output_bytes: u64,
+
+        /// Version of the normalization rules in force
+        #[arg(long, default_value = "norm-v1")]
+        normalize_version: String,
+
+        /// `FROM=TO` literal output replacement, repeatable
+        #[arg(long = "normalize-literal")]
+        normalize_literals: Vec<String>,
+
+        /// Port-number pattern masked out of comparison, repeatable
+        #[arg(long = "normalize-port")]
+        normalize_ports: Vec<String>,
     },
 }

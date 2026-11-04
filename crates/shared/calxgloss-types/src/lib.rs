@@ -45,6 +45,11 @@
 //!   `UnknownResolutions`) — what a run admitted it could not establish,
 //!   with derived ids, filed per binary under the record tree, and joined
 //!   to the reviewer's settle-by-evidence / not-relevant answers
+//! - [`scenario`] — Scenario records (`ScenarioContract`,
+//!   `ScenarioContracts`, `ScenarioCapture`, `ScenarioVerdict`,
+//!   `DimensionVerdict`) — how one EXE target binary is declared to be
+//!   run, what a scenario run was observed to do, and what a comparison
+//!   says per dimension, with absent fields reading *unassessed*
 //! - [`error`] — Unified error type (`TypesError`)
 
 // ============================================================
@@ -84,6 +89,7 @@ pub mod pipeline_phase;
 pub mod progress;
 pub mod retry_strategy;
 pub mod scan;
+pub mod scenario;
 pub mod scope;
 pub mod shim;
 pub mod test;
@@ -149,6 +155,14 @@ pub use progress::{
 pub use retry_strategy::RetryStrategy;
 pub use scan::{
     CoverageStatus, EffectiveCoverage, EngineProvenance, FacetCoverage, ScanCoverage, ScanMetadata,
+};
+pub use scenario::{
+    CapturePairing, DimensionVerdict, ExitDisposition, ExitObservation, FileChange,
+    FileObservation, InteractionKind, InteractionObservation, LiteralReplacement,
+    MAX_FINALIZATION_GRACE_MS, MAX_SCENARIO_OUTPUT_BYTES, MAX_SCENARIO_WINDOW_MS,
+    NormalizationRules, ProcessObservation, ProcessSample, ScenarioCapture, ScenarioContract,
+    ScenarioContracts, ScenarioSignal, ScenarioVerdict, ScriptedInput, ScriptedInteraction,
+    scenario_contracts_dir, scenario_contracts_path,
 };
 pub use scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,

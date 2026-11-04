@@ -24,6 +24,7 @@ pub mod memory;
 pub mod minidump_command;
 pub mod run_options;
 pub mod scan_command;
+pub mod scenario_command;
 pub mod serialize;
 pub mod serve;
 pub mod stringctx;

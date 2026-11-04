@@ -41,4 +41,10 @@ pub enum TypesError {
     /// The generated branch name was invalid.
     #[error("invalid branch name: {0}")]
     InvalidBranchName(String),
+
+    /// A scenario declaration carried a field the contract cannot carry —
+    /// refused at declaration time, naming the offending field so the
+    /// operator knows exactly what to fix (issue #402).
+    #[error("scenario contract field `{field}` is invalid: {reason}")]
+    ScenarioFieldInvalid { field: String, reason: String },
 }

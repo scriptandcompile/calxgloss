@@ -62,6 +62,14 @@ _Avoid_: park — that is a target binary's classification act, owned by Evidenc
 **Override**:
 The operator's standing decision that outranks the system's own judgment — a classification override outranks PE facts and name tables.
 
+**Scenario contract**:
+The closed declaration of how one EXE target binary is to be run for one scenario: working dir, explicit env, argv, scripted interactions (timed input at an at-offset, resize, signal — sensitive inputs stored as byte-count placeholders), terminal geometry, filesystem observation paths, idle window and max run duration, output caps, versioned normalization rules, and a finalization grace. Interface owns its authorship; pipeline and testgen only read the filed document (`re/scenarios/<binary identity>.json`, one per binary).
+_Avoid_: scenario run — that is the execution; config
+
+**Scenario run**:
+One child execution of a target program under a scenario contract. Never the run-wide *Run*: a scenario run is launched, bounded, and finalized on its own, while the run keeps working elsewhere.
+_Avoid_: Run, session, process (bare)
+
 ### Verification
 
 **Verification**:
