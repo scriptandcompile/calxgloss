@@ -30,17 +30,18 @@ Test counts in the archive are indicative targets, not exact requirements.
 **Tracks P19–P33 are the feature ideas collected by the [REA
 comparison](research/rea/README.md) (`docs/research/rea/`, each chapter's
 "Steal ideas"). P19 (admitted semantics), P20 (seam capability report +
-engine-identity cache key), P21 (first-class unknown records), and P22
-(the API-call trace dimension in the gate) shipped and left this matrix
-per the rule above (ADR-0053–ADR-0057), so the verdict tracks P26 and
+engine-identity cache key), P21 (first-class unknown records), P22 (the
+API-call trace dimension in the gate), and P23 (real inputs mined by the
+record-and-replay fold) shipped and left this matrix per the rule above
+(ADR-0053–ADR-0058), so the verdict tracks P26 and
 P27 are unblocked on their record side.**
 **Table order is dependency order** — no track appears before another track
 that blocks it (each summary below names which tracks block it and which
 tracks it blocks). Among tracks that do not block each other, the order is
 by how far each one moves calxgloss toward **complete end-to-end
 restitching from binaries**: first, a verification gate wide enough to
-cover what restitching can actually get wrong (P23–P24, after P22's trace
-dimension shipped); then the durable
+cover what restitching can actually get wrong (P24, after P22's trace
+dimension and P23's mined inputs shipped); then the durable
 receipts and the fail-closed ledger that finally make "this binary is
 done" a checkable claim instead of "the pipeline stopped with nobody
 complaining" (P25–P26). P27–P33 resolve stuck functions, strengthen
@@ -49,7 +50,6 @@ it.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P23 | Real inputs for the baseline — argument vectors mined from hooked export entries, plus Windows minidump crash records replayed as concrete reproduction tests; this closes the blind spot of invented inputs | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-cli`) + shared (`calxgloss-types`) | — | ⬜ not started | not ticketed | [#390](https://github.com/scriptandcompile/calxgloss/issues/390) |
 | P24 | Scenario-capture baseline for EXE targets — a declared scenario contract (scripted interactions, filesystem observation, exit disposition) with a five-dimension compare, as the EXE-level verification signal FFI cannot reach | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | not ticketed | [#391](https://github.com/scriptandcompile/calxgloss/issues/391) |
 | P25 | Verification receipts — every verification pass persists a digest-paired md+json receipt on the attempt branch (commands, case counts, dimensions, timings); the receipt is durable and diffable between attempts | pipeline (`calxgloss-verify`, `calxgloss-git`) + interface (`calxgloss-reports`) | — | ⬜ not started | not ticketed | [#393](https://github.com/scriptandcompile/calxgloss/issues/393) |
 | P26 | Fail-closed restitch conformance — a per-unit obligation ledger (owner = attempt-branch digest, required case kinds, verifier receipt) and a whole-binary closure verdict sealed by a digest; skipped, parked, overridden, or un-reviewed units never add up to complete | pipeline (`calxgloss-git`, `calxgloss-translator`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | not ticketed | [#392](https://github.com/scriptandcompile/calxgloss/issues/392) |
@@ -94,25 +94,6 @@ P27's send-back decision.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
-## P23 — Real inputs for the baseline (pipeline + interface)
-
-**The gate only proves what its invented inputs happened to test.** testgen
-builds arguments from export signatures plus type evidence. Real caller
-argument vectors never enter. An export that is never called stays untested
-while the pipeline counts the function as translated. Two input sources
-close the blind spot. (1) Hook the original DLL's export entries during a
-baseline or reference-app run, record raw argument vectors as observable
-events, and replay them as extra baseline cases. (2) Consume Windows
-minidumps REA-style — per-thread registers, fault address, module maps used
-only as mapping candidates — turning real crashes into concrete
-reproduction inputs and regression tests. The minidump part uses the same
-record-and-replay machinery as the hook part, so it ships after the hook
-lane. Every new case carries the strongest possible authority:
-`controlled-replay` at `observed` confidence — exactly what P26's ledger
-will cite. Source:
-[34](research/rea/34-runtime-observation.md) steal 2, [32](research/rea/32-native-artifact-intelligence.md)
-steal 4. Blocks: P25, P26 (case coverage behind the verdict).
-
 ## P24 — Scenario-capture baseline for EXE targets (pipeline + interface)
 
 **`target_dir` holds EXEs, and the FFI gate cannot touch their behavior at
@@ -148,13 +129,15 @@ between attempts, so a reviewer sees exactly what changed between a failure
 and its fix. The digest-pairing is what makes the receipt citable
 authority: P26's obligation ledger records each unit's status together with
 its verifier's receipt digest, so a green claim without a matching receipt
-is an input error, not a pass. It is deliberately placed after P23–P24
-(the trace gate, P22, already shipped — ADR-0057): receipts fix the gate's
+is an input error, not a pass. It is deliberately placed after P24
+(the trace gate P22 and the mined inputs P23 already shipped — ADR-0057,
+ADR-0058): receipts fix the gate's
 verdicts in place, so they should record the gate's widest agreed shape
 (values + API trace + mined inputs + scenarios) from day one, rather than
 being made again later. Source:
 [33](research/rea/33-reconstruction-evidence-workflow.md) steal 5. Blocked by
-(shape): P23, P24 (P22 shipped, ADR-0057). Blocks: P26. Specced as
+(shape): P24 (P22 shipped, ADR-0057; P23 shipped, ADR-0058). Blocks: P26.
+Specced as
 [#393](https://github.com/scriptandcompile/calxgloss/issues/393), ready for
 ticketing.
 
@@ -177,9 +160,9 @@ complete end-to-end restitching, made checkable. Source:
 Blocked by: P19 (data side — shipped, ADR-0053; the `unknown` value the
 verdict reads is in place), P21 (shipped, ADR-0056; the open,
 severity-carrying, evidence-demanding record the verdict gates on exists),
-P25 (hard); P23, P24 (shape — the verdict
+P25 (hard); P24 (shape — the verdict
 should stand on the widest gate and on a lane for EXEs; P22 shipped,
-ADR-0057). Blocks: nothing —
+ADR-0057; P23 shipped, ADR-0058). Blocks: nothing —
 this is the capstone.
 
 ## P27 — Hypothesis ledger for the retry loop (pipeline + interface)
