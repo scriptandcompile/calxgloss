@@ -61,7 +61,7 @@ the lock-order pairing, over the same kept bodies:
 - The **mixed read/write gate** stops a pair from claiming unless the
   two bodies show both a store and a read of the global somewhere. Two
   functions that each only overwrite the same slot lose updates, but
-  no reader is caught mid-write; the classic read/write race is what
+  no reader is caught mid-write. The classic read/write race is what
   this detector reports. This gate also keeps the scan's every-shape
   contract body — two functions each writing
   `hThread = CreateThread(...)` — off the findings list, which is why

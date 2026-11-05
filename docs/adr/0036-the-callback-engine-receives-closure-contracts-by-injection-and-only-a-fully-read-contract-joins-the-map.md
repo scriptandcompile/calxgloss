@@ -49,7 +49,7 @@ Split the work along the dependency boundary the spec drew:
   `callback_signature_map(workspace, binary)`. It loads the
   type-inference document through the type-inference persistor and
   groups its records per function. The callback crate and the
-  type-inference crate never touch each other; the translator already
+  type-inference crate never touch each other. The translator already
   depends on both.
 - The composition is **honest about what the records prove**. A
   function joins the map only when its parameter records cover
@@ -65,7 +65,7 @@ Split the work along the dependency boundary the spec drew:
 - A **missing, corrupt, or partial document yields an empty map**, and
   the scan silently falls back to today's suggestions: a bad neighbor
   artifact never fails the callback scan. A missing document is logged
-  at `debug` (the standalone scan is first-class); an unreadable one
+  at `debug` (the standalone scan is first-class). An unreadable one
   at `warn`.
 - The enrichment happens at **scan time, not prompt time**: the
   evidence engine enriches the finding's `suggestion` string before
