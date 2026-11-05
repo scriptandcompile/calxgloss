@@ -34,10 +34,10 @@ When your output refers to a domain concept (in an issue title, a refactor propo
 
 If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 
-## Writing rules for new entries
+## Writing rules for entries
 
-Every touched entry follows these shapes — and when editing an entry anyway, 
-recut it to the new shape. `docs/standards.md` § *Writing that reads* governs 
+Every touched entry follows these shapes — and when editing an entry anyway,
+recut it to the new shape. `docs/standards.md` § *Writing that reads* governs
 the sentences throughout.
 
 - **Glossary entries**: a `**Term**:` definition line of at most 25 plain
