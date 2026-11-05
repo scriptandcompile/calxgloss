@@ -148,3 +148,60 @@ fn fixture_console_exe_exits_with_the_code_named_in_argv_at_eof() {
         "stdin lines before EOF are consumed: {stdout}"
     );
 }
+
+#[test]
+#[ignore = "needs Wine and the mingw cross-toolchain"]
+fn fixture_console_exe_prints_what_argv_says_injected_into_the_output() {
+    // The terminal dimension's argv declaration route (P24.7, issue
+    // #408): `--say TEXT` prints TEXT to stdout at start, so a rigged
+    // comparison forces a named output difference through argv alone —
+    // the same route the exit code has.
+    let dir = wine_run_dir("argv-say");
+    let (code, stdout) = run_under_wine(
+        dir.path(),
+        &["--say", "argv-injected-output-line"],
+        b"echo after say\nexit 0\n",
+    );
+    assert_eq!(code, 0, "the run carries on after the injected line");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "calxgloss fixture console ready",
+            "calxgloss-fixture-console-v1",
+            "argv-injected-output-line",
+            "after say",
+        ],
+        "the injected line prints after the identity lines, before stdin acks"
+    );
+}
+
+#[test]
+#[ignore = "needs Wine and the mingw cross-toolchain"]
+fn fixture_console_exe_refuses_a_say_without_its_text_loudly() {
+    // Like a malformed `--exit-code`, a `--say` stripped of its text is
+    // refused loudly on stderr with exit 2: a rig that silently prints
+    // nothing is the silence this fixture never allows.
+    let dir = wine_run_dir("argv-say-missing");
+    let wine = std::env::var("CALXGLOSS_WINE").unwrap_or_else(|_| "wine".into());
+    let target = calxgloss_testfixtures::console_target_path()
+        .expect("build script should have compiled the fixture console exe");
+    let out = std::process::Command::new(wine)
+        .arg(target)
+        .args(["--say"])
+        .current_dir(dir.path())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("wine should launch the fixture");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the flag missing its text ends the run with exit 2"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.contains("--say needs text"),
+        "the refusal names the flag it missed: {stderr}"
+    );
+}

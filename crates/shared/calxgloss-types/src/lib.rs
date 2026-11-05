@@ -164,7 +164,8 @@ pub use scenario::{
     ProcessSample, ScenarioCapture, ScenarioContract, ScenarioContracts, ScenarioSignal,
     ScenarioVerdict, ScenarioVerdictDocument, ScriptedInput, ScriptedInteraction, TerminalGeometry,
     TerminalObservation, scenario_capture_path, scenario_captures_dir, scenario_contracts_dir,
-    scenario_contracts_path, scenario_verdict_path, scenario_verdicts_dir,
+    scenario_contracts_path, scenario_replay_capture_path, scenario_verdict_path,
+    scenario_verdicts_dir,
 };
 pub use scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,

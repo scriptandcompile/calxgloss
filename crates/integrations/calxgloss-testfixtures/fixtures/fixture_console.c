@@ -47,6 +47,12 @@
  * as 0. stdout is unbuffered so every acknowledgment lands in observation
  * order while the run lives.
  *
+ * `--say TEXT` on argv prints TEXT to stdout once, in argv order, right
+ * after the identity lines: the terminal dimension's argv declaration
+ * route, so a rigged comparison can inject a named output difference
+ * through argv alone (P24.7, issue #408). A `--say` stripped of its text
+ * is refused like a malformed `--exit-code`: loudly on stderr, exit 2.
+ *
  * The identity literals are the contract the fixture crate's console
  * smoke test enforces, the console analogue of the DLL fixture's string
  * literals: a reviewer names this fixture by them, never by a build path.
@@ -147,9 +153,26 @@ int main(int argc, char **argv)
 {
     /* Exit code for the EOF route: declared on argv, default 0. A
      * malformed declaration is refused loudly — a rigged comparison
-     * must never silently fall back to the default exit code. */
+     * must never silently fall back to the default exit code. `--say
+     * TEXT` declares an injected output line, printed right after the
+     * identity lines in argv order; its own misdeclaration is refused
+     * the same loud way. */
     int exit_code = 0;
+    static const char *says[16];
+    int say_count = 0;
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--say") == 0) {
+            if (i + 1 >= argc) {
+                fputs("fixture console: --say needs text\n", stderr);
+                return 2;
+            }
+            if (say_count >= (int)(sizeof says / sizeof says[0])) {
+                fputs("fixture console: too many --say flags\n", stderr);
+                return 2;
+            }
+            says[say_count++] = argv[++i];
+            continue;
+        }
         if (strcmp(argv[i], "--exit-code") != 0)
             continue;
         if (i + 1 >= argc) {
@@ -180,6 +203,8 @@ int main(int argc, char **argv)
 
     puts(kReady);
     puts(kTag);
+    for (int i = 0; i < say_count; i++)
+        puts(says[i]);
 
     char line[1024];
     while (fgets(line, sizeof line, stdin)) {

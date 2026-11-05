@@ -1446,6 +1446,37 @@ pub(super) enum ScenarioAction {
         #[arg(long = "secret", value_name = "MS:TEXT")]
         secrets: Vec<String>,
     },
+    /// Replay a declared scenario against any program the operator
+    /// names (P24.7, issue #408)
+    ///
+    /// The replay side is program-agnostic: the same contract, the same
+    /// capture machinery, the same comparison — the path the operator
+    /// names is all it takes, and no whole-EXE build machinery is asked
+    /// for anything. The replay's *scenario capture* files beside the
+    /// original's at
+    /// `re/scenarios/captures/{binary}-{scenario}-replay.json`, one
+    /// current replay per scenario name, a re-replay replacing the
+    /// previous document outright. A missing Wine fails the replay by
+    /// name exactly like the capture's standing preflight.
+    Replay {
+        /// Target binary identity, e.g. `eqgame.exe`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Scenario name whose declared contract runs
+        #[arg(long, required = true)]
+        scenario: String,
+
+        /// Path of the program to replay against — a restitched build
+        /// checked out on an attempt branch, or any other program
+        #[arg(long, required = true, value_name = "PATH")]
+        program: PathBuf,
+
+        /// `MS:TEXT` secret typed for one byte-count placeholder at that
+        /// offset for this run — same rule as the capture's (P24.5)
+        #[arg(long = "secret", value_name = "MS:TEXT")]
+        secrets: Vec<String>,
+    },
     /// Compare two scenario captures under the declared contract and file
     /// the digest-bearing scenario verdict (P24.6, issue #407)
     ///
@@ -1455,6 +1486,13 @@ pub(super) enum ScenarioAction {
     /// files (replacing any previous verdict for the pair) at
     /// `re/scenarios/verdicts/{binary}-{scenario}.json`; `--json` prints
     /// the machine-readable verdict document on stdout.
+    ///
+    /// Name neither `--left` nor `--right` and the compare pairs the two
+    /// filed captures beside each other in the record tree: the
+    /// original's capture on the left, the replay's on the right — the
+    /// operator chain is declare → capture → replay → compare (P24.7,
+    /// issue #408). A filed side that is not there is refused toward the
+    /// step that files it.
     Compare {
         /// Target binary identity, e.g. `eqgame.exe`
         #[arg(long, required = true)]
@@ -1464,13 +1502,15 @@ pub(super) enum ScenarioAction {
         #[arg(long, required = true)]
         scenario: String,
 
-        /// Path of the left scenario capture document
-        #[arg(long, required = true, value_name = "PATH")]
-        left: PathBuf,
+        /// Path of the left scenario capture document (default: the
+        /// filed original capture)
+        #[arg(long, value_name = "PATH")]
+        left: Option<PathBuf>,
 
-        /// Path of the right scenario capture document
-        #[arg(long, required = true, value_name = "PATH")]
-        right: PathBuf,
+        /// Path of the right scenario capture document (default: the
+        /// filed replay capture)
+        #[arg(long, value_name = "PATH")]
+        right: Option<PathBuf>,
 
         /// Print the machine-readable verdict document, exactly as filed
         #[arg(long)]

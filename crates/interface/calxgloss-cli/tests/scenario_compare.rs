@@ -328,3 +328,153 @@ fn a_capture_document_that_is_not_there_is_refused_naming_its_path() {
         "a refused compare files nothing"
     );
 }
+
+// ============================================================
+// The chain's compare (P24.7, issue #408): name neither side and
+// the command pairs the filed captures beside each other; the
+// pairing stamps read out loud, identical or differing
+// ============================================================
+
+/// File one hand-built capture at the record tree location a filed
+/// capture of this (binary, scenario) would hold — original for the
+/// capture step's document, replay for the replay step's.
+fn stage_filed_capture(ws: &Path, document: &serde_json::Value, replay: bool) -> PathBuf {
+    let dir = ws.join("re").join("scenarios").join("captures");
+    std::fs::create_dir_all(&dir).expect("the captures dir stands");
+    let suffix = if replay { "-replay" } else { "" };
+    let path = dir.join(format!("{BINARY}-{SCENARIO}{suffix}.json"));
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(document).expect("the capture serializes"),
+    )
+    .expect("the filed capture stages");
+    path
+}
+
+fn chain_compare(ws: &Path) -> (bool, String, String) {
+    let mut cmd = cli(ws);
+    cmd.args(["scenario", "compare"])
+        .args(["--binary", BINARY, "--scenario", SCENARIO]);
+    run(&mut cmd, ws)
+}
+
+#[test]
+fn naming_only_one_of_left_and_right_is_refused_naming_both_flags() {
+    // A half-named pair invites a silent default for the other side —
+    // the refusal names both flags and files nothing.
+    let ws = workspace();
+    declare(ws.path());
+    let left = stage_capture(ws.path(), "left.json", &capture_json("hello-scene"));
+    let mut cmd = cli(ws.path());
+    cmd.args(["scenario", "compare"])
+        .args(["--binary", BINARY, "--scenario", SCENARIO])
+        .args(["--left", &left.display().to_string()]);
+    let (ok, stdout, stderr) = run(&mut cmd, ws.path());
+    assert!(!ok, "one flag named, the other not, cannot compare");
+    let message = format!("{stdout}{stderr}");
+    assert!(
+        message.contains("--left") && message.contains("--right"),
+        "the refusal names both flags it wants named together: {message}"
+    );
+    assert!(
+        !filed_verdict(ws.path()).exists(),
+        "a refused compare files nothing"
+    );
+}
+
+#[test]
+fn the_chain_compare_toward_a_missing_original_points_at_the_capture_step() {
+    let ws = workspace();
+    declare(ws.path());
+    // Only the replay's capture stands: the chain is missing its original.
+    stage_filed_capture(ws.path(), &capture_json("hello-scene"), true);
+    let (ok, stdout, stderr) = chain_compare(ws.path());
+    assert!(!ok, "a chain compare with no original capture cannot run");
+    let message = format!("{stdout}{stderr}");
+    assert!(
+        message.contains("capture the scenario"),
+        "the refusal reaches toward the capture step that files the missing side: {message}"
+    );
+    assert!(
+        !filed_verdict(ws.path()).exists(),
+        "a refused compare files nothing"
+    );
+}
+
+#[test]
+fn the_chain_compare_toward_a_missing_replay_points_at_the_replay_step() {
+    let ws = workspace();
+    declare(ws.path());
+    stage_filed_capture(ws.path(), &capture_json("hello-scene"), false);
+    let (ok, stdout, stderr) = chain_compare(ws.path());
+    assert!(!ok, "a chain compare with no replay capture cannot run");
+    let message = format!("{stdout}{stderr}");
+    assert!(
+        message.contains("scenario replay"),
+        "the refusal reaches toward the replay step that files the missing side: {message}"
+    );
+    assert!(
+        !filed_verdict(ws.path()).exists(),
+        "a refused compare files nothing"
+    );
+}
+
+#[test]
+fn the_chain_compare_pairs_the_filed_captures_and_reads_the_pairing_out_loud() {
+    // Neither side named: the filed original on the left, the filed
+    // replay on the right — the operator chain declare → capture →
+    // replay → compare. Identical program bytes pair, and the report
+    // says so beside the verdict's filing.
+    let ws = workspace();
+    declare(ws.path());
+    stage_filed_capture(ws.path(), &capture_json("hello-scene"), false);
+    stage_filed_capture(ws.path(), &capture_json("hello-scene"), true);
+    let (ok, stdout, stderr) = chain_compare(ws.path());
+    assert!(ok, "the filed pair compares: {stdout}{stderr}");
+    assert!(
+        stdout.contains("identical program bytes"),
+        "the pairing rule is read out loud: {stdout}"
+    );
+
+    let document: ScenarioVerdictDocument = serde_json::from_str(
+        &std::fs::read_to_string(filed_verdict(ws.path())).expect("the verdict filed"),
+    )
+    .expect("the filed document parses");
+    let left_pair = document.left_pairing.expect("the left pairing stands read");
+    let right_pair = document
+        .right_pairing
+        .expect("the right pairing stands read");
+    assert_eq!(
+        left_pair.program_sha256, right_pair.program_sha256,
+        "identical program bytes pair, stamped beside the verdict"
+    );
+}
+
+#[test]
+fn differing_program_bytes_do_not_gate_the_compare_but_are_stated_what_against_what() {
+    // The pairing rule at the verdict: program bytes never gate the
+    // weighing — a replay against restitched bytes is exactly the point
+    // — but what paired against what is never left silent. The report
+    // names both stamps.
+    let ws = workspace();
+    declare(ws.path());
+    let mut right = capture_json("hello-scene");
+    right["pairing"]["program_sha256"] = serde_json::json!("sha256:restitched-bytes");
+    stage_filed_capture(ws.path(), &capture_json("hello-scene"), false);
+    stage_filed_capture(ws.path(), &right, true);
+    let (ok, stdout, stderr) = chain_compare(ws.path());
+    assert!(
+        ok,
+        "differing program bytes are compared, not refused: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("differing program bytes")
+            && stdout.contains("sha256:bytes-under-test")
+            && stdout.contains("sha256:restitched-bytes"),
+        "the verdict states which bytes paired against which: {stdout}"
+    );
+    assert!(
+        !stdout.contains("identical program bytes"),
+        "no claim of identity when the stamps differ: {stdout}"
+    );
+}

@@ -540,6 +540,37 @@ fn captures_land_at_their_named_record_tree_location() {
 }
 
 #[test]
+fn a_replay_capture_files_beside_the_originals_capture() {
+    // The replay capture stands beside the original's, one document per
+    // (binary, scenario name): the only difference from the original
+    // capture's name is the `-replay` suffix, so the pair of filed
+    // documents reads side by side in the captures directory — and a
+    // re-replay replaces the previous replay outright.
+    let binary = BinaryIdentity::new("eqgame.exe");
+    let original = scenario_capture_path("/ws", &binary, "boot-and-exit");
+    let replay = scenario_replay_capture_path("/ws", &binary, "boot-and-exit");
+    assert_eq!(
+        replay,
+        Path::new("/ws")
+            .join("re")
+            .join("scenarios")
+            .join("captures")
+            .join("eqgame.exe-boot-and-exit-replay.json"),
+        "the replay capture lands in the captures directory beside the original"
+    );
+    assert_eq!(
+        replay.parent(),
+        original.parent(),
+        "the pair stands in one directory"
+    );
+    assert_eq!(
+        replay.file_name().and_then(|name| name.to_str()),
+        Some("eqgame.exe-boot-and-exit-replay.json"),
+        "one name apart from the original capture's"
+    );
+}
+
+#[test]
 fn a_scenario_name_folds_to_one_file_key() {
     // A filed capture can never escape the captures directory through a
     // scenario name: every character outside [A-Za-z0-9._-] folds to `-`,

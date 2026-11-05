@@ -84,7 +84,7 @@ use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use commands::scan_command::handle_scan_command;
 use commands::scenario_command::{
     ScenarioDeclareOptions, handle_scenario_capture, handle_scenario_compare,
-    handle_scenario_declare,
+    handle_scenario_declare, handle_scenario_replay,
 };
 use commands::serve::handle_serve;
 use commands::translate::handle_translate;
@@ -413,6 +413,31 @@ fn main() -> Result<()> {
                     .unwrap_or_else(|| workspace.clone());
                 handle_scenario_capture(&binary, &scenario, &workspace, &validation_root, &secrets)
             }
+            ScenarioAction::Replay {
+                binary,
+                scenario,
+                program,
+                secrets,
+            } => {
+                // The replay runs a path the operator names — a restitched
+                // build checked out on an attempt branch, or any other
+                // program. No whole-EXE build machinery is asked for
+                // anything: the path is the only thing named.
+                let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+                let validation_root = settings
+                    .target_dir
+                    .as_ref()
+                    .map(|resolved| PathBuf::from(&resolved.value))
+                    .unwrap_or_else(|| workspace.clone());
+                handle_scenario_replay(
+                    &binary,
+                    &scenario,
+                    &program,
+                    &workspace,
+                    &validation_root,
+                    &secrets,
+                )
+            }
             ScenarioAction::Compare {
                 binary,
                 scenario,
@@ -422,9 +447,17 @@ fn main() -> Result<()> {
             } => {
                 // Pure record logic: two capture documents plus the filed
                 // contract in, one verdict document out — no run, no Wine,
-                // no runtime.
+                // no runtime. Name neither side and the compare pairs the
+                // filed original and replay captures (P24.7, issue #408).
                 let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
-                handle_scenario_compare(&binary, &scenario, &left, &right, &workspace, json)
+                handle_scenario_compare(
+                    &binary,
+                    &scenario,
+                    left.as_deref(),
+                    right.as_deref(),
+                    &workspace,
+                    json,
+                )
             }
         },
 

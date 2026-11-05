@@ -769,6 +769,21 @@ pub fn scenario_capture_path(
     scenario_captures_dir(workspace).join(format!("{binary}-{key}.json"))
 }
 
+/// The record tree location of one filed *replay capture* (P24.7, issue
+/// #408): `re/scenarios/captures/<binary identity>-<scenario key>-replay.json`
+/// — standing beside the original capture of the same scenario name, one
+/// name apart, so the pair a compare judges reads side by side. Exactly
+/// one current replay stands per (binary, scenario name): a re-replay
+/// replaces the previous replay document outright.
+pub fn scenario_replay_capture_path(
+    workspace: impl AsRef<Path>,
+    binary: &BinaryIdentity,
+    scenario: &str,
+) -> PathBuf {
+    let key = scenario_file_key(scenario);
+    scenario_captures_dir(workspace).join(format!("{binary}-{key}-replay.json"))
+}
+
 /// The record tree's scenario-verdict directory: `re/scenarios/verdicts`.
 /// The comparator slice files scenario verdicts here, one document per
 /// (binary, scenario name); P25's receipts and P26's ledger only read them.

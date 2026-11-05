@@ -20,7 +20,7 @@
 //! before anything launches, and the filed capture still never carries it.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use calxgloss_testgen::{TypedSecret, WineRunner, capture_scenario_with_secrets, compare_captures};
@@ -29,7 +29,8 @@ use calxgloss_types::{
     FileObservation, FinalizationOutcome, InteractionKind, LiteralReplacement, NormalizationRules,
     PersistError, ProcessSample, ScenarioCapture, ScenarioContract, ScenarioContracts,
     ScenarioSignal, ScriptedInput, ScriptedInteraction, TerminalGeometry, load_json, save_json,
-    scenario_capture_path, scenario_contracts_path, scenario_verdict_path,
+    scenario_capture_path, scenario_contracts_path, scenario_replay_capture_path,
+    scenario_verdict_path,
 };
 
 /// The gathered flags of one `scenario declare`, mirroring the variant's
@@ -286,36 +287,7 @@ pub fn handle_scenario_capture(
 ) -> Result<()> {
     reject_path_shaped_identity(binary)?;
     let binary = BinaryIdentity::new(binary);
-
-    // A capture runs a declaration, it never invents one: the filed
-    // contract document must stand and speak for this binary.
-    let contracts_path = scenario_contracts_path(workspace, &binary);
-    let documents = match load_json::<ScenarioContracts>(&contracts_path) {
-        Ok(documents) => documents,
-        Err(PersistError::NotFound { .. }) => {
-            bail!(
-                "no contract document for {binary} at {} — declare the scenario before capturing it",
-                contracts_path.display()
-            );
-        }
-        Err(error) => {
-            return Err(anyhow::Error::new(error).context(format!(
-                "reading the contract document at {}",
-                contracts_path.display()
-            )));
-        }
-    };
-    if documents.binary != binary {
-        bail!(
-            "the contract document filed at {} speaks for {}, not {binary} — refusing to capture across binaries",
-            contracts_path.display(),
-            documents.binary
-        );
-    }
-    let contract = documents.scenarios.get(scenario).cloned().ok_or_else(|| {
-        let declared: Vec<&str> = documents.scenarios.keys().map(String::as_str).collect();
-        anyhow!("scenario '{scenario}' is not declared for {binary} — declared here: {declared:?}")
-    })?;
+    let contract = load_declared_scenario(&binary, scenario, workspace, "capturing it", "capture")?;
     contract.validate(validation_root)?;
 
     // The original target binary: the identity names a file under the
@@ -327,32 +299,8 @@ pub fn handle_scenario_capture(
             program.display()
         );
     }
-    let working = Path::new(&contract.working_dir);
-    let run_dir = if working.is_absolute() {
-        working.to_path_buf()
-    } else {
-        validation_root.join(working)
-    };
-
-    let wine = WineRunner::new(workspace);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock stands after 1970")
-        .as_secs();
-    // A capture-time secret is the typed form of a declared placeholder:
-    // parsed by flag name, then handed to the run seam, which validates
-    // each against its placeholder's offset and count before anything
-    // launches — a secret the contract never declared is never typed.
-    let mut typed_secrets = Vec::new();
-    for value in secrets {
-        let (at_ms, text) = at_offset("--secret", value)?;
-        typed_secrets.push(TypedSecret {
-            at_ms,
-            text: text.to_string(),
-        });
-    }
-    let capture =
-        capture_scenario_with_secrets(&program, &run_dir, &contract, &wine, &typed_secrets, now)?;
+    let run_dir = run_dir_for(&contract, validation_root);
+    let capture = run_declared_scenario(&contract, &program, &run_dir, workspace, secrets)?;
 
     let path = scenario_capture_path(workspace, &binary, scenario);
     if let Ok(standing) = load_json::<ScenarioCapture>(&path) {
@@ -365,6 +313,21 @@ pub fn handle_scenario_capture(
         "scenario '{scenario}' captured against {binary}: {}",
         disposition_summary(&capture)
     );
+    print_filed_capture_line(&path, &capture, &contract);
+    if let Some(pairing) = &capture.pairing {
+        println!(
+            "  pairing: program sha256 {}, {}",
+            pairing.program_sha256, pairing.wine_version
+        );
+    }
+    Ok(())
+}
+
+/// The one filing line both capture and replay print: bytes recorded —
+/// a fired cap stated in the same words by both arms, since a bounded
+/// capture never claims more than it saw whichever program ran it — plus
+/// the acknowledgement and classification counts.
+fn print_filed_capture_line(path: &Path, capture: &ScenarioCapture, contract: &ScenarioContract) {
     println!(
         "  filed at {} — {} output byte(s) recorded{}, {} interaction(s) acknowledged, {} observation path(s) classified",
         path.display(),
@@ -395,11 +358,176 @@ pub fn handle_scenario_capture(
             .map(|f| f.entries.len())
             .unwrap_or(0),
     );
-    if let Some(pairing) = &capture.pairing {
-        println!(
-            "  pairing: program sha256 {}, {}",
-            pairing.program_sha256, pairing.wine_version
+}
+
+/// Load the filed contract document and take one scenario's contract out
+/// of it — the gate every capture, replay, and compare faces: the run
+/// executes a declaration, it never invents one. `for_word` completes
+/// "declare the scenario before {word}" and `verb` completes "refusing
+/// to {verb} across binaries", so each arm's refusal speaks its own act
+/// while pointing at the same missing document.
+fn load_declared_scenario(
+    binary: &BinaryIdentity,
+    scenario: &str,
+    workspace: &Path,
+    for_word: &str,
+    verb: &str,
+) -> Result<ScenarioContract> {
+    let contracts_path = scenario_contracts_path(workspace, binary);
+    let documents = match load_json::<ScenarioContracts>(&contracts_path) {
+        Ok(documents) => documents,
+        Err(PersistError::NotFound { .. }) => {
+            bail!(
+                "no contract document for {binary} at {} — declare the scenario before {for_word}",
+                contracts_path.display()
+            );
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(format!(
+                "reading the contract document at {}",
+                contracts_path.display()
+            )));
+        }
+    };
+    if documents.binary != *binary {
+        bail!(
+            "the contract document filed at {} speaks for {}, not {binary} — refusing to {verb} across binaries",
+            contracts_path.display(),
+            documents.binary
         );
+    }
+    let contract = documents.scenarios.get(scenario).cloned().ok_or_else(|| {
+        let declared: Vec<&str> = documents.scenarios.keys().map(String::as_str).collect();
+        anyhow!("scenario '{scenario}' is not declared for {binary} — declared here: {declared:?}")
+    })?;
+    Ok(contract)
+}
+
+/// Where the scenario run stands: the contract's working dir, resolved
+/// against the validation root when it is relative — the same run dir
+/// for capture and replay, so both runs face the state the contract
+/// speaks for.
+fn run_dir_for(contract: &ScenarioContract, validation_root: &Path) -> PathBuf {
+    let working = Path::new(&contract.working_dir);
+    if working.is_absolute() {
+        working.to_path_buf()
+    } else {
+        validation_root.join(working)
+    }
+}
+
+/// Run one declared scenario contract against a program under the
+/// standing Wine toolchain rules and hand back the capture: the machinery
+/// is shared by capture and replay whole — a missing Wine fails by name
+/// before a run dir is touched, and a capture-time secret is the typed
+/// form of a declared placeholder, validated by the run seam against its
+/// offset and count before anything launches. Nothing here says which
+/// program stands where: the caller names the path.
+fn run_declared_scenario(
+    contract: &ScenarioContract,
+    program: &Path,
+    run_dir: &Path,
+    workspace: &Path,
+    secrets: &[String],
+) -> Result<ScenarioCapture> {
+    let wine = WineRunner::new(workspace);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock stands after 1970")
+        .as_secs();
+    let mut typed_secrets = Vec::new();
+    for value in secrets {
+        let (at_ms, text) = at_offset("--secret", value)?;
+        typed_secrets.push(TypedSecret {
+            at_ms,
+            text: text.to_string(),
+        });
+    }
+    capture_scenario_with_secrets(program, run_dir, contract, &wine, &typed_secrets, now)
+}
+
+/// The `scenario replay` arm (P24.7, issue #408): run the declared
+/// scenario contract against **any program the operator names** — a
+/// restitched build checked out on an attempt branch, today — and file
+/// the replay's *scenario capture* beside the original's at
+/// `re/scenarios/captures/{binary}-{scenario}-replay.json`, replacing
+/// any previous replay for the name outright. The replay side is
+/// program-agnostic: the same contract, the same capture machinery, the
+/// same comparison; a path is the only thing the operator names, and no
+/// whole-EXE build machinery is asked for anything. The pairing stamps
+/// read beside both captures: identical program bytes pair, differing
+/// bytes are stated — what paired against what, never silently.
+pub fn handle_scenario_replay(
+    binary: &str,
+    scenario: &str,
+    program: &Path,
+    workspace: &Path,
+    validation_root: &Path,
+    secrets: &[String],
+) -> Result<()> {
+    reject_path_shaped_identity(binary)?;
+    let binary = BinaryIdentity::new(binary);
+    let contract = load_declared_scenario(&binary, scenario, workspace, "replaying it", "replay")?;
+    contract.validate(validation_root)?;
+
+    // The program the operator names, taken exactly as named: the
+    // replay's only dependency is that the path leads to a file.
+    if !program.is_file() {
+        bail!(
+            "the named replay program is not at {} — `scenario replay` takes the path of the program to run",
+            program.display()
+        );
+    }
+    let run_dir = run_dir_for(&contract, validation_root);
+    let capture = run_declared_scenario(&contract, program, &run_dir, workspace, secrets)?;
+
+    let path = scenario_replay_capture_path(workspace, &binary, scenario);
+    if let Ok(standing) = load_json::<ScenarioCapture>(&path) {
+        state_pairing_mismatch(&standing, &capture, &path);
+    }
+    save_json(&path, &capture)
+        .with_context(|| format!("filing the replay capture at {}", path.display()))?;
+
+    println!(
+        "scenario '{scenario}' replayed against {} for {binary}: {}",
+        program.display(),
+        disposition_summary(&capture)
+    );
+    print_filed_capture_line(&path, &capture, &contract);
+
+    // The pairing stamps read beside both captures of the pair: the
+    // replay says out loud which bytes it ran and how they stand against
+    // the original capture's, identical or not — a reader never has to
+    // open either document to know what paired against what.
+    let original = scenario_capture_path(workspace, &binary, scenario);
+    match (
+        capture.pairing.as_ref(),
+        load_json::<ScenarioCapture>(&original).ok(),
+    ) {
+        (Some(fresh), Some(standing)) => match standing.pairing.as_ref() {
+            Some(standing_pair) if standing_pair.program_sha256 == fresh.program_sha256 => {
+                println!(
+                    "  pairing: identical program bytes {} — this replay pairs against the original capture at {}",
+                    fresh.program_sha256,
+                    original.display()
+                );
+            }
+            Some(standing_pair) => println!(
+                "  pairing: differing program bytes — this replay ran {}, the original capture ran {}; what paired against what is stated, never assumed",
+                fresh.program_sha256, standing_pair.program_sha256
+            ),
+            None => println!(
+                "  pairing: this replay stamped program bytes {}; the original capture at {} carries no stamp to pair against",
+                fresh.program_sha256,
+                original.display()
+            ),
+        },
+        (Some(fresh), None) => println!(
+            "  pairing: this replay ran program bytes {}; no original capture stands at {} — capture the scenario before comparing this replay",
+            fresh.program_sha256,
+            original.display()
+        ),
+        (None, _) => {}
     }
     Ok(())
 }
@@ -414,11 +542,18 @@ pub fn handle_scenario_capture(
 /// the filing, and the prose; the weighing belongs to testgen's
 /// compare seam, which refuses cross-scenario pairs and cross-
 /// normalization-version pairs by name, filing nothing.
+///
+/// Name neither `--left` nor `--right` and the compare pairs the two
+/// filed captures beside each other (P24.7, issue #408): the original's
+/// capture on the left, the replay's on the right — the operator chain
+/// declare → capture → replay → compare. A filed side that is not there
+/// is refused toward the step that files it, and naming only one side
+/// is refused by both flags: a half-named pair invites a silent default.
 pub fn handle_scenario_compare(
     binary: &str,
     scenario: &str,
-    left: &Path,
-    right: &Path,
+    left: Option<&Path>,
+    right: Option<&Path>,
     workspace: &Path,
     as_json: bool,
 ) -> Result<()> {
@@ -427,52 +562,69 @@ pub fn handle_scenario_compare(
 
     // A compare judges a declared scenario: the contract document must
     // stand and speak for this binary — the same gate a capture faces.
-    let contracts_path = scenario_contracts_path(workspace, &binary);
-    let documents = match load_json::<ScenarioContracts>(&contracts_path) {
-        Ok(documents) => documents,
-        Err(PersistError::NotFound { .. }) => {
-            bail!(
-                "no contract document for {binary} at {} — declare the scenario before comparing its captures",
-                contracts_path.display()
-            );
-        }
-        Err(error) => {
-            return Err(anyhow::Error::new(error).context(format!(
-                "reading the contract document at {}",
-                contracts_path.display()
-            )));
-        }
-    };
-    if documents.binary != binary {
+    let contract = load_declared_scenario(
+        &binary,
+        scenario,
+        workspace,
+        "comparing its captures",
+        "compare",
+    )?;
+
+    let chain = left.is_none() && right.is_none();
+    if left.is_some() != right.is_some() {
         bail!(
-            "the contract document filed at {} speaks for {}, not {binary} — refusing to compare across binaries",
-            contracts_path.display(),
-            documents.binary
+            "scenario compare pairs one original and one replay capture: name both --left \
+             and --right, or neither to compare the filed pair beside each other"
         );
     }
-    let contract = documents.scenarios.get(scenario).cloned().ok_or_else(|| {
-        let declared: Vec<&str> = documents.scenarios.keys().map(String::as_str).collect();
-        anyhow!("scenario '{scenario}' is not declared for {binary} — declared here: {declared:?}")
-    })?;
+    let (left_path, right_path) = if chain {
+        (
+            scenario_capture_path(workspace, &binary, scenario),
+            scenario_replay_capture_path(workspace, &binary, scenario),
+        )
+    } else {
+        (
+            left.expect("both sides named together").to_path_buf(),
+            right.expect("both sides named together").to_path_buf(),
+        )
+    };
 
     // Both captures must stand and parse; a refusal names the path it
     // could not read, so a typo never masquerades as a missing block.
+    // In chain mode the refusal reaches further: it points each missing
+    // side at the operator step that files it.
     let read_capture = |path: &Path, side: &str| -> Result<ScenarioCapture> {
         match load_json::<ScenarioCapture>(path) {
             Ok(capture) => Ok(capture),
-            Err(PersistError::NotFound { .. }) => bail!(
-                "no {side} scenario capture document at {} — compare reads capture \
-                 documents; point --{side} at a filed capture or any hand-built one",
-                path.display()
-            ),
+            Err(PersistError::NotFound { .. }) => {
+                if chain {
+                    if side == "left" {
+                        bail!(
+                            "no original scenario capture at {} — capture the scenario \
+                             before comparing its replay",
+                            path.display()
+                        );
+                    }
+                    bail!(
+                        "no replay capture at {} — run `scenario replay` against the named \
+                         program before comparing the pair",
+                        path.display()
+                    );
+                }
+                bail!(
+                    "no {side} scenario capture document at {} — compare reads capture \
+                     documents; point --{side} at a filed capture or any hand-built one",
+                    path.display()
+                )
+            }
             Err(error) => Err(anyhow::Error::new(error).context(format!(
                 "reading the {side} capture document at {}",
                 path.display()
             ))),
         }
     };
-    let left_capture = read_capture(left, "left")?;
-    let right_capture = read_capture(right, "right")?;
+    let left_capture = read_capture(&left_path, "left")?;
+    let right_capture = read_capture(&right_path, "right")?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -501,6 +653,37 @@ pub fn handle_scenario_compare(
         verdict_word(&verdict.filesystem),
         verdict_word(&verdict.process),
     );
+    // The pairing rule, read out loud beside both captures: program
+    // bytes never gate the comparison, but what paired against what is
+    // never left silent either (P24.7, issue #408).
+    match (&document.left_pairing, &document.right_pairing) {
+        (Some(left_pair), Some(right_pair)) => {
+            if left_pair.program_sha256 == right_pair.program_sha256 {
+                println!(
+                    "  pairing: identical program bytes {} — the pair stands as one program against itself",
+                    left_pair.program_sha256
+                );
+            } else {
+                println!(
+                    "  pairing: differing program bytes — the left capture ran {}, the right capture ran {}; the pair is stated, never assumed",
+                    left_pair.program_sha256, right_pair.program_sha256
+                );
+            }
+        }
+        (Some(left_pair), None) => println!(
+            "  pairing: the left capture stamped program bytes {}; the right capture carries no stamp to pair against",
+            left_pair.program_sha256
+        ),
+        (None, Some(right_pair)) => println!(
+            "  pairing: the right capture stamped program bytes {}; the left capture carries no stamp to pair against",
+            right_pair.program_sha256
+        ),
+        (None, None) => {
+            println!(
+                "  pairing: neither capture carries a pairing stamp; the pair was read without one"
+            );
+        }
+    }
     for divergence in &document.divergences {
         println!("  DIVERGENCE: {}", describe_divergence(divergence));
     }
