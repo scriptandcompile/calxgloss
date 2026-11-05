@@ -16,14 +16,14 @@
 //! The pass only reads and writes text and structure in documents. It
 //! makes no analysis-engine reads (ADR-0026 stays untouched), mutates
 //! no program (ADR-0020), and uses no LLM. Resolution keeps the
-//! strongest claim (ADR-0022); on a tie it keeps the claim first seen
+//! strongest claim (ADR-0022). On a tie it keeps the claim first seen
 //! in scan order (ADR-0028's precedent). A lone signal — address
 //! equality on its own — claims nothing (ADR-0038).
 //!
 //! # Architecture
 //!
 //! * [`types`] — the document model: [`ScanSnapshot`] and
-//!   [`FunctionEntry`], one scan's in-memory listing; [`PairingDocument`],
+//!   [`FunctionEntry`], one scan's in-memory listing. [`PairingDocument`],
 //!   [`PairingRecord`], and [`MatchFamily`], the one persisted pairing.
 //!   It also holds the named constants: the name-identity,
 //!   byte-equal-body, and call-topology confidence bands, the topology
@@ -31,12 +31,12 @@
 //! * [`engine`] — [`pair_versions`], the pairing pass: a pure function
 //!   over two snapshots, documents in and pairing document out. The
 //!   confidence ladder opens with the name-identity and
-//!   normalized-body families; then the pass propagates the call
+//!   normalized-body families. Then the pass propagates the call
 //!   graph's topology claims to a fixed point and raises the confidence
 //!   of body pairs the topology agrees on. All of this runs before the
 //!   one-to-one resolution rule (strongest claim wins, ties go to the
 //!   claim first seen in scan order). The call map is built from the
-//!   bodies the snapshots themselves carry; the pass reads nothing from
+//!   bodies the snapshots themselves carry. The pass reads nothing from
 //!   the analysis engine (ADR-0024).
 //! * [`persist`] — [`BdiffPersistor`], the JSON document store: one
 //!   pairing document per (binary identity, old bytes, new bytes) under

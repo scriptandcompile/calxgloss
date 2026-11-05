@@ -18,11 +18,11 @@
 //!
 //! The crate is organized around the detectors the scan runs:
 //!
-//! - [`types`] - Core data types: `ByteSwapOperation` for the
-//!   per-function byte-swap record; `CrossFieldValidation` for the
-//!   message-integrity record; `SerializeFinding` as the union
-//!   over the record kinds; `SerializeResult`, `ScanMetadata` for the
-//!   persisted per-binary results.
+//! - [`types`] - Core data types:
+//!   - `ByteSwapOperation` for the per-function byte-swap record
+//!   - `CrossFieldValidation` for the message-integrity record
+//!   - `SerializeFinding` as the union over the record kinds
+//!   - `SerializeResult`, `ScanMetadata` for the persisted per-binary results
 //! - [`byteswap`] - Byte-swap call detection: `ByteSwapDetector`
 //!   recognizes `ntohs`/`ntohl`/`htons`/`htonl`, `bswap32`, and the
 //!   `__builtin_bswap16/32/64` spellings and suggests the matching

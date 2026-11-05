@@ -9,11 +9,11 @@
 //!
 //! The crate is organized into nine modules:
 //!
-//! - [`types`] - Core data types: `NamedType`, `TypeKind`, `StructField` for
-//!   named types from the engine's type listing; `Vtable`, `VtableMethod` for
-//!   detected vtables; `InferredStruct`, `InferredField`, `FieldType` for
-//!   string-inferred layouts; `TypeDatabase`, `ScanMetadata` for the
-//!   saved per-binary database.
+//! - [`types`] - Core data types:
+//!   - `NamedType`, `TypeKind`, `StructField` for named types from the engine's type listing
+//!   - `Vtable`, `VtableMethod` for detected vtables
+//!   - `InferredStruct`, `InferredField`, `FieldType` for string-inferred layouts
+//!   - `TypeDatabase`, `ScanMetadata` for the saved per-binary database
 //! - [`scanner`] - Named type recovery: `TypeLibraryScanner` queries the
 //!   Type Manager through the seam's `data_types()` / `struct_layout()` /
 //!   `enum_values()` reads, covering types never applied to a symbol.

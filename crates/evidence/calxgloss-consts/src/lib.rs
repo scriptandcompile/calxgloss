@@ -13,14 +13,14 @@
 //!
 //! The crate is organized into fourteen modules:
 //!
-//! - [`types`] - Core data types: `BitflagGroup`, `EnumCandidate`, and
-//!   `NamedConstant` for the detection records; `FlagFamily` for the
-//!   program-level merged flag-family record; `ProtocolConstant` for
-//!   the program-level known-magic record; `ColorConstant` for the
-//!   program-level palette record; `DataTable` for the program-level
-//!   data-table record; `ConstFinding` as the
-//!   union over the record kinds; `ConstResult`, `ScanMetadata` for
-//!   the persisted per-binary results.
+//! - [`types`] - Core data types:
+//!   - `BitflagGroup`, `EnumCandidate`, and `NamedConstant` for the detection records
+//!   - `FlagFamily` for the program-level merged flag-family record
+//!   - `ProtocolConstant` for the program-level known-magic record
+//!   - `ColorConstant` for the program-level palette record
+//!   - `DataTable` for the program-level data-table record
+//!   - `ConstFinding` as the union over the record kinds
+//!   - `ConstResult`, `ScanMetadata` for the persisted per-binary results
 //! - [`bitmask`] - Bitflag group detection: `BitmaskDetector` collects
 //!   the power-of-two literals used in bitwise contexts (`&`, `|`,
 //!   `^`, `&= ~`, `1 << n`) in each function into one flag-group
@@ -71,7 +71,7 @@
 //!   walks the same literal tally and groups the color-shaped values
 //!   (≤ 24-bit, not powers of two) into at most one program-level
 //!   `color_constant` palette finding per binary. Two distinct
-//!   qualifying values make a palette; a lone one claims nothing.
+//!   qualifying values make a palette. A lone one claims nothing.
 //! - `data_table` - a crate-private data-table reading: `data_tables`
 //!   checks each object the analysis engine's data listing defines
 //!   against how the kept bodies use it — an indexed read corroborates
