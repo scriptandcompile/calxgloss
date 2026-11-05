@@ -27,7 +27,7 @@ A binary whose PE has a non-empty COM descriptor is classified
 `DllCategory::DotNetManaged` and routed to a new `Strategy::DoNotTranslate`.
 
 - **Detection reuses the existing PE parse.** `classify_dll_with_target`
-  already parses the PE for the import table; the managed check is one
+  already parses the PE for the import table. The managed check is one
   accessor on the optional header's data directories
   (`get_clr_runtime_header`). No second file read, no new parse pass.
 - **Precedence is override > PE > names** — the classification precedence.
@@ -46,19 +46,19 @@ A binary whose PE has a non-empty COM descriptor is classified
   the analysis engine or the LLM, and state the gap ("we do not yet
   decompile .NET programs"), the signal, and the escape hatch.
 - **`known_runtime` stays false.** The flag is reserved for runtime
-  libraries; a managed binary is a translation candidate that happens to be
+  libraries. A managed binary is a translation candidate that happens to be
   untranslatable today, not a library to link against.
 
 ## Consequences
 
-- Managed binaries stop producing fake native translations; the gap is
+- Managed binaries stop producing fake native translations. The gap is
   stated openly instead of hidden.
 - When a managed decompiler exists, releasing a parked binary is just a
   classification-override entry pointing its category away from
   `DotNetManaged` — the override already releases it end to end, and a test
   enforces that behavior.
 - The dashboard gains a sixth review status and the CLI one more refusal
-  path; both are additive, and old records keep parsing
+  path. Both are additive, and old records keep parsing
   (`#[serde(default)]`).
 - Framework version, single-file bundles, and native images are explicitly
   out of scope: the COM descriptor answers only "is this managed", which is

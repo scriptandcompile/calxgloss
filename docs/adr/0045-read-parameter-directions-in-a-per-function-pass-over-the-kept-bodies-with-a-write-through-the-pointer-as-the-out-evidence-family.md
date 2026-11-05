@@ -36,7 +36,7 @@ engine reads — and records a direction only where the body shows a deciding
 shape.
 
 - **A closed enum, a new tagged record.** `Direction` (`in`, `out`,
-  `inout`) joins the vocabulary as an enum, not strings;
+  `inout`) joins the vocabulary as an enum, not strings.
   `InferredParamDirection` (function, parameter position, optional
   decompiled name, direction, method, scope, confidence, evidence) joins
   the union as `InferredType::Direction` with serde tag `"direction"`.
@@ -53,7 +53,7 @@ shape.
   by shape: a `*` on the name's near side and an `=` opening an assignment
   right behind it. A multiplication cannot take an assignment on its left,
   so a `*` beside a name the body assigns through can only be a
-  dereference; `==`, `!=`, `<=`, and `>=` never put the `=` at the name's
+  dereference. `==`, `!=`, `<=`, and `>=` never put the `=` at the name's
   side, so a comparison through the pointer stays silent. Field
   (`param_1->count = x`) and indexed (`param_1[i] = x`) writes are writes
   through the pointer too and join the family in #275 — scored at their own
@@ -77,7 +77,7 @@ shape.
   direct write, 70 for a field or indexed write) and keeping the write's
   line as evidence — the out half is the stronger claim.
 - **Absence is unknown, never silently *in*.** No deciding shape, no
-  record. A parameter with no record has no direction claim; the reading
+  record. A parameter with no record has no direction claim. The reading
   records what the body shows and stays quiet otherwise.
 - **A new conflict target, keyed beside the type.** Conflict
   resolution gains `Target::Direction { function, param_index }`, separate
@@ -86,7 +86,7 @@ shape.
   two directions — the highest-confidence reading wins, a tie keeps the one
   the scan showed first, exactly as every other target behaves.
 - **Scan order holds.** The detector runs inside the per-function pass, so
-  direction records follow the function listing, function by function; two
+  direction records follow the function listing, function by function. Two
   scans of one program diff cleanly, the way the union has always
   guaranteed.
 - **No write-back.** A direction is not a program type: the write-back
@@ -103,7 +103,7 @@ shape.
   `param_N direction` so the two lines stand apart).
 - The existing union→`TypeInfo` prompt conversion gains a direction
   arm, so retry prompts' type-info section includes direction lines from
-  the first scan; polishing that rendering for the signature shape is
+  the first scan. Polishing that rendering for the signature shape is
   #276/#277's prompt work, not a data change.
 - The pass adds **zero analysis engine round-trips**: it reads the
   `DecompiledFunction` the per-function pass already fetched, so the
@@ -119,6 +119,6 @@ shape.
   #275's widened families will exercise when a field write (70) meets a
   direct write (75) or a read (60) on one pointer.
 - Baseline tests capturing out-parameters (#228's downstream goal) read
-  the records from the persisted artifact; cross-function direction
+  the records from the persisted artifact. Cross-function direction
   propagation on the ADR-0014/0015 pattern stays the follow-up the
   spec names, not part of this ticket line.

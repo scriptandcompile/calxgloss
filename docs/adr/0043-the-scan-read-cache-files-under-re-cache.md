@@ -44,7 +44,7 @@ the tool's rename is a silent reset with no cleanup step.
 - The path an operator reads in `--help`, the README, and the layout tree
   matches the path on disk, and it is short enough to type.
 - Existing workspaces gain a third leftover, unused directory unless the
-  owner deletes the superseded ones; the README already tells the owner to
+  owner deletes the superseded ones. The README already tells the owner to
   delete by hand, and that covers it.
 - ADR-0042's title names the superseded path and reads as history, the way
   ADR-0041's deferral note already did.
