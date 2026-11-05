@@ -278,32 +278,33 @@ pub async fn run_translation_for_dll(
                         git_manager,
                         binary,
                         &func_result.function,
-                        ladder_winning_attempt(&func_result.retry_result),
+                        func_result.retry_result.winning_attempt(),
                         &output_path,
                     );
                     let file_refs: Vec<&str> = commit_files.iter().map(String::as_str).collect();
                     if output_path.to_str().is_some()
                         && let Ok(_commit) = git_manager.commit(
-                        branch_info,
-                        // Carry-over provenance (issue #299): when attempt
-                        // 1 was seeded from an accepted translation of a
-                        // paired previous-version function, the commit
-                        // says so and names the source. A fresh unit's
-                        // message is unchanged, byte for byte.
-                        &match func_result.carry_over.as_ref() {
-                            Some(seed) => format!(
-                                "re/auto/{}: translate {} (batch attempt, {})",
-                                func_result.function,
-                                binary,
-                                seed.commit_note()
-                            ),
-                            None => format!(
-                                "re/auto/{}: translate {} (batch attempt)",
-                                func_result.function, binary
-                            ),
-                        },
-                        &file_refs,
-                    ) && let Ok(merge_result) = git_manager.merge_to_main(branch_info)
+                            branch_info,
+                            // Carry-over provenance (issue #299): when attempt
+                            // 1 was seeded from an accepted translation of a
+                            // paired previous-version function, the commit
+                            // says so and names the source. A fresh unit's
+                            // message is unchanged, byte for byte.
+                            &match func_result.carry_over.as_ref() {
+                                Some(seed) => format!(
+                                    "re/auto/{}: translate {} (batch attempt, {})",
+                                    func_result.function,
+                                    binary,
+                                    seed.commit_note()
+                                ),
+                                None => format!(
+                                    "re/auto/{}: translate {} (batch attempt)",
+                                    func_result.function, binary
+                                ),
+                            },
+                            &file_refs,
+                        )
+                        && let Ok(merge_result) = git_manager.merge_to_main(branch_info)
                     {
                         match &merge_result {
                             calxgloss_git::MergeResult::Merged { merge_hash } => {

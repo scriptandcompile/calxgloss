@@ -302,7 +302,10 @@ fn file_receipt_pair(
             .to_string_lossy()
             .to_string()
     };
-    (relative(&json_path), relative(&json_path.with_extension("md")))
+    (
+        relative(&json_path),
+        relative(&json_path.with_extension("md")),
+    )
 }
 
 #[test]

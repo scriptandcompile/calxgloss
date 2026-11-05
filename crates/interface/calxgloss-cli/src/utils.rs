@@ -360,22 +360,6 @@ pub(crate) fn attempt_commit_files(
     files
 }
 
-/// The attempt in a unit's retry ladder whose verified pass produced the
-/// code a commit site is about to write — the last attempt the verify
-/// gate passed (`None` when the ladder had no winner). Its place in the
-/// sequence keys the *verification receipt* pair the commit stages
-/// beside that code (issue #413).
-pub(crate) fn ladder_winning_attempt(
-    retry: &calxgloss_translator::RetryResult,
-) -> Option<u32> {
-    retry
-        .attempts
-        .iter()
-        .rev()
-        .find(|attempt| attempt.is_successful())
-        .map(|attempt| attempt.attempt)
-}
-
 // ============================================================
 // Terminal formatting helpers (mirrors calxgloss-reports internals)
 // ============================================================
@@ -861,8 +845,7 @@ mod tests {
     /// A temp workspace over a fresh attempt branch with its translated
     /// code written — the shape every commit-site pin drives. Returns the
     /// workspace, repo, branch, and code path.
-    fn attempt_repo_and_code(
-    ) -> (
+    fn attempt_repo_and_code() -> (
         tempfile::TempDir,
         calxgloss_git::GitManager,
         calxgloss_git::GitBranch,

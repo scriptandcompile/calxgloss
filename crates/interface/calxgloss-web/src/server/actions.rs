@@ -35,7 +35,7 @@
 
 use calxgloss_git::{GitManager, ShimDependencyMap};
 use calxgloss_translator::assembly::{AssembledPass, BinaryTarget, PipelineSpec, assemble_patch};
-use calxgloss_types::{GitBranch, ReviewStatus, TypesError};
+use calxgloss_types::{BinaryIdentity, GitBranch, ReviewStatus, TypesError};
 use chrono::Utc;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -742,15 +742,27 @@ async fn run_patch_retry(
             .reset(branch_obj, git2::ResetType::Hard, Some(&mut co))
             .map_err(|e| anyhow::anyhow!("Failed to reset: {e}"))?;
 
-        // Commit
+        // Commit — the code plus the verified pass's *receipt pair*,
+        // resolved through `calxgloss-git`'s helper so this site does not
+        // re-derive the file names (issue #414, the web twin of the CLI
+        // sites from #413). The pair rides the same attempt-branch commit
+        // the retry already makes, so a branch checkout carries the
+        // justification for its own green claim. Staging is
+        // existence-gated: an absent pair changes the commit not at all —
+        // the claim stays uncitable, visibly, and nothing is fabricated.
         let commit_msg = format!(
             "re/{binary}/{function}v{attempt}: translate {function} to Rust (patch retry)",
         );
-        let _commit = git.commit(
-            &branch,
-            &commit_msg,
-            &[&format!("src/modules/{src_file_name}")],
-        )?;
+        let mut files = vec![format!("src/modules/{src_file_name}")];
+        if let Some(winner) = result.winning_attempt() {
+            files.extend(git.receipt_pair_paths(&BinaryIdentity::new(binary), function, winner));
+        }
+        let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        // One commit carries the code and the pair together, and its
+        // returned hash rides the patch record below — no second probe
+        // commit, whose tree could drift from what the first staged
+        // (#414; the probe dated from before the pair rode along).
+        let commit = git.commit(&branch, &commit_msg, &file_refs)?;
 
         // Write the successful patch record
         let patch_dir = repo_path
@@ -773,9 +785,7 @@ async fn run_patch_retry(
             "test_failures": Vec::<String>::new(),
             "commit_hash": "",
         });
-        if let Ok(commit) = git.commit(&branch, "", &[]) {
-            patch_record["commit_hash"] = serde_json::Value::String(commit.hash);
-        }
+        patch_record["commit_hash"] = serde_json::Value::String(commit.hash);
         let json = serde_json::to_string_pretty(&patch_record)?;
         std::fs::write(&patch_record_path, json)?;
 
@@ -1410,6 +1420,61 @@ mod tests {
                 .iter()
                 .any(|body| body.contains("description-owned-model")),
             "the description's model drove the call"
+        );
+
+        // Issue #414 grew the web commit site to stage the verified pass's
+        // *receipt pair* into the attempt-branch commit — and this run
+        // proves the existence gate from the other side: the ladder never
+        // earned a verified pass, so the commit site never ran, nothing
+        // was fabricated on the branch. Each attempt filed its own
+        // receipt pair on disk (the #412 seam), the attempt branch still
+        // points at its base commit, and no patch record exists.
+        //
+        // The forward pin — after a *verified pass* the attempt-branch
+        // commit carries the winner's pair — stands deferred to #416:
+        // testgen spells every generated case's inputs as a named object
+        // and the verify harness refuses to call named objects, so a
+        // pipeline-driven unit cannot honestly pass the values gate yet.
+        let unit_receipts = repo
+            .path()
+            .join("re")
+            .join("verification")
+            .join("fixture_target.dll")
+            .join("fixture_tick");
+        for member in ["attempt-1.json", "attempt-1.md"] {
+            assert!(
+                unit_receipts.join(member).is_file(),
+                "the ladder filed the attempt's own receipt pair member {member}",
+            );
+        }
+        let git = GitManager::open(repo.path()).expect("open the repo after the retry");
+        let v2 = GitBranch::new("fixture_target.dll", "fixture_tick", 2).expect("v2 branch name");
+        let base = git
+            .repo()
+            .find_branch("main", git2::BranchType::Local)
+            .expect("main branch")
+            .get()
+            .target()
+            .expect("main points at a commit");
+        assert_eq!(
+            git.repo()
+                .find_branch(&v2.name, git2::BranchType::Local)
+                .expect("the retry created the v2 branch")
+                .get()
+                .target(),
+            Some(base),
+            "a retry with no verified pass commits nothing to the attempt branch",
+        );
+        assert!(
+            !repo
+                .path()
+                .join("re")
+                .join("patches")
+                .join("fixture_target.dll")
+                .join("fixture_tick")
+                .join("v2.json")
+                .exists(),
+            "no patch record without a verified pass",
         );
     }
 

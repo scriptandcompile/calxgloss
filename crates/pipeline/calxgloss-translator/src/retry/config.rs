@@ -179,6 +179,19 @@ impl RetryResult {
         }
         self.attempts.push(attempt);
     }
+
+    /// The attempt in this ladder whose verified pass produced the code a
+    /// commit site is about to write — the last attempt the verify gate
+    /// passed (`None` when the ladder had no winner). Its place in the
+    /// sequence keys the *verification receipt* pair a commit site stages
+    /// beside that code (issue #413, issue #414).
+    pub fn winning_attempt(&self) -> Option<u32> {
+        self.attempts
+            .iter()
+            .rev()
+            .find(|attempt| attempt.is_successful())
+            .map(|attempt| attempt.attempt)
+    }
 }
 
 #[cfg(test)]
@@ -269,5 +282,34 @@ mod tests {
             config.next_strategy(RetryStrategy::Default),
             RetryStrategy::CompileFix
         );
+    }
+
+    fn attempt(n: u32, compiled: bool, passed: usize, total: usize) -> TranslationAttempt {
+        TranslationAttempt {
+            attempt: n,
+            rust_code: String::new(),
+            compiled,
+            compilation_errors: Vec::new(),
+            tests_passed: passed,
+            tests_total: total,
+            failed_tests: Vec::new(),
+            retry_strategy: "compile-fix".into(),
+            tokens_used: None,
+            context_tier: None,
+        }
+    }
+
+    /// The winner is the *last* attempt that cleared the verify gate —
+    /// later failed attempts do not erase its pass — and a ladder with
+    /// no pass at all cites nothing.
+    #[test]
+    fn winning_attempt_is_the_last_verified_pass() {
+        let mut ladder = RetryResult::new();
+        assert_eq!(ladder.winning_attempt(), None);
+        ladder.add_attempt(attempt(1, false, 0, 2));
+        ladder.add_attempt(attempt(2, true, 2, 2));
+        ladder.add_attempt(attempt(3, true, 1, 2));
+        ladder.add_attempt(attempt(4, true, 0, 2));
+        assert_eq!(ladder.winning_attempt(), Some(2));
     }
 }
