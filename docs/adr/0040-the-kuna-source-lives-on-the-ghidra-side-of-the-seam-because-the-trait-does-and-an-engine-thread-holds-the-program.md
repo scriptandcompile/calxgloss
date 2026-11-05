@@ -28,7 +28,7 @@ variant needs the type) — a dependency cycle.
 with the trait.** `calxgloss-kuna::source::KunaSource` exposes
 inherent methods over kuna-native DTOs (`KunaFunction`,
 `KunaDecompiled`, `KunaSymbol` — name + address, mirroring the Ghidra
-seam, no library field); `calxgloss-ghidra::scan_source` provides the
+seam, no library field). `calxgloss-ghidra::scan_source` provides the
 `impl ScanSource for KunaSource`, the `PipelineSource::Kuna` arm, and
 the error mapping (`FunctionNotFound` → `GhidraError::NotFound`,
 everything else → `GhidraError::Reported`). The kuna crate never names
@@ -56,13 +56,13 @@ one.
 
 ## Consequences
 
-- `calxgloss-kuna` stays analysis-engine-only and cycle-free; adding a
+- `calxgloss-kuna` stays analysis-engine-only and cycle-free. Adding a
   third analysis engine means another inherent-methods type plus an
   impl arm beside the trait, not a new dependency edge.
 - Every seam call pays one channel round-trip. Acceptable: the seam is
   already async and the calls are analysis-scale.
 - `EngineFault` loses the panic's backtrace (only its message is
-  captured). The process surviving is the point; debugging depth can
+  captured). The process surviving is the point. Debugging depth can
   wait until it matters.
 - The DTO duplication (kuna-native vs. seam types) is the price of the
-  cycle rule; the mapping is twelve lines and mechanical.
+  cycle rule. The mapping is twelve lines and mechanical.

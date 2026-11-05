@@ -24,13 +24,13 @@ the control state had to live somewhere both can reach.
   to the pipeline, and attaches it to the web router's state as an optional
   field. Plain `serve` has no handle, so its control endpoints honestly
   answer 503.
-- **Control flows only through REST; the WebSocket stays server→client.**
+- **Control flows only through REST. The WebSocket stays server→client.**
   `WsCommand` has only `Register`. We deliberately do *not* add a
   client→server command channel to it. Every lifecycle operation emits a
   progress event, so connected dashboards show state without polling.
 - **All W2 control endpoints register on the live router only**, following
   the ADR-0002 router rule.
-- **Pause and stop take effect at the next unit boundary**; the unit in
+- **Pause and stop take effect at the next unit boundary.** The unit in
   flight is never interrupted mid-LLM-call. `cancel-current` aborts the
   current unit at the earliest safe point and records the attempt as a
   cancelled failure. Nothing is discarded: an interrupted branch stays
