@@ -1384,8 +1384,11 @@ async fn persisted_branch_inventory_reaches_baseline_generation_through_translat
         .name
         .clone();
 
-    // The plain suite: no workspace, so no document to load.
-    let plain = tests_generated_through_translate(None, binary, &status).await;
+    // The plain suite: an empty workspace, so no document to load.
+    // (No workspace at all would send the pipeline's call-graph cache
+    // to the crate directory — the test's temp files belong in tmp.)
+    let plain_ws = TempDir::new().expect("temp workspace");
+    let plain = tests_generated_through_translate(Some(plain_ws.path()), binary, &status).await;
 
     let dir = TempDir::new().expect("temp workspace");
     let persistor = ControlFlowPersistor::new(dir.path());
