@@ -159,6 +159,17 @@ pub struct ExitObservation {
     pub finalization: Option<FinalizationOutcome>,
 }
 
+/// The rendered terminal's size in cells — geometry, not bytes. The run
+/// records it measured off the live terminal, never as declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TerminalGeometry {
+    /// Columns (character cells) wide.
+    pub cols: u16,
+    /// Rows (character cells) tall.
+    pub rows: u16,
+}
+
 /// The terminal dimension's block: the raw output chunks in order, plus
 /// the cap's explicit truncation mark. A capped capture states its cap —
 /// it never claims more than it saw.
@@ -174,6 +185,15 @@ pub struct TerminalObservation {
     /// document alone knows exactly what was withheld.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap_bytes: Option<u64>,
+    /// The geometry the live terminal opened at, read back off the host
+    /// PTY — absent reads unassessed, never a defaulted size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<TerminalGeometry>,
+    /// Every geometry the live terminal rendered after a resize, in order,
+    /// each read back off the running terminal rather than echoed from the
+    /// declared interaction — proof the resize landed on the terminal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rendered_states: Vec<TerminalGeometry>,
 }
 
 /// The interaction dimension's block: which scripted interactions the run

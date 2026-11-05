@@ -1439,5 +1439,11 @@ pub(super) enum ScenarioAction {
         /// Scenario name whose declared contract runs
         #[arg(long, required = true)]
         scenario: String,
+
+        /// `MS:TEXT` secret typed for one byte-count placeholder at that
+        /// offset for this run — it must match the declared placeholder,
+        /// and its text is never persisted (P24.5, issue #406)
+        #[arg(long = "secret", value_name = "MS:TEXT")]
+        secrets: Vec<String>,
     },
 }

@@ -85,6 +85,26 @@ fn capture(ws: &Path, scenario: &str) -> (bool, String, String) {
     run(&mut cmd, ws)
 }
 
+/// Warm a Wine prefix owned by one workspace alone — the private-prefix
+/// recipe from the run-seam pins: a bare silent `wine cmd.exe /c exit`
+/// with the Mono/Gecko components kept out of first-run setup, so no
+/// desktop dialog interrupts the run. A strong process-sample claim needs
+/// this: the sampler scopes by prefix stamp, and the shared default
+/// prefix would let a parallel pin's guests ride these samples.
+fn warm_private_prefix(ws: &Path) -> PathBuf {
+    let prefix = ws.join("wine-prefix");
+    std::fs::create_dir_all(&prefix).expect("the private prefix dir stands");
+    let status = Command::new("wine")
+        .args(["cmd.exe", "/c", "exit"])
+        .env("WINEPREFIX", &prefix)
+        .env("WINEDEBUG", "-all")
+        .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
+        .status()
+        .expect("the prefix initializer runs");
+    assert!(status.success(), "the private prefix set up clean");
+    prefix
+}
+
 fn capture_path(ws: &Path, scenario: &str) -> PathBuf {
     ws.join("re")
         .join("scenarios")
@@ -108,6 +128,27 @@ fn sha256_hex(path: &Path) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// Read the visible text out of recorded terminal chunks: the capture
+/// keeps the console's bytes verbatim, and conhost decorates some lines
+/// with per-glyph cursor hide/show sequences — the reader drops each
+/// escape sequence (ESC `[` + parameter bytes up to the final `@`..`~`
+/// byte) to weigh what an operator would have seen.
+fn visible_text(chunks: &[String]) -> String {
+    let raw = chunks.join("");
+    let mut text = String::new();
+    let mut rest = raw.as_str();
+    while let Some(at) = rest.find("\u{1b}[") {
+        text.push_str(&rest[..at]);
+        let params = &rest[at + 2..];
+        match params.find(|c: char| ('@'..'~').contains(&c)) {
+            Some(end) => rest = &params[end + 1..],
+            None => rest = "",
+        }
+    }
+    text.push_str(rest);
+    text
 }
 
 // ============================================================
@@ -207,7 +248,16 @@ fn a_scenario_capture_files_a_readable_document_at_its_record_tree_location() {
     std::fs::write(ws.path().join("old.dat"), b"old-bytes").expect("the before-side file stands");
     declare_boot_scenario(ws.path(), "boot", "65536");
 
-    let (ok, stdout, stderr) = capture(ws.path(), "boot");
+    // This pin files strong process-sample claims about the run's own
+    // tree, so the run stands on a prefix it owns alone: the sampler
+    // scopes by prefix stamp, and on the shared default prefix a
+    // parallel pin's guests would ride these samples (#405's scoping law).
+    let prefix = warm_private_prefix(ws.path());
+    let mut cmd = cli(ws.path());
+    cmd.args(["scenario", "capture"])
+        .args(["--binary", BINARY, "--scenario", "boot"])
+        .env("WINEPREFIX", &prefix);
+    let (ok, stdout, stderr) = run(&mut cmd, ws.path());
     assert!(
         ok,
         "the fixture scenario captures under Wine: {stdout}{stderr}"
@@ -299,8 +349,28 @@ fn a_scenario_capture_files_a_readable_document_at_its_record_tree_location() {
     let samples = document["process"]["samples"]
         .as_array()
         .expect("the process block stands");
-    assert_eq!(samples.len(), 1, "one honest launch sample");
-    assert_eq!(samples[0]["name"], BINARY);
+    assert!(!samples.is_empty(), "the run files its process samples");
+    assert_eq!(samples[0]["name"], BINARY, "the launch sample is first");
+    assert!(
+        samples.iter().all(
+            |sample| sample["pid"].as_u64().map(|pid| pid > 0) == Some(true)
+                && sample["name"].as_str().is_some_and(|name| !name.is_empty())
+        ),
+        "every sample names a live pid: {samples:?}"
+    );
+    let names: Vec<&str> = samples
+        .iter()
+        .map(|sample| sample["name"].as_str().unwrap_or(""))
+        .collect();
+    // The run stands on a prefix it owns alone, so these rows speak for
+    // this tree exactly: the sweep catches a guest instance of the
+    // program itself while the run is live, beside the launch stamp.
+    // Which wine helper rows (start/conhost/cmd) also ride along varies
+    // run to run — the pin never claims their exact set.
+    assert!(
+        names.iter().filter(|name| **name == BINARY).count() >= 2,
+        "the guest program instance is swept beside the launch stamp: {names:?}"
+    );
 
     let captures_dir = ws.path().join("re").join("scenarios").join("captures");
     let filed: Vec<_> = std::fs::read_dir(&captures_dir)
@@ -407,5 +477,129 @@ fn an_oversized_run_caps_its_output_and_says_so_in_the_document_and_the_print() 
     assert!(
         recorded <= 64,
         "the capture never claims more than it saw: {recorded} bytes"
+    );
+}
+
+// ============================================================
+// An interactive scenario run round-trips through the filed seam
+// (P24.5, issue #406)
+// ============================================================
+
+#[test]
+#[ignore = "needs Wine and the fixture console EXE"]
+fn an_interactive_scenario_run_round_trips_through_the_filed_seam_holding_its_secret_as_a_byte_count()
+ {
+    // The whole P24.5 scenario run, declared, run, and read back at the seam
+    // that matters — the filed document's own bytes: timed input, a
+    // secret typed from its placeholder, a resize proven by the rendered
+    // geometry, and a signal that ends the run; every acknowledgement
+    // stands at its offset, the terminal dimension carries geometry
+    // beside the chunks, and the secret text appears nowhere on disk.
+    let ws = workspace();
+    stage_fixture_exe(ws.path());
+    const SECRET: &str = "hunter2";
+
+    let mut declare = cli(ws.path());
+    declare
+        .args(["scenario", "declare"])
+        .args(["--binary", BINARY, "--scenario", "interactive"])
+        .args(["--input-at", "2000:echo scripted-file-seam"])
+        .args(["--secret-at", &format!("3000:{SECRET}")])
+        .args(["--resize-at", "4000:100x30"])
+        .args(["--signal-at", "6000:interrupt"])
+        .args(["--idle-timeout-ms", "15000", "--max-run-ms", "30000"]);
+    let (ok, stdout, stderr) = run(&mut declare, ws.path());
+    assert!(ok, "the interactive scenario declares: {stdout}{stderr}");
+
+    // The filed contract is the secret's storage form: a byte count and
+    // nothing else stands where the text was declared.
+    let contract_raw = std::fs::read(
+        ws.path()
+            .join("re")
+            .join("scenarios")
+            .join(format!("{BINARY}.json")),
+    )
+    .expect("the contract document reads at its record-tree location");
+    let contract_doc: serde_json::Value =
+        serde_json::from_slice(&contract_raw).expect("the contract document is JSON");
+    let interactions = contract_doc["scenarios"]["interactive"]["interactions"]
+        .as_array()
+        .expect("the declared contract names its interactions");
+    assert!(
+        interactions.iter().any(|interaction| {
+            interaction["kind"]["input"]["text"]["byte_count"] == serde_json::json!({ "bytes": 7 })
+        }),
+        "the placeholder files the count of the declared secret: {contract_doc}"
+    );
+    assert!(
+        !contract_raw
+            .windows(SECRET.len())
+            .any(|w| w == SECRET.as_bytes()),
+        "the declared secret's text never reaches the contract document"
+    );
+
+    let mut capture = cli(ws.path());
+    capture
+        .args(["scenario", "capture"])
+        .args(["--binary", BINARY, "--scenario", "interactive"])
+        .args(["--secret", &format!("3000:{SECRET}")]);
+    let (ok, stdout, stderr) = run(&mut capture, ws.path());
+    assert!(
+        ok,
+        "the interactive scenario run captures: {stdout}{stderr}"
+    );
+
+    // Read every dimension back at the filed seam.
+    let document = read_capture_document(ws.path(), "interactive");
+    let acks: Vec<u64> = document["interaction"]["acknowledged_at_ms"]
+        .as_array()
+        .expect("the interaction block names its acknowledgements")
+        .iter()
+        .map(|at| at.as_u64().expect("offsets are numbers"))
+        .collect();
+    assert_eq!(
+        acks,
+        [2_000, 3_000, 4_000, 6_000],
+        "input, the typed secret, the resize, and the signal all stand acknowledged at their offsets"
+    );
+    assert_eq!(
+        document["terminal"]["geometry"],
+        serde_json::json!({ "cols": 80, "rows": 24 }),
+        "the opening geometry stands beside the chunks"
+    );
+    assert_eq!(
+        document["terminal"]["rendered_states"],
+        serde_json::json!([{ "cols": 100, "rows": 30 }]),
+        "the resize shows in the rendered states the terminal actually wore"
+    );
+    let chunks: Vec<String> = document["terminal"]["chunks"]
+        .as_array()
+        .expect("the terminal block names its chunks")
+        .iter()
+        .map(|chunk| chunk.as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        chunks.join("").contains("scripted-file-seam"),
+        "the timed input reached the fixture console"
+    );
+    let text = visible_text(&chunks);
+    assert!(
+        text.contains("typed-bytes:7"),
+        "the fixture acknowledges the typed secret by count: {text}"
+    );
+    assert_eq!(
+        document["exit"]["disposition"], "exited",
+        "the signal ended the run on its own terms"
+    );
+
+    // The absence proof at the seam that matters: the filed document's
+    // raw bytes carry the count, never the secret.
+    let capture_raw =
+        std::fs::read(capture_path(ws.path(), "interactive")).expect("the capture document reads");
+    assert!(
+        !capture_raw
+            .windows(SECRET.len())
+            .any(|w| w == SECRET.as_bytes()),
+        "the typed secret appears nowhere in the filed capture document's raw bytes"
     );
 }

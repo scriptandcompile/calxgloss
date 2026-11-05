@@ -11,10 +11,12 @@ use std::path::Path;
 
 use calxgloss_types::{
     ExitDisposition, FileChange, FinalizationOutcome, NormalizationRules, ScenarioContract,
-    ScriptedInput, ScriptedInteraction,
+    ScenarioSignal, ScriptedInput, ScriptedInteraction, TerminalGeometry,
 };
 
+use super::TypedSecret;
 use super::capture_scenario;
+use super::capture_scenario_with_secrets;
 use super::files::{classify_paths, content_identity, snapshot_paths};
 use super::finalize_closed_run;
 use crate::wine::WineRunner;
@@ -790,5 +792,331 @@ fn a_byte_count_placeholder_input_is_never_delivered_nor_acknowledged() {
     assert!(
         !joined.contains("secret"),
         "the placeholder's bytes never leak into the capture: {joined}"
+    );
+}
+
+fn resize_at(at_ms: u64, cols: u16, rows: u16) -> ScriptedInteraction {
+    ScriptedInteraction {
+        at_ms,
+        kind: calxgloss_types::InteractionKind::Resize { cols, rows },
+    }
+}
+
+fn signal_at(at_ms: u64, signal: ScenarioSignal) -> ScriptedInteraction {
+    ScriptedInteraction {
+        at_ms,
+        kind: calxgloss_types::InteractionKind::Signal { signal },
+    }
+}
+
+#[test]
+#[ignore = "needs Wine and the mingw cross-toolchain"]
+fn a_scripted_scenario_run_acks_input_resize_and_signal_at_their_offsets() {
+    // The interaction dimension drives the live terminal: each scripted
+    // kind fires at its offset and stands acknowledged there. The terminal
+    // dimension carries geometry content beside the bytes — the opening
+    // geometry and the geometries the live terminal rendered after each
+    // resize, read back off the running PTY, not echoed from the contract.
+    let stage = tempfile::tempdir().expect("a staging dir");
+    let run_dir = stage.path().join("run");
+    std::fs::create_dir_all(&run_dir).expect("the run dir stands");
+    let program = stage.path().join("fixture_console.exe");
+    std::fs::copy(fixture_exe_path(), &program).expect("the fixture exe copies in");
+    let wine = warm_private_prefix(stage.path());
+
+    let mut c = contract("scripted-run");
+    c.idle_timeout_ms = 8_000;
+    c.max_run_ms = 30_000;
+    c.interactions = vec![
+        input_at(1_500, "echo scripted-hello"),
+        resize_at(2_500, 100, 30),
+        signal_at(3_500, ScenarioSignal::Interrupt),
+    ];
+
+    let capture =
+        capture_scenario(&program, &run_dir, &c, &wine, 1).expect("the scripted run files");
+    let interaction = capture.interaction.expect("the interaction block stands");
+    assert_eq!(
+        interaction.acknowledged_at_ms,
+        vec![1_500, 2_500, 3_500],
+        "every scripted kind stands acknowledged at its offset"
+    );
+
+    let terminal = capture.terminal.expect("the terminal block stands");
+    let text = visible_text(&terminal.chunks);
+    assert!(
+        text.contains("scripted-hello"),
+        "the input interaction reached the fixture console: {text}"
+    );
+    assert_eq!(
+        terminal.geometry,
+        Some(TerminalGeometry { cols: 80, rows: 24 }),
+        "the opening geometry is read off the live terminal"
+    );
+    assert_eq!(
+        terminal.rendered_states,
+        vec![TerminalGeometry {
+            cols: 100,
+            rows: 30
+        }],
+        "the resize landed on the live terminal, proven by read-back"
+    );
+
+    // The signal ended the run: the run closed as an exit on its own,
+    // not by a window or finalization — the interrupt did its work.
+    assert_eq!(
+        capture.exit.expect("the exit block stands").disposition,
+        ExitDisposition::Exited,
+        "the signal ended the run"
+    );
+}
+
+// ============================================================
+// Declared secrets at the capture seam (P24.5, issue #406)
+// ============================================================
+
+#[test]
+fn a_typed_secret_at_an_undeclared_offset_is_refused_naming_the_offset() {
+    // A capture-time secret is only ever the typed form of a declared
+    // placeholder: an offset carrying no byte-count placeholder is refused
+    // naming that offset — before Wine is even consulted, since a secret
+    // nobody declared is never typed anywhere.
+    let dirs = tempfile::tempdir().expect("a workspace dir");
+    let program = dirs.path().join("no-such.exe");
+    write_file(dirs.path(), "no-such.exe", b"not even a PE");
+    let wine = WineRunner::new(dirs.path()).with_wine_bin("calxgloss-no-such-wine");
+
+    let mut c = contract("secret-refused");
+    c.interactions = vec![ScriptedInteraction {
+        at_ms: 1_000,
+        kind: calxgloss_types::InteractionKind::Input {
+            text: ScriptedInput::ByteCount { bytes: 6 },
+        },
+    }];
+    let err = capture_scenario_with_secrets(
+        &program,
+        &dirs.path().join("run"),
+        &c,
+        &wine,
+        &[TypedSecret {
+            at_ms: 999,
+            text: "twelve".to_string(),
+        }],
+        1,
+    )
+    .expect_err("a secret at an undeclared offset is refused before anything runs");
+    let message = err.to_string();
+    assert!(
+        message.contains("999") && message.contains("byte-count placeholder"),
+        "the refusal names the offset and what it missed: {message}"
+    );
+}
+
+#[test]
+fn a_typed_secret_whose_count_disagrees_with_the_placeholder_is_refused() {
+    // The placeholder declares how many bytes stand at that offset; a
+    // secret of any other length is refused naming both counts — the
+    // capture never types what its contract did not say.
+    let dirs = tempfile::tempdir().expect("a workspace dir");
+    let program = dirs.path().join("no-such.exe");
+    write_file(dirs.path(), "no-such.exe", b"not even a PE");
+    let wine = WineRunner::new(dirs.path()).with_wine_bin("calxgloss-no-such-wine");
+
+    let mut c = contract("secret-count");
+    c.interactions = vec![ScriptedInteraction {
+        at_ms: 1_000,
+        kind: calxgloss_types::InteractionKind::Input {
+            text: ScriptedInput::ByteCount { bytes: 6 },
+        },
+    }];
+    let err = capture_scenario_with_secrets(
+        &program,
+        &dirs.path().join("run"),
+        &c,
+        &wine,
+        &[TypedSecret {
+            at_ms: 1_000,
+            text: "sixteen byte text".to_string(),
+        }],
+        1,
+    )
+    .expect_err("a miscounted secret is refused before anything runs");
+    let message = err.to_string();
+    assert!(
+        message.contains("1000") && message.contains("6") && message.contains("17"),
+        "the refusal names the offset and both counts (declared 6, typed 17): {message}"
+    );
+}
+
+#[test]
+fn a_typed_secret_controlling_the_terminal_line_is_refused_naming_the_offset() {
+    // A secret is typed as ONE line — its line ending belongs to the run.
+    // Text carrying a line break or a control character would ride the
+    // terminal as several inputs: the placeholder's single acknowledgement
+    // would stand over one line while the rest typed on into the guest.
+    // Such a secret is refused up front, naming its offset — even though
+    // its byte count would match the placeholder.
+    let dirs = tempfile::tempdir().expect("a workspace dir");
+    let program = dirs.path().join("no-such.exe");
+    write_file(dirs.path(), "no-such.exe", b"not even a PE");
+    let wine = WineRunner::new(dirs.path()).with_wine_bin("calxgloss-no-such-wine");
+
+    let mut c = contract("secret-line-break");
+    c.interactions = vec![ScriptedInteraction {
+        at_ms: 1_000,
+        kind: calxgloss_types::InteractionKind::Input {
+            text: ScriptedInput::ByteCount { bytes: 8 },
+        },
+    }];
+    let err = capture_scenario_with_secrets(
+        &program,
+        &dirs.path().join("run"),
+        &c,
+        &wine,
+        &[TypedSecret {
+            at_ms: 1_000,
+            text: "one\rtwo".to_string(),
+        }],
+        1,
+    )
+    .expect_err("a secret that would split into lines is refused before anything runs");
+    let message = err.to_string();
+    assert!(
+        message.contains("1000") && message.contains("single line"),
+        "the refusal names the offset and why the secret cannot type: {message}"
+    );
+
+    // The tab and other C0 controls steer the console's own editing, not
+    // text: a secret containing one is refused the same way.
+    let err = capture_scenario_with_secrets(
+        &program,
+        &dirs.path().join("run"),
+        &c,
+        &wine,
+        &[TypedSecret {
+            at_ms: 1_000,
+            text: "one\ttwo".to_string(),
+        }],
+        1,
+    )
+    .expect_err("a secret carrying a control character is refused");
+    assert!(
+        err.to_string().contains("1000"),
+        "the tab-carrying refusal names its offset: {err}"
+    );
+}
+
+#[test]
+fn two_typed_secrets_at_one_offset_are_refused_naming_the_offset() {
+    // One placeholder per offset, one typed form each: two secrets at the
+    // same offset is authorship confusion, and typing only one of them
+    // after validating both would be a silent lie. Refused up front.
+    let dirs = tempfile::tempdir().expect("a workspace dir");
+    let program = dirs.path().join("no-such.exe");
+    write_file(dirs.path(), "no-such.exe", b"not even a PE");
+    let wine = WineRunner::new(dirs.path()).with_wine_bin("calxgloss-no-such-wine");
+
+    let mut c = contract("secret-pair");
+    c.interactions = vec![ScriptedInteraction {
+        at_ms: 1_000,
+        kind: calxgloss_types::InteractionKind::Input {
+            text: ScriptedInput::ByteCount { bytes: 7 },
+        },
+    }];
+    let err = capture_scenario_with_secrets(
+        &program,
+        &dirs.path().join("run"),
+        &c,
+        &wine,
+        &[
+            TypedSecret {
+                at_ms: 1_000,
+                text: "hunter2".to_string(),
+            },
+            TypedSecret {
+                at_ms: 1_000,
+                text: "pa$$word".to_string(),
+            },
+        ],
+        1,
+    )
+    .expect_err("two secrets at one placeholder offset are refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("1000") && message.contains("only one secret"),
+        "the refusal names the doubled offset: {message}"
+    );
+}
+
+#[test]
+#[ignore = "needs Wine and the mingw cross-toolchain"]
+fn a_declared_secret_types_at_its_offset_and_stands_absent_from_the_record_bytes() {
+    // The placeholder earns its keep here: the contract's filed form still
+    // carries only the count, the capture types the declared secret at its
+    // offset, and the fixture acknowledges it by count alone — the secret's
+    // text appears nowhere in the capture's serialized raw bytes.
+    let stage = tempfile::tempdir().expect("a staging dir");
+    let run_dir = stage.path().join("run");
+    std::fs::create_dir_all(&run_dir).expect("the run dir stands");
+    let program = stage.path().join("fixture_console.exe");
+    std::fs::copy(fixture_exe_path(), &program).expect("the fixture exe copies in");
+    let wine = warm_private_prefix(stage.path());
+
+    let mut c = contract("typed-secret");
+    c.idle_timeout_ms = 8_000;
+    c.max_run_ms = 30_000;
+    c.interactions = vec![
+        ScriptedInteraction {
+            at_ms: 1_500,
+            kind: calxgloss_types::InteractionKind::Input {
+                text: ScriptedInput::ByteCount { bytes: 7 },
+            },
+        },
+        input_at(2_500, "exit 0"),
+    ];
+
+    let capture = capture_scenario_with_secrets(
+        &program,
+        &run_dir,
+        &c,
+        &wine,
+        &[TypedSecret {
+            at_ms: 1_500,
+            text: "hunter2".to_string(),
+        }],
+        1,
+    )
+    .expect("the declared secret rides the run");
+
+    let interaction = capture
+        .interaction
+        .as_ref()
+        .expect("the interaction block stands");
+    assert_eq!(
+        interaction.acknowledged_at_ms,
+        vec![1_500, 2_500],
+        "the placeholder earns its acknowledgement once its declared secret is typed"
+    );
+
+    let terminal = capture
+        .terminal
+        .as_ref()
+        .expect("the terminal block stands");
+    let text = visible_text(&terminal.chunks);
+    assert!(
+        text.contains("typed-bytes:7"),
+        "the fixture acknowledges the secret by count, never by text: {text}"
+    );
+
+    // Absence proven at both seams that matter: no terminal chunk carries
+    // the text, and the filed document's raw bytes never do.
+    assert!(
+        !terminal.chunks.join("").contains("hunter2"),
+        "no terminal chunk carries the typed secret"
+    );
+    let document = serde_json::to_vec(&capture).expect("the capture serializes for filing");
+    assert!(
+        !document.windows("hunter2".len()).any(|w| w == b"hunter2"),
+        "the typed secret appears nowhere in the capture document's raw bytes"
     );
 }

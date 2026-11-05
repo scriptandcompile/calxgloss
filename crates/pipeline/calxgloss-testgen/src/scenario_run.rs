@@ -41,7 +41,8 @@ use anyhow::{Context as _, Result};
 use calxgloss_types::{
     CapturePairing, ExitDisposition, ExitObservation, FilesystemObservation, FinalizationOutcome,
     InteractionKind, InteractionObservation, ProcessObservation, ProcessSample, ScenarioCapture,
-    ScenarioContract, ScenarioSignal, ScriptedInput, ScriptedInteraction, TerminalObservation,
+    ScenarioContract, ScenarioSignal, ScriptedInput, ScriptedInteraction, TerminalGeometry,
+    TerminalObservation,
 };
 
 use crate::wine::WineRunner;
@@ -61,10 +62,108 @@ pub fn capture_scenario(
     wine: &WineRunner,
     now: u64,
 ) -> Result<ScenarioCapture> {
-    // The standing preflight line first: a missing Wine fails by name
-    // here, before a run dir is touched or a process exists to hang.
+    capture_scenario_with_secrets(program, run_dir, contract, wine, &[], now)
+}
+
+/// One capture-time secret: the typed form of one byte-count placeholder
+/// the contract filed. It exists only while the run lives — it is never
+/// filed, never returned in the capture, and reaching the terminal at all
+/// requires it to match its placeholder exactly (see
+/// [`validate_typed_secrets`]).
+#[derive(Debug, Clone)]
+pub struct TypedSecret {
+    /// The `at_ms` offset of the placeholder this secret stands for.
+    pub at_ms: u64,
+    /// The secret text, typed at that offset and nothing else.
+    pub text: String,
+}
+
+/// Refuse typed secrets the contract did not declare, before anything
+/// runs: every one must stand at an offset whose interaction is a
+/// byte-count placeholder, and its length must equal the count the
+/// placeholder filed. A typed secret is one line — text carrying a
+/// control character would ride the terminal as several inputs and
+/// steer the console's own line editing, so it is refused even when
+/// its count matches — and one placeholder takes exactly one typed
+/// form. A capture never types what its contract didn't say — and the
+/// refusal arrives before even the Wine preflight, because a secret
+/// nobody declared is refused in any toolchain state.
+fn validate_typed_secrets(
+    contract: &ScenarioContract,
+    typed_secrets: &[TypedSecret],
+) -> Result<()> {
+    for secret in typed_secrets {
+        if typed_secrets
+            .iter()
+            .filter(|other| other.at_ms == secret.at_ms)
+            .count()
+            > 1
+        {
+            anyhow::bail!(
+                "the contract `{}` takes only one secret per placeholder offset — \
+                 two are typed at {} ms",
+                contract.name,
+                secret.at_ms
+            );
+        }
+        if secret.text.chars().any(char::is_control) {
+            anyhow::bail!(
+                "the secret typed at {} ms is not a single line of text — \
+                 a typed secret carries no control characters that would \
+                 split it across the terminal",
+                secret.at_ms
+            );
+        }
+        let placeholder = contract.interactions.iter().find(|interaction| {
+            interaction.at_ms == secret.at_ms
+                && matches!(
+                    interaction.kind,
+                    InteractionKind::Input {
+                        text: ScriptedInput::ByteCount { .. }
+                    }
+                )
+        });
+        match placeholder.map(|interaction| &interaction.kind) {
+            Some(InteractionKind::Input {
+                text: ScriptedInput::ByteCount { bytes },
+            }) if *bytes == secret.text.len() as u64 => {}
+            Some(InteractionKind::Input {
+                text: ScriptedInput::ByteCount { bytes },
+            }) => anyhow::bail!(
+                "the secret typed at {} ms is {} bytes; the contract `{}` declares {bytes} — \
+                 a typed secret must match its placeholder's count",
+                secret.at_ms,
+                secret.text.len(),
+                contract.name
+            ),
+            _ => anyhow::bail!(
+                "the contract `{}` declares no byte-count placeholder at {} ms — \
+                 a typed secret must match a declared one",
+                contract.name,
+                secret.at_ms
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Capture a scenario run with the contract's declared secrets at hand:
+/// each byte-count placeholder whose `at_ms` carries a matching typed
+/// secret is typed at its offset; the rest of the contract runs exactly
+/// as [`capture_scenario`] would.
+pub fn capture_scenario_with_secrets(
+    program: &Path,
+    run_dir: &Path,
+    contract: &ScenarioContract,
+    wine: &WineRunner,
+    typed_secrets: &[TypedSecret],
+    now: u64,
+) -> Result<ScenarioCapture> {
+    validate_typed_secrets(contract, typed_secrets)?;
+    // The standing preflight line: a missing Wine fails by name here,
+    // before a run dir is touched or a process exists to hang.
     wine.preflight_wine()?;
-    observe_run(program, run_dir, contract, wine, now)
+    observe_run(program, run_dir, contract, wine, typed_secrets, now)
 }
 
 #[cfg(unix)]
@@ -73,6 +172,7 @@ fn observe_run(
     run_dir: &Path,
     contract: &ScenarioContract,
     wine: &WineRunner,
+    typed_secrets: &[TypedSecret],
     now: u64,
 ) -> Result<ScenarioCapture> {
     let program_bytes = std::fs::read(program).with_context(|| {
@@ -96,6 +196,10 @@ fn observe_run(
     // working dir with the contract's explicit environment — nothing
     // inherited. The ownership token binds at launch.
     let mut console = pty::Pty::open(contract.cols, contract.rows)?;
+    // The opening geometry is read off the live terminal, not taken from
+    // the declaration: if the read ever fails the field stays absent and
+    // the capture reads unassessed, never a claimed size it didn't see.
+    let opening_geometry = console.geometry().ok();
     let (stdin_handle, stdout_handle, stderr_handle) = console.child_stdio()?;
     let mut command = std::process::Command::new(wine.wine_binary());
     command
@@ -152,6 +256,7 @@ fn observe_run(
     let mut sampler = sampler::Sampler::new(wine.prefix());
     let mut pending: VecDeque<&ScriptedInteraction> = contract.interactions.iter().collect();
     let mut terminal = Recording::new(contract.max_output_bytes);
+    terminal.geometry = opening_geometry;
     let mut acknowledged_at_ms = Vec::new();
     let mut last_output = start;
     let (disposition, exit_code, finalization) = loop {
@@ -185,8 +290,19 @@ fn observe_run(
                 break;
             }
             pending.pop_front();
-            if deliver(&console, next) {
+            let typed = typed_secrets
+                .iter()
+                .find(|secret| secret.at_ms == next.at_ms);
+            if deliver(&console, next, typed.map(|secret| secret.text.as_str())) {
                 acknowledged_at_ms.push(next.at_ms);
+                // A resize that landed is proven by reading the geometry
+                // back off the live terminal — the rendered state, not
+                // the declared one.
+                if matches!(next.kind, InteractionKind::Resize { .. })
+                    && let Ok(state) = console.geometry()
+                {
+                    terminal.rendered_states.push(state);
+                }
             }
         }
         if console
@@ -236,9 +352,10 @@ fn observe_run(
     run_dir: &Path,
     contract: &ScenarioContract,
     wine: &WineRunner,
+    typed_secrets: &[TypedSecret],
     now: u64,
 ) -> Result<ScenarioCapture> {
-    let _ = (program, run_dir, contract, wine, now);
+    let _ = (program, run_dir, contract, wine, typed_secrets, now);
     anyhow::bail!("a scenario run drives its host PTY on unix hosts only")
 }
 
@@ -270,10 +387,20 @@ impl From<Stopped> for FinalizationOutcome {
 }
 
 /// Deliver one interaction onto the terminal; true when it was delivered
-/// while the run stood — a byte-count placeholder's secret text is not
-/// held here, so it is never delivered and never acknowledged.
+/// while the run stood. A byte-count placeholder holds no text and types
+/// nothing of its own — it is typeable only in its declared secret's
+/// typed form, already validated against its count before the launch:
+/// the fixture's `secret` command first, then the secret's line, one
+/// write so nothing sits half-typed. A run in this lane types without
+/// echo (measured: wine-11 conhost stops echoing once the guest console
+/// clears `ENABLE_ECHO_INPUT`), so a typed secret never rides the output
+/// stream.
 #[cfg(unix)]
-fn deliver(console: &pty::Pty, interaction: &ScriptedInteraction) -> bool {
+fn deliver(
+    console: &pty::Pty,
+    interaction: &ScriptedInteraction,
+    typed_secret: Option<&str>,
+) -> bool {
     match &interaction.kind {
         InteractionKind::Input {
             text: ScriptedInput::Text(text),
@@ -284,7 +411,16 @@ fn deliver(console: &pty::Pty, interaction: &ScriptedInteraction) -> bool {
         }
         InteractionKind::Input {
             text: ScriptedInput::ByteCount { .. },
-        } => false,
+        } => {
+            let Some(secret) = typed_secret else {
+                return false;
+            };
+            let mut bytes = b"secret".to_vec();
+            bytes.extend_from_slice(INPUT_LINE_END);
+            bytes.extend_from_slice(secret.as_bytes());
+            bytes.extend_from_slice(INPUT_LINE_END);
+            console.write_input(&bytes).is_ok()
+        }
         InteractionKind::Resize { cols, rows } => console.resize(*cols, *rows).is_ok(),
         InteractionKind::Signal { signal } => match signal {
             ScenarioSignal::Interrupt => console.write_input(b"\x03").is_ok(),
@@ -323,6 +459,12 @@ struct Recording {
     recorded_bytes: usize,
     cap: usize,
     capped: bool,
+    /// Geometry read off the live terminal when it opened — absent only
+    /// if the read failed, which reads unassessed.
+    geometry: Option<TerminalGeometry>,
+    /// Geometries read back off the live terminal after each acknowledged
+    /// resize, in order — proof the resizes landed on the rendering.
+    rendered_states: Vec<TerminalGeometry>,
 }
 
 impl Recording {
@@ -332,6 +474,8 @@ impl Recording {
             recorded_bytes: 0,
             cap: cap as usize,
             capped: false,
+            geometry: None,
+            rendered_states: Vec::new(),
         }
     }
 
@@ -363,6 +507,8 @@ impl Recording {
             chunks: self.chunks,
             output_capped: self.capped,
             cap_bytes: self.capped.then_some(self.cap as u64),
+            geometry: self.geometry,
+            rendered_states: self.rendered_states,
         }
     }
 }

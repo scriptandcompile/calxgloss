@@ -93,7 +93,7 @@ pub use record_replay::{
     fold_capture_event_log,
 };
 pub use run::{BaselineRunner, TestContext};
-pub use scenario_run::capture_scenario;
+pub use scenario_run::{TypedSecret, capture_scenario, capture_scenario_with_secrets};
 pub use wine::capture::{
     BudgetStop, CAPTURE_LOG_NAME, CaptureBudgets, CaptureRun, derive_proxy_slots,
 };

@@ -399,14 +399,18 @@ fn main() -> Result<()> {
                     &validation_root,
                 )
             }
-            ScenarioAction::Capture { binary, scenario } => {
+            ScenarioAction::Capture {
+                binary,
+                scenario,
+                secrets,
+            } => {
                 let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
                 let validation_root = settings
                     .target_dir
                     .as_ref()
                     .map(|resolved| PathBuf::from(&resolved.value))
                     .unwrap_or_else(|| workspace.clone());
-                handle_scenario_capture(&binary, &scenario, &workspace, &validation_root)
+                handle_scenario_capture(&binary, &scenario, &workspace, &validation_root, &secrets)
             }
         },
 

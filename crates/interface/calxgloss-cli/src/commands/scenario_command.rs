@@ -15,12 +15,15 @@
 //! binary coexist in the one document. A sensitive scripted input
 //! (`--secret-at`) never persists its text — only the byte count files,
 //! and the e2e pin proves the secret appears nowhere in the filed bytes.
+//! A capture supplies that text just for its run (`--secret MS:TEXT`):
+//! the run seam validates it against its placeholder's offset and count
+//! before anything launches, and the filed capture still never carries it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use calxgloss_testgen::{WineRunner, capture_scenario};
+use calxgloss_testgen::{TypedSecret, WineRunner, capture_scenario_with_secrets};
 use calxgloss_types::{
     BinaryIdentity, ExitDisposition, InteractionKind, LiteralReplacement, NormalizationRules,
     PersistError, ScenarioCapture, ScenarioContract, ScenarioContracts, ScenarioSignal,
@@ -263,6 +266,10 @@ pub fn handle_scenario_declare(
 /// contract against the original target binary and file the scenario
 /// capture. The interface owns the load, the filing, and the pairing
 /// statement; the run itself belongs to testgen's scenario-run seam.
+/// `secrets` carries `--secret MS:TEXT` values — the run-time typed form
+/// of the contract's byte-count placeholders (P24.5, issue #406); they
+/// are folded through the run seam, which refuses any that does not
+/// match its placeholder, and they live only for this run.
 ///
 /// The pairing rule stands here at the filing point: a re-capture
 /// replaces the previous document outright — exactly one current capture
@@ -274,6 +281,7 @@ pub fn handle_scenario_capture(
     scenario: &str,
     workspace: &Path,
     validation_root: &Path,
+    secrets: &[String],
 ) -> Result<()> {
     reject_path_shaped_identity(binary)?;
     let binary = BinaryIdentity::new(binary);
@@ -330,7 +338,20 @@ pub fn handle_scenario_capture(
         .duration_since(std::time::UNIX_EPOCH)
         .expect("the clock stands after 1970")
         .as_secs();
-    let capture = capture_scenario(&program, &run_dir, &contract, &wine, now)?;
+    // A capture-time secret is the typed form of a declared placeholder:
+    // parsed by flag name, then handed to the run seam, which validates
+    // each against its placeholder's offset and count before anything
+    // launches — a secret the contract never declared is never typed.
+    let mut typed_secrets = Vec::new();
+    for value in secrets {
+        let (at_ms, text) = at_offset("--secret", value)?;
+        typed_secrets.push(TypedSecret {
+            at_ms,
+            text: text.to_string(),
+        });
+    }
+    let capture =
+        capture_scenario_with_secrets(&program, &run_dir, &contract, &wine, &typed_secrets, now)?;
 
     let path = scenario_capture_path(workspace, &binary, scenario);
     if let Ok(standing) = load_json::<ScenarioCapture>(&path) {

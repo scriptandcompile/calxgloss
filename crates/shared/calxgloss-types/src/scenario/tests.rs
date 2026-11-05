@@ -448,6 +448,62 @@ fn a_pre_block_hash_capture_document_still_parses_with_empty_blocks() {
     );
 }
 
+// ============================================================
+// Terminal geometry and rendered states beside the chunks (P24.5, #406)
+// ============================================================
+
+#[test]
+fn terminal_geometry_and_rendered_states_round_trip_beside_the_chunks() {
+    // The terminal dimension carries content beyond bytes: the geometry the
+    // console opened at, and every geometry the live terminal rendered after
+    // a resize, in order.
+    let observation = TerminalObservation {
+        chunks: vec!["ready".into()],
+        geometry: Some(TerminalGeometry { cols: 80, rows: 24 }),
+        rendered_states: vec![
+            TerminalGeometry {
+                cols: 100,
+                rows: 30,
+            },
+            TerminalGeometry {
+                cols: 120,
+                rows: 40,
+            },
+        ],
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&observation).expect("the observation serializes");
+    assert!(
+        json.contains(r#""geometry":{"cols":80,"rows":24}"#),
+        "the geometry files its cells: {json}"
+    );
+    assert!(
+        json.contains(r#""rendered_states":[{"cols":100,"rows":30},{"cols":120,"rows":40}]"#),
+        "the rendered states file in order: {json}"
+    );
+    let back: TerminalObservation = serde_json::from_str(&json).expect("it round-trips");
+    assert_eq!(back, observation);
+}
+
+#[test]
+fn a_terminal_record_without_geometry_or_states_reads_absent() {
+    // The honesty rule again: a capture written before P24.5 carries neither
+    // field, and it reads *unassessed* — no geometry, no states — never a
+    // defaulted 0x0 terminal.
+    let observation: TerminalObservation =
+        serde_json::from_str(r#"{"chunks": ["ready"]}"#).expect("an old terminal record parses");
+    assert_eq!(observation.geometry, None);
+    assert!(
+        observation.rendered_states.is_empty(),
+        "no states filed reads as none observed"
+    );
+    let json = serde_json::to_string(&observation).expect("it serializes");
+    assert!(
+        !json.contains("geometry") && !json.contains("rendered_states"),
+        "unobserved fields stay out of the document: {json}"
+    );
+}
+
 #[test]
 fn block_hashes_round_trip_beside_the_whole_file_digest() {
     let entry = FileObservation {

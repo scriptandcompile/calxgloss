@@ -8,6 +8,7 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::process::Stdio;
 
 use anyhow::{Context as _, Result};
+use calxgloss_types::TerminalGeometry;
 
 /// An open master/slave PTY pair, sized to the contract's geometry.
 #[derive(Debug)]
@@ -123,6 +124,27 @@ impl Pty {
             return Err(IoError::last_os_error());
         }
         Ok(())
+    }
+
+    /// Read the live terminal's geometry back off the master — what the
+    /// terminal is rendering, never what was declared.
+    pub(super) fn geometry(&self) -> IoResult<TerminalGeometry> {
+        let mut size = libc::winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: TIOCGWINSZ writes the winsize struct it is given, and the
+        // master fd is live for as long as the pair stands.
+        let ok = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+        if ok != 0 {
+            return Err(IoError::last_os_error());
+        }
+        Ok(TerminalGeometry {
+            cols: size.ws_col,
+            rows: size.ws_row,
+        })
     }
 
     /// Whether output is waiting, bounded by `timeout_ms` — the loop's

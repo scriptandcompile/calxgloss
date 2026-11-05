@@ -24,8 +24,21 @@
  *                            line>`, or `spawn-failed <command line>`
  *                            if the launch fails; the fixture carries
  *                            on reading and never waits on the child
+ *   secret                   read the single line that follows and
+ *                            acknowledge `typed-bytes:<N>` — the line's
+ *                            byte count and nothing else; the secret
+ *                            text is never written anywhere. The run
+ *                            starts echo-less (below), so what the
+ *                            terminal receives is only this count
  *   anything else            `refused: <line>`, and the run carries on —
  *                            a bad interaction is named, never fatal
+ *
+ * The run clears `ENABLE_ECHO_INPUT` on its console input at start:
+ * a Wine console echoes typed lines itself, at a level the host terminal
+ * cannot silence, and a scenario capture must carry only what the fixture
+ * itself writes — especially when a scripted interaction is a secret
+ * whose text must never reach the record (measured on wine-11: clearing
+ * the mode keeps line input intact and silences every typed echo).
  *
  * At EOF the run ends with the exit code declared by `--exit-code N` on
  * argv (default 0): both declaration routes — argv and stdin — let a
@@ -103,6 +116,20 @@ static int handle_line(char *line)
         }
         return -1;
     }
+    if (strcmp(line, "secret") == 0) {
+        /* The declared secret rides the line after the command: its byte
+         * count is the only thing acknowledged — the text itself is never
+         * written, and with the run echo-less it never reaches the
+         * terminal either. */
+        char secret[1024];
+        if (fgets(secret, sizeof secret, stdin) == NULL) {
+            printf("secret-missing\n");
+            return -1;
+        }
+        chomp(secret);
+        printf("typed-bytes:%lu\n", (unsigned long)strlen(secret));
+        return -1;
+    }
     if (strncmp(line, "exit ", 5) == 0) {
         char *end = NULL;
         long code = strtol(line + 5, &end, 10);
@@ -141,6 +168,15 @@ int main(int argc, char **argv)
     /* Unbuffered stdout: every acknowledgment lands in observation
      * order while the scenario run is still live. */
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    /* The run is echo-less from the start: a Wine console echoes
+     * typed lines itself and the host terminal cannot silence that, so
+     * the fixture clears ENABLE_ECHO_INPUT on its own input. Line input
+     * still arrives; only the typed echo goes. */
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD input_mode = 0;
+    if (GetConsoleMode(input, &input_mode))
+        SetConsoleMode(input, input_mode & ~ENABLE_ECHO_INPUT);
 
     puts(kReady);
     puts(kTag);

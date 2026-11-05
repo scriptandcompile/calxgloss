@@ -162,7 +162,7 @@ pub use scenario::{
     InteractionObservation, LiteralReplacement, MAX_FINALIZATION_GRACE_MS,
     MAX_SCENARIO_OUTPUT_BYTES, MAX_SCENARIO_WINDOW_MS, NormalizationRules, ProcessObservation,
     ProcessSample, ScenarioCapture, ScenarioContract, ScenarioContracts, ScenarioSignal,
-    ScenarioVerdict, ScriptedInput, ScriptedInteraction, TerminalObservation,
+    ScenarioVerdict, ScriptedInput, ScriptedInteraction, TerminalGeometry, TerminalObservation,
     scenario_capture_path, scenario_captures_dir, scenario_contracts_dir, scenario_contracts_path,
 };
 pub use scope::{
