@@ -57,14 +57,14 @@
 //!   are then read for a `data_race` claim: one function writes a
 //!   program global another reads, with no lock both sides respect.
 //!   Deciding which identifiers name program globals is the
-//!   `calxgloss-globalstate` crate's shared reading; this crate
+//!   `calxgloss-globalstate` crate's shared reading. This crate
 //!   consumes that reading directly and keeps only the lock-span
 //!   attribution, so the pass costs no extra decompiler round trips.
 //! - [`engine`] - Scan orchestration. `SyncEngine` runs the per-body
 //!   detectors over one loaded program through a `ScanSource`
 //!   (function listing + decompile-by-name). One sequential pass
 //!   decompiles each function exactly once and keeps the findings in
-//!   scan order; then the cross-function pass runs over the kept
+//!   scan order. Then the cross-function pass runs over the kept
 //!   bodies.
 //! - [`persist`] - JSON persistence: `SyncPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/sync/`.

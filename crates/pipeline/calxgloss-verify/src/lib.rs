@@ -43,7 +43,7 @@
 //!
 //! assert!(run.result.compiled);
 //! assert_eq!(run.result.tests_passed, run.result.tests_total);
-//! // The run filed its receipt pair; the digest pairs the two files.
+//! // The run filed its receipt pair. The digest pairs the two files.
 //! assert!(!run.receipt.digest.is_empty());
 //! # Ok(())
 //! # }
