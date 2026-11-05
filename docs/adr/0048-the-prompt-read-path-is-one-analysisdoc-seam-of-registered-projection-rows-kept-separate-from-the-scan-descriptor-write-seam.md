@@ -24,7 +24,7 @@ its trio of tests (spec #310).
 Because both sides name the same evidence engines and the same persisted
 documents, the unification question was right there: why not let one
 descriptor own both writing and reading a document? P34's rows already
-hold each evidence engine's persistor and document location; an
+hold each evidence engine's persistor and document location. An
 `AnalysisDoc` adapter repeats that persistor load. The open questions were
 what the read-side seam exposes, where it lives, whether the two tables
 merge, and what projection stays bespoke.
@@ -44,15 +44,17 @@ two:
   crate's existing `From` impls). Fourteen adapters make the seam real —
   one per per-function document that feeds the bundle.
 - **The degradation contract is written once, in the seam, never in an
-  adapter:** no workspace configured → the field stays empty, nothing
-  logged; document missing or unparseable → one `debug` line naming the
-  document kind, binary, and error, then empty, the two failure kinds
-  logging distinctly (`DocLoadError::Missing` vs `Corrupt`); document
-  present → exactly that function's records, in scan order. Absent context
-  degrades the prompt and never fails it — the existing rule, now spelled
-  in one place where it cannot repeat or drift.
+  adapter:**
+  - no workspace configured → the field stays empty, nothing logged
+  - document missing or unparseable → one `debug` line naming the document
+    kind, binary, and error, then empty, the two failure kinds logging
+    distinctly (`DocLoadError::Missing` vs `Corrupt`)
+  - document present → exactly that function's records, in scan order
+
+  Absent context degrades the prompt and never fails it — the existing
+  rule, now spelled in one place where it cannot repeat or drift.
 - **Bundle assembly is one pass over a static table of rows.**
-  `ProjectionRow` pairs an adapter with what it fills; `gather_function_evidence`
+  `ProjectionRow` pairs an adapter with what it fills. `gather_function_evidence`
   keeps its exact signature and combines the `PROJECTION_ROWS` table.
   Documents feeding two bundle fields — consts (const findings + data-table
   findings) and type-inference (type info + parameter directions) — are
@@ -71,19 +73,19 @@ two:
   document location — which neither hardcodes: both take it from the
   evidence engine's own persistor, the single owner of that location.
   Merging the tables would couple scan-phase scheduling to prompt assembly
-  so that a change to one forces a change to the other; keeping them apart
+  so that a change to one forces a change to the other. Keeping them apart
   lets P36 render the bundle while knowing nothing of scan machinery, and
   lets the read side cover documents that are not per-binary scan outputs
   at all. Any future unification needs its own ADR (spec #310 recorded it
-  as a later question; this ADR closes the question for now).
+  as a later question, and this ADR closes the question for now).
 - **Projection that is genuinely specific to one evidence engine stays
-  explicit bespoke code outside the seam:** libmatch's call-graph-
-  correlated extraction (consumes the call graph, not just the function
-  name), the async call-graph-neighbor and neighboring-context extractions
-  (reads over the scan seam, not a persisted per-binary document), and the
-  shim layer and PAL-trait extractions (whole-DLL reads, not per-function).
-  Squeezing them into the seam would distort it; they keep their own
-  tests.
+  explicit bespoke code outside the seam:** libmatch's
+  call-graph-correlated extraction (consumes the call graph, not just the
+  function name), the async call-graph-neighbor and neighboring-context
+  extractions (reads over the scan seam, not a persisted per-binary
+  document), and the shim layer and PAL-trait extractions (whole-DLL
+  reads, not per-function). Squeezing them into the seam would distort it.
+  They keep their own tests.
 
 ## Consequences
 
@@ -103,7 +105,7 @@ two:
   before and after (the whole-bundle behavior test passed unmodified across
   the whole migration).
 - Two tables now list every evidence engine, and each keeps its own roster
-  test; accepting that duplication is the price of the seam split. A
+  test. Accepting that duplication is the price of the seam split. A
   document moving on disk needs no table edited — its persistor owns the
   path — but a scan losing its registry row, or a read losing its
   projection row, fails loudly in its own suite, not silently.
