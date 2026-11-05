@@ -31,11 +31,11 @@ One evidence engine's own store. It owns where that engine's document lives and 
 The atomic act of deriving a fact from one body, symbol, or listing — and the product of that act. Every reading is a hypothesis, never a program fact.
 
 **Finding**:
-One evidence engine's persisted observation about one function or site; the umbrella word.
+One evidence engine's persisted observation about one function or site. This is the umbrella word.
 _Avoid_: as product nouns — hint, record, match: engine-local names for findings.
 
 **Claim**:
-What a reading asserts; the unit that competes in resolution. At binary level, a claim is an inference composed from several readings — a format, a protocol message, a platform divergence. A lone reading composes nothing.
+What a reading asserts. It is the unit that competes in resolution. At binary level, a claim is an inference composed from several readings — a format, a protocol message, a platform divergence. A lone reading composes nothing.
 
 **Resolution**:
 Per-scan merging that leaves exactly one finding per subject. The finding with the strongest confidence wins. If confidences are equal, the finding the scan surfaced first is kept.
@@ -61,7 +61,7 @@ A per-engine ordering of its bands. A corroborated reading always ranks higher t
 _Avoid_: rung, tier.
 
 **Corroboration**:
-Independent readings agreeing with one another; only corroborated readings reach an engine's top band.
+Independent readings agreeing with one another. Only corroborated readings reach an engine's top band.
 
 **Confidence penalty**:
 A deduction marking second-hand evidence — an inherited failure code, a tail-call match. The penalty never scores higher than the first-hand reading it came from.
@@ -114,7 +114,7 @@ Persisted findings follow the function listing, with per-function findings befor
 ### Coverage honesty
 
 **Facet**:
-An evidence engine's declared read surface — function bodies, import table, machine listings, and the rest. Coverage answers stay inside the declared set; a roster test pins each engine's declaration.
+An evidence engine's declared read surface — function bodies, import table, machine listings, and the rest. Coverage answers stay inside the declared set. A roster test pins each engine's declaration.
 
 **Scan coverage**:
 A scan's own record of how much it could read. It is written at scan time, beside the scan's provenance. Nothing downstream recomputes it.
@@ -168,7 +168,7 @@ A struct hypothesis clustered from the string literals its readers share. It is 
 Where a recovered name came from. From strongest to weakest: vtable class, then literal prefix, then function stem, then bare address. A stronger origin carries higher confidence.
 
 **Nesting** *(typesdb)*:
-Linking a struct field to a recovered named type by exact name only; ambiguous names stay unlinked.
+Linking a struct field to a recovered named type by exact name only. Ambiguous names stay unlinked.
 
 **Flagging** *(typesdb)*:
 Marking recovered types whose name *shape* matches a known library family (STL/MFC). Only the name shape counts, not the layout, and the result is flag-only.
@@ -207,13 +207,13 @@ The signature a callback carries that no single body spells out. The callback sc
 A call to a configured registration name with a callback bound. A chain links one such registration to a direct call or table dispatch in a partner body.
 
 **Allocation pair** *(memory)*:
-An allocation and its matching release inside one body; the engine stays silent on what never pairs.
+An allocation and its matching release inside one body. The engine stays silent on what never pairs.
 
 **Open allocation** *(memory)*:
 What the pairing walk leaves unpaired. The seam-pair, transfer, and leak readings all use this one shared result, so they can never disagree about what stands open.
 
 **Escape** *(memory)*:
-Any hand-off of a whole block to somewhere else; it doubles as the leak's false-positive gate.
+Any hand-off of a whole block to somewhere else. It doubles as the leak's false-positive gate.
 
 **Leak** *(memory)*:
 The cross-function pass's silence case: an open allocation with neither pair nor escape.
@@ -225,7 +225,7 @@ A whole-block ownership hand-off across a call boundary — into a callee or bac
 A callee storing its parameter outside its own frame. This is the reading that makes a box a shared handle.
 
 **Handle pairing** *(memory)*:
-An opener/closer pair over a non-memory resource; the type comes from the body's own declaration.
+An opener/closer pair over a non-memory resource. The type comes from the body's own declaration.
 
 **Lock order** *(sync)*:
 Two functions acquiring the same two locks in opposite relative orders. This makes a deadlock claim — one claim per conflicting pair.
@@ -243,7 +243,7 @@ A named constant a function returns, raises, or guards on. It names the failure 
 A caller guarding on, or re-returning, a callee's recorded failure codes. Codes travel the call map one hop. Idioms never travel. Inheritance pays the confidence penalty.
 
 **Body signature** *(libmatch)*:
-A library function's shape with decompiler noise normalized away — body shape, not bytes. It never touches flagging's name-shape records. Its store is the *signature database* — second of the three databases (see pattern database, known-signature database); all three replace their built-ins whole, never merge.
+A library function's shape with decompiler noise normalized away — body shape, not bytes. It never touches flagging's name-shape records. Its store is the *signature database* — second of the three databases (see pattern database, known-signature database). All three replace their built-ins whole, never merge.
 
 **Global site** *(globalstate)*:
 An identifier read or written as program data rather than as a function's own local. The same single rule is also used by the data-race readings.
