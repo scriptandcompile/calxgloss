@@ -10,25 +10,28 @@ Every evidence engine reads only part of a target: a decompiler that skips
 function bodies, a stripped binary with no vtable evidence, a scan that
 never reads delay imports. Before P19 that partial reach left no trace in
 the filed document: an empty control-flow section looked the same whether
-the scan read every body or barely any, and the escalated retry prompt could
-not tell "the program has no constants" from "the constants scan examined
-little." ADR-0052 had already given each evidence engine exactly one
-CLI-side home for such a field (the contribution entry's report printer),
-and #345 shaped the record itself: `ScanCoverage` — a status, a facet
-roster with limitation lines — living inside `ScanMetadata`. What the track
-had to fix, across all fifteen evidence engines (#346's apidetect first
-slice, #347 libmatch/floatsimd, #348 typesdb/consts, #349
+the scan read every body or barely any. And the escalated retry prompt
+could not tell "the program has no constants" from "the constants scan
+examined little." ADR-0052 had already given each evidence engine exactly
+one CLI-side home for such a field (the contribution entry's report
+printer). And #345 shaped the record itself: `ScanCoverage` — a status, a
+facet roster with limitation lines — living inside `ScanMetadata`. What
+the track had to fix, across all fifteen evidence engines (#346's apidetect
+first slice, #347 libmatch/floatsimd, #348 typesdb/consts, #349
 controlflow/memory/sync, #350 globalstate/errhandling/callback, #351
 algorithm/stringctx/serialize/typeinfer), was where the record lives, what
 its absence means, and who keeps it honest.
 
-The shape decisions worth fixing: whether the coverage record belongs
-inside the evidence engine's findings payload or beside the scan's own
-identity; whether a document with no record (every pre-P19 fixture) errors,
-reads as complete, or reads as something else; whether the prompt and
-report surfaces work out coverage downstream or only relay what the document
-says; and how fifteen hand-written rosters stop drifting from the records
-they describe.
+The shape decisions worth fixing:
+
+- whether the coverage record belongs inside the evidence engine's findings
+  payload or beside the scan's own identity
+- whether a document with no record (every pre-P19 fixture) errors, reads
+  as complete, or reads as something else
+- whether the prompt and report surfaces work out coverage downstream or
+  only relay what the document says
+- and how fifteen hand-written rosters stop drifting from the records they
+  describe
 
 ## Decision
 
@@ -55,74 +58,70 @@ checks against.
   read it everywhere else — applied to meaning instead of plumbing.
 - **Each evidence engine declares a static facet roster, and the roster
   holds the record to it at three levels.** Every evidence engine crate
-  holds `pub const
-  DECLARED_FACETS`, listing exactly the facets — the read
+  holds `pub const DECLARED_FACETS`, listing exactly the facets — the read
   surfaces — its scan could read. `ScanCoverage::roster_faults` in
   `calxgloss-types` spells every drift in one shared wording: a declared
   facet missing from the record, a facet appearing twice, or a record
   naming a facet the evidence engine never declared. Per evidence engine,
-  a `roster_faults`
-  test runs the checker over the written record against the crate's own
-  table. Track-wide, the translator's test pass walks **every registered
-  scan row's produced document** (fresh scans through the real pipeline:
-  context, prebatch phase, filed documents read back) and checks each
-  against the producing evidence engine's own `DECLARED_FACETS` — the table
-  pairs registry row names with the crates' tables, so the check reads the
-  tables' own data rather than a copy written on the test side — with one
-  failure report naming every offending evidence engine at once. At the
-  CLI, the
-  #342 pairing tests keep rows and contribution entries one-for-one. A
-  sixteenth evidence engine that writes no coverage record, or drifts a
-  facet id, fails loudly at the track level, not at review time.
+  a `roster_faults` test runs the checker over the written record against
+  the crate's own table. Track-wide, the translator's test pass walks
+  **every registered scan row's produced document** (fresh scans through
+  the real pipeline: context, prebatch phase, filed documents read back).
+  It checks each against the producing evidence engine's own
+  `DECLARED_FACETS` — the table pairs registry row names with the crates'
+  tables, so the check reads the tables' own data rather than a copy
+  written on the test side — with one failure report naming every offending
+  evidence engine at once. At the CLI, the #342 pairing tests keep rows and
+  contribution entries one-for-one. A sixteenth evidence engine that writes
+  no coverage record, or drifts a facet id, fails loudly at the track
+  level, not at review time.
 - **A document with no coverage record reads as `unknown` — never
-  `complete`, never an error.** `ScanMetadata::coverage` is an `Option`;
+  `complete`, never an error.** `ScanMetadata::coverage` is an `Option`.
   `coverage_status()` turns absence into `EffectiveCoverage::Unknown`. This
   is the compatibility rule for every pre-P19 fixture and every foreign
   document: it loads, its findings read as they always did, and coverage
   answers "we do not know." A track-wide test builds each evidence
   engine's pre-P19 document through its own persistor, asserts the raw
-  bytes carry
-  no `coverage` key, and asserts the load reads unknown — so old artifacts
-  keep working for as long as the track stands.
+  bytes carry no `coverage` key, and asserts the load reads unknown — so
+  old artifacts keep working for as long as the track stands.
 - **Unknown and falling-short must never look like complete: the doctrine
   pair.** Empty findings under complete coverage and empty findings under a
   record admitting failure never render the same bytes — heading plus the
   admission line against bare heading, or a qualified empty section against
   a silent one. Every prompt surface shows the record's own bounded
   `Coverage:` qualification line (`ScanCoverage::admission` owns the
-  wording once), and the prompts suite proves the pair for all fifteen
-  evidence engines in one table. Typesdb keeps its established #348 exception inside
+  wording once). The prompts suite proves the pair for all fifteen evidence
+  engines in one table. Typesdb keeps its established #348 exception inside
   the same doctrine: an empty structures list opens no section to qualify
-  either way, so its pair runs on populated structures instead, and the
+  either way, so its pair runs on populated structures instead. The
   invariant is asserted on the admission line itself.
 - **The review UI needs nothing new.** The admission line is part of the
   prompt, and the viewer already shows the prompt verbatim — the web
-  server's LLM I/O log records "the prompt sent to the LLM" as sent, so the
-  qualification the LLM saw is the qualification a reviewer reads
+  server's LLM I/O log records "the prompt sent to the LLM" as sent. So
+  the qualification the LLM saw is the qualification a reviewer reads
   (`crates/interface/calxgloss-web/src/server/llm_io_log.rs`). No endpoint,
-  view, or record type was added; the existing tests cover it.
+  view, or record type was added. The existing tests cover it.
 
 ## Consequences
 
 - Operator-visible analysis behavior is unchanged by the close-out: the
   whole-track test pass, the orphan check, and the pre-P19 tests lock in
-  what #345–#351 already shipped, and the fifteen run-equals-`--show`
+  what #345–#351 already shipped. And the fifteen run-equals-`--show`
   report tests — the contract that a command's run report and a later
   `--show` report of the same filed document are byte-identical — pass over
   the extended output untouched (names, flags, and report wording stand).
 - Fifteen evidence engines now state their limits out loud in every
-  document they file, and an empty section has exactly two honest readings
+  document they file. And an empty section has exactly two honest readings
   — the target lacks the evidence, or the scan could not reach it — told
   apart by the record, not by guesswork.
 - The rosters are the doctrine's single source of truth: an evidence engine
   adding a facet adds one string to `DECLARED_FACETS` and one line to its
   record, and forgetting either half fails its own test or the whole-track
-  test pass immediately; the pass reports every offending evidence engine
-  in one
-  report, which keeps a track-wide regression diagnosable in one run.
+  test pass immediately. The pass reports every offending evidence engine
+  in one report, which keeps a track-wide regression diagnosable in one
+  run.
 - Pre-P19 documents are permanently supported: absence-as-unknown is tested
-  per evidence engine through the real persistors, so a stale fixture and
-  an
+  per evidence engine through the real persistors. A stale fixture and an
   accidental `complete` default both trip tests rather than quietly
   upgrading old records' authority.
 - P21's verdict seam and P26's verdict consumption have their data side:
