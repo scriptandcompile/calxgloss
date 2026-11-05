@@ -135,11 +135,16 @@ impl TranslationPipeline {
         // re-derives it, so it is carried into the derived set and stands
         // until its question closes. Content unchanged, the revision
         // doctrine keeps it un-numbered; only its last-seen refreshes.
+        // The same carry holds for a verify run's receipt-unfiled record
+        // (issue #415): the pair path it names is re-derived only by that
+        // run itself, so a walk that never breaks its own filing must not
+        // erase the admitted unknown one broken run left behind.
         if let Some(landed_doc) = landed.as_ref() {
             for record in landed_doc.records.iter().flatten() {
                 if matches!(
                     record.origin,
                     calxgloss_types::UnknownOrigin::Capture { .. }
+                        | calxgloss_types::UnknownOrigin::VerifyRun { .. }
                 ) && !derived.iter().any(|mine| mine.id == record.id)
                 {
                     derived.push(record.clone());

@@ -3253,7 +3253,11 @@ async fn a_mined_replay_filing_a_suite_closes_a_standing_export_gap() {
 ///   log through the real fold: one entry replays clean, one replays
 ///   faulted → `crash_reproduction`, one carries a float slot →
 ///   `capture_refused`, and the fold's own filing helper lands those
-///   records beside the batch's.
+///   records beside the batch's;
+/// * the attempt-1 verification receipt pair has its authority key held
+///   open by a directory, so the walk's own filing fails at the first
+///   attempt and the verify engine admits the gap itself →
+///   `receipt_unfiled` (#415).
 ///
 /// Offline throughout: Kuna loads in-process, the LLM side is the
 /// canned broken-alternating server, and the fold's replay runs on the
@@ -3359,6 +3363,21 @@ async fn unknown_sweep_batch_records(dir: &std::path::Path) -> Vec<calxgloss_typ
     // climb is #372's walk, whose escalate prunes and
     // tier holds file the ladder's standing questions, and whose
     // zero-case fact the verification signal files beside them.
+    //
+    // The receipt-unfiled producer (issue #415) stages on the same walk:
+    // the attempt-1 verification pair has its JSON authority key held
+    // open by a directory, so that run's own filing fails and the verify
+    // engine admits the gap itself — one blocking record naming the run
+    // whose pair could not land, filed on the real path.
+    let held_pair = calxgloss_types::verification_receipt_path(
+        dir,
+        &calxgloss_types::BinaryIdentity::new(PROGRAM),
+        &unit,
+        1,
+    );
+    std::fs::create_dir_all(held_pair.parent().expect("pair directory"))
+        .expect("the verification pair directory");
+    std::fs::create_dir(&held_pair).expect("the attempt-1 authority key is held by a directory");
     let climbing = retry::RetryConfig {
         max_attempts: 9,
         ..retry::RetryConfig::default()
@@ -3516,6 +3535,12 @@ async fn the_unknown_sweep_pairs_the_roster_against_the_real_producers_one_for_o
         filed(calxgloss_types::UnknownKind::CrashReproduction),
         1,
         "the replay fault files the one crash-reproduction record naming the event (#396)"
+    );
+    assert_eq!(
+        filed(calxgloss_types::UnknownKind::ReceiptUnfiled),
+        1,
+        "the blocked attempt-1 pair files the one admitted unknown naming the run \
+         whose verification authority could not land (#415)"
     );
     assert!(
         swept_pairs(&records).contains(&(
