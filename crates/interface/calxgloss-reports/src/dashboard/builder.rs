@@ -413,6 +413,12 @@ impl<'a> DashboardBuilder<'a> {
         let mut dashboard = ReviewDashboard::new(units);
         dashboard.unknown_ledgers = unknown_ledgers;
 
+        // Issue #409 (P24.8): the scenario status rides the same model,
+        // derived from the filed scenario documents the same way for the
+        // terminal dashboard and the web review API alike — target-binary
+        // evidence beside the queue, never per-unit evidence.
+        dashboard.scenario_statuses = super::scenarios::derive_scenario_statuses(&self.repo_path);
+
         let blocked = dashboard.auto_block_units();
         if blocked > 0 {
             eprintln!(
@@ -1561,6 +1567,73 @@ mod tests {
         let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
 
         assert!(unit.unknowns.open.is_none(), "keyless ledger is unknown");
+    }
+
+    /// The filed contract document as `scenario declare` keeps exactly one
+    /// per target binary (issue #409).
+    fn file_scenario_contract(workspace: &std::path::Path, binary: &str, scenario: &str) {
+        let path = calxgloss_types::scenario_contracts_path(
+            workspace,
+            &calxgloss_types::BinaryIdentity::from(binary),
+        );
+        std::fs::create_dir_all(path.parent().expect("contracts dir")).expect("contracts dir");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "binary": binary,
+                "filed_at": 1,
+                "scenarios": { scenario: {
+                    "name": scenario,
+                    "working_dir": ".",
+                    "cols": 80,
+                    "rows": 24,
+                    "idle_timeout_ms": 5000,
+                    "max_run_ms": 15000,
+                    "finalization_grace_ms": 1000,
+                    "max_output_bytes": 65536,
+                    "normalization": { "version": "norm-v1" }
+                }}
+            })
+            .to_string(),
+        )
+        .expect("file contract document");
+    }
+
+    #[test]
+    fn filed_scenario_documents_ride_the_dashboard_as_per_binary_scenario_status() {
+        // Issue #409: the dashboard carries the scenario status beside
+        // the queue — and a binary with no filed scenario documents gets
+        // no row at all, never a fabricated nothing-declared checklist.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        file_scenario_contract(dir.path(), "eqgame.exe", "boot");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        assert_eq!(
+            dashboard.scenario_statuses.len(),
+            1,
+            "only eqgame.exe speaks"
+        );
+        assert_eq!(dashboard.scenario_statuses[0].binary, "eqgame.exe");
+        let boot = &dashboard.scenario_statuses[0].scenarios[0];
+        assert_eq!(boot.scenario, "boot");
+        assert!(boot.declared, "the filed contract declares it");
+        assert!(!boot.captured, "no capture filed — not-captured");
+        assert_eq!(
+            boot.verdict,
+            calxgloss_types::ScenarioVerdictReading::Unassessed,
+            "no verdict filed — unassessed"
+        );
+        assert!(
+            !dashboard
+                .scenario_statuses
+                .iter()
+                .any(|status| status.binary == "game_logic.dll"),
+            "the unit's binary with no scenario documents gets no row"
+        );
     }
 
     #[test]

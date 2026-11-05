@@ -732,6 +732,67 @@ impl ScenarioContracts {
     }
 }
 
+/// How one scenario's filed *scenario verdict* reads on the review
+/// surfaces (issue #409). This is the read-side mirror of
+/// [`ScenarioVerdictDocument`] — the dashboard never invents a reading
+/// the filed document does not carry, and an absent verdict document
+/// reads [`Unassessed`](Self::Unassessed), never a pass.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenarioVerdictReading {
+    /// A filed verdict assessed all five dimensions pass.
+    AssessedPass,
+    /// A filed verdict assessed at least one dimension fail; every failed
+    /// dimension is named, in the comparator's dimension order, never
+    /// folded into an anonymous count.
+    AssessedFail {
+        /// The dimensions the filed verdict assessed fail.
+        failed_dimensions: Vec<String>,
+    },
+    /// No verdict document stands filed — or the one filed assessed no
+    /// dimension fail and did not assess every dimension pass. Silence is
+    /// never laundered into a pass (the ADR-0053 absent-field rule, read
+    /// at the join).
+    #[default]
+    Unassessed,
+}
+
+/// One scenario's record reading on the review surfaces (issue #409):
+/// every slot reads from its own filed document, and a missing document
+/// degrades that slot to its honest negative — no contract renders
+/// not-declared, no capture renders not-captured, no verdict renders
+/// unassessed. This is *target-binary-level evidence*: it says nothing
+/// about any unit of work and never triggers a review action of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ScenarioStatus {
+    /// The scenario name the records stand for, unique per target binary.
+    pub scenario: String,
+    /// True only while the binary's filed contract document declares this
+    /// scenario name — a missing or unreadable contract renders false,
+    /// never a guess.
+    pub declared: bool,
+    /// True only while a scenario capture stands filed for this name
+    /// (original or replay) — a missing capture renders false.
+    pub captured: bool,
+    /// The filed verdict's reading, beside the other slots.
+    pub verdict: ScenarioVerdictReading,
+}
+
+/// The scenario status for one target binary: every scenario the filed
+/// scenario documents name for this binary, each with its own reading —
+/// several scenarios ride side by side and never collapse into one
+/// aggregate claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BinaryScenarioStatus {
+    /// The target binary identity these records speak for, verbatim.
+    pub binary: String,
+    /// The scenarios this binary's documents name, by name order.
+    #[serde(default)]
+    pub scenarios: Vec<ScenarioStatus>,
+}
+
 /// The record tree's scenario-contract directory: `re/scenarios/<workspace>`.
 /// Interface owns the contract documents filed here, one per target binary;
 /// pipeline and testgen only read them.
@@ -807,7 +868,7 @@ pub fn scenario_verdict_path(
 /// The file-key fold shared by the capture and verdict paths: every
 /// character outside `[A-Za-z0-9._-]` folds to `-`, so no declared name
 /// can ever climb out of its directory.
-fn scenario_file_key(scenario: &str) -> String {
+pub fn scenario_file_key(scenario: &str) -> String {
     scenario
         .chars()
         .map(|c| {

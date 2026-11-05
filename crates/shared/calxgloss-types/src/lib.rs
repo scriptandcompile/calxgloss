@@ -157,15 +157,15 @@ pub use scan::{
     CoverageStatus, EffectiveCoverage, EngineProvenance, FacetCoverage, ScanCoverage, ScanMetadata,
 };
 pub use scenario::{
-    CapturePairing, DimensionDivergence, DimensionVerdict, ExitDisposition, ExitObservation,
-    FileChange, FileObservation, FilesystemObservation, FinalizationOutcome, InteractionKind,
-    InteractionObservation, LiteralReplacement, MAX_FINALIZATION_GRACE_MS,
+    BinaryScenarioStatus, CapturePairing, DimensionDivergence, DimensionVerdict, ExitDisposition,
+    ExitObservation, FileChange, FileObservation, FilesystemObservation, FinalizationOutcome,
+    InteractionKind, InteractionObservation, LiteralReplacement, MAX_FINALIZATION_GRACE_MS,
     MAX_SCENARIO_OUTPUT_BYTES, MAX_SCENARIO_WINDOW_MS, NormalizationRules, ProcessObservation,
     ProcessSample, ScenarioCapture, ScenarioContract, ScenarioContracts, ScenarioSignal,
-    ScenarioVerdict, ScenarioVerdictDocument, ScriptedInput, ScriptedInteraction, TerminalGeometry,
-    TerminalObservation, scenario_capture_path, scenario_captures_dir, scenario_contracts_dir,
-    scenario_contracts_path, scenario_replay_capture_path, scenario_verdict_path,
-    scenario_verdicts_dir,
+    ScenarioStatus, ScenarioVerdict, ScenarioVerdictDocument, ScenarioVerdictReading,
+    ScriptedInput, ScriptedInteraction, TerminalGeometry, TerminalObservation,
+    scenario_capture_path, scenario_captures_dir, scenario_contracts_dir, scenario_contracts_path,
+    scenario_file_key, scenario_replay_capture_path, scenario_verdict_path, scenario_verdicts_dir,
 };
 pub use scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,

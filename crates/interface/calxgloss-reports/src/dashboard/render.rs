@@ -14,6 +14,7 @@ use chrono::Utc;
 
 use super::audit::{audit_ledger_header, audit_ledger_lines};
 use super::builder::DashboardBuilder;
+use super::scenarios::{scenario_status_header, scenario_status_lines};
 use super::view::UnitViewData;
 
 // ============================================================
@@ -275,6 +276,22 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
         println_content("");
         for ledger in &dashboard.unknown_ledgers {
             for line in audit_ledger_lines(ledger) {
+                println_content(line);
+            }
+            println_content("");
+        }
+    }
+
+    // The scenario status (issue #409, P24.8): what the filed scenario
+    // documents say for each EXE target — declared, captured, assessed —
+    // read straight off the records, each gap standing as its honest
+    // negative. Target-binary evidence beside the queue: it changes no
+    // unit's status and blocks no accept of its own.
+    if !dashboard.scenario_statuses.is_empty() {
+        println_content(scenario_status_header());
+        println_content("");
+        for status in &dashboard.scenario_statuses {
+            for line in scenario_status_lines(status) {
                 println_content(line);
             }
             println_content("");

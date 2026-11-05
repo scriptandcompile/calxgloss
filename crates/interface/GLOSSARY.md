@@ -107,6 +107,9 @@ The text review board built from branch state and the persisted records. The web
 **Unknown ledger**:
 The per-target-binary statement the run close and the dashboard print: what was never established, at what severity, with the evidence that would have closed it — and what review already settled and what it deliberately dismissed, counted apart.
 
+**Scenario status**:
+The per-target-binary reading the review surfaces print beside the queue: every scenario a filed scenario document names — declared or not declared, captured or not captured, and what its verdict says: assessed pass, assessed fail naming each failed dimension, or unassessed — with every missing record rendered as its honest negative, never as empty success. The shape rides the shared dashboard model: `ReviewDashboard.scenario_statuses` carries one entry per binary (`binary`, `scenarios`), each scenario its own row (`scenario`, `declared`, `captured`, `verdict`), the verdict encoded `unassessed`, `assessed_pass`, or `assessed_fail` with its `failed_dimensions`. Target-binary-level evidence: it changes no unit's review status and blocks no accept on its own.
+
 **Analytics on demand**:
 Numbers computed at request time from the persisted logs. There are no stored rollups, because a second copy of the truth would drift.
 

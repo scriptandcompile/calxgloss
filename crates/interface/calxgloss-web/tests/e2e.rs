@@ -53,6 +53,8 @@ mod headless_binary_and_unit_views;
 mod headless_queue_graph_live;
 #[path = "e2e/pipeline_progress_and_llm_log.rs"]
 mod pipeline_progress_and_llm_log;
+#[path = "e2e/scenario_status.rs"]
+mod scenario_status;
 #[path = "e2e/unit_detail_and_server_basics.rs"]
 mod unit_detail_and_server_basics;
 

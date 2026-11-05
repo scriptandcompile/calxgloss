@@ -8,6 +8,7 @@ use super::graph::DependencyGraph;
 use super::status::StatusCounts;
 use super::types::{ReviewStatus, WorkLevel};
 use super::work_unit::UnitOfWork;
+use crate::BinaryScenarioStatus;
 use crate::unknowns::BinaryUnknownLedger;
 
 /// A dashboard view of all units of work and their status.
@@ -40,6 +41,19 @@ pub struct ReviewDashboard {
     /// clean run.
     #[serde(default)]
     pub unknown_ledgers: Vec<BinaryUnknownLedger>,
+
+    /// The per-target-binary *scenario status* (issue #409, P24.8): each
+    /// scenario name the filed scenario documents speak for, with its
+    /// declared / captured / verdict reading — declared, captured,
+    /// assessed pass, assessed fail, or unassessed, each missing record
+    /// rendered as its honest negative. This is target-binary-level
+    /// evidence beside the review queue: a failing scenario verdict
+    /// changes no unit's review status and blocks no accept on its own;
+    /// the decision machinery is a later track. A binary with no filed
+    /// scenario documents rides here not at all — the surface names the
+    /// evidence that stands, never a fabricated checklist.
+    #[serde(default)]
+    pub scenario_statuses: Vec<BinaryScenarioStatus>,
 }
 
 impl ReviewDashboard {
@@ -155,6 +169,7 @@ impl ReviewDashboard {
             // honest only because the list names no binary whose ledger
             // went unread.
             unknown_ledgers: Vec::new(),
+            scenario_statuses: Vec::new(),
         }
     }
 

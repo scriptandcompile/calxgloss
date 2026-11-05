@@ -9,10 +9,13 @@
 //! - [`view`] — [`ViewTarget`], [`UnitViewData`], [`DiffSummary`], [`AttemptInfo`]
 //! - [`builder`] — [`DashboardBuilder`], [`parse_branch_name`], [`branch_matches`]
 //! - [`render`] — [`render_dashboard`], [`render_dashboard_follow`], [`render_unit_view`]
+//! - [`audit`] — [`derive_binary_unknown_ledgers`], [`binary_unknown_ledger`], [`audit_ledger_lines`]
+//! - [`scenarios`] — [`derive_scenario_statuses`], [`scenario_status_header`], [`scenario_status_lines`]
 
 pub mod audit;
 pub mod builder;
 pub mod render;
+pub mod scenarios;
 pub mod view;
 
 pub use audit::{
@@ -21,6 +24,7 @@ pub use audit::{
 };
 pub use builder::{DashboardBuilder, branch_matches, parse_branch_name};
 pub use render::{render_dashboard, render_dashboard_follow, render_unit_view};
+pub use scenarios::{derive_scenario_statuses, scenario_status_header, scenario_status_lines};
 pub use view::{AttemptInfo, DiffSummary, UnitViewData, ViewTarget};
 
 // Re-export types used in public API
