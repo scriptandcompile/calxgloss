@@ -17,7 +17,8 @@
 //!   it really arrived at an export entry, handed over by a capture lane
 //! - [`test`](mod@test) — Test case generation and baseline execution
 //! - [`translation`] — LLM translation requests and results
-//! - [`verification`] — Compilation and behavioral verification results
+//! - [`verification`] — Compilation and behavioral verification results and
+//!   the durable verification receipt
 //! - [`git`] — Branch and commit tracking
 //! - [`identity`] — `BinaryIdentity`, `UnitKey`, and the branch-name parser
 //!   (`parse_branch_name`) every crate shares
@@ -187,7 +188,10 @@ pub use unknowns::{
     UnknownSeverity, read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir,
     unknown_ledger_path, unknown_resolutions_path, unknown_roster_faults,
 };
-pub use verification::{FailedTest, VerificationResult};
+pub use verification::{
+    DimensionCounts, FailedTest, VerificationReceipt, VerificationResult, VerificationVerdict,
+    VerifierCommand, verification_receipt_path, verification_receipts_dir,
+};
 
 // ============================================================
 // Integration tests
