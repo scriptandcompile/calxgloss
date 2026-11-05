@@ -117,6 +117,31 @@ impl WineRunner {
         &self.prefix
     }
 
+    /// The Wine executable this runner invokes.
+    pub fn wine_binary(&self) -> &str {
+        &self.wine_bin
+    }
+
+    /// The Wine version's one-line stamp (`wine --version`), the pairing
+    /// stamp a scenario capture files beside the program digest.
+    pub fn wine_version(&self) -> Result<String> {
+        let output = Command::new(&self.wine_bin)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .output()
+            .with_context(|| {
+                format!(
+                    "Could not run '{} --version' to stamp the Wine version; install Wine \
+                     or set CALXGLOSS_WINE.",
+                    self.wine_bin
+                )
+            })?;
+        if !output.status.success() {
+            bail!("'{} --version' failed", self.wine_bin);
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
     /// Verify Wine is installed and the expected Rust target is available.
     pub fn preflight_wine(&self) -> Result<()> {
         let status = Command::new(&self.wine_bin)

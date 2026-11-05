@@ -11,6 +11,7 @@ calxgloss-types = { path = "../../shared/calxgloss-types" }
 calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 calxgloss-globalstate = { path = "../../evidence/calxgloss-globalstate" }
 goblin = { workspace = true }
+libc = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 regex = "1.11"

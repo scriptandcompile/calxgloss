@@ -1330,6 +1330,11 @@ pub(super) enum DashboardSubcommand {
 
 /// Subactions of the `scenario` command family (P24.1, issue #402).
 #[derive(Subcommand, Debug)]
+// The clap derive spells every action's flags inline; the `Declare`
+// variant's flag set dwarfs the others, and boxing it would only hide
+// the shape from the derive for a parse-time enum that never sits on a
+// hot path.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum ScenarioAction {
     /// Declare a scenario contract for a target binary and file it in
     /// the record tree
@@ -1416,5 +1421,23 @@ pub(super) enum ScenarioAction {
         /// Port-number pattern masked out of comparison, repeatable
         #[arg(long = "normalize-port")]
         normalize_ports: Vec<String>,
+    },
+    /// Run a declared scenario contract against the original target
+    /// binary and file the first scenario capture (P24.3, issue #404)
+    ///
+    /// The run stands behind a host PTY under the standing Wine
+    /// toolchain rules: a missing Wine fails the capture by name, exactly
+    /// like the baseline preflight, and files nothing. The capture lands
+    /// at `re/scenarios/captures/{binary}-{scenario}.json`; re-capture
+    /// replaces the previous document outright — exactly one current
+    /// capture per scenario name.
+    Capture {
+        /// Target binary identity, e.g. `eqgame.exe`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Scenario name whose declared contract runs
+        #[arg(long, required = true)]
+        scenario: String,
     },
 }

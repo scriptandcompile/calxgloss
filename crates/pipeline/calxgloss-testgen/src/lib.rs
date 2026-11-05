@@ -73,6 +73,7 @@ mod minidump;
 mod pe;
 mod record_replay;
 mod run;
+mod scenario_run;
 mod wine;
 
 pub use expectations::global_state_expectations;
@@ -92,6 +93,7 @@ pub use record_replay::{
     fold_capture_event_log,
 };
 pub use run::{BaselineRunner, TestContext};
+pub use scenario_run::capture_scenario;
 pub use wine::capture::{
     BudgetStop, CAPTURE_LOG_NAME, CaptureBudgets, CaptureRun, derive_proxy_slots,
 };

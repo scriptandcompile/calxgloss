@@ -374,3 +374,91 @@ fn a_refused_declaration_changes_nothing_at_all() {
     );
     assert_eq!(docs, before, "the refused declaration changed nothing");
 }
+
+// ============================================================
+// The capture document's record-tree location (P24.3, issue #404)
+// ============================================================
+
+#[test]
+fn captures_land_at_their_named_record_tree_location() {
+    // The captures live in their own directory under the scenario
+    // directory: one document per (binary, scenario name), so re-capture
+    // replaces the previous document outright and exactly one current
+    // capture stands per scenario name.
+    let path = scenario_capture_path("/ws", &BinaryIdentity::new("eqgame.exe"), "boot-and-exit");
+    assert_eq!(
+        path,
+        Path::new("/ws")
+            .join("re")
+            .join("scenarios")
+            .join("captures")
+            .join("eqgame.exe-boot-and-exit.json"),
+        "the record tree names the capture directory under the scenario directory"
+    );
+    assert_eq!(
+        scenario_captures_dir("/ws"),
+        scenario_contracts_dir("/ws").join("captures"),
+        "the captures directory stands inside the scenario directory"
+    );
+}
+
+#[test]
+fn a_scenario_name_folds_to_one_file_key() {
+    // A filed capture can never escape the captures directory through a
+    // scenario name: every character outside [A-Za-z0-9._-] folds to `-`,
+    // so the name stays one file name whatever was declared.
+    let path = scenario_capture_path(
+        "/ws",
+        &BinaryIdentity::new("eqgame.exe"),
+        "run ../ deep/name",
+    );
+    let file_name = path.file_name().expect("one file name, not a climb");
+    assert_eq!(
+        file_name.to_str().expect("utf-8 file name"),
+        "eqgame.exe-run-..--deep-name.json"
+    );
+    assert_eq!(
+        path.parent().expect("the file sits in the captures dir"),
+        scenario_captures_dir("/ws")
+    );
+}
+
+// ============================================================
+// File content identity: whole file + 4 KiB block hashes (P24.3)
+// ============================================================
+
+#[test]
+fn a_pre_block_hash_capture_document_still_parses_with_empty_blocks() {
+    // The block-hash detail grew with the capture slice: a capture
+    // document written without it still reads, stating no blocks at all —
+    // never an implied full-file single block.
+    let capture: ScenarioCapture = serde_json::from_str(
+        r#"{"scenario": "boot", "filed_at": 1, "filesystem": {"entries": [
+            {"path": "out.dat", "change": "created", "size_bytes": 5, "sha256": "ab"}
+        ]}}"#,
+    )
+    .expect("a pre-P24.3 capture document still parses");
+    let entry = &capture
+        .filesystem
+        .expect("the filesystem block reads")
+        .entries[0];
+    assert!(
+        entry.block_hashes.is_empty(),
+        "a document that never carried block hashes states none, not an implied block"
+    );
+}
+
+#[test]
+fn block_hashes_round_trip_beside_the_whole_file_digest() {
+    let entry = FileObservation {
+        path: "out.dat".to_string(),
+        change: FileChange::Created,
+        size_bytes: Some(5),
+        sha256: Some("whole-file".to_string()),
+        block_hashes: vec!["block-0".to_string(), "block-1".to_string()],
+    };
+    let json = serde_json::to_string(&entry).expect("the observation serializes");
+    assert!(json.contains("\"block_hashes\""), "wire form: {json}");
+    let back: FileObservation = serde_json::from_str(&json).expect("it round-trips");
+    assert_eq!(back, entry);
+}

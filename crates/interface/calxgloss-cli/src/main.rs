@@ -82,7 +82,9 @@ use commands::live::handle_live;
 use commands::minidump_command::handle_minidump;
 use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use commands::scan_command::handle_scan_command;
-use commands::scenario_command::{ScenarioDeclareOptions, handle_scenario_declare};
+use commands::scenario_command::{
+    ScenarioDeclareOptions, handle_scenario_capture, handle_scenario_declare,
+};
 use commands::serve::handle_serve;
 use commands::translate::handle_translate;
 use commands::verify::handle_verify;
@@ -396,6 +398,15 @@ fn main() -> Result<()> {
                     &workspace,
                     &validation_root,
                 )
+            }
+            ScenarioAction::Capture { binary, scenario } => {
+                let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+                let validation_root = settings
+                    .target_dir
+                    .as_ref()
+                    .map(|resolved| PathBuf::from(&resolved.value))
+                    .unwrap_or_else(|| workspace.clone());
+                handle_scenario_capture(&binary, &scenario, &workspace, &validation_root)
             }
         },
 

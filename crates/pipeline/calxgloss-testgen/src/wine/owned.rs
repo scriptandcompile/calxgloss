@@ -152,6 +152,29 @@ impl OwnedProcess {
         self.stop_with(|child| child.kill().is_ok())
     }
 
+    /// Finalize with the scenario contract's grace: SIGTERM through the
+    /// same token-rechecking path, a bounded window to end on its own,
+    /// then a forced SIGKILL — again only through the gate, never a
+    /// bare-PID kill. Unix only: the scenario lane's Wine toolchain
+    /// stands on unix hosts.
+    #[cfg(unix)]
+    pub fn stop_with_grace(&mut self, grace: std::time::Duration) -> Stopped {
+        let term = self.stop_with(terminate);
+        if term != Stopped::Signaled {
+            // Already exited or the token refused: there is nothing for
+            // the grace to force, and nothing stale may ever be signaled.
+            return term;
+        }
+        let deadline = std::time::Instant::now() + grace;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = self.try_wait() {
+                return Stopped::Signaled;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        self.stop()
+    }
+
     /// The shared signal path: decide first, signal the handle second.
     fn stop_with(&mut self, signal: impl FnOnce(&mut Child) -> bool) -> Stopped {
         let decision = stop_decision(self.token.started_at, observed_identity(self.token.pid));
@@ -180,10 +203,24 @@ impl OwnedProcess {
     }
 }
 
+/// The graceful first signal: SIGTERM at the handle's pid. Only ever
+/// reached from inside [`stop_with`](OwnedProcess::stop_with), after the
+/// token recheck has confirmed this pid still answers to the launched
+/// process — the pid here is never trusted on its own.
+#[cfg(unix)]
+fn terminate(child: &mut Child) -> bool {
+    // SAFETY: `kill` on a live pid is harmless; the caller's token gate is
+    // what makes the pid the right target, and it has just rechecked.
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) == 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
 
     fn spawn_sleep(secs: u32) -> Child {
         Command::new("sleep")
@@ -288,6 +325,76 @@ mod tests {
             owned.stop(),
             Stopped::AlreadyExited,
             "a reaped child earns no signal, whatever its old PID now serves"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sigterm_mortal_run_is_stopped_well_inside_the_grace() {
+        // The finalization sequence the scenario contract declares:
+        // SIGTERM first; a process that dies on it is reaped inside the
+        // grace and never sees the forced SIGKILL.
+        let mut owned = OwnedProcess::own(spawn_sleep(30));
+        let started = std::time::Instant::now();
+        assert_eq!(
+            owned.stop_with_grace(std::time::Duration::from_secs(10)),
+            Stopped::Signaled,
+            "SIGTERM reaches exactly the process this launch made"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "a SIGTERM-mortal process never waits out the grace"
+        );
+        let status = owned.wait().expect("the stopped child reaps");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGTERM),
+            "SIGTERM ended it, never a kill"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sigterm_immune_run_is_forced_out_once_the_grace_closes() {
+        // The grace is bounded: a process that ignores SIGTERM is forced
+        // out with SIGKILL when the grace closes, through the same
+        // token-rechecking path — never left running, never a bare kill.
+        let ready = tempfile::tempdir().expect("a ready marker dir");
+        let marker = ready.path().join("ready");
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "trap '' TERM; touch {}; sleep 30",
+                marker.display()
+            ))
+            .spawn()
+            .expect("a SIGTERM-immune sleeper should spawn");
+        let mut owned = OwnedProcess::own(child);
+        for _ in 0..400 {
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            marker.exists(),
+            "the sleeper installed its trap before the stop"
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(
+            owned.stop_with_grace(std::time::Duration::from_millis(300)),
+            Stopped::Signaled,
+            "the grace's forced SIGKILL rides the same gated path"
+        );
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(300),
+            "the grace is honored, never skipped"
+        );
+        let status = owned.wait().expect("the forced child reaps");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "the grace closed, so SIGKILL ended it"
         );
     }
 }

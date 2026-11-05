@@ -51,3 +51,5 @@ calxgloss-web = { path = "../calxgloss-web", features = ["server"] }
 [dev-dependencies]
 tempfile = "3"
 calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
+sha2 = { workspace = true }
+serde_json = { workspace = true }

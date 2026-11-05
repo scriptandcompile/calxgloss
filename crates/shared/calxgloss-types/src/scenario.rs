@@ -144,6 +144,11 @@ pub struct TerminalObservation {
     pub chunks: Vec<String>,
     /// Set when the output cap stopped recording; the run produced more.
     pub output_capped: bool,
+    /// The cap the recording stopped at, named in the record only when
+    /// it fired — a capped capture states its cap, so a reader of the
+    /// document alone knows exactly what was withheld.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_bytes: Option<u64>,
 }
 
 /// The interaction dimension's block: which scripted interactions the run
@@ -170,8 +175,9 @@ pub enum FileChange {
 }
 
 /// One declared observation path and how the run changed it, with the
-/// content identity the comparator will weigh (the block-hash detail
-/// grows with the capture slice, P24.3).
+/// content identity the comparator weighs: the whole-file digest plus
+/// the 4 KiB block digests of the same bytes (P24.3), so a partial write
+/// shows exactly which blocks moved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct FileObservation {
@@ -179,10 +185,16 @@ pub struct FileObservation {
     pub path: String,
     /// How the run changed it.
     pub change: FileChange,
-    /// Content size after the run, when the path exists after it.
+    /// Content size at the named side, when that side exists.
     pub size_bytes: Option<u64>,
-    /// Whole-file sha256, on either side that exists.
+    /// Whole-file sha256 of the named side: the after side for created,
+    /// modified, and unchanged, the before side for a deleted path.
     pub sha256: Option<String>,
+    /// The 4 KiB block digests of those same bytes, in block order; the
+    /// last block is the short remainder's digest. Empty only when no
+    /// side exists or the document predates the block hashes.
+    #[serde(default)]
+    pub block_hashes: Vec<String>,
 }
 
 /// The filesystem dimension's block: the before/after classification of
@@ -520,4 +532,37 @@ pub fn scenario_contracts_dir(workspace: impl AsRef<Path>) -> PathBuf {
 /// `re/scenarios/<binary identity>.json`.
 pub fn scenario_contracts_path(workspace: impl AsRef<Path>, binary: &BinaryIdentity) -> PathBuf {
     scenario_contracts_dir(workspace).join(format!("{binary}.json"))
+}
+
+/// The record tree's scenario-capture directory: `re/scenarios/captures`.
+/// Interface files captures here, one document per (binary, scenario
+/// name); compare and replay slices only read them.
+pub fn scenario_captures_dir(workspace: impl AsRef<Path>) -> PathBuf {
+    scenario_contracts_dir(workspace).join("captures")
+}
+
+/// The record tree location of one filed scenario capture:
+/// `re/scenarios/captures/<binary identity>-<scenario key>.json` —
+/// exactly one current capture per scenario name per binary: re-capture
+/// replaces the previous document outright, never versioned, never appended.
+///
+/// The scenario name folds into a file key: every character outside
+/// `[A-Za-z0-9._-]` folds to `-`, so no declared name can ever climb out
+/// of the captures directory.
+pub fn scenario_capture_path(
+    workspace: impl AsRef<Path>,
+    binary: &BinaryIdentity,
+    scenario: &str,
+) -> PathBuf {
+    let key: String = scenario
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    scenario_captures_dir(workspace).join(format!("{binary}-{key}.json"))
 }

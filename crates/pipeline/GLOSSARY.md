@@ -70,6 +70,14 @@ _Avoid_: scenario run — that is the execution; config
 One child execution of a target program under a scenario contract. Never the run-wide *Run*: a scenario run is launched, bounded, and finalized on its own, while the run keeps working elsewhere.
 _Avoid_: Run, session, process (bare)
 
+**Scenario capture**:
+The filed document of what one *scenario run* was observed to do: an optional block per dimension — terminal output chunks under the cap with its truncation mark, the acknowledged interaction offsets, the exit disposition from the closed set with its code when one exists, the before/after classification of the declared observation paths (created / deleted / modified / unchanged, each with size, whole-file sha256, and 4 KiB block digests — files are weighed by content, never by existence), and the process sample. Bounded evidence, never a claim: a capture that hit its cap never states more than it saw. It files at `re/scenarios/captures/<binary identity>-<scenario key>.json` — exactly one current capture per scenario name, a re-capture replacing the previous document outright.
+_Avoid_: baseline — that is the harness's ground-truth capture; capture event log — that is the *reference-app run*'s record; transcript
+
+**Pairing rule**:
+The rule that says which two *scenario captures* may be compared: only captures whose pairing stamps agree — the sha256 of the program bytes the run executed and the Wine version that ran them — pair for comparison. A digest mismatch is a stated mismatch, never silent: the CLI names both digests before a re-capture files over the current document.
+_Avoid_: fingerprint — that is PE identity; hash (bare)
+
 ### Verification
 
 **Verification**:

@@ -20,10 +20,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
+use calxgloss_testgen::{WineRunner, capture_scenario};
 use calxgloss_types::{
-    BinaryIdentity, InteractionKind, LiteralReplacement, NormalizationRules, PersistError,
-    ScenarioContract, ScenarioContracts, ScenarioSignal, ScriptedInput, ScriptedInteraction,
-    load_json, save_json, scenario_contracts_path,
+    BinaryIdentity, ExitDisposition, InteractionKind, LiteralReplacement, NormalizationRules,
+    PersistError, ScenarioCapture, ScenarioContract, ScenarioContracts, ScenarioSignal,
+    ScriptedInput, ScriptedInteraction, load_json, save_json, scenario_capture_path,
+    scenario_contracts_path,
 };
 
 /// The gathered flags of one `scenario declare`, mirroring the variant's
@@ -255,4 +257,173 @@ pub fn handle_scenario_declare(
         contract.observation_paths.len(),
     );
     Ok(())
+}
+
+/// The `scenario capture` arm (P24.3, issue #404): run the declared
+/// contract against the original target binary and file the scenario
+/// capture. The interface owns the load, the filing, and the pairing
+/// statement; the run itself belongs to testgen's scenario-run seam.
+///
+/// The pairing rule stands here at the filing point: a re-capture
+/// replaces the previous document outright — exactly one current capture
+/// per scenario name — but when the standing capture ran different
+/// program bytes, the mismatch is stated out loud before the
+/// replacement, never silent.
+pub fn handle_scenario_capture(
+    binary: &str,
+    scenario: &str,
+    workspace: &Path,
+    validation_root: &Path,
+) -> Result<()> {
+    reject_path_shaped_identity(binary)?;
+    let binary = BinaryIdentity::new(binary);
+
+    // A capture runs a declaration, it never invents one: the filed
+    // contract document must stand and speak for this binary.
+    let contracts_path = scenario_contracts_path(workspace, &binary);
+    let documents = match load_json::<ScenarioContracts>(&contracts_path) {
+        Ok(documents) => documents,
+        Err(PersistError::NotFound { .. }) => {
+            bail!(
+                "no contract document for {binary} at {} — declare the scenario before capturing it",
+                contracts_path.display()
+            );
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(format!(
+                "reading the contract document at {}",
+                contracts_path.display()
+            )));
+        }
+    };
+    if documents.binary != binary {
+        bail!(
+            "the contract document filed at {} speaks for {}, not {binary} — refusing to capture across binaries",
+            contracts_path.display(),
+            documents.binary
+        );
+    }
+    let contract = documents.scenarios.get(scenario).cloned().ok_or_else(|| {
+        let declared: Vec<&str> = documents.scenarios.keys().map(String::as_str).collect();
+        anyhow!("scenario '{scenario}' is not declared for {binary} — declared here: {declared:?}")
+    })?;
+    contract.validate(validation_root)?;
+
+    // The original target binary: the identity names a file under the
+    // validation root; the run stands in the contract's working dir.
+    let program = validation_root.join(binary.as_str());
+    if !program.is_file() {
+        bail!(
+            "the original target binary is not at {} — the binary identity must name a file in the target dir",
+            program.display()
+        );
+    }
+    let working = Path::new(&contract.working_dir);
+    let run_dir = if working.is_absolute() {
+        working.to_path_buf()
+    } else {
+        validation_root.join(working)
+    };
+
+    let wine = WineRunner::new(workspace);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock stands after 1970")
+        .as_secs();
+    let capture = capture_scenario(&program, &run_dir, &contract, &wine, now)?;
+
+    let path = scenario_capture_path(workspace, &binary, scenario);
+    if let Ok(standing) = load_json::<ScenarioCapture>(&path) {
+        state_pairing_mismatch(&standing, &capture, &path);
+    }
+    save_json(&path, &capture)
+        .with_context(|| format!("filing the scenario capture at {}", path.display()))?;
+
+    println!(
+        "scenario '{scenario}' captured against {binary}: {}",
+        disposition_summary(&capture)
+    );
+    println!(
+        "  filed at {} — {} output byte(s) recorded{}, {} interaction(s) acknowledged, {} observation path(s) classified",
+        path.display(),
+        capture
+            .terminal
+            .as_ref()
+            .map(|t| t.chunks.iter().map(String::len).sum::<usize>())
+            .unwrap_or(0),
+        match capture
+            .terminal
+            .as_ref()
+            .and_then(|t| t.output_capped.then_some(()))
+        {
+            Some(()) => format!(
+                " (capped at {} bytes — more was produced)",
+                contract.max_output_bytes
+            ),
+            None => String::new(),
+        },
+        capture
+            .interaction
+            .as_ref()
+            .map(|i| i.acknowledged_at_ms.len())
+            .unwrap_or(0),
+        capture
+            .filesystem
+            .as_ref()
+            .map(|f| f.entries.len())
+            .unwrap_or(0),
+    );
+    if let Some(pairing) = &capture.pairing {
+        println!(
+            "  pairing: program sha256 {}, {}",
+            pairing.program_sha256, pairing.wine_version
+        );
+    }
+    Ok(())
+}
+
+/// The pairing rule stated out loud: identical pairing stamps pair for
+/// comparison — the program's sha256 and the Wine that ran it — and a
+/// mismatch on either names both sides before the replacement files,
+/// never silent. A reader of the transcript never mistakes a
+/// re-capture of changed bytes for a clean re-run.
+fn state_pairing_mismatch(standing: &ScenarioCapture, fresh: &ScenarioCapture, path: &Path) {
+    let (Some(old), Some(new)) = (&standing.pairing, &fresh.pairing) else {
+        return;
+    };
+    if old == new {
+        return;
+    }
+    let mut parts = Vec::new();
+    if old.program_sha256 != new.program_sha256 {
+        parts.push(format!(
+            "program sha256 {} vs {}",
+            old.program_sha256, new.program_sha256
+        ));
+    }
+    if old.wine_version != new.wine_version {
+        parts.push(format!("wine {} vs {}", old.wine_version, new.wine_version));
+    }
+    println!(
+        "PAIRING MISMATCH: the capture standing at {} paired differently — {}; \
+         captures pair for comparison only against identical pairing stamps, and the replacement files as the current capture",
+        path.display(),
+        parts.join("; ")
+    );
+}
+
+fn disposition_summary(capture: &ScenarioCapture) -> String {
+    let Some(exit) = capture.exit.as_ref() else {
+        return "how it ended is unassessed".to_string();
+    };
+    match exit.disposition {
+        ExitDisposition::Exited => match exit.exit_code {
+            Some(code) => format!("exited with code {code}"),
+            None => "exited (no code reported)".to_string(),
+        },
+        ExitDisposition::Timeout => "closed by the max-run window".to_string(),
+        ExitDisposition::IdleTimeout => "closed by the idle window".to_string(),
+        ExitDisposition::Cancelled => "cancelled".to_string(),
+        ExitDisposition::Failed => "failed".to_string(),
+    }
 }
