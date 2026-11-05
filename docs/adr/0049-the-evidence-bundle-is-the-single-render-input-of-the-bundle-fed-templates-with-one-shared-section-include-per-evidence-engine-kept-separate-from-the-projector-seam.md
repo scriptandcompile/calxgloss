@@ -14,7 +14,7 @@ over again ~8–10 times before any template could read it.
 `EscalateTemplate` held 17 of the bundle's lists as its own fields, and
 `ModuleContextTemplate` held 12. The two prompt-data twins
 (`ModuleContextPromptData`, `FullModulePromptData`) declared 12 each yet
-again. Every constructor moved the same fields one by one; the escalate
+again. Every constructor moved the same fields one by one. The escalate
 constructor alone had ~20 of them. On the template side, each evidence
 engine's prompt-section body was hand-copied per template — the escalate
 and module-context section bodies were already byte-identical apart from
@@ -42,19 +42,21 @@ adapt to it.
   `EscalateTemplate`, `ModuleContextTemplate`, and `FullModuleTemplate`
   each hold the gathered `EvidenceBundle` as a single evidence field
   (borrowed `&EvidenceBundle` where the caller keeps ownership, moved
-  otherwise) and keep only genuinely context-tier-specific fields —
-  escalate: the function identity, failing code, and failure history;
-  module-context: the disassembly/decompiler context and baseline-test
-  results; full-module: those plus shim layers and PAL traits. Which
-  evidence sections a prompt shows is decided by which section includes
+  otherwise) and keep only genuinely context-tier-specific fields:
+  - escalate: the function identity, failing code, and failure history
+  - module-context: the disassembly/decompiler context and baseline-test
+    results
+  - full-module: those plus shim layers and PAL traits
+
+  Which evidence sections a prompt shows is decided by which section includes
   that template calls, never by any struct's field list.
 - **One shared section include per evidence engine, parameterized by
   (findings list, heading text).** Sixteen `templates/sections/*.j2`
   includes, their bodies lifted verbatim from the pre-refactor templates so
   renders stay byte-identical, called through Askama import + macro call
-  with each consumer passing its own heading (`ADDITIONAL CONTEXT —
-  GLOBAL STATE` in escalate, `GLOBAL STATE` in module-context); templates
-  stay compile-time-checked. Twenty-five (template × section) call pairs
+  with each consumer passing its own heading — `ADDITIONAL CONTEXT — GLOBAL STATE`
+  in escalate, `GLOBAL STATE` in module-context. Templates stay
+  compile-time-checked. Twenty-five (template × section) call pairs
   today: escalate 13, module-context 7, full-module 1, rich 2, detailed 2.
   The include takes the findings list, not the bundle, so the rich and
   detailed context tiers — which render from the translation request, not a
@@ -68,9 +70,9 @@ adapt to it.
 - **The prompt-data twins are deleted from the prompts crate's public
   API.** The module-context and full-module builders take `(request,
   bundle)` — plus shim layers and PAL traits for full-module — and
-  construct their template internally; the escalate builders pass the
+  construct their template internally. The escalate builders pass the
   bundle through as one field. Constructors that existed to fill the twins
-  with empty lists disappear; callers with no gathered context pass
+  with empty lists disappear. Callers with no gathered context pass
   `EvidenceBundle::default()`. Translator call sites stay mechanical:
   context tiers keep gathering through the P35 projector, keep the
   bespoke fills (call-graph neighbors, neighboring context, call-graph
@@ -78,12 +80,12 @@ adapt to it.
   bundle to the builders as-is.
 - **The render side stays separate from the projector seam.** The
   projector fills the bundle from persisted analysis documents and knows
-  nothing of templates; the templates render the bundle and know nothing of
+  nothing of templates. The templates render the bundle and know nothing of
   documents, persistors, or scan machinery. `EvidenceBundle` is the whole
   contract between them — ADR-0048's separation extended, not merged.
 - **Identity is verified, not assumed.** The error-handling section pair
   was diffed and found *not* byte-identical between escalate and
-  module-context, and deliberately stays per-template; the shared include
+  module-context, and deliberately stays per-template. The shared include
   and its roster row exist only for sections that genuinely share one
   body.
 
@@ -99,7 +101,7 @@ adapt to it.
   include roster locks the exact (template × section) set — P35's
   projector-roster pattern moved to the render side. A forgotten or
   accidentally dropped include fails CI loudly instead of silently
-  shrinking a prompt; a newly registered evidence engine arrives already
+  shrinking a prompt. A newly registered evidence engine arrives already
   covered.
 - Rendered prompts are byte-identical across the restructure: the
   pre-existing renders/omits pairs pass unmodified (apart from constructor
@@ -118,7 +120,7 @@ adapt to it.
 - Accepted price: three tables now list the evidence engines — the scan
   registry, the projection rows, and the include roster — each with its
   own roster test. That duplication is the accepted cost of keeping the
-  write, read, and render seams three; any future merging of tables needs
+  write, read, and render seams three. Any future merging of tables needs
   its own ADR, as with P34/P35.
 - The minimal/signature/with-tests/edge-case/failure-fix templates carry
   no hand-copied evidence bodies, were confirmed untouched, and may adopt
