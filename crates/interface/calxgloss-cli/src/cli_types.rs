@@ -1446,4 +1446,34 @@ pub(super) enum ScenarioAction {
         #[arg(long = "secret", value_name = "MS:TEXT")]
         secrets: Vec<String>,
     },
+    /// Compare two scenario captures under the declared contract and file
+    /// the digest-bearing scenario verdict (P24.6, issue #407)
+    ///
+    /// Pure record logic: no process launches, no Wine toolchain needed.
+    /// The pair's normalization stamps must agree — an unstamped or
+    /// cross-version pair is refused by name, nothing filed. The verdict
+    /// files (replacing any previous verdict for the pair) at
+    /// `re/scenarios/verdicts/{binary}-{scenario}.json`; `--json` prints
+    /// the machine-readable verdict document on stdout.
+    Compare {
+        /// Target binary identity, e.g. `eqgame.exe`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Scenario name whose declared contract judges the pair
+        #[arg(long, required = true)]
+        scenario: String,
+
+        /// Path of the left scenario capture document
+        #[arg(long, required = true, value_name = "PATH")]
+        left: PathBuf,
+
+        /// Path of the right scenario capture document
+        #[arg(long, required = true, value_name = "PATH")]
+        right: PathBuf,
+
+        /// Print the machine-readable verdict document, exactly as filed
+        #[arg(long)]
+        json: bool,
+    },
 }

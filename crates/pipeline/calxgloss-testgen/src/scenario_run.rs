@@ -184,6 +184,10 @@ fn observe_run(
     let pairing = CapturePairing {
         program_sha256: sha256_hex(&program_bytes),
         wine_version: wine.wine_version()?,
+        // The normalization version in force at capture time: the compare
+        // side refuses to pair captures across versions, and it can only
+        // name versions the captures themselves carry.
+        normalization_version: contract.normalization.version.clone(),
     };
 
     std::fs::create_dir_all(run_dir)

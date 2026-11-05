@@ -23,12 +23,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use calxgloss_testgen::{TypedSecret, WineRunner, capture_scenario_with_secrets};
+use calxgloss_testgen::{TypedSecret, WineRunner, capture_scenario_with_secrets, compare_captures};
 use calxgloss_types::{
-    BinaryIdentity, ExitDisposition, InteractionKind, LiteralReplacement, NormalizationRules,
-    PersistError, ScenarioCapture, ScenarioContract, ScenarioContracts, ScenarioSignal,
-    ScriptedInput, ScriptedInteraction, load_json, save_json, scenario_capture_path,
-    scenario_contracts_path,
+    BinaryIdentity, DimensionDivergence, DimensionVerdict, ExitDisposition, FileChange,
+    FileObservation, FinalizationOutcome, InteractionKind, LiteralReplacement, NormalizationRules,
+    PersistError, ProcessSample, ScenarioCapture, ScenarioContract, ScenarioContracts,
+    ScenarioSignal, ScriptedInput, ScriptedInteraction, TerminalGeometry, load_json, save_json,
+    scenario_capture_path, scenario_contracts_path, scenario_verdict_path,
 };
 
 /// The gathered flags of one `scenario declare`, mirroring the variant's
@@ -401,6 +402,268 @@ pub fn handle_scenario_capture(
         );
     }
     Ok(())
+}
+
+/// The `scenario compare` arm (P24.6, issue #407): weigh two *scenario
+/// captures* against the filed *scenario contract* and file the digest-
+/// bearing *scenario verdict* at `re/scenarios/verdicts/{binary}-{scenario}.json`
+/// — replacing any previous verdict for the pair outright. Pure record
+/// logic end to end: nothing launches, no Wine is looked for, and the
+/// captures may stand at any path the operator names — a hand-built pair
+/// is as readable as two filed captures. The interface owns the load,
+/// the filing, and the prose; the weighing belongs to testgen's
+/// compare seam, which refuses cross-scenario pairs and cross-
+/// normalization-version pairs by name, filing nothing.
+pub fn handle_scenario_compare(
+    binary: &str,
+    scenario: &str,
+    left: &Path,
+    right: &Path,
+    workspace: &Path,
+    as_json: bool,
+) -> Result<()> {
+    reject_path_shaped_identity(binary)?;
+    let binary = BinaryIdentity::new(binary);
+
+    // A compare judges a declared scenario: the contract document must
+    // stand and speak for this binary — the same gate a capture faces.
+    let contracts_path = scenario_contracts_path(workspace, &binary);
+    let documents = match load_json::<ScenarioContracts>(&contracts_path) {
+        Ok(documents) => documents,
+        Err(PersistError::NotFound { .. }) => {
+            bail!(
+                "no contract document for {binary} at {} — declare the scenario before comparing its captures",
+                contracts_path.display()
+            );
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(format!(
+                "reading the contract document at {}",
+                contracts_path.display()
+            )));
+        }
+    };
+    if documents.binary != binary {
+        bail!(
+            "the contract document filed at {} speaks for {}, not {binary} — refusing to compare across binaries",
+            contracts_path.display(),
+            documents.binary
+        );
+    }
+    let contract = documents.scenarios.get(scenario).cloned().ok_or_else(|| {
+        let declared: Vec<&str> = documents.scenarios.keys().map(String::as_str).collect();
+        anyhow!("scenario '{scenario}' is not declared for {binary} — declared here: {declared:?}")
+    })?;
+
+    // Both captures must stand and parse; a refusal names the path it
+    // could not read, so a typo never masquerades as a missing block.
+    let read_capture = |path: &Path, side: &str| -> Result<ScenarioCapture> {
+        match load_json::<ScenarioCapture>(path) {
+            Ok(capture) => Ok(capture),
+            Err(PersistError::NotFound { .. }) => bail!(
+                "no {side} scenario capture document at {} — compare reads capture \
+                 documents; point --{side} at a filed capture or any hand-built one",
+                path.display()
+            ),
+            Err(error) => Err(anyhow::Error::new(error).context(format!(
+                "reading the {side} capture document at {}",
+                path.display()
+            ))),
+        }
+    };
+    let left_capture = read_capture(left, "left")?;
+    let right_capture = read_capture(right, "right")?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock stands after 1970")
+        .as_secs();
+    let document = compare_captures(&binary, &contract, &left_capture, &right_capture, now)?;
+
+    let path = scenario_verdict_path(workspace, &binary, scenario);
+    save_json(&path, &document)
+        .with_context(|| format!("filing the scenario verdict at {}", path.display()))?;
+
+    if as_json {
+        // The machine-readable form: exactly the document the record
+        // tree now carries, digest and all.
+        let printed = serde_json::to_string_pretty(&document)?;
+        println!("{printed}");
+        return Ok(());
+    }
+
+    let verdict = &document.verdict;
+    println!(
+        "scenario '{scenario}' compared for {binary}: terminal {}, interaction {}, exit {}, filesystem {}, process {}",
+        verdict_word(&verdict.terminal),
+        verdict_word(&verdict.interaction),
+        verdict_word(&verdict.exit),
+        verdict_word(&verdict.filesystem),
+        verdict_word(&verdict.process),
+    );
+    for divergence in &document.divergences {
+        println!("  DIVERGENCE: {}", describe_divergence(divergence));
+    }
+    for unknown in &document.residual_unknowns {
+        println!("  UNKNOWN: {unknown}");
+    }
+    println!(
+        "  complete equivalence: {}",
+        if document.claims_complete_equivalence {
+            "claimed"
+        } else {
+            "NOT claimed — bounded evidence, stated unknowns"
+        }
+    );
+    println!("  filed at {} — digest {}", path.display(), document.digest);
+    Ok(())
+}
+
+/// The one word a dimension's state prints in the human verdict: the
+/// three-way read, spelled the way the document spells it.
+fn verdict_word(state: &DimensionVerdict) -> &'static str {
+    match state {
+        DimensionVerdict::AssessedPass => "assessed pass",
+        DimensionVerdict::AssessedFail => "assessed fail",
+        DimensionVerdict::Unassessed => "unassessed",
+    }
+}
+
+/// One named divergence as prose: the field, then both sides beside it —
+/// a side that never produced the thing reads named-absent, never a
+/// blank that could be read as agreement.
+fn describe_divergence(divergence: &DimensionDivergence) -> String {
+    match divergence {
+        DimensionDivergence::TerminalSegment { index, left, right } => format!(
+            "terminal segment {index}: left {} | right {}",
+            quoted(left.as_deref(), "never printed"),
+            quoted(right.as_deref(), "never printed"),
+        ),
+        DimensionDivergence::TerminalGeometry { left, right } => format!(
+            "terminal opening geometry: left {} | right {}",
+            geometry_word(left),
+            geometry_word(right),
+        ),
+        DimensionDivergence::TerminalRenderedStates { left, right } => format!(
+            "terminal rendered states: left [{}] | right [{}]",
+            geometries_word(left),
+            geometries_word(right),
+        ),
+        DimensionDivergence::InteractionAcknowledgement { at_ms, left, right } => format!(
+            "interaction at {at_ms} ms: left {} | right {}",
+            ack_word(*left),
+            ack_word(*right),
+        ),
+        DimensionDivergence::ExitDisposition { left, right } => format!(
+            "exit disposition: left {} | right {}",
+            exit_disposition_word(left),
+            exit_disposition_word(right),
+        ),
+        DimensionDivergence::ExitCode { left, right } => format!(
+            "exit code: left {} | right {}",
+            left.map(|code| code.to_string())
+                .unwrap_or_else(|| "no code reported".to_string()),
+            right
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "no code reported".to_string()),
+        ),
+        DimensionDivergence::ExitFinalization { left, right } => format!(
+            "finalization: left {} | right {}",
+            finalization_word(*left),
+            finalization_word(*right),
+        ),
+        DimensionDivergence::FileSystemPath { path, left, right } => format!(
+            "filesystem path {path}: left {} | right {}",
+            entry_word(left.as_ref()),
+            entry_word(right.as_ref()),
+        ),
+        DimensionDivergence::ProcessTreeRow { left, right } => format!(
+            "process-tree row: left {} | right {}",
+            row_word(left.as_ref()),
+            row_word(right.as_ref()),
+        ),
+    }
+}
+
+fn quoted(text: Option<&str>, absent: &str) -> String {
+    match text {
+        Some(text) => format!("`{text}`"),
+        None => format!("({absent})"),
+    }
+}
+
+fn geometry_word(geometry: &Option<TerminalGeometry>) -> String {
+    match geometry {
+        Some(geometry) => format!("{}x{}", geometry.cols, geometry.rows),
+        None => "(never measured)".to_string(),
+    }
+}
+
+fn geometries_word(states: &[TerminalGeometry]) -> String {
+    if states.is_empty() {
+        return "none rendered".to_string();
+    }
+    states
+        .iter()
+        .map(|geometry| format!("{}x{}", geometry.cols, geometry.rows))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn ack_word(acknowledged: bool) -> &'static str {
+    if acknowledged {
+        "acknowledged"
+    } else {
+        "never acknowledged"
+    }
+}
+
+fn exit_disposition_word(disposition: &ExitDisposition) -> &'static str {
+    match disposition {
+        ExitDisposition::Exited => "exited",
+        ExitDisposition::Timeout => "closed by the max-run window",
+        ExitDisposition::IdleTimeout => "closed by the idle window",
+        ExitDisposition::Cancelled => "cancelled",
+        ExitDisposition::Failed => "failed",
+    }
+}
+
+fn finalization_word(outcome: Option<FinalizationOutcome>) -> &'static str {
+    match outcome {
+        Some(FinalizationOutcome::Signaled) => "signaled",
+        Some(FinalizationOutcome::AlreadyExited) => "already exited before any signal",
+        Some(FinalizationOutcome::StaleIdentityUntouched) => "stale identity left untouched",
+        None => "never finalized",
+    }
+}
+
+fn entry_word(entry: Option<&FileObservation>) -> String {
+    match entry {
+        Some(entry) => {
+            let size = entry
+                .size_bytes
+                .map(|bytes| format!("{bytes} bytes"))
+                .unwrap_or_else(|| "size unrecorded".to_string());
+            let digest = entry.sha256.as_deref().unwrap_or("digest unrecorded");
+            format!(
+                "{} ({size}, {digest})",
+                match entry.change {
+                    FileChange::Created => "created",
+                    FileChange::Deleted => "deleted",
+                    FileChange::Modified => "modified",
+                    FileChange::Unchanged => "unchanged",
+                }
+            )
+        }
+        None => "(no entry filed)".to_string(),
+    }
+}
+
+fn row_word(row: Option<&ProcessSample>) -> String {
+    match row {
+        Some(row) => format!("{} (pid {})", row.name, row.pid),
+        None => "(never sighted)".to_string(),
+    }
 }
 
 /// The pairing rule stated out loud: identical pairing stamps pair for

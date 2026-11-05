@@ -8,6 +8,32 @@
 use super::*;
 
 #[test]
+fn comparison_verdicts_land_at_their_named_record_tree_location() {
+    // Verdicts live in their own directory beside the captures, one
+    // document per (binary, scenario name) like the capture keying — a
+    // later reader (P25's receipts, P26's ledger) finds the current
+    // verdict at this documented location and cites it by its digest.
+    let path = scenario_verdict_path("/ws", &BinaryIdentity::new("eqgame.exe"), "boot-and-exit");
+    assert_eq!(
+        path,
+        Path::new("/ws")
+            .join("re")
+            .join("scenarios")
+            .join("verdicts")
+            .join("eqgame.exe-boot-and-exit.json"),
+        "the record tree names the verdicts directory beside the captures"
+    );
+    assert_eq!(
+        scenario_verdicts_dir("/ws"),
+        scenario_captures_dir("/ws")
+            .parent()
+            .expect("the captures dir has a parent")
+            .join("verdicts"),
+        "the verdicts directory stands inside the scenario directory, beside the captures"
+    );
+}
+
+#[test]
 fn an_empty_verdict_document_reads_every_dimension_unassessed() {
     let verdict: ScenarioVerdict = serde_json::from_str("{}").expect("an empty verdict parses");
     assert_eq!(verdict.terminal, DimensionVerdict::Unassessed);
@@ -41,6 +67,87 @@ fn verdict_dimensions_round_trip_in_snake_case_wire_form() {
     assert!(json.contains("\"assessed_fail\""), "wire form: {json}");
     let back: ScenarioVerdict = serde_json::from_str(&json).expect("the verdict round-trips");
     assert_eq!(back, verdict);
+}
+
+#[test]
+fn a_filed_verdict_document_reads_back_by_its_own_digest() {
+    // The standing pin P25's receipts and P26's ledger lean on: a filed
+    // verdict names its own digest, and a reader who loads the filed bytes
+    // re-derives exactly that digest — the citation by digest is provable
+    // from the document alone.
+    let stage = tempfile::tempdir().expect("a staging dir");
+    let document = sample_verdict_document();
+    let path = stage.path().join("verdict.json");
+    crate::persist::save_json(&path, &document).expect("the verdict files");
+    let back: ScenarioVerdictDocument =
+        crate::persist::load_json(&path).expect("the filed verdict loads back");
+    assert_eq!(back, document, "the document round-trips through filing");
+    assert!(
+        document.digest.starts_with("sha256:"),
+        "the digest names its own algorithm: {}",
+        document.digest
+    );
+    assert_eq!(
+        document.content_digest().expect("the document serializes"),
+        back.digest,
+        "the digest reads back from the filed bytes alone"
+    );
+}
+
+#[test]
+fn the_verdict_digest_digests_the_content_never_the_digest_field_itself() {
+    // Same content under any stored digest string re-derives the same
+    // digest, and different content never does — the digest is the
+    // content's identity, so two verdicts that disagree cannot share one.
+    let a = sample_verdict_document();
+    let mut blanked = a.clone();
+    blanked.digest = String::new();
+    assert_eq!(
+        a.content_digest().expect("serializes"),
+        blanked.content_digest().expect("serializes"),
+        "the digest field itself never rides its own digest"
+    );
+    let mut b = a.clone();
+    b.verdict.terminal = DimensionVerdict::AssessedFail;
+    assert_ne!(
+        a.content_digest().expect("serializes"),
+        b.content_digest().expect("serializes"),
+        "a different verdict is a different digest"
+    );
+}
+
+#[test]
+fn a_pairing_stamp_carries_the_normalization_version_it_was_captured_under() {
+    // The capture names not only which bytes ran and which Wine ran them,
+    // but which normalization version governed it: pairing refuses across
+    // versions, and that refusal can only name versions the captures
+    // themselves carry.
+    let capture: ScenarioCapture = serde_json::from_str(
+        r#"{"scenario": "boot", "filed_at": 1,
+            "pairing": {"program_sha256": "aa", "wine_version": "wine-9.0",
+                        "normalization_version": "norm-v1"}}"#,
+    )
+    .expect("a stamped capture parses");
+    let pairing = capture.pairing.expect("the pairing stamp stands");
+    assert_eq!(pairing.normalization_version, "norm-v1");
+    let json = serde_json::to_string(&pairing).expect("the pairing round-trips");
+    assert!(
+        json.contains("\"normalization_version\":\"norm-v1\""),
+        "wire form: {json}"
+    );
+}
+
+#[test]
+fn a_pairing_from_before_the_version_stamp_reads_as_version_unstamped() {
+    // A capture filed before this stamp existed carries no version — the
+    // compare side reads that as *not proven*, never as agreement.
+    let pairing: CapturePairing =
+        serde_json::from_str(r#"{"program_sha256": "aa", "wine_version": "wine-9.0"}"#)
+            .expect("an older pairing still parses");
+    assert!(
+        pairing.normalization_version.is_empty(),
+        "the absent stamp reads as unstamped, never as a version"
+    );
 }
 
 #[test]
@@ -137,6 +244,36 @@ fn sample_contract(name: &str) -> ScenarioContract {
             port_patterns: vec![":\\d{4,5}".into()],
         },
     }
+}
+
+fn sample_verdict_document() -> ScenarioVerdictDocument {
+    // A filed verdict as the comparator files one: a named divergence, a
+    // stated unknown, and the digest the document stamps itself with.
+    let mut document = ScenarioVerdictDocument {
+        binary: BinaryIdentity::new("eqgame.exe"),
+        scenario: "boot".into(),
+        filed_at: 7,
+        normalization_version: "norm-v1".into(),
+        left_capture_sha256: "sha256:left-bytes".into(),
+        right_capture_sha256: "sha256:right-bytes".into(),
+        left_pairing: None,
+        right_pairing: None,
+        verdict: ScenarioVerdict {
+            exit: DimensionVerdict::AssessedFail,
+            ..ScenarioVerdict::default()
+        },
+        divergences: vec![DimensionDivergence::ExitCode {
+            left: Some(7),
+            right: Some(9),
+        }],
+        residual_unknowns: vec!["files outside the declared observation paths are unknown".into()],
+        claims_complete_equivalence: false,
+        digest: String::new(),
+    };
+    document.digest = document
+        .content_digest()
+        .expect("a sample verdict document serializes");
+    document
 }
 
 #[test]

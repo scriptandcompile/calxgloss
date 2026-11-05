@@ -92,6 +92,161 @@ pub struct ScenarioVerdict {
     pub process: DimensionVerdict,
 }
 
+/// One field where the two *scenario captures* diverged, named with both
+/// sides beside it — the reviewer never hand-diffs two raw captures to
+/// find what the comparison disagreed on. A missing side reads `None`:
+/// one capture carries the segment, ack, row, or entry the other never had.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DimensionDivergence {
+    /// One normalized terminal output segment reads differently, named by
+    /// its segment index; `None` is the side that never produced it.
+    TerminalSegment {
+        /// The zero-based segment (chunk) index where the sides disagree.
+        index: usize,
+        /// The left side's normalized segment text, if it has one.
+        left: Option<String>,
+        /// The right side's normalized segment text, if it has one.
+        right: Option<String>,
+    },
+    /// The opening terminal geometries the two runs measured disagree —
+    /// `None` is the side that never read its geometry.
+    TerminalGeometry {
+        /// The left side's measured opening geometry, if it has one.
+        left: Option<TerminalGeometry>,
+        /// The right side's measured opening geometry, if it has one.
+        right: Option<TerminalGeometry>,
+    },
+    /// The *rendered states* read back after resizes disagree: a restitch
+    /// whose resize never landed on the terminal shows up right here.
+    TerminalRenderedStates {
+        /// The left side's rendered states, in order.
+        left: Vec<TerminalGeometry>,
+        /// The right side's rendered states, in order.
+        right: Vec<TerminalGeometry>,
+    },
+    /// One scripted interaction offset was acknowledged on one side only,
+    /// named by its at-offset.
+    InteractionAcknowledgement {
+        /// The at-offset one side acknowledged and the other did not.
+        at_ms: u64,
+        /// Whether the left side acknowledged this offset.
+        left: bool,
+        /// Whether the right side acknowledged this offset.
+        right: bool,
+    },
+    /// The two runs ended by different named dispositions.
+    ExitDisposition {
+        /// How the left run ended.
+        left: ExitDisposition,
+        /// How the right run ended.
+        right: ExitDisposition,
+    },
+    /// The exit codes disagree — `None` is the side that never reported
+    /// a code, itself a named difference.
+    ExitCode {
+        /// The left side's exit code, if it reported one.
+        left: Option<u32>,
+        /// The right side's exit code, if it reported one.
+        right: Option<u32>,
+    },
+    /// The finalization outcomes disagree — including one side having
+    /// finalized and the other never having been finalized at all.
+    ExitFinalization {
+        /// The left side's finalization outcome, if the run was finalized.
+        left: Option<FinalizationOutcome>,
+        /// The right side's finalization outcome, if the run was finalized.
+        right: Option<FinalizationOutcome>,
+    },
+    /// One declared observation path reads differently across the two
+    /// captures — the whole entry sits on each side, so the change kind,
+    /// size, digest, and block digests are all beside the reader.
+    FileSystemPath {
+        /// The declared observation path that disagrees.
+        path: String,
+        /// The left side's entry for this path, if it has one.
+        left: Option<FileObservation>,
+        /// The right side's entry for this path, if it has one.
+        right: Option<FileObservation>,
+    },
+    /// One *process-tree row* one side had and the other did not — a
+    /// child one program spawned and the other never did. `None` names
+    /// the side that never sighted the row.
+    ProcessTreeRow {
+        /// The left side's row, if it sighted it.
+        left: Option<ProcessSample>,
+        /// The right side's row, if it sighted it.
+        right: Option<ProcessSample>,
+    },
+}
+
+/// The filed document of one *scenario comparison*: two *scenario captures*
+/// judged under one *scenario contract*, one [`DimensionVerdict`] per
+/// dimension of the five, every [`DimensionDivergence`] named with both
+/// sides beside it, and the residual unknowns that block a
+/// complete-equivalence claim stated by name. The comparator (P24.6) files
+/// it at `re/scenarios/verdicts/<binary identity>-<scenario key>.json` as
+/// its own digest-bearing document: [`Self::content_digest`] names the
+/// content, so P25's receipts and P26's ledger cite a verdict by digest
+/// and any reader proves the citation from the filed bytes alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ScenarioVerdictDocument {
+    /// The target binary identity this verdict was filed for.
+    pub binary: BinaryIdentity,
+    /// The scenario name whose captures were compared.
+    pub scenario: String,
+    /// When the verdict was filed, as a Unix timestamp in seconds.
+    pub filed_at: u64,
+    /// The normalization version the pair was judged under — stated, never
+    /// silent; a pair across different versions is refused, never filed.
+    pub normalization_version: String,
+    /// The content digest of the left capture document the comparison read.
+    pub left_capture_sha256: String,
+    /// The content digest of the right capture document the comparison read.
+    pub right_capture_sha256: String,
+    /// The left capture's pairing stamps, beside the reader so what paired
+    /// against what is always visible — absent reads unstamped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_pairing: Option<CapturePairing>,
+    /// The right capture's pairing stamps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_pairing: Option<CapturePairing>,
+    /// The five dimensions' states.
+    pub verdict: ScenarioVerdict,
+    /// Every named divergence, in dimension order (terminal, interaction,
+    /// exit, filesystem, process) and capture order within a dimension.
+    pub divergences: Vec<DimensionDivergence>,
+    /// What stays unknown even in this comparison — the output caps that
+    /// fired, the files outside the observation paths, a mismatched Wine
+    /// version — each stated, each blocking a complete-equivalence claim.
+    pub residual_unknowns: Vec<String>,
+    /// Whether the pair proves complete equivalence: only ever true when
+    /// every dimension assessed pass and no residual unknown stands; the
+    /// honesty rule means a bounded capture never silently claims it.
+    pub claims_complete_equivalence: bool,
+    /// The digest of this document's content (see [`Self::content_digest`]);
+    /// receipts cite the verdict by it.
+    pub digest: String,
+}
+
+impl ScenarioVerdictDocument {
+    /// The canonical digest of this verdict's content: sha256 over the
+    /// document's own JSON with the `digest` field blanked, prefixed
+    /// `sha256:` like every other content digest the record tree carries.
+    /// The digest field never rides its own digest, so a reader of a filed
+    /// document re-derives the same value from the filed bytes alone.
+    pub fn content_digest(&self) -> Result<String, TypesError> {
+        use sha2::{Digest as _, Sha256};
+        let mut blanked = self.clone();
+        blanked.digest = String::new();
+        let bytes = serde_json::to_vec(&blanked)?;
+        let sum = Sha256::digest(&bytes);
+        let hex: String = sum.iter().map(|byte| format!("{byte:02x}")).collect();
+        Ok(format!("sha256:{hex}"))
+    }
+}
+
 /// How a scenario run ended, from the closed set the capture lane names.
 /// Every way a run stops has a name here; nothing stops anonymously.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +274,14 @@ pub struct CapturePairing {
     pub program_sha256: String,
     /// The Wine version that ran the program.
     pub wine_version: String,
+    /// The normalization version the governing contract declared at
+    /// capture time: two captures never pair for comparison across
+    /// different versions. A capture filed before this stamp existed
+    /// deserializes with no version — unstamped means not proven, and
+    /// the compare side refuses the pair naming that, never assuming
+    /// agreement.
+    #[serde(default)]
+    pub normalization_version: String,
 }
 
 /// How a finalization — the close of a run that did not end on its own —
@@ -602,7 +765,35 @@ pub fn scenario_capture_path(
     binary: &BinaryIdentity,
     scenario: &str,
 ) -> PathBuf {
-    let key: String = scenario
+    let key = scenario_file_key(scenario);
+    scenario_captures_dir(workspace).join(format!("{binary}-{key}.json"))
+}
+
+/// The record tree's scenario-verdict directory: `re/scenarios/verdicts`.
+/// The comparator slice files scenario verdicts here, one document per
+/// (binary, scenario name); P25's receipts and P26's ledger only read them.
+pub fn scenario_verdicts_dir(workspace: impl AsRef<Path>) -> PathBuf {
+    scenario_contracts_dir(workspace).join("verdicts")
+}
+
+/// The record tree location of one filed scenario verdict:
+/// `re/scenarios/verdicts/<binary identity>-<scenario key>.json` — the
+/// scenario key folds exactly as the capture key does, and a re-compare
+/// replaces the previous verdict document outright.
+pub fn scenario_verdict_path(
+    workspace: impl AsRef<Path>,
+    binary: &BinaryIdentity,
+    scenario: &str,
+) -> PathBuf {
+    let key = scenario_file_key(scenario);
+    scenario_verdicts_dir(workspace).join(format!("{binary}-{key}.json"))
+}
+
+/// The file-key fold shared by the capture and verdict paths: every
+/// character outside `[A-Za-z0-9._-]` folds to `-`, so no declared name
+/// can ever climb out of its directory.
+fn scenario_file_key(scenario: &str) -> String {
+    scenario
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
@@ -611,6 +802,5 @@ pub fn scenario_capture_path(
                 '-'
             }
         })
-        .collect();
-    scenario_captures_dir(workspace).join(format!("{binary}-{key}.json"))
+        .collect()
 }

@@ -83,7 +83,8 @@ use commands::minidump_command::handle_minidump;
 use commands::run_options::{AutoRunOptions, LiveRunOptions, RunControls};
 use commands::scan_command::handle_scan_command;
 use commands::scenario_command::{
-    ScenarioDeclareOptions, handle_scenario_capture, handle_scenario_declare,
+    ScenarioDeclareOptions, handle_scenario_capture, handle_scenario_compare,
+    handle_scenario_declare,
 };
 use commands::serve::handle_serve;
 use commands::translate::handle_translate;
@@ -411,6 +412,19 @@ fn main() -> Result<()> {
                     .map(|resolved| PathBuf::from(&resolved.value))
                     .unwrap_or_else(|| workspace.clone());
                 handle_scenario_capture(&binary, &scenario, &workspace, &validation_root, &secrets)
+            }
+            ScenarioAction::Compare {
+                binary,
+                scenario,
+                left,
+                right,
+                json,
+            } => {
+                // Pure record logic: two capture documents plus the filed
+                // contract in, one verdict document out — no run, no Wine,
+                // no runtime.
+                let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+                handle_scenario_compare(&binary, &scenario, &left, &right, &workspace, json)
             }
         },
 

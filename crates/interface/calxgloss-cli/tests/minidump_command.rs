@@ -156,7 +156,10 @@ fn minidump_reports_refusals_per_dump_and_lands_named_records() {
     // Either way the vector is refused and the reason is named.
     let reason_named = ledger.contains("unmaterializable-pointer")
         || ledger.contains("argument-shape-not-in-signature");
-    assert!(reason_named, "the ledger names the refusal reason: {ledger}");
+    assert!(
+        reason_named,
+        "the ledger names the refusal reason: {ledger}"
+    );
 
     // Nothing was replayed, so no baseline suite was filed anywhere.
     assert!(

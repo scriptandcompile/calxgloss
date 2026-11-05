@@ -39,6 +39,14 @@
 //! records the calls that arrive through it, and forwards them transparently
 //! to the real module.
 //!
+//! The scenario lane (P24) runs declared *scenario contracts* against EXE
+//! targets: the `scenario_run` module stands one *scenario run* behind a
+//! host PTY under the standing Wine rules and files the *scenario
+//! capture*, while the `scenario_compare` module weighs a pair of captures
+//! under one contract into the digest-bearing *scenario verdict* — pure
+//! record logic, never a launch. See the Pipeline glossary for *scenario
+//! contract*, *scenario capture*, *scenario verdict*, and *pairing rule*.
+//!
 //! Global side-effect expectations are not captured from the Wine run — the
 //! harness reports return values only. They come from the global-state scan
 //! instead: [`global_state_expectations`] turns the function's access records
@@ -73,6 +81,7 @@ mod minidump;
 mod pe;
 mod record_replay;
 mod run;
+mod scenario_compare;
 mod scenario_run;
 mod wine;
 
@@ -93,6 +102,7 @@ pub use record_replay::{
     fold_capture_event_log,
 };
 pub use run::{BaselineRunner, TestContext};
+pub use scenario_compare::compare_captures;
 pub use scenario_run::{TypedSecret, capture_scenario, capture_scenario_with_secrets};
 pub use wine::capture::{
     BudgetStop, CAPTURE_LOG_NAME, CaptureBudgets, CaptureRun, derive_proxy_slots,
