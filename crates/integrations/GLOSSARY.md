@@ -11,7 +11,7 @@ The component that loads target binaries and answers decompile questions. It is 
 _Avoid_: bare "engine" (banned repo-wide); Ghidra as a live component — it is a retired engine, never the current one
 
 **Seam**:
-The fixed boundary between the analysis engine and every consumer. Reads flow through the *scan source*; writes flow through the *write-back source*. The seam stays in place even when the engine behind it is replaced.
+The fixed boundary between the analysis engine and every consumer. Reads flow through the *scan source*. Writes flow through the *write-back source*. The seam stays in place even when the engine behind it is replaced.
 _Avoid_: bridge — that was the deleted HTTP mechanism; provider
 
 **Scan source**:
@@ -19,10 +19,10 @@ The read side of the seam — the one place decompiled answers (bodies, listings
 _Avoid_: client (there is no connection any more)
 
 **Write-back source**:
-The write side of the seam — the only way scan records enter the loaded program; the scan read cache never implements it, by construction.
+The write side of the seam — the only way scan records enter the loaded program. The scan read cache never implements it, by construction.
 
 **Kuna**:
-The in-process analysis engine; it reads the target binary inside the harness process — nothing to attach to, spawn, install, or connect to.
+The in-process analysis engine. It reads the target binary inside the harness process — nothing to attach to, spawn, install, or connect to.
 _Avoid_: server, headless, JVM
 
 **Loaded program**:
@@ -37,8 +37,8 @@ _Avoid_: GhidraError (retired name)
 **Decompile dialect**:
 The pseudo-C text flavor the engine serves. Bodies, listings, and the pipeline's text handling are written in this flavor, and the engine reproduces it faithfully.
 
-**Ghidra names formats, never the engine**:
-Dialect spellings keep their historical names — `FUN_…`, `DAT_…`, `param_N`/`local_N`, `vftable`, the WARNING preamble — because they name a *format*; no live component is ever called Ghidra.
+**Historical format spellings**:
+The decompile dialect's spellings keep their historical names — `FUN_…`, `DAT_…`, `param_N`/`local_N`, `vftable`, the WARNING preamble — because they name a *format*, not an engine. No live component is ever called Ghidra. The analysis engine is always Kuna (ADR-0041).
 
 **Decompile noise filter**:
 The seam's curation of engine text. Shapes that would fake a structure (stack-guard patterns) are stripped, so they are never read as real. Shapes that are evidence (spelled try/catch frames) pass through byte for byte.
@@ -59,7 +59,7 @@ The ceiling on what one function's analysis may consume — instructions, second
 ### The LLM and its templates
 
 **Local LLM**:
-The locally hosted model that does the translating; because it is local, failed output is cheap and asking again is the normal path.
+The locally hosted model that does the translating. Because it is local, failed output is cheap and asking again is the normal path.
 
 **Fault monitor**:
 A run's watchdog over LLM responses. When a response shows a characteristic failure — invented APIs, an unproductive loop, divergence, exhaustion — the monitor ends the attempt.
