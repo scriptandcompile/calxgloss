@@ -42,9 +42,9 @@ confidence sit?
   as `AllocatorTracker::open_allocations`, so the pairing reading and
   the leak reading can never disagree about what stands open. The
   same escape gate checks handles too. An unclosed handle that is
-  passed to any callee, or returned whole, produces no claim (the
-  ownership findings are allocation-shaped; transferring handle
-  ownership is out of scope). An unclosed handle that escapes nowhere
+  passed to any callee, or returned whole, produces no claim: the
+  ownership findings are allocation-shaped, and transferring handle
+  ownership is out of scope. An unclosed handle that escapes nowhere
   leaks, reported at its opener.
 - **The evidence is the acquisition line alone.** A leak is an
   absence. The only positive fact is where the resource was acquired.

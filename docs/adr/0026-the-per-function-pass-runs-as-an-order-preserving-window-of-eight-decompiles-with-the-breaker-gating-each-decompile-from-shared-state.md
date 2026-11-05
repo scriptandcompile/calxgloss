@@ -11,12 +11,18 @@ decompile round trip to the Ghidra bridge at a time, so scan wall time
 grew with the listing's length times the round-trip latency. Spec #151
 asked to parallelize across functions with bounded concurrency. The
 scan's observable contract, pinned by tests and earlier ADRs, had to
-survive: hints land in listing order (ADR-0022's tie and survivor rules
-depend on this, and two scans of one program must diff cleanly); each
-function is decompiled exactly once; the string listing is fetched
-once; caller fetches stay arity-gated; and the skip-rate breaker (issue
-#71) still aborts a wrong-program scan with its counts instead of
-persisting a record that looks clean but is not. ADR-0024 additionally
+survive:
+
+- hints land in listing order (ADR-0022's tie and survivor rules
+  depend on this, and two scans of one program must diff cleanly)
+- each function is decompiled exactly once
+- the string listing is fetched once
+- caller fetches stay arity-gated
+- the skip-rate breaker (issue #71) still aborts a wrong-program scan
+  with its counts instead of persisting a record that looks clean but
+  is not
+
+ADR-0024 additionally
 fixed the correlation pass as a once-after-the-loop pass over the
 collected bodies, not per-function work.
 

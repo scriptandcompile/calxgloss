@@ -34,7 +34,7 @@ persisted before the field existed?
   statement keyword, and at least one word must fall outside the
   primitive and `undefined` family the decompiler writes on untyped
   slots. `undefined8`, `void *`, and `int` identify nothing worth a
-  `Drop` impl; `HANDLE` and `FILE` do. The primitive family is the
+  `Drop` impl. `HANDLE` and `FILE` do. The primitive family is the
   allocator detector's (`allocator::is_type_word`), deliberately not
   the handle detector's wider cast-stripping list, which counts
   `HANDLE` itself as a type word because it answers a different
