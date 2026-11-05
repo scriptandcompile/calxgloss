@@ -17,7 +17,7 @@ an SEH frame, it already spells the frame into the decompiled body as a
 filter treats as P15 territory and passes through byte-for-byte
 (issue #286). The track's first delivered slice — one thin end-to-end
 cut — is issue #287: it reads that spelling and saves a persisted
-finding; the
+finding. The
 track's later tickets add the exception-API readings, the goto-cleanup
 ladder, the failure-code records, and the cross-function propagation.
 
@@ -55,26 +55,26 @@ records its scan metadata, and a persistor — exactly as the global-state
   opening a spelled `catch` clause: `catch` immediately followed by its
   `(`, so an identifier merely starting with the word (`catch_count = 3;`)
   claims nothing. One frame block is one claim per function, the first in
-  body order; the evidence is the `catch` clause line that completes the
+  body order. The evidence is the `catch` clause line that completes the
   frame — the clause is the deciding sighting, since a `try` with no
   handler claims nothing. A lone `try`, a lone `catch`, and an ordinary
   guard all stay silent: absence of a spelled block is unknown, never a
   guessed frame.
 - **A tagged union, first kind `seh_frame`.** `SehFrame` (function,
   confidence, evidence, suggestion) joins `ErrhandlingFinding` under
-  serde tag `"seh_frame"`; the idiom kind lives in the tag, not a field, so
+  serde tag `"seh_frame"`. The idiom kind lives in the tag, not a field, so
   a persisted record can never disagree with its own tag. The track's later
   families — named personality-handler thunks and exception-API calls, the
   `RaiseException` reading, the goto-cleanup ladder, and the per-code
-  failure-code records (spec #230) — join the union as their own kinds;
-  consumers read the shared accessors (function, kind, confidence,
+  failure-code records (spec #230) — join the union as their own kinds.
+  Consumers read the shared accessors (function, kind, confidence,
   evidence, target, suggestion) without naming the family first.
 - **The spelled-block band, anchored: 80.** The decompiler read the
   exception data and reconstructed the frame itself — the strongest
   error-handling evidence a kept body can carry, the body-text counterpart
   of globalstate's exact-spelling band. The named-handler reading scores
   one band below, and the exception-API call one band below that (spec
-  #230's family ladder); each follow-up anchors its own band as it lands,
+  #230's family ladder). Each follow-up anchors its own band as it lands,
   strictly below the family above it, and no reading of a spelled block
   ever scores below 80.
 - **Scan order holds.** Findings follow the function listing, function by
@@ -82,7 +82,7 @@ records its scan metadata, and a persistor — exactly as the global-state
   guarantee.
 - **A new document, nothing existing touched.** One strict serde document
   per binary at `re/analysis/errhandling/{binary}.json` (ADR-0043's
-  analysis-directory convention); a missing artifact and a corrupt one stay
+  analysis-directory convention. A missing artifact and a corrupt one stay
   distinguishable to the loader (`NotFound` vs `Json`). No existing
   artifact changes shape, so every previously persisted analysis document
   loads byte-for-byte unchanged.
@@ -100,7 +100,7 @@ records its scan metadata, and a persistor — exactly as the global-state
   on to.
 - Persisted results gain a new document under the union's `seh_frame`
   kind and the CLI gains `errhandling --binary <name> [--show]`, printing
-  idiom, confidence, and evidence per function; nothing else reads the
+  idiom, confidence, and evidence per function. Nothing else reads the
   document yet.
 - The union's kind set is closed per release: documents written before a
   kind existed keep loading because each new kind is a new tag, the union
@@ -108,7 +108,7 @@ records its scan metadata, and a persistor — exactly as the global-state
   empty), and consumers pattern-match on tags they know.
 - The false-positive surface the spec names — GS-canary shapes,
   BOOL-shaped returns, lone gotos — belongs to the families that introduce
-  those readings; the spelled block cannot fire on them because it never
+  those readings. The spelled block cannot fire on them because it never
   claims without the pair spelled. Cross-function error-code propagation
   follows in the track's later tickets (#288+), using ADR-0035's pattern
   over the bodies the scan keeps.

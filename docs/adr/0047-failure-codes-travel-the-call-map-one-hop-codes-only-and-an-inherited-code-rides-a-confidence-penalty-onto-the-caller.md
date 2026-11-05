@@ -33,9 +33,9 @@ The `calxgloss-errhandling` scan gains one cross-function pass
 `DecompiledFunction` entries the scan already kept, appending
 `inherited_error_code` findings after every per-function record.
 
-- **Codes travel; idioms never.** A callee's spelled frame, named
+- **Codes travel. Idioms never.** A callee's spelled frame, named
   handler, exception-API call, `RaiseException` claim, and cleanup ladder
-  describe how the *callee* handles failure; none of them says anything
+  describe how the *callee* handles failure. None of them says anything
   about the caller's own body. Only failure-code records — the callee's
   contract — cross a call edge.
 - **Two caller shapes inherit.** A guard comparing a callee's return
@@ -70,14 +70,14 @@ The `calxgloss-errhandling` scan gains one cross-function pass
   (callers in listing order, call sites in body order) after the
   per-function block, so two scans of one program still diff cleanly.
 - **Nothing to inherit, nothing said.** A callee the scan never read (a
-  skipped decompile) or one that records no codes contributes nothing; the
+  skipped decompile) or one that records no codes contributes nothing. The
   skip and breaker behaviour of the per-function pass (issue #71) governs
   which callees exist for the pass. Recursion claims nothing.
 - **A new kind, no new reads.** The finding is a new tagged arm of
   ADR-0046's union stating its partner callee beside the code and the
-  shared accessors; call edges come from the same kept bodies through the
+  shared accessors. Call edges come from the same kept bodies through the
   shared `call_sites` scan, run over lines with comments and strings
-  blanked out, so the pass adds zero analysis engine round-trips
+  blanked out. The pass adds zero analysis engine round-trips
   (ADR-0024) and zero annotation write-back (ADR-0020).
 
 ## Consequences
@@ -89,10 +89,10 @@ The `calxgloss-errhandling` scan gains one cross-function pass
 - The confidence ladder is fixed by a const assertion: 54 under 55/60
   under the first-hand code bands, so a future band move cannot silently
   promote second-hand evidence above first-hand.
-- Old documents load unchanged — a new tag only; the CLI's
+- Old documents load unchanged — a new tag only. The CLI's
   kind-breakdown line gains `inherited_error_code`.
 - Chains of two or more hops need a reader (human or the #292 batch
-  wiring) to walk one edge at a time; that is deliberate, and a future
+  wiring) to walk one edge at a time. That is deliberate, and a future
   transitive rule would need its own ADR and its own, lower band.
-- Batch scan wiring and the prompt sections follow in #292–#293; nothing
+- Batch scan wiring and the prompt sections follow in #292–#293. Nothing
   in this change feeds a prompt or writes back yet.
