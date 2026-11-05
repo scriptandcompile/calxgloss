@@ -19,11 +19,13 @@
 //!
 //! The crate is organized into ten modules:
 //!
-//! - [`types`] - Core data types: `FpArrayCall`, `CallbackRegistration`,
-//!   `JumpTable`, `PluginArchitecture`, `CallbackChain`, and
-//!   `EventSystem` for the detection records; `CallbackFinding` as the
-//!   union over the six record kinds; `CallbackResult`, `ScanMetadata`
-//!   for the persisted per-binary results.
+//! - [`types`] - Core data types:
+//!   - `FpArrayCall`, `CallbackRegistration`, `JumpTable`,
+//!     `PluginArchitecture`, `CallbackChain`, and `EventSystem` for the
+//!     detection records
+//!   - `CallbackFinding` as the union over the six record kinds
+//!   - `CallbackResult`, `ScanMetadata` for the persisted per-binary
+//!     results
 //! - [`engine`] - Scan orchestration: `CallbackEngine` runs the four
 //!   per-body detectors and then the cross-function pass over one open
 //!   program through a `ScanSource` (function listing +

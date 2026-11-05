@@ -10,8 +10,8 @@
 //! a binary and records one flag per flagged function — the shape,
 //! the strongest evidence line, and a confidence band — as a document
 //! that downstream tickets consume. The translate prompts include the
-//! flag, so the LLM translates float as float; a reviewer triages the
-//! functions most likely mistranslated; and a later testgen track can
+//! flag, so the LLM translates float as float. A reviewer triages the
+//! functions most likely mistranslated. And a later testgen track can
 //! swap integer boundary sampling for rounding/NaN-boundary sampling
 //! for flagged functions without re-deriving the flag.
 //!

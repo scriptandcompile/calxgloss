@@ -11,12 +11,13 @@
 //!
 //! The crate is organized into seven modules:
 //!
-//! - [`types`] - Core data types: `MemoryHint`, `AllocationType` for
-//!   per-function detection records; `HandleLifecycle` and
-//!   `ReferenceCount` for the handle and reference-counting shapes;
-//!   `MemoryFinding` as the union over the three record kinds;
-//!   `MemoryResult`, `ScanMetadata` for the persisted per-binary
-//!   results.
+//! - [`types`] - Core data types:
+//!   - `MemoryHint`, `AllocationType` for per-function detection records
+//!   - `HandleLifecycle` and `ReferenceCount` for the handle and
+//!     reference-counting shapes
+//!   - `MemoryFinding` as the union over the three record kinds
+//!   - `MemoryResult`, `ScanMetadata` for the persisted per-binary
+//!     results
 //! - [`allocator`] - Allocation/deallocation pair tracking:
 //!   `AllocatorTracker` detects `malloc`/`calloc`/`realloc` → `free`
 //!   pairs within a function and suggests `Box<T>` or stack allocation

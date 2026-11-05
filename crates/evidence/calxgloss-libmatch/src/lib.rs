@@ -14,7 +14,7 @@
 //! line and an evidence confidence.
 //!
 //! Matching is body shape, not bytes — the body-based complement to
-//! ADR-0012's name-shape flagging; the two never touch each other's
+//! ADR-0012's name-shape flagging. The two never touch each other's
 //! records. Nothing is written back to the program (ADR-0020): findings
 //! are flag-only, and what a match tells downstream to do (call-graph
 //! `Skip` marking, prompt sections) is derived from the persisted
@@ -40,7 +40,7 @@
 //! - [`normalize`] - Body normalization: the wildcards that make a body
 //!   shape comparable. [`normalize`] is shared corpus-wide: its entry
 //!   point is public, and cross-crate consumers use it as-is without
-//!   re-testing its contract; the contract stays pinned here, through
+//!   re-testing its contract. The contract stays pinned here, through
 //!   scan findings.
 //! - [`matcher`] - Signature matching: `LibmatchMatcher` carries the
 //!   signature set a scan reads normalized bodies against.

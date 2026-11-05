@@ -9,18 +9,20 @@
 //!
 //! The crate is organized into nineteen modules:
 //!
-//! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
-//!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
-//!   `InferredCallType`, and `InferredReturnType` for inferred local
-//!   variables, call-site arguments, and function return values;
-//!   `CallingConvention` and `InferredConvention` for the closed set of
-//!   calling conventions and the reading a name gives one;
-//!   `Direction` and `InferredParamDirection` for the closed set of
-//!   parameter directions and the reading a body gives one of its
-//!   pointer parameters;
-//!   `InferredType` as the union over the six record kinds;
-//!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
-//!   results.
+//! - [`types`] - Core data types:
+//!   - `InferredParamType`, `InferenceMethod`, `InferenceScope` for
+//!     per-parameter inference records
+//!   - `InferredLocalType`, `InferredCallType`, and `InferredReturnType`
+//!     for inferred local variables, call-site arguments, and function
+//!     return values
+//!   - `CallingConvention` and `InferredConvention` for the closed set of
+//!     calling conventions and the reading a name gives one
+//!   - `Direction` and `InferredParamDirection` for the closed set of
+//!     parameter directions and the reading a body gives one of its
+//!     pointer parameters
+//!   - `InferredType` as the union over the six record kinds
+//!   - `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
+//!     results
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
 //!   function of a program exactly once. The inline detectors then read
 //!   the body, including the direction readings of the parameter

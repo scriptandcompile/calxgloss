@@ -30,7 +30,7 @@
 //! in the harness itself (see the `wine` module), written as an entry-event
 //! log beside the results, and replayed through the same ground-truth walk
 //! (the shared `CapturedCallEntry` record lives in
-//! `calxgloss_types::capture`); mining is additive, and an un-armed baseline
+//! `calxgloss_types::capture`). Mining is additive, and an un-armed baseline
 //! run emits exactly the suite this crate invented. See the Pipeline glossary
 //! for *mined input*, *captured call entry*, *entry hook*, *entry event*,
 //! *recording proxy*, *reference-app run*, and *case origin*. The recording

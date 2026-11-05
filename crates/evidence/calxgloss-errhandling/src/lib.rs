@@ -20,8 +20,8 @@
 //!
 //! The second-hand records sit beside them too. The cross-function
 //! pass copies a callee's recorded failure codes onto the callers that
-//! guard on the callee's result or return it again. Only codes travel;
-//! idioms never do. The copies score at a confidence penalty below
+//! guard on the callee's result or return it again. Only codes travel.
+//! Idioms never do. The copies score at a confidence penalty below
 //! every band that saw the literal value first-hand (ADR-0047). The
 //! whole-program pass and the prompt consumers are follow-up issues
 //! against this same artifact, and nothing here feeds an annotation
@@ -31,7 +31,7 @@
 //! keeps one claim per function. The strongest SEH family that fires
 //! wins. A `RaiseException` finding is kept beside it as a different
 //! fact, and a goto-cleanup ladder beside both as a third fact. A GS
-//! stack-canary check never reads as exception handling; it is
+//! stack-canary check never reads as exception handling. It is
 //! compiler noise, already stripped by the shipped decompiler-noise
 //! filter.
 //!
@@ -39,7 +39,7 @@
 //! time. No disassembly, no CFG, no call-fact reads, and nothing
 //! written back to the program (ADR-0020). An earlier draft of the
 //! pass was rejected for exactly those violations. The catalog's
-//! whole-program frame rule (ADR-0023) stays a future reading; this
+//! whole-program frame rule (ADR-0023) stays a future reading. This
 //! artifact prepares for it (ADR-0046). The cross-function pass is
 //! the one reading that relates two bodies. It reads the call edges
 //! out of the kept bodies themselves — the shared `call_sites` scan,

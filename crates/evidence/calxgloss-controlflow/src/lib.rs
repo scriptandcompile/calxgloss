@@ -18,7 +18,7 @@
 //!   `SelfRecursion`, `StateMachine`, `LoopNesting` (with `LoopKind`),
 //!   `BranchDensity` (with `BranchClassification`), `BranchSite` (with
 //!   `GuardedTarget`), and `MutualRecursion`. `ControlFlowFinding` is
-//!   the union over the seven record kinds; `ControlFlowResult` and
+//!   the union over the seven record kinds. `ControlFlowResult` and
 //!   `ScanMetadata` are the persisted per-binary results.
 //! - `chain` (crate-internal) - Shared chain walker: brace-depth-aware
 //!   discovery of if/else-if chains over one decompiled body, used by both

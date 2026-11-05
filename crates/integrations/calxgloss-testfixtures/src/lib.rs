@@ -13,14 +13,14 @@
 //! program that consumes stdin lines, writes and deletes observable files
 //! under its run dir, and ends on declared exit codes — from `exit <code>`
 //! on stdin or `--exit-code N` on argv. The scenario lane (P24) runs it
-//! for real; nothing scenario-specific lives in the program itself.
+//! for real. Nothing scenario-specific lives in the program itself.
 //!
 //! [`load_target`] parses the built DLL and fails with a named error the
 //! moment the fixture stops having that shape, so this crate's smoke test
 //! catches a broken fixture before an analysis engine test fails deep
 //! inside itself with it. [`load_console_target`] draws the same line for
 //! the console EXE's PE identity. The Integrations integration tests and
-//! the web e2e harness can reach the fixture as a dev-dependency; both
+//! the web e2e harness can reach the fixture as a dev-dependency. Both
 //! keep a reachability test, so the fixture stays reachable from each.
 //!
 //! # Architecture

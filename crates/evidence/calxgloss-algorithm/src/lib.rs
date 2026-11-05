@@ -9,10 +9,11 @@
 //!
 //! The crate is organized into ten modules:
 //!
-//! - [`types`] - Core data types: `AlgorithmHint`, `AlgorithmCategory`,
-//!   `DetectionMethod`, `AlgorithmPattern` for per-function detection
-//!   records; `AlgorithmRecognitionResult`, `ScanMetadata` for the
-//!   persisted per-binary results.
+//! - [`types`] - Core data types:
+//!   - `AlgorithmHint`, `AlgorithmCategory`, `DetectionMethod`,
+//!     `AlgorithmPattern` for per-function detection records
+//!   - `AlgorithmRecognitionResult`, `ScanMetadata` for the persisted
+//!     per-binary results
 //! - [`cfg_patterns`] - Control flow signature matching: `CfgPatternMatcher`
 //!   scans decompiled bodies against hardcoded patterns. The standard set
 //!   `default_patterns` includes: comparison sort, binary search, linear
@@ -54,7 +55,7 @@
 //!   each detection method (control flow 60, string body match 60 /
 //!   listing-only match 30, callback contract 75, cross-function
 //!   correlation 70). When several detectors claim the same algorithm for
-//!   one function, resolution keeps the highest-confidence claim; ties
+//!   one function, resolution keeps the highest-confidence claim. Ties
 //!   keep the claim the scan surfaced first, and the winning claim stays
 //!   where that algorithm first appeared.
 //! - [`persist`] - JSON persistence: `AlgorithmPersistor` saves and loads
@@ -63,7 +64,7 @@
 //!   JSON document with a section per detector, lets a scan read the
 //!   operator's own signature sets — exactly the pattern types' serde
 //!   shapes plus an optional per-entry confidence — instead of the
-//!   built-in standard sets; a malformed file fails the run naming its
+//!   built-in standard sets. A malformed file fails the run naming its
 //!   path.
 //! - [`error`] - [`AlgorithmError`] and the crate-wide [`Result`] alias.
 

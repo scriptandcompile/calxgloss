@@ -8,7 +8,7 @@
 //! # Branching Strategy
 //!
 //! - **Success**: the branch is created, its files are committed, and it is merged into `main`.
-//! - **Failure**: the branch is created and its files committed; the branch is retained, never deleted.
+//! - **Failure**: the branch is created and its files committed. The branch is retained, never deleted.
 //! - **Retries**: each fresh attempt gets a new branch with the next attempt number.
 //!
 //! # Commit Message Convention
