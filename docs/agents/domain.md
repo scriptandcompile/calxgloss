@@ -34,6 +34,21 @@ When your output refers to a domain concept (in an issue title, a refactor propo
 
 If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 
+## Writing rules for new entries
+
+Every touched entry follows these shapes — and when editing an entry anyway, 
+recut it to the new shape. `docs/standards.md` § *Writing that reads* governs 
+the sentences throughout.
+
+- **Glossary entries**: a `**Term**:` definition line of at most 25 plain
+  words that reads without the rest of the glossary. Spec detail (paths,
+  ordering guarantees, refusal rules, edge cases) goes in a `*Rules:*`
+  bullet list under the line, one claim per bullet. Never a multi-clause
+  paragraph definition.
+- **ADR titles**: at most 12 words, and the filename slug stays short
+  enough to type. The title indexes the decision; it does not summarize
+  it. The full decision statement belongs in the Decision section.
+
 ## Flag ADR conflicts
 
 If your output contradicts an existing ADR, say so explicitly instead of silently overriding it:

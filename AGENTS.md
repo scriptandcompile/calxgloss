@@ -60,4 +60,29 @@ Domain docs are split by context. The root `GLOSSARY-MAP.md` points to per-conte
 
 ### Commits
 
-Write commit messages in plain English: explain the work using the domain terms from the glossaries.
+Write commit messages in plain English. The subject line is a lowercase
+imperative verb doing a plain verb to a plain object — say what the change
+makes the code do — and use a glossary term only where it adds precision the
+plain words can't carry. The body must be readable by someone who has never
+read the glossary; later sentences may then use glossary terms for exactness.
+
+- Before: `honor the harness-error honesty rule at the verify seam`
+- After: `record a broken test harness as a harness-error receipt, never a unit verdict (issue #415)`
+
+Never stack nominalized metaphors ("the receipt fold", "the honesty edge") —
+those are invented variants, banned by `docs/standards.md`. See that file's
+*Writing that reads* section for the full sentence rules and a worked example.
+
+### Reply style
+
+When reporting work to a human in conversation:
+
+- Lead with what the change gives a person, in complete sentences.
+- Cite file:line, issue numbers, and record paths (e.g. `re/unknowns/…`)
+  instead of coined abstractions ("the P21 mechanism" → "the unknown-record
+  mechanism, decided in ADR-0056").
+- One sentence, one claim. No aphoristic closers ("neither edge is a log
+  line"), no rhetorical flourishes. End on the fact.
+- The same rules as `docs/standards.md` *Writing that reads* apply: name an
+  actor and a verb in every sentence, and make the first sentence of any
+  paragraph readable without the glossary.

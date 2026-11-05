@@ -2,6 +2,8 @@
 
 Calxgloss reverse-engineers target binaries into cross-platform Rust. Each context — a group of crates in the Cargo workspace — keeps its own glossary of domain words.
 
+Entry shape: a `**Term**:` line of ≤25 plain words that reads without the glossary, then a `*Rules:*` bullet list for spec detail — never a multi-clause paragraph definition. See `docs/agents/domain.md` and `docs/standards.md` § *Writing that reads*.
+
 ## Contexts
 
 - [Pipeline](./crates/pipeline/GLOSSARY.md): the translate ▸ verify ▸ retry ▸ commit loop that turns units of work into verified Rust

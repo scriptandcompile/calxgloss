@@ -73,14 +73,80 @@ Every library crate follows the same shape:
   rules, what gets persisted), not just restate the signature.
 - Write in plain English: short, direct sentences describing what the code
   does and when, the way you would explain it to a colleague new to the
-  project. No clever phrasing, no stacked technical adjectives.
+  project. No clever phrasing, no stacked technical adjectives. The full
+  sentence rules are in *Writing that reads* below.
 - When a doc names a domain concept, use the exact term from that context's
   glossary (`GLOSSARY-MAP.md` → `crates/<context>/GLOSSARY.md`), and use the
   same word consistently across doc comments, log messages, and error text —
   never a synonym or invented variant. Follow the map's word-ownership and
   banned-word rules (bare "engine" is banned: say *evidence engine* or
   *analysis engine*). Plain English is preferred everywhere a glossary term
-  is not actually needed.
+  is not actually needed. The glossary term is the noun; the words around it
+  stay ordinary English.
+
+## Writing that reads
+
+These rules bind all prose in this repo — doc comments, module docs, commit
+messages, glossary entries, ADRs, changelog entries, and replies to the
+partner. Documentation too dense to read is worse than none: it gives the
+illusion that useful documentation exists.
+
+### Sentence rules
+
+- One sentence, one claim. If a sentence has a semicolon, split it — or
+  make the claims a bulleted list.
+- Every sentence names an actor and a verb: "the verifier writes the pair",
+  not "the fold files the pair". Never turn a verb into a noun to avoid
+  naming an actor; compounds like "the receipt fold" or "the honesty edge"
+  are invented variants and doubly banned.
+- The **first sentence** of any doc comment, commit body, glossary entry,
+  or ADR must be readable without the glossary: plain words, no invented
+  compounds. Later sentences may then use glossary terms for precision.
+- Keep sentences under about 25 words. At most one em-dash tail per
+  sentence.
+- End on the fact, not the flourish. No aphorisms, no dramatic one-line
+  closers ("neither edge is a log line").
+
+### Precision is not the excuse
+
+Glossary terms stay exactly as they are (*file*, *pair*, *receipt*, *seam*)
+— they name real artifacts and nothing plainer names them. The disease is
+jargon used as the *grammar* of every sentence, not jargon used as *names*.
+Keep the nouns; fix the verbs.
+
+### Worked example
+
+Bad (a real response paragraph — every rule above broken at once):
+
+> The honesty edge of the receipt fold, at the verifier's persisting seam
+> where pairs are already written. A verifier-side breakage — the harness
+> errored, not the unit — files a pair verdicted harness-error and records
+> no unit verdict: infrastructure failure never reads as a unit failure and
+> never reads as a pass.
+
+Good (same facts, same precision, readable):
+
+> The verify step treats a broken test harness differently from a failing
+> unit, in two ways:
+>
+> 1. A harness failure never becomes a unit verdict. The run writes a
+>    receipt pair marked `harness-error` and records no pass or fail for
+>    the unit, so an infrastructure failure can't be read as a unit failure
+>    or as a pass (issue #415).
+> 2. A receipt that can't be written is recorded, not dropped. If the pair
+>    write fails, the run adds a `receipt-unfiled` record to the binary's
+>    unknown ledger (`re/unknowns/…`) naming the run whose receipt is
+>    missing, so the reviewer sees the verification isn't citable instead
+>    of assuming it was. Same mechanism as ADR-0056.
+>
+> Both are stored records a reviewer can see, not log lines.
+
+### Review hook
+
+The `code-review` skill's Standards axis treats this as a finding: **could a
+contributor who has never read this context's glossary understand the doc
+comments and commit messages in this diff?** If not, flag it, quote the
+sentence, and propose the split or rewrite.
 
 ## API & construction style
 
