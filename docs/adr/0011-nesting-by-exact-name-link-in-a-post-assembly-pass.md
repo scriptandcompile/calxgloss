@@ -24,7 +24,7 @@ links each field whose type name matches a recovered named type **by exact
 name**, keyed on the Type Manager path.
 
 - **Exact name, keyed on the path.** The link stores the matched type's
-  Type Manager path, not its name. Paths are unique; names are not. The
+  Type Manager path, not its name. Paths are unique. Names are not. The
   path is what a consumer resolves.
 - **Ambiguity stays unlinked.** Several recovered types can share a name,
   and that happens exactly when Ghidra applied the same typedef in several
@@ -56,6 +56,6 @@ name**, keyed on the Type Manager path.
     applied over another) stays unlinked. The field record has no
     category to disambiguate with, and guessing would corrupt the
     rendered subtree. Accepted: an unlinked field still names its type.
-  - The link adds recording and rendering; it is not a re-parse. The
+  - The link adds recording and rendering. It is not a re-parse. The
     nested type's own fields are not inlined into the outer type's list.
     A consumer that wants the subtree resolves the path.

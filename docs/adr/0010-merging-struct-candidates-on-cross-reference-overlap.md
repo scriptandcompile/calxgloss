@@ -16,9 +16,11 @@ the database as two half-candidates. Each has half the fields, half the
 evidence, and a weaker confidence, and the translator's prompts see two
 hypotheses where the program has one class.
 
-The merge rule needed deliberate choices: what overlap counts as "the same
-struct"; the order the pass runs in, so a vtable link survives; and how a
-merged candidate is named, scored, and kept deterministic.
+The merge rule needed deliberate choices:
+
+- what overlap counts as "the same struct"
+- the order the pass runs in, so a vtable link survives
+- and how a merged candidate is named, scored, and kept deterministic
 
 ## Decision
 
@@ -61,7 +63,7 @@ keeps both through the merge:
   score starts from the strongest member's confidence. It adds a breadth
   gain for fields the merge adds past the widest member, and an agreement
   gain for readers it adds past the widest reader set. These are the same
-  per-field and per-reader payouts `score()` pays; the merge's gains count
+  per-field and per-reader payouts `score()` pays. The merge's gains count
   the persisted reader list, hubs included. The result is clamped at 100.
   A merge can never score below either half it came from, so the
   min-confidence threshold, which filters before the pass, still filters

@@ -32,12 +32,16 @@ after the callee→caller pass. It walks the listing in order and emits
 
 - **The evidence is what callers hand in.** An argument types a
   parameter only when it shows a recognizable type on its own, without
-  the callee's body to explain it. Three forms qualify: a bare
-  identifier naming one of the caller's parameters that has a surviving
-  inline reading (the caller passes along, untouched, something it was
-  itself handed); a string literal (`"…"` is `char *`, `L"…"` is
-  `wchar_t *`); or a call to a known-signature routine, read as that
-  routine's **return type**. A numeric literal, a cast, an indexing or
+  the callee's body to explain it. Three forms qualify:
+
+  - a bare identifier naming one of the caller's parameters that has a
+    surviving inline reading (the caller passes along, untouched,
+    something it was itself handed)
+  - a string literal (`"…"` is `char *`, `L"…"` is `wchar_t *`)
+  - or a call to a known-signature routine, read as that routine's
+    **return type**
+
+  A numeric literal, a cast, an indexing or
   member operand, and an identifier the scan never typed say nothing.
   That position gets no reading. The call site may still be typed by the
   callee→caller pass, but the callee's parameter is not.
@@ -88,4 +92,4 @@ after the callee→caller pass. It walks the listing in order and emits
   proves its value on the untyped-helper case. The confidence ladder
   keeps a propagated reading from ever replacing direct evidence.
 - The CLI's method breakdown is unchanged. `cross_function` records
-  were already counted since ADR-0014; only their volume grows.
+  were already counted since ADR-0014. Only their volume grows.

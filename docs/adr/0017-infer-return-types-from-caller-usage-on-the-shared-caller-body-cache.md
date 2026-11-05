@@ -13,7 +13,7 @@ result as a string — assigning it to a `char *` slot, feeding it to
 The typeinfer vocabulary had three record kinds
 (parameter, local, call-site argument). The return kind was the fourth
 the record vocabulary never had. Spec #142 asks for return types
-inferred from caller usage; ticket #146 is that pass.
+inferred from caller usage. Ticket #146 is that pass.
 
 Four design questions came up: where the pass runs, what counts as a use
 of the returned value, what the reading is keyed on, and how the new
@@ -32,7 +32,7 @@ already collects its callers' bodies, and the same `caller_bodies` slice
 is passed to the return pass. **One caller lookup per function serves
 both directions**, and the scan stays at one decompile per function.
 
-- **Three usage shapes give a return type; everything else gives
+- **Three usage shapes give a return type. Everything else gives
   nothing.** A call site contributes when the returned value sits in a
   shape that carries a reading:
   1. **assigned to a local the scan typed in that same caller** —
@@ -57,7 +57,7 @@ both directions**, and the scan stays at one decompile per function.
   `Target::Return { function }`. One function never keeps two return
   types. A return reading never competes with a parameter, local, or
   call-site reading for the same name.
-- **Every call site contributes; resolution picks the winner.** Each
+- **Every call site contributes. Resolution picks the winner.** Each
   caller's reading is emitted at `RETURN_USAGE_CONFIDENCE` 60 — the
   bottom of the ladder, level with the assignment-chain family. The use
   is concrete, but the type is only as good as the reading behind the

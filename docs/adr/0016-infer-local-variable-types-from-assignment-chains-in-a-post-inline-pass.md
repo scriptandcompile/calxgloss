@@ -14,7 +14,7 @@ when the body plainly says what the slot holds. For example
 `local_8 = param_1;` where an inline reading already types `param_1` as
 `char *`, or `local_10 = (char *)malloc(0x10);` where the allocator's
 contract says it returns a buffer. Spec #142 asks for locals typed
-through assignment chains; ticket #145 is that detector.
+through assignment chains. Ticket #145 is that detector.
 
 Four design questions came up: where the pass runs, what may count as a
 source of a type, how far a chain is followed, and how the new records
@@ -64,7 +64,7 @@ already has a reading of its own.
   write, a comparison (`==`), a compound assignment (`+=`), a control
   header (`for (uVar2 = 0; …)`), and a write to a parameter are all
   skipped. The evidence is the trimmed assignment line.
-- **No new plumbing.** The pass adds no Ghidra round-trips; it reads the
+- **No new plumbing.** The pass adds no Ghidra round-trips. It reads the
   same `DecompiledFunction` values the inline pass fetched. The records
   flow through the existing final `resolve_conflicts`, the unchanged
   persistor, and the existing union→`TypeInfo` prompt conversion, which
