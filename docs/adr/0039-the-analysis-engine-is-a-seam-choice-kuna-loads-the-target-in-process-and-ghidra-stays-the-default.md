@@ -41,7 +41,7 @@ The crate wraps Kuna's console engine
 `load(path) -> KunaProgram` — answering program identity (SLEIGH id
 like `x86:LE:64:default`, entry point, symbol count). Every failure is
 a named `KunaError` whose message spells out the `--engine ghidra`
-fallback; no stack traces.
+fallback. No stack traces.
 
 **The Kuna dependency is pinned to a release tag via a git
 dependency** — `v1.878` (commit `cb68db1`) — because the Kuna
@@ -63,13 +63,13 @@ the analysis engine loads them from there. Only x86/x86-64 is
 embedded, matching calxgloss's PE-target scope.
 
 **`doctor` under `kuna` is load-and-report.** `doctor --engine kuna --binary
-<FILE>` loads the target and prints its identity; the
+<FILE>` loads the target and prints its identity. The
 probe/attach/spawn, install, and port checks of the Ghidra path simply
 do not run. The binary is required because there is no server to ask
 for its current program.
 
 **ADR-0001 and ADR-0007 stay Accepted and untouched.** They govern the
-`ghidra` analysis engine; the Ghidra lifecycle code is not modified by
+`ghidra` analysis engine. The Ghidra lifecycle code is not modified by
 this work. The two analysis engines coexist until (and unless) the
 parity comparison in #203 decides whether `kuna` ever becomes the
 default.
@@ -92,17 +92,17 @@ default.
 **Caveats:**
 - In-process embedding means an analysis engine panic lands inside
   calxgloss. The spec's isolate-at-the-seam-boundary rule
-  (catch-unwind per source call) is later-ticket work; the skeleton
+  (catch-unwind per source call) is later-ticket work. The skeleton
   itself does not yet install it.
-- Only x86/x86-64 specs are embedded; other architectures fail with
+- Only x86/x86-64 specs are embedded. Other architectures fail with
   the named load error and the `--engine ghidra` pointer.
 - The web scan path does not yet honour `kuna`: `serve` and `live` are
   gated to the ghidra analysis engine like every other
   analysis-engine-dependent command, and analysis engine selection
   reaches the web scan path itself with #212's e2e work.
-- First `kuna` use unpacks the specs into the user cache (~a few MB);
-  subsequent runs reuse them. Deleting the cache directory is always
+- First `kuna` use unpacks the specs into the user cache (~a few MB).
+  Subsequent runs reuse them. Deleting the cache directory is always
   safe.
-- The pinned Kuna release is young and moves fast; the pin plus the
+- The pinned Kuna release is young and moves fast. The pin plus the
   reported `KUNA_RELEASE` make any upgrade a deliberate, reviewable
   change.
