@@ -41,13 +41,13 @@ reads is a trait someone can accidentally hand to a write-back pass.
   probe — the moment anyone writes `impl TypeWriteSource for
   CachedGhidraSource`, the two collide (E0119) and the crate stops
   compiling. The guard lives inside the crate because coherence's
-  negative reasoning is only available where the trait is defined; an
+  negative reasoning is only available where the trait is defined. An
   integration test rejects the pair unconditionally.
 - **Both setters address the function by address.** The bridge parses
   `function_address` with `parseAddress` and refuses a name. So the
   trait takes `function_address: u64` and sends it as bare hex — the
   same rendering every address-carrying read call already uses. Naming
-  by prototype text would have been a friendlier API; it is not what
+  by prototype text would have been a friendlier API. It is not what
   the bridge accepts.
 - **Payload keys follow the v6.0.0 `@RequestBody` maps verbatim**,
   verified against the bridge source: `{function_address, prototype}`,
@@ -57,7 +57,7 @@ reads is a trait someone can accidentally hand to a write-back pass.
   offset?}`. Enum values are sent as a JSON object, not an array,
   because the bridge maps them as `Map<String, Integer>`. An omitted
   offset is absent from the payload, never null.
-- **Prose refusals join the classifier; the not-found sentinel does
+- **Prose refusals join the classifier. The not-found sentinel does
   not.** The write endpoints' refusal openings (`Failed to set
   function prototype`, `Structure with name`, `Could not resolve base
   type`, …) join `SERVER_ERROR_PREFIXES`. A refused write therefore

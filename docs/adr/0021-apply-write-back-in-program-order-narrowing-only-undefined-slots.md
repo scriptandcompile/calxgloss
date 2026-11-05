@@ -19,7 +19,7 @@ Manager holds no `Widget`? When may a write touch a slot at all? How
 does the record's Rust-flavored type text (`u32`) meet Ghidra's C
 parser? And how does one refused write affect the rest of the run?
 
-The tension: an aggressive pass types everything the scan inferred; a
+The tension: an aggressive pass types everything the scan inferred. A
 conservative pass risks doing little. The scan's records are
 hypotheses — the whole crate says so. So write-back must not let a
 hypothesis destroy a fact already in the program.
@@ -29,7 +29,7 @@ hypothesis destroy a fact already in the program.
 - **The driver is generic over both seams.** `WriteBack<S: ScanSource,
   W: TypeWriteSource>::new(source, writer, floor).apply(result)` lives
   in `write_back.rs`. The CLI passes the same raw `GhidraClient` to
-  both positions; ADR-0020's rule that the read cache never implements
+  both positions. ADR-0020's rule that the read cache never implements
   the write trait means there is nothing else to pass. Tests pass a
   canned program and a recording writer, so the whole pass is tested
   without a Ghidra server.
@@ -78,7 +78,7 @@ hypothesis destroy a fact already in the program.
   skipped, and the reason states their confidence and the floor. The CLI
   flag `--confidence-floor` sets it. `--write-back` works after a scan
   and with `--show`, applying the cached result.
-- **Setup reads can fail the run; per-record failures never do.** The
+- **Setup reads can fail the run. Per-record failures never do.** The
   function listing (name → address) and the Type Manager listing are the
   pass's foundation. A failure there ends the run. A function that will
   not decompile, and every refused write, is collected into the report
@@ -100,4 +100,4 @@ hypothesis destroy a fact already in the program.
 - The pass reads the current prototype from the decompiler's signature
   line — the only place the read seam exposes current parameter types.
   So a function whose body will not decompile cannot have its prototype
-  merged; its records are collected as failures saying exactly that.
+  merged. Its records are collected as failures saying exactly that.
