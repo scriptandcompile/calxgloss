@@ -21,5 +21,5 @@ Entry shape: a `**Term**:` line of ≤25 plain words that reads without the glos
 - **All → Shared**: `calxgloss-types` holds the records every context exchanges
 - **Pipeline ↔ Evidence (scan scheduling)**: Pipeline owns the schedule-table words — descriptor row, fan-out, cached-hit short-circuit, warn-and-continue. Evidence owns what a row means: scan row name, per-binary document, facets.
 - **Evidence → Pipeline (evidence bundle)**: the bundle and its projector seam are Pipeline's words. Evidence's findings pass through them.
-- **Parking is Evidence's**: parking is the classification act that keeps a do-not-translate target binary out of work. Shared stores its record; Interface renders it.
+- **Parking is Evidence's**: parking is the classification act that keeps a do-not-translate target binary out of work. Shared stores its record. Interface renders it.
 - **Bare "engine" is banned**: say *evidence engine* (the fifteen scans, Evidence's word) or *analysis engine* (Kuna at the seam, Integrations' word).
