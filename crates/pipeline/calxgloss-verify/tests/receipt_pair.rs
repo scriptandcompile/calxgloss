@@ -18,8 +18,9 @@
 use std::path::{Path, PathBuf};
 
 use calxgloss_types::{
-    BinaryIdentity, TestCase, VerificationReceipt, VerificationVerdict, VerifierCommand,
-    baseline_suite_digest, persist, verification_receipt_path,
+    BinaryIdentity, EffectiveLedger, TestCase, UnknownKind, UnknownSeverity, VerificationReceipt,
+    VerificationVerdict, VerifierCommand, baseline_suite_digest, persist, read_unknown_ledger,
+    verification_receipt_path,
 };
 use calxgloss_verify::{VerificationRun, Verifier, VerifyContext};
 use serde_json::json;
@@ -83,6 +84,145 @@ fn pair_verifies(json_path: &Path) -> VerificationReceipt {
         "the Markdown carries the same digest:\n{md}"
     );
     filed
+}
+
+/// The P25.6 honesty rule (issue #415): a run whose own harness breaks
+/// files its pair verdicted `harness-error` — and hands back no verdict
+/// at all. `verify` answers with `Err`, so no [`VerificationResult`] ever
+/// leaves the seam: the unit was never judged, and the pair assesses
+/// nothing. The break: the verifier's scratch root is a plain file, so
+/// the compile leg can never scaffold.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn a_harness_error_run_files_a_pair_verdicted_harness_error_and_records_no_unit_verdict() {
+    let work = tempfile::tempdir().expect("temp work dir");
+    std::fs::write(work.path().join("scratch"), "not a directory").expect("the root is blocked");
+    let verifier = Verifier::new(work.path()).expect("verifier");
+
+    let error = verifier
+        .verify(BINARY, FUNCTION, BODY, &[case(7)], &VerifyContext::default())
+        .await
+        .expect_err("a harness fault is the verifier's error, never a verdict");
+
+    // The pair stands at the run's own key, digest-paired like any other.
+    let filed = pair_verifies(&unit_dir(work.path()));
+    assert_eq!(filed.verdict, VerificationVerdict::HarnessError);
+    assert_eq!(
+        filed.verifier_command,
+        VerifierCommand::CompileOnly,
+        "no baseline case ever ran through a runner — the same compile-only doctrine as a compile-failed pair"
+    );
+    assert_eq!(filed.dimensions["values"].assessed, 0, "nothing was assessed");
+    assert_eq!(filed.dimensions["values"].passed, 0, "and least of all passed");
+    assert_eq!(filed.dimensions["api_trace"].assessed, 0);
+    assert!(filed.failed_cases.is_empty(), "no unit verdict — no case to name");
+    // The caller holds only the error: no result, no receipt travelled.
+    assert!(
+        !error.to_string().is_empty(),
+        "the harness failure itself is handed back, unsoftened"
+    );
+}
+
+/// A pair whose JSON authority cannot be written — the key is held by a
+/// directory — never reads as a quiet run: the run files an admitted
+/// unknown naming the run it belongs to, and its verdict stands honestly
+/// degraded rather than being fabricated into the record tree or erased
+/// into a log line.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn a_pair_that_cannot_be_written_files_an_admitted_unknown_naming_the_run() {
+    let work = tempfile::tempdir().expect("temp work dir");
+    let json_path = unit_dir(work.path());
+    std::fs::create_dir_all(json_path.parent().expect("unit dir")).expect("unit dir");
+    std::fs::create_dir(&json_path).expect("the authority key is held by a directory");
+    let verifier = Verifier::new(work.path()).expect("verifier");
+
+    let run = verifier
+        .verify(BINARY, FUNCTION, BODY, &[case(7)], &VerifyContext::default())
+        .await
+        .expect("the run's verdict stands, honestly degraded");
+    assert_eq!(run.result.tests_passed, 1, "the gate still judged the unit");
+
+    // Nothing was filed at the pair's key but the blocking directory, and
+    // the twin was never even attempted beside a missing authority.
+    assert!(
+        std::fs::metadata(&json_path).expect("the blocker").is_dir(),
+        "no JSON authority stands at the key"
+    );
+    assert!(
+        !json_path.with_extension("md").exists(),
+        "a twin beside no authority is never filed"
+    );
+
+    // The admitted unknown reads back through the existing route, naming
+    // exactly the run whose pair is missing.
+    let read =
+        read_unknown_ledger(work.path(), &BinaryIdentity::new(BINARY)).expect("the route reads");
+    let EffectiveLedger::Filed(records) = read else {
+        panic!("the unknown ledger was filed — the run admitted its missing receipt");
+    };
+    assert_eq!(records.len(), 1, "exactly the one admitted gap");
+    let record = &records[0];
+    assert_eq!(record.kind, UnknownKind::ReceiptUnfiled);
+    assert_eq!(record.severity, UnknownSeverity::Blocking);
+    assert_eq!(record.function.as_deref(), Some(FUNCTION));
+    assert_eq!(record.source_slot(), "attempt-1", "keyed by the pair's own attempt");
+    assert!(
+        record.question.contains(FUNCTION) && record.question.contains("attempt-1"),
+        "the question names the run it belongs to:\n{}",
+        record.question
+    );
+}
+
+/// The unknown record of a run whose pair could not be written reads
+/// back through the admitted-unknown route — `read_unknown_ledger` —
+/// the same filing the pipeline's own ledgers use. No cargo in sight:
+/// the record's shape and route are pinned at the filing helper.
+#[tokio::test]
+async fn the_persisted_unknown_reads_back_through_the_existing_route() {
+    let work = tempfile::tempdir().expect("temp work dir");
+    let verifier = Verifier::new(work.path()).expect("verifier");
+    verifier
+        .file_unfiled_receipt_unknown(
+            BINARY,
+            FUNCTION,
+            2,
+            "the receipt authority could not be written: disk full",
+        )
+        .await
+        .expect("the filing lands");
+
+    let read =
+        read_unknown_ledger(work.path(), &BinaryIdentity::new(BINARY)).expect("the route reads");
+    let EffectiveLedger::Filed(records) = read else {
+        panic!("the filing filed a current set, not an absent key");
+    };
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.kind, UnknownKind::ReceiptUnfiled);
+    assert_eq!(record.severity, UnknownSeverity::Blocking);
+    assert_eq!(record.function.as_deref(), Some(FUNCTION));
+    assert_eq!(record.source_slot(), "attempt-2");
+    assert_eq!(
+        record.id,
+        format!("{BINARY}/{FUNCTION}/receipt_unfiled/attempt-2"),
+        "the id follows the shared derivation"
+    );
+    assert!(record.question.contains("disk full"), "the reason rides the question");
+
+    // Filing the same run again stays one record — the id re-derives, the
+    // set never duplicates.
+    verifier
+        .file_unfiled_receipt_unknown(BINARY, FUNCTION, 2, "re-filed with the same key")
+        .await
+        .expect("the re-filing lands");
+    let EffectiveLedger::Filed(again) =
+        read_unknown_ledger(work.path(), &BinaryIdentity::new(BINARY)).expect("still readable")
+    else {
+        unreachable!()
+    };
+    assert_eq!(again.len(), 1, "one gap stays one record across re-filings");
+    assert_eq!(again[0].id, record.id);
 }
 
 /// A passing run files its pair under the record convention, paired by

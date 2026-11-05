@@ -2,8 +2,10 @@
 
 use anyhow::{Context, Result};
 use calxgloss_types::{
-    BinaryIdentity, DimensionCounts, ShimVerificationResult, TestCase, VerificationReceipt,
-    VerificationResult, VerificationVerdict, VerifierCommand, persist,
+    BinaryIdentity, DimensionCounts, PersistError, ShimVerificationResult, TestCase, UnknownKind,
+    UnknownLedger, UnknownOrigin, UnknownRecord, UnknownResolutions, UnknownSeverity,
+    VerificationReceipt, VerificationResult, VerificationVerdict, VerifierCommand, persist,
+    scan::now_unix_secs, unknown_ledger_path, unknown_resolutions_path,
     verification_receipt_markdown, verification_receipt_path,
 };
 use std::collections::BTreeMap;
@@ -185,8 +187,14 @@ impl Verifier {
     /// Every run files a pair, pass or fail: the `passed`, `tests-failed`,
     /// and `compile-failed` verdicts each leave their record. Filed pairs
     /// are never edited in place — a later run writes its own. A run whose
-    /// verifier toolchain itself errors (`Err`) is a harness failure and
-    /// files nothing yet: the unit was never judged.
+    /// verifier toolchain itself breaks is a harness failure: it files its
+    /// pair verdicted `harness-error` and records no unit verdict — the
+    /// unit was never judged, so the seam answers with `Err`, never with a
+    /// `VerificationResult` (P25.6, issue #415). A pair that cannot be
+    /// written files an admitted unknown naming the run it belongs to;
+    /// the run's own verdict still stands, honestly degraded, and the
+    /// missing authority is never fabricated into a unit verdict or
+    /// dropped as a log line.
     ///
     /// # Arguments
     ///
@@ -214,7 +222,41 @@ impl Verifier {
         debug!(binary, function, "Starting verification");
 
         let started = Instant::now();
-        let compile_result = self.compile(binary, function, rust_code).await?;
+        let suite_digest = match self.suite_digest(baseline_tests, context) {
+            Ok(digest) => digest,
+            Err(e) => {
+                // The suite itself will not fold: no receipt can name a
+                // suite digest, so the run files its unknown and the fold
+                // error stands — loudly, never a silent skip.
+                self.file_unfiled_receipt_unknown(
+                    binary,
+                    function,
+                    context.attempt,
+                    &format!("the baseline suite digest could not be folded: {e}"),
+                )?;
+                return Err(e);
+            }
+        };
+        let compile_result = match self.compile(binary, function, rust_code).await {
+            Ok(result) => result,
+            Err(e) => {
+                // The compile leg itself broke — a scaffold or cargo that
+                // could not even be run. The verifier's own failure, never
+                // the unit's: the run files its pair verdicted
+                // `harness-error` and hands the error back, with no
+                // verdict and no unit judgement claimed.
+                self.file_harness_error_receipt(
+                    binary,
+                    function,
+                    context,
+                    &suite_digest,
+                    &format!("the compile leg broke: {e}"),
+                    started.elapsed().as_millis() as u64,
+                    0,
+                )?;
+                return Err(e);
+            }
+        };
         let compile_ms = started.elapsed().as_millis() as u64;
 
         // A compile-failed gate never runs its test leg, so its test-run
@@ -243,11 +285,45 @@ impl Verifier {
             );
 
             let test_started = Instant::now();
-            let project =
-                self.scaffold_test_project(binary, function, rust_code, baseline_tests)?;
-            let test_output = cargo::run_test_runner(&project)
-                .await
-                .unwrap_or_else(|e| format!("Test execution failed: {}", e));
+            let project = match self.scaffold_test_project(binary, function, rust_code, baseline_tests)
+            {
+                Ok(project) => project,
+                Err(e) => {
+                    // The test project could not even be scaffolded: the
+                    // test leg broke inside the verifier, so the run is a
+                    // harness failure — pair verdicted `harness-error`,
+                    // no verdict handed back.
+                    self.file_harness_error_receipt(
+                        binary,
+                        function,
+                        context,
+                        &suite_digest,
+                        &format!("the test project could not be scaffolded: {e}"),
+                        compile_ms,
+                        test_started.elapsed().as_millis() as u64,
+                    )?;
+                    return Err(e);
+                }
+            };
+            let test_output = match cargo::run_test_runner(&project).await {
+                Ok(output) => output,
+                Err(e) => {
+                    // A runner that never started assessed nothing. The
+                    // old fallback text ("Test execution failed: …") read
+                    // as a zero-test run — a quiet near-pass. That swallow
+                    // is gone: an unstartable runner is a harness failure.
+                    self.file_harness_error_receipt(
+                        binary,
+                        function,
+                        context,
+                        &suite_digest,
+                        &format!("the test runner could not be started: {e}"),
+                        compile_ms,
+                        test_started.elapsed().as_millis() as u64,
+                    )?;
+                    return Err(e);
+                }
+            };
             test_run_ms = test_started.elapsed().as_millis() as u64;
 
             let (tests_passed, tests_total, failed_tests, trace_assessed_tests) =
