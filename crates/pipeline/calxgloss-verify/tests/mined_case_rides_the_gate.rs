@@ -14,7 +14,7 @@
 //! ```
 
 use calxgloss_types::{CaseOrigin, TestCase};
-use calxgloss_verify::Verifier;
+use calxgloss_verify::{Verifier, VerifyContext};
 use serde_json::json;
 
 /// The translated body under verification: it always returns 7.
@@ -53,9 +53,11 @@ async fn a_hand_stamped_mined_case_passes_the_gate_unchanged() {
             "restitched_mined",
             BODY,
             &[mined_case()],
+            &VerifyContext::default(),
         )
         .await
-        .expect("verification runs");
+        .expect("verification runs")
+        .result;
 
     assert!(result.compiled, "the body itself compiles");
     assert_eq!(

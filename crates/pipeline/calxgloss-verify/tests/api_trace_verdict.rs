@@ -14,7 +14,7 @@
 //! ```
 
 use calxgloss_types::{TestCase, VerificationResult};
-use calxgloss_verify::Verifier;
+use calxgloss_verify::{Verifier, VerifyContext};
 use serde_json::json;
 
 /// The translated body under verification: it reaches the value 7 through
@@ -52,10 +52,17 @@ fn case_with_trace(expected_trace: &[&str]) -> TestCase {
 async fn scratch_verify(body: &str, cases: &[TestCase]) -> VerificationResult {
     let work = tempfile::tempdir().expect("temp work dir");
     let verifier = Verifier::new(work.path()).expect("verifier");
-    verifier
-        .verify("fixture_target.dll", "restitched_trace", body, cases)
+    let run = verifier
+        .verify(
+            "fixture_target.dll",
+            "restitched_trace",
+            body,
+            cases,
+            &VerifyContext::default(),
+        )
         .await
-        .expect("verification runs")
+        .expect("verification runs");
+    run.result
 }
 
 /// A permuted expected trace is still a containment failure: the matcher

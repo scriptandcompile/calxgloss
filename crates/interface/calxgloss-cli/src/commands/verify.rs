@@ -4,12 +4,19 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calxgloss_testgen::TestGenerator;
-use calxgloss_verify::Verifier;
+use calxgloss_verify::{Verifier, VerifyContext};
 use tracing::info;
 
 use crate::utils::*;
 
 /// Handle the `verify` subcommand: verify a translated function.
+///
+/// The run files its *verification receipt* pair under the record tree
+/// (`re/verification/<binary>/<function>/attempt-1.json`/`.md`) and the
+/// command prints the pair's content digest — what P26's ledger will
+/// cite a verified unit by. The command commits nothing: the pair stands
+/// on disk beside `re/baseline/`, staged like any other record when its
+/// branch is built.
 pub async fn handle_verify(
     binary: &str,
     function: &str,
@@ -45,12 +52,22 @@ pub async fn handle_verify(
         }
     };
 
-    // Verify
+    // A standalone verify command sits outside any retry ladder: attempt
+    // one, no strategy. The suite digest names the baseline file only
+    // when one actually stood on disk and was read.
+    let read_baseline = baseline_path.filter(|path| path.exists());
+    let context = VerifyContext {
+        baseline_file: read_baseline.as_deref(),
+        ..VerifyContext::default()
+    };
+
+    // Verify — the run files its own digest-paired receipt pair.
     let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
-    let verification = verifier
-        .verify(binary, function, &rust_code, &baseline_tests)
+    let run = verifier
+        .verify(binary, function, &rust_code, &baseline_tests, &context)
         .await
         .context("Verification failed")?;
+    let verification = run.result;
 
     // Print results
     println!();
@@ -93,6 +110,22 @@ pub async fn handle_verify(
             red_bold("FAIL \u{2717}")
         );
     }
+
+    // The receipt pair the run filed, and the digest that pairs it: the
+    // handle any later green claim cites this verdict by.
+    println!();
+    println!(
+        "  {}{} {}",
+        white_bold("  Receipt: "),
+        calxgloss_types::verification_receipt_path(
+            workspace,
+            &run.receipt.binary,
+            function,
+            run.receipt.attempt
+        )
+        .display(),
+        dim(&format!("(+ {})", run.receipt.digest))
+    );
 
     Ok(())
 }

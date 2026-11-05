@@ -14,11 +14,22 @@
 //! - [`prompt_acceptance`] — Interactive y/n prompt for human acceptance
 //! - [`print_classification_report`] — Display DLL classification results
 //! - [`print_batch_summary`] — Display batch translation results (pass/fail per function)
+//! - [`verification_receipt_markdown`] — Render a *verification receipt*'s
+//!   human twin (re-exported from the record's owning crate)
 //! - [`dashboard::render_dashboard`] — Display the review dashboard as a text-based table
 //! - [`doctor::print_kuna_report`] — Display the `calxgloss doctor` Kuna engine report
 
 pub mod dashboard;
 pub mod doctor;
+
+/// Human rendering of a *verification receipt* at the review surface.
+///
+/// The rendering is owned by the record itself in `calxgloss-types` —
+/// the document renders its own human twin, so the pair's facts can
+/// never drift from its JSON authority — and re-exported here beside
+/// this crate's other human renderings, so a reader at the report
+/// surface imports it from one place.
+pub use calxgloss_types::verification_receipt_markdown;
 
 use std::io::{self, Write};
 

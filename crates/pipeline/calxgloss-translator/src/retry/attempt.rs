@@ -30,7 +30,7 @@ use calxgloss_types::{
     BinaryIdentity, ContextTier, FailureHint, FaultEvent, ProgressEvent, ResourceExhaustionFault,
     TestCase, TranslationEvents,
 };
-use calxgloss_verify::{CompileResult, Verifier};
+use calxgloss_verify::{CompileResult, VerificationRun, Verifier, VerifyContext};
 use tracing::warn;
 
 /// Approximate elapsed time recorded for resource-exhaustion events when the
@@ -225,6 +225,19 @@ fn record_in_detector(
 /// loop owns that policy (#330).
 // Parameters mirror one attempt's full input set, passed positionally by
 // the loop — same shape as log_token_usage.
+/// The retry ladder's receipt context for one attempt: its place and
+/// strategy ride the filed *verification receipt*. The prompt shape
+/// earns its own name when P25.3 wires the writer; for now the strategy
+/// names the path.
+fn attempt_receipt_context(attempt_num: u32, retry_strategy: &str) -> VerifyContext<'_> {
+    VerifyContext {
+        attempt: attempt_num,
+        retry_strategy,
+        attempt_path: retry_strategy,
+        ..VerifyContext::default()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_attempt(
     run: &mut AttemptRunCtx<'_>,
@@ -480,10 +493,11 @@ pub(crate) async fn run_attempt(
                     &run.function,
                     &new_rust_code,
                     unit.baseline_tests,
+                    &attempt_receipt_context(attempt_num, retry_strategy),
                 )
                 .await
             {
-                Ok(vr) => (
+                Ok(VerificationRun { result: vr, .. }) => (
                     vr.tests_passed,
                     vr.tests_total,
                     vr.failed_tests
@@ -662,10 +676,11 @@ pub(crate) async fn verify_and_record(
                     &run.function,
                     unit.code_under_fix,
                     unit.baseline_tests,
+                    &attempt_receipt_context(attempt_num, retry_strategy),
                 )
                 .await
             {
-                Ok(vr) => (
+                Ok(VerificationRun { result: vr, .. }) => (
                     vr.tests_passed,
                     vr.tests_total,
                     vr.failed_tests

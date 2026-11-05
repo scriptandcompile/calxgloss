@@ -1,9 +1,15 @@
 //! The [`Verifier`] engine and [`CompileResult`] — core verification types.
 
 use anyhow::{Context, Result};
-use calxgloss_types::{ShimVerificationResult, TestCase, VerificationResult};
+use calxgloss_types::{
+    BinaryIdentity, DimensionCounts, ShimVerificationResult, TestCase, VerificationReceipt,
+    VerificationResult, VerificationVerdict, VerifierCommand, persist,
+    verification_receipt_markdown, verification_receipt_path,
+};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::cargo;
@@ -48,6 +54,57 @@ pub struct CompileResult {
 
     /// Raw compiler output for debugging.
     pub output: String,
+}
+
+/// What the calling seam knows about one verify run that the verifier
+/// itself cannot: its place in the retry sequence and where the baseline
+/// suite was read from. These ride the filed *verification receipt* so
+/// the record names the story behind the verdict, not just the verdict.
+///
+/// Every field has a standalone default — attempt 1, no strategy, manual
+/// path, no filed baseline file — which is exactly what a one-off `verify`
+/// command run outside a retry loop is.
+#[derive(Debug, Clone)]
+pub struct VerifyContext<'a> {
+    /// The 1-based attempt number this run judges, keying the filed
+    /// receipt file.
+    pub attempt: u32,
+
+    /// The strategy that produced the code under verification
+    /// (`"initial"`, `"compile_fix"`, …).
+    pub retry_strategy: &'a str,
+
+    /// The shape of the prompt the attempt took, as the retry seam
+    /// names it.
+    pub attempt_path: &'a str,
+
+    /// Where the baseline suite was read from, when a filed baseline
+    /// document existed — the location rides the suite digest fold.
+    pub baseline_file: Option<&'a Path>,
+}
+
+impl Default for VerifyContext<'_> {
+    fn default() -> Self {
+        Self {
+            attempt: 1,
+            retry_strategy: "standalone",
+            attempt_path: "manual",
+            baseline_file: None,
+        }
+    }
+}
+
+/// One verify run handed back to its caller: the gate's judgement beside
+/// the *verification receipt* the run filed, so the commit site can
+/// stage the pair onto its branch without re-reading the record tree.
+#[derive(Debug, Clone)]
+pub struct VerificationRun {
+    /// The gate's judgement — compilation status, test counts, detailed
+    /// divergences (see [`VerificationResult`]).
+    pub result: VerificationResult,
+
+    /// The receipt exactly as filed, digest included.
+    pub receipt: VerificationReceipt,
 }
 
 impl Verifier {
@@ -114,12 +171,22 @@ impl Verifier {
         })
     }
 
-    /// Verify the translated Rust code against baseline tests.
+    /// Verify the translated Rust code against baseline tests, file its
+    /// *verification receipt* pair, and hand the run back.
     ///
     /// Full verification flow:
     /// 1. Compile the code via `cargo check`
     /// 2. If compilation succeeds, run behavioral tests against baseline inputs
     /// 3. Compare outputs against baseline expected values
+    /// 4. File the receipt pair — the JSON authority plus its Markdown twin,
+    ///    paired by content digest — under the record convention beside
+    ///    `re/baseline/` (the verifier owns its own receipt, ADR-0053)
+    ///
+    /// Every run files a pair, pass or fail: the `passed`, `tests-failed`,
+    /// and `compile-failed` verdicts each leave their record. Filed pairs
+    /// are never edited in place — a later run writes its own. A run whose
+    /// verifier toolchain itself errors (`Err`) is a harness failure and
+    /// files nothing yet: the unit was never judged.
     ///
     /// # Arguments
     ///
@@ -127,26 +194,36 @@ impl Verifier {
     /// * `function` — The function name.
     /// * `rust_code` — The translated Rust source code.
     /// * `baseline_tests` — Baseline test cases with expected return values.
+    /// * `context` — The run's place in the retry sequence and where the
+    ///    baseline suite was read from, as the calling seam knows them.
     ///
     /// # Returns
     ///
-    /// A [`VerificationResult`] with compilation status, test pass/fail counts,
-    /// and detailed failure information.
-    #[instrument(skip(self, rust_code, baseline_tests), fields(binary, function, test_count = baseline_tests.len()))]
+    /// A [`VerificationRun`] carrying the [`VerificationResult`] (compilation
+    /// status, test pass/fail counts, detailed failure information) beside
+    /// the [`VerificationReceipt`] the run filed, so commit sites can stage it.
+    #[instrument(skip(self, rust_code, baseline_tests, context), fields(binary, function, test_count = baseline_tests.len()))]
     pub async fn verify(
         &self,
         binary: &str,
         function: &str,
         rust_code: &str,
         baseline_tests: &[TestCase],
-    ) -> Result<VerificationResult> {
+        context: &VerifyContext<'_>,
+    ) -> Result<VerificationRun> {
         debug!(binary, function, "Starting verification");
 
+        let started = Instant::now();
         let compile_result = self.compile(binary, function, rust_code).await?;
+        let compile_ms = started.elapsed().as_millis() as u64;
 
-        if !compile_result.success {
+        // A compile-failed gate never runs its test leg, so its test-run
+        // timing stays zero — the receipt reads the gate's shape off the
+        // timings too.
+        let mut test_run_ms = 0u64;
+        let result = if !compile_result.success {
             info!(binary, function, "Skipping tests — compilation failed");
-            return Ok(VerificationResult {
+            VerificationResult {
                 compiled: false,
                 compilation_errors: compile_result.errors,
                 tests_passed: 0,
@@ -154,39 +231,185 @@ impl Verifier {
                 failed_tests: Vec::new(),
                 // Nothing ran, so the trace dimension assessed nothing.
                 trace_assessed_tests: 0,
-            });
-        }
+            }
+        } else {
+            info!(
+                binary,
+                function, "Compilation passed, running behavioral tests"
+            );
 
-        info!(
+            let test_started = Instant::now();
+            let project =
+                self.scaffold_test_project(binary, function, rust_code, baseline_tests)?;
+            let test_output = cargo::run_test_runner(&project)
+                .await
+                .unwrap_or_else(|e| format!("Test execution failed: {}", e));
+            test_run_ms = test_started.elapsed().as_millis() as u64;
+
+            let (tests_passed, tests_total, failed_tests, trace_assessed_tests) =
+                parse::parse_test_results(&test_output, baseline_tests);
+
+            info!(
+                binary,
+                function,
+                passed = tests_passed,
+                total = tests_total,
+                trace_assessed = trace_assessed_tests,
+                "Verification complete"
+            );
+
+            VerificationResult {
+                compiled: true,
+                compilation_errors: Vec::new(),
+                tests_passed,
+                tests_total,
+                failed_tests,
+                trace_assessed_tests,
+            }
+        };
+
+        // The verifier owns its own receipt: fold it, file the digest-
+        // paired JSON+Markdown pair, and hand it back beside the result.
+        let receipt = self.file_receipt(
+            &result,
             binary,
-            function, "Compilation passed, running behavioral tests"
+            function,
+            baseline_tests,
+            context,
+            compile_ms,
+            test_run_ms,
+        )?;
+        Ok(VerificationRun { result, receipt })
+    }
+
+    /// Fold and file one run's *verification receipt* pair: the JSON
+    /// authority under the record convention plus its Markdown twin,
+    /// paired by content digest. Filed pairs are never edited in place —
+    /// a later attempt writes its own name beside the earlier one.
+    ///
+    /// Returns the receipt exactly as filed, so the caller holds the same
+    /// document that stands on disk (and can stage it onto its branch).
+    // The run's facts are passed positionally — result, unit identity,
+    // suite, place-in-sequence, and the two timings — same shape as the
+    // retry ladder's recording helpers.
+    #[allow(clippy::too_many_arguments)]
+    fn file_receipt(
+        &self,
+        result: &VerificationResult,
+        binary: &str,
+        function: &str,
+        baseline_tests: &[TestCase],
+        context: &VerifyContext<'_>,
+        compile_ms: u64,
+        test_run_ms: u64,
+    ) -> Result<VerificationReceipt> {
+        // The verdict is the run's own, never a later reader's reading:
+        // a unit that never compiled is nobody's test failure, and a
+        // green gate with nobody asking still ran only the compile leg.
+        let verdict = if !result.compiled {
+            VerificationVerdict::CompileFailed
+        } else if result.failed_tests.is_empty() {
+            VerificationVerdict::Passed
+        } else {
+            VerificationVerdict::TestsFailed
+        };
+        // The gate's breadth is what was *actually invoked*: a unit that
+        // never compiled never ran a baseline case, and a zero-case suite
+        // runs no case through the runner — either one reads compile-only
+        // so a reviewer never mistakes a narrow gate for the full one.
+        let verifier_command = if result.compiled && !baseline_tests.is_empty() {
+            VerifierCommand::CompileAndBaselineTest
+        } else {
+            VerifierCommand::CompileOnly
+        };
+
+        // The dimension map mirrors the returned result's facts. A failed
+        // test whose return value still matched earned its values
+        // dimension — it diverged on the trace or side-effect leg, not the
+        // value leg — while the trace dimension counts only cases the
+        // capture vocabulary could speak an expectation for (ADR-0057's
+        // honesty rule: unassessed never reads as passed).
+        let values_matched = result
+            .failed_tests
+            .iter()
+            .filter(|f| f.expected == f.actual)
+            .count();
+        let trace_failed = result
+            .failed_tests
+            .iter()
+            .filter(|f| !f.expected_api_calls.is_empty() && f.trace_divergence_index.is_some())
+            .count();
+        let mut dimensions = BTreeMap::new();
+        dimensions.insert(
+            "values".to_string(),
+            DimensionCounts {
+                assessed: if result.compiled {
+                    result.tests_total
+                } else {
+                    0
+                },
+                passed: if result.compiled {
+                    result.tests_passed + values_matched
+                } else {
+                    0
+                },
+            },
+        );
+        dimensions.insert(
+            "api_trace".to_string(),
+            DimensionCounts {
+                assessed: result.trace_assessed_tests,
+                passed: result.trace_assessed_tests.saturating_sub(trace_failed),
+            },
         );
 
-        let project = self.scaffold_test_project(binary, function, rust_code, baseline_tests)?;
-        let test_output = cargo::run_test_runner(&project)
-            .await
-            .unwrap_or_else(|e| format!("Test execution failed: {}", e));
+        // The suite digest names where the cases were read from when a
+        // filed baseline document existed — relative to the record-tree
+        // root this verifier files under, so the location stays portable.
+        let baseline_location = context.baseline_file.map(|path| {
+            let relative = path.strip_prefix(&self.work_dir).unwrap_or(path);
+            relative.display().to_string()
+        });
+        let baseline_suite_digest =
+            calxgloss_types::baseline_suite_digest(baseline_tests, baseline_location.as_deref())
+                .map_err(|e| anyhow::anyhow!("failed to fold the baseline suite digest: {e}"))?;
 
-        let (tests_passed, tests_total, failed_tests, trace_assessed_tests) =
-            parse::parse_test_results(&test_output, baseline_tests);
+        let mut receipt = VerificationReceipt {
+            binary: BinaryIdentity::new(binary),
+            function: function.to_string(),
+            attempt: context.attempt,
+            retry_strategy: context.retry_strategy.to_string(),
+            attempt_path: context.attempt_path.to_string(),
+            verifier_command,
+            baseline_suite_digest,
+            dimensions,
+            compile_ms,
+            test_run_ms,
+            total_ms: compile_ms + test_run_ms,
+            verdict,
+            failed_cases: result.failed_tests.iter().map(|f| f.test_index).collect(),
+            digest: String::new(),
+        };
+        receipt.digest = receipt
+            .content_digest()
+            .map_err(|e| anyhow::anyhow!("failed to fold the receipt digest: {e}"))?;
+
+        let json_path =
+            verification_receipt_path(&self.work_dir, &receipt.binary, function, receipt.attempt);
+        persist::save_json(&json_path, &receipt)
+            .map_err(|e| anyhow::anyhow!("failed to file the receipt {json_path:?}: {e}"))?;
+        let md_path = json_path.with_extension("md");
+        std::fs::write(&md_path, verification_receipt_markdown(&receipt))
+            .with_context(|| format!("failed to file the receipt twin {md_path:?}"))?;
 
         info!(
             binary,
             function,
-            passed = tests_passed,
-            total = tests_total,
-            trace_assessed = trace_assessed_tests,
-            "Verification complete"
+            attempt = receipt.attempt,
+            digest = %receipt.digest,
+            "Verification receipt filed"
         );
-
-        Ok(VerificationResult {
-            compiled: true,
-            compilation_errors: Vec::new(),
-            tests_passed,
-            tests_total,
-            failed_tests,
-            trace_assessed_tests,
-        })
+        Ok(receipt)
     }
 
     // ---- Internal helpers ----

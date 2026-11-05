@@ -11,12 +11,15 @@
 //! 3. Provide stub implementations for common external dependencies (PAL traits, etc.)
 //! 4. Run `cargo check` to verify compilation
 //! 5. If compilation succeeds, generate and run behavioral tests against baseline inputs
-//! 6. Return a [`VerificationResult`] with compilation status and test pass/fail details
+//! 6. File a *verification receipt* pair — JSON authority plus Markdown
+//!    twin, paired by content digest — under `re/verification/`, and
+//!    return a [`VerificationRun`] with the [`VerificationResult`] beside
+//!    the receipt that was filed
 //!
 //! # Example
 //!
 //! ```ignore
-//! use calxgloss_verify::Verifier;
+//! use calxgloss_verify::{VerifyContext, Verifier};
 //! use std::path::Path;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,15 +33,18 @@
 //!
 //! let baseline_tests = vec![];
 //!
-//! let results = verifier.verify(
+//! let run = verifier.verify(
 //!     "game_logic.dll",
 //!     "draw_sprite",
 //!     rust_code,
 //!     &baseline_tests,
+//!     &VerifyContext::default(),
 //! ).await?;
 //!
-//! assert!(results.compiled);
-//! assert_eq!(results.tests_passed, results.tests_total);
+//! assert!(run.result.compiled);
+//! assert_eq!(run.result.tests_passed, run.result.tests_total);
+//! // The run filed its receipt pair; the digest pairs the two files.
+//! assert!(!run.receipt.digest.is_empty());
 //! # Ok(())
 //! # }
 //! ```
@@ -52,7 +58,7 @@ mod stubs;
 pub use calxgloss_types::{
     FailedTest, ShimMappingTestResult, ShimVerificationResult, TestCase, VerificationResult,
 };
-pub use engine::{CompileResult, Verifier};
+pub use engine::{CompileResult, VerificationRun, Verifier, VerifyContext};
 pub use helpers::{sanitize_crate_name, sanitize_identifier};
 pub use parse::{
     extract_mapping_function, parse_cargo_output, parse_shim_test_results, parse_test_line,

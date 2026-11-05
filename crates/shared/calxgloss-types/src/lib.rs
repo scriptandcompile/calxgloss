@@ -190,7 +190,8 @@ pub use unknowns::{
 };
 pub use verification::{
     DimensionCounts, FailedTest, VerificationReceipt, VerificationResult, VerificationVerdict,
-    VerifierCommand, verification_receipt_path, verification_receipts_dir,
+    VerifierCommand, baseline_suite_digest, verification_receipt_markdown,
+    verification_receipt_path, verification_receipts_dir,
 };
 
 // ============================================================

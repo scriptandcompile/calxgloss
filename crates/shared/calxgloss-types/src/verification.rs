@@ -241,6 +241,15 @@ pub struct VerificationReceipt {
     /// harness (see [`VerificationVerdict`]).
     pub verdict: VerificationVerdict,
 
+    /// The baseline cases the run saw diverge, named by position in the
+    /// suite as fed — a `tests-failed` verdict never rests on counts
+    /// alone. A passed run files an empty list; a compile-failed run
+    /// names none either, since no case ever ran to fail.
+    /// `#[serde(default)]` keeps receipts saved before the field existed
+    /// readable, per this record's serde discipline.
+    #[serde(default)]
+    pub failed_cases: Vec<usize>,
+
     /// The digest of this document's own content (see
     /// [`Self::content_digest`]); the handle P26's ledger will cite a
     /// verified unit by.
@@ -265,12 +274,110 @@ impl VerificationReceipt {
     }
 }
 
+/// Render a filed receipt's human-readable twin from its own JSON facts.
+///
+/// This is the pipeline-side half of the digest pair: the same document the
+/// JSON authority carries, folded into prose a reviewer reads, with the
+/// JSON's content digest embedded so the pair re-derives from its contents
+/// alone. It adds nothing the record does not already state — one receipt,
+/// one truth — and its wording is deliberately not part of the tested
+/// contract (only the digest pairing and the facts are).
+pub fn verification_receipt_markdown(receipt: &VerificationReceipt) -> String {
+    // Labels come off the record's own serde spelling, so the human side can
+    // never spell a verdict differently than the JSON authority files it.
+    fn label<T: Serialize + ?Sized>(value: &T) -> String {
+        serde_json::to_value(value)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "?".to_string())
+    }
+
+    let failed = if receipt.failed_cases.is_empty() {
+        "none".to_string()
+    } else {
+        receipt
+            .failed_cases
+            .iter()
+            .map(|index| format!("case {index}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let dimensions = receipt
+        .dimensions
+        .iter()
+        .map(|(name, counts)| {
+            format!(
+                "- Dimension `{name}`: assessed {}, passed {}",
+                counts.assessed, counts.passed
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "# Verification receipt — {function} ({binary})\n\n\
+         Verdict: `{verdict}` · attempt {attempt} · strategy `{strategy}` · path `{path}`\n\n\
+         - Gate: `{gate}`\n\
+         - Baseline suite digest: `{suite}`\n\
+         {dimensions}\n\
+         - Timings: compile {compile} ms, test run {test} ms, total {total} ms\n\
+         - Failed baseline cases: {failed}\n\n\
+         ## Pairing\n\n\
+         The JSON document beside this rendering is the authority. Recompute the\n\
+         digest over it with its `digest` field blanked and it must equal:\n\n\
+         ```\n{digest}\n```\n",
+        function = receipt.function,
+        binary = receipt.binary.as_str(),
+        verdict = label(&receipt.verdict),
+        attempt = receipt.attempt,
+        strategy = receipt.retry_strategy,
+        path = receipt.attempt_path,
+        gate = label(&receipt.verifier_command),
+        suite = receipt.baseline_suite_digest,
+        compile = receipt.compile_ms,
+        test = receipt.test_run_ms,
+        total = receipt.total_ms,
+        failed = failed,
+        digest = receipt.digest,
+    )
+}
+
 /// The record tree's verification-receipt directory: `re/verification`.
 /// Receipts file here beside `re/baseline/` — same per-binary,
 /// per-function unit layout as the baseline suites they were earned
 /// against.
 pub fn verification_receipts_dir(workspace: impl AsRef<std::path::Path>) -> std::path::PathBuf {
     workspace.as_ref().join("re").join("verification")
+}
+
+/// The canonical document the *baseline-suite digest* folds: the case suite
+/// exactly as fed into a verify run, plus the location of the baseline file
+/// it was read from when one existed. Field order is fixed here, so the
+/// digest re-derives from filed baseline bytes plus the named location.
+#[derive(Serialize)]
+struct BaselineSuiteFold<'a> {
+    baseline_file: Option<&'a str>,
+    cases: &'a [crate::test::TestCase],
+}
+
+/// The content digest (`sha256:`-prefixed) of the baseline suite actually
+/// fed into a verification run — [sha256 over the canonical encoding of
+/// [`BaselineSuiteFold`]]. A run with no cases folds the empty suite
+/// explicitly, never a missing field; the baseline file's location rides
+/// the fold when one existed, so the same cases read from a named file
+/// never digest as cases handed over from nowhere.
+pub fn baseline_suite_digest(
+    cases: &[crate::test::TestCase],
+    baseline_file: Option<&str>,
+) -> Result<String, crate::error::TypesError> {
+    use sha2::{Digest as _, Sha256};
+    let bytes = serde_json::to_vec(&BaselineSuiteFold {
+        baseline_file,
+        cases,
+    })?;
+    let sum = Sha256::digest(&bytes);
+    let hex: String = sum.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!("sha256:{hex}"))
 }
 
 /// The record tree location of one unit's filed receipt for one attempt:
@@ -346,6 +453,7 @@ mod tests {
             "test_run_ms": 1300,
             "total_ms": 6100,
             "verdict": "tests_failed",
+            "failed_cases": [0, 2],
             "digest": "sha256:bbb0"
         }"#;
         let receipt: VerificationReceipt =
@@ -367,6 +475,11 @@ mod tests {
         assert_eq!(receipt.test_run_ms, 1300);
         assert_eq!(receipt.total_ms, 6100);
         assert_eq!(receipt.verdict, VerificationVerdict::TestsFailed);
+        assert_eq!(
+            receipt.failed_cases,
+            [0, 2],
+            "the verdict names the baseline cases that diverged"
+        );
         assert_eq!(receipt.digest, "sha256:bbb0");
 
         let written = serde_json::to_string(&receipt).expect("serializes");
@@ -411,6 +524,17 @@ mod tests {
         );
     }
 
+    /// One generated baseline case for the suite-fold pins to feed.
+    fn sample_case() -> crate::test::TestCase {
+        crate::test::TestCase {
+            inputs: serde_json::json!([1, 2]),
+            expected_return: serde_json::json!(3),
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+            origin: crate::CaseOrigin::Generated,
+        }
+    }
+
     /// One real-shaped receipt for the digest and path pins to fold over.
     fn sample_receipt() -> VerificationReceipt {
         let mut dimensions = BTreeMap::new();
@@ -441,6 +565,7 @@ mod tests {
             test_run_ms: 1300,
             total_ms: 6100,
             verdict: VerificationVerdict::TestsFailed,
+            failed_cases: Vec::new(),
             digest: String::new(),
         }
     }
@@ -483,6 +608,98 @@ mod tests {
             read_back.content_digest().expect("folds"),
             a.digest,
             "the digest re-derives from the filed bytes alone"
+        );
+    }
+
+    #[test]
+    fn the_receipt_markdown_renders_the_json_authority_s_own_facts() {
+        // One receipt, one truth: the human side is rendered from the JSON
+        // document alone — same verdict, same suite digest, same dimension
+        // counts, same named failures — and it embeds the JSON's content
+        // digest so the pair proves itself from its own contents.
+        let mut receipt = sample_receipt();
+        receipt.failed_cases = vec![1];
+        receipt.digest = receipt.content_digest().expect("folds");
+
+        let md = verification_receipt_markdown(&receipt);
+        assert!(
+            md.contains(&receipt.digest),
+            "the rendering carries the JSON authority's digest:\n{md}"
+        );
+        assert!(
+            md.contains("tests_failed"),
+            "the verdict is the JSON's verdict"
+        );
+        assert!(
+            md.contains(&receipt.baseline_suite_digest),
+            "the suite digest rides the rendering too"
+        );
+        assert!(
+            md.contains("case 1"),
+            "the failed case is named on the human side"
+        );
+        assert!(md.contains("assessed 3, passed 2"), "values counts ride");
+        assert!(md.contains("assessed 1, passed 1"), "api_trace counts ride");
+        assert!(
+            md.contains("compile_and_baseline_test"),
+            "the gate as invoked"
+        );
+    }
+
+    #[test]
+    fn a_passing_run_and_a_compile_failure_name_no_failed_cases_in_the_markdown() {
+        // "Naming the failed tests" is honest both ways: a pass files an
+        // empty list and says none; a compile-failed run names none either —
+        // no case ever ran to fail.
+        let mut passed = sample_receipt();
+        passed.verdict = VerificationVerdict::Passed;
+        passed.failed_cases = Vec::new();
+        passed.digest = passed.content_digest().expect("folds");
+        let md = verification_receipt_markdown(&passed);
+        assert!(md.contains("none"), "a pass says so plainly:\n{md}");
+        assert!(!md.contains("case 1"));
+    }
+
+    #[test]
+    fn the_baseline_suite_digest_folds_the_canonical_cases_and_names_their_location() {
+        // The digest is the run's own answer to "judged against which suite":
+        // sha256 over the canonical encoding of the cases actually fed in,
+        // with the baseline file's location named when one existed. A reader
+        // re-derives the empty-suite digest independently — the expected
+        // value here is the literal sha256 of the canonical fold bytes, not
+        // a recomputation of the writer's code.
+        let empty = baseline_suite_digest(&[], None).expect("the empty suite folds");
+        assert_eq!(
+            empty, "sha256:d3b0ecf1dd8f369432b9e00b99024c6ca03b22b1c2f111720ebd817bf2012358",
+            "an empty suite files an explicit digest, never a missing field"
+        );
+
+        let cases = vec![sample_case()];
+
+        // Same cases, named vs unnamed origin file: a suite read from a filed
+        // baseline stands apart from cases handed over without one.
+        let located = baseline_suite_digest(
+            &cases,
+            Some("re/baseline/game_logic.dll/DrawSprite/baseline.json"),
+        )
+        .expect("the located suite folds");
+        let anonymous = baseline_suite_digest(&cases, None).expect("the bare suite folds");
+        assert_ne!(
+            located, anonymous,
+            "the fold names the baseline file's location when one existed"
+        );
+        assert!(located.starts_with("sha256:"));
+
+        // Stability: the suite round-tripped through its canonical encoding
+        // folds to the same digest — the reader's recomputation from filed
+        // baseline bytes matches what the run filed.
+        let written = serde_json::to_vec(&cases).expect("cases serialize");
+        let read_back: Vec<crate::test::TestCase> =
+            serde_json::from_slice(&written).expect("the canonical bytes read back");
+        assert_eq!(
+            baseline_suite_digest(&read_back, None).expect("refolds"),
+            anonymous,
+            "the fold is stable across the canonical encoding"
         );
     }
 

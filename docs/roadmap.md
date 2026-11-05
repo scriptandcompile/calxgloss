@@ -52,7 +52,7 @@ it.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P25 | Verification receipts — every verification pass persists a digest-paired md+json receipt on the attempt branch (commands, case counts, dimensions, timings); the receipt is durable and diffable between attempts | pipeline (`calxgloss-verify`, `calxgloss-git`) + interface (`calxgloss-reports`) | — | ⬜ not started | not ticketed | [#393](https://github.com/scriptandcompile/calxgloss/issues/393) |
+| P25 | Verification receipts — every verification pass persists a digest-paired md+json receipt on the attempt branch (commands, case counts, dimensions, timings); the receipt is durable and diffable between attempts | pipeline (`calxgloss-verify`, `calxgloss-git`) + interface (`calxgloss-reports`) | — | 🔶 in progress | ticketed (#410–#415): P25.1 verification-receipt record, digest fold, and the `re/verification` route landed (#410), P25.2 every verify run files its digest-paired receipt pair beside the baseline and the verify command prints the digest landed (#411); next up the attempt seam's retry-ladder records (#412) | [#393](https://github.com/scriptandcompile/calxgloss/issues/393) |
 | P26 | Fail-closed restitch conformance — a per-unit obligation ledger (owner = attempt-branch digest, required case kinds, verifier receipt) and a whole-binary closure verdict sealed by a digest; skipped, parked, overridden, or un-reviewed units never add up to complete | pipeline (`calxgloss-git`, `calxgloss-translator`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | not ticketed | [#392](https://github.com/scriptandcompile/calxgloss/issues/392) |
 | P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
 | P28 | Masked byte search at the seam — `search_bytes(pattern, mask)` with wildcard hex and a bit mask, giving the `consts`/`serialize` magic-number scans real matches instead of guesses | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + evidence (`calxgloss-consts`, `calxgloss-serialize`) | — | ⬜ not started | not specced | — |
@@ -117,9 +117,9 @@ one, rather than being made again later. Source:
 [33](research/rea/33-reconstruction-evidence-workflow.md) steal 5. Blocked by
 (shape): nothing outstanding — P22, P23, and P24 shipped
 (ADR-0057–ADR-0059). Blocks: P26.
-Specced as
-[#393](https://github.com/scriptandcompile/calxgloss/issues/393), ready for
-ticketing.
+Ticketed as
+[#410–#415](https://github.com/scriptandcompile/calxgloss/issues/410);
+P25.1 and P25.2 have landed.
 
 ## P26 — Fail-closed restitch conformance: obligation ledger + closure digest (pipeline + interface)
 
