@@ -13,13 +13,18 @@ count the word cannot hold. But bodies show their width evidence in more
 shapes than those two. `param_1 == 0x100000000`, `param_1 | 0xff0000000`,
 and `param_1 += 0x100000000` all say the parameter is
 wider than the decompiler's default word. The detector read none of
-them. Spec #142 asks for the bit-pattern analysis to be deepened; ticket
+them. Spec #142 asks for the bit-pattern analysis to be deepened. Ticket
 #148 is that widening.
 
-Four design questions came up: which operations join the family; whether
-an operation's *shape alone* marks a parameter as an integer, or only
-its constant does; how to read a constant sitting on the left; and where
-the new readings sit on the ladder. The tension: shifts and masks exist
+Four design questions came up:
+
+- which operations join the family
+- whether an operation's *shape alone* marks a parameter as an integer,
+  or only its constant does
+- how to read a constant sitting on the left
+- and where the new readings sit on the ladder
+
+The tension: shifts and masks exist
 only on integers, but a comparison or a `+=` is just as natural on a
 pointer. `param_1 == 0` is the null-test spelling, and `param_1 += 4`
 could advance a pointer by one. So the same operation class cannot have

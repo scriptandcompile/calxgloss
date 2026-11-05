@@ -12,8 +12,8 @@ decompiled body, or an MSVC-mangled listing symbol like
 `?Render@Widget@@QAEXH@Z`. In that case the parameter contract is
 already in the name, and nothing a body does with the parameters says
 more than the symbol does. Every inline detector so far read *usage*
-(what a body does with a parameter); none read the *name* itself. Spec
-#142 asks for C++ mangling analysis; ticket #147 is that detector.
+(what a body does with a parameter). None read the *name* itself. Spec
+#142 asks for C++ mangling analysis. Ticket #147 is that detector.
 
 Four design questions came up: where each spelling is read, how far the
 MSVC decoder goes, how a decoded member's implicit `this` lines up with
@@ -59,7 +59,7 @@ different points of the per-function pass:
   back-references like `V1@` — makes the *whole name* unparseable. An
   unparseable name produces no records at all, never a partial guess: a
   half-decoded signature would mistype positions the decoder is not sure
-  of. Back-references are skipped on purpose; the subset covers the
+  of. Back-references are skipped on purpose. The subset covers the
   symbols real listings carry for the arguments that matter.
 - **Placement is count-checked, never guessed.** A member symbol puts
   `this` at position 0 and the decoded arguments after it. The reading
@@ -69,7 +69,7 @@ different points of the per-function pass:
   nothing. The mismatch means the scan is not looking at the signature
   it thinks it is.
 - **A spelled list is required.** A qualified name with no parameter
-  list (`Widget::paint(param_1)`) says nothing; only a spelled contract
+  list (`Widget::paint(param_1)`) says nothing. Only a spelled contract
   types anything. Namespace noise — `std::` segments and `operator`
   spellings, matched on the whole segment — never counts as a member
   contract. This is the same guard the this-pointer detector applies
