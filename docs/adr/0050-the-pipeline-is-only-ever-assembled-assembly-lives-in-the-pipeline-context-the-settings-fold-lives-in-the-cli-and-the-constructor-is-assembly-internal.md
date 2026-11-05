@@ -10,18 +10,21 @@ Issue #265 unified every `TranslationPipeline` construction *shape* — each
 site called its `with_*` setters in one unconditional sequence — but left
 the **construction** itself at four sites: `auto`, `translate`,
 `batch_translate`, and the web server's patch-retry. Four sites re-deciding
-the same questions is four answers that drift, and they had drifted: only 3
-of the 4 built an LLM client — the web path read `OPENROUTER_API_KEY` from
-the environment and re-implemented the CLI's `resolve_llm_client` fallback
-chain inline, a third copy; only 3 wired the test generator, the git
-accepted-attempt port, user-supplied `api_mappings`, and the retry ladder
-(the web pipeline held `ApiMappings::default()`, silently dropping
-mappings, and its analysis engine load ignored the configured Kuna budgets
-— two loads honored the budgets and one ignored them); `RetryConfig` was
-assembled by hand at 3 sites plus one `RetryConfig::default()`, and the
-review UI's retry settings reached only one of them. The `auto` build
-sequence alone was fifteen setter calls, thirteen wrapped in `if let`
-conditions.
+the same questions is four answers that drift, and they had drifted:
+
+- Only 3 of the 4 built an LLM client: the web path read
+  `OPENROUTER_API_KEY` from the environment and re-implemented the CLI's
+  `resolve_llm_client` fallback chain inline, a third copy.
+- Only 3 wired the test generator, the git accepted-attempt port,
+  user-supplied `api_mappings`, and the retry ladder. The web pipeline held
+  `ApiMappings::default()`, silently dropping mappings, and its analysis
+  engine load ignored the configured Kuna budgets — two loads honored the
+  budgets and one ignored them.
+- `RetryConfig` was assembled by hand at 3 sites plus one
+  `RetryConfig::default()`, and the review UI's retry settings reached only
+  one of them.
+- The `auto` build sequence alone was fifteen setter calls, thirteen wrapped
+  in `if let` conditions.
 
 The drift had already done real damage: `serve` passed `actions: None` to
 its router, so the review UI's **Retry patch** button ran through a stub
@@ -32,10 +35,12 @@ could not predict which machinery would honor it, and a fix to one
 construction fixed none of the others (spec #322, architecture review
 2026-10-24, candidate 4).
 
-The shape decisions worth fixing were: where assembly lives, who converts
-the settings record into a pipeline description, what happens to the public
-constructor, and how many adapters over the seam make it real rather than
-hypothetical.
+The shape decisions worth fixing:
+
+- where assembly lives
+- who converts the settings record into a pipeline description
+- what happens to the public constructor
+- and how many adapters over the seam make it real rather than hypothetical
 
 ## Decision
 
@@ -44,30 +49,30 @@ compiler, not by review comments.
 
 - **Assembly lives in the pipeline context.**
   `crates/pipeline/calxgloss-translator/src/assembly.rs` owns the whole
-  build-up: `PipelineSpec` — a pass described as data (LLM selection,
+  build-up. `PipelineSpec` describes a pass as data: LLM selection,
   workspace, patch mode, target binary, Kuna budget, API mappings, retry
-  policy, call-graph and cache flags, injected events/stop/control/scope/
-  override/accepted-attempt handles) — plus `assemble(&spec, &engine) ->
-  AssembledPass { pipeline, verifier, retry }` and `assemble_patch(&spec)`
-  for a pass that loads its own analysis engine. The module is public on the
-  crate path, but the seam types are *not* re-exported at the crate root:
-  the root surface stays unchanged, and new hand-rolled constructions cannot
-  reach through it.
+  policy, call-graph and cache flags, injected
+  events/stop/control/scope/override/accepted-attempt handles.
+  `assemble(&spec, &engine) -> AssembledPass { pipeline, verifier, retry }`
+  builds it, and `assemble_patch(&spec)` builds a pass that loads its own
+  analysis engine. The module is public on the crate path, but the seam
+  types are *not* re-exported at the crate root: the root surface stays
+  unchanged, and new hand-rolled constructions cannot reach through it.
 - **The settings fold lives in the CLI.** The CLI's settings module holds
   the one conversion, `settings::pipeline_spec(&Settings) -> PipelineSpec`.
   It copies the resolved LLM endpoint/model/key pair — with context window,
-  temperature, and timeout — verbatim into the LLM description; it passes
-  the workspace and the Kuna budgets through the existing settings fold;
-  and it passes retry attempts and strategy through the shared retry
-  ladder. Unknown strategy names are refused by the fold itself, and unset
-  values are left to assembly's default. The settings crate stays a leaf
-  that never names pipeline types, and the orphan rule forbids
-  `From<Settings> for PipelineSpec` across crates anyway; a fold living
+  temperature, and timeout — verbatim into the LLM description. It passes
+  the workspace and the Kuna budgets through the existing settings fold. It
+  passes retry attempts and strategy through the shared retry ladder. The
+  fold itself refuses unknown strategy names, and unset values are left to
+  assembly's default. The settings crate stays a leaf that never names
+  pipeline types, and the orphan rule forbids
+  `From<Settings> for PipelineSpec` across crates anyway. A fold living
   inside the settings crate was explicitly rejected. Each command adds its
   run options on top of the description (`command_pass_spec`: resolved
-  workspace, call-graph flags, cache-refresh escape hatch, target binary),
-  and each patch request adds its run-scoped fields on the *same*
-  description — never a second construction.
+  workspace, call-graph flags, cache-refresh escape hatch, target binary).
+  Each patch request adds its run-scoped fields on the *same* description —
+  never a second construction.
 - **The pipeline constructor is assembly-internal.**
   `TranslationPipeline::new` and the sixteen `with_*` setters the assembly
   actually calls became `pub(crate)`: hand-building a pipeline outside the
@@ -76,7 +81,7 @@ compiler, not by review comments.
   setters that no production code called and that no test tied to real
   behavior are deleted with their fields — `with_exports`,
   `with_fault_logger`, `with_call_graph`. The compiler cannot enforce this
-  fact *inside* the crate, so a source-check test does:
+  fact *inside* the crate, so a source-check test does.
   `tests/source_pins.rs` walks every `crates/*/src` tree, cuts each file at
   its first `#[cfg(test)]` line, ignores comments, and asserts that the
   literal constructor call appears in exactly one production module —
@@ -93,11 +98,11 @@ compiler, not by review comments.
   and the handler calls `assemble_patch` before anything is created — LLM
   checked first, so a server started without LLM settings meets the
   `MissingLlm` refusal at request time with no branch record or task left
-  behind. The canned stub response is deleted; a router without the backend
+  behind. The canned stub response is deleted. A router without the backend
   honestly refuses. `translate` and `batch_translate` use the same seam as
   its third and fourth adapters — every production call site that builds a
   translation pass now goes over the seam.
-- **LLM ownership is the adapter's choice; construction stays the seam's.**
+- **LLM ownership is the adapter's choice. Construction stays the seam's.**
   The description includes either the caller's prebuilt client (the CLI's
   client resolution chain keeps its fallback chain and `ConfigError`
   semantics exactly) or an endpoint description — endpoint, model, API key,
@@ -114,12 +119,12 @@ compiler, not by review comments.
   territory): entry points keep loading their analysis engine and passing
   it in, and per-binary budget selection stays with the CLI's load.
 - **The description holds real options only.** Every `PipelineSpec` field
-  corresponds to a behavior that exists in the code; the epic text named
+  corresponds to a behavior that exists in the code. The epic text named
   spec fields with no implementation counterpart anywhere — a target
   dialect, an LLM-call-budget cap, toolchain paths, a testgen toggle, a
   `no_tests` flag, git policy and author — and those are deliberately
   absent. A spec field that only passed through assembly unused would be a
-  hidden test of a behavior that does not exist; each joins the description
+  hidden test of a behavior that does not exist. Each joins the description
   on the ticket that builds the behavior.
 
 ## Consequences
@@ -136,27 +141,27 @@ compiler, not by review comments.
   leaving no task behind. An unknown retry-strategy name stops the command
   or the server at startup instead of being silently defaulted.
 - Contributor contract: a new entry point that translates describes one
-  pass and calls assembly once — the full option set comes free with it; an
+  pass and calls assembly once. The full option set comes free with it. An
   option edit is one edit site, not four builder sequences each remembering
-  it differently; command bodies read as run logic (the LLM-config
+  it differently. Command bodies read as run logic (the LLM-config
   resolution chain, the hand-built verifier, the retry ladder, and the
   setter sequence all left `auto`, `translate`, and `batch_translate`).
   Hand-building a pipeline outside the pipeline context is a compile error,
-  and the source-check test catches a second in-crate builder sequence; the
+  and the source-check test catches a second in-crate builder sequence. The
   crate's `no_run` doctests build passes through the seam, doubling as the
   contract's usage documentation.
 - Accepted costs, recorded honestly: the assembly module is crate-path
   public, so the contract is enforced at the constructor boundary plus the
-  source-check test, not by the visibility of its types; the source-check
+  source-check test, not by the visibility of its types. The source-check
   test lives in the seam's own test suite (`tests/source_pins.rs`) because
   the `workspace-hygiene` suite the spec predicted for it does not exist in
-  this repo; the mode/dialect builder re-exports the spec expected to
+  this repo. The mode/dialect builder re-exports the spec expected to
   retire were already gone from the context root.
 - Carried forward: P38 receives a complete `AssembledPass` for the
-  retry-loop deepening; the line this record carries forward — "P39 folds
+  retry-loop deepening. The line this record carries forward — "P39 folds
   engine loading" — lands as one shared place that loads the analysis
-  engine; the shim pipeline (`ShimRunConfig`) may grow a spec
-  entry on its own ticket; on-disk paths and formats are untouched
-  (ADR-0043's cache-key discipline stands), and ADR-0004's in-process
-  control handles pass through the description's injected fields unchanged
-  (Kuna alone per ADR-0041).
+  engine. The shim pipeline (`ShimRunConfig`) may grow a spec entry on its
+  own ticket. On-disk paths and formats are untouched (ADR-0043's cache-key
+  discipline stands), and ADR-0004's in-process control handles pass
+  through the description's injected fields unchanged (Kuna alone per
+  ADR-0041).
