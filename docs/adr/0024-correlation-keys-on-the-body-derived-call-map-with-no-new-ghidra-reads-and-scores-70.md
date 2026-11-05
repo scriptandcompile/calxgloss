@@ -29,7 +29,7 @@ do its hints enter resolution and the confidence floor?
   collected anyway. It reads each body for the program's own function
   names, appearing as whole identifier tokens. These token matches
   cover both call shapes that matter: a direct call (`FUN_x(...);`) and
-  a callback handed to a host (`qsort(a, n, 4, FUN_y)`); the graph xref
+  a callback handed to a host (`qsort(a, n, 4, FUN_y)`). The graph xref
   route would have had to reconstruct the second shape. The scan's
   fetch counts — decompiles, string reads, caller reads — are identical
   with the detector present and absent. A test pins this at the evidence

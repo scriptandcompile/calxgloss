@@ -33,7 +33,7 @@ established? And how does a malformed file behave?
   round-trip test already pins half the file format. The fourth
   section that a correlation detector will need (#155) is an additive
   change to the same document.
-- **A supplied database replaces the standard sets whole; it never
+- **A supplied database replaces the standard sets whole. It never
   merges.** `AlgorithmEngine::with_pattern_database` swaps all three
   detector sets at once, and a section the document omits is an empty
   set. Merging would make the effective set depend on both the file and
@@ -57,7 +57,7 @@ established? And how does a malformed file behave?
   ADR-0022's `resolve_conflicts` carrying their final score. A
   per-entry 90 wins against a standard-score claim for the same
   algorithm, and a per-entry 20 loses to a claim at 60. Coming from a
-  file gives a claim no privilege; resolution stays purely score-based.
+  file gives a claim no privilege. Resolution stays purely score-based.
 - **Loading goes through the shared JSON persistence plumbing, and a
   bad file fails the run loudly.** `PatternDatabase::load` wraps
   `calxgloss_types::persist::load_json`. A missing, unreadable, or
