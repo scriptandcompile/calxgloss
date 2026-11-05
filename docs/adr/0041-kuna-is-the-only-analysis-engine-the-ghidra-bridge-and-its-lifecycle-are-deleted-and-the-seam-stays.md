@@ -30,7 +30,7 @@ Delete the Ghidra path outright — no compatibility shims, no
 deprecation window (issue #214):
 
 - **The client and lifecycle are gone.** `GhidraClient` and the entire
-  `lifecycle/` module leave `calxgloss-ghidra`; `PipelineSource::Live`
+  `lifecycle/` module leave `calxgloss-ghidra`. `PipelineSource::Live`
   goes with them, leaving `Cached | Kuna`. The crate keeps only the
   seam: the `ScanSource`/`TypeWriteSource` traits, the answer shapes,
   the shared parse scraper, and the two-tier scan read cache.
@@ -39,11 +39,11 @@ deprecation window (issue #214):
   `GHIDRA_*`/`CALXGLOSS_GHIDRA_*`/`ANALYSIS_ENGINE` variables are
   deleted. A stale config that still names them fails as an
   unknown-key parse error that names the offending keys and prints the
-  example — `deny_unknown_fields` does the refusing; there is no
+  example — `deny_unknown_fields` does the refusing. There is no
   special-case message and no ignored-key path.
 - **The seam's vocabulary stops claiming Ghidra.** `GhidraError`
-  becomes `EngineError` (`Reported`/`NotFound`/`Malformed`); the
-  translator's fetch failure becomes `ScanFetch`; the progress event
+  becomes `EngineError` (`Reported`/`NotFound`/`Malformed`). The
+  translator's fetch failure becomes `ScanFetch`. The progress event
   `GhidraFetchComplete` becomes `ScanFetchComplete` and
   `TranslationPhase::GhidraFetch` becomes `ScanFetch` (serde tag
   `scan_fetch`). The three lifecycle events with no producer left —
@@ -54,7 +54,7 @@ deprecation window (issue #214):
   replayed. The CLI flag `--refresh-ghidra-cache` becomes
   `--refresh-cache`.
 - **`doctor` shrinks to what is checkable.** The install, pairing, and
-  port probes are deleted; it loads the target under Kuna and reports.
+  port probes are deleted. It loads the target under Kuna and reports.
   `--fix` stays and says there is nothing to install.
 
 What deliberately stays: the seam itself, the scan read cache, the
@@ -66,20 +66,20 @@ text handling is live vocabulary, not bridge residue.
 ## Consequences
 
 - Any run — CLI or web — works with no Ghidra install, no JVM, and no
-  server; the whole test suite runs offline. The e2e web scan against
+  server. The whole test suite runs offline. The e2e web scan against
   the fixture is the acceptance proof.
-- ADR-0039's seam and in-process-load decisions stand; this ADR
+- ADR-0039's seam and in-process-load decisions stand. This ADR
   retires its "Ghidra stays the default" half. ADR-0039 and ADR-0040
   are left as written (historical record).
 - Deferred renames, recorded so the name-vs-thing gap is intentional:
   the crate stays `calxgloss-ghidra` (the seam predates the analysis
   engine), the on-disk cache directory stays `re/ghidra-cache/`
-  (existing workspaces keep their caches; v2 format markers do the
+  (existing workspaces keep their caches. v2 format markers do the
   invalidating), and the web UI's "Ghidra Context" tab and
   `/api/units/{id}/ghidra` route stay (they serve decompile-dialect
-  content; renaming them is a UI change, not an analysis engine
+  content. Renaming them is a UI change, not an analysis engine
   change).
 - The web pipeline view's `project_ingestion` phase loses its original
   producers (the preflight events). It still becomes active from
-  classification counts, so the phase survives; if it ever appears
+  classification counts, so the phase survives. If it ever appears
   dead in practice, a follow-up can drop it.

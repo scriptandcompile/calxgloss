@@ -25,7 +25,7 @@ confusion costs every reader and every agent working through the repo.
 Take up all three deferrals (issue #214 follow-up):
 
 - **The seam crate renames.** `crates/integrations/calxgloss-ghidra`
-  becomes `calxgloss-decomp`; every dependency path and import in the
+  becomes `calxgloss-decomp`. Every dependency path and import in the
   workspace follows.
 - **The cache directory renames.** The two-tier scan read cache files
   go under `re/decomp-cache/` instead of `re/ghidra-cache/`. The
@@ -52,19 +52,19 @@ and the `Ghidra/Processors/x86` paths in the Kuna build, which are
 real spec-tree paths. Historical records — CHANGELOG entries, ADRs,
 and archived docs — are left as written. The two bridge-era notes that
 sat loose in `docs/`, `ghidra_endpoint_map.md` and
-`ghidra_integration.md`, are deleted with this uptake; their surviving
+`ghidra_integration.md`, are deleted with this uptake. Their surviving
 history is the ADRs and the changelog.
 
 ## Consequences
 
 - The crate name, the cache path, and the UI tab finally refer to the
-  thing that does the work; no import or path in the live tree names a
+  thing that does the work. No import or path in the live tree names a
   retired system.
 - Existing workspaces lose their scan caches once. Rebuilding is just
-  a rerun; the format-version machinery treats the old directory as
+  a rerun. The format-version machinery treats the old directory as
   gone anyway.
 - The web route change breaks anything bookmarked against
-  `/api/units/{id}/ghidra`; the dashboard is the only consumer.
+  `/api/units/{id}/ghidra`. The dashboard is the only consumer.
 - ADR-0041's deferral note reads as history now. This ADR is the
   record of uptake, and no further Ghidra-named surface remains to
   rename.
