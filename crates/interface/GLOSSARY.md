@@ -10,7 +10,7 @@ The human touchpoints of the reverse-engineering effort: where a run is started 
 The one process that runs the pipeline and the review server together — the only place pipeline control exists, and the recommended day-to-day entry point.
 
 **Serve**:
-The review server standing alone, without a pipeline; control endpoints answer honestly that there is nothing to control rather than pretend otherwise.
+The review server standing alone, without a pipeline. Control endpoints answer honestly that there is nothing to control rather than pretend otherwise.
 
 **Auto**:
 The command that reads the project's state and runs the next step.
@@ -40,26 +40,32 @@ The command that shows the configuration in force and which layer each value cam
 The command that writes the project's configuration template.
 
 **Settings fold**:
-The CLI's act of composing resolved settings into the pipeline's pass description. The fold itself belongs to this context; the words for the settings belong to Shared.
+The CLI's act of composing resolved settings into the pipeline's pass description. The fold itself belongs to this context. The words for the settings belong to Shared.
 
 ### Reviewing
 
 **Review action**:
-The reviewer's act on a unit — *accept*, *send back*, *request patch* — each with its git effect. The verdicts are Pipeline's words; the buttons are this context's.
+The reviewer's act on a unit — *accept*, *send back*, *request patch* — each with its git effect. The verdicts are Pipeline's words. The buttons are this context's.
 _Avoid_: reject — the CLI subcommand that carried the old word; retire it from every surface
 
 **Unknown record**:
 The open question a unit carries for the reviewer to see: listed on the web unit detail and queue tallies and on the terminal dashboard, each with its severity, its question, and the evidence that would close it. Settled records are counted apart from open ones.
 
 **Reviewer resolution**:
-The reviewer's act on one open unknown record: *resolve* it — the fact is established, with a stated reason; *dismiss* it — the question is judged irrelevant and stays visible as dismissed; or *reopen* a settled one. It rides the existing review-action seam with the same conflict discipline, and it is not a review verdict: it never accepts a unit, touches a branch, or changes a review status.
+The reviewer's act on one open unknown record.
+*Rules:*
+- *resolve* it: the fact is established, with a stated reason.
+- *dismiss* it: the question is judged irrelevant, and it stays visible as dismissed.
+- *reopen* a settled one.
+- It rides the existing review-action seam with the same conflict discipline.
+- It is not a review verdict. It never accepts a unit, touches a branch, or changes a review status.
 _Avoid_: resolve as a verdict — settling a question is not accepting a unit
 
 **Reviewer intent**:
 What the operator has decided and persisted: ordering, priorities, skips, overrides. It lives in its own records. It is never derived from artifacts, and no derived rebuild may edit it.
 
 **Queue overlay**:
-The reviewer's persisted manual ordering and priority; it only breaks ties between units at the same dependency depth.
+The reviewer's persisted manual ordering and priority. It only breaks ties between units at the same dependency depth.
 
 **Skip set**:
 The reviewer's persisted skips, shown and honored on every dashboard rebuild.
@@ -76,7 +82,7 @@ _Avoid_: "Ghidra Context" — the retired label for this surface
 The unit-detail view that diffs one attempt against another. It compares exactly the attempts that exist — branches plus patch records — and never invents any.
 
 **LLM I/O log**:
-The kept record of prompts and responses the reviewer can read and search; old entries are honestly absent, not hidden.
+The kept record of prompts and responses the reviewer can read and search. Old entries are honestly absent, not hidden.
 
 **Honest degradation**:
 The standing rule for every surface: a missing or corrupt artifact reads as *no artifact*. An unmeasured value renders blank, never zero.
@@ -94,7 +100,11 @@ Moving one discovered binary to the front of the run with a single press.
 _Avoid_: park (the route comments' third sense of the word) — parking is Evidence's act
 
 **Scope controls**:
-Steering what a run touches: which binaries are in, held, or skipped; which functions are skipped or prioritized; and the budgets that bound what the run consumes.
+Steering what a run touches.
+*Rules:*
+- Which binaries are in, held, or skipped.
+- Which functions are skipped or prioritized.
+- The budgets that bound what the run consumes.
 
 **Run request**:
 The start/restart form's choices: which phase runs, against which targets, over which slice of units.
@@ -108,13 +118,18 @@ The text review board built from branch state and the persisted records. The web
 The per-target-binary statement the run close and the dashboard print: what was never established, at what severity, with the evidence that would have closed it — and what review already settled and what it deliberately dismissed, counted apart.
 
 **Scenario status**:
-The per-target-binary reading the review surfaces print beside the queue: every scenario a filed scenario document names — declared or not declared, captured or not captured, and what its verdict says: assessed pass, assessed fail naming each failed dimension, or unassessed — with every missing record rendered as its honest negative, never as empty success. The shape rides the shared dashboard model: `ReviewDashboard.scenario_statuses` carries one entry per binary (`binary`, `scenarios`), each scenario its own row (`scenario`, `declared`, `captured`, `verdict`), the verdict encoded `unassessed`, `assessed_pass`, or `assessed_fail` with its `failed_dimensions`. Target-binary-level evidence: it changes no unit's review status and blocks no accept on its own.
+The per-target-binary reading the review surfaces print beside the queue.
+*Rules:*
+- Every scenario a filed scenario document names appears: declared or not declared, captured or not captured, and what its verdict says — assessed pass, assessed fail naming each failed dimension, or unassessed.
+- Every missing record renders as its honest negative, never as empty success.
+- The shape rides the shared dashboard model. `ReviewDashboard.scenario_statuses` carries one entry per binary (`binary`, `scenarios`), each scenario its own row (`scenario`, `declared`, `captured`, `verdict`), and the verdict is encoded `unassessed`, `assessed_pass`, or `assessed_fail` with its `failed_dimensions`.
+- It is target-binary-level evidence. It changes no unit's review status and blocks no accept on its own.
 
 **Analytics on demand**:
 Numbers computed at request time from the persisted logs. There are no stored rollups, because a second copy of the truth would drift.
 
 **Persisted logs**:
-The fault, token-usage, and prompt-strategy records analytics reads; any count covers only the log's kept window, and that limit is stated rather than hidden.
+The fault, token-usage, and prompt-strategy records analytics reads. Any count covers only the log's kept window, and that limit is stated rather than hidden.
 
 **Phase bar**:
-The progress strip over the master-plan phases; a phase with no backing data source renders as having no data, never as empty progress.
+The progress strip over the master-plan phases. A phase with no backing data source renders as having no data, never as empty progress.
