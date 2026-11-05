@@ -1,4 +1,4 @@
-# ADR-0047: Failure codes travel the call map one hop, codes only, and an inherited code rides a confidence penalty onto the caller
+# ADR-0047: Failure codes travel the call map one hop, codes only
 
 - **Status:** Accepted
 - **Date:** 2026-10-23 (P15 propagation shipped, issue #291)

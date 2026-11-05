@@ -1,4 +1,4 @@
-# ADR-0049: The evidence bundle is the single render input of the bundle-fed templates, with one shared section include per evidence engine, kept separate from the projector seam
+# ADR-0049: The evidence bundle is the single render input of the bundle-fed templates
 
 - **Status:** Accepted
 - **Date:** 2026-10-25 (P36 shipped, issues #317–#321, spec #316)

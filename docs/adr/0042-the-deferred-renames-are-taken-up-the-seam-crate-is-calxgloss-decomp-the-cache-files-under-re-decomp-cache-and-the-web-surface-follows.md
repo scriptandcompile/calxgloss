@@ -1,4 +1,4 @@
-# ADR-0042: The deferred renames are taken up — the seam crate is `calxgloss-decomp`, the cache files under `re/decomp-cache/`, and the web surface follows
+# ADR-0042: The deferred renames are taken up
 
 - **Status:** Accepted
 - **Date:** 2026-10-18

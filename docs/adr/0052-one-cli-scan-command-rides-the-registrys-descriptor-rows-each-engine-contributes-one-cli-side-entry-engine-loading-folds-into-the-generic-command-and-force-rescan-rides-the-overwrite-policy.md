@@ -1,4 +1,4 @@
-# ADR-0052: One CLI scan command rides the registry's descriptor rows — each engine contributes one CLI-side entry, engine loading folds into the generic command, and force-rescan rides the overwrite policy
+# ADR-0052: One CLI scan command rides the registry's descriptor rows
 
 - **Status:** Accepted
 - **Date:** 2026-10-25 (P39 shipped, issues #338–#343, spec #337)

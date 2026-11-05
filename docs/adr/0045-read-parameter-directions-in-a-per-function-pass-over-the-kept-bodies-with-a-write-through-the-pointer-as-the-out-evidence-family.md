@@ -1,4 +1,4 @@
-# ADR-0045: Read parameter directions in a per-function pass over the kept bodies, with a write through the pointer as the out-evidence family
+# ADR-0045: Parameter directions are read per function over the kept bodies
 
 - **Status:** Accepted
 - **Date:** 2026-10-22 (P12.7-1 shipped, issue #274)

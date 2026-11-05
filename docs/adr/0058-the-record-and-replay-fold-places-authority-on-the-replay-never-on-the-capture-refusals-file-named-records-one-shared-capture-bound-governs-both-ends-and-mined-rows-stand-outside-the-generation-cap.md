@@ -1,4 +1,4 @@
-# ADR-0058: The record-and-replay fold places authority on the replay, never on the capture — refusals file named records, one shared capture bound governs both ends, and mined rows stand outside the generation cap
+# ADR-0058: The record-and-replay fold places authority on the replay, never the capture
 
 - **Status:** Accepted
 - **Date:** 2026-11-04 (P23 shipped, epic #390, slices #395–#401)

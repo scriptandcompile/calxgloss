@@ -1,4 +1,4 @@
-# ADR-0056: An admitted gap is filed as a named record, not left as prose — deterministic ids over prose-derived ones, two documents one per owner joined at read time, and the honesty lineage turned on its own artifact
+# ADR-0056: Admitted gaps are filed as named records, not left as prose
 
 - **Status:** Accepted
 - **Date:** 2026-10-29 (P21 shipped, issues #368–#377, spec #367)

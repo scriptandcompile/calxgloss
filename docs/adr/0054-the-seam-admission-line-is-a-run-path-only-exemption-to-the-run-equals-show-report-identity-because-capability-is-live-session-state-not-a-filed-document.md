@@ -1,4 +1,4 @@
-# ADR-0054: The seam admission line is a run-path-only exemption to the run-equals-`--show` report identity, because capability is live session state, not a filed document
+# ADR-0054: The seam admission line is a run-path-only report exemption
 
 - **Status:** Accepted
 - **Date:** 2026-10-27 (P20-2 shipped, issue #355, spec #353)

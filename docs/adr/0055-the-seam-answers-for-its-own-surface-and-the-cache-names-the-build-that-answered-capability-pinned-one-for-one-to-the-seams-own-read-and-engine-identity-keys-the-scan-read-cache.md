@@ -1,4 +1,4 @@
-# ADR-0055: The seam answers for its own surface, and the cache names the build that answered — capability pinned one-for-one to the seam's own read, and engine identity, not a hand-bumped integer, keys the scan read cache
+# ADR-0055: The cache keys on engine identity, pinned to the seam's own read
 
 - **Status:** Accepted
 - **Date:** 2026-10-27 (P20 shipped, issues #354–#359, spec #353)

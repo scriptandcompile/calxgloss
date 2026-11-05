@@ -1,4 +1,4 @@
-# ADR-0051: An attempt is one seam — prompt, LLM, verification, record; the loop keeps only policy, strategies are adapters at the existing door, and the failing verdict routes into the next prompt
+# ADR-0051: An attempt is one seam; the loop keeps only policy
 
 - **Status:** Accepted
 - **Date:** 2026-10-25 (P38 shipped, issues #331–#336, spec #330)

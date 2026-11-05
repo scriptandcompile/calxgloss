@@ -1,4 +1,4 @@
-# ADR-0059: The scenario lane files one current document per (binary, scenario), weighs its five dimensions as pure record logic where silence never launders a pass, and keeps scenario evidence reporting at the review surfaces without ever deciding a unit
+# ADR-0059: The scenario lane files one current document per (binary, scenario)
 
 - **Status:** Accepted
 - **Date:** 2026-11-04 (P24 shipped, epic #391, slices #402–#409)

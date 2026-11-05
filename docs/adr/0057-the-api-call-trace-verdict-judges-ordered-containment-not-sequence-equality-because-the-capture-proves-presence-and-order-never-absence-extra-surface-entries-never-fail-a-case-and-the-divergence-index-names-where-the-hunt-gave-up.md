@@ -1,4 +1,4 @@
-# ADR-0057: The API-call trace verdict judges ordered containment, not sequence equality — because the capture proves presence and order, never absence, extra surface entries never fail a case, and the divergence index names where the hunt for the unhonoured call gave up
+# ADR-0057: The API-call trace verdict judges ordered containment, not sequence equality
 
 - **Status:** Accepted
 - **Date:** 2026-10-31 (P22 shipped, issues #382–#389, spec #388, containment ticket #389)

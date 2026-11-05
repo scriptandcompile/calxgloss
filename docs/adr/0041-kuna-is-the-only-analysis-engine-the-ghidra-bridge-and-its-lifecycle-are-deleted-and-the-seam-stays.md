@@ -1,4 +1,4 @@
-# ADR-0041: Kuna is the only analysis engine — the Ghidra bridge and its lifecycle are deleted, the seam stays, and no engine choice remains
+# ADR-0041: Kuna is the only analysis engine
 
 - **Status:** Accepted
 - **Date:** 2026-10-18 (#214 shipped, epic #203)

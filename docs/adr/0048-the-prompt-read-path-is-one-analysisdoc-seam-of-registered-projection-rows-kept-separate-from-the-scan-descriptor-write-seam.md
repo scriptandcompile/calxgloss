@@ -1,4 +1,4 @@
-# ADR-0048: The prompt read path is one AnalysisDoc seam of registered projection rows, kept separate from the scan-descriptor write seam
+# ADR-0048: The prompt read path is one AnalysisDoc seam of projection rows
 
 - **Status:** Accepted
 - **Date:** 2026-10-25 (P35 shipped, issues #311–#315, spec #310)

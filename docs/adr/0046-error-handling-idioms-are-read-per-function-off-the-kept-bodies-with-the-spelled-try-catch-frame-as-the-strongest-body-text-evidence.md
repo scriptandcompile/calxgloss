@@ -1,4 +1,4 @@
-# ADR-0046: Error-handling idioms are read per function off the kept bodies, with the spelled try/catch frame as the strongest body-text evidence
+# ADR-0046: Error-handling idioms are read per function over the kept bodies
 
 - **Status:** Accepted
 - **Date:** 2026-10-23 (P15-1 shipped, issue #287)

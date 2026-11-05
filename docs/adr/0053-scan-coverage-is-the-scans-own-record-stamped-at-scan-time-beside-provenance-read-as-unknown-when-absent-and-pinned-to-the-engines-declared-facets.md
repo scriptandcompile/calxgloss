@@ -1,4 +1,4 @@
-# ADR-0053: Scan coverage is the scan's own record — stamped at scan time beside provenance, read as `unknown` when absent, and pinned to the engine's declared facets
+# ADR-0053: Scan coverage is the scan's own record
 
 - **Status:** Accepted
 - **Date:** 2026-10-26 (P19 shipped, issues #345–#352, spec #344)

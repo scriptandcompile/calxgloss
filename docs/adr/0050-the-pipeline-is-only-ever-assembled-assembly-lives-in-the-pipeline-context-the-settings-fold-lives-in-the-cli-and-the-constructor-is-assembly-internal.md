@@ -1,4 +1,4 @@
-# ADR-0050: The pipeline is only ever assembled — assembly lives in the pipeline context, the settings fold lives in the CLI, and the constructor is assembly-internal
+# ADR-0050: The pipeline is only ever assembled
 
 - **Status:** Accepted
 - **Date:** 2026-10-25 (P37 shipped, issues #323–#329, spec #322)

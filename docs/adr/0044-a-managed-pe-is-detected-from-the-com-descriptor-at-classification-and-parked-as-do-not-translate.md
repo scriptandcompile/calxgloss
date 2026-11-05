@@ -1,4 +1,4 @@
-# ADR-0044: A managed PE is detected from the COM descriptor at classification and parked as Do Not Translate
+# ADR-0044: A managed PE is detected from the COM descriptor and parked
 
 - **Status:** Accepted
 - **Date:** 2026-10-19

@@ -1,4 +1,4 @@
-# ADR-0040: The Kuna source lives on the Ghidra side of the seam because the trait does, and an engine thread holds the !Send program with every call guarded
+# ADR-0040: The Kuna source lives on the Ghidra side of the seam
 
 - **Status:** Accepted
 - **Date:** 2026-10-16 (X5-#206 shipped, epic #203)
