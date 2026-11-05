@@ -557,8 +557,12 @@ pub(crate) async fn run_attempt(
             )
         }
         Err(e) => {
-            // The verifier itself fell over — the unit was never judged and
-            // no pair was filed (P25.6 files an admitted unknown for that).
+            // The verifier itself fell over — the unit was never judged.
+            // P25.6's honesty rule holds upstream: the run filed its
+            // harness-error pair at its own attempt key (or the admitted
+            // unknown naming the run, if even that pair could not land),
+            // so the record tree says the harness broke even though this
+            // quote keeps the seam's sentinel.
             // The attempt's quotes keep the seam's sentinel so the fix
             // prompts hold today's shape.
             warn!(
@@ -754,8 +758,12 @@ pub(crate) async fn verify_and_record(
             )
         }
         Err(e) => {
-            // The verifier itself fell over — the unit was never judged and
-            // no pair was filed (P25.6 files an admitted unknown for that).
+            // The verifier itself fell over — the unit was never judged.
+            // P25.6's honesty rule holds upstream: the run filed its
+            // harness-error pair at its own attempt key (or the admitted
+            // unknown naming the run, if even that pair could not land),
+            // so the record tree says the harness broke even though this
+            // quote keeps the seam's sentinel.
             warn!(error = %e, "Verification gate failed during retry");
             (
                 false,

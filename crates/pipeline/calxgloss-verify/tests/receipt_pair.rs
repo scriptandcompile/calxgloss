@@ -174,6 +174,41 @@ async fn a_pair_that_cannot_be_written_files_an_admitted_unknown_naming_the_run(
     );
 }
 
+/// The twin's half of the same rule, seen from the other side: when the
+/// Markdown twin cannot be written, the JSON authority this run just
+/// wrote is retracted rather than left standing alone — a key never
+/// holds a half-pair a reader cannot pairing-check. The run still files
+/// its admitted unknown and keeps its earned verdict.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn a_twin_that_cannot_be_written_leaves_no_half_pair_behind() {
+    let work = tempfile::tempdir().expect("temp work dir");
+    let json_path = unit_dir(work.path());
+    std::fs::create_dir_all(json_path.parent().expect("unit dir")).expect("unit dir");
+    std::fs::create_dir(json_path.with_extension("md"))
+        .expect("the twin's key is held by a directory");
+    let verifier = Verifier::new(work.path()).expect("verifier");
+
+    let run = verifier
+        .verify(BINARY, FUNCTION, BODY, &[case(7)], &VerifyContext::default())
+        .await
+        .expect("the run's verdict stands, honestly degraded");
+    assert_eq!(run.result.tests_passed, 1, "the gate still judged the unit");
+
+    assert!(
+        !json_path.exists(),
+        "the half-filed authority was retracted, never left standing alone"
+    );
+    let read =
+        read_unknown_ledger(work.path(), &BinaryIdentity::new(BINARY)).expect("the route reads");
+    let EffectiveLedger::Filed(records) = read else {
+        panic!("the run admitted its missing pair");
+    };
+    assert_eq!(records.len(), 1, "exactly the one admitted gap");
+    assert_eq!(records[0].kind, UnknownKind::ReceiptUnfiled);
+    assert_eq!(records[0].source_slot(), "attempt-1");
+}
+
 /// The unknown record of a run whose pair could not be written reads
 /// back through the admitted-unknown route — `read_unknown_ledger` —
 /// the same filing the pipeline's own ledgers use. No cargo in sight:

@@ -3256,7 +3256,7 @@ async fn a_mined_replay_filing_a_suite_closes_a_standing_export_gap() {
 ///   records beside the batch's;
 /// * the attempt-1 verification receipt pair has its authority key held
 ///   open by a directory, so the walk's own filing fails at the first
-///   attempt and the verify engine admits the gap itself →
+///   attempt and the verifier admits the gap itself →
 ///   `receipt_unfiled` (#415).
 ///
 /// Offline throughout: Kuna loads in-process, the LLM side is the
@@ -3366,9 +3366,9 @@ async fn unknown_sweep_batch_records(dir: &std::path::Path) -> Vec<calxgloss_typ
     //
     // The receipt-unfiled producer (issue #415) stages on the same walk:
     // the attempt-1 verification pair has its JSON authority key held
-    // open by a directory, so that run's own filing fails and the verify
-    // engine admits the gap itself — one blocking record naming the run
-    // whose pair could not land, filed on the real path.
+    // open by a directory, so that run's own filing fails and the
+    // verifier itself admits the gap — one blocking record naming the
+    // run whose pair could not land, filed on the real path.
     let held_pair = calxgloss_types::verification_receipt_path(
         dir,
         &calxgloss_types::BinaryIdentity::new(PROGRAM),

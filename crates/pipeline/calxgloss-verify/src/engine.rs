@@ -227,13 +227,19 @@ impl Verifier {
             Err(e) => {
                 // The suite itself will not fold: no receipt can name a
                 // suite digest, so the run files its unknown and the fold
-                // error stands — loudly, never a silent skip.
-                self.file_unfiled_receipt_unknown(
+                // error stands — loudly, never a silent skip. If even the
+                // unknown cannot be filed, both failures ride one error.
+                if let Err(unknown) = self.file_unfiled_receipt_unknown(
                     binary,
                     function,
                     context.attempt,
                     &format!("the baseline suite digest could not be folded: {e}"),
-                )?;
+                ) {
+                    return Err(anyhow::anyhow!(
+                        "the baseline suite digest could not be folded: {e}; and the \
+                         admitted unknown for the unfiled receipt could not be filed: {unknown:#}"
+                    ));
+                }
                 return Err(e);
             }
         };
@@ -245,7 +251,7 @@ impl Verifier {
                 // the unit's: the run files its pair verdicted
                 // `harness-error` and hands the error back, with no
                 // verdict and no unit judgement claimed.
-                self.file_harness_error_receipt(
+                match self.file_harness_error_receipt(
                     binary,
                     function,
                     context,
@@ -253,8 +259,14 @@ impl Verifier {
                     &format!("the compile leg broke: {e}"),
                     started.elapsed().as_millis() as u64,
                     0,
-                )?;
-                return Err(e);
+                ) {
+                    Ok(()) => return Err(e),
+                    // The honesty filing failed on top of the harness failure:
+                    // chain both, never losing the harness error itself.
+                    Err(honesty) => return Err(e).context(format!(
+                        "and its harness-error honesty filing failed too: {honesty:#}"
+                    )),
+                }
             }
         };
         let compile_ms = started.elapsed().as_millis() as u64;
@@ -293,7 +305,7 @@ impl Verifier {
                     // test leg broke inside the verifier, so the run is a
                     // harness failure — pair verdicted `harness-error`,
                     // no verdict handed back.
-                    self.file_harness_error_receipt(
+                    match self.file_harness_error_receipt(
                         binary,
                         function,
                         context,
@@ -301,8 +313,13 @@ impl Verifier {
                         &format!("the test project could not be scaffolded: {e}"),
                         compile_ms,
                         test_started.elapsed().as_millis() as u64,
-                    )?;
-                    return Err(e);
+                    ) {
+                        Ok(()) => return Err(e),
+                        // Chain both failures; the harness error is never lost.
+                        Err(honesty) => return Err(e).context(format!(
+                            "and its harness-error honesty filing failed too: {honesty:#}"
+                        )),
+                    }
                 }
             };
             let test_output = match cargo::run_test_runner(&project).await {
@@ -312,7 +329,7 @@ impl Verifier {
                     // old fallback text ("Test execution failed: …") read
                     // as a zero-test run — a quiet near-pass. That swallow
                     // is gone: an unstartable runner is a harness failure.
-                    self.file_harness_error_receipt(
+                    match self.file_harness_error_receipt(
                         binary,
                         function,
                         context,
@@ -320,8 +337,13 @@ impl Verifier {
                         &format!("the test runner could not be started: {e}"),
                         compile_ms,
                         test_started.elapsed().as_millis() as u64,
-                    )?;
-                    return Err(e);
+                    ) {
+                        Ok(()) => return Err(e),
+                        // Chain both failures; the harness error is never lost.
+                        Err(honesty) => return Err(e).context(format!(
+                            "and its harness-error honesty filing failed too: {honesty:#}"
+                        )),
+                    }
                 }
             };
             test_run_ms = test_started.elapsed().as_millis() as u64;
@@ -539,8 +561,22 @@ impl Verifier {
         persist::save_json(&json_path, receipt)
             .map_err(|e| anyhow::anyhow!("failed to file the receipt {json_path:?}: {e}"))?;
         let md_path = json_path.with_extension("md");
-        std::fs::write(&md_path, verification_receipt_markdown(receipt))
-            .with_context(|| format!("failed to file the receipt twin {md_path:?}"))?;
+        if let Err(twin) = std::fs::write(&md_path, verification_receipt_markdown(receipt)) {
+            // Pair-or-nothing: a lone JSON authority without its twin is a
+            // half-pair no reader can pairing-check. Retract the authority
+            // this run just wrote so the key says nothing about the run
+            // rather than half a story.
+            return Err(match std::fs::remove_file(&json_path) {
+                Ok(()) => anyhow::anyhow!(
+                    "failed to file the receipt twin {md_path:?}: {twin} \
+                     (the half-filed authority was retracted)"
+                ),
+                Err(cleanup) => anyhow::anyhow!(
+                    "failed to file the receipt twin {md_path:?}: {twin}; and the half-filed \
+                     authority could not even be retracted: {cleanup}"
+                ),
+            });
+        }
         Ok(json_path)
     }
 
@@ -553,6 +589,9 @@ impl Verifier {
     /// no verdict to give. A harness-error pair that itself cannot be
     /// written files an admitted unknown naming the run it belongs to;
     /// the harness failure is still handed back, unsoftened.
+    // The run's facts are passed positionally — identity, place-in-sequence,
+    // the folded suite digest, the break reason, and the two leg timings —
+    // the same shape as `file_receipt`'s positional facts above.
     #[allow(clippy::too_many_arguments)]
     fn file_harness_error_receipt(
         &self,
