@@ -43,6 +43,22 @@
 //! case in the batch. When a batch run dies without reporting all cases, the
 //! runner retries case-by-case so one bad input does not lose the rest.
 //! Note that this only covers *crashes*; a hanging call is still fatal.
+//!
+//! # Wine prefix setup — silent init only, never the boot dialog
+//!
+//! A fresh Wine prefix sets up **silently** when the first command through
+//! it is a bare `wine` run — that is the route every Wine-lane path takes
+//! ([`WineRunner`], the scenario runs), and it must stay that way. The
+//! one-loud route is `wineboot -u` against a prefix that still has setup
+//! work to do: Wine 10 and newer show a GUI progress dialog (titled "Wine",
+//! owned by `wineboot.exe`) that pops up, runs its setup, and closes
+//! itself — on a desktop host it steals focus mid-test, and under a
+//! headless runner it is pure noise. Keep `wineboot -u` off the test path
+//! entirely; it exists only to refresh an *already-set-up* prefix after a
+//! Wine upgrade. If a lane ever needs the prefix re-initialized, a bare
+//! `wine cmd.exe /c exit` does the same first-run work without a window,
+//! and `WINEDLLOVERRIDES="mscoree,mshtml="` keeps the Wine Mono/Gecko
+//! installer components out of the setup path for fully headless CI.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
