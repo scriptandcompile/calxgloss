@@ -28,9 +28,9 @@ use calxgloss_llm::{
 };
 use calxgloss_types::{
     BinaryIdentity, ContextTier, FailureHint, FaultEvent, ProgressEvent, ResourceExhaustionFault,
-    TestCase, TranslationEvents,
+    TestCase, TranslationEvents, VerificationReceipt,
 };
-use calxgloss_verify::{CompileResult, VerificationRun, Verifier, VerifyContext};
+use calxgloss_verify::{VerificationRun, Verifier, VerifyContext};
 use tracing::warn;
 
 /// Approximate elapsed time recorded for resource-exhaustion events when the
@@ -41,12 +41,28 @@ const DEFAULT_ELAPSED_SECS: u64 = 300;
 /// Which prompt path produced this attempt. Today's two loop branches
 /// spelled the exhausted-attempt note differently; the seam keeps both
 /// spellings byte-identical across the move (#332).
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum AttemptPath {
+    /// The initial translation handed to the loop, verified before any
+    /// fix prompt ran.
+    InitialTranslation,
     /// A strategy-built fix prompt (compile fix, test fix, escalate, …).
     StrategyPrompt,
     /// A tier-escalated prompt rebuilt with decompiler/workspace context.
     TierEscalated,
+}
+
+impl AttemptPath {
+    /// The path's name on the filed *verification receipt* — the spelling
+    /// the seam names its prompt shapes by, so a reviewer can line a pair
+    /// up with the prompt that produced the code under it.
+    pub(crate) fn receipt_name(self) -> &'static str {
+        match self {
+            Self::InitialTranslation => "initial-translation",
+            Self::StrategyPrompt => "strategy-prompt",
+            Self::TierEscalated => "tier-escalated",
+        }
+    }
 }
 
 /// The unit under repair, routed through the seam instead of the loop
@@ -132,6 +148,14 @@ pub(crate) enum AttemptOutcome {
 pub(crate) struct AttemptReport {
     pub outcome: AttemptOutcome,
     pub loop_fired: bool,
+    /// The *verification receipt* this attempt's verify run filed, exactly
+    /// as filed — the pair's JSON authority. It travels back up the seam
+    /// so a commit site can stage the pair onto the attempt branch (P25.4).
+    /// `None` when the gate never ran: an LLM-level failure never reached
+    /// verification.
+    // Read by P25.4's commit sites; the seam hands it back already.
+    #[allow(dead_code)]
+    pub receipt: Option<VerificationReceipt>,
 }
 
 /// Emit a TranslationAttemptCompleted event for the attempt just appended to
@@ -225,15 +249,18 @@ fn record_in_detector(
 /// loop owns that policy (#330).
 // Parameters mirror one attempt's full input set, passed positionally by
 // the loop — same shape as log_token_usage.
-/// The retry ladder's receipt context for one attempt: its place and
-/// strategy ride the filed *verification receipt*. The prompt shape
-/// earns its own name when P25.3 wires the writer; for now the strategy
-/// names the path.
-fn attempt_receipt_context(attempt_num: u32, retry_strategy: &str) -> VerifyContext<'_> {
+/// The retry ladder's receipt context for one attempt: its place, strategy,
+/// and prompt-shape path ride the filed *verification receipt*, so each
+/// attempt in a sequence names itself on disk (issue #412).
+fn attempt_receipt_context(
+    attempt_num: u32,
+    retry_strategy: &str,
+    path: AttemptPath,
+) -> VerifyContext<'_> {
     VerifyContext {
         attempt: attempt_num,
         retry_strategy,
-        attempt_path: retry_strategy,
+        attempt_path: path.receipt_name(),
         ..VerifyContext::default()
     }
 }
@@ -334,9 +361,11 @@ pub(crate) async fn run_attempt(
                 "LLM resource exhausted during retry"
             );
             // Today's two branches spelled the note differently; the seam
-            // keeps both across the move (#332).
+            // keeps both across the move (#332). `InitialTranslation` never
+            // reaches `run_attempt` — the initial tail has no LLM call —
+            // so it shares the plain strategy wording.
             let note = match path {
-                AttemptPath::StrategyPrompt => {
+                AttemptPath::StrategyPrompt | AttemptPath::InitialTranslation => {
                     format!("LLM resource exhausted ({kind}) — model is overloaded or timed out")
                 }
                 AttemptPath::TierEscalated => {
@@ -374,6 +403,7 @@ pub(crate) async fn run_attempt(
                     kind: kind.to_string(),
                 },
                 loop_fired: false,
+                receipt: None,
             };
         }
         Err(e) => {
@@ -405,6 +435,7 @@ pub(crate) async fn run_attempt(
             return AttemptReport {
                 outcome: AttemptOutcome::LlmCallError,
                 loop_fired: false,
+                receipt: None,
             };
         }
     };
@@ -465,84 +496,98 @@ pub(crate) async fn run_attempt(
         return AttemptReport {
             outcome: AttemptOutcome::LlmEmpty,
             loop_fired: false,
+            receipt: None,
         };
     }
 
-    // Verify the fix attempt
-    let compile_result = match run
+    // Verify the fix attempt. One gate call does it all: `verify` compiles
+    // the code itself, files this attempt's *verification receipt* pair for
+    // whichever leg ended the run — a compile-failed attempt still leaves
+    // its record on disk so the ladder is reconstructable (issue #412) —
+    // and hands the pair's JSON authority back up the seam.
+    let mut filed_receipt: Option<VerificationReceipt> = None;
+    let (
+        compiled,
+        compilation_errors,
+        tests_passed,
+        tests_total,
+        failed_tests,
+        structured_failed_cases,
+    ) = match run
         .verifier
-        .compile(&run.binary, &run.function, &new_rust_code)
+        .verify(
+            &run.binary,
+            &run.function,
+            &new_rust_code,
+            unit.baseline_tests,
+            &attempt_receipt_context(attempt_num, retry_strategy, path),
+        )
         .await
     {
-        Ok(cr) => cr,
-        Err(e) => CompileResult {
-            success: false,
-            errors: vec![e.to_string()],
-            warnings: Vec::new(),
-            output: e.to_string(),
-        },
-    };
-
-    // Get test results
-    let (tests_passed, tests_total, failed_tests, structured_failed_cases) =
-        if compile_result.success {
-            match run
-                .verifier
-                .verify(
-                    &run.binary,
-                    &run.function,
-                    &new_rust_code,
-                    unit.baseline_tests,
-                    &attempt_receipt_context(attempt_num, retry_strategy),
-                )
-                .await
-            {
-                Ok(VerificationRun { result: vr, .. }) => (
-                    vr.tests_passed,
-                    vr.tests_total,
-                    vr.failed_tests
-                        .iter()
-                        .map(|ft| {
-                            format!(
-                                "Test {}: expected {}, got {} — {}",
-                                ft.test_index, ft.expected, ft.actual, ft.error
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                    vr.failed_tests
-                        .iter()
-                        .map(|ft| calxgloss_prompts::EdgeCaseTest {
-                            index: ft.test_index,
-                            inputs: ft.inputs.clone(),
-                            expected: ft.expected.clone(),
-                            actual: ft.actual.clone(),
-                            error: ft.error.clone(),
-                            disassembly_hints: String::new(),
-                        })
-                        .collect::<Vec<_>>(),
-                ),
-                Err(_) => (
-                    0,
-                    0,
-                    vec!["Verification failed".to_string()],
-                    vec![calxgloss_prompts::EdgeCaseTest {
-                        index: 0,
-                        inputs: serde_json::Value::Null,
-                        expected: serde_json::Value::Null,
-                        actual: serde_json::Value::Null,
-                        error: "Verification failed".to_string(),
+        Ok(VerificationRun {
+            result: vr,
+            receipt,
+        }) => {
+            filed_receipt = Some(receipt);
+            (
+                vr.compiled,
+                vr.compilation_errors,
+                vr.tests_passed,
+                vr.tests_total,
+                vr.failed_tests
+                    .iter()
+                    .map(|ft| {
+                        format!(
+                            "Test {}: expected {}, got {} — {}",
+                            ft.test_index, ft.expected, ft.actual, ft.error
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                vr.failed_tests
+                    .iter()
+                    .map(|ft| calxgloss_prompts::EdgeCaseTest {
+                        index: ft.test_index,
+                        inputs: ft.inputs.clone(),
+                        expected: ft.expected.clone(),
+                        actual: ft.actual.clone(),
+                        error: ft.error.clone(),
                         disassembly_hints: String::new(),
-                    }],
-                ),
-            }
-        } else {
-            (0, 0, Vec::new(), Vec::new())
-        };
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+        Err(e) => {
+            // The verifier itself fell over — the unit was never judged and
+            // no pair was filed (P25.6 files an admitted unknown for that).
+            // The attempt's quotes keep the seam's sentinel so the fix
+            // prompts hold today's shape.
+            warn!(
+                attempt = attempt_num,
+                error = %e,
+                "Verification gate failed during retry"
+            );
+            (
+                false,
+                vec![e.to_string()],
+                0,
+                0,
+                vec!["Verification failed".to_string()],
+                vec![calxgloss_prompts::EdgeCaseTest {
+                    index: 0,
+                    inputs: serde_json::Value::Null,
+                    expected: serde_json::Value::Null,
+                    actual: serde_json::Value::Null,
+                    error: "Verification failed".to_string(),
+                    disassembly_hints: String::new(),
+                }],
+            )
+        }
+    };
 
     // Record this attempt in the infinite-loop detector so we catch
     // cases where the LLM keeps returning identical code despite
     // changing prompts/strategies.
-    let attempt_success = compile_result.success && tests_passed == tests_total;
+    let attempt_success = compiled && tests_passed == tests_total;
     let loop_fired = record_in_detector(
         run,
         prompt,
@@ -555,8 +600,8 @@ pub(crate) async fn run_attempt(
     let attempt = TranslationAttempt {
         attempt: attempt_num,
         rust_code: new_rust_code,
-        compiled: compile_result.success,
-        compilation_errors: compile_result.errors.clone(),
+        compiled,
+        compilation_errors,
         tests_passed,
         tests_total,
         failed_tests: failed_tests.clone(),
@@ -631,6 +676,7 @@ pub(crate) async fn run_attempt(
     AttemptReport {
         outcome,
         loop_fired,
+        receipt: filed_receipt,
     }
 }
 
@@ -650,83 +696,90 @@ pub(crate) async fn verify_and_record(
     detector_prompt: &str,
     tokens_used: Option<usize>,
 ) -> AttemptReport {
-    let compile_result = match run
+    // The gate's judgement plus the receipt it files — one `verify` call,
+    // which compiles the code itself and files a pair for whichever leg
+    // ended the run, including a compile-failed initial translation
+    // (issue #412). This tail only ever verifies the initial translation —
+    // the fix attempts ride `run_attempt` and verify their returned code
+    // there — so the receipt's path is the seam's own initial one.
+    let mut filed_receipt: Option<VerificationReceipt> = None;
+    let (
+        compiled,
+        compilation_errors,
+        tests_passed,
+        tests_total,
+        failed_tests,
+        structured_failed_cases,
+    ) = match run
         .verifier
-        .compile(&run.binary, &run.function, unit.code_under_fix)
+        .verify(
+            &run.binary,
+            &run.function,
+            unit.code_under_fix,
+            unit.baseline_tests,
+            &attempt_receipt_context(attempt_num, retry_strategy, AttemptPath::InitialTranslation),
+        )
         .await
     {
-        Ok(cr) => cr,
+        Ok(VerificationRun {
+            result: vr,
+            receipt,
+        }) => {
+            filed_receipt = Some(receipt);
+            (
+                vr.compiled,
+                vr.compilation_errors,
+                vr.tests_passed,
+                vr.tests_total,
+                vr.failed_tests
+                    .iter()
+                    .map(|ft| {
+                        format!(
+                            "Test {}: expected {}, got {} — {}",
+                            ft.test_index, ft.expected, ft.actual, ft.error
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                vr.failed_tests
+                    .iter()
+                    .map(|ft| calxgloss_prompts::EdgeCaseTest {
+                        index: ft.test_index,
+                        inputs: ft.inputs.clone(),
+                        expected: ft.expected.clone(),
+                        actual: ft.actual.clone(),
+                        error: ft.error.clone(),
+                        disassembly_hints: String::new(),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
         Err(e) => {
-            warn!(error = %e, "Compilation check failed during retry");
-            CompileResult {
-                success: false,
-                errors: vec![e.to_string()],
-                warnings: Vec::new(),
-                output: e.to_string(),
-            }
+            // The verifier itself fell over — the unit was never judged and
+            // no pair was filed (P25.6 files an admitted unknown for that).
+            warn!(error = %e, "Verification gate failed during retry");
+            (
+                false,
+                vec![e.to_string()],
+                0,
+                0,
+                vec!["Verification failed".to_string()],
+                vec![calxgloss_prompts::EdgeCaseTest {
+                    index: 0,
+                    inputs: serde_json::Value::Null,
+                    expected: serde_json::Value::Null,
+                    actual: serde_json::Value::Null,
+                    error: "Verification failed".to_string(),
+                    disassembly_hints: String::new(),
+                }],
+            )
         }
     };
-
-    let (tests_passed, tests_total, failed_tests, structured_failed_cases) =
-        if compile_result.success {
-            match run
-                .verifier
-                .verify(
-                    &run.binary,
-                    &run.function,
-                    unit.code_under_fix,
-                    unit.baseline_tests,
-                    &attempt_receipt_context(attempt_num, retry_strategy),
-                )
-                .await
-            {
-                Ok(VerificationRun { result: vr, .. }) => (
-                    vr.tests_passed,
-                    vr.tests_total,
-                    vr.failed_tests
-                        .iter()
-                        .map(|ft| {
-                            format!(
-                                "Test {}: expected {}, got {} — {}",
-                                ft.test_index, ft.expected, ft.actual, ft.error
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                    vr.failed_tests
-                        .iter()
-                        .map(|ft| calxgloss_prompts::EdgeCaseTest {
-                            index: ft.test_index,
-                            inputs: ft.inputs.clone(),
-                            expected: ft.expected.clone(),
-                            actual: ft.actual.clone(),
-                            error: ft.error.clone(),
-                            disassembly_hints: String::new(),
-                        })
-                        .collect::<Vec<_>>(),
-                ),
-                Err(_) => (
-                    0,
-                    0,
-                    vec!["Verification failed".to_string()],
-                    vec![calxgloss_prompts::EdgeCaseTest {
-                        index: 0,
-                        inputs: serde_json::Value::Null,
-                        expected: serde_json::Value::Null,
-                        actual: serde_json::Value::Null,
-                        error: "Verification failed".to_string(),
-                        disassembly_hints: String::new(),
-                    }],
-                ),
-            }
-        } else {
-            (0, 0, Vec::new(), Vec::new())
-        };
 
     let attempt = TranslationAttempt {
         attempt: attempt_num,
         rust_code: unit.code_under_fix.to_string(),
-        compiled: compile_result.success,
-        compilation_errors: compile_result.errors.clone(),
+        compiled,
+        compilation_errors,
         tests_passed,
         tests_total,
         failed_tests,
@@ -764,6 +817,7 @@ pub(crate) async fn verify_and_record(
     AttemptReport {
         outcome,
         loop_fired,
+        receipt: filed_receipt,
     }
 }
 
@@ -771,7 +825,7 @@ pub(crate) async fn verify_and_record(
 mod tests {
     use super::*;
     use calxgloss_analysis::{FaultLogger, PromptStrategyLogger, TokenUsageLogger};
-    use calxgloss_types::ContextTier;
+    use calxgloss_types::{ContextTier, VerificationVerdict, persist, verification_receipt_path};
 
     const GOOD_CODE: &str = "fn draw_sprite(x: i32) -> i32 { x }";
     const BROKEN_CODE: &str = "fn draw_sprite(x: i32) -> i32 { let y: = ; x }";
@@ -999,9 +1053,34 @@ mod tests {
             "outcome: {:?}",
             report
         );
+        assert_eq!(
+            report.receipt.as_ref().map(|r| r.verdict),
+            Some(VerificationVerdict::CompileFailed),
+            "the compile-failed gate still hands its receipt back"
+        );
         let attempt = result.attempts.last().expect("one attempt recorded");
         assert!(!attempt.compiled);
         assert!(!attempt.compilation_errors.is_empty());
+
+        // A compile-failed attempt leaves its own pair too — the branch
+        // history explains why the code was re-prompted (issue #412).
+        let pair =
+            verification_receipt_path(ws.path().join("verify"), unit_identity(), "draw_sprite", 1);
+        assert!(
+            pair.is_file() && pair.with_extension("md").is_file(),
+            "the failed attempt files its pair at {pair:?}"
+        );
+        let filed: VerificationReceipt =
+            persist::load_json(&pair).expect("the authority reads back");
+        assert_eq!(filed.verdict, VerificationVerdict::CompileFailed);
+        assert_eq!(filed.attempt, 1);
+        assert_eq!(filed.retry_strategy, "compile_fix");
+        assert_eq!(filed.attempt_path, "strategy-prompt");
+        assert_eq!(
+            filed.dimensions["values"].assessed, 0,
+            "nothing ran to be assessed"
+        );
+        assert_eq!(filed, report.receipt.expect("the same receipt handed back"));
 
         assert_eq!(history.len(), 1);
         assert!(
@@ -1168,6 +1247,10 @@ mod tests {
             "outcome: {:?}",
             report
         );
+        assert!(
+            report.receipt.is_none(),
+            "no gate ran, so no receipt came back"
+        );
         let attempt = result.attempts.last().expect("one attempt recorded");
         assert!(attempt.compilation_errors[0].starts_with("LLM call failed:"));
         assert!(history.is_empty());
@@ -1241,6 +1324,246 @@ mod tests {
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
         }]
+    }
+
+    /// Bodies the scratch harness can actually build and run — the shape of
+    /// the verify crate's own receipt suite: no params, JSON value out.
+    const SEAM_FAIL_BODY: &str =
+        "pub fn call_no_params() -> serde_json::Value { serde_json::Value::from(6) }";
+    const SEAM_PASS_BODY: &str =
+        "pub fn call_no_params() -> serde_json::Value { serde_json::Value::from(7) }";
+
+    /// One baseline case demanding `want` through no params, with no
+    /// API-call-trace expectation — the trace dimension stays unassessed.
+    fn seam_case(want: i64) -> TestCase {
+        TestCase {
+            inputs: serde_json::json!(null),
+            expected_return: serde_json::json!(want),
+            expected_side_effects: Vec::new(),
+            expected_api_calls: Vec::new(),
+            origin: calxgloss_types::CaseOrigin::Generated,
+        }
+    }
+
+    fn seam_unit<'a>(code_under_fix: &'a str, suite: &'a [TestCase]) -> AttemptUnit<'a> {
+        AttemptUnit {
+            binary: unit_identity(),
+            function: "call_no_params",
+            code_under_fix,
+            baseline_tests: suite,
+            tier: ContextTier::Signature,
+            function_address: None,
+            call_graph: &[],
+            call_graph_context: &[],
+        }
+    }
+
+    /// The plain-text diff over two receipt authorities: the lines whose
+    /// occurrence counts differ between the two canonical-order documents
+    /// (multiset difference, both directions). Identical layout means a
+    /// line standing in the diff is content that changed, not ordering.
+    fn changed_receipt_lines(first: &std::path::Path, second: &std::path::Path) -> Vec<String> {
+        let mut counts: std::collections::HashMap<String, i32> = Default::default();
+        for line in std::fs::read_to_string(first)
+            .expect("first authority reads")
+            .lines()
+        {
+            *counts.entry(line.to_string()).or_default() += 1;
+        }
+        for line in std::fs::read_to_string(second)
+            .expect("second authority reads")
+            .lines()
+        {
+            *counts.entry(line.to_string()).or_default() -= 1;
+        }
+        counts
+            .into_iter()
+            .filter(|(_, count)| *count != 0)
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    /// P25.3, issue #412: a failing verify followed by its fix, through the
+    /// attempt seam's door, leaves **two digest-paired receipt pairs** that
+    /// coexist on disk — one per attempt, keyed on the attempt's place.
+    /// Each pair names its unit and its place in the ladder, a plain-text
+    /// diff over the stable-ordered JSONs shows the verdict, dimension
+    /// counts, and timings change, an honestly-passed gate with no trace
+    /// expectation still records `api_trace` unassessed (ADR-0057), and
+    /// each receipt hands back up the seam for a commit site to stage (P25.4).
+    #[tokio::test]
+    #[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+    async fn a_failing_attempt_and_its_fix_each_file_their_own_pair_keyed_on_their_place() {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let verifier_root = ws.path().join("verify");
+        let verifier = Verifier::new(&verifier_root).expect("verifier");
+        let base = canned_llm(200, SEAM_PASS_BODY).await;
+        let llm = LlmClient::from_url(&base, "test-model").expect("llm client");
+        let mut loop_detector = InfiniteLoopDetector::new();
+        let mut run = AttemptRunCtx {
+            verifier: &verifier,
+            llm: &llm,
+            events: None,
+            workspace: Some(ws.path()),
+            resource_detector: None,
+            fault_logger: None,
+            loop_detector: &mut loop_detector,
+            binary: "game_logic.dll".to_string().into(),
+            function: "call_no_params".to_string(),
+        };
+
+        let suite = vec![seam_case(7)];
+        let mut result = RetryResult::new();
+
+        // Attempt 1: the initial translation compiles but the suite
+        // diverges — an honest tests-failed through the seam's door.
+        let failing_unit = seam_unit(SEAM_FAIL_BODY, &suite);
+        let first_report = verify_and_record(
+            &mut run,
+            &mut result,
+            &failing_unit,
+            1,
+            "initial",
+            "call_no_params (game_logic.dll) initial translation",
+            Some(10),
+        )
+        .await;
+        assert!(
+            matches!(
+                first_report.outcome,
+                AttemptOutcome::VerificationFailed { .. }
+            ),
+            "outcome: {:?}",
+            first_report
+        );
+
+        // Attempt 2: the compile_fix prompt's fixed code passes the same suite.
+        let mut history: Vec<FailureHint> = Vec::new();
+        let fixed_unit = seam_unit(SEAM_FAIL_BODY, &suite);
+        let second_report = run_attempt(
+            &mut run,
+            &mut result,
+            &mut history,
+            &fixed_unit,
+            AttemptPath::StrategyPrompt,
+            "compile_fix",
+            2,
+            "fix the diverging case",
+            std::time::Instant::now(),
+        )
+        .await;
+        assert!(
+            matches!(second_report.outcome, AttemptOutcome::Passed),
+            "outcome: {:?}",
+            second_report
+        );
+
+        // Both pairs coexist keyed on their place in the sequence, twins attached.
+        let first_json =
+            verification_receipt_path(&verifier_root, unit_identity(), "call_no_params", 1);
+        let second_json =
+            verification_receipt_path(&verifier_root, unit_identity(), "call_no_params", 2);
+        for path in [&first_json, &second_json] {
+            assert!(path.is_file(), "the pair's authority stands at {path:?}");
+            assert!(
+                path.with_extension("md").is_file(),
+                "its Markdown twin stands beside it"
+            );
+        }
+
+        // The reader's pairing check on each pair: the JSON names its own
+        // digest and the twin carries the same one.
+        let first: VerificationReceipt =
+            persist::load_json(&first_json).expect("the first authority reads");
+        let second: VerificationReceipt =
+            persist::load_json(&second_json).expect("the second authority reads");
+        for (receipt, path) in [(&first, &first_json), (&second, &second_json)] {
+            assert_eq!(
+                receipt.content_digest().expect("the fold"),
+                receipt.digest,
+                "the JSON names itself: {}",
+                receipt.digest
+            );
+            let md = std::fs::read_to_string(path.with_extension("md")).expect("the twin reads");
+            assert!(
+                md.contains(&receipt.digest),
+                "the twin carries the same digest"
+            );
+        }
+
+        // Each pair names its unit — binary identity plus function — and
+        // its place: attempt number, retry strategy, and the attempt path
+        // as the seam names it.
+        for receipt in [&first, &second] {
+            assert_eq!(receipt.binary.as_str(), "game_logic.dll");
+            assert_eq!(receipt.function, "call_no_params");
+        }
+        assert_eq!(first.attempt, 1);
+        assert_eq!(first.retry_strategy, "initial");
+        assert_eq!(first.attempt_path, "initial-translation");
+        assert_eq!(second.attempt, 2);
+        assert_eq!(second.retry_strategy, "compile_fix");
+        assert_eq!(second.attempt_path, "strategy-prompt");
+
+        // The failure→fix step is what the diff shows: verdict, dimension
+        // counts, and timings all change between the two authorities.
+        assert_eq!(first.verdict, VerificationVerdict::TestsFailed);
+        assert_eq!(second.verdict, VerificationVerdict::Passed);
+        assert_eq!(
+            (
+                first.dimensions["values"].assessed,
+                first.dimensions["values"].passed
+            ),
+            (1, 0),
+            "the failing attempt assessed the one case and lost it"
+        );
+        assert_eq!(
+            (
+                second.dimensions["values"].assessed,
+                second.dimensions["values"].passed
+            ),
+            (1, 1),
+            "the fix assessed it and won it"
+        );
+        let changed = changed_receipt_lines(&first_json, &second_json);
+        assert!(
+            changed
+                .iter()
+                .any(|line| line.contains("\"verdict\"") && line.contains(':')),
+            "the plain-text diff shows the verdict changing:\n{changed:?}"
+        );
+        assert!(
+            changed.iter().any(|line| line.contains("\"passed\":")),
+            "and the dimension counts changing:\n{changed:?}"
+        );
+        assert!(
+            changed.iter().any(|line| line.contains("_ms\":")),
+            "and the timings changing:\n{changed:?}"
+        );
+
+        // Both runs timed their real legs.
+        for receipt in [&first, &second] {
+            assert!(
+                receipt.compile_ms > 0 && receipt.test_run_ms > 0 && receipt.total_ms > 0,
+                "timings present: {} / {} / {}",
+                receipt.compile_ms,
+                receipt.test_run_ms,
+                receipt.total_ms
+            );
+        }
+
+        // An honestly-degraded pass: no case spoke an API-call-trace
+        // expectation, so the trace dimension reads unassessed — silence
+        // is never a pass (ADR-0057), even on a fully passing gate.
+        assert_eq!(
+            second.dimensions["api_trace"].assessed, 0,
+            "a green gate still files api_trace unassessed when nothing asked it"
+        );
+
+        // The receipts travel back up the seam, identical to the filed
+        // authorities — the commit site stages them later (P25.4).
+        assert_eq!(first_report.receipt.as_ref(), Some(&first));
+        assert_eq!(second_report.receipt.as_ref(), Some(&second));
     }
 
     #[tokio::test]

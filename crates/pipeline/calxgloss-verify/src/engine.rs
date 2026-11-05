@@ -227,7 +227,11 @@ impl Verifier {
                 compiled: false,
                 compilation_errors: compile_result.errors,
                 tests_passed: 0,
-                tests_total: baseline_tests.len(),
+                // The counters count tests that RAN — a gate whose test leg
+                // never started ran none, so its unrun suite counts as
+                // zero, not as suite size. Downstream "did any baseline
+                // case run" questions read this directly.
+                tests_total: 0,
                 failed_tests: Vec::new(),
                 // Nothing ran, so the trace dimension assessed nothing.
                 trace_assessed_tests: 0,
