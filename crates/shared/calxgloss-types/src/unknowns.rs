@@ -107,6 +107,13 @@ pub enum UnknownKind {
     /// expressible baseline expectation. Filed naming the event the crash
     /// was replayed from (P23's crash-reproduction record).
     CrashReproduction,
+    /// A verify run reached its verdict while its *verification receipt*
+    /// pair could not be written: the run's justification is unfiled, so
+    /// the verdict's authority is missing rather than merely unstaged.
+    /// Filed naming the run by its place in the retry sequence — the
+    /// receipt's own key (P25.6's honesty rule: a dropped receipt never
+    /// reads as a quiet pass).
+    ReceiptUnfiled,
 }
 
 display_serde_label!(UnknownKind {
@@ -118,6 +125,7 @@ display_serde_label!(UnknownKind {
     TierRefused => "tier_refused",
     CaptureRefused => "capture_refused",
     CrashReproduction => "crash_reproduction",
+    ReceiptUnfiled => "receipt_unfiled",
 });
 
 /// The declared roster of unknown kinds — the closed set every producer is
@@ -136,6 +144,7 @@ pub const DECLARED_UNKNOWN_KINDS: &[&str] = &[
     "tier_refused",
     "capture_refused",
     "crash_reproduction",
+    "receipt_unfiled",
 ];
 
 /// How much an open unknown matters — the closed severity scale.
@@ -204,6 +213,11 @@ pub enum UnknownOrigin {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event_sequence: Option<u64>,
     },
+    /// Derived from one verify run's failed attempt to file its
+    /// *verification receipt* pair: the run's 1-based place in the retry
+    /// sequence — the receipt's own file key — so the record names exactly
+    /// the pair that is missing (P25.6, issue #415).
+    VerifyRun { attempt: u32 },
 }
 
 impl UnknownOrigin {
@@ -233,6 +247,10 @@ impl UnknownOrigin {
                 capture_id,
                 event_sequence: None,
             } => format!("{capture_id}#capture"),
+            // One run's unfiled pair is one gap: the slot is the receipt's
+            // own file key, so the record and the pair it mourns are keyed
+            // identically and a re-filed run re-derives the same record.
+            UnknownOrigin::VerifyRun { attempt } => format!("attempt-{attempt}"),
         }
     }
 }
