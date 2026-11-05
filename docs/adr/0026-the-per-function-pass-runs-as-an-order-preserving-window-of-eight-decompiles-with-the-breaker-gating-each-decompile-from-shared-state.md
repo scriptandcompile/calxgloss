@@ -1,4 +1,4 @@
-# ADR-0026: The per-function pass runs as an order-preserving window of eight decompiles, with the skip-rate breaker gating each decompile from shared state
+# ADR-0026: The per-function pass runs as an order-preserving window of eight decompiles
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P3.5-5 shipped, issue #156)

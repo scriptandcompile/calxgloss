@@ -1,4 +1,4 @@
-# ADR-0037: The apidetect divergence reading needs both platform families, and a named COM interface suppresses the nameless runtime claim
+# ADR-0037: The apidetect divergence reading needs both platform families
 
 - **Status:** Accepted
 - **Date:** 2026-10-15 (P9.5-2/-3 shipped, issues #185, #186)

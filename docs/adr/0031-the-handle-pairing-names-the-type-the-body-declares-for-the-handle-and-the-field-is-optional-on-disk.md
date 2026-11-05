@@ -1,4 +1,4 @@
-# ADR-0031: The handle pairing names the type the body itself declares for the handle, the scoped narrowing still outranks it, and the field is optional on disk
+# ADR-0031: Handle pairing names the type the body itself declares
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P4.5-5 shipped, issue #162)

@@ -1,4 +1,4 @@
-# ADR-0023: One JSON pattern database replaces the standard sets whole, with per-entry confidence riding on the pattern types
+# ADR-0023: One JSON pattern database replaces the standard sets whole
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P3.5-2 shipped, issue #153)

@@ -1,4 +1,4 @@
-# ADR-0009: Inferred candidates link to RTTI-confirmed vtables on one shared method, and take the class name
+# ADR-0009: Inferred candidates link to RTTI-confirmed vtables for their class name
 
 - **Status:** Accepted
 - **Date:** 2026-10-13 (P1.5-1 shipped, issue #137)

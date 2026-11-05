@@ -1,4 +1,4 @@
-# ADR-0011: Recover type nesting by linking fields to named types by exact name, in a post-assembly pass
+# ADR-0011: Recover type nesting by exact-name field links, in a post-assembly pass
 
 - **Status:** Accepted
 - **Date:** 2026-10-13 (P1.5-3 shipped, issue #139)

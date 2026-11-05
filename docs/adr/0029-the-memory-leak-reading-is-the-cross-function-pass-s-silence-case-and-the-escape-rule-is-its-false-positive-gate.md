@@ -1,4 +1,4 @@
-# ADR-0029: The memory leak reading is the cross-function pass's silence case — an open resource with no pair and no escape — and the escape rule is its false-positive gate
+# ADR-0029: The memory leak reading is the cross-function pass's silence case
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P4.5-3 shipped, issue #160)

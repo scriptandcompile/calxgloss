@@ -1,4 +1,4 @@
-# ADR-0030: The memory Rc upgrade rewrites the cross-function claim in place when the callee's body keeps the parameter, and the keep is a store outside the callee's own frame
+# ADR-0030: The memory Rc upgrade rewrites the cross-function claim in place
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P4.5-4 shipped, issue #161)

@@ -1,4 +1,4 @@
-# ADR-0027: The memory cross-function pass runs over the scan's kept bodies, ties releases positionally, and lets the first releasing callee win
+# ADR-0027: The memory pass ties releases positionally; the first releasing callee wins
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P4.5-1 shipped, issue #158)

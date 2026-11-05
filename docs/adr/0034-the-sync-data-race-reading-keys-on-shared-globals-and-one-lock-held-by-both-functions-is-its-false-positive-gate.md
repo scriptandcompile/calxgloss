@@ -1,4 +1,4 @@
-# ADR-0034: The sync data-race reading keys on shared globals, and one lock held by both functions is its false-positive gate
+# ADR-0034: The sync data-race reading keys on shared globals
 
 - **Status:** Accepted
 - **Date:** 2026-10-14

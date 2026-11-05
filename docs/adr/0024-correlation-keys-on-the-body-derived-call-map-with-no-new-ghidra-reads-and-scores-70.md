@@ -1,4 +1,4 @@
-# ADR-0024: Correlation keys on the body-derived call map with no new Ghidra reads, and scores above a single-body match
+# ADR-0024: Correlation detection rides the body-derived call map, no new Ghidra reads
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P3.5-3 shipped, issue #154)

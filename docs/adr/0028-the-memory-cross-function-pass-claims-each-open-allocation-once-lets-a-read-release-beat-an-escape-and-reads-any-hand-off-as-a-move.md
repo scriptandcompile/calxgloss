@@ -1,4 +1,4 @@
-# ADR-0028: The memory cross-function pass claims each open allocation once, lets a read release beat an escape, and reads any hand-off as a move
+# ADR-0028: The memory pass claims each open allocation once and reads hand-offs as moves
 
 - **Status:** Accepted
 - **Date:** 2026-10-14 (P4.5-2 shipped, issue #159)

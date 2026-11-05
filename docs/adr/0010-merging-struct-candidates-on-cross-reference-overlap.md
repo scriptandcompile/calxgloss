@@ -1,4 +1,4 @@
-# ADR-0010: Struct candidates merge when their cross-reference evidence overlaps by half the smaller reader set
+# ADR-0010: Struct candidates merge on overlapping cross-reference reader sets
 
 - **Status:** Accepted
 - **Date:** 2026-10-13 (P1.5-2 shipped, issue #138)

@@ -1,4 +1,4 @@
-# ADR-0039: The analysis engine is a seam choice — Kuna loads the target in-process, Ghidra stays the default, and one run uses exactly one engine
+# ADR-0039: The analysis engine is a seam choice — one engine per run
 
 - **Status:** Accepted
 - **Date:** 2026-10-16 (X5-#205 shipped, epic #203)

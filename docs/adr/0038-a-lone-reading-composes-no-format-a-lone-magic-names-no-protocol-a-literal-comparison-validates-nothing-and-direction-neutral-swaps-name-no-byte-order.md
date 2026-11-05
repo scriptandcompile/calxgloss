@@ -1,4 +1,4 @@
-# ADR-0038: A lone reading composes no format, a lone magic names no protocol, a literal comparison validates nothing, and direction-neutral swaps name no byte order
+# ADR-0038: A lone reading composes no format, a lone magic names no protocol
 
 - **Status:** Accepted
 - **Date:** 2026-10-16 (P11.5-1–4 shipped, issues #198–#201)

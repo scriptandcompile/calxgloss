@@ -1,4 +1,4 @@
-# ADR-0036: The callback engine receives closure contracts by injection, and only a fully-read contract joins the map
+# ADR-0036: The callback engine receives closure contracts by injection
 
 - **Status:** Accepted
 - **Date:** 2026-10-15
