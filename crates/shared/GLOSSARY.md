@@ -23,7 +23,7 @@ The working pass's latest touch. It proves the run is alive without asking the r
 What the pipeline is *doing* right now — as distinct from the dashboard, which shows what a unit *achieved*.
 
 **Run state machine**:
-The one shared record of whether the run is idle, running, paused, stopping, complete, or errored. Every control acts on it. An illegal transition is refused, and the refusal names it. The run itself is Pipeline's concept; the state machine record lives here.
+The one shared record of whether the run is idle, running, paused, stopping, complete, or errored. Every control acts on it. An illegal transition is refused, and the refusal names it. The run itself is Pipeline's concept. The state machine record lives here.
 
 **Control handle**:
 A cloneable handle to a run that can be passed across threads. It covers stop, cancel-current, and run-request. All three are modeled on the stop signal: set it, and it takes effect at the next safe point.
@@ -47,7 +47,7 @@ What sort of tracked work a row is. Only function translation is a *unit of work
 The shared record type holds the 0–100 integer of evidence confidence. Unit confidence is Pipeline's separate scale and does not travel through this type.
 
 **Unknown record**:
-The one shared shape for an unanswered question about a target binary. Consumers render its stored wording; they do not restate it.
+The one shared shape for an unanswered question about a target binary. Consumers render its stored wording. They do not restate it.
 *Rules:*
 - Names the function too, when the gap is function-specific.
 - Carries a kind from a closed roster and a severity from a closed scale.
@@ -74,10 +74,10 @@ The four configuration layers, ordered most specific first: flag, environment, c
 The layer a value came from, carried alongside the value — what makes layered configuration debuggable, and what the config command shows.
 
 **Config file**:
-The project's `calxgloss.toml` beside the workspace, with a machine-wide file under the user config directory; a `--config` path must exist.
+The project's `calxgloss.toml` beside the workspace, with a machine-wide file under the user config directory. A `--config` path must exist.
 
 **Environment layer**:
-Settings named after their file section — one variable per key; set-but-empty counts as absent.
+Settings named after their file section — one variable per key. Set-but-empty counts as absent.
 
 **Unknown-key refusal**:
 A misspelled setting fails loudly at parse time, naming the bad key, rather than surfacing later as mysterious default behavior.
