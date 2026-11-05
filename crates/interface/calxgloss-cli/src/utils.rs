@@ -329,6 +329,53 @@ pub fn write_translation_function(
     Ok(output_path)
 }
 
+/// The files one attempt-branch commit carries: the translated code plus
+/// the *verification receipt* pair for the unit's verified pass, resolved
+/// through `calxgloss-git`'s [`calxgloss_git::GitManager::receipt_pair_paths`]
+/// so no commit site re-derives the file names (issue #413).
+///
+/// `verified_attempt` names which attempt in the ladder produced the code
+/// being committed — for a batch or auto pass that is the winner: the
+/// last attempt the verify gate passed, since the ladder's `compiled` and
+/// test counts come straight from that gate's verdict (issue #412). `None`
+/// says the site does not know a pass to cite, and nothing but the code
+/// rides. The pair lands in the list only when the verify gate actually
+/// filed it — an absent pair leaves the green claim uncitable, visibly,
+/// and nothing is fabricated.
+pub(crate) fn attempt_commit_files(
+    git: &calxgloss_git::GitManager,
+    binary: &str,
+    function: &str,
+    verified_attempt: Option<u32>,
+    translated_code: &Path,
+) -> Vec<String> {
+    let mut files = vec![translated_code.to_string_lossy().to_string()];
+    if let Some(attempt) = verified_attempt {
+        files.extend(git.receipt_pair_paths(
+            &calxgloss_types::BinaryIdentity::new(binary),
+            function,
+            attempt,
+        ));
+    }
+    files
+}
+
+/// The attempt in a unit's retry ladder whose verified pass produced the
+/// code a commit site is about to write — the last attempt the verify
+/// gate passed (`None` when the ladder had no winner). Its place in the
+/// sequence keys the *verification receipt* pair the commit stages
+/// beside that code (issue #413).
+pub(crate) fn ladder_winning_attempt(
+    retry: &calxgloss_translator::RetryResult,
+) -> Option<u32> {
+    retry
+        .attempts
+        .iter()
+        .rev()
+        .find(|attempt| attempt.is_successful())
+        .map(|attempt| attempt.attempt)
+}
+
 // ============================================================
 // Terminal formatting helpers (mirrors calxgloss-reports internals)
 // ============================================================
@@ -803,5 +850,92 @@ mod tests {
         let target = dir.path().join("target").join("broken.dll");
         guard_managed_binary(dir.path(), "broken.dll", &target)
             .expect("an unreadable file passes the guard");
+    }
+
+    // ─── Attempt-branch commit staging (issue #413) ──────────────────
+    //
+    // The CLI wiring pins at the committed file list, not at internals:
+    // what `attempt_commit_files` hands a commit site is what that
+    // site's attempt-branch commit carries.
+
+    /// A temp workspace over a fresh attempt branch with its translated
+    /// code written — the shape every commit-site pin drives. Returns the
+    /// workspace, repo, branch, and code path.
+    fn attempt_repo_and_code(
+    ) -> (
+        tempfile::TempDir,
+        calxgloss_git::GitManager,
+        calxgloss_git::GitBranch,
+        std::path::PathBuf,
+    ) {
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let git = calxgloss_git::GitManager::init_repo(dir.path(), None).expect("init temp repo");
+        let branch = git
+            .create_branch("game_logic.dll", "DrawSprite", 1, None)
+            .expect("create attempt branch")
+            .branch;
+        let code = dir.path().join("src").join("draw_sprite_v1.rs");
+        std::fs::create_dir_all(code.parent().expect("src parent")).expect("src dir");
+        std::fs::write(&code, "fn draw_sprite() {}").expect("write code");
+        (dir, git, branch, code)
+    }
+
+    /// File a unit's *verification receipt* pair for one attempt under
+    /// the workspace — JSON authority plus Markdown twin — by the
+    /// record-tree convention, independent of the helpers under test.
+    fn file_pair(workspace: &Path, function: &str, attempt: u32) {
+        let json = calxgloss_types::verification_receipt_path(
+            workspace,
+            &calxgloss_types::BinaryIdentity::new("game_logic.dll"),
+            function,
+            attempt,
+        );
+        std::fs::create_dir_all(json.parent().expect("receipt parent")).expect("receipt dir");
+        std::fs::write(&json, r#"{"attempt": 2}"#).expect("file the receipt json");
+        std::fs::write(json.with_extension("md"), "# receipt pair twin\n").expect("file the twin");
+    }
+
+    #[test]
+    fn the_attempt_commit_carries_the_code_and_the_verified_pass_receipt_pair() {
+        let (dir, git, branch, code) = attempt_repo_and_code();
+        file_pair(dir.path(), "DrawSprite", 2);
+
+        let files = attempt_commit_files(&git, "game_logic.dll", "DrawSprite", Some(2), &code);
+        let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let commit = git
+            .commit(
+                &branch,
+                "re/batch/DrawSprite: translate game_logic.dll (batch attempt)",
+                &file_refs,
+            )
+            .expect("commit attempt");
+
+        let pair_json = "re/verification/game_logic.dll/DrawSprite/attempt-2.json";
+        let pair_md = "re/verification/game_logic.dll/DrawSprite/attempt-2.md";
+        assert_eq!(
+            commit.files.len(),
+            3,
+            "code plus the filed pair: {commit:?}"
+        );
+        assert!(commit.files.iter().any(|f| f == pair_json));
+        assert!(commit.files.iter().any(|f| f == pair_md));
+    }
+
+    #[test]
+    fn an_unfiled_pair_leaves_the_attempt_commit_carrying_only_the_code() {
+        // An absent pair commits as before with nothing fabricated — the
+        // green claim is left uncitable, visibly (issue #413).
+        let (_dir, git, branch, code) = attempt_repo_and_code();
+
+        let files = attempt_commit_files(&git, "game_logic.dll", "DrawSprite", Some(1), &code);
+        let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let commit = git
+            .commit(
+                &branch,
+                "re/batch/DrawSprite: translate game_logic.dll (batch attempt)",
+                &file_refs,
+            )
+            .expect("commit attempt");
+        assert_eq!(commit.files.len(), 1, "only the code rides: {commit:?}");
     }
 }

@@ -956,6 +956,41 @@ impl GitManager {
         format!("src/modules/{function}/translated.rs")
     }
 
+    /// The repo-relative paths of one attempt's *verification receipt*
+    /// pair — the JSON authority plus its Markdown twin — under this
+    /// repository's `re/verification/` route.
+    ///
+    /// A commit site stages the returned pair into the attempt-branch
+    /// commit it already makes, so a branch checkout answers "what stood
+    /// behind this commit?" with no pipeline running (issue #413). The
+    /// naming belongs to [`calxgloss_types::verification_receipt_path`]
+    /// alone — no commit site re-derives file names. The pair lands in
+    /// the returned list only when the verify gate actually filed it,
+    /// twin included — a half pair verifies nothing — so an absent pair
+    /// leaves the green claim uncitable rather than fabricated.
+    pub fn receipt_pair_paths(
+        &self,
+        binary: &BinaryIdentity,
+        function: &str,
+        attempt: u32,
+    ) -> Vec<String> {
+        let json =
+            calxgloss_types::verification_receipt_path(self.repo_path(), binary, function, attempt);
+        let md = json.with_extension("md");
+        if !json.exists() || !md.exists() {
+            return Vec::new();
+        }
+        [json, md]
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(self.repo_path())
+                    .unwrap_or(path.as_path())
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect()
+    }
+
     /// The accepted (merged) translation for one function of one binary,
     /// as `(attempt, rust_code)` — the source for carry-over seeding (issue #299).
     ///

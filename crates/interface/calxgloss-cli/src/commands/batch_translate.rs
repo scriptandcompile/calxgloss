@@ -203,31 +203,44 @@ pub async fn handle_batch_translate(
                     let branch_info = &branch_result.branch;
                     print_git_status(branch_info, false);
 
-                    if let Some(output_path_str) = output_path.to_str()
+                    // The verified pass's filed *verification receipt*
+                    // pair rides this commit beside the code, resolved
+                    // through the git helper — staged only if the gate
+                    // filed one (issue #413). The winning attempt in the
+                    // unit's ladder is the pass this commit's code came
+                    // from.
+                    let commit_files = attempt_commit_files(
+                        git_manager,
+                        binary,
+                        &func_result.function,
+                        ladder_winning_attempt(&func_result.retry_result),
+                        &output_path,
+                    );
+                    let file_refs: Vec<&str> = commit_files.iter().map(String::as_str).collect();
+                    if output_path.to_str().is_some()
                         && let Ok(_commit) = git_manager.commit(
-                            branch_info,
-                            // Carry-over provenance (issue #299): when
-                            // attempt 1 was seeded from an accepted
-                            // translation of a paired previous-version
-                            // function, the commit says so and names the
-                            // source — the same note the auto pass writes
-                            // (issue #326). A fresh unit's message is
-                            // unchanged, byte for byte.
-                            &match func_result.carry_over.as_ref() {
-                                Some(seed) => format!(
-                                    "re/batch/{}: translate {} (batch attempt, {})",
-                                    func_result.function,
-                                    binary,
-                                    seed.commit_note()
-                                ),
-                                None => format!(
-                                    "re/batch/{}: translate {} (batch attempt)",
-                                    func_result.function, binary
-                                ),
-                            },
-                            &[output_path_str],
-                        )
-                        && let Ok(merge_result) = git_manager.merge_to_main(branch_info)
+                        branch_info,
+                        // Carry-over provenance (issue #299): when
+                        // attempt 1 was seeded from an accepted
+                        // translation of a paired previous-version
+                        // function, the commit says so and names the
+                        // source — the same note the auto pass writes
+                        // (issue #326). A fresh unit's message is
+                        // unchanged, byte for byte.
+                        &match func_result.carry_over.as_ref() {
+                            Some(seed) => format!(
+                                "re/batch/{}: translate {} (batch attempt, {})",
+                                func_result.function,
+                                binary,
+                                seed.commit_note()
+                            ),
+                            None => format!(
+                                "re/batch/{}: translate {} (batch attempt)",
+                                func_result.function, binary
+                            ),
+                        },
+                        &file_refs,
+                    ) && let Ok(merge_result) = git_manager.merge_to_main(branch_info)
                     {
                         match &merge_result {
                             calxgloss_git::MergeResult::Merged { merge_hash } => {

@@ -150,6 +150,195 @@ fn test_commit_accepts_absolute_paths() {
 }
 
 #[test]
+fn test_attempt_commit_stages_the_units_receipt_pair() {
+    // Issue #413: a checkout of the attempt branch answers "what stood
+    // behind this commit?" with no pipeline running — the verify gate's
+    // *receipt pair* for the attempt rides the same commit as the code,
+    // resolved through this crate's helper so no commit site re-derives
+    // the file names.
+    let (_tmp_dir, manager) = temp_git_repo();
+    let branch = manager
+        .create_branch("game_logic.dll", "DrawSprite", 2, None)
+        .expect("create attempt branch")
+        .branch;
+
+    // The translated code under commit.
+    let src = manager.repo_path().join("src").join("draw_sprite_v2.rs");
+    std::fs::create_dir_all(src.parent().expect("src parent")).expect("src dir");
+    std::fs::write(&src, "fn draw_sprite() {}").expect("write code");
+
+    // The pair a verify run filed for attempt 2 — JSON authority plus
+    // Markdown twin — by the record-tree convention, independent of the
+    // helper under test.
+    let (pair_json, pair_md) = file_receipt_pair(&manager, "game_logic.dll", "DrawSprite", 2);
+
+    // The commit site asks the helper for the pair and stages it beside
+    // the code in the attempt-branch commit it already makes.
+    let mut files = vec!["src/draw_sprite_v2.rs".to_string()];
+    files.extend(manager.receipt_pair_paths(
+        &BinaryIdentity::new("game_logic.dll"),
+        "DrawSprite",
+        2,
+    ));
+    let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let commit = manager
+        .commit(
+            &branch,
+            "re/translation/DrawSprite: translate DrawSprite (attempt 2)",
+            &file_refs,
+        )
+        .expect("commit attempt");
+
+    // Pin at the committed file list: the code plus both pair members,
+    // spelled repo-relative so a diff across attempt branches reads clean.
+    assert_eq!(
+        commit.files.len(),
+        3,
+        "code plus the receipt pair: {commit:?}"
+    );
+    assert!(commit.files.iter().any(|f| f == &pair_json));
+    assert!(commit.files.iter().any(|f| f == &pair_md));
+
+    // The commit tree really carries the pair — the branch checkout
+    // reads the receipts, not just the returned record — and the staged
+    // JSON is the record as filed, in the document's declaration order
+    // (`binary` before `attempt`, `verdict` before `failed_cases` before
+    // `digest` — never alphabetical), so `git diff` between attempt
+    // branches reads cleanly.
+    let commit_obj = manager
+        .repo()
+        .find_commit(commit.hash.parse().expect("commit oid"))
+        .expect("commit object");
+    let tree = commit_obj.tree().expect("commit tree");
+    let blob_content = |path: &str| {
+        let entry_id = tree
+            .get_path(std::path::Path::new(path))
+            .expect("pair member in the commit tree")
+            .id();
+        manager
+            .repo()
+            .find_blob(entry_id)
+            .expect("commit-staged receipt blob")
+            .content()
+            .to_vec()
+    };
+    let committed_json = String::from_utf8(blob_content(&pair_json)).expect("utf-8 json");
+    let disk_json =
+        std::fs::read_to_string(manager.repo_path().join(&pair_json)).expect("filed json on disk");
+    assert_eq!(
+        committed_json, disk_json,
+        "staging files the record as-is — the diff reads the same bytes"
+    );
+    assert!(
+        committed_json.find("\"binary\"") < committed_json.find("\"attempt\""),
+        "declaration order, not alphabetical: {committed_json}"
+    );
+    assert!(
+        committed_json.find("\"verdict\"") < committed_json.find("\"failed_cases\""),
+        "declaration order, not alphabetical: {committed_json}"
+    );
+    assert!(
+        committed_json.find("\"failed_cases\"") < committed_json.find("\"digest\""),
+        "declaration order, not alphabetical: {committed_json}"
+    );
+    assert!(committed_json.contains("\"digest\": \"sha256:"));
+}
+
+/// File one attempt's *verification receipt* pair under the repository —
+/// the JSON authority persisted through `calxgloss-types`' own record
+/// route, plus its digest-paired Markdown twin — and return the pair's
+/// repo-relative paths. Written by the record conventions, never by the
+/// helper under test.
+fn file_receipt_pair(
+    manager: &GitManager,
+    binary: &str,
+    function: &str,
+    attempt: u32,
+) -> (String, String) {
+    let mut dimensions = std::collections::BTreeMap::new();
+    dimensions.insert(
+        "values".to_string(),
+        calxgloss_types::DimensionCounts {
+            assessed: 1,
+            passed: 1,
+        },
+    );
+    let mut receipt = calxgloss_types::VerificationReceipt {
+        binary: BinaryIdentity::new(binary),
+        function: function.to_string(),
+        attempt,
+        retry_strategy: "initial".to_string(),
+        attempt_path: "initial-translation".to_string(),
+        verifier_command: calxgloss_types::VerifierCommand::CompileAndBaselineTest,
+        baseline_suite_digest: "sha256:aaa0".to_string(),
+        dimensions,
+        compile_ms: 4200,
+        test_run_ms: 1300,
+        total_ms: 5500,
+        verdict: calxgloss_types::VerificationVerdict::Passed,
+        failed_cases: Vec::new(),
+        digest: String::new(),
+    };
+    receipt.digest = receipt
+        .content_digest()
+        .expect("receipt serializes for its digest");
+
+    let json_path = calxgloss_types::verification_receipt_path(
+        manager.repo_path(),
+        &receipt.binary,
+        function,
+        attempt,
+    );
+    calxgloss_types::persist::save_json(&json_path, &receipt).expect("file the receipt json");
+    std::fs::write(
+        json_path.with_extension("md"),
+        calxgloss_types::verification_receipt_markdown(&receipt),
+    )
+    .expect("file the receipt twin");
+
+    let relative = |path: &std::path::Path| {
+        path.strip_prefix(manager.repo_path())
+            .expect("pair lands under the repo")
+            .to_string_lossy()
+            .to_string()
+    };
+    (relative(&json_path), relative(&json_path.with_extension("md")))
+}
+
+#[test]
+fn test_receipt_pair_absent_resolves_to_nothing() {
+    // An absent pair commits as before with nothing fabricated — the
+    // green claim is left uncitable, visibly (issue #413).
+    let (_tmp_dir, manager) = temp_git_repo();
+    let branch = manager
+        .create_branch("game_logic.dll", "DrawSprite", 1, None)
+        .expect("create attempt branch")
+        .branch;
+
+    // This attempt committed its code but never left a filed pair on
+    // disk — nothing was ever placed under the unit's verification route.
+    let src = manager.repo_path().join("src").join("draw_sprite_v1.rs");
+    std::fs::create_dir_all(src.parent().expect("src parent")).expect("src dir");
+    std::fs::write(&src, "fn draw_sprite() {}").expect("write code");
+
+    assert!(
+        manager
+            .receipt_pair_paths(&BinaryIdentity::new("game_logic.dll"), "DrawSprite", 1)
+            .is_empty(),
+        "a pair never filed resolves to no paths at all"
+    );
+
+    let commit = manager
+        .commit(
+            &branch,
+            "re/translation/DrawSprite: translate DrawSprite (attempt 1)",
+            &["src/draw_sprite_v1.rs"],
+        )
+        .expect("commit attempt");
+    assert_eq!(commit.files, vec!["src/draw_sprite_v1.rs".to_string()]);
+}
+
+#[test]
 fn test_merge_to_main() {
     let (tmp_dir, manager) = temp_git_repo();
     let branch_result = manager

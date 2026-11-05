@@ -230,8 +230,13 @@ pub async fn handle_translate(
             let branch_info = &branch_result.branch;
             print_git_status(branch_info, false);
 
-            // Commit the translated code
-            let output_path_str = output_path.to_string_lossy().to_string();
+            // Commit the translated code, staging this attempt's filed
+            // *verification receipt* pair beside it — the branch checkout
+            // then states what stood behind the commit, no pipeline
+            // running (issue #413).
+            let commit_files =
+                attempt_commit_files(git, binary, function, Some(attempt.attempt), &output_path);
+            let file_refs: Vec<&str> = commit_files.iter().map(String::as_str).collect();
             let _commit = git
                 .commit(
                     branch_info,
@@ -239,7 +244,7 @@ pub async fn handle_translate(
                         "re/translation/{}: translate {} (attempt {}, retry strategy: {})",
                         function, binary, attempt.attempt, attempt.retry_strategy
                     ),
-                    &[&output_path_str],
+                    &file_refs,
                 )
                 .context("Failed to commit translated code")?;
 
