@@ -71,7 +71,14 @@ One child execution of a target program under a scenario contract. Never the run
 _Avoid_: Run, session, process (bare)
 
 **Scenario capture**:
-The filed document of what one *scenario run* was observed to do: an optional block per dimension — terminal output chunks under the cap with its truncation mark, beside them the *terminal geometry*: the opening geometry measured off the host PTY and the *rendered states* read back off the live terminal after each resize (the terminal dimension has content, not just bytes); the acknowledged interaction offsets — every interaction delivered while the run stood stands acknowledged at its at-offset, a placeholder input included once its *typed secret* stood at that offset; the exit disposition from the closed set with its code when one exists and its *finalization outcome* when a window closed the run; the before/after classification of the declared observation paths (created / deleted / modified / unchanged, each with size, whole-file sha256, and 4 KiB block digests — files are weighed by content, never by existence); and the *process samples*: the launch sample plus the ones swept from the run's standing process tree, so a program that spawns children shows them in the record. Bounded evidence, never a claim: a capture that hit its cap never states more than it saw. It files at `re/scenarios/captures/<binary identity>-<scenario key>.json` — exactly one current capture per scenario name, a re-capture replacing the previous document outright.
+The filed record of what one *scenario run* was observed to do — bounded evidence, never a claim. Exactly one current capture per scenario name at `re/scenarios/captures/<binary identity>-<scenario key>.json`; a re-capture replaces the previous document outright.
+*Rules:*
+- One optional block per dimension: terminal, interaction, exit, filesystem, process. A capture that hit its cap never states more than it saw.
+- Terminal: output chunks under the cap with its truncation mark, beside them the *terminal geometry* — the opening geometry measured off the host PTY and the *rendered states* read back off the live terminal after each resize. The terminal dimension has content, not just bytes.
+- Interaction: every interaction delivered while the run stood is acknowledged at its at-offset; a placeholder input counts once its *typed secret* stood at that offset.
+- Exit: the disposition from the closed set, with its code when one exists and its *finalization outcome* when a window closed the run.
+- Filesystem: before/after classification of the declared observation paths (created / deleted / modified / unchanged), each with size, whole-file sha256, and 4 KiB block digests — files are weighed by content, never by existence.
+- Process: the launch sample plus the ones swept from the run's standing process tree, so a program that spawns children shows them in the record.
 _Avoid_: baseline — that is the harness's ground-truth capture; capture event log — that is the *reference-app run*'s record; transcript
 
 **Scenario replay**:
@@ -79,7 +86,15 @@ A *scenario run* of a declared *scenario contract* against any program the opera
 _Avoid_: re-capture — that replaces a capture of the same program; regression run
 
 **Scenario verdict**:
-The judgment of a pair of *scenario captures* under one *scenario contract*, filed as a digest-bearing document: each of the five dimensions — terminal, interaction, exit, filesystem, process — reads assessed pass, assessed fail, or unassessed, an absent or empty block reading unassessed so silence is never mistaken for a pass and never fails by silence; every failure names its divergent field with both sides beside it. Only the contract's declared, versioned normalization rules ever equalize, and the verdict states the version it judged under. Fired caps, mismatched Wine versions, and every file outside the declared observation paths ride as stated residual unknowns, any one of which blocks the document claiming complete equivalence — a bounded pair never claims more than it saw. The comparator is pure record logic: two capture documents and the contract in, the verdict out — it launches nothing and needs no Wine. It files at `re/scenarios/verdicts/<binary identity>-<scenario key>.json`, one current verdict per pair, a re-compare replacing the previous document outright; its content digest (sha256 over the document's own JSON with the digest field blanked) is how P25's receipts and P26's ledger cite it, and it cites the two captures it judged by theirs.
+The judgment of a pair of *scenario captures* under one *scenario contract*, filed as a digest-bearing document at `re/scenarios/verdicts/<binary identity>-<scenario key>.json`. One current verdict per pair; a re-compare replaces the previous document outright.
+*Rules:*
+- Each of the five dimensions — terminal, interaction, exit, filesystem, process — reads assessed pass, assessed fail, or unassessed.
+- An absent or empty block reads unassessed: silence is never mistaken for a pass and never fails by silence.
+- Every failure names its divergent field, with both sides beside it.
+- Only the contract's declared, versioned normalization rules ever equalize, and the verdict states the version it judged under.
+- Fired caps, mismatched Wine versions, and every file outside the declared observation paths ride as stated residual unknowns. Any one of them blocks a complete-equivalence claim — a bounded pair never claims more than it saw.
+- The comparator is pure record logic: two capture documents and the contract in, the verdict out — it launches nothing and needs no Wine.
+- Its content digest (sha256 over the document's own JSON with the digest field blanked) is how P25's receipts and P26's ledger cite it, and the verdict cites the two captures it judged by theirs.
 _Avoid_: diff — divergences are named fields, not a byte dump; judgment, comparison report
 
 **Typed secret**:
@@ -91,7 +106,13 @@ A *terminal geometry* read back off the live host PTY after a scripted resize st
 _Avoid_: window size; resolution
 
 **Pairing rule**:
-The rule saying which two *scenario captures* may be compared. The normalization stamp decides pairing: two captures pair only when both name the *normalization rules* version their captures ran under and the versions agree — an unstamped or cross-version pair is refused by name, never silently bridged. Program bytes and Wine travel beside the pair rather than gating it: comparing original against restitched bytes is the point, so differing program digests pair while the verdict carries both pairing blocks, and a mismatching Wine version rides as a stated residual unknown that blocks complete-equivalence claims. At the filing point the CLI names both program digests before a re-capture files over the current document — a digest mismatch is stated, never silent.
+The rule saying which two *scenario captures* may be compared.
+*Rules:*
+- The normalization stamp decides pairing: two captures pair only when both name the *normalization rules* version their captures ran under, and the versions agree.
+- An unstamped or cross-version pair is refused by name, never silently bridged.
+- Program bytes and Wine travel beside the pair rather than gating it: comparing original against restitched bytes is the point, so differing program digests pair while the verdict carries both pairing blocks.
+- A mismatching Wine version rides as a stated residual unknown that blocks complete-equivalence claims.
+- At the filing point the CLI names both program digests before a re-capture files over the current document — a digest mismatch is stated, never silent.
 _Avoid_: fingerprint — that is PE identity; hash (bare)
 
 ### Verification
@@ -224,7 +245,9 @@ One unit's gathered evidence, built from the evidence engines' per-binary docume
 ### Unknown residue
 
 **Unknown record**:
-A gap the batch admitted from data already on disk, shaped as the shared record at the point of admission, by one of four producers: the coverage fold (a facet that fell short), the held capability report (a family declared unavailable, against units whose retry posture re-asks it), the verification signal (a unit that ran zero baseline cases; an export no filed baseline document covers), and the ladder's own pruned escalate and refused tier step. A record states what is not known — never what to do about it.
+A gap the batch admitted from data already on disk, filed as a shared record at the point of admission. A record states what is not known — never what to do about it.
+*Rules:*
+- Four producers: the coverage fold (a facet that fell short), the held capability report (a family declared unavailable, against units whose retry posture re-asks it), the verification signal (a unit that ran zero baseline cases, or an export no filed baseline document covers), and the ladder's own pruned escalate and refused tier step.
 
 **Unknown ledger**:
 The pipeline's own filing of what a batch admitted: one document per target binary, in deterministic scan order; each batch's filing replaces the last.
