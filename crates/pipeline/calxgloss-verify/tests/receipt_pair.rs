@@ -189,7 +189,6 @@ async fn the_persisted_unknown_reads_back_through_the_existing_route() {
             2,
             "the receipt authority could not be written: disk full",
         )
-        .await
         .expect("the filing lands");
 
     let read =
@@ -214,7 +213,6 @@ async fn the_persisted_unknown_reads_back_through_the_existing_route() {
     // set never duplicates.
     verifier
         .file_unfiled_receipt_unknown(BINARY, FUNCTION, 2, "re-filed with the same key")
-        .await
         .expect("the re-filing lands");
     let EffectiveLedger::Filed(again) =
         read_unknown_ledger(work.path(), &BinaryIdentity::new(BINARY)).expect("still readable")

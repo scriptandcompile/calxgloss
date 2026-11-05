@@ -444,15 +444,9 @@ impl Verifier {
         );
 
         // The suite digest names where the cases were read from when a
-        // filed baseline document existed — relative to the record-tree
-        // root this verifier files under, so the location stays portable.
-        let baseline_location = context.baseline_file.map(|path| {
-            let relative = path.strip_prefix(&self.work_dir).unwrap_or(path);
-            relative.display().to_string()
-        });
-        let baseline_suite_digest =
-            calxgloss_types::baseline_suite_digest(baseline_tests, baseline_location.as_deref())
-                .map_err(|e| anyhow::anyhow!("failed to fold the baseline suite digest: {e}"))?;
+        // filed baseline document existed — one fold implementation,
+        // shared with the harness-error pair (P25.6).
+        let baseline_suite_digest = self.suite_digest(baseline_tests, context)?;
 
         let mut receipt = VerificationReceipt {
             binary: BinaryIdentity::new(binary),
@@ -474,13 +468,36 @@ impl Verifier {
             .content_digest()
             .map_err(|e| anyhow::anyhow!("failed to fold the receipt digest: {e}"))?;
 
-        let json_path =
-            verification_receipt_path(&self.work_dir, &receipt.binary, function, receipt.attempt);
-        persist::save_json(&json_path, &receipt)
-            .map_err(|e| anyhow::anyhow!("failed to file the receipt {json_path:?}: {e}"))?;
-        let md_path = json_path.with_extension("md");
-        std::fs::write(&md_path, verification_receipt_markdown(&receipt))
-            .with_context(|| format!("failed to file the receipt twin {md_path:?}"))?;
+        if let Err(filing) = self.write_receipt_pair(&receipt) {
+            // P25.6 (issue #415): the pair cannot land. The missing
+            // authority is filed as an admitted unknown naming the run it
+            // belongs to — never dropped as a log line. The run's own
+            // verdict was already earned by the gate; it stands, honestly
+            // degraded, and the record tree says out loud that this run's
+            // pair is missing. If even the unknown cannot be filed, the
+            // failure surfaces loudly as an error.
+            let record_id = self
+                .file_unfiled_receipt_unknown(
+                    binary,
+                    function,
+                    receipt.attempt,
+                    &format!("the receipt pair could not be filed: {filing}"),
+                )
+                .map_err(|unknown| {
+                    anyhow::anyhow!(
+                        "failed to file the receipt pair: {filing}; the run's pair is \
+                         unfiled and even the admitted unknown could not be filed: {unknown:#}"
+                    )
+                })?;
+            warn!(
+                binary,
+                function,
+                attempt = receipt.attempt,
+                record_id = %record_id,
+                "verification receipt pair unfiled; admitted unknown filed in its place"
+            );
+            return Ok(receipt);
+        }
 
         info!(
             binary,
@@ -490,6 +507,223 @@ impl Verifier {
             "Verification receipt filed"
         );
         Ok(receipt)
+    }
+
+    /// Fold the run's baseline suite digest: where the cases were read
+    /// from, when a filed baseline document existed, relative to the
+    /// record-tree root this verifier files under so the location stays
+    /// portable. The fold is deterministic — two runs over the same suite
+    /// and location fold the same digest whatever the verdict turns out
+    /// to be.
+    fn suite_digest(&self, baseline_tests: &[TestCase], context: &VerifyContext<'_>) -> Result<String> {
+        let baseline_location = context.baseline_file.map(|path| {
+            let relative = path.strip_prefix(&self.work_dir).unwrap_or(path);
+            relative.display().to_string()
+        });
+        calxgloss_types::baseline_suite_digest(baseline_tests, baseline_location.as_deref())
+            .map_err(|e| anyhow::anyhow!("failed to fold the baseline suite digest: {e}"))
+    }
+
+    /// Write one receipt as its digest-paired md+json pair under the
+    /// record convention. The JSON authority is filed first: a twin beside
+    /// a missing authority is never attempted, so the key either holds a
+    /// complete pair or says nothing about the run. Returns the JSON
+    /// member's path for the caller's logs.
+    fn write_receipt_pair(&self, receipt: &VerificationReceipt) -> Result<PathBuf> {
+        let json_path = verification_receipt_path(
+            &self.work_dir,
+            &receipt.binary,
+            &receipt.function,
+            receipt.attempt,
+        );
+        persist::save_json(&json_path, receipt)
+            .map_err(|e| anyhow::anyhow!("failed to file the receipt {json_path:?}: {e}"))?;
+        let md_path = json_path.with_extension("md");
+        std::fs::write(&md_path, verification_receipt_markdown(receipt))
+            .with_context(|| format!("failed to file the receipt twin {md_path:?}"))?;
+        Ok(json_path)
+    }
+
+    /// P25.6 (issue #415): the verifier toolchain broke before the unit
+    /// could be judged — the run still files its pair, verdicted
+    /// `harness-error`: no baseline case was assessed, no case is named,
+    /// and the compile-only command doctrine says so plainly (the same
+    /// one a compile-failed pair keeps). The seam hands back `Err`, never
+    /// a [`VerificationResult`]: the unit was never judged, so there is
+    /// no verdict to give. A harness-error pair that itself cannot be
+    /// written files an admitted unknown naming the run it belongs to;
+    /// the harness failure is still handed back, unsoftened.
+    #[allow(clippy::too_many_arguments)]
+    fn file_harness_error_receipt(
+        &self,
+        binary: &str,
+        function: &str,
+        context: &VerifyContext<'_>,
+        suite_digest: &str,
+        reason: &str,
+        compile_ms: u64,
+        test_run_ms: u64,
+    ) -> Result<()> {
+        error!(binary, function, attempt = context.attempt, reason, "verifier harness failure; filing the harness-error receipt pair");
+        let mut receipt = VerificationReceipt {
+            binary: BinaryIdentity::new(binary),
+            function: function.to_string(),
+            attempt: context.attempt,
+            retry_strategy: context.retry_strategy.to_string(),
+            attempt_path: context.attempt_path.to_string(),
+            // No baseline case ever ran through a runner — the honest
+            // command is compile-only, whatever the run meant to do.
+            verifier_command: VerifierCommand::CompileOnly,
+            baseline_suite_digest: suite_digest.to_string(),
+            dimensions: BTreeMap::new(),
+            compile_ms,
+            test_run_ms,
+            total_ms: compile_ms + test_run_ms,
+            verdict: VerificationVerdict::HarnessError,
+            // No unit verdict means no case to name.
+            failed_cases: Vec::new(),
+            digest: String::new(),
+        };
+        // Nothing was assessed, so nothing passed — on either dimension.
+        for dimension in ["values", "api_trace"] {
+            receipt.dimensions.insert(
+                dimension.to_string(),
+                DimensionCounts {
+                    assessed: 0,
+                    passed: 0,
+                },
+            );
+        }
+        receipt.digest = receipt
+            .content_digest()
+            .map_err(|e| anyhow::anyhow!("failed to fold the harness-error digest: {e}"))?;
+
+        match self.write_receipt_pair(&receipt) {
+            Ok(path) => {
+                info!(
+                    binary,
+                    function,
+                    attempt = receipt.attempt,
+                    path = %path.display(),
+                    digest = %receipt.digest,
+                    "harness-error receipt pair filed"
+                );
+                Ok(())
+            }
+            Err(filing) => {
+                // Even the honesty artifact could not land: file the
+                // unknown that says so, and let the caller keep holding
+                // the harness failure itself.
+                let record_id = self.file_unfiled_receipt_unknown(
+                    binary,
+                    function,
+                    context.attempt,
+                    &format!("the harness-error receipt pair could not be filed: {filing}"),
+                )?;
+                error!(
+                    binary,
+                    function,
+                    record_id = %record_id,
+                    "harness-error pair unfiled; the missing receipt is an admitted unknown"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// File the admitted unknown saying one verify run's receipt pair
+    /// never landed, naming the run by its attempt slot and the pair path
+    /// it belongs to. Merged into the binary's own ledger document: every
+    /// landed record keeps its place under the revision doctrine
+    /// (issue #368), and re-filing the same run stays one record — the id
+    /// re-derives from binary, function, kind, and slot. An unreadable
+    /// ledger or resolutions document is a hard refusal, never a silent
+    /// overwrite. Returns the record's id.
+    pub fn file_unfiled_receipt_unknown(
+        &self,
+        binary: &str,
+        function: &str,
+        attempt: u32,
+        reason: &str,
+    ) -> Result<String> {
+        let identity = BinaryIdentity::new(binary);
+        let pair_path = verification_receipt_path(&self.work_dir, &identity, function, attempt);
+        let record = UnknownRecord::derive(
+            identity.clone(),
+            Some(function.to_string()),
+            UnknownKind::ReceiptUnfiled,
+            UnknownSeverity::Blocking,
+            format!(
+                "verification of {binary}/{function} (attempt {attempt}) finished without its \
+                 receipt pair at {} ever landing: {reason} — which verify run carries this \
+                 unit's digest claim?",
+                pair_path.display()
+            ),
+            format!(
+                "the digest-paired md+json pair at {} stands on disk, or the run is re-run \
+                 and files it",
+                pair_path.display()
+            ),
+            UnknownOrigin::VerifyRun { attempt },
+            now_unix_secs(),
+        );
+        let path = unknown_ledger_path(&self.work_dir, &identity);
+        let reopened = match persist::load_json::<UnknownResolutions>(&unknown_resolutions_path(
+            &self.work_dir,
+        )) {
+            Ok(resolutions) => resolutions.reopened,
+            Err(PersistError::NotFound { .. }) => BTreeMap::new(),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "refusing to file an unfiled-receipt unknown over an unreadable \
+                     resolutions document at {}: {e}",
+                    unknown_resolutions_path(&self.work_dir).display()
+                ));
+            }
+        };
+        let landed = match persist::load_json::<UnknownLedger>(&path) {
+            Ok(ledger) => Some(ledger),
+            Err(PersistError::NotFound { .. }) => None,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "refusing to file an unfiled-receipt unknown over an unreadable \
+                     ledger at {}: {e}",
+                    path.display()
+                ));
+            }
+        };
+        // The derived set for this filing: this run's record plus every
+        // landed record under another id, so a pipeline batch's records
+        // keep their place in their own document.
+        let mut derived: Vec<UnknownRecord> = landed
+            .as_ref()
+            .and_then(|ledger| ledger.records.as_ref())
+            .map(|records| {
+                records
+                    .iter()
+                    .filter(|landed| landed.id != record.id)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        derived.push(record.clone());
+        let filed = UnknownLedger::file(
+            identity,
+            landed.as_ref(),
+            &derived,
+            &reopened,
+            now_unix_secs(),
+        );
+        persist::save_json(&path, &filed)
+            .with_context(|| format!("filing the unfiled-receipt unknown into {}", path.display()))?;
+        info!(
+            binary,
+            function,
+            attempt,
+            record_id = %record.id,
+            "the unfiled verification receipt is now an admitted unknown"
+        );
+        Ok(record.id)
     }
 
     // ---- Internal helpers ----
