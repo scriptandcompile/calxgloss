@@ -121,6 +121,26 @@ pub struct CapturePairing {
     pub wine_version: String,
 }
 
+/// How a finalization — the close of a run that did not end on its own —
+/// reached its process, through the ownership token's SIGTERM→grace→
+/// SIGKILL gate. The closed set the owned-process discipline can name;
+/// every scenario close lands one of these in its record, including a
+/// token that refused to touch a recycled pid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalizationOutcome {
+    /// The token rechecked clean and the owned process was signaled —
+    /// ended by SIGTERM inside the grace or forced by SIGKILL after it.
+    Signaled,
+    /// The process had already exited before any signal: nothing to
+    /// finalize, and nothing was signaled.
+    AlreadyExited,
+    /// The pid answered to a different identity than the token bound:
+    /// the token refused, the stranger was never touched, and this
+    /// record is how the capture says so.
+    StaleIdentityUntouched,
+}
+
 /// The exit dimension's block: how the run ended and with what code, when
 /// a code exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +152,11 @@ pub struct ExitObservation {
     /// The exit code, when the disposition carries one.
     #[serde(default)]
     pub exit_code: Option<u32>,
+    /// How the finalization gate answered for a run the windows closed;
+    /// absent when the run exited on its own — nothing was finalized, so
+    /// the field reads *unassessed* like every absent block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalization: Option<FinalizationOutcome>,
 }
 
 /// The terminal dimension's block: the raw output chunks in order, plus
@@ -218,12 +243,15 @@ pub struct ProcessSample {
     pub name: String,
 }
 
-/// The process dimension's block: sampled process-tree rows. A child-free
+/// The process dimension's block: the *process samples* — the launch
+/// sample plus the ones swept from the run's live process tree, so a
+/// program that spawns children shows them in the record. A child-free
 /// run records its honest emptiness, not a gap.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", default)]
 pub struct ProcessObservation {
-    /// The sampled rows, in sampling order.
+    /// The samples in filing order: the launch sample first, then each
+    /// sweep's newly sighted pids in pid order.
     pub samples: Vec<ProcessSample>,
 }
 

@@ -10,13 +10,15 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use calxgloss_types::{
-    ExitDisposition, FileChange, NormalizationRules, ScenarioContract, ScriptedInput,
-    ScriptedInteraction,
+    ExitDisposition, FileChange, FinalizationOutcome, NormalizationRules, ScenarioContract,
+    ScriptedInput, ScriptedInteraction,
 };
 
 use super::capture_scenario;
 use super::files::{classify_paths, content_identity, snapshot_paths};
+use super::finalize_closed_run;
 use crate::wine::WineRunner;
+use crate::wine::owned::{OwnedProcess, OwnershipToken, Stopped};
 
 fn contract(name: &str) -> ScenarioContract {
     ScenarioContract {
@@ -325,6 +327,10 @@ fn a_clean_fixture_run_captures_exit_output_files_acks_and_pairing() {
         "the run ended on its own"
     );
     assert_eq!(exit.exit_code, Some(7), "the fixture's declared code lands");
+    assert_eq!(
+        exit.finalization, None,
+        "a run that ended on its own was never finalized — the field reads unassessed"
+    );
 
     let terminal = capture.terminal.expect("the terminal block stands");
     let joined = terminal.chunks.join("");
@@ -380,9 +386,28 @@ fn a_clean_fixture_run_captures_exit_output_files_acks_and_pairing() {
     );
 
     let process = capture.process.expect("the process block stands");
-    assert_eq!(process.samples.len(), 1, "one honest launch sample");
-    assert!(!process.samples[0].name.is_empty());
-    assert!(process.samples[0].pid > 0);
+    // This pin shares the user's Wine prefix with the other run pins,
+    // which cargo may run in parallel; a parallel pin's guest carries the
+    // same prefix stamp and can appear in this run's samples. What must
+    // hold under any contamination: samples are present, honest, and the
+    // launch sample names the program the contract launched.
+    assert!(
+        !process.samples.is_empty(),
+        "the run files its process samples"
+    );
+    assert!(
+        process
+            .samples
+            .iter()
+            .all(|sample| sample.pid > 0 && !sample.name.is_empty()),
+        "every process sample names a live pid: {:?}",
+        process.samples
+    );
+    assert!(
+        process.samples[0].name == "fixture_console.exe",
+        "the launch sample names the launched program: {:?}",
+        process.samples[0]
+    );
 }
 
 #[test]
@@ -408,11 +433,274 @@ fn a_silent_run_is_closed_by_the_idle_window() {
         ExitDisposition::IdleTimeout,
         "the silent run ends by the idle window's name"
     );
+    assert_eq!(
+        exit.finalization,
+        Some(FinalizationOutcome::Signaled),
+        "the idle close files how finalization reached the owned process"
+    );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(25),
         "the idle window acted, it did not wait out the max run"
     );
     assert_eq!(exit.exit_code, None, "a closed run carries no exit code");
+}
+
+#[test]
+#[ignore = "needs Wine and the mingw cross-toolchain"]
+fn a_chatty_run_is_closed_by_the_max_run_window() {
+    // The other named window: a run that keeps talking never goes idle,
+    // so only the max-run duration may end it — and it ends *by that
+    // name*, at the window, not at a stall.
+    let stage = tempfile::tempdir().expect("a staging dir");
+    let run_dir = stage.path().join("run");
+    std::fs::create_dir_all(&run_dir).expect("the run dir stands");
+    let program = stage.path().join("fixture_console.exe");
+    std::fs::copy(fixture_exe_path(), &program).expect("the fixture exe copies in");
+
+    let mut c = contract("chatterbox");
+    c.idle_timeout_ms = 2_000;
+    c.max_run_ms = 5_000;
+    // Each echo lands inside the idle window and restarts the silence
+    // clock; the run never goes idle, so the max-run window owns its end.
+    c.interactions = (0..4)
+        .map(|i| input_at(500 + i * 1_000, &format!("echo tick-{i}")))
+        .collect();
+
+    let wine = WineRunner::new(stage.path());
+    let started = std::time::Instant::now();
+    let capture =
+        capture_scenario(&program, &run_dir, &c, &wine, 1).expect("the max-run close still files");
+    let exit = capture.exit.as_ref().expect("the exit block stands");
+    assert_eq!(
+        exit.disposition,
+        ExitDisposition::Timeout,
+        "the chatty run ends by the max-run window's name, never idle: {:?}",
+        exit.disposition
+    );
+    assert_eq!(
+        exit.finalization,
+        Some(FinalizationOutcome::Signaled),
+        "the closed run records that finalization reached exactly the owned process"
+    );
+    assert_eq!(exit.exit_code, None, "a closed run carries no exit code");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(c.max_run_ms),
+        "the run lived to its window: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(c.max_run_ms + 4_000),
+        "the window acted at its close, grace and drain included: {:?}",
+        started.elapsed()
+    );
+    let joined = capture
+        .terminal
+        .expect("the terminal block stands")
+        .chunks
+        .join("");
+    assert!(
+        joined.contains("tick-3"),
+        "the run was still answering echoes when the window closed: {joined}"
+    );
+}
+
+/// Stand up a private, fully set-up Wine prefix under `stage` and hand back
+/// a runner pointed at it. The prefix is initialized through a bare
+/// `wine cmd.exe /c exit` — the silent route every Wine-lane path takes
+/// (see the module doc rule in `wine.rs`: never `wineboot -u` a fresh
+/// prefix; that is the route that pops the GUI setup dialog). The pin's
+/// own guest processes all carry this prefix's stamp in their inherited
+/// environment, and the sampler scopes samples by that stamp — so the
+/// process-sample assertions below stay exact no matter what the
+/// shared-prefix pins are running in parallel.
+fn warm_private_prefix(stage: &Path) -> WineRunner {
+    let prefix = stage.join("wine-prefix");
+    std::fs::create_dir_all(&prefix).expect("the private prefix dir stands");
+    let status = std::process::Command::new("wine")
+        .args(["cmd.exe", "/c", "exit"])
+        .env("WINEPREFIX", &prefix)
+        .env("WINEDEBUG", "-all")
+        // Keep the Mono/Gecko installer components out of first-run setup
+        // — the headless belt from the wine.rs module doc.
+        .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
+        .status()
+        .expect("the prefix initializer runs");
+    assert!(status.success(), "the private prefix set up clean");
+    WineRunner::new(stage).with_prefix(prefix)
+}
+
+/// Read the text out of recorded terminal chunks. A run that spawns a
+/// child attaches another console client, and conhost then hides and
+/// shows the cursor around its writes and redraws the line — the capture
+/// keeps those bytes verbatim, as it must; the pin reads the visible
+/// text by dropping each escape sequence (ESC `[` + parameter bytes up
+/// to the final `@`..`~` byte).
+fn visible_text(chunks: &[String]) -> String {
+    let raw = chunks.join("");
+    let mut text = String::new();
+    let mut rest = raw.as_str();
+    while let Some(at) = rest.find("\u{1b}[") {
+        text.push_str(&rest[..at]);
+        let params = &rest[at + 2..];
+        match params.find(|c: char| ('@'..'~').contains(&c)) {
+            Some(end) => rest = &params[end + 1..],
+            None => rest = "",
+        }
+    }
+    text.push_str(rest);
+    text
+}
+
+#[test]
+#[ignore = "needs Wine and the mingw cross-toolchain"]
+fn a_run_that_spawns_a_child_records_the_child_in_its_process_samples() {
+    // The process dimension earns its keep here: a program that spawns
+    // children must show them in the record, not hide them. The fixture's
+    // `spawn` verb launches a Wine guest child that stays alive well past
+    // the run's own close, and the sampled rows must name it.
+    let stage = tempfile::tempdir().expect("a staging dir");
+    let run_dir = stage.path().join("run");
+    std::fs::create_dir_all(&run_dir).expect("the run dir stands");
+    let program = stage.path().join("fixture_console.exe");
+    std::fs::copy(fixture_exe_path(), &program).expect("the fixture exe copies in");
+    let wine = warm_private_prefix(stage.path());
+
+    let mut c = contract("spawner");
+    c.idle_timeout_ms = 5_000;
+    c.max_run_ms = 30_000;
+    // A guest cmd.exe child, alive ~15s: the run closes on its idle
+    // window long before the child does, so the sampling window always
+    // sees it standing. (Wine has no sleep.exe; ping to loopback paces
+    // one packet per second, so the child is slow-alive for a known
+    // span — an unroutable target fails every send instantly and dies
+    // before the next sweep.)
+    c.interactions = vec![input_at(
+        1_500,
+        "spawn cmd.exe /c ping -n 15 127.0.0.1 >nul",
+    )];
+
+    let capture = capture_scenario(&program, &run_dir, &c, &wine, 1).expect("the spawn run files");
+    let text = visible_text(&capture.terminal.expect("the terminal block stands").chunks);
+    assert!(
+        text.contains("spawned"),
+        "the fixture acknowledged the child launch: {text}"
+    );
+
+    let process = capture.process.expect("the process block stands");
+    assert!(
+        process
+            .samples
+            .iter()
+            .any(|sample| sample.name == "cmd.exe"),
+        "the spawned guest child is among the run's process samples: {:?}",
+        process.samples
+    );
+}
+
+#[test]
+#[ignore = "needs Wine and the mingw cross-toolchain"]
+fn a_child_free_run_records_its_own_image_and_names_no_child() {
+    // Honest emptiness: a run that spawns nothing still records the guest
+    // process it actually ran — the observation is real, not a declared
+    // placeholder — and it names no children it never had.
+    let stage = tempfile::tempdir().expect("a staging dir");
+    let run_dir = stage.path().join("run");
+    std::fs::create_dir_all(&run_dir).expect("the run dir stands");
+    let program = stage.path().join("fixture_console.exe");
+    std::fs::copy(fixture_exe_path(), &program).expect("the fixture exe copies in");
+    let wine = warm_private_prefix(stage.path());
+
+    let mut c = contract("child-free");
+    c.idle_timeout_ms = 8_000;
+    c.max_run_ms = 30_000;
+    c.interactions = vec![input_at(1_500, "exit 3")];
+
+    let capture = capture_scenario(&program, &run_dir, &c, &wine, 1).expect("the clean run files");
+    assert_eq!(
+        capture
+            .exit
+            .as_ref()
+            .expect("the exit block stands")
+            .exit_code,
+        Some(3),
+        "the fixture exited on cue"
+    );
+
+    let process = capture.process.expect("the process block stands");
+    let launch = &process.samples[0];
+    assert!(
+        process
+            .samples
+            .iter()
+            .any(|sample| sample.pid != launch.pid && sample.name == "fixture_console.exe"),
+        "the run's own guest process is observed, not just declared: {:?}",
+        process.samples
+    );
+    assert!(
+        process
+            .samples
+            .iter()
+            .all(|sample| sample.name != "cmd.exe" && sample.name != "ping"),
+        "a child-free run names no children: {:?}",
+        process.samples
+    );
+}
+
+/// A stranger-PID close, run against a real live process the token no
+/// longer answers to: the hard rule is proven end through the run lane's
+/// own finalization step, and the record the step files names the
+/// refusal by name. No Wine involved — the stranger needs only a live
+/// pid and a stamp no live process can answer to.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stranger_holding_the_pid_is_never_signaled_and_the_record_names_the_refusal() {
+    let stranger = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("a stranger should spawn");
+    // A forged launch stamp of 0 ticks: no live process answers to it,
+    // exactly the shape a recycled pid presents.
+    let stale_token = OwnershipToken {
+        pid: stranger.id(),
+        started_at: Some(0),
+    };
+    let mut process = OwnedProcess::with_token(stranger, stale_token);
+
+    let filed = finalize_closed_run(&mut process, std::time::Duration::from_millis(300));
+    assert_eq!(
+        filed,
+        FinalizationOutcome::StaleIdentityUntouched,
+        "the run's record names the token's refusal, it never files silence"
+    );
+    assert_eq!(
+        process.try_wait().expect("try_wait runs"),
+        None,
+        "the stranger is untouched: the close signaled nothing"
+    );
+
+    // The test's own cleanup, deliberately outside the token path.
+    let mut child = process.into_inner();
+    child.kill().expect("cleanup kill");
+    child.wait().expect("cleanup reap");
+}
+
+/// The capture's exit block files the finalization outcome the gate
+/// answered — this one-to-one mapping is the whole bridge, so the
+/// stranger pin's named refusal is exactly what a capture would carry.
+#[test]
+fn the_stop_outcomes_map_onto_the_recorded_finalization_one_to_one() {
+    assert_eq!(
+        FinalizationOutcome::from(Stopped::Signaled),
+        FinalizationOutcome::Signaled
+    );
+    assert_eq!(
+        FinalizationOutcome::from(Stopped::AlreadyExited),
+        FinalizationOutcome::AlreadyExited
+    );
+    assert_eq!(
+        FinalizationOutcome::from(Stopped::StaleIdentityUntouched),
+        FinalizationOutcome::StaleIdentityUntouched
+    );
 }
 
 #[test]

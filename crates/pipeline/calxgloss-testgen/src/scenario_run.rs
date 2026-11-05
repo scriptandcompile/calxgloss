@@ -1,15 +1,25 @@
-//! The scenario-run seam (P24.3, issue #404): run one declared scenario
-//! contract against the original target program under the standing Wine
-//! toolchain rules and produce the observed **scenario capture** — exit
+//! The scenario-run seam (P24.3–P24.4, issues #404, #405): run one declared
+//! scenario contract against the original target program under the standing
+//! Wine toolchain rules and produce the observed **scenario capture** — exit
 //! disposition, raw terminal chunks under the cap with its truncation
 //! mark, the before/after classification of the declared observation
-//! paths, the interaction acknowledgements, the launch sample, and the
-//! pairing stamps (the program's sha256 and the Wine that ran it).
+//! paths, the interaction acknowledgements, the process samples, and
+//! the pairing stamps (the program's sha256 and the Wine that ran it).
 //!
-//! The run binds an ownership token at launch; every finalization signal
-//! rides the token-gated SIGTERM→SIGKILL grace. A missing Wine fails the
-//! capture by name through the standing preflight line — before any
-//! process exists to hang.
+//! The run binds an ownership token at launch; both declared windows (idle,
+//! max run) close a runaway run through the token-gated SIGTERM→grace→
+//! SIGKILL finalization, and every close files its outcome by name —
+//! including the token's refusal to touch a pid that answers to a stranger.
+//! The process dimension is sampled from the host at the run's own birth
+//! anchor, so a program that spawns children shows them in the record. A
+//! missing Wine fails the capture by name through the standing preflight
+//! line — before any process exists to hang.
+//!
+//! Standing rule for the future *instrumented* scenario run, recorded
+//! here and deliberately unimplemented in this seam: the guest process is
+//! spawned **paused**, the target image is **load**ed into it, then it is
+//! **resume**d — spawn-paused→load→resume, never a running process probed
+//! from outside.
 //!
 //! This seam owns the *run*; the interface owns loading the contract,
 //! filing the document, and the pairing-mismatch statement (compare the
@@ -20,6 +30,8 @@
 mod files;
 #[cfg(unix)]
 mod pty;
+#[cfg(target_os = "linux")]
+mod sampler;
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -27,13 +39,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use calxgloss_types::{
-    CapturePairing, ExitDisposition, ExitObservation, FilesystemObservation, InteractionKind,
-    InteractionObservation, ProcessObservation, ProcessSample, ScenarioCapture, ScenarioContract,
-    ScenarioSignal, ScriptedInput, ScriptedInteraction, TerminalObservation,
+    CapturePairing, ExitDisposition, ExitObservation, FilesystemObservation, FinalizationOutcome,
+    InteractionKind, InteractionObservation, ProcessObservation, ProcessSample, ScenarioCapture,
+    ScenarioContract, ScenarioSignal, ScriptedInput, ScriptedInteraction, TerminalObservation,
 };
 
 use crate::wine::WineRunner;
-use crate::wine::owned::OwnedProcess;
+use crate::wine::owned::{OwnedProcess, Stopped};
 #[cfg(unix)]
 use pty::INPUT_LINE_END;
 
@@ -94,8 +106,12 @@ fn observe_run(
         .env("WINEDEBUG", "-all");
     // Wine's own toolchain environment (where the prefix and display
     // live) — the program's declared env is applied over it, and nothing
-    // else is inherited.
-    for key in ["WINEPREFIX", "HOME", "DISPLAY", "XAUTHORITY", "USER"] {
+    // else is inherited. The prefix is the runner's, not the process
+    // env's: a runner pointed at a private prefix runs its guests there,
+    // and they land on that prefix's wineserver — the tree the sampler
+    // then walks belongs to this run alone.
+    command.env("WINEPREFIX", wine.prefix());
+    for key in ["HOME", "DISPLAY", "XAUTHORITY", "USER"] {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
         }
@@ -129,31 +145,40 @@ fn observe_run(
     let max_run = Duration::from_millis(contract.max_run_ms);
     let idle_window = Duration::from_millis(contract.idle_timeout_ms);
     let grace = Duration::from_millis(contract.finalization_grace_ms);
+    let mut samples = vec![sample];
+    // The process dimension is sampled, not just declared: the sampler
+    // anchors its sweeps to the processes this run brings into the world.
+    #[cfg(target_os = "linux")]
+    let mut sampler = sampler::Sampler::new(wine.prefix());
     let mut pending: VecDeque<&ScriptedInteraction> = contract.interactions.iter().collect();
     let mut terminal = Recording::new(contract.max_output_bytes);
     let mut acknowledged_at_ms = Vec::new();
     let mut last_output = start;
-    let (disposition, exit_code) = loop {
+    let (disposition, exit_code, finalization) = loop {
         if let Ok(Some(status)) = process.try_wait() {
             // Natural exit: one bounded drain so the last words are not
-            // lost, then the run is *exited* with its code.
+            // lost, then the run is *exited* with its code. Nothing was
+            // finalized — the record leaves that field unassessed.
             drain(&console, &mut terminal, Duration::from_millis(200));
             break (
                 ExitDisposition::Exited,
                 status.code().and_then(|code| u32::try_from(code).ok()),
+                None,
             );
         }
         let elapsed = start.elapsed();
         if elapsed >= max_run {
-            process.stop_with_grace(grace);
+            let filed = finalize_closed_run(&mut process, grace);
             drain(&console, &mut terminal, Duration::from_millis(200));
-            break (ExitDisposition::Timeout, None);
+            break (ExitDisposition::Timeout, None, Some(filed));
         }
         if last_output.elapsed() >= idle_window {
-            process.stop_with_grace(grace);
+            let filed = finalize_closed_run(&mut process, grace);
             drain(&console, &mut terminal, Duration::from_millis(200));
-            break (ExitDisposition::IdleTimeout, None);
+            break (ExitDisposition::IdleTimeout, None, Some(filed));
         }
+        #[cfg(target_os = "linux")]
+        sampler.sweep(elapsed, &mut samples);
         let elapsed_ms = elapsed.as_millis() as u64;
         while let Some(next) = pending.front().copied() {
             if next.at_ms > elapsed_ms {
@@ -181,6 +206,11 @@ fn observe_run(
         }
     };
 
+    // One last sweep after the close: a child born while the windows
+    // ruled is sampled even if the cadence had not come round.
+    #[cfg(target_os = "linux")]
+    sampler.final_sweep(&mut samples);
+
     let after = files::snapshot_paths(run_dir, &contract.observation_paths);
     Ok(ScenarioCapture {
         scenario: contract.name.clone(),
@@ -191,13 +221,12 @@ fn observe_run(
         exit: Some(ExitObservation {
             disposition,
             exit_code,
+            finalization,
         }),
         filesystem: Some(FilesystemObservation {
             entries: files::classify_paths(&contract.observation_paths, &before, &after),
         }),
-        process: Some(ProcessObservation {
-            samples: vec![sample],
-        }),
+        process: Some(ProcessObservation { samples }),
     })
 }
 
@@ -218,6 +247,26 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     files::hex_digest(&hasher.finalize())
+}
+
+/// Close a run the windows ended, through the standing finalization
+/// gate: SIGTERM past the ownership token's recheck, the declared grace
+/// to end on its own, then the forced SIGKILL — never a bare-PID kill.
+/// The gate's answer is filed into the capture by name, including the
+/// token's refusal to touch a pid that answers to a stranger.
+#[cfg(unix)]
+fn finalize_closed_run(process: &mut OwnedProcess, grace: Duration) -> FinalizationOutcome {
+    FinalizationOutcome::from(process.stop_with_grace(grace))
+}
+
+impl From<Stopped> for FinalizationOutcome {
+    fn from(outcome: Stopped) -> Self {
+        match outcome {
+            Stopped::Signaled => Self::Signaled,
+            Stopped::AlreadyExited => Self::AlreadyExited,
+            Stopped::StaleIdentityUntouched => Self::StaleIdentityUntouched,
+        }
+    }
 }
 
 /// Deliver one interaction onto the terminal; true when it was delivered

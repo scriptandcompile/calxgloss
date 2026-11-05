@@ -19,6 +19,11 @@
  *   delete <path>            remove <path>: `deleted <path>`, or
  *                            `missing <path>` when there was nothing
  *   exit <code>              end the run right now with that exit code
+ *   spawn <command line>     launch <command line> as a child process,
+ *                            acknowledged `spawned <win-pid> <command
+ *                            line>`, or `spawn-failed <command line>`
+ *                            if the launch fails; the fixture carries
+ *                            on reading and never waits on the child
  *   anything else            `refused: <line>`, and the run carries on —
  *                            a bad interaction is named, never fatal
  *
@@ -36,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <windows.h>
 
 /* Identity literals the console smoke test must find in the image. */
 static const char kTag[] = "calxgloss-fixture-console-v1";
@@ -79,6 +85,22 @@ static int handle_line(char *line)
     if (strncmp(line, "delete ", 7) == 0) {
         const char *path = line + 7;
         printf("%s %s\n", remove(path) == 0 ? "deleted" : "missing", path);
+        return -1;
+    }
+    if (strncmp(line, "spawn ", 6) == 0) {
+        char *cmdline = line + 6;
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof si);
+        si.cb = sizeof si;
+        memset(&pi, 0, sizeof pi);
+        if (CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            printf("spawned %lu %s\n", pi.dwProcessId, cmdline);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        } else {
+            printf("spawn-failed %s\n", cmdline);
+        }
         return -1;
     }
     if (strncmp(line, "exit ", 5) == 0) {
