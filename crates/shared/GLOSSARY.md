@@ -10,7 +10,7 @@ The exchange currency of the reverse-engineering effort: the records every conte
 A pipeline milestone announced verbatim. The log file, the live view, and the dashboards all read the same event names, and none are invented downstream.
 
 **Master-plan phase**:
-One of the eight segments of the original plan the phase bar renders; the vocabulary is fixed, and a segment with no backing data says so as its own state.
+One of the eight fixed segments of the original plan that the phase bar renders. A segment with no backing data says so as its own state.
 _Avoid_: confusing master-plan phases with a unit's in-flight steps
 
 **No data source**:
@@ -47,19 +47,28 @@ What sort of tracked work a row is. Only function translation is a *unit of work
 The shared record type holds the 0–100 integer of evidence confidence. Unit confidence is Pipeline's separate scale and does not travel through this type.
 
 **Unknown record**:
-The one shared shape for an unanswered question about a target binary — plus the function, where the gap is function-specific: a kind from a closed roster, a severity from a closed scale, one bounded question line, one bounded required-evidence line, the origin it was derived from, and a revision every write is checked against. Consumers render its stored wording; they do not restate it.
+The one shared shape for an unanswered question about a target binary. Consumers render its stored wording; they do not restate it.
+*Rules:*
+- Names the function too, when the gap is function-specific.
+- Carries a kind from a closed roster and a severity from a closed scale.
+- Carries one bounded question line and one bounded required-evidence line.
+- Carries the origin it was derived from, and a revision that every write is checked against.
 _Avoid_: gap — *known gaps* is Pipeline's free-text limitations carrier, a different thing; hole, concern
 
 **Unknown ledger**:
 The pipeline's per-target-binary document of unknown records, `re/unknowns/<binary identity>.json`. Its filing envelope — the binary it speaks for and when it was filed — is how a reader tells a filed ledger from a stray document.
 
 **Reviewer resolution**:
-The reviewer's answer to one unknown record, bound to the record's id: a disposition — *resolved* or *dismissed* — a bounded reason, and the revision it was written against. It persists in the reviewer's own resolutions document and survives every derived rebuild; a reopen is a durable mark, not a deletion.
+The reviewer's answer to one unknown record, bound to the record's id.
+*Rules:*
+- Carries a disposition (*resolved* or *dismissed*), a bounded reason, and the revision it was written against.
+- It persists in the reviewer's own resolutions document and survives every derived rebuild.
+- A reopen is a durable mark, not a deletion.
 
 ### Settings
 
 **Settings layers**:
-Flag, then environment, then config file, then built-in default — most specific wins, so a one-off always overrides and a machine is described only once.
+The four configuration layers, ordered most specific first: flag, environment, config file, built-in default. The most specific layer wins, so a one-off always overrides and a machine is described only once.
 
 **Source**:
 The layer a value came from, carried alongside the value — what makes layered configuration debuggable, and what the config command shows.
@@ -74,4 +83,7 @@ Settings named after their file section — one variable per key; set-but-empty 
 A misspelled setting fails loudly at parse time, naming the bad key, rather than surfacing later as mysterious default behavior.
 
 **Record tree**:
-The effort's on-disk memory under the workspace's `re/` — classification, analysis documents, reviewer intent, patches, and the caches each owner writes. Each owner names its own location, and each document has exactly one owner: the unknown ledgers under `re/unknowns/` are the pipeline's documents, the reviewer's resolutions at `re/review/unknown_resolutions.json` are the reviewer's. No one reads another owner's files by guessing paths.
+The effort's on-disk memory under the workspace's `re/` — classification, analysis documents, reviewer intent, patches, and the caches each owner writes.
+*Rules:*
+- Each owner names its own location, and each document has exactly one owner. The unknown ledgers under `re/unknowns/` are the pipeline's documents, and the reviewer's resolutions at `re/review/unknown_resolutions.json` are the reviewer's.
+- No one reads another owner's files by guessing paths.
