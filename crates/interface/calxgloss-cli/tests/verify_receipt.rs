@@ -42,7 +42,7 @@ fn cli(dir: &Path) -> Command {
 
 /// A body that always returns 7 — the same fixture the verify crate's
 /// receipt pins drive through the real runner.
-const BODY: &str = "pub fn call_no_params() -> serde_json::Value { serde_json::Value::from(7) }";
+const BODY: &str = "pub fn receipt_cli() -> serde_json::Value { serde_json::Value::from(7) }";
 
 #[test]
 #[ignore = "scaffolds and cargo-runs a real scratch project + runner"]

@@ -346,6 +346,8 @@ mod tests {
             tests_total: 2,
             failed_tests: vec![],
             trace_assessed_tests: 1,
+            value_assessed_tests: 2,
+            values_matched_tests: 2,
         };
         let json = serde_json::to_string(&result).unwrap();
         let deserialized: VerificationResult = serde_json::from_str(&json).unwrap();

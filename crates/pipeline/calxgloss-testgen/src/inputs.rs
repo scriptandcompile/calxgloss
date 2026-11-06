@@ -337,8 +337,14 @@ pub fn generate_test_inputs(
         test_cases.extend(generic_tests);
     }
 
-    // Ensure we have a reasonable minimum number of tests
-    if test_cases.len() < 3 {
+    // Ensure we have a reasonable minimum number of tests — but only
+    // when no signature told us the unit's calling shape. A PARSED
+    // signature's suite must speak only that shape: padding it with
+    // generic three-slot calls makes the scratch build fail on any
+    // unit whose arity is not three, so a correctly translated unit
+    // could never honestly pass its own suite (issue #416). With no
+    // signature parsed, the generic shape stays the best guess.
+    if test_cases.len() < 3 && parsed.is_none() {
         test_cases.extend(generate_generic_tests(&edge_cases));
     }
 
@@ -387,9 +393,12 @@ fn generate_signature_tests(
     let params = &parsed.parameters;
 
     if params.is_empty() {
-        // No parameters, just one test with empty inputs
+        // No parameters: one case with a null input, the shape the verify
+        // harness dispatches as a no-argument call. (An empty object told
+        // the harness nothing about arity — it could not call the unit at
+        // all, which is why generated suites could never honestly pass.)
         tests.push(TestCase {
-            inputs: json!({}),
+            inputs: json!(null),
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
@@ -407,13 +416,15 @@ fn generate_signature_tests(
     // Generate individual parameter boundary tests
     for (i, param_boundaries_item) in param_boundaries.iter().enumerate() {
         for boundary_value in param_boundaries_item {
-            let mut inputs = serde_json::Map::new();
+            // Values sit in declared-parameter order — the positional shape
+            // the verify harness dispatches by.
+            let mut inputs: Vec<serde_json::Value> = Vec::with_capacity(params.len());
             for (j, param) in params.iter().enumerate() {
                 if j == i {
-                    inputs.insert(format!("param_{}", j), boundary_value.clone());
+                    inputs.push(boundary_value.clone());
                 } else {
                     // Use default value for other params
-                    inputs.insert(format!("param_{}", j), param_default_value(param));
+                    inputs.push(param_default_value(param));
                 }
             }
             tests.push(TestCase {
@@ -428,10 +439,7 @@ fn generate_signature_tests(
 
     // Generate a "zero" test if the function has integer parameters
     if has_integer_params(params) {
-        let mut inputs = serde_json::Map::new();
-        for (i, param) in params.iter().enumerate() {
-            inputs.insert(format!("param_{}", i), param_zero_value(param));
-        }
+        let inputs: Vec<serde_json::Value> = params.iter().map(param_zero_value).collect();
         tests.push(TestCase {
             inputs: json!(inputs),
             expected_return: json!(null),
@@ -442,10 +450,7 @@ fn generate_signature_tests(
     }
 
     // Generate a "typical" test with reasonable default values
-    let mut inputs = serde_json::Map::new();
-    for (i, param) in params.iter().enumerate() {
-        inputs.insert(format!("param_{}", i), param_typical_value(param));
-    }
+    let inputs: Vec<serde_json::Value> = params.iter().map(param_typical_value).collect();
     tests.push(TestCase {
         inputs: json!(inputs),
         expected_return: json!(null),
@@ -456,12 +461,12 @@ fn generate_signature_tests(
 
     // Generate a "max value" test for the first integer param
     if let Some(first_int_idx) = params.iter().position(|p| is_integer_type(&p.r#type)) {
-        let mut inputs = serde_json::Map::new();
+        let mut inputs: Vec<serde_json::Value> = Vec::with_capacity(params.len());
         for (j, param) in params.iter().enumerate() {
             if j == first_int_idx {
-                inputs.insert(format!("param_{}", j), param_max_value(param));
+                inputs.push(param_max_value(param));
             } else {
-                inputs.insert(format!("param_{}", j), param_default_value(param));
+                inputs.push(param_default_value(param));
             }
         }
         tests.push(TestCase {
@@ -492,26 +497,20 @@ fn generate_disassembly_tests(
     let boundary_values = edge_cases.get_boundary_values();
 
     for boundary in &boundary_values {
-        let mut inputs = serde_json::Map::new();
-        // Apply boundary to first integer parameter
-        for (i, param) in params.iter().enumerate() {
-            if is_integer_type(&param.r#type) {
-                inputs.insert(
-                    format!("param_{}", i),
-                    json!(if param.is_signed {
-                        *boundary
-                    } else {
-                        (*boundary as u64).min(u32::MAX as u64) as i64
-                    }),
-                );
-                break;
-            }
-        }
-
-        // Fill remaining params with defaults
-        for (i, param) in params.iter().enumerate() {
-            if !inputs.contains_key(&format!("param_{}", i)) {
-                inputs.insert(format!("param_{}", i), param_default_value(param));
+        // Apply the boundary to the first integer parameter; the rest keep
+        // their defaults. Values sit in declared-parameter order.
+        let mut inputs: Vec<serde_json::Value> = Vec::with_capacity(params.len());
+        let mut applied = false;
+        for param in params.iter() {
+            if !applied && is_integer_type(&param.r#type) {
+                inputs.push(json!(if param.is_signed {
+                    *boundary
+                } else {
+                    (*boundary as u64).min(u32::MAX as u64) as i64
+                }));
+                applied = true;
+            } else {
+                inputs.push(param_default_value(param));
             }
         }
 
@@ -537,13 +536,11 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
     let all_values: Vec<i64> = boundary_values.into_iter().chain(generic_values).collect();
 
     for value in all_values {
-        let mut inputs = serde_json::Map::new();
-        inputs.insert("param_0".to_string(), json!(value));
-        inputs.insert("param_1".to_string(), json!(0));
-        inputs.insert("param_2".to_string(), json!(0));
-
+        // The generic three-slot positional shape: a value in the first
+        // slot, zeros behind it. The verify harness dispatches it as a
+        // three-argument call.
         tests.push(TestCase {
-            inputs: json!(inputs),
+            inputs: json!([value, 0, 0]),
             expected_return: json!(null),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
@@ -729,14 +726,14 @@ fn branch_case_for_signature(
         .first()
         .copied()
         .or_else(|| params.iter().position(|p| is_integer_type(&p.r#type)))?;
-    let mut inputs = serde_json::Map::new();
+    let mut inputs: Vec<serde_json::Value> = Vec::with_capacity(params.len());
     for (i, param) in params.iter().enumerate() {
         let value = match probe {
             Probe::Zero if involved.contains(&i) || involved.is_empty() => param_zero_value(param),
             _ if i == target && !matches!(probe, Probe::Zero) => encode_probe(param, probe)?,
             _ => param_typical_value(param),
         };
-        inputs.insert(format!("param_{i}"), value);
+        inputs.push(value);
     }
     Some(TestCase {
         inputs: json!(inputs),
@@ -766,17 +763,15 @@ fn branch_case_generic(site: &BranchSite, probe: &Probe) -> Option<TestCase> {
         Probe::Value(n) => json!(n),
         Probe::Float(f) => json!(f),
     };
-    let mut inputs = serde_json::Map::new();
-    for i in 0..3 {
-        inputs.insert(
-            format!("param_{i}"),
+    let inputs: Vec<serde_json::Value> = (0..3)
+        .map(|i| {
             if i == target {
                 probe_value.clone()
             } else {
                 json!(0)
-            },
-        );
-    }
+            }
+        })
+        .collect();
     Some(TestCase {
         inputs: json!(inputs),
         expected_return: json!(null),
@@ -1150,11 +1145,11 @@ mod tests {
         tests.iter().map(|t| t.inputs.to_string()).collect()
     }
 
-    /// The values a suite gives to one input key.
-    fn probed_values(tests: &[TestCase], key: &str) -> Vec<serde_json::Value> {
+    /// The values a suite gives to one positional input slot.
+    fn probed_values(tests: &[TestCase], index: usize) -> Vec<serde_json::Value> {
         tests
             .iter()
-            .filter_map(|t| t.inputs.get(key).cloned())
+            .filter_map(|t| t.inputs.get(index).cloned())
             .collect()
     }
 
@@ -1202,7 +1197,7 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(probed_values(&tests, "param_0").contains(&json!(256)));
+        assert!(probed_values(&tests, 0).contains(&json!(256)));
     }
 
     #[test]
@@ -1219,7 +1214,7 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        let probed = probed_values(&tests, "param_0");
+        let probed = probed_values(&tests, 0);
         assert!(
             probed.contains(&json!(9)),
             "the keep-looping side is probed"
@@ -1252,7 +1247,7 @@ mod tests {
             .collect();
         assert_eq!(
             new,
-            vec![&json!({"param_0": 0, "param_1": 42})],
+            vec![&json!([0, 42])],
             "the null/zero probe is the only case a guard against zero adds"
         );
     }
@@ -1281,7 +1276,7 @@ mod tests {
             .collect();
         assert_eq!(
             new,
-            vec![&json!({"param_0": 0, "param_1": 0, "param_2": 42})],
+            vec![&json!([0, 0, 42])],
             "the null/zero probe is the only case a shape-only reading adds"
         );
     }
@@ -1308,7 +1303,7 @@ mod tests {
             ),
         ];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        let probed = probed_values(&tests, "param_0");
+        let probed = probed_values(&tests, 0);
         assert!(probed.contains(&json!(1)));
         assert!(probed.contains(&json!(2)));
     }
@@ -1330,7 +1325,7 @@ mod tests {
         let without = generate_test_inputs(sig, "", &[]).unwrap();
         let with = generate_test_inputs(sig, "", &inventory).unwrap();
         assert_eq!(with.len(), without.len());
-        assert!(probed_values(&with, "param_0").contains(&json!(0)));
+        assert!(probed_values(&with, 0).contains(&json!(0)));
     }
 
     #[test]
@@ -1345,11 +1340,7 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(
-            tests
-                .iter()
-                .any(|t| t.inputs == json!({"param_0": 7, "param_1": 42}))
-        );
+        assert!(tests.iter().any(|t| t.inputs == json!([7, 42])));
     }
 
     #[test]
@@ -1364,11 +1355,7 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(
-            tests
-                .iter()
-                .any(|t| t.inputs == json!({"param_0": 42, "param_1": 0}))
-        );
+        assert!(tests.iter().any(|t| t.inputs == json!([42, 0])));
     }
 
     #[test]
@@ -1426,13 +1413,9 @@ mod tests {
             without.len() < MAX_TEST_CASES_PER_FUNCTION,
             "the cap cuts into the branch cases, not the boundary suite"
         );
-        let probed = probed_values(&tests, "param_0");
-        // The shape-only probe ({0, 42}) is gone...
-        assert!(
-            !tests
-                .iter()
-                .any(|t| t.inputs == json!({"param_0": 0, "param_1": 42}))
-        );
+        let probed = probed_values(&tests, 0);
+        // The shape-only probe ([0, 42]) is gone...
+        assert!(!tests.iter().any(|t| t.inputs == json!([0, 42])));
         // ...and among the exact readings the later sites dropped first:
         // every probe up to the cutoff stays, every probe past it does
         // not.
@@ -1466,7 +1449,7 @@ mod tests {
             ),
         ];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        let probed = probed_values(&tests, "param_0");
+        let probed = probed_values(&tests, 0);
         assert!(probed.contains(&json!(100)), "Kuna's hex immediate reads");
         assert!(probed.contains(&json!(65)), "Ghidra's char literal reads");
     }
@@ -1485,7 +1468,7 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(!probed_values(&tests, "param_0").contains(&json!(300)));
+        assert!(!probed_values(&tests, 0).contains(&json!(300)));
     }
 
     #[test]
@@ -1503,11 +1486,7 @@ mod tests {
             70,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        assert!(
-            tests
-                .iter()
-                .any(|t| t.inputs == json!({"param_0": 0, "param_1": 42}))
-        );
+        assert!(tests.iter().any(|t| t.inputs == json!([0, 42])));
     }
 
     #[test]
@@ -1522,7 +1501,7 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs(sig, "", &inventory).unwrap();
-        let probed = probed_values(&tests, "param_0");
+        let probed = probed_values(&tests, 0);
         assert!(probed.contains(&json!(2)));
         assert!(probed.contains(&json!(4)));
     }
@@ -1538,10 +1517,6 @@ mod tests {
             80,
         )];
         let tests = generate_test_inputs("", "", &inventory).unwrap();
-        assert!(
-            tests
-                .iter()
-                .any(|t| t.inputs == json!({"param_0": 7, "param_1": 0, "param_2": 0}))
-        );
+        assert!(tests.iter().any(|t| t.inputs == json!([7, 0, 0])));
     }
 }

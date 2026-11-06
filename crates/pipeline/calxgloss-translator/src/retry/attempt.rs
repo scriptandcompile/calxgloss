@@ -1323,10 +1323,11 @@ mod tests {
         assert_eq!(fault_entries(ws.path()).len(), 1, "one fault record");
     }
 
-    /// One failing baseline case: `draw_sprite(5)` returns 6, expected 4.
+    /// One failing baseline case: `draw_sprite(5)` returns 6, expected 4 —
+    /// positional inputs, the shape testgen files.
     fn failing_suite() -> Vec<TestCase> {
         vec![TestCase {
-            inputs: serde_json::json!(5),
+            inputs: serde_json::json!([5]),
             expected_return: serde_json::json!(4),
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
@@ -1591,7 +1592,7 @@ mod tests {
             function: "draw_sprite".to_string(),
         };
         let suite = failing_suite();
-        let unit = fixture_unit("fn draw_sprite(x: i32) -> i32 { x + 1 }", &suite);
+        let unit = fixture_unit("pub fn draw_sprite(x: i32) -> i32 { x + 1 }", &suite);
         let mut result = RetryResult::new();
 
         let report = verify_and_record(
@@ -1608,10 +1609,9 @@ mod tests {
         // The initial attempt's verdict is honest now (#334): a
         // merely-compiling unit with a non-empty suite is not done — the
         // record carries the suite's real counts and the outcome routes to
-        // a retry. (The scratch toolchain's suite runner currently fails
-        // to build — a verify-crate defect out of this ticket's scope —
-        // so every failing suite verdict lands as 0-of-N here; the honest
-        // part is that the suite was consulted and recorded at all.)
+        // a retry. Since #416 those counts are real case lines: the runner
+        // called draw_sprite(5), it returned 6 against an expected 4, and
+        // the record says 0-of-1 with that mismatch named.
         assert!(
             matches!(report.outcome, AttemptOutcome::VerificationFailed { .. }),
             "outcome: {:?}",

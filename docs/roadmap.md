@@ -33,9 +33,11 @@ comparison](research/rea/README.md) (`docs/research/rea/`, each chapter's
 engine-identity cache key), P21 (first-class unknown records), P22 (the
 API-call trace dimension in the gate), P23 (real inputs mined by the
 record-and-replay fold), and P24 (the scenario-capture baseline giving EXE
-targets a verification signal FFI cannot reach) shipped and left this matrix
-per the rule above (ADR-0053–ADR-0059), so the verdict tracks P26 and
-P27 are unblocked on their record and runtime sides.**
+targets a verification signal FFI cannot reach), and P25 (verification
+receipts — every verify run files its digest-paired pair and every commit
+site stages it onto the attempt branch) shipped and left this matrix per the
+rule above (ADR-0053–ADR-0059; P25's tickets #410–#416), so the verdict
+track P26 and P27 are unblocked on their record and runtime sides.**
 **Table order is dependency order** — no track appears before another track
 that blocks it (each summary below names which tracks block it and which
 tracks it blocks). Among tracks that do not block each other, the order is
@@ -43,16 +45,14 @@ by how far each one moves calxgloss toward **complete end-to-end
 restitching from binaries**: the verification gate wide enough to cover
 what restitching can actually get wrong has now shipped — P22's trace
 dimension, P23's mined inputs, and P24's scenario baseline for EXEs — so the
-front of the table is the durable receipts and the fail-closed ledger
-that finally make "this binary is done" a checkable claim instead of "the
-pipeline stopped with nobody
-complaining" (P25–P26). P27–P33 resolve stuck functions, strengthen
+front of the table is the fail-closed ledger that finally makes
+"this binary is done" a checkable claim instead of "the pipeline stopped
+with nobody complaining" (P26; its durable-receipt half, P25, shipped). P27–P33 resolve stuck functions, strengthen
 evidence, or serve operations; none of them blocks a track listed above
 it.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P25 | Verification receipts — every verification pass persists a digest-paired md+json receipt on the attempt branch (commands, case counts, dimensions, timings); the receipt is durable and diffable between attempts | pipeline (`calxgloss-verify`, `calxgloss-git`) + interface (`calxgloss-reports`) | — | 🔶 in progress | ticketed (#410–#415): P25.1 verification-receipt record, digest fold, and the `re/verification` route landed (#410), P25.2 every verify run files its digest-paired receipt pair beside the baseline and the verify command prints the digest landed (#411), P25.3 the attempt seam records each attempt's receipt and the retry ladder becomes diffable landed (#412), P25.4 the attempt-branch commit stages the verified pass's receipt pair landed (#413), P25.5 the web patch-retry commit stages the pair landed (#414, its after-a-verified-pass e2e pin deferred to #416 — the verify harness cannot call testgen's named-object cases, so no pipeline-driven unit passes the values gate yet), P25.6 the harness-error honesty rule: a harness-error run files its pair verdicted `harness-error` and records no unit verdict, and an unwritable receipt files an admitted unknown naming the run landed (#415); all six ticketed slices landed — what remains open is the deferred web green-path e2e pin (#416) | [#393](https://github.com/scriptandcompile/calxgloss/issues/393) |
 | P26 | Fail-closed restitch conformance — a per-unit obligation ledger (owner = attempt-branch digest, required case kinds, verifier receipt) and a whole-binary closure verdict sealed by a digest; skipped, parked, overridden, or un-reviewed units never add up to complete | pipeline (`calxgloss-git`, `calxgloss-translator`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | not ticketed | [#392](https://github.com/scriptandcompile/calxgloss/issues/392) |
 | P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
 | P28 | Masked byte search at the seam — `search_bytes(pattern, mask)` with wildcard hex and a bit mask, giving the `consts`/`serialize` magic-number scans real matches instead of guesses | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + evidence (`calxgloss-consts`, `calxgloss-serialize`) | — | ⬜ not started | not specced | — |
@@ -95,42 +95,6 @@ blame ranking extends P27's send-back decision.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
-## P25 — Verification receipts on the attempt branch (pipeline + interface)
-
-**Verification results used to live only inside the running pipeline; the
-commit message was the only durable trace a pass left.** That is what this
-track closes: every `calxgloss-verify` run now files a digest-paired
-receipt pair under `re/verification/`, and all four commit sites —
-`translate`, `batch-translate`, `auto`, and the web patch-retry — stage
-that pair into the attempt-branch commit, so a branch checkout carries the
-justification for its own green claim. Each attempt also records its own
-receipt pair, making the retry ladder diffable. A run whose own harness
-fails now files its pair verdicted `harness-error` and records no unit
-verdict, and a receipt that cannot be written files an admitted unknown
-naming the run it belongs to instead of disappearing as a log line
-(#415). The one green-path e2e pin at the web seam waits on #416 (the
-verify harness cannot dispatch testgen's named-object baseline inputs).
-The receipt is an
-REA-style md+json record whose two files are paired by digest, naming the
-verifier command, the baseline-suite digest, the case counts per
-dimension, and the timings. In the style of `compare_bundles`, it is machine-diffable
-between attempts, so a reviewer sees exactly what changed between a failure
-and its fix. The digest-pairing is what makes the receipt citable
-authority: P26's obligation ledger records each unit's status together with
-its verifier's receipt digest, so a green claim without a matching receipt
-is an input error, not a pass. It is deliberately placed after the gate
-reached its widest agreed shape: the trace gate (P22, ADR-0057), the mined
-inputs (P23, ADR-0058), and the scenario baseline for EXEs (P24, ADR-0059)
-all shipped. Receipts fix the gate's verdicts in place, so they should
-record that shape (values + API trace + mined inputs + scenarios) from day
-one, rather than being made again later. Source:
-[33](research/rea/33-reconstruction-evidence-workflow.md) steal 5. Blocked by
-(shape): nothing outstanding — P22, P23, and P24 shipped
-(ADR-0057–ADR-0059). Blocks: P26.
-Ticketed as
-[#410–#415](https://github.com/scriptandcompile/calxgloss/issues/410);
-P25.1–P25.6 have landed.
-
 ## P26 — Fail-closed restitch conformance: obligation ledger + closure digest (pipeline + interface)
 
 **"Queue empty" is not "binary done".** Today calxgloss cannot tell a
@@ -150,7 +114,8 @@ complete end-to-end restitching, made checkable. Source:
 Blocked by: P19 (data side — shipped, ADR-0053; the `unknown` value the
 verdict reads is in place), P21 (shipped, ADR-0056; the open,
 severity-carrying, evidence-demanding record the verdict gates on exists),
-P25 (hard); the gate's shape — P22
+P25 (shipped, #410–#416; the
+receipt digest the ledger cites is filed and rides the commit); the gate's shape — P22
 (ADR-0057), P23 (ADR-0058), and P24 (ADR-0059, the EXE lane whose *scenario
 verdict* the closure reads) all shipped, and carrying a failing scenario
 verdict into that closure is this track's own decision work, not the review

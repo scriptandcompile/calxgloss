@@ -19,7 +19,7 @@ use serde_json::json;
 
 /// The translated body under verification: it always returns 7.
 const BODY: &str = r#"
-pub fn call_no_params() -> serde_json::Value {
+pub fn restitched_mined() -> serde_json::Value {
     serde_json::Value::from(7)
 }
 "#;

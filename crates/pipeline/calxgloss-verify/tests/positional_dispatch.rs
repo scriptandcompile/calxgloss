@@ -1,0 +1,201 @@
+//! The harness calls the unit it is given (issue #416).
+//!
+//! testgen files each generated case's inputs as a positional value —
+//! null for a unit with no parameters, a JSON array of arguments
+//! otherwise — and the generated runner dispatches that shape to the
+//! function named by the verify request. These pins drive that contract
+//! through a real scaffolded project and a real `cargo run`. A
+//! pipeline-driven suite can honestly earn a `passed`. An arity the
+//! unit never had fails as the unit's own compile failure. A panicking
+//! unit fails its case instead of the harness. And when a suite names
+//! no expected returns, the values dimension says it assessed nothing
+//! rather than claiming a match. Like this crate's other compile-backed
+//! tests, they hide behind `#[ignore]`:
+//!
+//! ```text
+//! cargo test -p calxgloss-verify --test positional_dispatch -- --ignored
+//! ```
+
+use calxgloss_types::{TestCase, VerifierCommand};
+use calxgloss_types::{VerificationReceipt, VerificationVerdict};
+use calxgloss_verify::{Verifier, VerifyContext};
+use serde_json::json;
+
+/// Drive one body + suite through the real gate, keeping the receipt
+/// beside the result for the dimension assertions.
+async fn gate(
+    function: &str,
+    body: &str,
+    cases: &[TestCase],
+) -> (calxgloss_types::VerificationResult, VerificationReceipt) {
+    let work = tempfile::tempdir().expect("temp work dir");
+    let verifier = Verifier::new(work.path()).expect("verifier");
+    let run = verifier
+        .verify(
+            "positional_dispatch.dll",
+            function,
+            body,
+            cases,
+            &VerifyContext::default(),
+        )
+        .await
+        .expect("verification runs");
+    (run.result, run.receipt)
+}
+
+/// A generated case as testgen files it: positional inputs, no expected
+/// return yet — the suite a pipeline-driven attempt actually carries.
+fn generated_case(inputs: serde_json::Value) -> TestCase {
+    TestCase {
+        inputs,
+        expected_return: json!(null),
+        expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
+        origin: calxgloss_types::CaseOrigin::Generated,
+    }
+}
+
+/// A pipeline-driven attempt whose unit matches its signature earns a
+/// real `passed` from the real runner — and the receipt says the values
+/// dimension assessed nothing, because no generated case named an
+/// expected return (ADR-0057: a pass that compared no values must say
+/// so, not look like a values match).
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn a_pipeline_shaped_suite_honestly_passes_the_generated_unit() {
+    let body = "pub fn fixture_gate() -> u32 { let mut d = GraphicsDeviceStub::default(); d.create_texture(2, 2); d.present(); 7 }";
+    let (result, receipt) = gate("fixture_gate", body, &[generated_case(json!(null))]).await;
+
+    assert!(result.compiled, "the generated unit compiles");
+    assert_eq!(
+        result.tests_total, 1,
+        "the null case ran through the runner"
+    );
+    assert_eq!(result.tests_passed, 1, "and the harness called the unit");
+    assert_eq!(
+        result.value_assessed_tests, 0,
+        "no case named an expected return"
+    );
+    assert_eq!(receipt.verdict, VerificationVerdict::Passed);
+    assert_eq!(
+        receipt.verifier_command,
+        VerifierCommand::CompileAndBaselineTest,
+        "a case ran — the full gate, not a compile-only stand-in"
+    );
+    let values = &receipt.dimensions["values"];
+    assert_eq!(
+        (values.assessed, values.passed),
+        (0, 0),
+        "the pass compared no values, and the receipt records 0 assessed — never a 6/6 values match it did not earn"
+    );
+}
+
+/// An arity the unit never defined is the unit's own compile failure:
+/// the null-input arm calls the named unit with no arguments, rustc
+/// rejects the call, and the run reads `compile_failed` — never the old
+/// vacuous `passed` that a never-called unit used to earn.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn an_arity_the_unit_never_defined_fails_as_compile_failed() {
+    let body = "pub fn fixture_gate(code: u32) -> u32 { code }";
+    let (result, receipt) = gate("fixture_gate", body, &[generated_case(json!(null))]).await;
+
+    assert!(
+        !result.compiled,
+        "the runner's call to the named unit must not build: {:?}",
+        result.compilation_errors
+    );
+    assert!(
+        result
+            .compilation_errors
+            .iter()
+            .any(|e| e.contains("this function takes 1 argument but 0 arguments were supplied")),
+        "the compile error names the mismatch: {:?}",
+        result.compilation_errors
+    );
+    assert_eq!(receipt.verdict, VerificationVerdict::CompileFailed);
+    assert_eq!(result.tests_total, 0, "no case ever ran");
+}
+
+/// A suite whose generated case carries arguments dispatches them
+/// positionally, coercing to the unit's own parameter types.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn a_positional_case_calls_the_unit_with_its_arguments() {
+    let body = "pub fn fixture_sum(a: u32, b: i32) -> i64 { a as i64 + b as i64 }";
+    let mut case = generated_case(json!([40, 2]));
+    case.expected_return = json!(42);
+    let (result, receipt) = gate("fixture_sum", body, &[case]).await;
+
+    assert_eq!(
+        result.tests_passed, 1,
+        "the harness called fixture_sum(40, 2)"
+    );
+    assert_eq!(result.value_assessed_tests, 1);
+    assert_eq!(result.values_matched_tests, 1);
+    let values = &receipt.dimensions["values"];
+    assert_eq!((values.assessed, values.passed), (1, 1));
+    assert_eq!(receipt.verdict, VerificationVerdict::Passed);
+}
+
+/// A unit that panics on an input fails that case — with the panic named
+/// in the failure — while the harness itself survives to report every
+/// other case. tests_failed, never harness-error.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn a_panicking_unit_fails_its_case_not_the_harness() {
+    let body = r#"pub fn fixture_gate() -> u32 { panic!("off-by-one in the loop bound") }"#;
+    let (result, receipt) = gate(
+        "fixture_gate",
+        body,
+        &[generated_case(json!(null)), generated_case(json!(null))],
+    )
+    .await;
+
+    assert!(
+        result.compiled,
+        "the body compiles — it just panics when called"
+    );
+    assert_eq!(
+        result.failed_tests.len(),
+        2,
+        "both cases ran and both failed"
+    );
+    assert!(
+        result.failed_tests[0]
+            .error
+            .contains("the unit panicked: off-by-one in the loop bound"),
+        "the panic message rides the failure: {:?}",
+        result.failed_tests[0].error
+    );
+    assert_eq!(
+        result.value_assessed_tests, 0,
+        "an uncalled return assesses nothing"
+    );
+    assert_eq!(receipt.verdict, VerificationVerdict::TestsFailed);
+}
+
+/// A named-object input — the shape the harness used to refuse with a
+/// sentinel string while calling nothing — now fails its own case by
+/// name, honestly, instead of pretending the suite was judged.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn an_uncallable_named_object_input_fails_its_case() {
+    let body = "pub fn fixture_gate() -> u32 { let mut d = GraphicsDeviceStub::default(); d.create_texture(2, 2); d.present(); 7 }";
+    let (result, _receipt) = gate(
+        "fixture_gate",
+        body,
+        &[generated_case(json!({"param_0": 1}))],
+    )
+    .await;
+
+    assert_eq!(result.failed_tests.len(), 1);
+    assert!(
+        result.failed_tests[0]
+            .error
+            .contains("gives fixture_gate no callable arguments"),
+        "the failure names the unit and the uncallable input: {:?}",
+        result.failed_tests[0].error
+    );
+    assert_eq!(result.value_assessed_tests, 0);
+}

@@ -942,16 +942,16 @@ async fn marker_rotating_llm() -> String {
 /// seam with its baseline suite — a merely-compiling unit with a non-
 /// empty suite is NOT done. The attempt-1 record carries the suite's real
 /// counts, the run reports failure, and the retry prompt is the test-fix
-/// one built from that verdict's payload. (The scratch toolchain's suite
-/// runner currently fails to build — a verify-crate defect out of this
-/// ticket's scope — so the honest verdict lands as 0-of-1 with no per-
-/// case lines; what is pinned is that the suite was consulted at all and
-/// the record tells the truth about it, which is what closes the compile-
-/// only success hole.)
+/// one built from that verdict's payload. Since #416 the runner really
+/// calls the named unit, so the failing case here is a real one: the unit
+/// computes 6 and the case expected 4, and the record says 0-of-1 with
+/// that mismatch in hand — what is pinned is that the suite was consulted
+/// at all and the record tells the truth about it, which is what closes
+/// the compile-only success hole.
 #[tokio::test]
 async fn a_compiling_unit_with_a_failing_suite_is_not_reported_success() {
     let ws = tempfile::TempDir::new().expect("temp workspace");
-    let good = "fn draw_sprite(x: i32) -> i32 { x + 1 }";
+    let good = "pub fn DrawSprite(x: i32) -> i32 { x + 1 }";
 
     let translation = Translation {
         binary: "game_logic.dll".to_string().into(),
@@ -1079,7 +1079,7 @@ async fn a_compiling_unit_with_a_failing_suite_is_not_reported_success() {
 async fn a_trace_divergent_failed_test_routes_the_divergence_into_the_next_fix_prompt() {
     let ws = tempfile::TempDir::new().expect("temp workspace");
     const BODY: &str = r#"
-pub fn call_no_params() -> serde_json::Value {
+pub fn RestitchTrace() -> serde_json::Value {
     let fs = FileSystemStub::default();
     let handle = fs.open("pin_trace.txt", FileMode::Read).expect("the stub open always works");
     let mut buf = [0u8; 8];
@@ -1192,9 +1192,10 @@ pub fn call_no_params() -> serde_json::Value {
 /// attempt N has failed, attempt N+1's prompt names N's OWN code and
 /// quotes N's OWN failure evidence — the initial translation is no longer
 /// the repair target or the evidence source. (The structured failing
-/// cases of a tests-failed verdict go through the same routing; they are
-/// pinned at seam and adapter level because this toolchain's suite runner
-/// cannot produce real case lines — defect note above.)
+/// cases of a tests-failed verdict go through the same routing; a real
+/// runner case line is pinned end to end at the verify seam in
+/// `calxgloss-verify/tests/positional_dispatch.rs`, and the trace-
+/// divergent case line drives the routing above.)
 #[tokio::test]
 async fn fix_prompts_quote_the_latest_failed_attempts_code_and_evidence() {
     let ws = tempfile::TempDir::new().expect("temp workspace");

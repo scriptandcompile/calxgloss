@@ -1448,8 +1448,8 @@ async fn persisted_branch_inventory_reaches_baseline_generation_through_translat
     let probes = |value: i64| {
         tests.iter().any(|t| {
             t.inputs
-                .as_object()
-                .is_some_and(|values| values.values().any(|v| *v == serde_json::json!(value)))
+                .as_array()
+                .is_some_and(|values| values.iter().any(|v| *v == serde_json::json!(value)))
         })
     };
     assert!(
@@ -4084,22 +4084,25 @@ async fn a_batch_seeds_attempt_1_from_the_accepted_translation_of_a_paired_twin(
         "a seeded attempt spends no LLM tokens"
     );
     // The seed is a hypothesis the new bytes get to reject — and from
-    // #334 on the rejection is honest: attempt 1 now consults the
-    // freshly captured baseline suite, and the attempt-1 record
-    // carries its real size. The verdict lands as tests-failed here
-    // for two toolchain-side reasons outside this issue's scope — the
-    // scratch suite runner cannot build on this machine (a verify-
-    // crate defect), and a stub seed like this one could never answer
-    // a behavioral suite anyway. What is pinned is the contract: the
-    // suite was consulted, the counts are real, and success remains
-    // the verifier's verdict, never a carry-over stamp — the review
+    // #334 on the rejection is honest, and #416 made it concrete:
+    // attempt 1 goes through the full gate with the freshly captured
+    // baseline suite, and the harness calls the unit BY NAME. This
+    // seed still names the old function, so the scratch build fails
+    // at that call — the attempt-1 record says exactly that
+    // (compiled=false, no case ran), and success remains the
+    // verifier's verdict, never a carry-over stamp — the review
     // overlay model (ADR-0003) is untouched, and the pairing never
     // marks a unit Verified.
-    assert!(attempt.compiled, "the seed compiles against the new bytes");
     assert!(
-        attempt.tests_total > 0,
-        "attempt 1 now consults the captured baseline suite — the \
-             compile-only success hole is closed (#334)"
+        !attempt.compiled,
+        "the seed names the old function while the harness calls the new \
+             one by name — the new bytes reject the hypothesis at the build: {:?}",
+        attempt.compilation_errors.first()
+    );
+    assert_eq!(
+        attempt.tests_total, 0,
+        "no case ran — the scratch never built — but the attempt was still \
+             verified, never a vacuous success (#334, #416)"
     );
     assert!(
         !attempt.is_successful(),

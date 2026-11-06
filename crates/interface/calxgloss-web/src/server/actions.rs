@@ -1422,19 +1422,14 @@ mod tests {
             "the description's model drove the call"
         );
 
-        // Issue #414 grew the web commit site to stage the verified pass's
-        // *receipt pair* into the attempt-branch commit — and this run
-        // proves the existence gate from the other side: the ladder never
-        // earned a verified pass, so the commit site never ran, nothing
-        // was fabricated on the branch. Each attempt filed its own
-        // receipt pair on disk (the #412 seam), the attempt branch still
-        // points at its base commit, and no patch record exists.
-        //
-        // The forward pin — after a *verified pass* the attempt-branch
-        // commit carries the winner's pair — stands deferred to #416:
-        // testgen spells every generated case's inputs as a named object
-        // and the verify harness refuses to call named objects, so a
-        // pipeline-driven unit cannot honestly pass the values gate yet.
+        // #414 grew the web commit site to stage the verified pass's
+        // *receipt pair* into the attempt-branch commit; #416 removed
+        // the blocker that kept a pipeline-driven run from ever earning
+        // that pass. The run now walks the green side of the existence
+        // gate: the retry earned a verified pass, its attempt-branch
+        // commit carries the module file AND the winning attempt's
+        // pair, and the patch record cites that one commit — a branch
+        // checkout carries the justification for its own green claim.
         let unit_receipts = repo
             .path()
             .join("re")
@@ -1447,6 +1442,26 @@ mod tests {
                 "the ladder filed the attempt's own receipt pair member {member}",
             );
         }
+        // The winner is the filed attempt whose receipt JSON reads
+        // `passed` — the same authority the commit staged.
+        let winner = std::fs::read_dir(&unit_receipts)
+            .expect("the ladder filed the unit's receipts")
+            .filter_map(|entry| {
+                entry
+                    .ok()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+            })
+            .find(|name| {
+                name.starts_with("attempt-")
+                    && name.ends_with(".json")
+                    && std::fs::read_to_string(unit_receipts.join(name))
+                        .ok()
+                        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                        .is_some_and(|doc| doc["verdict"] == "passed")
+            })
+            .expect("some filed attempt's receipt reads passed — the pass was verified");
+        let winner_stem = winner.trim_end_matches(".json");
+
         let git = GitManager::open(repo.path()).expect("open the repo after the retry");
         let v2 = GitBranch::new("fixture_target.dll", "fixture_tick", 2).expect("v2 branch name");
         let base = git
@@ -1456,25 +1471,56 @@ mod tests {
             .get()
             .target()
             .expect("main points at a commit");
+        let tip = git
+            .repo()
+            .find_branch(&v2.name, git2::BranchType::Local)
+            .expect("the retry created the v2 branch")
+            .get()
+            .target()
+            .expect("a verified pass commits to the attempt branch");
+        let commit = git.repo().find_commit(tip).expect("the branch tip commit");
         assert_eq!(
-            git.repo()
-                .find_branch(&v2.name, git2::BranchType::Local)
-                .expect("the retry created the v2 branch")
-                .get()
-                .target(),
-            Some(base),
-            "a retry with no verified pass commits nothing to the attempt branch",
+            commit.parent_count(),
+            1,
+            "the pass rides one commit on top of the branch's base",
         );
-        assert!(
-            !repo
-                .path()
-                .join("re")
-                .join("patches")
-                .join("fixture_target.dll")
-                .join("fixture_tick")
-                .join("v2.json")
-                .exists(),
-            "no patch record without a verified pass",
+        assert_eq!(
+            commit.parent(0).expect("the commit's parent").id(),
+            base,
+            "and that base is main — the v2 branch grew from it",
+        );
+        let tree = commit.tree().expect("the commit's tree");
+        for member in [
+            "src/modules/fixture_target.rs".to_string(),
+            format!("re/verification/fixture_target.dll/fixture_tick/{winner_stem}.json"),
+            format!("re/verification/fixture_target.dll/fixture_tick/{winner_stem}.md"),
+        ] {
+            assert!(
+                tree.get_path(std::path::Path::new(&member)).is_ok(),
+                "the attempt-branch commit carries {member} — the code rides \
+                 beside the receipt pair that justifies it (#414)",
+            );
+        }
+
+        // The patch record exists for a verified pass, and its hash is
+        // the very commit that carries the pair — no second probe
+        // commit whose tree could drift from the staged one.
+        let patch_record_path = repo
+            .path()
+            .join("re")
+            .join("patches")
+            .join("fixture_target.dll")
+            .join("fixture_tick")
+            .join("v2.json");
+        let record: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&patch_record_path)
+                .expect("a verified pass writes its patch record"),
+        )
+        .expect("the patch record parses");
+        assert_eq!(
+            record["commit_hash"].as_str().unwrap_or_default(),
+            tip.to_string(),
+            "the record cites the commit carrying the pair",
         );
     }
 
@@ -1532,7 +1578,7 @@ mod tests {
                     }
                     let body_str = String::from_utf8_lossy(&request).into_owned();
                     CAPTURED.lock().expect("capture lock").push(body_str);
-                    let body = r#"{"choices":[{"message":{"role":"assistant","content":"fn fixture_tick(code: u32) -> u32 { code }"}}],"usage":{"completion_tokens":10,"prompt_tokens":20,"total_tokens":30}}"#;
+                    let body = r#"{"choices":[{"message":{"role":"assistant","content":"pub fn fixture_tick() -> u32 { let mut d = GraphicsDeviceStub::default(); d.create_texture(2, 2); d.present(); 7 }"}}],"usage":{"completion_tokens":10,"prompt_tokens":20,"total_tokens":30}}"#;
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()

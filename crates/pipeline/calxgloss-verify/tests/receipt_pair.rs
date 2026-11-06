@@ -29,10 +29,10 @@ const BINARY: &str = "receipt_fixture.dll";
 const FUNCTION: &str = "receipt_gate";
 
 /// A body that always returns 7, with no surface calls.
-const BODY: &str = "pub fn call_no_params() -> serde_json::Value { serde_json::Value::from(7) }";
+const BODY: &str = "pub fn receipt_gate() -> serde_json::Value { serde_json::Value::from(7) }";
 
 /// The failing twin: the same unit never compiles.
-const BROKEN_BODY: &str = "pub fn call_no_params() -> serde_json::Value { \"not an int\" }";
+const BROKEN_BODY: &str = "pub fn receipt_gate() -> serde_json::Value { \"not an int\" }";
 
 /// One baseline case demanding value `want` through no params.
 fn case(want: i64) -> TestCase {
@@ -100,7 +100,13 @@ async fn a_harness_error_run_files_a_pair_verdicted_harness_error_and_records_no
     let verifier = Verifier::new(work.path()).expect("verifier");
 
     let error = verifier
-        .verify(BINARY, FUNCTION, BODY, &[case(7)], &VerifyContext::default())
+        .verify(
+            BINARY,
+            FUNCTION,
+            BODY,
+            &[case(7)],
+            &VerifyContext::default(),
+        )
         .await
         .expect_err("a harness fault is the verifier's error, never a verdict");
 
@@ -112,10 +118,19 @@ async fn a_harness_error_run_files_a_pair_verdicted_harness_error_and_records_no
         VerifierCommand::CompileOnly,
         "no baseline case ever ran through a runner — the same compile-only doctrine as a compile-failed pair"
     );
-    assert_eq!(filed.dimensions["values"].assessed, 0, "nothing was assessed");
-    assert_eq!(filed.dimensions["values"].passed, 0, "and least of all passed");
+    assert_eq!(
+        filed.dimensions["values"].assessed, 0,
+        "nothing was assessed"
+    );
+    assert_eq!(
+        filed.dimensions["values"].passed, 0,
+        "and least of all passed"
+    );
     assert_eq!(filed.dimensions["api_trace"].assessed, 0);
-    assert!(filed.failed_cases.is_empty(), "no unit verdict — no case to name");
+    assert!(
+        filed.failed_cases.is_empty(),
+        "no unit verdict — no case to name"
+    );
     // The caller holds only the error: no result, no receipt travelled.
     assert!(
         !error.to_string().is_empty(),
@@ -138,7 +153,13 @@ async fn a_pair_that_cannot_be_written_files_an_admitted_unknown_naming_the_run(
     let verifier = Verifier::new(work.path()).expect("verifier");
 
     let run = verifier
-        .verify(BINARY, FUNCTION, BODY, &[case(7)], &VerifyContext::default())
+        .verify(
+            BINARY,
+            FUNCTION,
+            BODY,
+            &[case(7)],
+            &VerifyContext::default(),
+        )
         .await
         .expect("the run's verdict stands, honestly degraded");
     assert_eq!(run.result.tests_passed, 1, "the gate still judged the unit");
@@ -166,7 +187,11 @@ async fn a_pair_that_cannot_be_written_files_an_admitted_unknown_naming_the_run(
     assert_eq!(record.kind, UnknownKind::ReceiptUnfiled);
     assert_eq!(record.severity, UnknownSeverity::Blocking);
     assert_eq!(record.function.as_deref(), Some(FUNCTION));
-    assert_eq!(record.source_slot(), "attempt-1", "keyed by the pair's own attempt");
+    assert_eq!(
+        record.source_slot(),
+        "attempt-1",
+        "keyed by the pair's own attempt"
+    );
     assert!(
         record.question.contains(FUNCTION) && record.question.contains("attempt-1"),
         "the question names the run it belongs to:\n{}",
@@ -190,7 +215,13 @@ async fn a_twin_that_cannot_be_written_leaves_no_half_pair_behind() {
     let verifier = Verifier::new(work.path()).expect("verifier");
 
     let run = verifier
-        .verify(BINARY, FUNCTION, BODY, &[case(7)], &VerifyContext::default())
+        .verify(
+            BINARY,
+            FUNCTION,
+            BODY,
+            &[case(7)],
+            &VerifyContext::default(),
+        )
         .await
         .expect("the run's verdict stands, honestly degraded");
     assert_eq!(run.result.tests_passed, 1, "the gate still judged the unit");
@@ -242,7 +273,10 @@ async fn the_persisted_unknown_reads_back_through_the_existing_route() {
         format!("{BINARY}/{FUNCTION}/receipt_unfiled/attempt-2"),
         "the id follows the shared derivation"
     );
-    assert!(record.question.contains("disk full"), "the reason rides the question");
+    assert!(
+        record.question.contains("disk full"),
+        "the reason rides the question"
+    );
 
     // Filing the same run again stays one record — the id re-derives, the
     // set never duplicates.

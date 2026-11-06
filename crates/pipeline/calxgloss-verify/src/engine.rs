@@ -263,9 +263,7 @@ impl Verifier {
                     Ok(()) => return Err(e),
                     // The honesty filing failed on top of the harness failure:
                     // chain both, never losing the harness error itself.
-                    Err(honesty) => return Err(e).context(format!(
-                        "and its harness-error honesty filing failed too: {honesty:#}"
-                    )),
+                    Err(honesty) => return Err(harness_fault(e, honesty)),
                 }
             }
         };
@@ -277,19 +275,7 @@ impl Verifier {
         let mut test_run_ms = 0u64;
         let result = if !compile_result.success {
             info!(binary, function, "Skipping tests — compilation failed");
-            VerificationResult {
-                compiled: false,
-                compilation_errors: compile_result.errors,
-                tests_passed: 0,
-                // The counters count tests that RAN — a gate whose test leg
-                // never started ran none, so its unrun suite counts as
-                // zero, not as suite size. Downstream "did any baseline
-                // case run" questions read this directly.
-                tests_total: 0,
-                failed_tests: Vec::new(),
-                // Nothing ran, so the trace dimension assessed nothing.
-                trace_assessed_tests: 0,
-            }
+            unrun_suite_result(compile_result.errors)
         } else {
             info!(
                 binary,
@@ -297,37 +283,36 @@ impl Verifier {
             );
 
             let test_started = Instant::now();
-            let project = match self.scaffold_test_project(binary, function, rust_code, baseline_tests)
-            {
-                Ok(project) => project,
-                Err(e) => {
-                    // The test project could not even be scaffolded: the
-                    // test leg broke inside the verifier, so the run is a
-                    // harness failure — pair verdicted `harness-error`,
-                    // no verdict handed back.
-                    match self.file_harness_error_receipt(
-                        binary,
-                        function,
-                        context,
-                        &suite_digest,
-                        &format!("the test project could not be scaffolded: {e}"),
-                        compile_ms,
-                        test_started.elapsed().as_millis() as u64,
-                    ) {
-                        Ok(()) => return Err(e),
-                        // Chain both failures; the harness error is never lost.
-                        Err(honesty) => return Err(e).context(format!(
-                            "and its harness-error honesty filing failed too: {honesty:#}"
-                        )),
+            let project =
+                match self.scaffold_test_project(binary, function, rust_code, baseline_tests) {
+                    Ok(project) => project,
+                    Err(e) => {
+                        // The test project could not even be scaffolded: the
+                        // test leg broke inside the verifier, so the run is a
+                        // harness failure — pair verdicted `harness-error`,
+                        // no verdict handed back.
+                        match self.file_harness_error_receipt(
+                            binary,
+                            function,
+                            context,
+                            &suite_digest,
+                            &format!("the test project could not be scaffolded: {e}"),
+                            compile_ms,
+                            test_started.elapsed().as_millis() as u64,
+                        ) {
+                            Ok(()) => return Err(e),
+                            // Chain both failures; the harness error is never lost.
+                            Err(honesty) => return Err(harness_fault(e, honesty)),
+                        }
                     }
-                }
-            };
+                };
             let test_output = match cargo::run_test_runner(&project).await {
                 Ok(output) => output,
                 Err(e) => {
                     // A runner that never started assessed nothing. The
-                    // old fallback text ("Test execution failed: …") read
-                    // as a zero-test run — a quiet near-pass. That swallow
+                    // old fallback text ("Test execution failed: …")
+                    // filed that as a zero-test run a reader could
+                    // almost mistake for a clean verdict. That swallow
                     // is gone: an unstartable runner is a harness failure.
                     match self.file_harness_error_receipt(
                         binary,
@@ -340,33 +325,125 @@ impl Verifier {
                     ) {
                         Ok(()) => return Err(e),
                         // Chain both failures; the harness error is never lost.
-                        Err(honesty) => return Err(e).context(format!(
-                            "and its harness-error honesty filing failed too: {honesty:#}"
-                        )),
+                        Err(honesty) => return Err(harness_fault(e, honesty)),
                     }
                 }
             };
             test_run_ms = test_started.elapsed().as_millis() as u64;
 
-            let (tests_passed, tests_total, failed_tests, trace_assessed_tests) =
-                parse::parse_test_results(&test_output, baseline_tests);
+            let report = parse::parse_test_results(&test_output, baseline_tests);
+            if !report.produced_results && !baseline_tests.is_empty() {
+                // The suite had cases and the runner printed no result
+                // rows at all. Three honest readings: the *test project* —
+                // the unit beside the generated runner — never built,
+                // which is where a unit that does not match the harness's
+                // calling shape surfaces as its own compile failure; the
+                // unit itself crashed the runner before it printed, which
+                // is a test that failed with an unobserved return; or the
+                // runner broke without a word, which is the verifier's
+                // failure, never the unit's (#415's rule).
+                if test_output.contains("could not compile") {
+                    let (_, errors, _) = parse::parse_cargo_output(&test_output);
+                    info!(
+                        binary,
+                        function, "Test project did not compile — tests never ran"
+                    );
+                    unrun_suite_result(errors)
+                } else if parse::runner_death_signal(&test_output) {
+                    warn!(
+                        binary,
+                        function, "Unit crashed the runner before it printed a result"
+                    );
+                    VerificationResult {
+                        compiled: true,
+                        compilation_errors: Vec::new(),
+                        tests_passed: 0,
+                        tests_total: baseline_tests.len(),
+                        // The runner printed nothing, so no printed row
+                        // says *which* case it died on: the record names
+                        // the crash and claims no inputs and no return.
+                        failed_tests: vec![parse::runner_died_before_first_row()],
+                        trace_assessed_tests: 0,
+                        value_assessed_tests: 0,
+                        values_matched_tests: 0,
+                    }
+                } else {
+                    match self.file_harness_error_receipt(
+                        binary,
+                        function,
+                        context,
+                        &suite_digest,
+                        "the test runner produced no result rows",
+                        compile_ms,
+                        test_started.elapsed().as_millis() as u64,
+                    ) {
+                        Ok(()) => {
+                            return Err(anyhow::anyhow!(
+                                "the test runner produced no result rows for {function} \
+                                 in {binary}"
+                            ));
+                        }
+                        // Chain both failures; the harness error is never lost.
+                        Err(honesty) => {
+                            return Err(harness_fault(
+                                anyhow::anyhow!(
+                                    "the test runner produced no result rows for {function} \
+                                     in {binary}"
+                                ),
+                                honesty,
+                            ));
+                        }
+                    }
+                }
+            } else if report.incomplete {
+                // The runner died part-way: the unit crashed on one of its
+                // own cases. Name the crashed case and leave its return
+                // unobserved — a failing test, never a broken harness.
+                let crash_index = report.total;
+                let crash_inputs = baseline_tests
+                    .get(crash_index)
+                    .map(|case| case.inputs.clone())
+                    .unwrap_or(serde_json::Value::Null);
+                let mut failed = report.failed;
+                failed.push(parse::crashed_suite_failure(crash_index, &crash_inputs));
+                warn!(
+                    binary,
+                    function,
+                    crashed_at = crash_index,
+                    suite_len = baseline_tests.len(),
+                    "Unit crashed the runner part-way through the suite"
+                );
+                VerificationResult {
+                    compiled: true,
+                    compilation_errors: Vec::new(),
+                    tests_passed: report.passed,
+                    tests_total: baseline_tests.len(),
+                    failed_tests: failed,
+                    trace_assessed_tests: report.trace_assessed,
+                    value_assessed_tests: report.value_assessed,
+                    values_matched_tests: report.values_matched,
+                }
+            } else {
+                info!(
+                    binary,
+                    function,
+                    passed = report.passed,
+                    total = report.total,
+                    trace_assessed = report.trace_assessed,
+                    value_assessed = report.value_assessed,
+                    "Verification complete"
+                );
 
-            info!(
-                binary,
-                function,
-                passed = tests_passed,
-                total = tests_total,
-                trace_assessed = trace_assessed_tests,
-                "Verification complete"
-            );
-
-            VerificationResult {
-                compiled: true,
-                compilation_errors: Vec::new(),
-                tests_passed,
-                tests_total,
-                failed_tests,
-                trace_assessed_tests,
+                VerificationResult {
+                    compiled: true,
+                    compilation_errors: Vec::new(),
+                    tests_passed: report.passed,
+                    tests_total: report.total,
+                    failed_tests: report.failed,
+                    trace_assessed_tests: report.trace_assessed,
+                    value_assessed_tests: report.value_assessed,
+                    values_matched_tests: report.values_matched,
+                }
             }
         };
 
@@ -425,17 +502,13 @@ impl Verifier {
             VerifierCommand::CompileOnly
         };
 
-        // The dimension map mirrors the returned result's facts. A failed
-        // test whose return value still matched earned its values
-        // dimension — it diverged on the trace or side-effect leg, not the
-        // value leg — while the trace dimension counts only cases the
-        // capture vocabulary could speak an expectation for (ADR-0057's
-        // honesty rule: unassessed never reads as passed).
-        let values_matched = result
-            .failed_tests
-            .iter()
-            .filter(|f| f.expected == f.actual)
-            .count();
+        // The dimension map mirrors the returned result's facts, taken
+        // straight from the runner's own per-case assessments rather than
+        // reconstructed from the pass verdict: the values dimension counts
+        // only cases the runner could call *and* hold against an expected
+        // return, and the trace dimension counts only cases the capture
+        // vocabulary could speak an expectation for (ADR-0057's honesty
+        // rule: unassessed never reads as passed).
         let trace_failed = result
             .failed_tests
             .iter()
@@ -445,16 +518,8 @@ impl Verifier {
         dimensions.insert(
             "values".to_string(),
             DimensionCounts {
-                assessed: if result.compiled {
-                    result.tests_total
-                } else {
-                    0
-                },
-                passed: if result.compiled {
-                    result.tests_passed + values_matched
-                } else {
-                    0
-                },
+                assessed: result.value_assessed_tests,
+                passed: result.values_matched_tests,
             },
         );
         dimensions.insert(
@@ -537,7 +602,11 @@ impl Verifier {
     /// portable. The fold is deterministic — two runs over the same suite
     /// and location fold the same digest whatever the verdict turns out
     /// to be.
-    fn suite_digest(&self, baseline_tests: &[TestCase], context: &VerifyContext<'_>) -> Result<String> {
+    fn suite_digest(
+        &self,
+        baseline_tests: &[TestCase],
+        context: &VerifyContext<'_>,
+    ) -> Result<String> {
         let baseline_location = context.baseline_file.map(|path| {
             let relative = path.strip_prefix(&self.work_dir).unwrap_or(path);
             relative.display().to_string()
@@ -603,7 +672,13 @@ impl Verifier {
         compile_ms: u64,
         test_run_ms: u64,
     ) -> Result<()> {
-        error!(binary, function, attempt = context.attempt, reason, "verifier harness failure; filing the harness-error receipt pair");
+        error!(
+            binary,
+            function,
+            attempt = context.attempt,
+            reason,
+            "verifier harness failure; filing the harness-error receipt pair"
+        );
         let mut receipt = VerificationReceipt {
             binary: BinaryIdentity::new(binary),
             function: function.to_string(),
@@ -753,8 +828,9 @@ impl Verifier {
             &reopened,
             now_unix_secs(),
         );
-        persist::save_json(&path, &filed)
-            .with_context(|| format!("filing the unfiled-receipt unknown into {}", path.display()))?;
+        persist::save_json(&path, &filed).with_context(|| {
+            format!("filing the unfiled-receipt unknown into {}", path.display())
+        })?;
         info!(
             binary,
             function,
@@ -866,7 +942,7 @@ include!("stub_content.rs");
             .context("Failed to write lib.rs")?;
 
         // Write test runner binary
-        let test_harness = self.generate_test_harness(function, baseline_tests);
+        let test_harness = self.generate_test_harness(function, baseline_tests, rust_code);
         std::fs::write(project_dir.join("src").join("main.rs"), test_harness)
             .context("Failed to write test runner")?;
 
@@ -899,8 +975,14 @@ include!("stub_content.rs");
         project_dir
     }
 
-    /// Generate a test runner that invokes the translated function with baseline inputs.
-    fn generate_test_harness(&self, function: &str, baseline_tests: &[TestCase]) -> String {
+    /// Generate a test runner that **calls the translated unit** with each
+    /// baseline case's positional inputs, and judges what came back.
+    fn generate_test_harness(
+        &self,
+        function: &str,
+        baseline_tests: &[TestCase],
+        rust_code: &str,
+    ) -> String {
         let mut code = String::new();
 
         // Import the translated library and shared PAL types
@@ -912,14 +994,24 @@ include!("stub_content.rs");
         code.push_str(
             r#"// Test runner for behavioral verification
 //
-// A case passes only when BOTH dimensions match: the return value equals the
-// baseline value, and — when the baseline case carries a recorded API-call
-// trace — the expected names appear in order, repetitions intact, inside the
+// The runner CALLS the translated unit. A baseline case's inputs are a
+// positional value: null means no arguments, and a JSON array calls the
+// unit with one coerced argument per element, in order. Inputs the
+// coercion cannot speak make THAT CASE fail — naming the input and its
+// position — and a unit that panics fails its case rather than taking
+// the harness down with it.
+//
+// Two dimensions judge each case. The VALUES dimension is assessed only
+// when the baseline carries an expected return and the runner actually
+// called the unit with it: an expected null leaves the value verdict
+// unassessed, and the runner says out loud when it never compared a
+// value (ADR-0057 — silence never counts as a pass). The TRACE dimension
+// is assessed when the case carries a recorded API-call trace: the
+// expected names must appear in order, repetitions intact, inside the
 // ordered verify-PAL-surface call sequence as a subsequence (ordered
 // containment). Extra surface entries never fail: they are entries the
-// capture vocabulary cannot speak. An empty expected trace leaves the trace
-// dimension unassessed: the value verdict stands alone, and silence never
-// counts as a trace pass.
+// capture vocabulary cannot speak. An empty expected trace leaves the
+// trace dimension unassessed the same way.
 
 use serde::{Deserialize, Serialize};
 
@@ -942,6 +1034,7 @@ struct TestResult {
     actual_api_calls: Vec<String>,
     trace_divergence_index: Option<usize>,
     trace_assessed: bool,
+    value_assessed: bool,
 }
 
 fn main() {
@@ -952,15 +1045,36 @@ fn main() {
 
     let results: Vec<TestResult> = tests.iter().enumerate().map(|(i, t)| {
         pal::begin_api_trace();
-        let output = call_function(&t.inputs);
+        // A unit that panics is a failing case, not a dead harness: the
+        // panic is caught, named in the case's error, and every other
+        // case still gets its row.
+        let call = std::panic::catch_unwind(|| call_function(&t.inputs));
         let actual_api_calls = pal::take_api_trace();
-        judge(i, t, output, actual_api_calls)
+        let (output, call_error) = match call {
+            Ok(Ok(value)) => (value, None),
+            Ok(Err(reason)) => (Value::Null, Some(reason)),
+            Err(panic) => {
+                let reason = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "panicked without a message".to_string());
+                (Value::Null, Some(format!("the unit panicked: {reason}")))
+            }
+        };
+        judge(i, t, output, call_error, actual_api_calls)
     }).collect();
 
     println!("{}", serde_json::to_string(&results).unwrap());
 }
 
-fn judge(i: usize, t: &TestCaseInput, output: Value, actual_api_calls: Vec<String>) -> TestResult {
+fn judge(
+    i: usize,
+    t: &TestCaseInput,
+    output: Value,
+    call_error: Option<String>,
+    actual_api_calls: Vec<String>,
+) -> TestResult {
     let trace_assessed = !t.expected_api_calls.is_empty();
     let trace_divergence_index = if trace_assessed {
         // Greedy containment walk: each expected name must be found in the
@@ -985,7 +1099,14 @@ fn judge(i: usize, t: &TestCaseInput, output: Value, actual_api_calls: Vec<Strin
     } else {
         None
     };
-    let value_error = if t.expected_return == output {
+    // The values dimension is assessed exactly when the case carried an
+    // expected return AND the runner called the unit to compare against
+    // it. An uncallable input or a null expectation leaves it unassessed —
+    // never a vacuous pass, never a fabricated failure.
+    let value_assessed = call_error.is_none() && t.expected_return != Value::Null;
+    let value_error = if !value_assessed {
+        None
+    } else if output == t.expected_return {
         None
     } else {
         Some(format!("expected {}, got {}", t.expected_return, output))
@@ -996,12 +1117,12 @@ fn judge(i: usize, t: &TestCaseInput, output: Value, actual_api_calls: Vec<Strin
         t.expected_api_calls.join(", "),
         actual_api_calls.join(", "),
     ));
-    let error = match (value_error, trace_error) {
-        (None, None) => None,
-        (Some(value), None) => Some(value),
-        (None, Some(trace)) => Some(trace),
-        (Some(value), Some(trace)) => Some(format!("{} — {}", value, trace)),
-    };
+    let error = [call_error, value_error, trace_error]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<String>>()
+        .join(" — ");
+    let error = (!error.is_empty()).then_some(error);
     TestResult {
         test_index: i,
         expected: t.expected_return.clone(),
@@ -1012,98 +1133,272 @@ fn judge(i: usize, t: &TestCaseInput, output: Value, actual_api_calls: Vec<Strin
         actual_api_calls,
         trace_divergence_index,
         trace_assessed,
+        value_assessed,
     }
 }
 
-fn call_function(inputs: &Value) -> Value {
+fn to_json<T: serde::Serialize>(value: T) -> Result<Value, String> {
+    serde_json::to_value(value)
+        .map_err(|e| format!("the unit returned a value JSON cannot carry: {e}"))
+}
+
+/// Coercion from one JSON input to the unit's parameter type at a
+/// position. The unit's own signature picks which impl applies; inputs
+/// outside it fail the case by name and position.
+trait JsonArg: Sized {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String>;
+}
+
+fn json_arg<T: JsonArg>(value: &Value, position: usize) -> Result<T, String> {
+    T::json_arg(value, position)
+}
+
+macro_rules! numeric_arg {
+    ($($t:ty),*) => {
+        $(
+            impl JsonArg for $t {
+                fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+                    if let Some(n) = value.as_i64() {
+                        return <$t>::try_from(n)
+                            .map_err(|_| format!("input {position} ({n}) is outside {}'s range", stringify!($t)));
+                    }
+                    if let Some(n) = value.as_u64() {
+                        return <$t>::try_from(n)
+                            .map_err(|_| format!("input {position} ({n}) is outside {}'s range", stringify!($t)));
+                    }
+                    // A float spelling of an integer argument must be whole
+                    // and inside the declared range — never a silent truncation.
+                    if let Some(f) = value.as_f64() {
+                        let fits = f.fract() == 0.0
+                            && f >= <$t>::MIN as f64
+                            && f <= <$t>::MAX as f64;
+                        return if fits {
+                            Ok(f as $t)
+                        } else {
+                            Err(format!(
+                                "input {position} ({f}) is not a whole {}",
+                                stringify!($t)
+                            ))
+                        };
+                    }
+                    Err(format!("input {position} is not a number: {value}"))
+                }
+            }
+        )*
+    };
+}
+
+numeric_arg!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+
+impl JsonArg for f32 {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        value
+            .as_f64()
+            .and_then(|f| {
+                let narrowed = f as f32;
+                (f64::from(narrowed) == f).then_some(narrowed)
+            })
+            .ok_or_else(|| format!("input {position} is not an f32-representable number: {value}"))
+    }
+}
+
+impl JsonArg for f64 {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        value
+            .as_f64()
+            .ok_or_else(|| format!("input {position} is not a number: {value}"))
+    }
+}
+
+impl JsonArg for bool {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        value
+            .as_bool()
+            .ok_or_else(|| format!("input {position} is not a boolean: {value}"))
+    }
+}
+
+impl JsonArg for String {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("input {position} is not a string: {value}"))
+    }
+}
+
+impl JsonArg for char {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        value
+            .as_u64()
+            .and_then(|code| u32::try_from(code).ok())
+            .and_then(char::from_u32)
+            .ok_or_else(|| format!("input {position} is not a char code: {value}"))
+    }
+}
+
+impl<T> JsonArg for *mut T {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        pointer_address(value, position).map(|addr| addr as *mut T)
+    }
+}
+
+impl<T> JsonArg for *const T {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        pointer_address(value, position).map(|addr| addr as *const T)
+    }
+}
+
+fn pointer_address(value: &Value, position: usize) -> Result<usize, String> {
+    match value {
+        Value::Null => Ok(0),
+        _ => value
+            .as_u64()
+            .or_else(|| value.as_i64().and_then(|i| u64::try_from(i).ok()))
+            .map(|addr| addr as usize)
+            .ok_or_else(|| format!("input {position} is not a pointer address: {value}")),
+    }
+}
+
+impl<T: JsonArg> JsonArg for Option<T> {
+    fn json_arg(value: &Value, position: usize) -> Result<Self, String> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(T::json_arg(value, position)?))
+    }
+}
+
+fn call_function(inputs: &Value) -> Result<Value, String> {
 "#,
         );
 
-        // Generate input pattern match arms (these close the match with
-        // their own unmatched-pattern fallback, so only the fn closes here).
-        code.push_str(&self.generate_input_patterns(baseline_tests));
+        // Generate the dispatch arms (these close the match with their own
+        // unmatched-input fallback, so only the fn closes here). When the
+        // unit is declared unsafe, its calls need an explicit unsafe block.
+        let unsafe_unit = self.unit_is_unsafe(function, rust_code);
+        code.push_str(&self.generate_input_patterns(function, baseline_tests, unsafe_unit));
 
         code.push_str("}\n");
 
         code
     }
 
-    /// Generate input pattern match arms for all test cases.
-    fn generate_input_patterns(&self, baseline_tests: &[TestCase]) -> String {
+    /// Generate the unit's dispatch arms, one per distinct input shape the
+    /// suite feeds: null calls with no arguments, an array of length `n`
+    /// calls with `n` coerced arguments, and a bare number, bool, or string
+    /// calls with that single argument. Anything else fails the case with
+    /// a message naming the unit and the input.
+    fn generate_input_patterns(
+        &self,
+        function: &str,
+        baseline_tests: &[TestCase],
+        unsafe_unit: bool,
+    ) -> String {
+        let unit = sanitize_identifier(function);
+        // Rust 2024: calling an unsafe fn requires an unsafe block at the
+        // call site; a plain block around a safe call would warn.
+        let call = |args: String| {
+            if unsafe_unit {
+                format!("unsafe {{ {unit}({args}) }}")
+            } else {
+                format!("{unit}({args})")
+            }
+        };
+
+        // The suite repeats shapes heavily — collect each shape once.
+        let mut shapes = std::collections::BTreeSet::new();
+        for test in baseline_tests {
+            let shape = match &test.inputs {
+                serde_json::Value::Null => InputShape::NoArgs,
+                serde_json::Value::Bool(_) => InputShape::OneBool,
+                serde_json::Value::Number(_) => InputShape::OneNumber,
+                serde_json::Value::String(_) => InputShape::OneString,
+                serde_json::Value::Array(arr) => InputShape::Args(arr.len()),
+                // A named object is not a callable shape; the unmatched
+                // fallback below fails those cases honestly.
+                serde_json::Value::Object(_) => continue,
+            };
+            shapes.insert(shape);
+        }
+
         let mut code = String::new();
         code.push_str("    match inputs {\n");
-
-        for test in baseline_tests {
-            let inputs = &test.inputs;
-
-            // Try to extract typed literals from the JSON
-            // Patterns are qualified with `Value::`: the runner imports
-            // `serde_json::Value` but not `Value::*`, so a bare `Null` arm
-            // would compile as a *binding* matching everything (or, with a
-            // `(n)` subpattern, not compile at all — E0170).
-            match inputs {
-                serde_json::Value::Null => {
-                    code.push_str("        Value::Null => call_no_params(),\n");
-                }
-                serde_json::Value::Number(n) => {
-                    if let Some(v) = n.as_i64() {
-                        code.push_str(&format!(
-                            "        Value::Number(n) if n.as_i64() == Some({}) => call_single_int({}),\n",
-                            v, v
-                        ));
-                    } else if let Some(v) = n.as_u64() {
-                        code.push_str(&format!("        Value::Number(n) if n.as_u64() == Some({}) => call_single_uint({}),\n", v, v));
-                    } else if let Some(v) = n.as_f64() {
-                        code.push_str(&format!("        Value::Number(n) if n.as_f64() == Some({}) => call_single_float({}),\n", v, v));
-                    } else {
-                        code.push_str("        Value::Number(_) => call_single_int(0),\n");
-                    }
-                }
-                serde_json::Value::Array(arr) if arr.len() == 2 => {
-                    code.push_str("        Value::Array(arr) if arr.len() == 2 && arr.iter().all(|v| v.is_number()) => {\n");
-                    code.push_str("            if let (Some(a), Some(b)) = (arr[0].as_i64(), arr[1].as_i64()) {\n");
-                    code.push_str("                call_two_ints(a as i32, b as i32)\n");
-                    code.push_str("            } else {\n");
-                    code.push_str("                Value::String(\"type mismatch for 2-int pattern\".into())\n");
-                    code.push_str("            }\n        }\n");
-                }
-                serde_json::Value::Array(arr) if arr.len() == 3 => {
-                    code.push_str("        Value::Array(arr) if arr.len() == 3 && arr.iter().all(|v| v.is_number()) => {\n");
-                    code.push_str("            if let (Some(a), Some(b), Some(c)) = (arr[0].as_i64(), arr[1].as_i64(), arr[2].as_u64()) {\n");
-                    code.push_str(
-                        "                call_three_ints(a as i32, b as i32, c as u32)\n",
-                    );
-                    code.push_str("            } else {\n");
-                    code.push_str("                Value::String(\"type mismatch for 3-int pattern\".into())\n");
-                    code.push_str("            }\n        }\n");
-                }
-                serde_json::Value::Array(arr) => {
+        for shape in shapes {
+            match shape {
+                InputShape::NoArgs => code.push_str(&format!(
+                    "        Value::Null => to_json({}),\n",
+                    call(String::new())
+                )),
+                InputShape::OneBool => code.push_str(&format!(
+                    "        Value::Bool(_) => to_json({}),\n",
+                    call("json_arg(inputs, 0)?".to_string())
+                )),
+                InputShape::OneNumber => code.push_str(&format!(
+                    "        Value::Number(_) => to_json({}),\n",
+                    call("json_arg(inputs, 0)?".to_string())
+                )),
+                InputShape::OneString => code.push_str(&format!(
+                    "        Value::String(_) => to_json({}),\n",
+                    call("json_arg(inputs, 0)?".to_string())
+                )),
+                InputShape::Args(len) => {
+                    let args = (0..len)
+                        .map(|i| format!("json_arg(&arr[{i}], {i})?"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     code.push_str(&format!(
-                        "        Value::Array(arr) if arr.len() == {} => {{",
-                        arr.len()
+                        "        Value::Array(arr) if arr.len() == {len} => to_json({}),\n",
+                        call(args)
                     ));
-                    code.push_str(" Value::String(format!(\"array of length {} not supported\", arr.len()))\n        }}\n");
-                }
-                serde_json::Value::Object(_) => {
-                    code.push_str("        Value::Object(_) => {\n");
-                    code.push_str("            Value::String(\"named parameters not supported in MVP\".into())\n");
-                    code.push_str("        }\n");
-                }
-                _ => {
-                    code.push_str(
-                        "        _ => Value::String(\"unrecognized input pattern\".into()),\n",
-                    );
                 }
             }
         }
 
-        // Fallback for unmatched patterns
-        code.push_str(
-            "        _ => Value::String(\"could not match input to function signature\".into()),\n",
-        );
+        // Anything the suite feeds that the runner cannot speak — a named
+        // object, or an arity the unit's own definition never had — fails
+        // the case honestly. It never calls a stand-in function, and it
+        // never returns a sentinel that could vacuously match an
+        // expectation.
+        code.push_str(&format!(
+            "        other => Err(format!(\"{{other}} gives {unit} no callable arguments\")),\n"
+        ));
         code.push_str("    }\n");
 
         code
+    }
+
+    /// True when the named unit is declared `unsafe fn`: the 2024 edition
+    /// demands an explicit unsafe block at its call sites, so the generated
+    /// dispatch arms wrap the call only when the unit's own definition is
+    /// unsafe. A safe unit keeps plain calls; wrapping those would warn.
+    fn unit_is_unsafe(&self, function: &str, rust_code: &str) -> bool {
+        let name = sanitize_identifier(function);
+        for line in rust_code.lines() {
+            let line = line.trim();
+            // `pub unsafe fn <name>` or `unsafe fn <name>`, with a possible
+            // generic suffix on the name — but not a call of it.
+            let Some(rest) = line
+                .strip_prefix("pub unsafe fn ")
+                .or_else(|| line.strip_prefix("unsafe fn "))
+            else {
+                continue;
+            };
+            let Some(after_name) = rest.strip_prefix(&name) else {
+                continue;
+            };
+            // The name must end at a boundary: `(` opens the parameters,
+            // `<` the generics, whitespace or end separates a longer name
+            // (`TickTick`) from the unit we are naming (`Tick`).
+            if after_name
+                .chars()
+                .next()
+                .is_some_and(|next| next == '(' || next == '<' || next.is_whitespace())
+            {
+                return true;
+            }
+        }
+        false
     }
 
     // ---- Shim layer verification ----
@@ -1318,6 +1613,45 @@ fn call_function(inputs: &Value) -> Value {
     }
 }
 
+/// The verifier's own break, chained with the failure of its honesty
+/// filing: the harness error is the finding, and the failed filing rides
+/// beside it — both losses stay loud, never one swallowed by the other.
+fn harness_fault(harness: anyhow::Error, honesty: anyhow::Error) -> anyhow::Error {
+    harness.context(format!(
+        "and its harness-error honesty filing failed too: {honesty:#}"
+    ))
+}
+
+/// A gate whose test leg never ran: nothing passed, nothing failed, and
+/// no dimension assessed anything. The counters count tests that RAN, so
+/// an unrun suite counts as zero, not as suite size — downstream "did any
+/// baseline case run" questions read this directly.
+fn unrun_suite_result(compilation_errors: Vec<String>) -> VerificationResult {
+    VerificationResult {
+        compiled: false,
+        compilation_errors,
+        tests_passed: 0,
+        tests_total: 0,
+        failed_tests: Vec::new(),
+        trace_assessed_tests: 0,
+        value_assessed_tests: 0,
+        values_matched_tests: 0,
+    }
+}
+
+/// One distinct input spelling the suite feeds the generated runner,
+/// collected so each dispatch arm is generated once. Declaration order
+/// is generation order: null, then bare scalars, then arrays by length.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum InputShape {
+    NoArgs,
+    OneBool,
+    OneNumber,
+    OneString,
+    /// A JSON array to destructure into `n` positional arguments.
+    Args(usize),
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -1448,11 +1782,51 @@ error[E0308]: mismatched types
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
         }];
-        let (passed, total, failed, trace_assessed) = parse_test_results("", &baseline);
-        assert_eq!(passed, 0);
-        assert_eq!(total, 1);
-        assert!(failed.is_empty());
-        assert_eq!(trace_assessed, 0);
+        let report = parse_test_results("", &baseline);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.total, 1);
+        assert!(report.failed.is_empty());
+        assert_eq!(report.trace_assessed, 0);
+        assert!(
+            !report.produced_results,
+            "a runner that printed no rows produced no verdicts to fold"
+        );
+    }
+
+    /// Issue #416's row shape: the runner itself names what each dimension
+    /// assessed, so uncallable inputs and expected-null cases stay honest.
+    #[test]
+    fn the_new_runner_rows_name_the_values_dimension_directly() {
+        let json = r#"[{"test_index":0,"expected":null,"actual":42,"passed":true,"error":null,"trace_assessed":false,"value_assessed":false},{"test_index":1,"expected":null,"actual":null,"passed":false,"error":"{\"param_0\":1} gives MyFunc no callable arguments","trace_assessed":false,"value_assessed":false},{"test_index":2,"expected":7,"actual":7,"passed":true,"error":null,"trace_assessed":false,"value_assessed":true}]"#;
+        let make_case = |inputs: serde_json::Value, expected: serde_json::Value| TestCase {
+            inputs,
+            expected_return: expected,
+            expected_side_effects: vec![],
+            expected_api_calls: vec![],
+            origin: calxgloss_types::CaseOrigin::Generated,
+        };
+        let baseline = vec![
+            make_case(serde_json::json!([42]), serde_json::json!(null)),
+            make_case(serde_json::json!({"param_0": 1}), serde_json::json!(null)),
+            make_case(serde_json::json!(null), serde_json::json!(7)),
+        ];
+
+        let report = parse_test_results(json, &baseline);
+        assert_eq!(
+            report.passed, 2,
+            "the row that compared no value and the row whose value matched both pass"
+        );
+        assert_eq!(
+            report.failed.len(),
+            1,
+            "the uncallable input fails its case"
+        );
+        assert_eq!(
+            report.value_assessed, 1,
+            "only the third row compared a value"
+        );
+        assert_eq!(report.values_matched, 1);
+        assert!(report.produced_results);
     }
 
     #[test]
@@ -1464,12 +1838,12 @@ error[E0308]: mismatched types
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
         }];
-        let (passed, total, failed, trace_assessed) =
-            parse_test_results("SKIPPED: no baseline file", &baseline);
-        assert_eq!(passed, 0);
-        assert_eq!(total, 1);
-        assert!(failed.is_empty());
-        assert_eq!(trace_assessed, 0, "a skipped run assesses nothing");
+        let report = parse_test_results("SKIPPED: no baseline file", &baseline);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.total, 1);
+        assert!(report.failed.is_empty());
+        assert_eq!(report.trace_assessed, 0, "a skipped run assesses nothing");
+        assert!(!report.produced_results);
     }
 
     #[test]
@@ -1493,15 +1867,21 @@ error[E0308]: mismatched types
             },
         ];
 
-        let (passed, total, failed, trace_assessed) = parse_test_results(json, &baseline);
-        assert_eq!(passed, 1);
-        assert_eq!(total, 2);
-        assert_eq!(failed.len(), 1);
-        assert_eq!(failed[0].test_index, 1);
-        assert_eq!(failed[0].error, "expected 100, got 99");
+        let report = parse_test_results(json, &baseline);
+        assert_eq!(report.passed, 1);
+        assert_eq!(report.total, 2);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].test_index, 1);
+        assert_eq!(report.failed[0].error, "expected 100, got 99");
         assert_eq!(
-            trace_assessed, 0,
+            report.trace_assessed, 0,
             "results without the trace dimension read as unassessed"
+        );
+        assert!(report.produced_results);
+        assert_eq!(
+            (report.value_assessed, report.values_matched),
+            (2, 1),
+            "rows that predate the value_assessed flag compared a value unconditionally"
         );
     }
 
@@ -1531,11 +1911,11 @@ error[E0308]: mismatched types
             origin: calxgloss_types::CaseOrigin::Generated,
         }];
 
-        let (passed, _total, failed, _trace_assessed) = parse_test_results(json, &baseline);
-        assert_eq!(passed, 0);
-        assert_eq!(failed.len(), 1);
+        let report = parse_test_results(json, &baseline);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.failed.len(), 1);
         assert_eq!(
-            failed[0].expected_side_effects, baseline[0].expected_side_effects,
+            report.failed[0].expected_side_effects, baseline[0].expected_side_effects,
             "the failure carries the typed expectations through"
         );
     }
@@ -1555,25 +1935,28 @@ error[E0308]: mismatched types
             origin: calxgloss_types::CaseOrigin::Generated,
         }];
 
-        let (passed, _total, failed, trace_assessed) = parse_test_results(json, &baseline);
-        assert_eq!(passed, 0, "a matching value on a diverging path fails");
-        assert_eq!(trace_assessed, 1, "the dimension was assessed");
-        assert_eq!(failed.len(), 1);
+        let report = parse_test_results(json, &baseline);
         assert_eq!(
-            failed[0].error,
+            report.passed, 0,
+            "a matching value on a diverging path fails"
+        );
+        assert_eq!(report.trace_assessed, 1, "the dimension was assessed");
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(
+            report.failed[0].error,
             "API-call trace divergence at position 1: expected [blit, present], got [present, blit]",
             "the failure names the trace divergence at the position"
         );
         assert_eq!(
-            failed[0].actual_api_calls,
+            report.failed[0].actual_api_calls,
             ["present".to_string(), "blit".to_string()],
             "the actual trace travels beside the expected one"
         );
         assert_eq!(
-            failed[0].expected_api_calls,
+            report.failed[0].expected_api_calls,
             ["blit".to_string(), "present".to_string()]
         );
-        assert_eq!(failed[0].trace_divergence_index, Some(1));
+        assert_eq!(report.failed[0].trace_divergence_index, Some(1));
     }
 
     #[test]
@@ -1608,9 +1991,42 @@ error[E0308]: mismatched types
             },
         ];
 
-        let harness = verifier.generate_test_harness("MyFunc", &tests);
+        let harness =
+            verifier.generate_test_harness("MyFunc", &tests, "pub fn MyFunc(x: u32) -> u32 { x }");
         assert!(harness.contains("fn main()"));
         assert!(harness.contains("fn call_function"));
+        assert!(
+            harness.contains("Value::Array(arr) if arr.len() == 2 => to_json(MyFunc(json_arg(&arr[0], 0)?, json_arg(&arr[1], 1)?)),"),
+            "the runner calls the unit by name; a repeated shape gets one arm, not two: {harness}"
+        );
+        assert!(
+            harness.contains("std::panic::catch_unwind"),
+            "a panicking unit fails its case, never the whole run"
+        );
+        assert!(
+            harness.contains("value_assessed"),
+            "every row states whether a value was ever compared"
+        );
+        assert!(
+            !harness.contains("named parameters not supported"),
+            "the refusal-to-call sentinel is gone"
+        );
+
+        // A suite feeding a named object — the shape the harness used to
+        // refuse — keeps one honest fallback arm that fails the case.
+        let object_case = vec![TestCase {
+            inputs: serde_json::json!({"param_0": 1}),
+            expected_return: serde_json::json!(null),
+            expected_side_effects: vec![],
+            expected_api_calls: vec![],
+            origin: calxgloss_types::CaseOrigin::Generated,
+        }];
+        let harness =
+            verifier.generate_test_harness("MyFunc", &object_case, "pub fn MyFunc() -> u32 { 0 }");
+        assert!(
+            harness.contains("gives MyFunc no callable arguments"),
+            "an uncallable input fails its case by name, not by sentinel value"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1631,8 +2047,11 @@ error[E0308]: mismatched types
             origin: calxgloss_types::CaseOrigin::Generated,
         }];
 
-        let patterns = verifier.generate_input_patterns(&tests);
-        assert!(patterns.contains("Array(arr) if arr.len() == 3"));
+        let patterns = verifier.generate_input_patterns("Sum3", &tests, false);
+        assert!(
+            patterns.contains("Value::Array(arr) if arr.len() == 3 => to_json(Sum3(json_arg(&arr[0], 0)?, json_arg(&arr[1], 1)?, json_arg(&arr[2], 2)?)),"),
+            "a 3-slot case dispatches to the unit by name with three coerced arguments: {patterns}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1653,8 +2072,33 @@ error[E0308]: mismatched types
             origin: calxgloss_types::CaseOrigin::Generated,
         }];
 
-        let patterns = verifier.generate_input_patterns(&tests);
-        assert!(patterns.contains("Null => call_no_params()"));
+        let patterns = verifier.generate_input_patterns("Tick", &tests, false);
+        assert!(
+            patterns.contains("Value::Null => to_json(Tick()),"),
+            "a null-input case calls the unit named by the verify request: {patterns}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unsafe_marker_counts_only_at_the_named_units_own_definition() {
+        let dir = std::env::temp_dir().join("calxgloss_verify_unsafe_flag");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+        let verifier = Verifier::new(&dir).unwrap();
+
+        // The unit's own unsafe definition is what needs the unsafe call block.
+        assert!(verifier.unit_is_unsafe("Tick", "pub unsafe fn Tick() -> u32 { 0 }"));
+        assert!(verifier.unit_is_unsafe("Tick", "unsafe fn Tick<T>(x: T) {{ }}"));
+        // A different unit whose name merely starts with this one's is not
+        // this unit's definition: an old repeated strip read `TickTick(` as
+        // unit `Tick` and wrapped that unit's safe calls in unsafe blocks.
+        assert!(!verifier.unit_is_unsafe("Tick", "unsafe fn TickTick() -> u32 { 0 }"));
+        // A plain call of an unsafe name is not a definition line either,
+        // and a safe definition keeps plain calls.
+        assert!(!verifier.unit_is_unsafe("Tick", "let r = unsafe { Tick() };"));
+        assert!(!verifier.unit_is_unsafe("Tick", "pub fn Tick() -> u32 { 0 }"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1675,8 +2119,11 @@ error[E0308]: mismatched types
             origin: calxgloss_types::CaseOrigin::Generated,
         }];
 
-        let patterns = verifier.generate_input_patterns(&tests);
-        assert!(patterns.contains("Number(n) if n.as_i64() == Some(42)"));
+        let patterns = verifier.generate_input_patterns("Half", &tests, false);
+        assert!(
+            patterns.contains("Value::Number(_) => to_json(Half(json_arg(inputs, 0)?)),"),
+            "a bare-number input calls the unit with one coerced argument: {patterns}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1826,5 +2273,97 @@ error[E0308]: mismatched types
         let line = "this is not a test output";
         let parsed = parse_test_line(line);
         assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn a_runner_death_signal_is_recognized_from_cargos_wording() {
+        // cargo's real wording for a runner killed by the unit crashing.
+        assert!(parse::runner_death_signal(
+            "error: failed to run bin `scratch_verify` (target/debug/scratch_verify)\
+             \nCaused by:\n  process didn't exit successfully: `...` (signal: 11, SIGSEGV: invalid memory reference)"
+        ));
+        assert!(parse::runner_death_signal(
+            "error: test failed, to rerun pass `--test integration`\n\
+             (signal: 6, SIGABRT: process abort signal)"
+        ));
+        // Ordinary failures and near-misses never read as a death signal.
+        assert!(!parse::runner_death_signal(
+            "test result: FAILED. 3 passed; 1 failed"
+        ));
+        assert!(!parse::runner_death_signal(
+            "error: could not compile `scratch` (bin \"runner\") due to 1 previous error"
+        ));
+    }
+
+    #[test]
+    fn a_partial_suite_stops_when_the_runner_died_short_of_its_cases() {
+        let cases = vec![
+            TestCase {
+                inputs: serde_json::json!([null]),
+                expected_return: serde_json::json!(null),
+                expected_side_effects: vec![],
+                expected_api_calls: vec![],
+                origin: calxgloss_types::CaseOrigin::Generated,
+            },
+            TestCase {
+                inputs: serde_json::json!([null]),
+                expected_return: serde_json::json!(null),
+                expected_side_effects: vec![],
+                expected_api_calls: vec![],
+                origin: calxgloss_types::CaseOrigin::Generated,
+            },
+        ];
+        // One row printed of two cases, and cargo's fatal-signal line: the
+        // unit crashed the runner on the second case.
+        let output = "[{\"test_index\":0,\"expected\":null,\"actual\":7,\"passed\":true,\
+                      \"error\":null,\"expected_api_calls\":[],\"actual_api_calls\":[],\
+                      \"trace_divergence_index\":null,\"value_assessed\":false}]\n\
+                      error: process didn't exit successfully: `...` (signal: 11, SIGSEGV: invalid memory reference)";
+        let report = parse::parse_test_results(output, &cases);
+        assert!(report.produced_results, "the printed row is a real result");
+        assert!(report.incomplete, "the suite did not finish");
+        assert_eq!(report.total, 1, "only one row is claimed");
+    }
+
+    #[test]
+    fn a_fatal_signal_run_before_any_row_reads_as_the_units_crash_not_a_harness_fault() {
+        // The shape verify()'s no-rows + fatal-signal arm reads: a test
+        // project that built, ran, and died on a fatal signal before
+        // printing any row. It is the unit's failing test — never a harness
+        // fault and never a pass — and with no rows printed, no evidence
+        // says which case the runner broke on, so the failure record names
+        // no inputs and claims no return.
+        let cases = vec![TestCase {
+            inputs: serde_json::json!([null, 1]),
+            expected_return: serde_json::json!(null),
+            expected_side_effects: vec![],
+            expected_api_calls: vec![],
+            origin: calxgloss_types::CaseOrigin::Generated,
+        }];
+        let output = "error: process didn't exit successfully: `target/debug/runner` \
+                      (signal: 11, SIGSEGV: invalid memory reference)";
+        let report = parse::parse_test_results(output, &cases);
+        assert!(
+            parse::runner_death_signal(output),
+            "cargo's death line reads as a fatal signal"
+        );
+        assert!(!report.produced_results, "the runner printed no rows");
+        // The record the arm files: the crash names itself; the crashed
+        // case stays unnamed because nothing was printed to attribute it.
+        let failure = parse::runner_died_before_first_row();
+        assert!(failure.error.contains("crashed the runner"));
+        assert!(
+            failure.error.contains("crashed case is unknown"),
+            "the record admits it cannot name the crashed case: {:?}",
+            failure.error
+        );
+        assert!(
+            failure.inputs.is_null(),
+            "no case is claimed as the crashed one: {failure:?}"
+        );
+        assert_eq!(
+            failure.actual,
+            serde_json::Value::String("runner died on a fatal signal".to_string())
+        );
     }
 }

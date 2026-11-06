@@ -107,6 +107,23 @@ pub struct VerificationResult {
     /// results saved before the dimension existed readable as unassessed.
     #[serde(default)]
     pub trace_assessed_tests: usize,
+
+    /// How many baseline cases the runner could *call and compare a
+    /// return value against* — a case with no expected return, or one
+    /// the runner could not call at all, leaves the values dimension
+    /// unassessed for it. Like the trace count, this makes an honest
+    /// verdict distinguishable from a vacuous one: `passed` on a suite
+    /// of unassessed values states that it compared none, instead of
+    /// posing as a values match (ADR-0057). `#[serde(default)]` keeps
+    /// results saved before the count existed readable.
+    #[serde(default)]
+    pub value_assessed_tests: usize,
+
+    /// Value-assessed cases whose returned value matched the expected
+    /// one — the values dimension's pass count, never inferred from the
+    /// overall test verdict (ADR-0057).
+    #[serde(default)]
+    pub values_matched_tests: usize,
 }
 
 /// The outcome a verification run reached, as a receipt names it.

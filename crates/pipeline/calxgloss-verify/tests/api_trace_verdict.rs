@@ -21,7 +21,7 @@ use serde_json::json;
 /// the verify PAL surface in one known order — `create_texture`,
 /// `create_render_target`, `blit`, `present`.
 const PAL_BODY: &str = r#"
-pub fn call_no_params() -> serde_json::Value {
+pub fn restitched_trace() -> serde_json::Value {
     let mut device = GraphicsDeviceStub::default();
     let texture = device.create_texture(2, 2);
     let mut target = device.create_render_target(2, 2);
@@ -300,7 +300,7 @@ async fn a_storage_shaped_exact_route_still_passes_and_is_assessed() {
     // A body that reaches 7 through open/read/close on the file surface,
     // demanded through exactly that route.
     const STORAGE_BODY: &str = r#"
-pub fn call_no_params() -> serde_json::Value {
+pub fn restitched_trace() -> serde_json::Value {
     let fs = FileSystemStub::default();
     let handle = fs
         .open("pin_storage.bin", FileMode::Read)
@@ -340,7 +340,7 @@ async fn a_thread_shaped_exact_route_still_passes_and_is_assessed() {
     // surface, demanded through exactly that route. The spawned closure
     // touches no surface entry, keeping the recorded route deterministic.
     const THREAD_BODY: &str = r#"
-pub fn call_no_params() -> serde_json::Value {
+pub fn restitched_trace() -> serde_json::Value {
     ThreadStub::sleep(0);
     let worker = ThreadStub::spawn(|| serde_json::Value::from(1))
         .expect("the stub spawn always works");

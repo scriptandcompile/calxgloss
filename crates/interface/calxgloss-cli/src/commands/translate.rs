@@ -299,6 +299,12 @@ pub async fn handle_translate(
                         tests_total: attempt.tests_total,
                         failed_tests: Vec::new(),
                         trace_assessed_tests: 0,
+                        // The attempt record carries no per-dimension value
+                        // counts, so the failure summary leaves the value
+                        // dimensions at zero instead of claiming assessments
+                        // it never made.
+                        value_assessed_tests: 0,
+                        values_matched_tests: 0,
                     },
                 );
                 last_branch = Some(branch_info.clone());

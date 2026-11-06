@@ -935,11 +935,24 @@ fn tag_feeds_parameter(
 }
 
 /// Canonical dedup key: the inputs as a positional value vector in
-/// signature order, each parameter resolved through the key spellings its
-/// row may carry — the signature's name, the generation's `param_0`-style
-/// spelling, the harness's `param_1`-style spelling. Two rows carry one
-/// call's inputs; the key spells the values, not the key names.
+/// signature order. Generated rows carry that vector directly — `null`
+/// for a zero-parameter call, a JSON array otherwise — while mined
+/// rows still name each parameter (the signature's own name, the
+/// harness's `param_1`-style spelling, or the generation's older
+/// 0-based spelling). Two rows carry one call's inputs; the key spells
+/// the values, not the key names.
 fn positional_key(inputs: &Value, parsed: &ParsedSignature) -> String {
+    // The positional spellings key straight through: a null is the
+    // empty vector (one with a zero-parameter unit's object row), and
+    // a bare scalar is a one-argument call.
+    match inputs {
+        Value::Null => return String::from("[]"),
+        Value::Array(_) => return serde_json::to_string(inputs).unwrap_or_default(),
+        Value::Object(_) => {}
+        scalar => {
+            return serde_json::to_string(&vec![scalar]).unwrap_or_default();
+        }
+    }
     let mut vector: Vec<&Value> = Vec::new();
     if let Value::Object(object) = inputs {
         for (index, parameter) in parsed.parameters.iter().enumerate() {

@@ -348,9 +348,9 @@ async fn a_twin_deduplicates_upgrades_the_origin_and_is_never_replayed() {
     let dir = tempfile::tempdir().unwrap();
     let generator = TestGenerator::new(dir.path());
     // A generated suite row already filed for the same input vector,
-    // keyed the generation's 0-based way.
+    // keyed the generation's positional way (issue #416).
     let generated = TestCase {
-        inputs: json!({"param_0": 9}),
+        inputs: json!([9]),
         expected_return: Value::Null,
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),

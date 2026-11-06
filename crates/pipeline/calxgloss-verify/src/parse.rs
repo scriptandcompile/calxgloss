@@ -38,23 +38,61 @@ pub fn parse_cargo_output(output: &str) -> (bool, Vec<String>, Vec<String>) {
     (errors.is_empty(), errors, warnings)
 }
 
+/// What one run's runner rows say the gate learned, per dimension.
+#[derive(Debug, Clone, Default)]
+pub struct TestRunReport {
+    /// Cases the runner reported as passed.
+    pub passed: usize,
+
+    /// Rows the runner produced (or, with no rows, the suite size it
+    /// never got through).
+    pub total: usize,
+
+    /// Rows the runner reported as failed.
+    pub failed: Vec<FailedTest>,
+
+    /// Cases whose expected API-call trace was compared.
+    pub trace_assessed: usize,
+
+    /// Cases whose return value the runner could call and compare —
+    /// uncallable inputs and expected-null cases leave this count alone.
+    pub value_assessed: usize,
+
+    /// Value-assessed cases whose returned value matched the expectation.
+    pub values_matched: usize,
+
+    /// Whether the runner produced any per-case result rows at all.
+    /// A non-empty baseline with no rows means the test project (unit
+    /// plus runner) never built or the runner broke before printing —
+    /// counts alone must never read as a verdict over an unjudged suite.
+    pub produced_results: bool,
+
+    /// Whether the runner stopped before finishing the suite: the rows it
+    /// printed cover fewer cases than the suite holds and its last word is
+    /// a fatal signal, so the unit itself crashed on the next case.
+    pub incomplete: bool,
+}
+
 /// Parse test runner output for pass/fail results.
 ///
-/// Returns `(tests_passed, tests_total, failed_tests, trace_assessed_tests)`,
-/// where `trace_assessed_tests` counts the cases whose expected API-call
-/// trace was recorded and therefore compared — a trace-assessed pass is
-/// distinguishable from a trace-unassessed one, and a run that never
-/// assessed any trace counts zero.
+/// Counts each dimension honestly: `trace_assessed` counts the cases
+/// whose expected API-call trace was recorded and therefore compared,
+/// and `value_assessed` counts the cases the runner could actually call
+/// and hold against an expected return (the new runner rows name this;
+/// older row shapes that always compared a value read as assessed).
 pub fn parse_test_results(
     output: &str,
     baseline_tests: &[calxgloss_types::TestCase],
-) -> (usize, usize, Vec<FailedTest>, usize) {
+) -> TestRunReport {
     if output.contains("SKIPPED")
         || output.contains("no baseline file")
         || output.contains("baseline.json not found")
     {
         warn!("Behavioral tests were skipped");
-        return (0, baseline_tests.len(), Vec::new(), 0);
+        return TestRunReport {
+            total: baseline_tests.len(),
+            ..Default::default()
+        };
     }
 
     // Try to parse test results from JSON output
@@ -64,8 +102,11 @@ pub fn parse_test_results(
         && let Ok(results) = serde_json::from_str::<Vec<Value>>(json_line)
     {
         let mut failed = Vec::new();
-        let mut passed = 0;
-        let mut trace_assessed = 0;
+        let mut report = TestRunReport {
+            total: results.len(),
+            produced_results: !results.is_empty(),
+            ..Default::default()
+        };
 
         for (i, result) in results.iter().enumerate() {
             // The runner assessed the trace dimension for this case exactly
@@ -76,11 +117,29 @@ pub fn parse_test_results(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                trace_assessed += 1;
+                report.trace_assessed += 1;
+            }
+            // The runner assessed the values dimension for this case when
+            // it could call the unit AND the baseline case carried an
+            // expected return. A row that predates the flag compared a
+            // value unconditionally, so it reads as assessed.
+            let value_assessed = result
+                .get("value_assessed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if value_assessed {
+                report.value_assessed += 1;
+                let expected = baseline_tests
+                    .get(i)
+                    .map(|t| t.expected_return.clone())
+                    .unwrap_or_else(|| result.get("expected").cloned().unwrap_or_default());
+                if result.get("actual").cloned().unwrap_or_default() == expected {
+                    report.values_matched += 1;
+                }
             }
             if let Some(passed_val) = result.get("passed").and_then(|v| v.as_bool()) {
                 if passed_val {
-                    passed += 1;
+                    report.passed += 1;
                 } else if let Some(error_msg) = result.get("error").and_then(|v| v.as_str()) {
                     failed.push(FailedTest {
                         test_index: i,
@@ -130,19 +189,32 @@ pub fn parse_test_results(
             }
         }
 
-        return (passed, results.len(), failed, trace_assessed);
+        report.failed = failed;
+        // The runner stopped mid-suite when its last word is a fatal
+        // signal and the rows it printed cover fewer cases than the suite
+        // holds: the unit crashed on the next case, and that case's return
+        // was never observed.
+        report.incomplete = !results.is_empty()
+            && results.len() < baseline_tests.len()
+            && runner_death_signal(output);
+        return report;
     }
 
-    // Fallback: if we couldn't parse structured output, assume tests ran
-    // but produced no verifiable results
+    // No JSON rows at all. The caller (`Verifier::verify`) decides whose
+    // failure this is — a test project that never built, or a runner
+    // that broke without printing — and `produced_results: false` is
+    // what lets that routing stay honest instead of filing an unjudged
+    // run as a zero-test pass.
     let trimmed = output.trim();
     if trimmed.is_empty() {
-        return (0, baseline_tests.len(), Vec::new(), 0);
+        warn!("Test runner produced no output");
+    } else {
+        warn!("Could not parse test results from runner output");
     }
-
-    // If cargo run succeeded without errors but we couldn't parse results,
-    // the runner may have produced output we don't understand
-    (0, baseline_tests.len(), Vec::new(), 0)
+    TestRunReport {
+        total: baseline_tests.len(),
+        ..Default::default()
+    }
 }
 
 /// Parse `cargo test` output for shim test results.
@@ -271,6 +343,63 @@ pub struct ParsedTestLine {
     pub name: String,
     pub is_ok: bool,
     pub error: Option<String>,
+}
+
+/// True when a test runner's captured output reports that the runner
+/// process itself died on a fatal signal — a segfault or abort from the
+/// code under test, not a compile or test failure. A harness that calls a
+/// unit with a raw address (a null pointer the JSON `null` coerced to)
+/// sees this when the unit dereferences it; cargo words the death as
+/// `(signal: 11, SIGSEGV: invalid memory reference)` on its failure line.
+pub fn runner_death_signal(output: &str) -> bool {
+    output.lines().any(|line| {
+        let line = line.trim();
+        line.contains("(signal:")
+            && (line.contains("SIGILL")
+                || line.contains("SIGABRT")
+                || line.contains("SIGBUS")
+                || line.contains("SIGFPE")
+                || line.contains("SIGSEGV"))
+    })
+}
+
+/// Failure record for a suite the runner died part-way through: the crash
+/// names itself, and no return is claimed for it — nothing was assessed.
+pub fn crashed_suite_failure(test_index: usize, inputs: &serde_json::Value) -> FailedTest {
+    FailedTest {
+        test_index,
+        inputs: inputs.clone(),
+        expected: serde_json::Value::Null,
+        actual: serde_json::Value::String("runner died on a fatal signal".to_string()),
+        error: "the code under test crashed the runner (segfault or abort), so its return \
+             was never observed"
+            .to_string(),
+        expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
+        actual_api_calls: Vec::new(),
+        trace_divergence_index: None,
+    }
+}
+
+/// Failure record for a suite whose runner died on a fatal signal before
+/// printing any row: nothing printed means nothing attributes the death
+/// to a case, so the record names the crash, admits the crashed case is
+/// unknown, and claims no inputs and no return.
+pub fn runner_died_before_first_row() -> FailedTest {
+    FailedTest {
+        test_index: 0,
+        inputs: serde_json::Value::Null,
+        expected: serde_json::Value::Null,
+        actual: serde_json::Value::String("runner died on a fatal signal".to_string()),
+        error: "the code under test crashed the runner (segfault or abort) before it printed \
+             any result row; the crashed case is unknown, so no case is blamed and no \
+             return was observed"
+            .to_string(),
+        expected_side_effects: Vec::new(),
+        expected_api_calls: Vec::new(),
+        actual_api_calls: Vec::new(),
+        trace_divergence_index: None,
+    }
 }
 
 /// Parse a single test output line and extract the test name and result.
