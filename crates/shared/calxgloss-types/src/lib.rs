@@ -84,6 +84,7 @@ pub mod function;
 pub mod git;
 pub mod identity;
 pub mod live_translation;
+pub mod obligations;
 pub mod overrides;
 pub mod persist;
 pub mod pipeline_phase;
@@ -139,6 +140,10 @@ pub use git::{GitBranch, GitCommit};
 pub use identity::{BinaryIdentity, BranchName, UnitKey, parse_branch_name, work_kind_for_prefix};
 pub use live_translation::{
     LiveTranslationState, LiveUnitProgress, PassState, PassStatus, derive_unit_confidence,
+};
+pub use obligations::{
+    CaseKind, DECLARED_CASE_KINDS, DECLARED_DISPOSITIONS, ObligationDisposition, ObligationEntry,
+    ObligationLedger, obligation_ledger_dir, obligation_ledger_path, read_obligation_ledger,
 };
 pub use overrides::{
     FunctionOverride, OverrideControl, UnitOverrides, override_records_path, unit_override_key,
