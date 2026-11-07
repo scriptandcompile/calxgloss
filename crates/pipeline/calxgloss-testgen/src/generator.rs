@@ -623,7 +623,8 @@ mod tests {
         // ledger's entries declare.
         let sig = "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)";
         let disassembly = "cmp eax, 0\nje null_handler\ncmp ecx, 256\nja out_of_bounds";
-        let cases = crate::generate_test_inputs(sig, disassembly, &[]).unwrap();
+        let cases = crate::generate_test_inputs(sig, disassembly, &[])
+            .expect("the fixture signature and disassembly generate a suite");
         let suite: Vec<TestResult> = cases
             .into_iter()
             .map(|test_case| TestResult {
@@ -636,12 +637,14 @@ mod tests {
             })
             .collect();
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("temp workspace");
         let generator = TestGenerator::new(temp_dir.path());
         generator
             .save_baseline("test.dll", "DrawSprite", &suite)
-            .unwrap();
-        let loaded = generator.load_baseline("test.dll", "DrawSprite").unwrap();
+            .expect("the generated suite files");
+        let loaded = generator
+            .load_baseline("test.dll", "DrawSprite")
+            .expect("the filed document loads");
         assert_eq!(
             loaded, suite,
             "the filed baseline document round-trips every stamped kind"
@@ -701,10 +704,10 @@ mod tests {
         // before kinds existed reads back with every kind ABSENT —
         // never a defaulted kind — and re-filing it invents no kind
         // field, so a later required-kind check fails closed on it.
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("temp workspace");
         let generator = TestGenerator::new(temp_dir.path());
         let baseline_dir = temp_dir.path().join("re/baseline/test.dll/TestFunc");
-        std::fs::create_dir_all(&baseline_dir).unwrap();
+        std::fs::create_dir_all(&baseline_dir).expect("create the baseline directory");
         std::fs::write(
             baseline_dir.join("baseline.json"),
             r#"[
@@ -714,7 +717,7 @@ mod tests {
                "actual_return": 2, "actual_side_effects": [], "passed": true, "error": null}
             ]"#,
         )
-        .unwrap();
+        .expect("file the pre-kind document");
 
         let loaded = generator
             .load_baseline("test.dll", "TestFunc")
@@ -730,7 +733,8 @@ mod tests {
         generator
             .save_baseline("test.dll", "TestFunc", &loaded)
             .expect("re-filing the read document");
-        let filed = std::fs::read_to_string(baseline_dir.join("baseline.json")).unwrap();
+        let filed = std::fs::read_to_string(baseline_dir.join("baseline.json"))
+            .expect("read the re-filed bytes back");
         assert!(
             !filed.contains("case_kind"),
             "re-filing an unkinded document invents no kind field: {filed}"

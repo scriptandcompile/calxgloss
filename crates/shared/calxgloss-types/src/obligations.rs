@@ -1,4 +1,6 @@
-//! The obligation ledger — one done claim's record, shaped before its owners
+//! Whether a target binary's restitch work is finished is a claim, and the
+//! obligation ledger is the record that claim must answer to. The record
+//! shape grows here, ahead of the tickets that will file and read it
 //! (track P26, issue #417).
 //!
 //! "Queue empty" is not "binary done". This module grows the record that
@@ -16,6 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 
 use crate::display_serde_label;
@@ -120,6 +123,7 @@ pub const DECLARED_DISPOSITIONS: &[&str] = &[
 /// with the document's binary forms the unit key and attempt — the triple
 /// everything else in the harness joins on (issue #417).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ObligationEntryWire")]
 pub struct ObligationEntry {
     /// The unit's function name, joined with the ledger document's binary
     /// verbatim to spell the unit key.
@@ -131,17 +135,59 @@ pub struct ObligationEntry {
     /// green claim to the exact content it was made about.
     pub owner_commit: String,
     /// The case kinds this obligation requires. Until a later track
-    /// narrows by signature, that is the whole closed roster — [`CaseKind::ALL`].
+    /// narrows by signature, that is the whole closed roster — every
+    /// entry must demand all of [`CaseKind::ALL`]; the deserializer
+    /// refuses a subset (issue #417).
     pub required_case_kinds: Vec<CaseKind>,
     /// The verifier-receipt digest this entry cites, present wherever the
-    /// unit claims green. Absent means no citation, and the reader treats
-    /// a claim with no citation as an input error — never a pass.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// unit claims green. A green claim with no citation is an invalid
+    /// entry: the deserializer refuses it rather than letting it read as
+    /// a pass (issue #417).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub receipt_digest: Option<String>,
     /// Where the unit stands, from the closed disposition roster. The
     /// fact and its provenance; a disposition never counts as verified
     /// work it did not do.
     pub disposition: ObligationDisposition,
+}
+
+/// The shape an [`ObligationEntry`] deserializes through: the fields
+/// plain, plus the entry-level validity the filed record must carry —
+/// the full case-kind roster and a receipt citation wherever the entry
+/// claims verified (issue #417).
+#[derive(Deserialize)]
+struct ObligationEntryWire {
+    function: String,
+    attempt: u32,
+    owner_commit: String,
+    #[serde(deserialize_with = "deserialize_required_case_kinds")]
+    required_case_kinds: Vec<CaseKind>,
+    #[serde(default)]
+    receipt_digest: Option<String>,
+    disposition: ObligationDisposition,
+}
+
+impl TryFrom<ObligationEntryWire> for ObligationEntry {
+    type Error = String;
+
+    fn try_from(wire: ObligationEntryWire) -> Result<Self, Self::Error> {
+        if wire.disposition == ObligationDisposition::ClaimedVerified
+            && wire.receipt_digest.is_none()
+        {
+            return Err(format!(
+                "the obligation entry for `{}` attempt {} claims verified without citing a verifier receipt",
+                wire.function, wire.attempt
+            ));
+        }
+        Ok(Self {
+            function: wire.function,
+            attempt: wire.attempt,
+            owner_commit: wire.owner_commit,
+            required_case_kinds: wire.required_case_kinds,
+            receipt_digest: wire.receipt_digest,
+            disposition: wire.disposition,
+        })
+    }
 }
 
 impl ObligationEntry {
@@ -164,6 +210,36 @@ impl ObligationEntry {
             disposition,
         }
     }
+}
+
+/// The entry-level roster closure (issue #417): an obligation's
+/// `required_case_kinds` must name every declared case kind, in any
+/// order and without repeats. Today every unit requires all three; a
+/// later track that narrows requirements by signature extends this
+/// fold rather than letting a reader quietly accept a subset.
+fn deserialize_required_case_kinds<'de, D>(deserializer: D) -> Result<Vec<CaseKind>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let kinds = Vec::<CaseKind>::deserialize(deserializer)?;
+    let mut sorted = kinds.clone();
+    sorted.sort();
+    sorted.dedup();
+    if sorted != CaseKind::ALL.to_vec() {
+        let label = |kinds: &[CaseKind]| {
+            kinds
+                .iter()
+                .map(|kind| kind.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(serde::de::Error::custom(format!(
+            "an obligation must require every declared case kind ({}) — got a roster of ({})",
+            label(&CaseKind::ALL),
+            label(&kinds),
+        )));
+    }
+    Ok(kinds)
 }
 
 /// The pipeline's per-binary obligation ledger: one entry per unit of
@@ -272,18 +348,51 @@ pub fn obligation_ledger_path(workspace: impl AsRef<Path>, binary: &BinaryIdenti
     obligation_ledger_dir(workspace).join(format!("{binary}.json"))
 }
 
-/// Read one binary's obligation ledger. The two readings stay distinct the
+/// Read one binary's obligation ledger. The readings stay distinct the
 /// way the unknown ledger keeps its three: no document at all is a
 /// [`PersistError::NotFound`] — recomputable-missing, the state a later
-/// verdict names as *no ledger filed* — while corrupt bytes are a
-/// [`PersistError::Json`], an input error that fails loudly and is never
-/// read as clean. A filed document missing its envelope or digest fails
-/// here too, at the deserializer.
+/// verdict names as *no ledger filed* — while corrupt bytes, a tampered
+/// document, and a replaced one are all [`PersistError::Json`], input
+/// errors that fail loudly and are never read as clean. Concretely the
+/// reader checks the envelope names the binary it was asked for (a
+/// validly sealed ledger for another binary is a replaced document), and
+/// re-derives the closure digest from the filed bytes and refuses unless
+/// it matches the stamped one — so an edit that keeps the old seal is
+/// caught, and a re-sealed document has to reproduce every entry to pass
+/// at all. A filed document missing its envelope or digest fails here
+/// too, at the deserializer.
 pub fn read_obligation_ledger(
     workspace: impl AsRef<Path>,
     binary: &BinaryIdentity,
 ) -> Result<ObligationLedger, PersistError> {
-    load_json(&obligation_ledger_path(workspace, binary))
+    let path = obligation_ledger_path(workspace, binary);
+    let ledger: ObligationLedger = load_json(&path)?;
+    if ledger.binary != *binary {
+        return Err(PersistError::Json {
+            path,
+            source: serde_json::Error::custom(format!(
+                "obligation ledger names `{}` in its envelope, not the asked-for `{binary}` \u{2014} a replaced or misfiled document is an input error",
+                ledger.binary
+            )),
+        });
+    }
+    let re_derived = ledger.content_digest().map_err(|err| PersistError::Json {
+        path: path.clone(),
+        source: match err {
+            TypesError::Serialization(source) => source,
+            other => serde_json::Error::custom(other.to_string()),
+        },
+    })?;
+    if re_derived != ledger.digest {
+        return Err(PersistError::Json {
+            path,
+            source: serde_json::Error::custom(format!(
+                "obligation ledger digest mismatch: filed {}, re-derived {re_derived} from the filed bytes \u{2014} a tampered document is an input error, never a reading",
+                ledger.digest
+            )),
+        });
+    }
+    Ok(ledger)
 }
 
 #[cfg(test)]

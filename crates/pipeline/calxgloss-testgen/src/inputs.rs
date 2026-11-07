@@ -394,11 +394,29 @@ fn generate_signature_tests(
 
     // Values harvested from the body's comparison guards are error-path
     // probes even where the signature loop feeds them in: they stamp
-    // negative (issue #418).
-    let harvested: HashSet<String> = edge_cases
-        .get_boundary_values()
-        .into_iter()
-        .map(|v| v.to_string())
+    // negative (issue #418). The sets mirror, per parameter, the same
+    // conversion `param_boundary_values` applies to harvested values, so
+    // a probe that arrives type-adjusted still stamps by its intent.
+    let harvested: Vec<HashSet<String>> = params
+        .iter()
+        .map(|p| {
+            edge_cases
+                .get_boundary_values()
+                .into_iter()
+                .map(|v| {
+                    if is_integer_type(&p.r#type) {
+                        if p.is_signed {
+                            v
+                        } else {
+                            (v as u64).min(u32::MAX as u64) as i64
+                        }
+                    } else {
+                        v
+                    }
+                })
+                .map(|v| v.to_string())
+                .collect()
+        })
         .collect();
 
     if params.is_empty() {
@@ -447,7 +465,7 @@ fn generate_signature_tests(
                 // the body's guards named is an error-path probe even
                 // through this loop (issue #418).
                 case_kind: Some(match boundary_value.as_i64() {
-                    Some(v) if harvested.contains(&v.to_string()) => {
+                    Some(v) if harvested[i].contains(&v.to_string()) => {
                         calxgloss_types::CaseKind::Negative
                     }
                     _ => calxgloss_types::CaseKind::Positive,

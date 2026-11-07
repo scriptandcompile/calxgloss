@@ -35,6 +35,10 @@
 //! - [`overrides`] — Per-unit reviewer overrides (`FunctionOverride`,
 //!   `UnitOverrides`, `OverrideControl`) — how one unit's next attempt is
 //!   steered, persisted under the record tree
+//! - [`obligations`] — The obligation ledger record (`ObligationLedger`,
+//!   `ObligationEntry`, `CaseKind`, `ObligationDisposition`) — what a done
+//!   claim must close per unit, sealed by its own closure digest, filed
+//!   under the record tree at `re/obligations/`
 //! - [`classification_overrides`] — Binary classification overrides
 //!   (`BinaryClassificationOverride`, `ClassificationOverrideControl`) —
 //!   one target binary's category corrected live, persisted under the

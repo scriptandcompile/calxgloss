@@ -66,23 +66,37 @@ The reviewer's answer to one unknown record, bound to the record's id.
 - A reopen is a durable mark, not a deletion.
 
 **Obligation ledger**:
-The pipeline's per-target-binary record of the restitch work that a done claim must close: one obligation entry per unit of work, filed beside the unknown ledgers at `re/obligations/<binary identity>.json`.
+The pipeline's record of the work a done claim must close, one entry per unit, filed per target binary.
 *Rules:*
+- Filed at `re/obligations/<binary identity>.json`, beside the unknown ledgers.
 - Each batch's filing replaces the last, exactly as the unknown ledger's does.
 - Its roster comes from the binary's own export listing, never from the queue.
 _Avoid_: confusing it with the unknown ledger — that one records gaps, this one records what must close
 
 **Obligation entry**:
-One unit's standing in the ledger: its function and attempt, its owner (the attempt branch's head commit digest), the case kinds its baseline suite must cover, a verifier-receipt citation wherever it claims green, and its disposition.
+One unit's standing in the ledger, joined with the document's binary into the unit key and attempt.
+*Rules:*
+- Names the unit's function and attempt, and its owner: the attempt branch's head commit digest.
+- States the case kinds its baseline suite must cover, and cites a verifier receipt wherever the unit claims green.
+- Closes with a disposition.
 
 **Case kind**:
-What kind of try a baseline case is: *positive*, *negative*, or *malformed* — a closed roster. An obligation closes only when its suite has tried every required kind.
+What kind of try a baseline case is.
+*Rules:*
+- A closed roster: *positive*, *negative*, or *malformed*.
+- An obligation closes only when its suite has tried every required kind.
 
 **Obligation disposition**:
-How a unit's obligation stands, from a closed roster: *claimed-verified*, *skipped*, *parked*, *overridden*, *un-reviewed*, or *no-baseline*. Each names an honest fact; none counts as verified work it did not do.
+How a unit's obligation stands, from a closed roster.
+*Rules:*
+- *Claimed-verified*, *skipped*, *parked*, *overridden*, *un-reviewed*, or *no-baseline*.
+- Each names an honest fact. None counts as verified work it did not do.
 
 **Closure digest**:
-The sha256 seal over one obligation ledger's canonical content. Every reader re-derives it from the filed bytes alone; a mismatch is an input error, never a reading.
+The sha256 seal over one obligation ledger's canonical content.
+*Rules:*
+- Every reader re-derives it from the filed bytes alone.
+- A mismatch is an input error, never a reading.
 
 ### Settings
 

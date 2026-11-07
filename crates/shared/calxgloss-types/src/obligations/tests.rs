@@ -97,18 +97,28 @@ fn a_document_without_its_filing_envelope_is_not_a_filed_ledger() {
         err.to_string().contains("binary"),
         "the refusal names the missing envelope field: {err}"
     );
+    let err = serde_json::from_str::<ObligationLedger>(
+        r#"{"binary": "game_logic.dll", "entries": [], "digest": "sha256:00"}"#,
+    )
+    .expect_err("a document missing its filing time is refused");
+    assert!(
+        err.to_string().contains("filed_at"),
+        "the refusal names the missing filing time: {err}"
+    );
 }
 
 /// Three obligations for one binary, in the writer's scan order, built
 /// through the entry constructor so the fixture rides the real shape.
 fn scan_order_entries() -> Vec<ObligationEntry> {
+    let mut claimed = ObligationEntry::new(
+        "DrawSprite",
+        1,
+        "aaaa1111",
+        ObligationDisposition::ClaimedVerified,
+    );
+    claimed.receipt_digest = Some("sha256:9f0e12".to_string());
     vec![
-        ObligationEntry::new(
-            "DrawSprite",
-            1,
-            "aaaa1111",
-            ObligationDisposition::ClaimedVerified,
-        ),
+        claimed,
         ObligationEntry::new(
             "DrawSprite",
             2,
@@ -173,9 +183,9 @@ fn a_refiling_of_unchanged_records_at_a_later_time_seals_the_same_digest() {
         evening.digest, morning.digest,
         "unchanged records refiled later seal the same digest"
     );
-    assert_ne!(
+    assert_eq!(
         evening.binary,
-        BinaryIdentity::new("other.dll"),
+        BinaryIdentity::new("game_logic.dll"),
         "the envelope still names its binary"
     );
     assert_eq!(
@@ -251,5 +261,92 @@ fn a_missing_ledger_reads_as_recomputable_missing_and_corrupt_bytes_as_tampered(
     assert!(
         matches!(err, PersistError::Json { .. }),
         "corrupt is corrupt: {err}"
+    );
+}
+
+#[test]
+fn a_content_edit_under_a_stale_digest_refuses_at_the_reader() {
+    // "A tampered or replaced ledger reads as an input error, never as a
+    // clean run": the reader re-derives the digest from the filed bytes
+    // and refuses on mismatch, so editing the entries without resealing
+    // cannot pass the reader holding the old seal.
+    let workspace = tempfile::TempDir::new().expect("temp workspace");
+    let binary = BinaryIdentity::new("game_logic.dll");
+    let path = obligation_ledger_path(workspace.path(), &binary);
+    save_json(&path, &filed_obligation_ledger()).expect("files");
+
+    let mut tampered: ObligationLedger =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("filed bytes"))
+            .expect("parses");
+    tampered.entries[0].disposition = ObligationDisposition::Skipped;
+    save_json(&path, &tampered).expect("rewrite keeps the stale stamped digest");
+
+    let err = read_obligation_ledger(workspace.path(), &binary)
+        .expect_err("the re-derived digest refuses the edit");
+    assert!(
+        matches!(err, PersistError::Json { .. }),
+        "a tampered ledger is corrupt, never a reading: {err}"
+    );
+}
+
+#[test]
+fn a_replaced_ledger_from_another_binary_refuses_at_the_reader() {
+    // The envelope is the reader's replaced-document check: a validly
+    // sealed ledger for one binary, filed under another binary's name,
+    // refuses — its seal is intact but it speaks for the wrong binary.
+    let workspace = tempfile::TempDir::new().expect("temp workspace");
+    let binary = BinaryIdentity::new("game_logic.dll");
+    let other = ObligationLedger::file("other.dll", scan_order_entries(), 1_730_000_000)
+        .expect("plain records always serialize");
+    save_json(&obligation_ledger_path(workspace.path(), &binary), &other).expect("misfiled");
+
+    let err = read_obligation_ledger(workspace.path(), &binary)
+        .expect_err("the envelope must name the asked-for binary");
+    assert!(
+        matches!(err, PersistError::Json { .. }) && err.to_string().contains("other.dll"),
+        "the refusal names the binary the document actually speaks for: {err}"
+    );
+}
+
+#[test]
+fn an_entry_that_drops_a_declared_case_kind_refuses_at_the_deserializer() {
+    // "Every unit obligation requires all three case kinds": closed at
+    // the deserializer, so a suite cannot quietly close an obligation by
+    // never requiring a malformed try. A later track narrowing by
+    // signature extends this shape rather than relaxing it silently.
+    let mut entry = serde_json::to_value(ObligationEntry::new(
+        "DrawSprite",
+        1,
+        "aaaa1111",
+        ObligationDisposition::NoBaseline,
+    ))
+    .expect("entry writes");
+    entry["required_case_kinds"] = serde_json::json!(["positive", "negative"]);
+    let err = serde_json::from_value::<ObligationEntry>(entry)
+        .expect_err("an obligation requiring only part of the roster is refused");
+    assert!(
+        err.to_string().contains("malformed"),
+        "the refusal names the dropped case kind: {err}"
+    );
+}
+
+#[test]
+fn a_claimed_verified_entry_with_no_receipt_citation_refuses_at_the_deserializer() {
+    // "A verifier-receipt-digest citation wherever the unit claims
+    // green": a green claim with no cited receipt is an invalid value,
+    // refused at the deserializer like an invented one — never quietly
+    // read as a pass.
+    let entry = serde_json::to_value(ObligationEntry::new(
+        "DrawSprite",
+        1,
+        "aaaa1111",
+        ObligationDisposition::ClaimedVerified,
+    ))
+    .expect("entry writes");
+    let err = serde_json::from_value::<ObligationEntry>(entry)
+        .expect_err("a green claim with no cited receipt is refused");
+    assert!(
+        err.to_string().contains("receipt"),
+        "the refusal names the missing citation: {err}"
     );
 }
