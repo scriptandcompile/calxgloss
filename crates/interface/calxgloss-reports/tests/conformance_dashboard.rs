@@ -166,6 +166,68 @@ fn claimed_entry(function: &str, attempt: u32, owner: &str, receipt: &str) -> Ob
     entry
 }
 
+/// Files the reviewer's skip set at `re/review/skips.json` with the
+/// given unit keys — the same document the review surfaces write.
+fn stage_skip_set(dir_path: &std::path::Path, keys: &[&str]) {
+    let path = dir_path.join("re").join("review").join("skips.json");
+    std::fs::create_dir_all(path.parent().expect("review dir")).expect("review dir");
+    std::fs::write(
+        &path,
+        serde_json::json!({"skipped": keys}).to_string(),
+    )
+    .expect("file skip set");
+}
+
+/// Files a classification record at `re/classify/{binary}.json` with the
+/// given category and reason — the shape the `classify` command files.
+fn stage_classification(dir_path: &std::path::Path, binary: &str, category: &str, reason: &str) {
+    let path = dir_path.join("re").join("classify").join(format!("{binary}.json"));
+    std::fs::create_dir_all(path.parent().expect("classify dir")).expect("classify dir");
+    std::fs::write(
+        &path,
+        serde_json::json!({"category": category, "reason": reason}).to_string(),
+    )
+    .expect("file classification");
+}
+
+/// Files an operator classification override steering `binary` to the
+/// given category, at `re/analysis/classification_overrides.json`.
+fn stage_classification_override(dir_path: &std::path::Path, binary: &str, category: &str) {
+    let path = dir_path
+        .join("re")
+        .join("analysis")
+        .join("classification_overrides.json");
+    std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("analysis dir");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "overrides": {binary: {"category": category, "known_runtime": false}}
+        })
+        .to_string(),
+    )
+    .expect("file classification override");
+}
+
+/// Files a reviewer unit override record for `{binary}/{function}` at
+/// `re/analysis/unit_overrides.json`, with the given notes.
+fn stage_unit_override(dir_path: &std::path::Path, binary: &str, function: &str, notes: &str) {
+    let path = dir_path
+        .join("re")
+        .join("analysis")
+        .join("unit_overrides.json");
+    std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("analysis dir");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "overrides": {
+                format!("{binary}/{function}"): {"reviewer_notes": notes}
+            }
+        })
+        .to_string(),
+    )
+    .expect("file unit override");
+}
+
 #[test]
 fn honest_dispositions_tally_apart_from_verified_in_the_model_and_the_json() {
     // One fully proven obligation closed and five honest dispositions —
@@ -275,6 +337,79 @@ fn honest_dispositions_tally_apart_from_verified_in_the_model_and_the_json() {
         tally["no_baseline"],
         serde_json::json!(1),
         "JSON shows the no-baseline tally"
+    );
+}
+
+#[test]
+fn branch_merged_with_no_accept_review_action_reads_un_reviewed_and_never_verified() {
+    // Issue #420 (P26.4), AC 5: a merge landed on main without an Accept
+    // review action. The read seam joins branch state with the review
+    // records, so the unit reads *un-reviewed* — tallied in its own
+    // count, never as verified — and the verdict never reaches complete.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = dir
+        .path()
+        .join("src")
+        .join("game_logic.dll_DrawPrimitive_v1.rs");
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let receipt_digest = stage_receipt_pair(&git, "game_logic.dll", "DrawPrimitive", 1);
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &[
+                "src/game_logic.dll_DrawPrimitive_v1.rs",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.json",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    // The merge lands with no accept_branch call: no Accept record stands.
+    git.merge_to_main(&branch).expect("merge into main");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a merged, un-reviewed unit blocks complete on its own"
+    );
+    assert_eq!(
+        row.tally.un_reviewed, 1,
+        "the un-reviewed merge tallies in its own count"
+    );
+    assert_eq!(
+        row.tally.verified, 0,
+        "a merge with no Accept review action is never verified"
+    );
+    let open = row.first_open.as_ref().expect("the honest reading is named");
+    assert!(
+        open.link.contains("Accept"),
+        "the reading names the missing review action: {}",
+        open.link
     );
 }
 
@@ -1224,4 +1359,262 @@ fn file_digest(path: &std::path::Path) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::fs::read(path).expect("file reads").hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+#[test]
+fn a_reviewer_skip_holds_its_unit_out_and_names_the_skip_set_as_provenance() {
+    // Issue #420 (P26.4), AC 1: the reviewer's skip set names one unit
+    // attempt. The read seam joins it with the ledger, so the unit reads
+    // *skipped* — tallied apart from the verified, with the skip set
+    // named as provenance — and the verdict is *incomplete*, never a
+    // clean run.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+
+    let branch = git
+        .create_branch("game_logic.dll", "DrawSprite", 1, None)
+        .expect("translation branch")
+        .branch;
+    let receipt_digest = stage_receipt_pair(&git, "game_logic.dll", "DrawSprite", 1);
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawSprite",
+            &[
+                "re/verification/game_logic.dll/DrawSprite/attempt-1.json",
+                "re/verification/game_logic.dll/DrawSprite/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    // The reviewer skips this attempt: the skip set spells the unit key
+    // exactly as the review surfaces store it.
+    stage_skip_set(dir.path(), &["game_logic.dll/DrawSprite/v1"]);
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawSprite", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a skipped unit blocks complete on its own"
+    );
+    assert_eq!(
+        row.tally.skipped, 1,
+        "the skipped unit tallies in its own count"
+    );
+    assert_eq!(
+        row.tally.verified, 0,
+        "a unit the reviewer took out of work never reads verified"
+    );
+    let open = row.first_open.as_ref().expect("the honest reading is named");
+    assert!(
+        open.link.contains("skips.json"),
+        "the provenance names the skip-set document: {}",
+        open.link
+    );
+}
+
+#[test]
+fn a_do_not_translate_classification_parks_every_unit_under_the_binary() {
+    // Issue #420 (P26.4), AC 2: the binary is classified Do Not
+    // Translate. Every unit under it reads *parked* with the
+    // classification's reason beside it — even a fully-evidenced claim —
+    // and the verdict never reaches complete.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+
+    let branch = git
+        .create_branch("game_logic.dll", "DrawSprite", 1, None)
+        .expect("translation branch")
+        .branch;
+    let receipt_digest = stage_receipt_pair(&git, "game_logic.dll", "DrawSprite", 1);
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawSprite",
+            &[
+                "re/verification/game_logic.dll/DrawSprite/attempt-1.json",
+                "re/verification/game_logic.dll/DrawSprite/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    git.merge_to_main(&branch).expect("merge into main");
+    stage_accept_record(dir.path(), "game_logic.dll", "DrawSprite", 1);
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    // The classification record parks the whole binary, reason included.
+    stage_classification(
+        dir.path(),
+        "game_logic.dll",
+        "DotNetManaged",
+        "we do not yet decompile .NET programs",
+    );
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawSprite", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a parked binary never reads complete"
+    );
+    assert_eq!(
+        row.tally.parked, 1,
+        "the parked unit tallies in its own count"
+    );
+    assert_eq!(
+        row.tally.verified, 0,
+        "a parked unit is not verified, however green its claim"
+    );
+    let open = row.first_open.as_ref().expect("the honest reading is named");
+    assert!(
+        open.link.contains("we do not yet decompile .NET programs"),
+        "the classification's reason rides beside the disposition: {}",
+        open.link
+    );
+}
+
+#[test]
+fn a_classification_override_releases_the_parked_obligation_to_its_evidence() {
+    // Issue #420 (P26.4), AC 3: an operator classification override beats
+    // the classification record. Once the binary's in-force category is
+    // no longer Do Not Translate, nothing parks its units, and the same
+    // fully-evidenced obligation closes — the override releases, it does
+    // not merely relabel.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+
+    let branch = git
+        .create_branch("game_logic.dll", "DrawSprite", 1, None)
+        .expect("translation branch")
+        .branch;
+    let receipt_digest = stage_receipt_pair(&git, "game_logic.dll", "DrawSprite", 1);
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawSprite",
+            &[
+                "re/verification/game_logic.dll/DrawSprite/attempt-1.json",
+                "re/verification/game_logic.dll/DrawSprite/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    git.merge_to_main(&branch).expect("merge into main");
+    stage_accept_record(dir.path(), "game_logic.dll", "DrawSprite", 1);
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    stage_classification(
+        dir.path(),
+        "game_logic.dll",
+        "DotNetManaged",
+        "we do not yet decompile .NET programs",
+    );
+    // The operator overrides the classification: the in-force category is
+    // ProjectSpecific, so the park no longer stands.
+    stage_classification_override(dir.path(), "game_logic.dll", "ProjectSpecific");
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawSprite", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Complete,
+        "the released obligation closes on its evidence"
+    );
+    assert_eq!(row.tally.verified, 1, "the released unit reads verified again");
+    assert_eq!(row.tally.parked, 0, "the override releases the park outright");
+}
+
+#[test]
+fn a_reviewer_unit_override_record_tallies_overridden_and_never_reads_verified() {
+    // Issue #420 (P26.4), AC 4: a reviewer files a unit override record.
+    // The unit's system judgment stands overridden at the read — tallied
+    // apart from the verified, naming the override document as
+    // provenance — even over a fully-evidenced green claim.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+        .expect("translation branch")
+        .branch;
+    let receipt_digest = stage_receipt_pair(&git, "game_logic.dll", "DrawPrimitive", 1);
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &[
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.json",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    git.merge_to_main(&branch).expect("merge into main");
+    stage_accept_record(dir.path(), "game_logic.dll", "DrawPrimitive", 1);
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    // The reviewer's override record for this exact unit.
+    stage_unit_override(
+        dir.path(),
+        "game_logic.dll",
+        "DrawPrimitive",
+        "hand-audited, keep out of reruns",
+    );
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "an overridden unit blocks complete on its own"
+    );
+    assert_eq!(
+        row.tally.overridden, 1,
+        "the overridden unit tallies in its own count"
+    );
+    assert_eq!(
+        row.tally.verified, 0,
+        "an overridden unit never counts as verified, however green its evidence"
+    );
+    let open = row.first_open.as_ref().expect("the honest reading is named");
+    assert!(
+        open.link.contains("unit_overrides.json"),
+        "the provenance names the override document: {}",
+        open.link
+    );
 }

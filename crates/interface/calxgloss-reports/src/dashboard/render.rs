@@ -143,7 +143,10 @@ fn hsep_bold() {
 pub(crate) fn println_content(content: impl AsRef<str>) {
     let s = content.as_ref();
     let visible: String = s.chars().filter(|c| !c.is_control()).collect();
-    let padded = if visible.len() < SEP_WIDTH {
+    // The frame is a visible-column budget, not a byte budget: a line of
+    // multibyte glyphs (`↳`, `—`) under the width must pad, not fall into
+    // the clip path and print nothing.
+    let padded = if visible.chars().count() < SEP_WIDTH {
         format!("{:<SEP_WIDTH$}", s)
     } else {
         let mut end = SEP_WIDTH.min(visible.len());

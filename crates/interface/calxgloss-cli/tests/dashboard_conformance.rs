@@ -277,6 +277,36 @@ fn honest_dispositions_print_counted_apart_from_verified() {
 }
 
 #[test]
+fn a_join_derived_un_reviewed_unit_prints_counted_apart_from_verified() {
+    // Issue #420 (P26.4), AC 6 at the terminal: the *un-reviewed* tally
+    // comes from the read seam's join — a merged branch with no standing
+    // Accept record — and the terminal counts it apart from the verified.
+    let ws = fully_evidenced_workspace(Vec::new());
+    std::fs::remove_file(ws.path().join("re/accepts/game_logic.dll/DrawPrimitive/v1.json"))
+        .expect("withdraw the Accept record");
+
+    let (ok, stdout, stderr) = run(
+        cli(ws.path()).args(["--target-dir", ".", "dashboard"]),
+        ws.path(),
+    );
+    assert!(ok, "the dashboard run failed:\n{stdout}\n{stderr}");
+
+    let joined: String = stdout
+        .lines()
+        .map(|line| strip_ansi(line).trim().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        joined.contains("game_logic.dll — incomplete (0 verified, 1 un-reviewed)"),
+        "the join's un-reviewed count prints apart from the verified:\n{stdout}"
+    );
+    assert!(
+        joined.contains("DrawPrimitive attempt 1 — no Accept review action stands"),
+        "the broken review link names itself below the counts:\n{stdout}"
+    );
+}
+
+#[test]
 fn tampered_ledger_bytes_print_the_input_error_and_an_unknown_verdict() {
     // AC 3 at the terminal: tampered filed bytes are an input error named
     // at the read — stderr names it, and stdout prints the *unknown*

@@ -12,16 +12,23 @@
 //! rows. Nothing here stores a verdict, so no second copy of the truth
 //! can drift from the first. The layer reads only: it never accepts a
 //! unit, touches a branch, or changes a review status.
+//!
+//! The join also carries the reviewer's live records beside the ledger
+//! (issue #420): the reviewer skip set, the Do Not Translate
+//! classifications that park a binary's units, and the unit override
+//! records — where one of those stands for a unit, it decides that unit's
+//! disposition at the read.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use calxgloss_git::GitManager;
 use calxgloss_types::{
     BinaryConformance, BinaryIdentity, BinaryUnknownLedger, ConformanceOpenObligation,
     ConformanceTally, ConformanceUnknownCause, ConformanceVerdict, GitBranch,
-    ObligationDisposition, ObligationEntry, PersistError, UnknownSeverity, VerificationReceipt,
-    VerificationVerdict, obligation_ledger_dir, read_obligation_ledger, verification_receipt_path,
+    ObligationDisposition, ObligationEntry, OverrideControl, PersistError, UnknownSeverity,
+    VerificationReceipt, VerificationVerdict, dashboard::ReviewSkips, obligation_ledger_dir,
+    override_records_path, read_obligation_ledger, verification_receipt_path,
 };
 
 use super::render::{green_bold, yellow_bold};
@@ -50,21 +57,53 @@ pub fn conformance_binaries(
     binaries
 }
 
+/// What the read seam joins with the filed ledger (issue #420): the
+/// reviewer skip-set keys, the parked binaries with their classification
+/// reasons, and the unit-override handle over the workspace — the live
+/// records the review surfaces already read, shared here rather than
+/// reinterpreted.
+#[derive(Default, Clone)]
+pub struct ConformanceJoin<'a> {
+    /// Skip-set keys spelling `{binary}/{function}/v{attempt}`, exactly
+    /// as the review surfaces store them.
+    pub skipped: BTreeSet<String>,
+    /// Parked binaries — those whose in-force category is Do Not
+    /// Translate — with the classification document's reason beside each.
+    pub parked: HashMap<&'a str, Option<String>>,
+    /// The unit-override handle over the workspace, opened once per
+    /// build. A never-opened handle stands for no override records.
+    pub overrides: Option<OverrideControl>,
+}
+
+impl ConformanceJoin<'_> {
+    /// The reviewer override record standing for one unit, if any.
+    fn override_for(&self, binary: &str, function: &str) -> bool {
+        self.overrides
+            .as_ref()
+            .is_some_and(|control| control.get(binary, function).is_some())
+    }
+}
+
 /// Derive one conformance row per binary: the filed obligation ledger
 /// joined with branch state, the receipt pairs committed on the attempt
 /// branches, the Accept records, and the binary's open-unknown reading
 /// from the dashboard model's unknown-ledger rows. A *complete* verdict
 /// requires every obligation closed on checked evidence and an unknown
 /// ledger proven open-free of blocking records — fail-closed aggregation,
-/// so an unproven gate never reads as a clean run (issue #392).
+/// so an unproven gate never reads as a clean run (issue #392). The
+/// `join` carries the reviewer's live records — the skip set, the Do Not
+/// Translate parked binaries with their classification reasons, and the
+/// unit override handle — and where one stands for a unit, that record
+/// decides the unit's disposition at the read (issue #420).
 pub fn derive_binary_conformance(
     git: &GitManager,
     binaries: &BTreeSet<String>,
     unknown_rows: &[BinaryUnknownLedger],
+    join: &ConformanceJoin,
 ) -> Vec<BinaryConformance> {
     binaries
         .iter()
-        .map(|binary| conformance_row(git, binary, unknown_rows))
+        .map(|binary| conformance_row(git, binary, unknown_rows, join))
         .collect()
 }
 
@@ -79,6 +118,11 @@ enum ClaimReading {
     /// longer names the branch tip. The obligation stays open. This is
     /// incompleteness, not an unreadable record.
     Open(String),
+    /// The review door never opened: no Accept review action stands, so
+    /// the unit reads *un-reviewed* — its own tally, never verified
+    /// (issue #420, AC 5). A merged branch makes this the whole story;
+    /// review, not the merge, is the only door into verified.
+    UnReviewed(String),
     /// A leg is an input error: the cited pair cannot be resolved on the
     /// attempt branch. Like a corrupt document, this fails loudly and
     /// lands a named unknown cause on the verdict.
@@ -89,6 +133,7 @@ fn conformance_row(
     git: &GitManager,
     binary: &str,
     unknown_rows: &[BinaryUnknownLedger],
+    join: &ConformanceJoin,
 ) -> BinaryConformance {
     let identity = BinaryIdentity::from(binary);
     let ledger = match read_obligation_ledger(git.repo_path(), &identity) {
@@ -151,6 +196,29 @@ fn conformance_row(
     let mut obligations_open = false;
     let mut first_open: Option<ConformanceOpenObligation> = None;
     for entry in &ledger.entries {
+        // The read seam joins the ledger with the live records (issue
+        // #420): where a Do Not Translate classification, a reviewer
+        // skip, or a reviewer override stands for this unit, that record
+        // decides the unit's disposition. The entry's own filed
+        // disposition only speaks when no live record stands for the
+        // unit.
+        if let Some(hold) = disposition_at_read(join, binary, entry) {
+            tally_obligation(&mut row.tally, hold.disposition);
+            obligations_open = true;
+            first_open.get_or_insert_with(|| ConformanceOpenObligation {
+                function: entry.function.clone(),
+                attempt: entry.attempt,
+                link: hold.reason.clone(),
+            });
+            eprintln!(
+                "  [conformance] {binary}: obligation `{}` attempt {} reads {} — {}",
+                entry.function,
+                entry.attempt,
+                disposition_words(&hold.disposition),
+                hold.reason
+            );
+            continue;
+        }
         match entry.disposition {
             ObligationDisposition::ClaimedVerified => match close_claim(git, &identity, entry) {
                 ClaimReading::Closed => row.tally.verified += 1,
@@ -163,6 +231,23 @@ fn conformance_row(
                     });
                     eprintln!(
                         "  [conformance] {binary}: obligation `{}` attempt {} stays open — {reason}",
+                        entry.function, entry.attempt
+                    );
+                }
+                ClaimReading::UnReviewed(reason) => {
+                    // An attempt no review action ever acted on reads
+                    // un-reviewed: its own tally, counted apart from the
+                    // verified, and never a verified close (issue #420,
+                    // AC 5).
+                    obligations_open = true;
+                    row.tally.un_reviewed += 1;
+                    first_open.get_or_insert_with(|| ConformanceOpenObligation {
+                        function: entry.function.clone(),
+                        attempt: entry.attempt,
+                        link: reason.clone(),
+                    });
+                    eprintln!(
+                        "  [conformance] {binary}: obligation `{}` attempt {} reads un-reviewed — {reason}",
                         entry.function, entry.attempt
                     );
                 }
@@ -181,18 +266,18 @@ fn conformance_row(
             },
             disposition => {
                 // Honest dispositions never count toward closure (issue
-                // #392): every one holds its obligation open and keeps its
-                // own tally, counted apart from the verified (issue #419,
-                // AC 4).
+                // #392): every one holds its obligation open and keeps
+                // its own tally, counted apart from the verified (issue
+                // #419, AC 4). Where the filed ledger itself records the
+                // disposition, the provenance says so plainly.
                 obligations_open = true;
-                match disposition {
-                    ObligationDisposition::Skipped => row.tally.skipped += 1,
-                    ObligationDisposition::Parked => row.tally.parked += 1,
-                    ObligationDisposition::Overridden => row.tally.overridden += 1,
-                    ObligationDisposition::UnReviewed => row.tally.un_reviewed += 1,
-                    ObligationDisposition::NoBaseline => row.tally.no_baseline += 1,
-                    ObligationDisposition::ClaimedVerified => {}
-                }
+                tally_obligation(&mut row.tally, disposition);
+                let words = disposition_words(&disposition);
+                first_open.get_or_insert_with(|| ConformanceOpenObligation {
+                    function: entry.function.clone(),
+                    attempt: entry.attempt,
+                    link: format!("the filed obligation ledger records it as {words}"),
+                });
             }
         }
     }
@@ -251,6 +336,82 @@ fn unknowns_gate_reasons(binary: &str, unknown_rows: &[BinaryUnknownLedger]) -> 
             })
             .collect(),
     }
+}
+
+/// The live record standing for one unit at the read seam, and why (the
+/// precedence, issue #420): a Do Not Translate classification parks
+/// every unit under the binary; the reviewer skip set holds a unit out
+/// attempt by attempt; a reviewer override record overrides the unit's
+/// system judgment. Each names its own document as the provenance
+/// beside the disposition. Where no live record speaks, the ledger's
+/// own filed disposition stands.
+fn disposition_at_read(
+    join: &ConformanceJoin,
+    binary: &str,
+    entry: &ObligationEntry,
+) -> Option<HeldDisposition> {
+    if let Some(reason) = join.parked.get(binary) {
+        let reason = reason
+            .clone()
+            .unwrap_or_else(|| "the classification records it as Do Not Translate".to_string());
+        return Some(HeldDisposition {
+            disposition: ObligationDisposition::Parked,
+            reason: format!("the binary's Do Not Translate classification parks it: {reason}"),
+        });
+    }
+    let unit_attempt = format!("{}/{}/v{}", binary, entry.function, entry.attempt);
+    if join.skipped.contains(&unit_attempt) {
+        return Some(HeldDisposition {
+            disposition: ObligationDisposition::Skipped,
+            reason: format!(
+                "the reviewer's skip set names this unit at {}",
+                ReviewSkips::path_in(Path::new("")).display()
+            ),
+        });
+    }
+    if join.override_for(binary, &entry.function) {
+        return Some(HeldDisposition {
+            disposition: ObligationDisposition::Overridden,
+            reason: format!(
+                "a reviewer unit override record in {} overrides this unit's system judgment",
+                override_records_path(Path::new("")).display()
+            ),
+        });
+    }
+    None
+}
+
+/// One live record's honest reading of one unit: the disposition from
+/// the closed roster, and the provenance sentence naming the record.
+struct HeldDisposition {
+    disposition: ObligationDisposition,
+    reason: String,
+}
+
+/// The tally slot one disposition keeps, always apart from the verified
+/// (issue #419, AC 4). A claimed-verified entry never lands here: it
+/// either closes on checked evidence or names the leg that broke.
+/// Unknowns carry no slot — they are verdict causes, not obligation
+/// dispositions.
+fn tally_obligation(tally: &mut ConformanceTally, disposition: ObligationDisposition) {
+    match disposition {
+        ObligationDisposition::Skipped => tally.skipped += 1,
+        ObligationDisposition::Parked => tally.parked += 1,
+        ObligationDisposition::Overridden => tally.overridden += 1,
+        ObligationDisposition::UnReviewed => tally.un_reviewed += 1,
+        ObligationDisposition::NoBaseline => tally.no_baseline += 1,
+        ObligationDisposition::ClaimedVerified => {}
+    }
+}
+
+/// The disposition words the terminal and the first-open sentence share:
+/// the roster's own spelling of the disposition — the same label serde
+/// writes into the JSON — with underscores spoken as spaces. Unknowns
+/// spell their cause beside them, never a bare label.
+fn disposition_words(disposition: &ObligationDisposition) -> String {
+    disposition
+        .to_string()
+        .replace('_', " ")
 }
 
 /// Check one green claim against the evidence the entry pins: its owner
@@ -348,10 +509,13 @@ fn close_claim(
     }
 
     // Review is the only door into verified: a merged branch with no
-    // standing Accept action never closes an obligation (issue #392,
-    // story 6).
+    // standing Accept action never closes an obligation, and the unit
+    // reads un-reviewed — its own tally, never verified (issue #392,
+    // story 6; issue #420, AC 5).
     if !accept_record_stands(git.repo_path(), identity, &entry.function, entry.attempt) {
-        return ClaimReading::Open("no Accept review action stands for this attempt".to_string());
+        return ClaimReading::UnReviewed(
+            "no Accept review action stands for this attempt".to_string(),
+        );
     }
     if !git
         .is_branch_merged_into_main(&branch.name)

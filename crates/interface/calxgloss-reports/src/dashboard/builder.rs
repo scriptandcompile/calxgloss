@@ -429,10 +429,23 @@ impl<'a> DashboardBuilder<'a> {
         let mut dashboard = ReviewDashboard::new(units);
         dashboard.unknown_ledgers = unknown_ledgers;
 
+        // The read seam joins the obligation ledgers with the reviewer's
+        // live records — the same skip set, parked classifications, and
+        // unit override records the review surfaces above read (issue
+        // #420).
+        let conformance_join = super::conformance::ConformanceJoin {
+            skipped: skipped_keys.iter().cloned().collect(),
+            parked: parked
+                .iter()
+                .map(|(binary, reason)| (binary.as_str(), reason.clone()))
+                .collect(),
+            overrides: Some(calxgloss_types::OverrideControl::open(&self.repo_path)),
+        };
         dashboard.conformance = super::conformance::derive_binary_conformance(
             self.git,
             &conformance_set,
             &dashboard.unknown_ledgers,
+            &conformance_join,
         );
 
         // Issue #409 (P24.8): the scenario status rides the same model,
