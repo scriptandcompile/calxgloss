@@ -51,12 +51,21 @@ dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
 has the fail-closed ledger that finally makes "this binary is done" a
 checkable claim instead of "the pipeline stopped with nobody complaining"
 (P26, after its durable-receipt half P25). The front of the table is now
-P27's hypothesis ledger for the retry loop. P27–P33 resolve stuck
-functions, strengthen evidence, or serve operations; none of them blocks
-another.
+the P53–P56 block — an explicit priority call made on 2026-11-07: a run
+that reads as 17 minutes of silence, a 14 GB scan document, and a wrong
+verification verdict each stand between the operator and a real
+end-to-end restitching run, and no older track blocks this block or
+depends on it. P53-before-P56 is the block's one hard internal edge.
+Below it, P27's hypothesis ledger leads the older tracks again; P27–P33
+resolve stuck functions, strengthen evidence, or serve operations; none
+of them blocks another.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
+| P53 | Live runs read legibly in the web view — pre-batch scans, call-graph and xref-index builds, unit state transitions, and what Kuna is working on appear in the web progress panel, not only in log files | pipeline (`calxgloss-translator`) + interface (`calxgloss-web`) + integrations (`calxgloss-kuna`) | — | ⬜ not started | filed as issue, not specced | [#425](https://github.com/scriptandcompile/calxgloss/issues/425) |
+| P54 | Kill the sync/globalstate scans' false positives at the source — decompiler locals (`v1`, `a0`, `eax`, `stack`, `local_20`) masquerade as shared globals and lock instances in one shared name reading (69% of globalstate's 280K rows, and the fake `v1` rollup's 4,737×5,136 writer×reader pairs drive sync's 43.5M); fix the classification, then aggregate per global/lock-instance and gate on concurrency reachability | evidence (`calxgloss-globalstate`, `calxgloss-sync`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | filed as issue, root cause verified 2026-11-07, not specced | [#426](https://github.com/scriptandcompile/calxgloss/issues/426) |
+| P55 | Honest verdicts when the test runner breaks — "Compilation successful" followed by "Could not parse test results" and "tests never ran" hit every unit of one live run; a runner parse failure is never a compile failure, and the runner's output stays diagnosable from the log | pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | filed as issue, not specced | [#427](https://github.com/scriptandcompile/calxgloss/issues/427) |
+| P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and retarget the 3,097 lines of terminal-agreement tests at the model | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07, not filed, not specced | — |
 | P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
 | P28 | Masked byte search at the seam — `search_bytes(pattern, mask)` with wildcard hex and a bit mask, giving the `consts`/`serialize` magic-number scans real matches instead of guesses | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + evidence (`calxgloss-consts`, `calxgloss-serialize`) | — | ⬜ not started | not specced | — |
 | P29 | Ad-hoc call-path / def-use primitive at the seam — trace "how does this value reach this call" over the kept bodies on demand, so `escalate` retries get targeted answers without a full re-scan | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
@@ -95,6 +104,20 @@ into existing tracks instead of opening new ones: the scored truth eval
 lands on P33 as its missing oracle, KRAKEN's `process`-oracle shape
 pre-designed P24's scenario contract (shipped, ADR-0059), and trace-armed
 blame ranking extends P27's send-back decision.
+
+**P53–P56 are the gaps seen during the 2026-11-07 live-run diagnosis**
+(LaunchPad.exe, 7,267 functions, on the everquest workspace): three are
+failures that run witnessed firsthand, each filed as an issue before
+landing here, and the fourth is the surface decision the review raised —
+terminal-visible reports are not wanted ("17 min of 'it's running' is
+unacceptable"), so the visibility work lands at the web view and the
+terminal report half gets removed behind it. The block deliberately
+sits at the front of the table: only P56 waits on anything (P53, inside
+the block), P55 need not wait for P49's named-outcome vocabulary — the
+parse fix stands alone and P49 folds it in afterward — and doing P56
+before P31 saves rework, since P31 would deepen `doctor`'s terminal
+report inside the very crate P56 strips; P30, P50 and P52 also touch
+that crate and inherit the same ordering benefit.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
@@ -430,3 +453,127 @@ time; nothing here changes pipeline shape. Source:
 [36](research/kraken/36-rewrite-pipeline.md) steal 8,
 [37](research/kraken/37-inference-corpus-eval.md) steal 4, README #12.
 Blocked by (as a runner): P42 (the exit-criterion tests).
+
+## P53 — Live runs read legibly in the web view (pipeline + interface + integrations)
+
+**Seventeen minutes of "it's running" says nothing.** A cold `live` run
+spent ~15 minutes in the pre-batch scans (the sync scan alone:
+`findings=43547588 duration_secs=785`) and then minutes per unit in LLM
+translation, while the web progress panel held `{"units":[]}` and the
+queue panel showed no movement at all. The scan phase is not a unit and
+not a phase the progress store tracks, the cold call-graph build (57 s)
+and Kuna's first xref-index build sit in the same silent window, and the
+default `warn` verbosity hides the scans' own log lines. The fix makes
+the scan phase a first-class progress phase: one entry per scan (name,
+binary, elapsed, finding count or error) into the enhanced progress
+store rendered as a scan panel; unit state transitions (queued →
+translating → verifying → awaiting-review) in the queue panel off the
+existing WS events; optionally Kuna's `tick` heartbeat as a "Kuna
+working: <function>" line. Acceptance: a cold run on a large binary
+answers in the browser what is running, which unit is being worked, and
+what the last completed step was — without tailing a log file. P41's
+Mapping panel (issue #366) is the same product gap found earlier at a
+smaller scale. Filed as
+[#425](https://github.com/scriptandcompile/calxgloss/issues/425) during
+the 2026-11-07 live-run diagnosis. Blocks: P56.
+
+## P54 — The sync/globalstate scans' false-positive collapse (evidence + pipeline)
+
+**The 43.5M findings are pairwise inflation, not 43.5M sync points —
+and most of the pairs are about fakes.** The root cause was verified in
+code and measured on the workspace 2026-11-07, in two layers.
+*Classification:* the shared global reading
+(`calxgloss-globalstate/src/detector.rs:187-239`) decides what counts
+as program data through `is_decompiler_local` (`:352-359`), which only
+knows `param_*`, `local_*`, and `*Var<digits>` — Kuna names this PE's
+locals `v1..vN`, `a0/a1`, registers, and `stack`, so 69% of
+globalstate's 280,360 rows (192,748) carry just twelve junk names, and
+its rollups advertise fakes as process-wide state (`v1`: 5,136
+readers, 4,737 writers). The sync race pass consumes that same reading
+(`sync/cross_function.rs:252`), and one fake name's 4,737×5,136
+writer×reader cross-product is ~24M rows alone — together the fakes
+match the observed 43,547,588. *Enumeration:* `CrossFunctionAnalyzer::analyze`
+(`sync/cross_function.rs:113-196`) enumerates all 26.4M function pairs
+twice; the lock-order pass keys locks by bare body name (`:206-217`),
+so a `local_20` slot in unrelated functions reads as one shared lock —
+name-collision junk, since deadlock needs the same lock instance — and
+the race pass emits one row per (function, partner, global) without
+ever asking whether the pair can run concurrently. Both passes are
+O(functions²) — where the 785 s and the 14 GB sync doc come from —
+and globalstate's own scan spent 960 s writing 74 MB of the same
+junk. The fix kills the false positives rather than truncating them:
+fix the name classification first (one function, feeding both scans
+and the review rollups), then aggregate per global and per
+lock-instance (one finding with accessor counts and example
+statements, not pairwise rows), compare locks across functions only
+when they name a global/static or named-symbol heap handle, gate the
+pass on thread-entry reachability through the batch's existing call
+graph with the coverage record admitting exclusions, and let
+`Interlocked`/atomic and TLS evidence suppress races the per-body
+detectors already cover. A cap with an explicit *truncated* marker
+stays only as a safety net. The pairwise test pin
+`a_race_lands_once_per_function_pair_and_per_global` retargets to the
+aggregated shape. Surveyed siblings: `algorithm` is 51,557 hints but
+reports once per function-relationship (bounded), `callback` and
+`stringctx` run all-pair loops — O(n²) duration but KB/MB output, a
+time landmine not a size one — and `controlflow`/`consts`/`typeinfer`/
+call-graph are linear and clean. These findings feed the translator's
+evidence bundles, so the win is prompt quality, not just size. Pairs
+with: P53 (the scan's finding count becomes visible output there),
+P51 (the aggregated accessor counts are exactly the evidence-count
+vocabulary that track wants). Filed as
+[#426](https://github.com/scriptandcompile/calxgloss/issues/426) during
+the 2026-11-07 live-run diagnosis.
+
+## P55 — Honest verdicts when the test runner breaks (pipeline)
+
+**The gate reported a compile failure the compiler had just denied.**
+Every unit that reached verification in the 2026-11-07 diagnosis — three
+of three — logged `Compilation successful`, then WARN "Could not parse
+test results from runner output"
+(`crates/pipeline/calxgloss-verify/src/parse.rs:212`), then INFO "Test
+project did not compile — tests never ran"
+(`crates/pipeline/calxgloss-verify/src/engine.rs:349`) two seconds
+later. The parse failure folds into the compile-failure branch no matter
+what the compile step said, so clean units burned three `compile_fix`
+LLM retries each against a failure that was not a compile failure, and
+the P25 receipt filed the wrong failure class. The fix: name the
+harness-parse failure as its own outcome, never claim "did not compile"
+after the compile step reported success, log the first ~20 lines of raw
+runner output at WARN on parse failure so the format mismatch is
+diagnosable from the log alone, and add the workspace's actual runner
+output to the parse fixture set. Pairs with: P49 — that track's verdict
+honesty rules give `VerificationResult` the named-outcome vocabulary
+this outcome belongs to. Filed as
+[#427](https://github.com/scriptandcompile/calxgloss/issues/427) during
+the 2026-11-07 live-run diagnosis.
+
+## P56 — The web view as the only report surface (interface)
+
+**Two renderers of one model, and the terminal half goes silent when it
+matters.** The web server already builds its dashboard payload from
+`calxgloss_reports::dashboard::DashboardBuilder`
+(`crates/interface/calxgloss-web/src/lib.rs:25`, `server/mod.rs:846`);
+the terminal renderers (`render.rs` plus the 717-line print half of
+`lib.rs`), the `dashboard` command, and the interactive `prompt_acceptance`
+flow are the second copy — and `tests/conformance_dashboard.rs` (2,470
+lines) exists only to pin their byte-for-byte agreement with the run-close
+prints (`auto.rs:750,760`). Removing the terminal half therefore cannot
+delete the crate outright: the ~5,130 lines of dashboard/conformance/run-close
+derivation must first become a model-only crate (or a slimmed
+`calxgloss-reports`), the CLI-wide ANSI helpers (`println_content`,
+`hsep*`, `*_bold`, re-exported at `calxgloss-cli/src/utils.rs:4` and used
+across ~32 files) need a home inside `calxgloss-cli`, the terminal
+renderers and accept prompt get deleted, and the 3,097 lines of tests get
+retargeted from rendered strings to model data — they encode what
+conformance rows must mean, so convert rather than delete. Ballpark from
+the 2026-11-07 review: 4–6 focused days, risk concentrated in the tests.
+Deleting the run-close prints and the y/n prompt makes web acceptance the
+only review flow, so this track lands after P53 makes the web view
+trustworthy during a run. One conflict to settle at spec time: P31
+deepens `doctor`, whose report half (`doctor.rs`) lives in this same
+crate — doing P56 first avoids growing terminal report code P56 would
+then delete. Review done 2026-11-07; not yet filed as an issue. Blocks
+(as rework cost, not design): P30, P31, P50, P52 — each touches
+`calxgloss-reports`, and doing P56 first shrinks the surface they
+touch. Blocked by: P53.
