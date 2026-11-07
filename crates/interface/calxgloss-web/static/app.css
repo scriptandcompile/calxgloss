@@ -3442,6 +3442,51 @@ td.unknowns-cell-unknown {
     color: var(--text-muted);
 }
 
+/* Evidence-scan panel (issue #428) — one row per registered scan of
+   the binary whose scan pass is in flight. */
+
+.live-section-title {
+    margin: 14px 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.live-scans {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.live-scan {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 6px 12px;
+}
+
+.live-scan.scan-running {
+    border-color: var(--accent-cyan);
+}
+
+.live-scan.scan-finished {
+    border-color: var(--accent-green-dim);
+}
+
+.live-scan-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.scan-findings {
+    color: var(--text-secondary);
+}
+
 .pass-chip.state-passed {
     background: var(--accent-green-dim);
     color: var(--accent-green);

@@ -407,6 +407,36 @@ pub struct ProgressState {
     /// engine (issue #214), so this stays empty and the pipeline view
     /// derives `project_ingestion` from classification counts alone.
     ingestion: Arc<RwLock<IngestionState>>,
+    /// The pre-batch evidence scans of the binary whose pass is in flight,
+    /// keyed by scan name so the latest event for a name wins
+    /// (issue #428). The map holds one binary at a time: the first scan
+    /// event for a different binary, or a `BatchStarted` naming one,
+    /// clears the previous binary's rows — they no longer describe the
+    /// live pass.
+    scans: Arc<RwLock<std::collections::BTreeMap<String, ScanRecord>>>,
+}
+
+/// One registered evidence scan as the live store currently holds it
+/// (issue #428). A running record has `elapsed_secs: None`, and the
+/// payload measures its elapsed time from `started_at` at serve time. A
+/// finished record keeps the run's wall-clock seconds, and keeps the
+/// row's finding count only when the evidence engine reported a single
+/// one.
+#[derive(Debug, Clone)]
+pub struct ScanRecord {
+    /// The registry row's name.
+    pub scan: String,
+    /// The binary whose scan pass this record belongs to.
+    pub binary: BinaryIdentity,
+    /// When the started event landed — the running clock's anchor.
+    pub started_at: std::time::Instant,
+    /// Whether the completed event has landed.
+    pub finished: bool,
+    /// The completed event's wall-clock seconds; `None` while running.
+    pub elapsed_secs: Option<f64>,
+    /// The count the evidence engine reported; `None` means the row
+    /// files no single count, never a zero.
+    pub findings: Option<usize>,
 }
 
 /// Startup ingestion state (issue #124): whether startup ingestion has
@@ -478,6 +508,7 @@ impl ProgressState {
             queue: Arc::new(RwLock::new(Vec::new())),
             activity: Arc::new(RwLock::new(None)),
             ingestion: Arc::new(RwLock::new(IngestionState::default())),
+            scans: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
         }
     }
 
@@ -533,6 +564,15 @@ impl ProgressState {
                 // previous pass is stale the moment a new one begins.
                 *self.processing.write().await = Some(binary.clone());
                 *self.activity.write().await = None;
+                // The same rule for the scan panel (issue #428): records
+                // belong to the binary whose pass they witnessed. Another
+                // pass over the same binary keeps them until that row's
+                // next started event replaces the record. A pass for a
+                // different binary retires the previous binary's rows.
+                let mut scans = self.scans.write().await;
+                if scans.values().any(|record| record.binary != *binary) {
+                    scans.clear();
+                }
             }
             ProgressEvent::QueuePlanned { binaries } => {
                 // The plan is the run's intent, replaced wholesale if a
@@ -585,6 +625,52 @@ impl ProgressState {
                 let mut activity = self.activity.write().await;
                 if activity.as_ref().is_some_and(|(d, _)| d == binary) {
                     *activity = None;
+                }
+            }
+            ProgressEvent::EvidenceScanStarted { binary, scan } => {
+                // The scan traffic itself also marks the pass boundary:
+                // the live pipeline emits no `BatchStarted`, so the first
+                // scan event naming a new binary retires the previous
+                // binary's rows (issue #428).
+                let mut scans = self.scans.write().await;
+                if scans.values().any(|record| record.binary != *binary) {
+                    scans.clear();
+                }
+                // A re-run pass over the same binary replaces the row's
+                // old record the moment its new pass starts.
+                scans.insert(
+                    scan.clone(),
+                    ScanRecord {
+                        scan: scan.clone(),
+                        binary: binary.clone(),
+                        started_at: std::time::Instant::now(),
+                        finished: false,
+                        elapsed_secs: None,
+                        findings: None,
+                    },
+                );
+            }
+            ProgressEvent::EvidenceScanCompleted {
+                binary,
+                scan,
+                elapsed_secs,
+                findings,
+            } => {
+                let mut scans = self.scans.write().await;
+                if scans.values().any(|record| record.binary != *binary) {
+                    scans.clear();
+                }
+                // The phase emits the started event before this one, so a
+                // running record is normally already here. A completed
+                // with no running record for the current binary is a
+                // dropped event, and an incomplete story stays out of the
+                // panel rather than inventing one row.
+                if let Some(record) = scans.get_mut(scan)
+                    && record.binary == *binary
+                {
+                    record.finished = true;
+                    record.elapsed_secs = Some(*elapsed_secs);
+                    record.findings = *findings;
                 }
             }
             ProgressEvent::PipelineStateChanged { .. } => {
@@ -762,6 +848,12 @@ impl ProgressState {
     pub async fn entry(&self, binary: &str, function: &str) -> Option<ProgressEntry> {
         let key = UnitKey::new(&BinaryIdentity::from(binary), function).to_string();
         self.entries.read().await.get(&key).cloned()
+    }
+
+    /// The scan records of the binary whose pass is in flight, in scan-name
+    /// order — the live view's stable row order (issue #428).
+    pub async fn scan_snapshot(&self) -> Vec<ScanRecord> {
+        self.scans.read().await.values().cloned().collect()
     }
 
     /// Returns a snapshot of classification results as serializable info.

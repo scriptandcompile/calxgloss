@@ -211,6 +211,13 @@
                 <h2>Live Translation</h2>
                 <span id="live-summary" class="badge"></span>
             </div>
+            <!-- Pre-batch evidence scans (issue #428): the scan phase
+                 runs before any unit exists, so its panel leads. -->
+            <h3 class="live-section-title">Evidence scans</h3>
+            <div id="live-scans" class="live-scans"></div>
+            <div id="live-scans-empty" class="empty-state">
+                <p>The scan phase has not started for this binary yet.</p>
+            </div>
             <div id="live-units" class="live-units"></div>
             <div id="live-empty" class="empty-state" style="display:none">
                 <p id="live-empty-message"></p>

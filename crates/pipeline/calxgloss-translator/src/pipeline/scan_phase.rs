@@ -33,54 +33,79 @@ pub(super) const SCAN_PHASE: &str = "evidence scans";
 pub(super) const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 
 /// One evidence scan as the fan-out's unit of work: takes its owned
-/// [`ScanJob`] and hands back the scan's boxed future. Each scan's future
-/// is a distinct type, so the window boxes them to move them onto tasks
-/// (issue #240). Registered rows arrive as closures that capture their row,
-/// hence the boxed `FnOnce` rather than the plain `fn` pointer (issue #302).
-pub(super) type EvidenceScanTask =
-    Box<dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'static>;
+/// [`ScanJob`] and hands back the scan's boxed future, whose answer is
+/// the finding count from the evidence engine when the row names a
+/// single one. It is `None` when the row names no count or the scan
+/// degraded. Each scan's future is a distinct type, so the window boxes
+/// them to move them onto tasks (issue #240). Registered rows arrive as
+/// closures that capture their row, hence the boxed `FnOnce` rather than
+/// the plain `fn` pointer (issue #302).
+pub(super) type EvidenceScanTask = Box<
+    dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = Option<usize>> + Send>>
+        + Send
+        + 'static,
+>;
 
 /// One evidence scan as it passes through the fan-out window: it counts
 /// itself in, runs, and counts itself out. The phase records the highest
 /// count it ever reached, so the window's cap is a tested contract rather
 /// than only a comment (issue #241). A named async fn again, so that the
-/// spawned future is `'static` (issue #240).
+/// spawned future is `'static` (issue #240). The window carries the row's
+/// name and its spawn instant back to the phase loop. The phase uses
+/// them to emit the row's completed event, naming the wall-clock seconds
+/// and the row's finding count when the row names a single one, or no
+/// count at all (issue #428).
 pub(super) async fn run_scan_in_window(
+    name: &'static str,
+    started: std::time::Instant,
     scan: EvidenceScanTask,
     job: ScanJob,
     in_flight: Arc<AtomicUsize>,
     high_water: Arc<AtomicUsize>,
-) {
+) -> (&'static str, f64, Option<usize>) {
     let entered = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
     high_water.fetch_max(entered, Ordering::SeqCst);
-    scan(job).await;
+    let findings = scan(job).await;
     in_flight.fetch_sub(1, Ordering::SeqCst);
+    (name, started.elapsed().as_secs_f64(), findings)
 }
 
 /// One registered row as the phase runs it: the row reads the batch
 /// through the job's owned context, carries the completion latches the
 /// phase armed for its declared dependency edge, and reports its own
 /// outcome; the phase's window, progress reporting, and joins wrap it
-/// from outside (issues #302, #305).
-pub(super) async fn run_registered_scan(row: ScanDescriptor, job: ScanJob, latches: ScanLatches) {
+/// from outside (issues #302, #305). The phase keeps only the row's
+/// finding count from that outcome — its event pair names the row, and
+/// the filed flag needs no second witness (issue #428).
+pub(super) async fn run_registered_scan(
+    row: ScanDescriptor,
+    job: ScanJob,
+    latches: ScanLatches,
+) -> Option<usize> {
     let mut ctx = job.scan_context();
     ctx.latches = latches;
-    row.run(ctx).await;
+    row.run(ctx).await.findings
 }
 
 /// The registered rows as ready-to-run tasks: each row moves into its own
-/// closure, boxed so the window can move it onto a task (issue #240). The
+/// closure, boxed so the window can move it onto a task (issue #240), and
+/// the row's registry name travels beside its task so the phase can name
+/// the scan in its own started/completed event pair (issue #428). The
 /// completion latches are attached to each row's context from the table's
 /// own declarations — the latch armed for this row's name is the one its
 /// run publishes on every exit, and the latch named by its `waits_for` is
 /// the one its pre-scan hook waits on (issue #305). No row carries its own
 /// latch field; the ordering edge is table data, and this is the only way
 /// a scan enters the phase (issue #308).
-pub(super) fn registered_scan_tasks() -> Vec<EvidenceScanTask> {
+pub(super) fn registered_scan_tasks() -> Vec<(&'static str, EvidenceScanTask)> {
     let rows = scan_rows();
     let armed = arm_completion_latches(&rows);
     rows.into_iter()
-        .map(|row| -> EvidenceScanTask {
+        .map(|row| {
+            // The row's registry name travels beside its task so the
+            // phase's event pair can name the scan it started and
+            // finished (issue #428).
+            let name = row.name();
             let publish = armed
                 .iter()
                 .find(|(name, _)| *name == row.name())
@@ -91,9 +116,10 @@ pub(super) fn registered_scan_tasks() -> Vec<EvidenceScanTask> {
                     .find(|(name, _)| *name == producer)
                     .map(|(_, latch)| latch.clone())
             });
-            Box::new(move |job: ScanJob| {
+            let task: EvidenceScanTask = Box::new(move |job: ScanJob| {
                 Box::pin(run_registered_scan(row, job, ScanLatches { publish, wait }))
-            })
+            });
+            (name, task)
         })
         .collect()
 }
@@ -285,8 +311,23 @@ impl TranslationPipeline {
         self.scan_window_high_water.store(0, Ordering::SeqCst);
         let in_flight = Arc::new(AtomicUsize::new(0));
         let high_water = Arc::clone(&self.scan_window_high_water);
-        for scan in scans.by_ref().take(MAX_CONCURRENT_EVIDENCE_SCANS) {
+        // One named started event per admitted row (issue #428). The
+        // pair's completed twin is emitted from the join below, so the
+        // started always precedes its completed on the channel.
+        let binary_id = BinaryIdentity::from(binary);
+        let emit_started = |name: &'static str| {
+            if let Some(events) = &self.events {
+                events.emit(ProgressEvent::EvidenceScanStarted {
+                    binary: binary_id.clone(),
+                    scan: name.to_string(),
+                });
+            }
+        };
+        for (name, scan) in scans.by_ref().take(MAX_CONCURRENT_EVIDENCE_SCANS) {
+            emit_started(name);
             set.spawn(run_scan_in_window(
+                name,
+                std::time::Instant::now(),
                 scan,
                 job.clone(),
                 Arc::clone(&in_flight),
@@ -295,17 +336,38 @@ impl TranslationPipeline {
         }
         // Sliding window: every completion frees a slot for the next scan,
         // and the group joins all fifteen — a failing or panicking scan
-        // never cancels its siblings (issue #240).
+        // never cancels its siblings (issue #240). The join also names the
+        // row it just finished: its completed event carries the wall-clock
+        // seconds from spawn and the row's finding count when the row
+        // reports a single one, or no count at all (issue #428). A task
+        // that never completed keeps its warning from issue #240. Its
+        // scan keeps only a started event, so the live view shows that
+        // scan as unfinished.
         while let Some(outcome) = set.join_next().await {
-            if let Err(e) = outcome {
-                warn!(
-                    binary,
-                    error = %e,
-                    "An evidence scan task did not complete; continuing without its context"
-                );
+            match outcome {
+                Ok((name, elapsed_secs, findings)) => {
+                    if let Some(events) = &self.events {
+                        events.emit(ProgressEvent::EvidenceScanCompleted {
+                            binary: binary_id.clone(),
+                            scan: name.to_string(),
+                            elapsed_secs,
+                            findings,
+                        });
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        binary,
+                        error = %e,
+                        "An evidence scan task did not complete; continuing without its context"
+                    );
+                }
             }
-            if let Some(scan) = scans.next() {
+            if let Some((name, scan)) = scans.next() {
+                emit_started(name);
                 set.spawn(run_scan_in_window(
+                    name,
+                    std::time::Instant::now(),
                     scan,
                     job.clone(),
                     Arc::clone(&in_flight),

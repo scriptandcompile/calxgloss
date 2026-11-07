@@ -315,6 +315,20 @@ function scheduleDashboardRefresh() {
     }, 2000);
 }
 
+/* Scan records ride the enhanced-progress payload, not the WS push —
+   the scan events only say when to refetch. Coalesced like the
+   dashboard refresh, and aimed at the live view only: the scan phase
+   emits two events per row per pass (issue #428). */
+let liveProgressRefreshTimer = null;
+function scheduleLiveProgressRefresh() {
+    if (State.currentView !== "live") return;
+    if (liveProgressRefreshTimer) return;
+    liveProgressRefreshTimer = setTimeout(() => {
+        liveProgressRefreshTimer = null;
+        loadLiveProgress();
+    }, 300);
+}
+
 function handleWSMessage(event) {
     console.log("[WS] handleWSMessage event:", event.event);
 
@@ -324,6 +338,16 @@ function handleWSMessage(event) {
     if (event.event === "unit_phase") {
         applyUnitPhase(event.unit);
         return;
+    }
+
+    // Pre-batch evidence-scan traffic and pass boundaries (issue #428) —
+    // the live view's scan panel re-renders from the enhanced-progress
+    // payload: a new row appears on started, settles on completed, and a
+    // pass for the next binary clears the previous one's rows. No reload.
+    if (event.event === "evidence_scan_started" ||
+        event.event === "evidence_scan_completed" ||
+        event.event === "batch_started") {
+        scheduleLiveProgressRefresh();
     }
 
     // Pipeline lifecycle transitions (issue #94) — the controls header

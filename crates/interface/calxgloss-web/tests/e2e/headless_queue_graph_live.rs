@@ -1532,3 +1532,175 @@ async fn test_headless_reload_keeps_current_tab() {
     tab.close_target().ok();
     drop(browser);
 }
+
+
+/// Headless-browser pin for the live view's evidence-scan panel (issue #428):
+/// pushed scan events render named rows without a reload. A running row shows
+/// its name and a ticking clock. A finished row shows its elapsed seconds and
+/// the finding count the evidence engine reported. A finished scan that filed
+/// no single count shows the words `no single count` instead of a number. A
+/// batch for the next binary clears the pass's rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_headless_live_view_shows_scan_rows() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
+    let _server = spawn_server(router, fixture.port()).await;
+
+    let Some(browser) = launch_headless_browser() else {
+        eprintln!("skipping scan-panel test: no headless browser found");
+        return;
+    };
+    let tab = open_dashboard_tab(&browser, fixture.port());
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click live tab");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Before the first started event the panel says the scan phase has not
+    // started — it must not imply that a count of scans ran.
+    assert!(
+        eval_bool(
+            &tab,
+            "document.getElementById('live-scans-empty').style.display === ''"
+        ),
+        "the not-started message should show before the first scan event"
+    );
+    let before = eval_text(&tab, "document.getElementById('live-scans')?.textContent || ''");
+    assert!(
+        !before.contains("0 scan") && !before.contains("scan"),
+        "no scan rows and no implied scan count before the first event, got {before:?}"
+    );
+
+    // One pass over one binary: a finished scan with a count, one still
+    // running, and one finished whose evidence engine files no single
+    // count.
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "scan_hd.dll".into(),
+    });
+    for event in [
+        ProgressEvent::EvidenceScanStarted {
+            binary: "scan_hd.dll".into(),
+            scan: "control-flow".into(),
+        },
+        ProgressEvent::EvidenceScanCompleted {
+            binary: "scan_hd.dll".into(),
+            scan: "control-flow".into(),
+            elapsed_secs: 2.5,
+            findings: Some(9),
+        },
+        ProgressEvent::EvidenceScanStarted {
+            binary: "scan_hd.dll".into(),
+            scan: "callback-detection".into(),
+        },
+        ProgressEvent::EvidenceScanStarted {
+            binary: "scan_hd.dll".into(),
+            scan: "type-database".into(),
+        },
+        ProgressEvent::EvidenceScanCompleted {
+            binary: "scan_hd.dll".into(),
+            scan: "type-database".into(),
+            elapsed_secs: 4.0,
+            findings: None,
+        },
+    ] {
+        events.emit(event);
+    }
+
+    // The pushed events re-render the panel on their own: three named rows,
+    // no reload.
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length") == 3 {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "the pushed scan events should produce three rows without a reload, rows: {}",
+        eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length")
+    );
+    let row_text = |name: &str| -> String {
+        eval_text(
+            &tab,
+            &format!("document.querySelector('#live-scans [data-scan=\"{name}\"]')?.textContent || ''"),
+        )
+    };
+
+    // Finished rows: elapsed seconds with the finding count where the
+    // scan files one, and the words `no single count` where it does not.
+    let counted = row_text("control-flow");
+    assert!(
+        counted.contains("2.5s") && counted.contains("9 findings"),
+        "the finished row should show elapsed seconds and the finding count, got {counted:?}"
+    );
+    let uncounted = row_text("type-database");
+    assert!(
+        uncounted.contains("4s") && uncounted.contains("no single count"),
+        "a finished scan without one reported count must not show a number, got {uncounted:?}"
+    );
+    assert!(
+        !uncounted.contains("0 finding"),
+        "a row must not invent a zero count, got {uncounted:?}"
+    );
+
+    // The in-flight scan stays a running row, its clock advancing on the
+    // ticker while its completed event is still out.
+    let running = row_text("callback-detection");
+    assert!(
+        running.contains("running"),
+        "the in-flight scan should render as running, got {running:?}"
+    );
+    let clock = || -> String {
+        eval_text(
+            &tab,
+            "document.querySelector('#live-scans [data-scan=\"callback-detection\"] .live-elapsed')?.textContent || ''",
+        )
+    };
+    let first = clock();
+    assert!(
+        first.ends_with('s') && first != "s",
+        "the running row should show a seconds clock, got {first:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let second = clock();
+    assert_ne!(
+        first, second,
+        "the running scan's clock must advance without a reload (was {first:?}, now {second:?})"
+    );
+
+    // A batch for the next binary clears this pass's scan rows, and the panel
+    // falls back to the not-started message.
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "next_scan_hd.dll".into(),
+    });
+    let mut cleared = false;
+    for _ in 0..25 {
+        if eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length") == 0 {
+            cleared = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        cleared,
+        "a batch for the next binary should clear the previous pass's scan rows"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            "document.getElementById('live-scans-empty').style.display === ''"
+        ),
+        "the cleared panel should say the scan phase has not started"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}

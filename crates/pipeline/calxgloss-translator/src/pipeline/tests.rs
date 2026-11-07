@@ -1632,7 +1632,7 @@ async fn callback_detection_waits_for_inference_across_a_reversed_call_order() {
     );
 
     assert!(
-        inference.run(inference_ctx).await,
+        inference.run(inference_ctx).await.filed,
         "the inference scan succeeds over the fixture"
     );
     assert!(
@@ -1644,7 +1644,7 @@ async fn callback_detection_waits_for_inference_across_a_reversed_call_order() {
         .await
         .expect("the published latch releases the callback row — inference never strands it")
         .expect("the callback task runs");
-    assert!(scanned, "the callback scan succeeds over the fixture");
+    assert!(scanned.filed, "the callback scan succeeds over the fixture");
 
     // The enrichment the wait protects: inference's document is in
     // place when the callback row composes its contracts, and it
@@ -1699,7 +1699,7 @@ async fn callback_detection_holds_until_the_latch_publishes() {
         .expect("the publish releases the held row")
         .expect("the callback task runs");
     assert!(
-        scanned,
+        scanned.filed,
         "the released row scans the fixture normally and files its document"
     );
     assert!(
@@ -1740,7 +1740,7 @@ async fn a_failing_type_inference_scan_degrades_callback_detection_never_blocks_
     )
     .await
     .expect("a failing inference scan still returns");
-    assert!(!inferred, "the failed save degrades the inference row");
+    assert!(!inferred.filed, "the failed save degrades the inference row");
     assert!(
         edge.is_set(),
         "the failing run still published its latch on the way out"
@@ -1757,7 +1757,7 @@ async fn a_failing_type_inference_scan_degrades_callback_detection_never_blocks_
     )
     .await
     .expect("a failed inference row never blocks the callback row");
-    assert!(scanned, "the callback scan itself still succeeds");
+    assert!(scanned.filed, "the callback scan itself still succeeds");
 
     assert!(
         !TypeInferPersistor::new(dir.path()).exists("eqmain.dll"),
@@ -3749,6 +3749,187 @@ async fn scan_phase_heartbeats_name_the_phase_cold_and_warm() {
     assert_phase_beats(&warm);
 }
 
+/// Drain every `EvidenceScan*` event seen since the last drain.
+fn drain_scan_events(
+    rx: &mut tokio::sync::broadcast::Receiver<ProgressEvent>,
+) -> Vec<ProgressEvent> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .filter(|ev| {
+            matches!(
+                ev,
+                ProgressEvent::EvidenceScanStarted { .. }
+                    | ProgressEvent::EvidenceScanCompleted { .. }
+            )
+        })
+        .collect()
+}
+
+/// Every registered row — names taken from `scan_rows()`, never a
+/// hand-written list — got exactly one started/completed pair, in that
+/// order, each pair naming the row and the batch binary, and no
+/// completed event invents a negative or infinite elapsed (issue #428).
+fn assert_scan_pairs(pairs: &[ProgressEvent], names: &[&'static str]) {
+    use std::collections::HashMap;
+    let mut stage: HashMap<&str, u8> = HashMap::new(); // 1 = started, 2 = completed
+    for event in pairs {
+        match event {
+            ProgressEvent::EvidenceScanStarted { scan, binary } => {
+                assert!(
+                    !binary.as_str().is_empty(),
+                    "the started event names the batch binary: {event}"
+                );
+                assert_eq!(
+                    stage.insert(scan.as_str(), 1),
+                    None,
+                    "one started event per row per pass: {scan}"
+                );
+            }
+            ProgressEvent::EvidenceScanCompleted {
+                scan,
+                elapsed_secs,
+                ..
+            } => {
+                assert!(
+                    elapsed_secs.is_finite() && *elapsed_secs >= 0.0,
+                    "the completed event carries a real elapsed: {event}"
+                );
+                assert_eq!(
+                    stage.insert(scan.as_str(), 2),
+                    Some(1),
+                    "the completed event pairs with the row's own started event: {scan}"
+                );
+            }
+            other => unreachable!("drain_scan_events keeps scan events only, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        stage.len(),
+        names.len(),
+        "every registered row got a pair — the roster holds {} rows: {stage:?}",
+        names.len()
+    );
+    for name in names {
+        assert_eq!(
+            stage.get(*name),
+            Some(&2),
+            "the registered row {name} got a full started/completed pair"
+        );
+    }
+}
+
+/// One named row's completed event from a drained pair list.
+fn completed_scan<'a>(
+    pairs: &'a [ProgressEvent],
+    name: &str,
+) -> &'a ProgressEvent {
+    pairs
+        .iter()
+        .find(|ev| {
+            matches!(ev, ProgressEvent::EvidenceScanCompleted { scan, .. } if scan == name)
+        })
+        .unwrap_or_else(|| panic!("the {name} row's completed event is in the drain"))
+}
+
+/// Every registered scan row gets a named started/completed pair on the
+/// progress channel per pass, cold and warm (issue #428). The pairs name
+/// the registry rows exactly as `scan_rows()` lists them, and the
+/// completed events carry real elapsed seconds. The finding count rides
+/// through only where the row names a single one: the type-database row
+/// files three separate counts and so reports none, while control-flow
+/// names one and reports the evidence engine's count on a cold and a
+/// warm pass.
+#[tokio::test]
+async fn every_registered_scan_gets_a_named_pair_cold_and_warm() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _) = cached_pipeline(dir.path());
+    // A wide channel: a full batch emits evidence-engine heartbeat
+    // events between the pair events, and a lagged subscriber would drop
+    // pairs and make the exact-count assertion flaky.
+    let events = TranslationEvents::new(4096);
+    let mut rx = events.subscribe();
+    let pipeline = pipeline.with_events(events);
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    // Names and pair count both follow the registry table itself, so a
+    // newly registered row needs no test edit (issue #428). Only the
+    // roster being non-empty is pinned here.
+    let names: Vec<&'static str> = scan_rows().iter().map(|row| row.name()).collect();
+    assert!(
+        !names.is_empty(),
+        "the registry table names the rows the pairs must follow"
+    );
+
+    // Cold pass: every row runs its evidence engine against the live reads.
+    pipeline
+        .batch_translate(
+            calxgloss_testfixtures::TARGET_FILE_NAME,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("cold batch over the fixture");
+    let cold = drain_scan_events(&mut rx);
+    assert_scan_pairs(&cold, &names);
+    // The row with no single count reports no count: the event carries
+    // no findings field at all.
+    let cold_db = completed_scan(&cold, "type-database");
+    match cold_db {
+        ProgressEvent::EvidenceScanCompleted { findings, .. } => assert_eq!(
+            *findings,
+            None,
+            "the type-database row files three separate counts, so it reports none: {cold_db}"
+        ),
+        other => unreachable!("completed_scan found a completed event, got {other:?}"),
+    }
+    // A single-count row that succeeds files the evidence engine's count.
+    let cold_flow = completed_scan(&cold, "control-flow");
+    match cold_flow {
+        ProgressEvent::EvidenceScanCompleted { findings, .. } => assert!(
+            findings.is_some(),
+            "the control-flow row ran and saved, so its count is reported: {cold_flow}"
+        ),
+        other => unreachable!("completed_scan found a completed event, got {other:?}"),
+    }
+
+    // Warm pass: wipe the scan result documents so every row runs its
+    // evidence engine again, this time reading bodies from the read
+    // cache. The pairs must stand per row per pass (the warm-replay
+    // heartbeat convention of issue #121).
+    std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
+        .expect("clear the scan result documents");
+    pipeline
+        .batch_translate(
+            calxgloss_testfixtures::TARGET_FILE_NAME,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("warm batch replays from the cache");
+    let warm = drain_scan_events(&mut rx);
+    assert_scan_pairs(&warm, &names);
+    let warm_db = completed_scan(&warm, "type-database");
+    match warm_db {
+        ProgressEvent::EvidenceScanCompleted { findings, .. } => assert_eq!(
+            *findings,
+            None,
+            "the warm re-run still files three separate counts and reports none: {warm_db}"
+        ),
+        other => unreachable!("completed_scan found a completed event, got {other:?}"),
+    }
+    let warm_flow = completed_scan(&warm, "control-flow");
+    match warm_flow {
+        ProgressEvent::EvidenceScanCompleted { findings, .. } => assert!(
+            findings.is_some(),
+            "the warm control-flow re-run reports the evidence engine's count: {warm_flow}"
+        ),
+        other => unreachable!("completed_scan found a completed event, got {other:?}"),
+    }
+}
+
 /// Cache trouble degrades to plain live reads: with the binary file
 /// missing, the disk tier is dropped entirely and every read passes
 /// straight through to the engine — the batch behaves exactly as an
@@ -4367,7 +4548,7 @@ async fn the_fanned_scan_phase_persists_what_the_sequential_registry_run_persist
         let mut ctx = job.scan_context();
         ctx.latches = ScanLatches { publish, wait };
         assert!(
-            row.run(ctx).await,
+            row.run(ctx).await.filed,
             "the sequential {} row must file its document over the fixture",
             row.name()
         );
@@ -5198,7 +5379,7 @@ async fn a_set_override_file_replaces_the_built_in_set_inside_the_row_build() {
                     ..ScanRunOptions::default()
                 },
             )
-            .await,
+            .await.filed,
         "the algorithm row scans the fixture from the override file's set"
     );
     let document = AlgorithmPersistor::new(dir.path())
@@ -5228,7 +5409,7 @@ async fn a_set_override_file_replaces_the_built_in_set_inside_the_row_build() {
                     ..ScanRunOptions::default()
                 },
             )
-            .await,
+            .await.filed,
         "the known-library row scans the fixture from the override file's set"
     );
     let document = calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path())
@@ -5283,7 +5464,7 @@ async fn a_malformed_set_override_file_fails_the_override_capable_rows_naming_th
                     ..ScanRunOptions::default()
                 },
             )
-            .await,
+            .await.filed,
             "the {row_name} row's scan fails on its malformed override file"
         );
         assert!(
@@ -5331,7 +5512,7 @@ async fn the_write_suppression_option_holds_the_type_database_row_to_its_reads()
         .scan_job(PROGRAM)
         .expect("the workspace is configured, so the job exists");
     assert!(
-        row.run(default_job.scan_context()).await,
+        row.run(default_job.scan_context()).await.filed,
         "the type-database row scans the fixture with the defaults"
     );
 
@@ -5347,7 +5528,7 @@ async fn the_write_suppression_option_holds_the_type_database_row_to_its_reads()
                 ..ScanRunOptions::default()
             },
         )
-        .await,
+        .await.filed,
         "the type-database row scans the fixture with the write suppression set"
     );
     assert_eq!(
@@ -5387,7 +5568,7 @@ async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed
     let persistor = AlgorithmPersistor::new(dir.path());
 
     assert!(
-        row.run(job.scan_context()).await,
+        row.run(job.scan_context()).await.filed,
         "the cold run files the built-in set's document"
     );
     let built_in = persistor
@@ -5415,7 +5596,7 @@ async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed
                 ..ScanRunOptions::default()
             },
         )
-        .await,
+        .await.filed,
         "the default policy answers a filed document from the short-circuit"
     );
     let short_circuited = persistor.load(PROGRAM).expect("document still filed");
@@ -5434,7 +5615,7 @@ async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed
                 ..ScanRunOptions::default()
             },
         )
-        .await,
+        .await.filed,
         "the overwrite policy re-runs a row whose document is already filed"
     );
     let replaced = persistor.load(PROGRAM).expect("the forced re-scan saved");
@@ -5462,7 +5643,7 @@ async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed
                 ..ScanRunOptions::default()
             },
         )
-        .await,
+        .await.filed,
         "a forced re-scan on a malformed override file answers false"
     );
     let survived = persistor
@@ -5753,7 +5934,7 @@ async fn a_scan_job_handed_to_a_spawned_task_matches_the_inline_call() {
     let inline = find_row("type-database")
         .run(inline_job.scan_context())
         .await;
-    assert!(inline, "the inline scan succeeds over the fixture");
+    assert!(inline.filed, "the inline scan succeeds over the fixture");
 
     let job_dir = TempDir::new().expect("temp workspace");
     let job = pipeline_over(Some(job_dir.path()))

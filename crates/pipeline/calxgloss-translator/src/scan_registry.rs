@@ -285,9 +285,39 @@ pub struct ScanRunOptions {
 /// [`ScanDescriptor::new`]. The shape itself reads the run's
 /// [`ScanRunOptions`] (the overwrite policy ahead of the short-circuit),
 /// and the row interprets the rest inside its own engine build. The
-/// answer says whether the document is in place.
-type RunStep =
-    Box<dyn Fn(ScanContext, ScanRunOptions) -> OwnedFuture<bool> + Send + Sync + 'static>;
+/// answer reports whether the document is in place and, when the scan
+/// ran its evidence engine and saved, the row's finding count (issue #428).
+type RunStep = Box<
+    dyn Fn(ScanContext, ScanRunOptions) -> OwnedFuture<ScanRunOutcome> + Send + Sync + 'static,
+>;
+
+/// What one registered scan's run answers: whether its document is in
+/// place afterwards — filed by this run, or already filed and
+/// short-circuited — and what the scan found, reported only when the
+/// evidence engine ran, succeeded, and saved a document.
+///
+/// `findings` is `None` on every path where no single count exists: a
+/// cached-hit short-circuit (the evidence engine never ran), a scan or
+/// save failure, and rows like the type-database that file several
+/// separate counts. The scan phase's completed event carries this
+/// straight through, so an unreported count stays unreported there
+/// (issue #428).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanRunOutcome {
+    /// The document is filed — by this run or already standing.
+    pub filed: bool,
+    /// The scan's finding count, when the evidence engine ran and the row
+    /// reports a single count for what it filed.
+    pub findings: Option<usize>,
+}
+
+/// The row's finding counter: how the row names the single count of
+/// things its scan filed, read from the evidence engine's own result
+/// after a successful save. `None` in the row means the row has no single
+/// count — the type-database scan reports named types, vtables, and
+/// inferred structs separately — so its completed event reports no
+/// count at all (issue #428).
+type FindingsStep<T> = Arc<dyn Fn(&T) -> usize + Send + Sync + 'static>;
 
 /// Everything one registered scan reads, owned by the scan itself: the
 /// target binary it reads and its document is named after, the workspace
@@ -383,6 +413,13 @@ where
     /// a single-finding-count scan reports one).
     pub on_saved: SuccessStep<T>,
 
+    /// The single count of things the scan filed, read from the evidence
+    /// engine's result after a successful save and carried in the scan
+    /// phase's completed event (issue #428). `None` when the row has no
+    /// single count to report — the type-database row files three
+    /// separate counts — and the completed event then carries no count.
+    pub findings: Option<FindingsStep<T>>,
+
     /// Optional step run before the engine is built.
     pub pre_scan: Option<ScanHook>,
 
@@ -411,8 +448,10 @@ impl ScanDescriptor {
     /// the row interprets the ones it can. Persist the document on
     /// success. On a scan or save failure, degrade to a warning: a first
     /// scan leaves no document, and a forced re-scan leaves the previous
-    /// one in place. The answer is `false` after either failure, `true`
-    /// on a cached hit or a saved document. The post-scan hook runs on
+    /// one in place. The answer reports `false` for `filed` after either
+    /// failure, `true` on a cached hit or a saved document, and carries the
+    /// evidence engine's finding count when the run saved and the row
+    /// names a single one (issue #428). The post-scan hook runs on
     /// every exit, and so does the publish of a producer arm's
     /// completion latch: cached hit, success, and both failures release
     /// the waiter alike (issue #305). The heartbeat, the window, and the
@@ -436,6 +475,7 @@ impl ScanDescriptor {
         let save = row.save;
         let build_and_scan = row.build_and_scan;
         let on_saved = row.on_saved;
+        let findings_step = row.findings;
         let pre_scan = row.pre_scan;
         let post_scan = row.post_scan;
 
@@ -449,6 +489,7 @@ impl ScanDescriptor {
             let save = Arc::clone(&save);
             let build_and_scan = Arc::clone(&build_and_scan);
             let on_saved = Arc::clone(&on_saved);
+            let findings_step = findings_step.clone();
             let pre_scan = pre_scan.clone();
             let post_scan = post_scan.clone();
             Box::pin(async move {
@@ -458,6 +499,7 @@ impl ScanDescriptor {
                 // save only ever follows a successful scan and never
                 // deletes, so a failed forced re-scan leaves the
                 // previous document filed.
+                let mut findings = None;
                 let scanned = if !options.overwrite_filed_document
                     && exists(&persistor, &ctx.binary)
                 {
@@ -478,6 +520,14 @@ impl ScanDescriptor {
                         Ok(result) => match save(&persistor, &result) {
                             Ok(()) => {
                                 on_saved(&ctx, &result);
+                                // The row's own count of what it filed, read
+                                // from the evidence engine's result while it
+                                // is still here — and only here. A cached
+                                // hit, a failed scan, and a failed save all
+                                // leave `findings` None: the evidence engine
+                                // never ran, or nothing was filed, so the
+                                // completed event reports no count (issue #428).
+                                findings = findings_step.as_ref().map(|count| count(&result));
                                 true
                             }
                             Err(e) => {
@@ -502,7 +552,10 @@ impl ScanDescriptor {
                 if let Some(latch) = &ctx.latches.publish {
                     latch.publish();
                 }
-                scanned
+                ScanRunOutcome {
+                    filed: scanned,
+                    findings,
+                }
             })
         });
 
@@ -538,7 +591,7 @@ impl ScanDescriptor {
     /// filed-document short-circuit, the built-in sets, and the
     /// engine's own write-back behavior all stay as the rows shipped
     /// them.
-    pub async fn run(&self, ctx: ScanContext) -> bool {
+    pub async fn run(&self, ctx: ScanContext) -> ScanRunOutcome {
         self.run_with_options(ctx, ScanRunOptions::default()).await
     }
 
@@ -548,9 +601,15 @@ impl ScanDescriptor {
     /// and write-suppression signal reach the row's own engine build,
     /// where the row interprets them. Report whether the scan's
     /// document is in place afterwards — filed by this run, or already
-    /// filed and short-circuited. A failure warns and answers `false`;
-    /// it never aborts the group around it.
-    pub async fn run_with_options(&self, ctx: ScanContext, options: ScanRunOptions) -> bool {
+    /// filed and short-circuited. A failure warns and reports the document
+    /// as not filed; it never aborts the group around it. A successful run
+    /// carries the evidence engine's finding count when the row names a
+    /// single one. `findings` is `None` everywhere else (issue #428).
+    pub async fn run_with_options(
+        &self,
+        ctx: ScanContext,
+        options: ScanRunOptions,
+    ) -> ScanRunOutcome {
         (self.run)(ctx, options).await
     }
 }
@@ -592,6 +651,7 @@ fn controlflow_row() -> ScanDescriptor {
                 "Control-flow detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -676,6 +736,7 @@ fn memory_row() -> ScanDescriptor {
                 "Memory lifecycle detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -711,6 +772,7 @@ fn concurrency_row() -> ScanDescriptor {
                 "Concurrency detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -749,6 +811,7 @@ fn global_state_row() -> ScanDescriptor {
                 "Global-state detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -786,6 +849,7 @@ fn constants_row() -> ScanDescriptor {
                 "Constant detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -824,6 +888,7 @@ fn error_handling_row() -> ScanDescriptor {
                 "Error-handling idiom detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -861,6 +926,7 @@ fn floatsimd_row() -> ScanDescriptor {
                 "Float/SIMD usage detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -913,6 +979,7 @@ fn type_database_row() -> ScanDescriptor {
                 "Type database recovered"
             );
         }),
+        findings: None,
         pre_scan: None,
         post_scan: None,
     })
@@ -965,6 +1032,7 @@ fn algorithm_row() -> ScanDescriptor {
                 "Algorithm recognition complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.hints.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -1002,6 +1070,7 @@ fn string_context_row() -> ScanDescriptor {
                 "String context scan complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -1037,6 +1106,7 @@ fn library_api_row() -> ScanDescriptor {
                 "API detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -1075,6 +1145,7 @@ fn serialization_row() -> ScanDescriptor {
                 "Serialization detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -1115,6 +1186,7 @@ fn type_inference_row() -> ScanDescriptor {
                 "Type inference complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.inferences.len())),
         pre_scan: None,
         post_scan: None,
     })
@@ -1176,6 +1248,7 @@ fn callback_row() -> ScanDescriptor {
                 "Callback detection complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: {
             let composed = Arc::clone(&composed);
             Some(Arc::new(move |ctx| {
@@ -1277,6 +1350,7 @@ fn known_library_row() -> ScanDescriptor {
                 "Known-library identification complete"
             );
         }),
+        findings: Some(Arc::new(|result| result.findings.len())),
         pre_scan: None,
         post_scan: None,
     })

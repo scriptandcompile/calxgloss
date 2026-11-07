@@ -383,7 +383,7 @@ pub(crate) async fn handle_scan_command(
         // composes from cached documents regardless.
         latches: ScanLatches::default(),
     };
-    if !row.run_with_options(ctx, options).await {
+    if !row.run_with_options(ctx, options).await.filed {
         // The row already warned with its own byte-for-byte wording;
         // the CLI's job is only to make the failure the process exit.
         bail!(

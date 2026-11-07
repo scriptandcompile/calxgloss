@@ -168,6 +168,34 @@ pub struct LiveUnitProgress {
     pub outcome: Option<String>,
 }
 
+/// One pre-batch evidence scan as the live pipeline currently sees it
+/// (issue #428).
+///
+/// One record per registered scan name for the binary whose pass is in
+/// flight. An unfinished record is running now, and its `elapsed_secs`
+/// is measured at serve time from when the scan started. A finished
+/// record keeps the run's wall-clock seconds. `findings` is the scan's
+/// finding count when the evidence engine reported a single one, and
+/// `None` when the row files separate counts or the evidence engine
+/// never ran. An unreported count leaves the field out of the payload
+/// entirely — never a zero.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveScanProgress {
+    /// The registry row's name: "control-flow", "type-database", …
+    pub scan: String,
+    /// The binary whose scan pass this record belongs to.
+    pub binary: BinaryIdentity,
+    /// Whether the scan's completed event has landed.
+    pub finished: bool,
+    /// Seconds from the scan's spawn to completion, or — while running —
+    /// to the moment the payload was served.
+    pub elapsed_secs: f64,
+    /// The scan's finding count, when the evidence engine reported a
+    /// single one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub findings: Option<usize>,
+}
+
 /// The live view payload: every unit the live pipeline is tracking.
 ///
 /// Served by `GET /api/progress/enhanced`, which is registered in the live
@@ -182,15 +210,23 @@ pub struct LiveTranslationState {
     pub count: usize,
     /// Units still in flight — no terminal event observed yet.
     pub in_flight: usize,
+    /// The pre-batch evidence scans of the binary whose pass is in flight,
+    /// sorted by scan name so rows don't shuffle between refreshes
+    /// (issue #428). Empty before the scan phase's first started event.
+    /// `serde(default)` keeps payloads written before this field existed
+    /// readable.
+    #[serde(default)]
+    pub scans: Vec<LiveScanProgress>,
 }
 
 impl LiveTranslationState {
-    /// A state with no units tracked.
+    /// A state with no units tracked and no scans tracked.
     pub fn empty() -> Self {
         Self {
             units: Vec::new(),
             count: 0,
             in_flight: 0,
+            scans: Vec::new(),
         }
     }
 }
@@ -415,6 +451,13 @@ mod tests {
             units: vec![unit()],
             count: 1,
             in_flight: 1,
+            scans: vec![LiveScanProgress {
+                scan: "control-flow".into(),
+                binary: "game_logic.dll".into(),
+                finished: true,
+                elapsed_secs: 3.5,
+                findings: Some(7),
+            }],
         };
         let json = serde_json::to_value(&state).expect("serializes");
         assert_eq!(json["count"], 1);
@@ -423,6 +466,7 @@ mod tests {
             json["units"].as_array().expect("units is an array").len(),
             1
         );
+        assert_eq!(json["scans"].as_array().expect("scans is an array").len(), 1);
 
         let back: LiveTranslationState = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, state);
@@ -431,5 +475,31 @@ mod tests {
         assert_eq!(empty.count, 0);
         assert_eq!(empty.in_flight, 0);
         assert!(empty.units.is_empty());
+        assert!(empty.scans.is_empty());
+    }
+
+    #[test]
+    fn live_state_scans_omit_unreported_counts_and_old_payloads_still_read() {
+        // A scan with no single count serializes without the field at all.
+        let no_count = LiveScanProgress {
+            scan: "type-database".into(),
+            binary: "eqmain.dll".into(),
+            finished: true,
+            elapsed_secs: 12.0,
+            findings: None,
+        };
+        let json = serde_json::to_value(&no_count).expect("serializes");
+        assert!(
+            json.get("findings").is_none(),
+            "no single count, no findings field: {json}"
+        );
+
+        // A payload written before the scans field existed still reads,
+        // with no scans tracked.
+        let old: LiveTranslationState = serde_json::from_value(serde_json::json!({
+            "units": [], "count": 0, "in_flight": 0,
+        }))
+        .expect("an old payload is still readable");
+        assert!(old.scans.is_empty());
     }
 }

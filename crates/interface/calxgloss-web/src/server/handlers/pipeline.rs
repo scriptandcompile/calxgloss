@@ -3,8 +3,8 @@
 use super::super::{
     BatchInfo, BinaryFocusResponse, BinaryPauseResponse, ClassificationInfo, CombinedState,
     PipelineControl, PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse,
-    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse, ServerError,
-    UnitCancelResponse,
+    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse, ScanRecord,
+    ServerError, UnitCancelResponse,
 };
 
 use super::process::binary_matches;
@@ -15,10 +15,10 @@ use axum::{
     extract::{Path as PathExtractor, State},
 };
 use calxgloss_types::{
-    BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PalReadiness,
-    PalTraitReadiness, PassStatus, PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest,
-    PipelineState, RunRequestSignal, ScopeControl, TokenUsageLog, TranslationPhase,
-    derive_unit_confidence,
+    BinaryIdentity, BinaryProgress, LiveScanProgress, LiveTranslationState, LiveUnitProgress,
+    PalReadiness, PalTraitReadiness, PassStatus, PhaseProgress, PhaseState, PipelinePhase,
+    PipelineRunRequest, PipelineState, RunRequestSignal, ScopeControl, TokenUsageLog,
+    TranslationPhase, derive_unit_confidence,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -85,13 +85,44 @@ pub async fn api_get_progress_enhanced(
             .then_with(|| a.function.cmp(&b.function))
     });
 
+    // The scan rows of the binary whose pass is in flight (issue #428),
+    // in scan-name order — already stable from the store's keyed map.
+    let scans: Vec<LiveScanProgress> = progress
+        .read()
+        .await
+        .scan_snapshot()
+        .await
+        .iter()
+        .map(live_scan_progress)
+        .collect();
+
     let count = units.len();
     let in_flight = units.iter().filter(|u| !u.finished).count();
     Json(LiveTranslationState {
         units,
         count,
         in_flight,
+        scans,
     })
+}
+
+/// Project one [`ScanRecord`] into the shared [`LiveScanProgress`] the
+/// live view consumes (issue #428). A running scan's elapsed is measured
+/// at serve time from its own start. A finished scan reports the seconds
+/// recorded by its completed event. A scan that filed no single count
+/// keeps `findings` as `None`, and the payload then carries no count.
+pub(crate) fn live_scan_progress(r: &ScanRecord) -> LiveScanProgress {
+    let elapsed = match r.elapsed_secs {
+        Some(secs) => secs,
+        None => r.started_at.elapsed().as_secs_f64(),
+    };
+    LiveScanProgress {
+        scan: r.scan.clone(),
+        binary: r.binary.clone(),
+        finished: r.finished,
+        elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
+        findings: r.findings,
+    }
 }
 
 /// Project one live [`ProgressEntry`] into the shared [`LiveUnitProgress`]

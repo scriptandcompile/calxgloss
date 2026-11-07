@@ -243,6 +243,36 @@ pub enum ProgressEvent {
         index: usize,
         total: usize,
     },
+    /// One registered evidence scan started running, named by its registry
+    /// row name. Batch-level like the phase's heartbeat. It names no unit
+    /// and derives no unit phase. The scan phase emits one
+    /// started/completed pair per row per pass, cold and warm alike, so
+    /// the live view's scan panel can show each scan while it runs
+    /// (issue #428).
+    EvidenceScanStarted {
+        binary: BinaryIdentity,
+        /// The registry row's name — "control-flow", "type-database", …
+        scan: String,
+    },
+    /// The named evidence scan finished its pass. Pairs with
+    /// [`ProgressEvent::EvidenceScanStarted`]. `findings` carries the
+    /// scan's finding count when the evidence engine reports a single
+    /// one. It is `None` when no single count exists — the type-database
+    /// row files named types, vtables, and inferred structs separately —
+    /// and on a cached-hit or failed scan. A `None` serializes to no
+    /// field at all, never a zero (issue #428).
+    EvidenceScanCompleted {
+        binary: BinaryIdentity,
+        /// The registry row's name — "control-flow", "type-database", …
+        scan: String,
+        /// Seconds from the scan's spawn to its completion, live read or
+        /// cache replay alike.
+        elapsed_secs: f64,
+        /// The finding count the evidence engine reported, absent when
+        /// the row files no single count.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        findings: Option<usize>,
+    },
     /// Batch translation for a DLL has completed (summary across all functions).
     BatchSummary {
         binary: BinaryIdentity,
@@ -429,6 +459,8 @@ impl ProgressEvent {
             | ProgressEvent::BatchStarted { .. }
             | ProgressEvent::QueuePlanned { .. }
             | ProgressEvent::BatchProgress { .. }
+            | ProgressEvent::EvidenceScanStarted { .. }
+            | ProgressEvent::EvidenceScanCompleted { .. }
             | ProgressEvent::BatchSummary { .. }
             | ProgressEvent::PipelineStateChanged { .. }
             | ProgressEvent::BinaryPauseChanged { .. } => None,
@@ -641,6 +673,24 @@ impl std::fmt::Display for ProgressEvent {
                     write!(f, "{pass} ({binary})")
                 }
             }
+            ProgressEvent::EvidenceScanStarted { binary, scan } => {
+                write!(f, "Evidence scan {scan} started ({binary})")
+            }
+            ProgressEvent::EvidenceScanCompleted {
+                binary,
+                scan,
+                elapsed_secs,
+                findings,
+            } => match findings {
+                Some(count) => write!(
+                    f,
+                    "Evidence scan {scan} finished in {elapsed_secs:.1}s — {count} finding(s) ({binary})"
+                ),
+                None => write!(
+                    f,
+                    "Evidence scan {scan} finished in {elapsed_secs:.1}s ({binary})"
+                ),
+            },
             ProgressEvent::BatchSummary {
                 binary,
                 total_functions,
@@ -1454,6 +1504,69 @@ mod tests {
         let json = serde_json::to_value(&event).expect("serializes");
         assert_eq!(json["event"], "batch_started");
         assert_eq!(json["binary"], "LaunchPad.exe");
+    }
+
+    #[test]
+    fn evidence_scan_started_is_batch_scoped_tagged_and_phaseless() {
+        let event = ProgressEvent::EvidenceScanStarted {
+            binary: "LaunchPad.exe".into(),
+            scan: "control-flow".into(),
+        };
+        assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a scan row names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "evidence_scan_started");
+        assert_eq!(json["scan"], "control-flow");
+        assert_eq!(json["binary"], "LaunchPad.exe");
+        let shown = event.to_string();
+        assert!(shown.contains("control-flow"), "display names the scan: {shown}");
+    }
+
+    #[test]
+    fn evidence_scan_completed_names_scan_elapsed_and_findings() {
+        let event = ProgressEvent::EvidenceScanCompleted {
+            binary: "LaunchPad.exe".into(),
+            scan: "control-flow".into(),
+            elapsed_secs: 4.25,
+            findings: Some(9),
+        };
+        assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a finished scan names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "evidence_scan_completed");
+        assert_eq!(json["scan"], "control-flow");
+        assert_eq!(json["elapsed_secs"], 4.25);
+        assert_eq!(json["findings"], 9);
+        let shown = event.to_string();
+        assert!(shown.contains("control-flow"), "display names the scan: {shown}");
+        assert!(shown.contains("9"), "display reports the count: {shown}");
+    }
+
+    #[test]
+    fn evidence_scan_completed_omits_unreported_findings_never_a_zero() {
+        let event = ProgressEvent::EvidenceScanCompleted {
+            binary: "LaunchPad.exe".into(),
+            scan: "type-database".into(),
+            elapsed_secs: 1.5,
+            findings: None,
+        };
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "evidence_scan_completed");
+        assert!(
+            json.get("findings").is_none(),
+            "an unreported count stays absent, never a fabricated zero: {json}"
+        );
+        let shown = event.to_string();
+        assert!(
+            !shown.contains("0"),
+            "the display invents no count: {shown}"
+        );
     }
 
     #[test]

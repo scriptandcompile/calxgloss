@@ -47,7 +47,9 @@ export async function loadLiveProgress() {
         // Anchor each row's elapsed clock to when its record arrived, so a
         // later push for another unit doesn't shift this row's clock.
         (lastState.units || []).forEach(u => { u._receivedAt = lastFetchedAt; });
+        (lastState.scans || []).forEach(s => { s._receivedAt = lastFetchedAt; });
         renderLiveUnits();
+        renderLiveScans();
     } catch (err) {
         lastState = null;
         list.innerHTML = "";
@@ -60,6 +62,10 @@ export async function loadLiveProgress() {
         } else {
             showEmpty("Live progress is unavailable right now — the request failed.");
         }
+        // No payload, no scan records: say the scan phase has not started
+        // rather than leave stale rows or imply a count. (issue #428)
+        const scansEmpty = document.getElementById("live-scans-empty");
+        if (scansEmpty) scansEmpty.style.display = "";
     }
 }
 
@@ -163,6 +169,47 @@ function renderLiveUnits() {
     list.innerHTML = units.map(unitRowHtml).join("");
 }
 
+/** Render the pre-batch evidence-scan panel (issue #428) from the same
+ *  payload as the units. Empty means the scan phase has not started for
+ *  this binary — the panel says exactly that, never "0 scans ran". */
+function renderLiveScans() {
+    const list = document.getElementById("live-scans");
+    if (!list) return;
+    const empty = document.getElementById("live-scans-empty");
+    const scans = (lastState && lastState.scans) || [];
+    if (scans.length === 0) {
+        list.innerHTML = "";
+        if (empty) empty.style.display = "";
+        return;
+    }
+    if (empty) empty.style.display = "none";
+    list.innerHTML = scans.map(scanRowHtml).join("");
+}
+
+/** Markup for one scan row: running rows carry the ticking clock's
+ *  anchor (same pattern as the unit rows); finished rows show the pass's
+ *  elapsed and the finding count the evidence engine reported, or the
+ *  words `no single count` when the scan filed no single count. */
+function scanRowHtml(s) {
+    const receivedAt = s._receivedAt || lastFetchedAt;
+    let chips;
+    if (!s.finished) {
+        chips = `<span class="live-chip live-phase">running</span>` +
+            `<span class="live-chip live-elapsed" data-elapsed-base="${s.elapsed_secs ?? 0}" data-received-at="${receivedAt}">${Math.floor(s.elapsed_secs ?? 0)}s</span>`;
+    } else {
+        const count = typeof s.findings === "number"
+            ? `<span class="live-chip scan-findings">${s.findings} finding${s.findings === 1 ? "" : "s"}</span>`
+            : `<span class="live-chip scan-findings">no single count</span>`;
+        chips = `<span class="live-chip live-elapsed">${Math.round((s.elapsed_secs ?? 0) * 10) / 10}s</span>` +
+            count;
+    }
+    return `
+        <div class="live-scan ${s.finished ? "scan-finished" : "scan-running"}" data-scan="${escapeHtml(s.scan)}">
+            <span class="live-scan-name">${escapeHtml(s.scan)}</span>
+            ${chips}
+        </div>`;
+}
+
 /** Markup for one unit row — shared by the full render and the per-push update. */
 function unitRowHtml(u) {
     const phase = u.phase || "unknown";
@@ -208,10 +255,14 @@ function unitRowHtml(u) {
         </div>`;
 }
 
-/** Advance the displayed elapsed clocks from each row's own base and anchor. */
+/** Advance the displayed elapsed clocks from each row's own base and
+ *  anchor — unit rows and the running scan rows alike (issue #428);
+ *  finished scan rows show a settled value and need no tick. */
 function tickElapsed() {
     if (!lastState) return;
-    document.querySelectorAll("#live-units .live-elapsed").forEach(el => {
+    document.querySelectorAll(
+        "#live-units .live-elapsed, #live-scans .live-elapsed[data-elapsed-base]"
+    ).forEach(el => {
         const base = parseFloat(el.dataset.elapsedBase || "0");
         const receivedAt = parseFloat(el.dataset.receivedAt || "0") || lastFetchedAt;
         const drift = (Date.now() - receivedAt) / 1000;

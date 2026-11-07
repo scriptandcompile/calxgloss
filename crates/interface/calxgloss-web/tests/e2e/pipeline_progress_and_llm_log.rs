@@ -1396,6 +1396,205 @@ async fn test_progress_enhanced_reports_live_records() {
     assert_eq!(failed["baseline"]["state"].as_str(), Some("failed"));
 }
 
+/// Issue #428: `/api/progress/enhanced` also serves the scan phase's
+/// records — one per scan name in stable sorted order. The running row
+/// answers `finished: false` with a measurable elapsed. A finished row
+/// carries the pass's elapsed and the finding count the evidence engine
+/// reported, and omits the count entirely when the row names no single
+/// count. A second pass over the same binary keeps the other records
+/// until that row's next events replace them. A pass for the NEXT
+/// binary retires the previous binary's rows.
+#[tokio::test]
+async fn test_progress_enhanced_serves_live_scan_records() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    for event in [
+        ProgressEvent::BatchStarted {
+            binary: "eqmain.dll".into(),
+        },
+        // Finished with a single count the evidence engine reported.
+        ProgressEvent::EvidenceScanStarted {
+            binary: "eqmain.dll".into(),
+            scan: "control-flow".into(),
+        },
+        ProgressEvent::EvidenceScanCompleted {
+            binary: "eqmain.dll".into(),
+            scan: "control-flow".into(),
+            elapsed_secs: 2.5,
+            findings: Some(9),
+        },
+        // Started only — still running when the payload is served.
+        ProgressEvent::EvidenceScanStarted {
+            binary: "eqmain.dll".into(),
+            scan: "callback-detection".into(),
+        },
+        // Finished with no single count the evidence engine reported.
+        ProgressEvent::EvidenceScanStarted {
+            binary: "eqmain.dll".into(),
+            scan: "type-database".into(),
+        },
+        ProgressEvent::EvidenceScanCompleted {
+            binary: "eqmain.dll".into(),
+            scan: "type-database".into(),
+            elapsed_secs: 1.5,
+            findings: None,
+        },
+    ] {
+        events.emit(event);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let body: serde_json::Value = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/progress/enhanced",
+        fixture.port()
+    ))
+    .await
+    .expect("enhanced progress request succeeds")
+    .json()
+    .await
+    .expect("body is JSON");
+
+    let scans = body["scans"].as_array().expect("scans is an array");
+    let names: Vec<&str> = scans
+        .iter()
+        .map(|s| s["scan"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["callback-detection", "control-flow", "type-database"],
+        "scan rows are served in stable scan-name order"
+    );
+
+    let scan = |name: &str| -> serde_json::Value {
+        scans
+            .iter()
+            .find(|s| s["scan"].as_str() == Some(name))
+            .cloned()
+            .unwrap_or_else(|| panic!("the {name} row is served"))
+    };
+
+    let flow = scan("control-flow");
+    assert_eq!(flow["finished"].as_bool(), Some(true));
+    assert_eq!(flow["elapsed_secs"].as_f64(), Some(2.5));
+    assert_eq!(flow["findings"].as_u64(), Some(9));
+    assert_eq!(flow["binary"].as_str(), Some("eqmain.dll"));
+
+    let running = scan("callback-detection");
+    assert_eq!(
+        running["finished"].as_bool(),
+        Some(false),
+        "a started scan is running until its completed event lands"
+    );
+    assert!(
+        running["elapsed_secs"].as_f64().is_some_and(|e| e >= 0.0),
+        "a running row carries a measurable elapsed clock: {running}"
+    );
+    assert!(
+        running.get("findings").is_none(),
+        "a running scan reports no count: {running}"
+    );
+
+    let db = scan("type-database");
+    assert_eq!(db["finished"].as_bool(), Some(true));
+    assert_eq!(db["elapsed_secs"].as_f64(), Some(1.5));
+    assert!(
+        db.get("findings").is_none(),
+        "a scan with no single count omits the field, never a zero: {db}"
+    );
+
+    // A second pass over the SAME binary keeps the records standing
+    // until that row's next events replace it.
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "eqmain.dll".into(),
+    });
+    events.emit(ProgressEvent::EvidenceScanStarted {
+        binary: "eqmain.dll".into(),
+        scan: "control-flow".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body: serde_json::Value = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/progress/enhanced",
+        fixture.port()
+    ))
+    .await
+    .expect("enhanced progress request succeeds")
+    .json()
+    .await
+    .expect("body is JSON");
+    let scans = body["scans"].as_array().expect("scans is an array");
+    assert_eq!(
+        scans.len(),
+        3,
+        "the same binary's re-run pass keeps the previous records: {scans:?}"
+    );
+    let flow = scans
+        .iter()
+        .find(|s| s["scan"].as_str() == Some("control-flow"))
+        .expect("control-flow still served");
+    assert_eq!(
+        flow["finished"].as_bool(),
+        Some(false),
+        "the re-run's started event replaced the finished record"
+    );
+
+    // The live pipeline emits no `BatchStarted`, so the scan traffic
+    // itself is the pass boundary: the first scan event naming the next
+    // binary retires the previous binary's rows (issue #428).
+    events.emit(ProgressEvent::EvidenceScanStarted {
+        binary: "game_logic.dll".into(),
+        scan: "control-flow".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body: serde_json::Value = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/progress/enhanced",
+        fixture.port()
+    ))
+    .await
+    .expect("enhanced progress request succeeds")
+    .json()
+    .await
+    .expect("body is JSON");
+    let scans = body["scans"].as_array().expect("scans is an array");
+    assert_eq!(
+        scans.len(),
+        1,
+        "the first scan event for the next binary cleared the previous rows: {scans:?}"
+    );
+    assert_eq!(scans[0]["binary"].as_str(), Some("game_logic.dll"));
+    assert_eq!(scans[0]["scan"].as_str(), Some("control-flow"));
+
+    // A `BatchStarted` naming the next binary retires the rows the same
+    // way — the auto-run path emits it before any scan event.
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "third.dll".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body: serde_json::Value = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/progress/enhanced",
+        fixture.port()
+    ))
+    .await
+    .expect("enhanced progress request succeeds")
+    .json()
+    .await
+    .expect("body is JSON");
+    assert!(
+        body["scans"]
+            .as_array()
+            .expect("scans is an array")
+            .is_empty(),
+        "the new binary's pass cleared the previous binary's scan records: {body}"
+    );
+}
+
 /// Route-table contract: endpoints that read live translation state are
 /// registered **only** in the WebSocket (live) router. On the plain serve
 /// router and the actions router they must fall through to the static 404,

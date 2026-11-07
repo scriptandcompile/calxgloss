@@ -143,7 +143,8 @@ pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
 pub use identity::{BinaryIdentity, BranchName, UnitKey, parse_branch_name, work_kind_for_prefix};
 pub use live_translation::{
-    LiveTranslationState, LiveUnitProgress, PassState, PassStatus, derive_unit_confidence,
+    LiveScanProgress, LiveTranslationState, LiveUnitProgress, PassState, PassStatus,
+    derive_unit_confidence,
 };
 pub use obligations::{
     BinaryConformance, CaseKind, ConformanceOpenObligation, ConformanceTally,
