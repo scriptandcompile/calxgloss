@@ -14,6 +14,7 @@ use chrono::Utc;
 
 use super::audit::{audit_ledger_header, audit_ledger_lines};
 use super::builder::DashboardBuilder;
+use super::conformance::{conformance_header, conformance_lines};
 use super::scenarios::{scenario_status_header, scenario_status_lines};
 use super::view::UnitViewData;
 
@@ -37,7 +38,7 @@ fn dim(text: &str) -> String {
     format!("{}{}{}", ANSI_DIM, text, ANSI_RESET)
 }
 
-fn green_bold(text: &str) -> String {
+pub(crate) fn green_bold(text: &str) -> String {
     format!("{}{}{}{}", ANSI_BOLD, ANSI_GREEN, text, ANSI_RESET)
 }
 
@@ -129,7 +130,7 @@ fn truncate(text: &str, max_width: usize) -> String {
 // ============================================================
 
 /// Width of horizontal dividers (no vertical borders, no corners).
-const SEP_WIDTH: usize = 78;
+pub(crate) const SEP_WIDTH: usize = 78;
 
 fn hsep() {
     println!("  {}", "─".repeat(SEP_WIDTH));
@@ -292,6 +293,24 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
         println_content("");
         for status in &dashboard.scenario_statuses {
             for line in scenario_status_lines(status) {
+                println_content(line);
+            }
+            println_content("");
+        }
+    }
+
+    // The conformance rows (issue #419, P26.3): whether each target
+    // binary's restitch work is honestly closed, derived fresh from the
+    // filed obligation ledger joined with the receipt pairs, Accept
+    // actions, branch state, and open unknowns. A never-filed ledger
+    // reads as unknown right here, and the honest dispositions stand
+    // counted apart from the verified — the section closes nothing and
+    // accepts nothing of its own.
+    if !dashboard.conformance.is_empty() {
+        println_content(conformance_header());
+        println_content("");
+        for row in &dashboard.conformance {
+            for line in conformance_lines(row) {
                 println_content(line);
             }
             println_content("");

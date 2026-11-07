@@ -410,8 +410,30 @@ impl<'a> DashboardBuilder<'a> {
             })
             .collect();
 
+        // Issue #419 (P26.3): the per-binary conformance verdict rides the
+        // same model, derived fresh on every build — the obligation
+        // ledger joined at read time, never a stored copy that could
+        // drift. Every translated unit's binary and every ledger filed
+        // under `re/obligations/` gets a row. Supporting shim and
+        // classification branches are not target binaries and get none —
+        // their pseudo-binary would only print a false "no ledger filed"
+        // verdict (issue #419).
+        let conformance_set = super::conformance::conformance_binaries(
+            &self.repo_path,
+            units
+                .iter()
+                .filter(|unit| unit.kind == WorkKind::FunctionTranslation)
+                .map(|unit| unit.binary.as_str().to_string()),
+        );
+
         let mut dashboard = ReviewDashboard::new(units);
         dashboard.unknown_ledgers = unknown_ledgers;
+
+        dashboard.conformance = super::conformance::derive_binary_conformance(
+            self.git,
+            &conformance_set,
+            &dashboard.unknown_ledgers,
+        );
 
         // Issue #409 (P24.8): the scenario status rides the same model,
         // derived from the filed scenario documents the same way for the

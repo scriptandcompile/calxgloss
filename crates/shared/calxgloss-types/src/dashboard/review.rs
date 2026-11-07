@@ -9,6 +9,7 @@ use super::status::StatusCounts;
 use super::types::{ReviewStatus, WorkLevel};
 use super::work_unit::UnitOfWork;
 use crate::BinaryScenarioStatus;
+use crate::obligations::BinaryConformance;
 use crate::unknowns::BinaryUnknownLedger;
 
 /// A dashboard view of all units of work and their status.
@@ -54,6 +55,16 @@ pub struct ReviewDashboard {
     /// evidence that stands, never a fabricated checklist.
     #[serde(default)]
     pub scenario_statuses: Vec<BinaryScenarioStatus>,
+
+    /// The per-binary *conformance verdict* (issue #419, P26.3): whether
+    /// this target binary's restitch work is honestly closed, derived
+    /// fresh on every build from the filed obligation ledger joined with
+    /// branch state, Accept records, and the unknown ledgers — never
+    /// stored, so no second copy of the truth can drift. A binary whose
+    /// ledger was never filed rides here with an *unknown* reading naming
+    /// its cause, never as a clean run.
+    #[serde(default)]
+    pub conformance: Vec<BinaryConformance>,
 }
 
 impl ReviewDashboard {
@@ -170,6 +181,7 @@ impl ReviewDashboard {
             // went unread.
             unknown_ledgers: Vec::new(),
             scenario_statuses: Vec::new(),
+            conformance: Vec::new(),
         }
     }
 

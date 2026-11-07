@@ -146,8 +146,10 @@ pub use live_translation::{
     LiveTranslationState, LiveUnitProgress, PassState, PassStatus, derive_unit_confidence,
 };
 pub use obligations::{
-    CaseKind, DECLARED_CASE_KINDS, DECLARED_DISPOSITIONS, ObligationDisposition, ObligationEntry,
-    ObligationLedger, obligation_ledger_dir, obligation_ledger_path, read_obligation_ledger,
+    BinaryConformance, CaseKind, ConformanceOpenObligation, ConformanceTally,
+    ConformanceUnknownCause, ConformanceVerdict, DECLARED_CASE_KINDS, DECLARED_DISPOSITIONS,
+    ObligationDisposition, ObligationEntry, ObligationLedger, obligation_ledger_dir,
+    obligation_ledger_path, read_obligation_ledger,
 };
 pub use overrides::{
     FunctionOverride, OverrideControl, UnitOverrides, override_records_path, unit_override_key,

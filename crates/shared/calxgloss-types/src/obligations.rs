@@ -116,6 +116,156 @@ pub const DECLARED_DISPOSITIONS: &[&str] = &[
 ];
 
 // ============================================================
+// The derived conformance verdict (issue #419)
+// ============================================================
+
+/// The whole-binary conformance verdict a reader derives from one binary's
+/// obligation ledger and the state joined beside it: *complete*,
+/// *incomplete*, or *unknown* — the only three readings the type allows.
+/// A reader never stores this: every dashboard build recomputes it, and an
+/// absent reading defaults to *unknown*, never a pass (fail-closed
+/// restitch conformance, issue #392).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConformanceVerdict {
+    /// Every obligation in the filed ledger closed on checked evidence,
+    /// and nothing open blocks the binary.
+    Complete,
+    /// The ledger reads, but some obligation stands open — an unverified
+    /// disposition, an unclosed claim, or an open blocking unknown.
+    Incomplete,
+    /// The conformance documents themselves cannot be read: the ledger
+    /// was never filed, lists no obligations, its seal does not re-derive,
+    /// or a cited receipt cannot be resolved. Absence is never a clean run.
+    #[default]
+    Unknown,
+}
+
+display_serde_label!(ConformanceVerdict {
+    Complete => "complete",
+    Incomplete => "incomplete",
+    Unknown => "unknown",
+});
+
+/// The named cause a reader states beside an *unknown* verdict — the
+/// closed roster the P26 track decided, so the operator knows what to
+/// fix (issue #392, story 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConformanceUnknownCause {
+    /// No obligation ledger document stands for this binary.
+    NoLedgerFiled,
+    /// The filed ledger bytes do not re-seal to the digest they carry —
+    /// tampered or replaced, an input error named at read.
+    DigestMismatch,
+    /// The ledger stands validly sealed but lists no obligations: it
+    /// names nothing to close, so it proves nothing and never reads
+    /// complete (fail-closed, issue #392).
+    NoObligationsFiled,
+    /// A cited verifier receipt cannot be resolved against the attempt
+    /// branch: no pair there, unreadable bytes, a digest that does not
+    /// match the citation, or a pair speaking for another unit.
+    UnresolvableReceiptCitation,
+}
+
+display_serde_label!(ConformanceUnknownCause {
+    NoLedgerFiled => "no_ledger_filed",
+    DigestMismatch => "digest_mismatch",
+    NoObligationsFiled => "no_obligations_filed",
+    UnresolvableReceiptCitation => "unresolvable_receipt_citation",
+});
+
+/// The disposition tallies behind a conformance row (issue #419, AC 4):
+/// the *skipped*, *parked*, *overridden*, *un-reviewed*, and *no-baseline*
+/// obligations counted apart from the verified ones, so an operator never
+/// mistakes an honest hold-out for closed work. Every count is
+/// serde-defaulted to zero: an older document reads, and an absent tally
+/// is never a lost fact dressed up as a clean one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConformanceTally {
+    /// Obligations closed by a *claimed-verified* entry whose whole
+    /// evidence chain stood when checked.
+    #[serde(default)]
+    pub verified: usize,
+    /// Obligations the operator held out of work — the skip set named them.
+    #[serde(default)]
+    pub skipped: usize,
+    /// Obligations parked by a do-not-translate classification.
+    #[serde(default)]
+    pub parked: usize,
+    /// Obligations whose system judgment an operator overrode; an override
+    /// never counts as verification.
+    #[serde(default)]
+    pub overridden: usize,
+    /// Attempts that reached review without an Accept action.
+    #[serde(default)]
+    pub un_reviewed: usize,
+    /// Obligations no baseline case ever covered.
+    #[serde(default)]
+    pub no_baseline: usize,
+}
+
+/// The conformance reading for one target binary, riding the shared
+/// dashboard model beside the per-binary unknown ledgers (issue #419).
+/// Every field is serde-defaulted: an older model document still reads,
+/// and an absent verdict comes back *unknown* — never a pass, never a
+/// silent zero.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryConformance {
+    /// The binary identity this row speaks for, verbatim including
+    /// extension — the same key the unknown ledgers join on.
+    pub binary: String,
+    /// The verdict the derivation reached, or *unknown* when the records
+    /// cannot be read.
+    #[serde(default)]
+    pub verdict: ConformanceVerdict,
+    /// The named causes, present exactly when the verdict is *unknown*.
+    #[serde(default)]
+    pub causes: Vec<ConformanceUnknownCause>,
+    /// The closure digest the verdict was computed under — the filed
+    /// ledger's own seal. Absent when no readable ledger stands, because
+    /// then nothing sealed anything (issue #392, story 11).
+    #[serde(default)]
+    pub closure_digest: Option<String>,
+    /// The dispositions behind the verdict, counted apart from the closed
+    /// obligations, so honest hold-outs are visible beside the verdict
+    /// (issue #419, AC 4). Absent in an older document reads as all-zero —
+    /// the tallies are a display of what a readable ledger already says.
+    #[serde(default)]
+    pub tally: ConformanceTally,
+    /// For an *incomplete* verdict, the first obligation whose chain broke
+    /// and where — named so the operator fixes the first thing instead of
+    /// guessing which count is honest (issue #419, AC 1).
+    #[serde(default)]
+    pub first_open: Option<ConformanceOpenObligation>,
+
+    /// Why the blocking-unknown gate refused to open. Each reason is a
+    /// plain-words sentence naming an open blocking-severity unknown
+    /// record, or naming that the binary's open unknown state was never
+    /// proven free of them. Empty exactly when the gate stood open
+    /// (issue #419: an *incomplete* verdict with a closed evidence chain
+    /// still names its reason).
+    #[serde(default)]
+    pub blocking_unknowns: Vec<String>,
+}
+
+/// The first obligation that did not close and the chain link that
+/// broke: the unit named by its ledger function, the link named in plain
+/// words (issue #419, AC 1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConformanceOpenObligation {
+    /// The ledger function naming the obligation that stayed open.
+    pub function: String,
+    /// The attempt number of that obligation, as the ledger entry spells it.
+    pub attempt: u32,
+    /// The chain link that broke, in plain words: what the reader checked
+    /// and what the check found.
+    pub link: String,
+}
+
+// ============================================================
 // The obligation entry and the ledger document
 // ============================================================
 

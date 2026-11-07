@@ -98,6 +98,14 @@ The sha256 seal over one obligation ledger's canonical content.
 - Every reader re-derives it from the filed bytes alone.
 - A mismatch is an input error, never a reading.
 
+**Conformance verdict**:
+The dashboard's per-binary answer — *complete*, *incomplete*, or *unknown* — to whether one target binary's restitched units closed end to end.
+*Rules:*
+- Every dashboard build re-derives it from the repository; nothing stores a verdict.
+- *Complete* requires every obligation closed on checked evidence — attempt branch, owner pin, receipt pair, Accept action, merge — and an open-unknown state proven free of blocking records.
+- *Unknown* names its cause: no ledger filed, digest mismatch, an empty roster, or an unresolvable receipt citation. A missing document reads as unknown, never as a clean run.
+- *Skipped*, *parked*, *overridden*, *un-reviewed*, and *no-baseline* obligations are tallied apart from verified and never count toward *complete*.
+
 ### Settings
 
 **Settings layers**:
