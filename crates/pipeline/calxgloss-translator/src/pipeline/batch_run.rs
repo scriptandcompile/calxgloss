@@ -267,11 +267,22 @@ impl TranslationPipeline {
             // the batch stops before its last unit (issue #369).
             self.file_unknown_ledger(binary)?;
 
+            // ...and re-file its obligation ledger beside it: the roster
+            // the batch closed with stays the current state even when the
+            // batch stops mid-queue (issue #422).
+            self.file_obligation_ledger(binary).await?;
+
             if !continue_batch {
                 info!(binary, function, "Batch stopped early by callback");
                 break;
             }
         }
+
+        // A batch that ran no unit — or whose last unit never reached the
+        // boundary write — still closes by filing its obligation ledger:
+        // the exports never queued are exactly the obligations the ledger
+        // exists to hold open (issue #422).
+        self.file_obligation_ledger(binary).await?;
 
         info!(
             binary,

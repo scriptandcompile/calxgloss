@@ -6201,3 +6201,578 @@ fn the_sweep_fails_a_query_method_claimed_by_two_families() {
         "a query method claimed twice fails the pairing, naming itself"
     );
 }
+
+// ============================================================
+// The obligation ledger filed at batch close (issue #422)
+// ============================================================
+
+/// The batch's filed obligation ledger, read back through the reader's
+/// own digest check (issue #417): a filing that stamped no closure
+/// digest, or filed bytes a later reader cannot re-derive, fails here
+/// rather than in the assertions below.
+fn filed_obligations(dir: &std::path::Path) -> calxgloss_types::ObligationLedger {
+    calxgloss_types::read_obligation_ledger(dir, &calxgloss_types::BinaryIdentity::new(PROGRAM))
+        .expect("the batch closes by filing its obligation ledger, digest re-derivable")
+}
+
+/// Stage one JSON document at `path` under the workspace, making its
+/// directory — the same on-disk documents the live controls persist, so
+/// the filing reads the state exactly as the run's own reads see it.
+fn stage_document(path: std::path::PathBuf, doc: serde_json::Value) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("staged document's directory");
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&doc).expect("staged document serializes"),
+    )
+    .expect("the staged document lands");
+}
+
+/// The roster is the export listing held by the analysis record itself:
+/// every named export, verbatim, in the listing's own order — and a
+/// batch that queues no unit still files it, because the exports never
+/// queued are exactly the obligations the ledger exists to hold open
+/// (issue #422).
+#[tokio::test]
+async fn a_batch_closes_by_filing_the_export_listing_as_its_obligation_roster() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+    assert!(!exports.is_empty(), "the fixture serves its named exports");
+
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("a batch that queues no unit still closes its ledger");
+
+    let ledger = filed_obligations(dir.path());
+    assert_eq!(
+        ledger
+            .entries
+            .iter()
+            .map(|entry| entry.function.clone())
+            .collect::<Vec<String>>(),
+        exports
+            .iter()
+            .filter(|export| !export.name.is_empty())
+            .map(|export| export.name.clone())
+            .collect::<Vec<String>>(),
+        "the roster is the export listing, verbatim and in the listing's own order"
+    );
+    assert!(
+        !ledger.digest.is_empty(),
+        "the filing stamps a closure digest"
+    );
+    for entry in &ledger.entries {
+        assert_eq!(
+            entry.attempt, 0,
+            "no attempt has stood for an export the batch never queued"
+        );
+        assert!(
+            entry.receipt_digest.is_none(),
+            "no pipeline filing cites a receipt it cannot resolve at filing time"
+        );
+    }
+    assert!(
+        ledger
+            .entries
+            .iter()
+            .all(|entry| entry.disposition
+                != calxgloss_types::ObligationDisposition::ClaimedVerified),
+        "a pipeline filing never claims verified work for itself"
+    );
+}
+
+/// An export no filed baseline document covers takes *no-baseline* — the
+/// P21 signal's own fact ("no filed baseline document for an export")
+/// re-checked live at the filing, never a restated record. Filing a real
+/// baseline document makes exactly that export stop reading no-baseline
+/// at the next batch (issue #422).
+#[tokio::test]
+async fn an_export_no_baseline_document_covers_files_on_the_ledger_as_no_baseline() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+    assert!(!exports.is_empty(), "the fixture serves its named exports");
+
+    // Nothing filed as a baseline anywhere: every entry stands open as
+    // no-baseline, its attempt zero — never queued, never exercised.
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch that files the all-no-baseline roster");
+    let ledger = filed_obligations(dir.path());
+    for entry in &ledger.entries {
+        assert_eq!(
+            entry.disposition,
+            calxgloss_types::ObligationDisposition::NoBaseline,
+            "`{}` stands no-baseline: no filed baseline document covers it",
+            entry.function
+        );
+    }
+
+    // Cover one export the way testgen's own writer files a baseline,
+    // and re-batch: the covering is what moves that one entry.
+    let covered = exports
+        .iter()
+        .last()
+        .expect("the fixture lists at least one export");
+    calxgloss_testgen::TestGenerator::new(dir.path())
+        .save_baseline(PROGRAM, &covered.name, &[])
+        .expect("a baseline document filed through the real writer");
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch after the covering");
+    let ledger = filed_obligations(dir.path());
+    let dispositions: Vec<(String, calxgloss_types::ObligationDisposition)> = ledger
+        .entries
+        .iter()
+        .map(|entry| (entry.function.clone(), entry.disposition))
+        .collect();
+    assert_eq!(
+        dispositions
+            .iter()
+            .filter(|(_, disposition)| *disposition
+                == calxgloss_types::ObligationDisposition::NoBaseline)
+            .count(),
+        exports
+            .iter()
+            .filter(|export| !export.name.is_empty() && export.name != covered.name)
+            .count(),
+        "the covered export alone stops reading no-baseline; the others stand"
+    );
+    let covering = ledger
+        .entries
+        .iter()
+        .find(|entry| entry.function == covered.name)
+        .expect("the covered export keeps its entry");
+    assert_ne!(
+        covering.disposition,
+        calxgloss_types::ObligationDisposition::NoBaseline,
+        "a filed baseline document moves `{}` off no-baseline",
+        covered.name
+    );
+}
+
+/// The batch's own skip set stamps *skipped*: an export the operator's
+/// scope document holds out of the queue plan carries that disposition
+/// on the ledger, while its unskipped peers keep theirs (issue #422).
+#[tokio::test]
+async fn an_export_the_batches_scope_skipped_takes_skipped_on_the_ledger() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+    let skipped = exports
+        .iter()
+        .find(|export| !export.name.is_empty())
+        .expect("the fixture lists a named export")
+        .name
+        .clone();
+
+    // The same persisted scope document the web controls write and the
+    // run reads at queue selection.
+    stage_document(
+        calxgloss_types::scope_record_path(dir.path()),
+        serde_json::json!({
+            "skipped_functions": [{"binary": PROGRAM, "function": skipped}],
+        }),
+    );
+
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch over the scoped skip");
+    let ledger = filed_obligations(dir.path());
+    let held = ledger
+        .entries
+        .iter()
+        .find(|entry| entry.function == skipped)
+        .expect("the skipped export keeps its entry");
+    assert_eq!(
+        held.disposition,
+        calxgloss_types::ObligationDisposition::Skipped,
+        "the batch's own skip set stamps the entry skipped"
+    );
+    assert_eq!(
+        ledger
+            .entries
+            .iter()
+            .filter(|entry| entry.disposition == calxgloss_types::ObligationDisposition::Skipped)
+            .count(),
+        1,
+        "only the named export reads skipped; its peers keep their own facts"
+    );
+}
+
+/// Classification parks the whole roster: a `DotNetManaged` record parks
+/// every entry *parked*, and the operator's classification override
+/// beats the record — the next batch re-opens the roster away from
+/// parked, the same precedence every other consumer applies (issue
+/// #422).
+#[tokio::test]
+async fn a_parked_classification_parks_the_roster_until_an_override_reopens_it() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let classified = dir
+        .path()
+        .join("re")
+        .join("classify")
+        .join(format!("{PROGRAM}.json"));
+    stage_document(
+        classified,
+        serde_json::json!({
+            "name": PROGRAM,
+            "category": "DotNetManaged",
+            "reason": "managed assembly: metadata, not machine code",
+        }),
+    );
+
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch over a parked classification");
+    let ledger = filed_obligations(dir.path());
+    assert!(
+        !ledger.entries.is_empty()
+            && ledger
+                .entries
+                .iter()
+                .all(|entry| entry.disposition == calxgloss_types::ObligationDisposition::Parked),
+        "a do-not-translate binary parks every entry of its roster"
+    );
+
+    // The override beats the record, exactly as the parked map the
+    // dashboard builds applies it: re-classified away from managed, the
+    // next batch no longer parks the roster.
+    stage_document(
+        calxgloss_types::classification_override_records_path(dir.path()),
+        serde_json::json!({
+            "overrides": {PROGRAM: {"category": "ProjectSpecific"}},
+        }),
+    );
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch over the override reopening the binary");
+    let refiled = filed_obligations(dir.path());
+    assert!(
+        refiled
+            .entries
+            .iter()
+            .all(|entry| entry.disposition != calxgloss_types::ObligationDisposition::Parked),
+        "the in-force category is not managed anymore: no entry claims parking"
+    );
+}
+
+/// A standing unit override record stamps *overridden*: the reviewer
+/// overruled a system judgment about that unit, and overruling is its
+/// own honest fact — the peers keep theirs (issue #422).
+#[tokio::test]
+async fn a_standing_unit_override_record_stamps_the_overridden_disposition() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+    let overridden = exports
+        .iter()
+        .find(|export| !export.name.is_empty())
+        .expect("the fixture lists a named export")
+        .name
+        .clone();
+
+    // The same persisted override document OverrideControl writes — the
+    // record the reader joins at read time, stamped here at filing.
+    stage_document(
+        calxgloss_types::override_records_path(dir.path()),
+        serde_json::json!({
+            "overrides": {
+                calxgloss_types::unit_override_key(PROGRAM, &overridden): {
+                    "custom_hints": ["the reviewer held this unit's retry open"],
+                },
+            },
+        }),
+    );
+
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch over the standing override");
+    let ledger = filed_obligations(dir.path());
+    let unit = ledger
+        .entries
+        .iter()
+        .find(|entry| entry.function == overridden)
+        .expect("the overridden export keeps its entry");
+    assert_eq!(
+        unit.disposition,
+        calxgloss_types::ObligationDisposition::Overridden,
+        "a standing override record stamps the entry overridden"
+    );
+    assert_eq!(
+        ledger
+            .entries
+            .iter()
+            .filter(|entry| entry.disposition == calxgloss_types::ObligationDisposition::Overridden)
+            .count(),
+        1,
+        "only the overridden unit reads overridden"
+    );
+}
+
+/// A batch that actually ran work still claims nothing: with a filed
+/// baseline for every export and no Accept record anywhere, every entry
+/// holds open *un-reviewed* — the absence of the Accept action is the
+/// fact, never a verified stamp (issue #422).
+#[tokio::test]
+async fn a_batch_that_ran_work_with_no_accept_action_holds_its_roster_un_reviewed() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+    let generator = calxgloss_testgen::TestGenerator::new(dir.path());
+    for export in exports.iter().filter(|export| !export.name.is_empty()) {
+        generator
+            .save_baseline(PROGRAM, &export.name, &[])
+            .expect("a baseline document filed for every export");
+    }
+
+    let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+        .await
+        .expect("fixture function listing");
+    let unit = listed
+        .iter()
+        .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+        .expect("the fixture lists fixture_status")
+        .name
+        .clone();
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            std::slice::from_ref(&unit),
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch that ran one unit through to review");
+
+    let ledger = filed_obligations(dir.path());
+    assert!(
+        !ledger.entries.is_empty()
+            && ledger.entries.iter().all(
+                |entry| entry.disposition == calxgloss_types::ObligationDisposition::UnReviewed
+            ),
+        "every entry holds open un-reviewed: no Accept record stands, and the \
+         batch's own green work never files a verified claim over the review door"
+    );
+    for entry in &ledger.entries {
+        assert!(
+            entry.receipt_digest.is_none(),
+            "`{}` names no receipt citation beside its un-reviewed hold",
+            entry.function
+        );
+    }
+}
+
+/// Successive batches over unchanged records seal the same digest: the
+/// closure digest re-derives from the filed entries alone, so a re-run
+/// that changed no state lands a byte-re-derivable twin (issue #422).
+#[tokio::test]
+async fn successive_batches_over_unchanged_records_seal_the_same_digest() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the first batch");
+    let first = filed_obligations(dir.path());
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the re-run batch");
+    let second = filed_obligations(dir.path());
+
+    assert_eq!(
+        second.digest, first.digest,
+        "a batch over unchanged records seals the same closure digest"
+    );
+    assert_eq!(
+        second.entries, first.entries,
+        "the re-filed entries are the same obligations, re-derived"
+    );
+}
+
+/// Each batch's filing replaces the previous document outright: the
+/// roster stays the current state, never an append log — a skip set
+/// lifted and a baseline filed at the next batch move those entries and
+/// leave no stale stamps behind (issue #422).
+#[tokio::test]
+async fn the_next_batch_filing_replaces_the_previous_entries_wholesale() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+    let moved = exports
+        .iter()
+        .find(|export| !export.name.is_empty())
+        .expect("the fixture lists a named export")
+        .name
+        .clone();
+
+    stage_document(
+        calxgloss_types::scope_record_path(dir.path()),
+        serde_json::json!({
+            "skipped_functions": [{"binary": PROGRAM, "function": moved}],
+        }),
+    );
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch under the skip set");
+    let first = filed_obligations(dir.path());
+    assert_eq!(
+        first
+            .entries
+            .iter()
+            .find(|entry| entry.function == moved)
+            .expect("the skipped export keeps its entry")
+            .disposition,
+        calxgloss_types::ObligationDisposition::Skipped
+    );
+
+    // Lift the skip and cover the export — then re-batch. The re-filed
+    // document carries the current state only: no second entry for the
+    // export, no leftover skip stamp.
+    std::fs::remove_file(calxgloss_types::scope_record_path(dir.path()))
+        .expect("the lifted skip set");
+    calxgloss_testgen::TestGenerator::new(dir.path())
+        .save_baseline(PROGRAM, &moved, &[])
+        .expect("a baseline document filed through the real writer");
+    pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect("the batch after the skip lifted and the baseline landed");
+
+    let second = filed_obligations(dir.path());
+    assert_eq!(
+        second.entries.len(),
+        first.entries.len(),
+        "the roster replaced in place: one entry per export, never an append log"
+    );
+    let now = second
+        .entries
+        .iter()
+        .filter(|entry| entry.function == moved)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        now.len(),
+        1,
+        "the export appears exactly once in the re-filed roster"
+    );
+    assert_eq!(
+        now[0].disposition,
+        calxgloss_types::ObligationDisposition::UnReviewed,
+        "the current state reads un-reviewed — the skip stamp is gone once the \
+         skip set lifted, and the filed baseline moved it off no-baseline"
+    );
+    assert!(
+        second
+            .entries
+            .iter()
+            .all(|entry| entry.disposition != calxgloss_types::ObligationDisposition::Skipped),
+        "no stale skip stamp survives the replacing filing"
+    );
+}

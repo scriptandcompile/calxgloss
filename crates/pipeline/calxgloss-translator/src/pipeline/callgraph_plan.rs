@@ -549,6 +549,11 @@ impl TranslationPipeline {
             // the batch stops before its last unit (issue #369).
             self.file_unknown_ledger(binary)?;
 
+            // ...and re-file its obligation ledger beside it: the roster
+            // the batch closed with stays the current state even when the
+            // batch stops mid-plan (issue #422).
+            self.file_obligation_ledger(binary).await?;
+
             if !continue_batch {
                 info!(
                     binary,
@@ -558,6 +563,10 @@ impl TranslationPipeline {
                 break;
             }
         }
+
+        // A batch whose plan ran no unit — or never reached the boundary
+        // write — still closes by filing its obligation ledger (issue #422).
+        self.file_obligation_ledger(binary).await?;
 
         info!(
             binary,

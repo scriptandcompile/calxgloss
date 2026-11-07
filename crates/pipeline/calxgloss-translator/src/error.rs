@@ -99,6 +99,18 @@ pub enum TranslatorError {
         #[source]
         source: calxgloss_types::PersistError,
     },
+
+    /// The batch's obligation-ledger write failed (issue #422): the
+    /// filing could not seal the closure digest over the derived
+    /// entries, or it could not write the document. The variant names
+    /// its binary so an operator can investigate the artifact, the way
+    /// the corrupt-document doctrine asks.
+    #[error("obligation ledger for '{binary}' could not be filed: {source}")]
+    ObligationLedger {
+        binary: String,
+        #[source]
+        source: calxgloss_types::PersistError,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, TranslatorError>;
