@@ -43,6 +43,10 @@ mod analysis_artifact_contract;
 mod analytics_api;
 #[path = "e2e/attempts_api_and_analytics_views.rs"]
 mod attempts_api_and_analytics_views;
+#[path = "e2e/conformance_web.rs"]
+mod conformance_web;
+#[path = "e2e/conformance_web_js.rs"]
+mod conformance_web_js;
 #[path = "e2e/control_endpoints.rs"]
 mod control_endpoints;
 #[path = "e2e/dashboard_api.rs"]

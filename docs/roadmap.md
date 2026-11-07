@@ -35,9 +35,12 @@ API-call trace dimension in the gate), P23 (real inputs mined by the
 record-and-replay fold), and P24 (the scenario-capture baseline giving EXE
 targets a verification signal FFI cannot reach), and P25 (verification
 receipts — every verify run files its digest-paired pair and every commit
-site stages it onto the attempt branch) shipped and left this matrix per the
-rule above (ADR-0053–ADR-0059; P25's tickets #410–#416), so the verdict
-track P26 and P27 are unblocked on their record and runtime sides.**
+site stages it onto the attempt branch) and P26 (fail-closed conformance —
+the obligation ledger and the per-binary *conformance verdict* every
+surface renders from one derivation) shipped and left this matrix per the
+rule above (ADR-0053–ADR-0060; P25's tickets #410–#416, P26's #417–#424),
+so the verdict track P27 and the tracks after it stand unblocked on their
+record and runtime sides.**
 **Table order is dependency order** — no track appears before another track
 that blocks it (each summary below names which tracks block it and which
 tracks it blocks). Among tracks that do not block each other, the order is
@@ -45,15 +48,16 @@ by how far each one moves calxgloss toward **complete end-to-end
 restitching from binaries**: the verification gate wide enough to cover
 what restitching can actually get wrong has now shipped — P22's trace
 dimension, P23's mined inputs, and P24's scenario baseline for EXEs — so the
-front of the table is the fail-closed ledger that finally makes
+front of the table was the fail-closed ledger that finally makes
 "this binary is done" a checkable claim instead of "the pipeline stopped
-with nobody complaining" (P26; its durable-receipt half, P25, shipped). P27–P33 resolve stuck functions, strengthen
+with nobody complaining" — that has shipped too (P26; its durable-receipt
+half, P25, shipped before it). P27–P33 resolve stuck functions, strengthen
 evidence, or serve operations; none of them blocks a track listed above
 it.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P26 | Fail-closed restitch conformance — a per-unit obligation ledger (owner = attempt-branch digest, required case kinds, verifier receipt) and a whole-binary closure verdict sealed by a digest; skipped, parked, overridden, or un-reviewed units never add up to complete | pipeline (`calxgloss-git`, `calxgloss-translator`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | 🔶 in progress | record shape landed (#417): the ledger document, its closed case-kind and disposition rosters, and its closure digest; baseline case kinds stamped at generation (#418); conformance verdict derived fresh on every dashboard build (#419); dispositions joined at the read with the reviewer's live records (#420); next the ledger's producer | [#392](https://github.com/scriptandcompile/calxgloss/issues/392) |
+| P26 | Fail-closed restitch conformance — a per-unit obligation ledger (owner = attempt-branch digest, required case kinds, verifier receipt) and a whole-binary closure verdict sealed by a digest; skipped, parked, overridden, or un-reviewed units never add up to complete | pipeline (`calxgloss-git`, `calxgloss-translator`, `calxgloss-verify`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ✅ done | shipped #417–#424: ledger + closure digest (#417), case kinds stamped (#418), verdict derived per build (#419), read seam joins live records (#420, #421), pipeline files the ledger at batch close (#422), run close prints the audit line for line (#423), web surfaces render the verdict and each unit's obligation entry (#424); ADR-0060 closed the honesty lineage | [#392](https://github.com/scriptandcompile/calxgloss/issues/392) |
 | P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
 | P28 | Masked byte search at the seam — `search_bytes(pattern, mask)` with wildcard hex and a bit mask, giving the `consts`/`serialize` magic-number scans real matches instead of guesses | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + evidence (`calxgloss-consts`, `calxgloss-serialize`) | — | ⬜ not started | not specced | — |
 | P29 | Ad-hoc call-path / def-use primitive at the seam — trace "how does this value reach this call" over the kept bodies on demand, so `escalate` retries get targeted answers without a full re-scan | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::types::{ReviewStatus, Staleness, WorkKind};
 use crate::identity::BinaryIdentity;
+use crate::obligations::UnitObligation;
 use crate::unknowns::UnitUnknowns;
 
 /// A single item in the review dashboard.
@@ -71,4 +72,20 @@ pub struct UnitOfWork {
     /// every build.
     #[serde(default)]
     pub unknowns: UnitUnknowns,
+
+    /// The dashboard builder fills this unit's *obligation entry* from
+    /// the filed *obligation ledger* and the reviewer's live records,
+    /// and the read seam decides its disposition (issue #424). The web
+    /// unit detail and the terminal render this one joined reading
+    /// beside the per-binary *conformance verdict*, never a second
+    /// derivation.
+    ///
+    /// The ledger's readings ride through untouched: no ledger filed,
+    /// an unreadable ledger, and an older document without this field
+    /// all read as *unknown* — never zero, never a closed obligation.
+    /// The join is never stored here twice: the builder recomputes it
+    /// from the pipeline's ledger and the reviewer's live records on
+    /// every build.
+    #[serde(default)]
+    pub obligation: UnitObligation,
 }

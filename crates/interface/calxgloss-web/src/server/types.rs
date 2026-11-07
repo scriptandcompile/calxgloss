@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use calxgloss_types::{
     BinaryIdentity, BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress,
     PhaseRecord, PipelinePhase, PipelineState, ReviewDashboard, ReviewStatus, TokenUsageEntry,
-    TranslationPhase, UnitOfWork, UnitUnknowns,
+    TranslationPhase, UnitObligation, UnitOfWork, UnitUnknowns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -168,6 +168,12 @@ pub struct UnitResponseInner {
     /// `open: []` is the honest known-and-none.
     #[serde(default)]
     pub unknowns: UnitUnknowns,
+    /// The unit's own obligation entry, carried straight from the shared
+    /// derived model (issue #424). A payload without it, a binary with no
+    /// filed ledger, or a ledger with no entry for this unit all read
+    /// `unknown` — never zero obligations, never a pass.
+    #[serde(default)]
+    pub obligation: UnitObligation,
     /// Staleness indicator: "fresh", "stale (2d 3h)", etc.
     pub stale: String,
     /// Git diff summary between this unit's branch and main.

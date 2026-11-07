@@ -258,6 +258,11 @@
                         <h2>Queue Items</h2>
                         <span id="queue-count" class="badge"></span>
                     </div>
+                    <!-- Per-binary conformance verdicts (issue #424): the
+                         shared derived model's rows, rendered above the
+                         item list so an empty queue never hides them. -->
+                    <div id="queue-conformance" class="queue-conformance"
+                        aria-label="Per-binary conformance verdicts"></div>
                     <div id="queue-list-scroll" class="queue-list-scroll">
                         <div id="full-queue-list" class="full-queue-list"></div>
                         <div id="full-queue-empty" class="empty-state" style="display:none">

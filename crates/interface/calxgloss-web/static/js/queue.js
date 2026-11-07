@@ -25,6 +25,13 @@ export function renderFullQueue(dashboard, selectedId = null) {
         if (!visibleIds.has(id)) State.queueSelected.delete(id);
     }
 
+    // Per-binary conformance readings (issue #424): the shared derived
+    // model's rows render before the list's early return — an empty
+    // queue never hides the honest verdict — and nothing about the
+    // verdict is computed here; the payload already carries the one
+    // derivation the terminal dashboard prints from.
+    renderConformanceSection(dashboard);
+
     if (units.length === 0) {
         list.innerHTML = "";
         empty.style.display = "flex";
@@ -350,6 +357,88 @@ async function executeBatch(action, spec, unitIds, reason) {
     }
 }
 
+// ─── Per-binary conformance section (issue #424) ────────────────────────
+
+// The conformance rows ride the payload from the shared derived model,
+// stating the same facts the terminal dashboard's conformance lines
+// state — verdict, disposition tallies, closure digest, first broken
+// link, unknown gate — and computing nothing here. A payload carrying
+// no rows at all renders unknown, never a clean run.
+function renderConformanceSection(dashboard) {
+    const el = document.getElementById("queue-conformance");
+    if (!el) return;
+    const rows = dashboard && Array.isArray(dashboard.conformance) ? dashboard.conformance : null;
+    if (!rows) {
+        el.innerHTML = `
+            <div class="conformance-row conformance-unknown">
+                Conformance — unknown: the payload carries no conformance rows — never a clean run
+            </div>`;
+        return;
+    }
+    el.innerHTML = rows.map(conformanceRowHtml).join("");
+}
+
+function conformanceRowHtml(row) {
+    const binary = escapeHtml(row.binary || "?");
+    if (row.verdict === "complete") {
+        const seal = String(row.closure_digest || "").replace(/^sha256:/, "").slice(0, 8) || "?";
+        return `
+            <div class="conformance-row conformance-complete">
+                ${binary} — complete (${(row.tally && row.tally.verified) || 0} verified, sealed ${escapeHtml(seal)})
+            </div>`;
+    }
+    if (row.verdict === "incomplete") {
+        const details = [];
+        if (row.first_open) {
+            details.push(`\u21b3 first open: ${escapeHtml(row.first_open.function || "?")} ` +
+                `attempt ${row.first_open.attempt == null ? "?" : row.first_open.attempt} ` +
+                `\u2014 ${escapeHtml(row.first_open.link || "")}`);
+        }
+        for (const reason of row.blocking_unknowns || []) {
+            details.push(`\u21b3 unknown gate: ${escapeHtml(reason)}`);
+        }
+        return `
+            <div class="conformance-row conformance-incomplete">
+                ${binary} — incomplete (${conformanceTallyWords(row.tally)})
+                ${details.length ? `<div class="conformance-details">${details.join("<br>")}</div>` : ""}
+            </div>`;
+    }
+    // Unknown — and any verdict word that is not an honest complete or
+    // incomplete lands here too: an unreadable field renders unknown,
+    // never a pass. The tallies a broken read still counted ride along.
+    const causes = (row.causes || []).map(c => String(c).replace(/_/g, " "));
+    const t = row.tally || {};
+    const anyCount = CONFORMANCE_TALLY_KEYS.some(([key]) => (t[key] || 0) > 0);
+    return `
+        <div class="conformance-row conformance-unknown">
+            ${binary} \u2014 unknown: ${escapeHtml(causes.join(", ") || "unnamed cause")} \u2014 never a clean run` +
+        `${anyCount ? ` (${escapeHtml(conformanceTallyWords(row.tally))})` : ""}
+        </div>`;
+}
+
+// The tally's fields in the order the terminal reads them: verified
+// first, then each honest disposition held apart from it.
+const CONFORMANCE_TALLY_KEYS = [
+    ["verified", "verified"],
+    ["skipped", "skipped"],
+    ["parked", "parked"],
+    ["overridden", "overridden"],
+    ["un_reviewed", "un-reviewed"],
+    ["no_baseline", "no-baseline"],
+];
+
+// The nonzero counts behind a verdict, verified first and each honest
+// disposition held apart from it — the same words the terminal prints.
+function conformanceTallyWords(tally) {
+    const t = tally || {};
+    const words = [];
+    for (const [key, label] of CONFORMANCE_TALLY_KEYS) {
+        const n = t[key] || 0;
+        if (key === "verified" || n > 0) words.push(`${n} ${label}`);
+    }
+    return words.join(", ");
+}
+
 // ─── Detail Panel ───────────────────────────────────────────────────────
 
 export async function showDetail(unitId) {
@@ -591,6 +680,7 @@ function renderDetailOverview(u) {
         ` : ""}
 
         ${renderUnknownsSection(u)}
+        ${renderObligationSection(u)}
 
         ${renderProcessSections(u)}
         ${renderAnalysisSections(u)}
@@ -649,6 +739,49 @@ function renderUnknownsSection(u) {
             ${settled > 0
                 ? `<div class="unknowns-settled">${unk.resolved || 0} resolved · ${unk.dismissed || 0} dismissed</div>`
                 : ""}
+        </div>
+    `;
+}
+
+// The unit's own obligation entry (issue #424): the unit detail renders
+// exactly what the shared model joined for this unit — the same reading
+// the per-binary conformance verdict was computed from, never a second
+// computation here. Absence reads unknown: no entry on the payload, or
+// no entry filed for this unit's binary, is spelled out — never shown
+// as zero obligations and never as closed work.
+function renderObligationSection(u) {
+    // Function-translation units have obligations; classification and
+    // shim work does not. The unit payload spells kinds in words
+    // ("Function Translation"), the queue model in snake_case — the
+    // same normalization the status labels use covers both. A payload
+    // with no kind at all keeps its section and renders the unknown,
+    // rather than vanishing the question.
+    const kind = String(u.kind || "").toLowerCase().replace(/\s+/g, "_");
+    if (u.kind && kind !== "function_translation") return "";
+    const entry = u.obligation && u.obligation.entry;
+    if (!entry) {
+        return `
+            <div class="detail-section">
+                <div class="detail-section-title">Obligation</div>
+                <div class="unknowns-state unknowns-unknown">
+                    Unknown — no obligation entry is filed for this unit. This is never shown as zero obligations.
+                </div>
+            </div>
+        `;
+    }
+    const kinds = (entry.required_case_kinds || []).join(", ") || "unknown";
+    const disposition = String(entry.disposition || "unknown").replace(/_/g, " ");
+    return `
+        <div class="detail-section">
+            <div class="detail-section-title">Obligation</div>
+            <div class="obligation-row"><span class="obligation-label">Attempt</span><span>${entry.attempt}</span></div>
+            <div class="obligation-row"><span class="obligation-label">Owner digest</span><span>${escapeHtml(entry.owner_commit || "\u2014")}</span></div>
+            <div class="obligation-row"><span class="obligation-label">Required case kinds</span><span>${escapeHtml(kinds)}</span></div>
+            <div class="obligation-row"><span class="obligation-label">Disposition</span><span>${escapeHtml(disposition)}</span></div>
+            ${entry.disposition_reason
+                ? `<div class="obligation-row"><span class="obligation-label">Decided by</span><span>${escapeHtml(entry.disposition_reason)}</span></div>`
+                : ""}
+            <div class="obligation-row"><span class="obligation-label">Receipt citation</span><span>${escapeHtml(entry.receipt_digest || "none filed")}</span></div>
         </div>
     `;
 }

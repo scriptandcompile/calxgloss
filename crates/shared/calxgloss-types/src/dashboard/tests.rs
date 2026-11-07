@@ -96,6 +96,7 @@ fn dashboard_sorts_by_dependencies() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "unit_1".into(),
@@ -119,6 +120,7 @@ fn dashboard_sorts_by_dependencies() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "unit_2".into(),
@@ -142,6 +144,7 @@ fn dashboard_sorts_by_dependencies() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ];
 
@@ -282,6 +285,7 @@ fn make_unit(id: &str, status: ReviewStatus, dependencies: Vec<String>) -> UnitO
         known_gaps: vec![],
         stale: Staleness::Fresh,
         unknowns: crate::UnitUnknowns::unknown(),
+        obligation: crate::UnitObligation::unknown(),
     }
 }
 
@@ -467,6 +471,7 @@ fn recent_activity_is_ordered_newest_first_and_deterministic() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         }
     }
 
@@ -514,6 +519,7 @@ fn dashboard_accepts_units_into_recent_activity() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "unit_2".into(),
@@ -537,6 +543,7 @@ fn dashboard_accepts_units_into_recent_activity() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ];
 
@@ -619,6 +626,7 @@ fn pending_in_dependency_order() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "unit_1".into(),
@@ -642,6 +650,7 @@ fn pending_in_dependency_order() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "unit_2".into(),
@@ -665,6 +674,7 @@ fn pending_in_dependency_order() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ];
 
@@ -1174,6 +1184,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1197,6 +1208,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ]);
 
@@ -1250,6 +1262,7 @@ fn auto_block_noop_when_all_deps_accepted() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1273,6 +1286,7 @@ fn auto_block_noop_when_all_deps_accepted() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ]);
 
@@ -1312,6 +1326,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "pal_graphics".into(),
@@ -1335,6 +1350,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1358,6 +1374,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ]);
 
@@ -1397,6 +1414,7 @@ fn auto_block_propagates_transitively() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "shim_wgpu".into(),
@@ -1420,6 +1438,7 @@ fn auto_block_propagates_transitively() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1443,6 +1462,7 @@ fn auto_block_propagates_transitively() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "integrate".into(),
@@ -1466,6 +1486,7 @@ fn auto_block_propagates_transitively() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ]);
 
@@ -1512,6 +1533,7 @@ fn auto_block_respects_terminal_statuses() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1535,6 +1557,7 @@ fn auto_block_respects_terminal_statuses() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ]);
 
@@ -1583,6 +1606,7 @@ fn auto_block_patch_requested_blocks_dependents() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "func_present".into(),
@@ -1606,6 +1630,7 @@ fn auto_block_patch_requested_blocks_dependents() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ]);
 
@@ -1645,6 +1670,7 @@ fn auto_block_idempotent() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
         UnitOfWork {
             id: "func_draw".into(),
@@ -1668,6 +1694,7 @@ fn auto_block_idempotent() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         },
     ]);
 
@@ -1705,6 +1732,7 @@ fn dashboard_graph_order_is_stable_across_input_orders() {
             known_gaps: vec![],
             stale: Staleness::Fresh,
             unknowns: crate::UnitUnknowns::unknown(),
+            obligation: crate::UnitObligation::unknown(),
         }
     }
 

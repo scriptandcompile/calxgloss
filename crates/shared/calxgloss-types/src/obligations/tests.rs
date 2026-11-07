@@ -350,3 +350,94 @@ fn a_claimed_verified_entry_with_no_receipt_citation_refuses_at_the_deserializer
         "the refusal names the missing citation: {err}"
     );
 }
+
+// ── the unit's obligation entry, riding the unit (issue #424) ────────
+
+#[test]
+fn a_unit_obligation_nobody_filed_reads_unknown_never_a_closed_obligation() {
+    // The reading the surfaces fall back on: nothing filed, nothing
+    // readable, and an older document all answer with the unknown
+    // reading — an absent entry is never a zero and never a closed
+    // obligation (issue #424, AC 4).
+    let absent = UnitObligation::unknown();
+    assert!(absent.entry.is_none(), "unknown carries no entry");
+    assert_eq!(
+        serde_json::to_value(&absent).expect("unknown writes"),
+        serde_json::json!({ "entry": null }),
+        "the unknown reading rides the JSON as an explicit null"
+    );
+}
+
+#[test]
+fn an_older_unit_document_without_the_obligation_field_still_reads_unknown() {
+    // The web and every older reader keep working: a UnitOfWork document
+    // written before the obligation field existed parses, and the field
+    // reads as the unknown reading, never as a crash and never as
+    // closed work (issue #424, AC 4).
+    let unit = crate::dashboard::UnitOfWork {
+        id: "game_logic.dll/DrawPrimitive/v1".into(),
+        name: "DrawPrimitive".into(),
+        kind: crate::dashboard::WorkKind::FunctionTranslation,
+        binary: "game_logic.dll".into(),
+        function: Some("DrawPrimitive".into()),
+        attempt: 1,
+        status: crate::dashboard::ReviewStatus::Queued,
+        accepted: false,
+        unit_confidence: None,
+        baseline_tests_passed: None,
+        baseline_tests_total: None,
+        verification_tests_passed: None,
+        verification_tests_total: None,
+        llm_model: None,
+        context_tier: None,
+        dependencies: vec![],
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        known_gaps: vec![],
+        stale: crate::dashboard::Staleness::Fresh,
+        unknowns: crate::UnitUnknowns::unknown(),
+        obligation: UnitObligation::unknown(),
+    };
+    let mut written = serde_json::to_value(&unit).expect("the unit writes");
+    written
+        .as_object_mut()
+        .expect("an object")
+        .remove("obligation");
+    let read_back: crate::dashboard::UnitOfWork =
+        serde_json::from_value(written).expect("an older unit document still reads");
+    assert!(
+        read_back.obligation.entry.is_none(),
+        "the absent field reads as unknown, never as a closed obligation"
+    );
+}
+
+#[test]
+fn the_unit_obligation_entry_carries_what_the_unit_detail_renders() {
+    // The entry the unit detail names (issue #424, AC 2): the attempt the
+    // entry speaks for, its owner digest, the required case kinds, the
+    // disposition, and the receipt citation it carries — pinned as whole
+    // JSON, the shape every surface renders from.
+    let obligation = UnitObligation {
+        entry: Some(UnitObligationEntry {
+            attempt: 1,
+            owner_commit: "aaaa1111".into(),
+            required_case_kinds: CaseKind::ALL.to_vec(),
+            disposition: ObligationDisposition::ClaimedVerified,
+            disposition_reason: None,
+            receipt_digest: Some("sha256:cafe".into()),
+        }),
+    };
+    assert_eq!(
+        serde_json::to_value(&obligation).expect("the entry writes"),
+        serde_json::json!({
+            "entry": {
+                "attempt": 1,
+                "owner_commit": "aaaa1111",
+                "required_case_kinds": ["positive", "negative", "malformed"],
+                "disposition": "claimed_verified",
+                "receipt_digest": "sha256:cafe"
+            }
+        }),
+        "every field the unit detail renders rides the payload"
+    );
+}

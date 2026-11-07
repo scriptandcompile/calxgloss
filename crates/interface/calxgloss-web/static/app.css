@@ -769,6 +769,67 @@ svg {
     border-color: var(--accent-red);
 }
 
+/* Per-binary conformance verdicts above the queue item list (issue #424):
+   rows render the shared derived model's one verdict — complete names
+   what sealed it, incomplete shows the honest dispositions beside the
+   verified count, and unknown names its causes and never reads as a
+   clean run. The strip holds even when the queue list is empty. */
+.queue-conformance {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0;
+}
+
+.queue-conformance .conformance-row {
+    font-size: 12px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+}
+
+.queue-conformance .conformance-row.conformance-complete {
+    color: var(--accent-green);
+    border-color: var(--accent-green-dim);
+}
+
+.queue-conformance .conformance-row.conformance-incomplete {
+    color: var(--accent-yellow);
+}
+
+.queue-conformance .conformance-row.conformance-unknown {
+    color: var(--accent-red);
+    font-weight: 600;
+}
+
+.queue-conformance .conformance-details {
+    margin-top: 3px;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-secondary, var(--text-muted));
+}
+
+/* The unit's own obligation entry in the unit detail (issue #424): the
+   same joined reading the conformance rows were computed from; the
+   unknown reuses the unknown-records styling so absence never renders
+   as a zero. */
+.queue-detail-body .obligation-row {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+    margin: 4px 0;
+}
+
+.queue-detail-body .obligation-label {
+    min-width: 130px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    padding-top: 1px;
+}
+
 /* Unknown records in the unit detail (issue #376): open records render
    with their question, severity, and required evidence; settled records
    read as settled, beside the open ones and visibly distinct; and the

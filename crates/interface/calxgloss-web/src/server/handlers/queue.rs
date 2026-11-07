@@ -418,6 +418,7 @@ mod tests {
             known_gaps: vec![],
             stale: calxgloss_types::dashboard::Staleness::Fresh,
             unknowns: calxgloss_types::UnitUnknowns::unknown(),
+            obligation: calxgloss_types::UnitObligation::unknown(),
         }
     }
 

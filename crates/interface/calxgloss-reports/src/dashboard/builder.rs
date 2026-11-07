@@ -27,9 +27,9 @@ use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewSkips, ReviewStatus, Staleness, UnitOfWork, WorkKind,
 };
 use calxgloss_types::{
-    BinaryIdentity, BinaryUnknownLedger, ClassificationOverrides, EffectiveLedger, UnitUnknowns,
-    UnknownRecord, UnknownResolutions, classification_override_records_path, read_unknown_ledger,
-    read_unknown_resolutions, unknown_ledger_dir, work_kind_for_prefix,
+    BinaryIdentity, BinaryUnknownLedger, ClassificationOverrides, EffectiveLedger, UnitObligation,
+    UnitUnknowns, UnknownRecord, UnknownResolutions, classification_override_records_path,
+    read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir, work_kind_for_prefix,
 };
 use chrono::Utc;
 
@@ -288,6 +288,10 @@ impl<'a> DashboardBuilder<'a> {
                         unknown_resolutions.as_ref(),
                         None,
                     ),
+                    // A classification is not a unit of restitch work: the
+                    // obligation ledger never rosters it, and its reading
+                    // stays the honest unknown (issue #424).
+                    obligation: UnitObligation::unknown(),
                 };
                 units_by_key.entry(key).or_default().push(unit);
             }
@@ -431,6 +435,33 @@ impl<'a> DashboardBuilder<'a> {
             &dashboard.unknown_ledgers,
             &conformance_join,
         );
+
+        // Issue #424 (P26.8): each function-translation unit also carries
+        // its own *obligation entry*, filled from the same ledger read and
+        // the same live-record join as the per-binary rows just derived —
+        // the unit detail and the queue view read one derivation and can
+        // never disagree. A binary whose ledger was never filed yields no
+        // entry: every unit of that binary keeps the unknown reading,
+        // never a closed obligation.
+        let unit_obligations =
+            super::conformance::derive_unit_obligations(&self.repo_path, &conformance_set, &conformance_join);
+        for unit in dashboard
+            .review_queue
+            .iter_mut()
+            .chain(dashboard.recent_activity.iter_mut())
+        {
+            if unit.kind != WorkKind::FunctionTranslation {
+                continue;
+            }
+            let Some(function) = unit.function.as_deref() else {
+                continue;
+            };
+            unit.obligation = unit_obligations
+                .get(unit.binary.as_str())
+                .and_then(|by_attempt| by_attempt.get(&(function.to_string(), unit.attempt)))
+                .cloned()
+                .unwrap_or_default();
+        }
 
         // Issue #409 (P24.8): the scenario status rides the same model,
         // derived from the filed scenario documents the same way for the
@@ -735,6 +766,10 @@ impl<'a> DashboardBuilder<'a> {
             known_gaps: vec![],
             stale,
             unknowns: UnitUnknowns::unknown(),
+            // Filled from the filed obligation ledger after the read seam
+            // joins (issue #424); until then the reading is the honest
+            // unknown, never a closed obligation.
+            obligation: UnitObligation::unknown(),
         }
     }
 }
@@ -2221,5 +2256,111 @@ mod tests {
             format!(r#"{{"binary": "{binary}", "filed_at": 1}}"#),
         )
         .expect("file an envelope-only ledger");
+    }
+
+    // ── the unit's obligation entry (issue #424, P26.8) ────────────────
+
+    #[test]
+    fn a_filed_obligation_entry_rides_its_unit_with_the_fields_the_unit_detail_names() {
+        // The web unit detail renders the unit's obligation entry from the
+        // derived model. The build seam fills it: the attempt the entry
+        // speaks for, its owner digest, the required case kinds, the
+        // disposition, and the receipt citation (issue #424, AC 2).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        let mut entry = calxgloss_types::ObligationEntry::new(
+            "DrawPrimitive",
+            1,
+            "aaaa1111",
+            calxgloss_types::ObligationDisposition::ClaimedVerified,
+        );
+        entry.receipt_digest = Some("sha256:cafe".to_string());
+        stage_obligation_ledger(dir.path(), "game_logic.dll", vec![entry]);
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        let entry = unit
+            .obligation
+            .entry
+            .as_ref()
+            .expect("the filed entry rides the unit");
+        assert_eq!(entry.attempt, 1, "the entry speaks for attempt 1");
+        assert_eq!(entry.owner_commit, "aaaa1111", "the owner digest rides");
+        assert_eq!(
+            entry.required_case_kinds,
+            calxgloss_types::CaseKind::ALL,
+            "the required case kinds ride from the closed roster"
+        );
+        assert_eq!(
+            entry.disposition,
+            calxgloss_types::ObligationDisposition::ClaimedVerified,
+            "with no live record standing, the filed disposition speaks"
+        );
+        assert_eq!(
+            entry.receipt_digest.as_deref(),
+            Some("sha256:cafe"),
+            "the receipt citation rides as filed"
+        );
+    }
+
+    #[test]
+    fn a_unit_whose_binary_has_no_filed_ledger_reads_the_unknown_obligation_never_a_closed_one() {
+        // The builder files nothing on its own, so a never-filed ledger
+        // leaves the unit's reading unknown (issue #424, AC 4).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        assert!(
+            unit.obligation.entry.is_none(),
+            "a never-filed ledger leaves the unit unknown, never closed"
+        );
+    }
+
+    #[test]
+    fn a_live_record_decides_the_unit_obligation_at_the_read_like_the_conformance_row() {
+        // The two surfaces read one derivation (issue #424, AC 1): where
+        // the reviewer's skip set stands for the unit, the unit's
+        // obligation reads *skipped* with that record's reason beside it —
+        // the same join the per-binary row tallies, not the filed claim.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        stage_obligation_ledger(
+            dir.path(),
+            "game_logic.dll",
+            vec![claimed_verified_entry("DrawPrimitive", 1, "sha256:cafe")],
+        );
+        stage_skip_set(dir.path(), &["game_logic.dll/DrawPrimitive/v1"]);
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+
+        let entry = unit
+            .obligation
+            .entry
+            .as_ref()
+            .expect("the filed entry still rides the unit");
+        assert_eq!(
+            entry.disposition,
+            calxgloss_types::ObligationDisposition::Skipped,
+            "the live skip record decides the disposition at the read"
+        );
+        let reason = entry
+            .disposition_reason
+            .as_deref()
+            .expect("the deciding record states its reason");
+        assert!(
+            reason.contains("skip set"),
+            "the reason names the record that decided: {reason}"
+        );
     }
 }

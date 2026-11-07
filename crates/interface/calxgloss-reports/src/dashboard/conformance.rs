@@ -32,9 +32,9 @@ use calxgloss_types::{
     BinaryConformance, BinaryIdentity, BinaryUnknownLedger, ConformanceOpenObligation,
     ConformanceTally, ConformanceUnknownCause, ConformanceVerdict, GitBranch,
     ObligationDisposition, ObligationEntry, OverrideControl, PersistError, ScenarioVerdictDocument,
-    UnknownSeverity, VerificationReceipt, VerificationVerdict, dashboard::ReviewSkips,
-    obligation_ledger_dir, override_records_path, read_obligation_ledger, scenario_file_key,
-    scenario_verdicts_dir, verification_receipt_path,
+    UnitObligation, UnitObligationEntry, UnknownSeverity, VerificationReceipt, VerificationVerdict,
+    dashboard::ReviewSkips, obligation_ledger_dir, override_records_path, read_obligation_ledger,
+    scenario_file_key, scenario_verdicts_dir, verification_receipt_path,
 };
 
 use super::render::{green_bold, println_content, yellow_bold};
@@ -750,6 +750,70 @@ fn branch_receipt(
     let receipt: VerificationReceipt = serde_json::from_slice(&bytes)
         .map_err(|err| format!("the receipt does not parse: {err}"))?;
     Ok(receipt)
+}
+
+/// The unit's *obligation entry* riding the review model (issue #424,
+/// P26.8): one map per binary from the ledger's function and attempt to
+/// the entry as the read seam decides it — each attempt of a function
+/// joins with its own entry, never the newest one. The fold runs the
+/// same ledger read and the same live-record join as [`conformance_row`],
+/// so the unit detail's entry and the per-binary *conformance verdict*
+/// read one derivation and can never disagree. A binary whose ledger
+/// was never filed or could not be read yields no map at all — every
+/// unit of that binary keeps the honest unknown reading, never a closed
+/// obligation. The row for the binary names the cause on the same build.
+pub fn derive_unit_obligations(
+    workspace: &Path,
+    binaries: &BTreeSet<String>,
+    join: &ConformanceJoin,
+) -> HashMap<String, std::collections::BTreeMap<(String, u32), UnitObligation>> {
+    let mut per_binary = HashMap::new();
+    for binary in binaries {
+        let Ok(ledger) = read_obligation_ledger(workspace, &BinaryIdentity::from(binary.as_str()))
+        else {
+            // Never filed or an input error: [`conformance_row`] already
+            // named this cause on the same build, and the units below
+            // ride the unknown reading from it.
+            continue;
+        };
+        let by_attempt: std::collections::BTreeMap<(String, u32), UnitObligation> = ledger
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    (entry.function.clone(), entry.attempt),
+                    unit_obligation_for(binary, entry, join),
+                )
+            })
+            .collect();
+        per_binary.insert(binary.clone(), by_attempt);
+    }
+    per_binary
+}
+
+/// The filed [`ObligationEntry`] as one unit's riding entry: what the
+/// entry names rides through, and the *obligation disposition* is the
+/// read seam's — the live reviewer record standing for the unit decides
+/// it, otherwise the filed one speaks (issue #420, issue #424).
+fn unit_obligation_for(
+    binary: &str,
+    entry: &ObligationEntry,
+    join: &ConformanceJoin,
+) -> UnitObligation {
+    let (disposition, disposition_reason) = match disposition_at_read(join, binary, entry) {
+        Some(held) => (held.disposition, Some(held.reason)),
+        None => (entry.disposition, None),
+    };
+    UnitObligation {
+        entry: Some(UnitObligationEntry {
+            attempt: entry.attempt,
+            owner_commit: entry.owner_commit.clone(),
+            required_case_kinds: entry.required_case_kinds.clone(),
+            disposition,
+            disposition_reason,
+            receipt_digest: entry.receipt_digest.clone(),
+        }),
+    }
 }
 
 /// Whether one Accept review action stands for the attempt: a record

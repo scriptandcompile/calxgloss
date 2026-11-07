@@ -793,6 +793,7 @@ mod tests {
             known_gaps: Vec::new(),
             stale: calxgloss_types::dashboard::Staleness::Fresh,
             unknowns: calxgloss_types::UnitUnknowns::unknown(),
+            obligation: calxgloss_types::UnitObligation::unknown(),
         }
     }
 

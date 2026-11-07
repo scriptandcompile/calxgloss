@@ -265,6 +265,72 @@ pub struct ConformanceOpenObligation {
     pub link: String,
 }
 
+/// One unit's *obligation entry* riding the review model, so the web
+/// unit detail renders the same joined reading the per-binary
+/// *conformance verdict* was computed from (issue #424). The builder
+/// fills it on every build from the filed *obligation ledger* and the
+/// live records the read seam joins — never stored, so no second copy
+/// can drift. Every field is serde-defaulted: an older unit document
+/// without this field still reads, and the reading is *unknown* — never
+/// zero, never a closed obligation.
+///
+/// The entry states the *obligation disposition* as the read seam
+/// decides it: a live reviewer record (a skip, a park, an override)
+/// stands over the filed one, and otherwise the filed one speaks.
+/// Whether a filed green claim closes its obligation is the separate
+/// question the per-binary *conformance verdict* answers by walking the
+/// evidence chain. One build answers both from one ledger read, so the
+/// unit entry and the row state the same facts side by side.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitObligation {
+    /// The ledger entry filed for this unit, its disposition decided at
+    /// the read. `None` is the unknown reading: no ledger filed for the
+    /// binary, a ledger that could not be read, or a ledger naming no
+    /// entry for this unit — never rendered as a zero or as closed work.
+    #[serde(default)]
+    pub entry: Option<UnitObligationEntry>,
+}
+
+/// What the unit detail names about one *obligation entry* (issue #424,
+/// AC 2): the attempt the entry speaks for, its owner digest, the
+/// required case kinds, the disposition standing at the read, and the
+/// verifier-receipt citation the entry carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitObligationEntry {
+    /// The attempt the entry speaks for, 1-based like every other
+    /// attempt number in the harness; attempt 0 means the entry makes
+    /// no green claim.
+    #[serde(default)]
+    pub attempt: u32,
+    /// The owner: the attempt branch's head commit digest the green
+    /// claim is pinned to. Empty when the entry names no owner.
+    #[serde(default)]
+    pub owner_commit: String,
+    /// The case kinds this obligation requires, from the closed roster.
+    #[serde(default)]
+    pub required_case_kinds: Vec<CaseKind>,
+    /// The disposition standing for this unit at the read: a live
+    /// reviewer record where one stands, otherwise the filed one.
+    pub disposition: ObligationDisposition,
+    /// Where a live record decided the disposition, the plain-words
+    /// reason that record states beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition_reason: Option<String>,
+    /// The verifier-receipt digest this entry cites, present exactly
+    /// when the entry claims green.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_digest: Option<String>,
+}
+
+impl UnitObligation {
+    /// The unknown reading: no filed entry stands for this unit. This is
+    /// also the `Default` — a unit nobody filed against is unknown,
+    /// never zero and never a closed obligation.
+    pub fn unknown() -> Self {
+        Self::default()
+    }
+}
+
 // ============================================================
 // The obligation entry and the ledger document
 // ============================================================

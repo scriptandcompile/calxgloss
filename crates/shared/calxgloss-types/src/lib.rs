@@ -148,8 +148,8 @@ pub use live_translation::{
 pub use obligations::{
     BinaryConformance, CaseKind, ConformanceOpenObligation, ConformanceTally,
     ConformanceUnknownCause, ConformanceVerdict, DECLARED_CASE_KINDS, DECLARED_DISPOSITIONS,
-    ObligationDisposition, ObligationEntry, ObligationLedger, obligation_ledger_dir,
-    obligation_ledger_path, read_obligation_ledger,
+    ObligationDisposition, ObligationEntry, ObligationLedger, UnitObligation, UnitObligationEntry,
+    obligation_ledger_dir, obligation_ledger_path, read_obligation_ledger,
 };
 pub use overrides::{
     FunctionOverride, OverrideControl, UnitOverrides, override_records_path, unit_override_key,
