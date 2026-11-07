@@ -271,6 +271,7 @@ fn file_receipt_pair(
         attempt_path: "initial-translation".to_string(),
         verifier_command: calxgloss_types::VerifierCommand::CompileAndBaselineTest,
         baseline_suite_digest: "sha256:aaa0".to_string(),
+        covered_case_kinds: calxgloss_types::CaseKind::ALL.iter().copied().collect(),
         dimensions,
         compile_ms: 4200,
         test_run_ms: 1300,

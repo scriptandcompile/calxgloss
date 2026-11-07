@@ -33,6 +33,7 @@ fn sample_receipt() -> VerificationReceipt {
         attempt_path: "compile_fix".to_string(),
         verifier_command: VerifierCommand::CompileAndBaselineTest,
         baseline_suite_digest: "sha256:aaa0".to_string(),
+        covered_case_kinds: calxgloss_types::CaseKind::ALL.iter().copied().collect(),
         dimensions,
         compile_ms: 4200,
         test_run_ms: 1300,

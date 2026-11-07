@@ -97,6 +97,7 @@ fn fully_evidenced_workspace(extra_entries: Vec<ObligationEntry>) -> tempfile::T
         attempt_path: "strategy_prompt".to_string(),
         verifier_command: VerifierCommand::CompileAndBaselineTest,
         baseline_suite_digest: "sha256:suite".to_string(),
+        covered_case_kinds: calxgloss_types::CaseKind::ALL.iter().copied().collect(),
         dimensions,
         compile_ms: 10,
         test_run_ms: 5,

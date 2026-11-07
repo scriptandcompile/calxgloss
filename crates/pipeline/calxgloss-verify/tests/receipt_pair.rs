@@ -579,3 +579,32 @@ async fn each_attempt_writes_its_own_pair_and_a_filed_pair_is_never_edited() {
         "a different run is a different digest"
     );
 }
+
+/// The coverage stamp (issue #421, AC 3): the filed pair states the
+/// case-kind classes the suite as fed exercised — every kind a baseline
+/// case declared — and a case that declared no kind contributes none.
+/// A suite without a malformed case never stamps `malformed`, so P26's
+/// obligation check never reads the malformed class as tried.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn the_filed_pair_stamps_the_kinds_the_suite_declared_and_a_kindless_case_adds_nothing() {
+    let mut positive = case(7);
+    positive.case_kind = Some(calxgloss_types::CaseKind::Positive);
+    let mut negative = case(7);
+    negative.case_kind = Some(calxgloss_types::CaseKind::Negative);
+    // `case(7)` itself declares no kind: an honest unclassified try.
+    let (_run, work) = scratch_run(&VerifyContext::default(), BODY, &[positive, negative, case(7)]).await;
+
+    let filed = pair_verifies(&unit_dir(work.path()));
+    assert_eq!(
+        filed.covered_case_kinds,
+        [
+            calxgloss_types::CaseKind::Positive,
+            calxgloss_types::CaseKind::Negative,
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>(),
+        "the pair stamps exactly the kinds the suite's cases declared — the kindless \
+         case contributes none, and the never-tried malformed class stays unstamped"
+    );
+}

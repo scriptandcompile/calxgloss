@@ -10,9 +10,10 @@
 use calxgloss_git::GitManager;
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
-    BinaryConformance, BinaryIdentity, ConformanceTally, ConformanceUnknownCause,
-    ConformanceVerdict, DimensionCounts, ObligationDisposition, ObligationEntry, ObligationLedger,
-    VerificationReceipt, VerificationVerdict, VerifierCommand, obligation_ledger_path, save_json,
+    BinaryConformance, BinaryIdentity, CaseKind, ConformanceTally, ConformanceUnknownCause,
+    ConformanceVerdict, DimensionCounts, DimensionVerdict, ObligationDisposition, ObligationEntry,
+    ObligationLedger, ScenarioVerdict, ScenarioVerdictDocument, VerificationReceipt,
+    VerificationVerdict, VerifierCommand, obligation_ledger_path, save_json, scenario_verdict_path,
     verification_receipt_markdown,
 };
 use std::collections::BTreeMap;
@@ -67,6 +68,40 @@ fn stage_receipt_pair_verdicted(
     attempt: u32,
     verdict: VerificationVerdict,
 ) -> String {
+    stage_receipt_pair_core(git, binary, function, attempt, verdict, &CaseKind::ALL, None, None)
+}
+
+/// Files a digest-paired receipt pair whose suite exercised exactly the
+/// `covered` case kinds — every other required kind stays unexercised,
+/// as a suite with no malformed case files it — and returns the pair's
+/// content digest.
+fn stage_receipt_pair_covering(
+    git: &GitManager,
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    covered: &[CaseKind],
+) -> String {
+    stage_receipt_pair_core(git, binary, function, attempt, VerificationVerdict::Passed, covered, None, None)
+}
+
+/// The fixture core: the pair is filed at the path for
+/// `(binary, function, attempt)`, while the receipt's own words can be
+/// pointed at another unit or attempt (`content_function` /
+/// `content_attempt`) — how a citation that names the wrong unit gets
+/// staged. Returns the pair's content digest.
+// the fixture stages every knob a receipt carries; most callers name most of them `None`
+#[allow(clippy::too_many_arguments)]
+fn stage_receipt_pair_core(
+    git: &GitManager,
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    verdict: VerificationVerdict,
+    covered: &[CaseKind],
+    content_function: Option<&str>,
+    content_attempt: Option<u32>,
+) -> String {
     let identity = BinaryIdentity::new(binary);
     let mut dimensions = BTreeMap::new();
     dimensions.insert(
@@ -82,12 +117,13 @@ fn stage_receipt_pair_verdicted(
     );
     let mut receipt = VerificationReceipt {
         binary: identity.clone(),
-        function: function.to_string(),
-        attempt,
+        function: content_function.unwrap_or(function).to_string(),
+        attempt: content_attempt.unwrap_or(attempt),
         retry_strategy: "initial".to_string(),
         attempt_path: "strategy_prompt".to_string(),
         verifier_command: VerifierCommand::CompileAndBaselineTest,
         baseline_suite_digest: "sha256:suite".to_string(),
+        covered_case_kinds: covered.iter().copied().collect(),
         dimensions,
         compile_ms: 10,
         test_run_ms: 5,
@@ -131,6 +167,33 @@ fn stage_unknown_ledger(dir: &std::path::Path, binary: &str, records: Vec<serde_
         "records": records,
     });
     std::fs::write(&path, doc.to_string()).expect("file unknown ledger");
+}
+
+/// Files the reviewer's resolutions at `re/review/unknown_resolutions.json`
+/// — each `(id, disposition)` settled with its bounded reason line, the
+/// shape the review surfaces write.
+fn stage_unknown_resolutions(dir: &std::path::Path, settled: &[(&str, &str)]) {
+    let path = dir
+        .join("re")
+        .join("review")
+        .join("unknown_resolutions.json");
+    std::fs::create_dir_all(path.parent().expect("review dir")).expect("review dir");
+    let resolutions: serde_json::Map<String, serde_json::Value> = settled
+        .iter()
+        .map(|(id, disposition)| {
+            (
+                (*id).to_string(),
+                serde_json::json!({
+                    "disposition": disposition,
+                    "reason": "the reviewer settled this record at the review surface",
+                    "expected_revision": 1,
+                    "at": 1_700_000_001,
+                }),
+            )
+        })
+        .collect();
+    let doc = serde_json::json!({ "resolutions": resolutions, "reopened": {} });
+    std::fs::write(&path, doc.to_string()).expect("file unknown resolutions");
 }
 
 /// Files an Accept review-action record at
@@ -1618,3 +1681,790 @@ fn a_reviewer_unit_override_record_tallies_overridden_and_never_reads_verified()
         open.link
     );
 }
+
+// ============================================================
+// Issue #421 (P26.5): the injected faults a green claim must never
+// wave through — an unresolvable citation, a suite missing a required
+// case kind, a settled unknown, and the exe target's scenario lane.
+// Each fault gets one named test at this seam.
+// ============================================================
+
+/// Stages one fully-closed unit: branch, translated source, a passed
+/// receipt pair (committing both twins), and a standing Accept record
+/// folded by `accept_branch`. Returns (owner commit hash, receipt
+/// citation) for the ledger entry.
+fn fully_closed_unit(
+    git: &GitManager,
+    dir: &std::path::Path,
+    binary: &str,
+    function: &str,
+) -> (String, String) {
+    let branch = git
+        .create_branch(binary, function, 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = dir
+        .join("src")
+        .join(format!("{binary}_{function}_v1.rs"));
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let receipt_digest = stage_receipt_pair(git, binary, function, 1);
+    let commit = git
+        .commit(
+            &branch,
+            &format!("re: translate {function}"),
+            &[
+                &format!("src/{binary}_{function}_v1.rs"),
+                &format!("re/verification/{binary}/{function}/attempt-1.json"),
+                &format!("re/verification/{binary}/{function}/attempt-1.md"),
+            ],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    (commit.hash, receipt_digest)
+}
+
+#[test]
+fn a_green_claim_whose_pair_was_never_committed_is_an_input_error_that_names_its_cause() {
+    // AC 1: a ClaimedVerified entry cites a digest, but the attempt
+    // branch carries no receipt pair at all. The read refuses — the row
+    // falls to *unknown* naming the unresolvable citation, never a
+    // degraded pass beside the counts.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = dir
+        .path()
+        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &["src/game_logic.dll_DrawPrimitive_v1.rs"],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit.hash,
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("the build never fails on an unresolvable citation");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Unknown,
+        "a green claim citing a pair that was never filed is an input error, never a pass"
+    );
+    assert_eq!(
+        row.causes,
+        vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
+        "the unknown names the unresolvable receipt citation as its cause"
+    );
+    assert_eq!(row.tally.verified, 0, "an unresolvable citation never counts verified");
+}
+
+#[test]
+fn an_entry_claiming_verified_without_any_citation_refuses_to_parse_and_reads_unknown() {
+    // AC 1's other half: a ClaimedVerified entry citing no receipt at
+    // all is refused when the ledger is read — the entry-level roster
+    // closure files it nowhere — and the row falls to *unknown* naming
+    // its input error. A claim with no citation cannot degrade into a
+    // pass beside the counts.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = one_unit_repo(dir.path());
+    let mut entry = ObligationEntry::new(
+        "DrawPrimitive",
+        1,
+        "0000000000000000000000000000000000000000",
+        ObligationDisposition::ClaimedVerified,
+    );
+    entry.receipt_digest = None;
+    let ledger = ObligationLedger::file("game_logic.dll", vec![entry], 1_700_000_000)
+        .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("the build never fails on an uncited claim");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Unknown,
+        "an uncited green claim is refused at the read, never waved through"
+    );
+    assert_eq!(
+        row.causes,
+        vec![ConformanceUnknownCause::DigestMismatch],
+        "the refused document names its input error as the cause"
+    );
+    assert_eq!(row.closure_digest, None, "a refused ledger seals nothing");
+}
+
+#[test]
+fn a_half_committed_pair_never_closes_a_green_claim() {
+    // AC 2: the receipt JSON is committed but its Markdown twin is not.
+    // A half pair verifies nothing — the same rule the commit sites
+    // state — so the claim reads an unresolvable citation, not a close.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = dir
+        .path()
+        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let receipt_digest = stage_receipt_pair(&git, "game_logic.dll", "DrawPrimitive", 1);
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &[
+                "src/game_logic.dll_DrawPrimitive_v1.rs",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.json",
+            ],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("the build survives a half-committed pair");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Unknown,
+        "a half-committed pair verifies nothing — no close, no degraded pass"
+    );
+    assert_eq!(
+        row.causes,
+        vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
+        "the missing Markdown twin is named as an unresolvable citation"
+    );
+}
+
+#[test]
+fn a_citation_that_matches_no_pair_on_the_branch_is_refused_naming_both_digests() {
+    // AC 2's first half: the entry cites a digest, the branch carries a
+    // pair — but the pair seals a different digest. The claim is
+    // refused: the row reads *unknown* naming the unresolvable
+    // citation, never the green the entry claimed.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let (commit_hash, _) = fully_closed_unit(&git, dir.path(), "game_logic.dll", "DrawPrimitive");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit_hash,
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        )],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("the build survives a mismatched citation");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Unknown,
+        "a citation matching no filed pair never closes, never a pass beside the counts"
+    );
+    assert_eq!(
+        row.causes,
+        vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
+        "the unknown names the citation that seals nothing on the branch"
+    );
+    assert_eq!(row.tally.verified, 0);
+}
+
+#[test]
+fn a_pair_naming_another_attempt_than_the_entry_never_closes_it() {
+    // AC 2's second half: the pair's bytes speak for attempt 1 while
+    // the entry is attempt 2's — another attempt's green run can never
+    // close this obligation, however exactly its digest matches.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 2, None)
+        .expect("attempt 2 branch")
+        .branch;
+    let source = dir
+        .path()
+        .join("src/game_logic.dll_DrawPrimitive_v2.rs");
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let receipt_digest = stage_receipt_pair_core(
+        &git,
+        "game_logic.dll",
+        "DrawPrimitive",
+        2,
+        VerificationVerdict::Passed,
+        &CaseKind::ALL,
+        None,
+        Some(1),
+    );
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &[
+                "src/game_logic.dll_DrawPrimitive_v2.rs",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-2.json",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-2.md",
+            ],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawPrimitive", 2, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("the build survives a mismatched unit citation");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Unknown,
+        "a pair speaking for another attempt never closes this entry"
+    );
+    assert_eq!(
+        row.causes,
+        vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
+        "the unit mismatch is named as an unresolvable citation"
+    );
+}
+
+#[test]
+fn a_pair_naming_another_unit_than_the_entry_never_closes_it() {
+    // AC 2's other half: the pair rides the right path with the right
+    // attempt number, but the receipt's own face names another unit —
+    // a green run of a different unit can never close this obligation,
+    // however exactly its digest seals to the citation.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = dir
+        .path()
+        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let receipt_digest = stage_receipt_pair_core(
+        &git,
+        "game_logic.dll",
+        "DrawPrimitive",
+        1,
+        VerificationVerdict::Passed,
+        &CaseKind::ALL,
+        Some("OtherUnit"),
+        None,
+    );
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &[
+                "src/game_logic.dll_DrawPrimitive_v1.rs",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.json",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("the build survives a wrong-unit citation");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Unknown,
+        "a receipt speaking for another unit never closes this entry"
+    );
+    assert_eq!(
+        row.causes,
+        vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
+        "the wrong-unit pair is named as an unresolvable citation"
+    );
+}
+
+/// Files a *scenario verdict* document for `scenario` at the path the
+/// scenario close action files it — `re/scenarios/verdicts/
+/// <binary>-<scenario key>.json` — claiming (or not) complete
+/// equivalence on its face.
+fn stage_scenario_verdict(dir: &std::path::Path, binary: &str, scenario: &str, claims: bool) {
+    let identity = BinaryIdentity::new(binary);
+    let path = scenario_verdict_path(dir, &identity, scenario);
+    std::fs::create_dir_all(path.parent().expect("verdicts dir")).expect("verdicts dir");
+    // the fixture files the document the way the comparator would: every
+    // dimension assessed pass, and a stamped digest that really covers the
+    // filed content, so tamper tests can break the digest while the content
+    // still claims the lane closed
+    let mut document = ScenarioVerdictDocument {
+        binary: identity,
+        scenario: scenario.to_string(),
+        filed_at: 1_700_000_000,
+        normalization_version: "v1".to_string(),
+        left_capture_sha256: "sha256:left".to_string(),
+        right_capture_sha256: "sha256:right".to_string(),
+        left_pairing: None,
+        right_pairing: None,
+        verdict: ScenarioVerdict {
+            terminal: DimensionVerdict::AssessedPass,
+            interaction: DimensionVerdict::AssessedPass,
+            exit: DimensionVerdict::AssessedPass,
+            filesystem: DimensionVerdict::AssessedPass,
+            process: DimensionVerdict::AssessedPass,
+        },
+        divergences: Vec::new(),
+        residual_unknowns: Vec::new(),
+        claims_complete_equivalence: claims,
+        digest: String::new(),
+    };
+    document.digest = document.content_digest().expect("verdict content digest");
+    save_json(&path, &document).expect("file the scenario verdict");
+}
+
+#[test]
+fn a_suite_missing_a_required_case_kind_holds_the_obligation_open() {
+    // AC 3: the whole green chain stands — pair filed, citation sealed,
+    // Accept record, merged branch — but the filed suite exercised only
+    // positive and negative cases, and the obligation requires the
+    // malformed class too. The obligation stays open, and the row names
+    // the missing kind as the first broken link.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = dir
+        .path()
+        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let receipt_digest = stage_receipt_pair_covering(
+        &git,
+        "game_logic.dll",
+        "DrawPrimitive",
+        1,
+        &[CaseKind::Positive, CaseKind::Negative],
+    );
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &[
+                "src/game_logic.dll_DrawPrimitive_v1.rs",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.json",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a green run that never tried the malformed class never seals the binary complete"
+    );
+    assert_eq!(row.tally.verified, 0, "the unsealed claim never counts verified");
+    let open = row.first_open.as_ref().expect("the broken link is named");
+    assert!(
+        open.link.contains("malformed"),
+        "the first open link names the never-exercised case kind: {}",
+        open.link
+    );
+    assert!(
+        !open.link.contains("positive") && !open.link.contains("negative"),
+        "the kinds the suite did exercise are not named: {}",
+        open.link
+    );
+}
+
+#[test]
+fn an_old_filed_receipt_that_stamps_no_covered_kinds_keeps_a_green_claim_open() {
+    // AC 3's fail-closed half: a receipt filed before the covered-kinds
+    // field existed reads as covering nothing, and a suite whose cases
+    // declared no kind never exercised one — either way every required
+    // kind is missing and the claim stays open.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let branch = git
+        .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = dir
+        .path()
+        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
+    std::fs::write(&source, "// translated").expect("write source");
+    let receipt_digest = stage_receipt_pair_covering(&git, "game_logic.dll", "DrawPrimitive", 1, &[]);
+    let commit = git
+        .commit(
+            &branch,
+            "re: translate DrawPrimitive",
+            &[
+                "src/game_logic.dll_DrawPrimitive_v1.rs",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.json",
+                "re/verification/game_logic.dll/DrawPrimitive/attempt-1.md",
+            ],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a receipt claiming no covered kind never closes an obligation requiring kinds"
+    );
+    let open = row.first_open.as_ref().expect("the broken link is named");
+    assert!(
+        open.link.contains("positive") && open.link.contains("malformed"),
+        "the first open link names every required kind the suite never exercised: {}",
+        open.link
+    );
+}
+
+#[test]
+fn a_settled_blocking_unknown_backed_by_its_resolution_document_stays_out_of_the_refusal() {
+    // AC 5: two blocking-severity records stand in the ledger, one
+    // settled resolved and one dismissed, each backed by the reviewer's
+    // resolution document. Neither counts as open: the gate opens and
+    // the fully closed binary reads complete.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let (commit_hash, receipt_digest) =
+        fully_closed_unit(&git, dir.path(), "game_logic.dll", "DrawPrimitive");
+    stage_unknown_ledger(
+        dir.path(),
+        "game_logic.dll",
+        vec![
+            serde_json::json!({
+                "id": "unknown-a-mystery",
+                "binary": "game_logic.dll",
+                "kind": "export_uncovered",
+                "severity": "blocking",
+                "question": "what does the un-mapped export really do?",
+                "required_evidence": "a filed baseline document naming the export",
+                "origin": { "origin": "case_set", "case_set": "re/baseline/game_logic.dll.json" },
+                "first_seen": 1,
+                "last_seen": 1,
+                "revision": 1,
+            }),
+            serde_json::json!({
+                "id": "unknown-b-mystery",
+                "binary": "game_logic.dll",
+                "kind": "export_uncovered",
+                "severity": "blocking",
+                "question": "which caller relies on the edge case?",
+                "required_evidence": "a trace naming the caller",
+                "origin": { "origin": "case_set", "case_set": "re/baseline/game_logic.dll.json" },
+                "first_seen": 1,
+                "last_seen": 1,
+                "revision": 1,
+            }),
+        ],
+    );
+    stage_unknown_resolutions(
+        dir.path(),
+        &[("unknown-a-mystery", "resolved"), ("unknown-b-mystery", "dismissed")],
+    );
+    let ledger = ObligationLedger::file(
+        "game_logic.dll",
+        vec![claimed_entry("DrawPrimitive", 1, &commit_hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "game_logic.dll");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Complete,
+        "settled unknowns backed by their resolution documents never hold the gate shut"
+    );
+    assert!(
+        row.blocking_unknowns.is_empty(),
+        "no blocking line names a settled record: {:?}",
+        row.blocking_unknowns
+    );
+    assert_eq!(row.tally.verified, 1);
+}
+
+#[test]
+fn a_fully_closed_exe_unit_waits_on_its_scenario_verdict_lane() {
+    // AC 6: every unit-level link stands for an exe target — green
+    // pair, sealed citation, Accept record, merged branch — yet no
+    // scenario verdict is filed. The FFI gate never closes an entry on
+    // its own: the row reads *incomplete*, and the first open
+    // link names the missing scenario assessment.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let (commit_hash, receipt_digest) =
+        fully_closed_unit(&git, dir.path(), "eqgame.exe", "game_loop");
+    stage_unknown_ledger(dir.path(), "eqgame.exe", Vec::new());
+    let ledger = ObligationLedger::file(
+        "eqgame.exe",
+        vec![claimed_entry("game_loop", 1, &commit_hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "eqgame.exe");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a closed exe unit without a filed scenario verdict is honest work awaiting \
+         scenario assessment — never complete"
+    );
+    assert_eq!(row.tally.verified, 0, "the exe claim never counts verified on unit links alone");
+    let open = row.first_open.as_ref().expect("the missing lane is named");
+    assert!(
+        open.link.contains("scenario verdict"),
+        "the first open link names the scenario verdict lane: {}",
+        open.link
+    );
+}
+
+#[test]
+fn a_filed_scenario_verdict_claiming_complete_equivalence_closes_the_exe_row() {
+    // AC 6's closing half: the same fully closed exe unit, with a
+    // scenario verdict document filed under `re/scenarios/verdicts/`
+    // claiming complete equivalence. The obligation closes and the
+    // binary reads complete.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let (commit_hash, receipt_digest) =
+        fully_closed_unit(&git, dir.path(), "eqgame.exe", "game_loop");
+    stage_scenario_verdict(dir.path(), "eqgame.exe", "main", true);
+    stage_unknown_ledger(dir.path(), "eqgame.exe", Vec::new());
+    let ledger = ObligationLedger::file(
+        "eqgame.exe",
+        vec![claimed_entry("game_loop", 1, &commit_hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "eqgame.exe");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Complete,
+        "unit links plus a filed complete-equivalence scenario verdict seal the exe row"
+    );
+    assert_eq!(row.tally.verified, 1);
+}
+
+#[test]
+fn a_scenario_verdict_claiming_only_partial_equivalence_never_closes_the_exe_row() {
+    // The filed verdict must claim complete equivalence: a verdict
+    // filed without that claim assesses the lane but closes nothing.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let (commit_hash, receipt_digest) =
+        fully_closed_unit(&git, dir.path(), "eqgame.exe", "game_loop");
+    stage_scenario_verdict(dir.path(), "eqgame.exe", "main", false);
+    stage_unknown_ledger(dir.path(), "eqgame.exe", Vec::new());
+    let ledger = ObligationLedger::file(
+        "eqgame.exe",
+        vec![claimed_entry("game_loop", 1, &commit_hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "eqgame.exe");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a verdict that never claims complete equivalence never closes the lane"
+    );
+    let open = row.first_open.as_ref().expect("the open lane is named");
+    assert!(
+        open.link.contains("scenario verdict"),
+        "the first open link still names the scenario verdict lane: {}",
+        open.link
+    );
+}
+
+#[test]
+fn a_scenario_verdict_document_outside_its_filing_envelope_is_not_a_filed_verdict() {
+    // The claim must stand in a *filed* verdict: a document whose name
+    // does not spell the filing site's `{binary}-{scenario key}`
+    // envelope — a stray, renamed, or misplaced document — claims
+    // nothing, fail-closed.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let (commit_hash, receipt_digest) =
+        fully_closed_unit(&git, dir.path(), "eqgame.exe", "game_loop");
+    let verdicts = dir.path().join("re").join("scenarios").join("verdicts");
+    std::fs::create_dir_all(&verdicts).expect("verdicts dir");
+    std::fs::write(
+        verdicts.join("eqgame.exe-not-the-key.json"),
+        serde_json::json!({
+            "binary": "eqgame.exe",
+            "scenario": "main",
+            "filed_at": 1_700_000_000,
+            "normalization_version": "v1",
+            "left_capture_sha256": "sha256:left",
+            "right_capture_sha256": "sha256:right",
+            "verdict": {},
+            "divergences": [],
+            "residual_unknowns": [],
+            "claims_complete_equivalence": true,
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        })
+            .to_string(),
+    )
+    .expect("file the stray verdict");
+    stage_unknown_ledger(dir.path(), "eqgame.exe", Vec::new());
+    let ledger = ObligationLedger::file(
+        "eqgame.exe",
+        vec![claimed_entry("game_loop", 1, &commit_hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "eqgame.exe");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a stray document outside the verdict filing envelope is never a filed verdict"
+    );
+}
+
+#[test]
+fn a_tampered_scenario_verdict_never_closes_the_exe_row() {
+    // The verdict a close trusts must verify from its filed bytes alone:
+    // a capture digest swapped after filing while the stamped digest
+    // stays behind is no verdict at all, the same fail-closed rule a
+    // tampered receipt citation obeys. The row falls back to incomplete
+    // naming the scenario verdict lane.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git = init_test_repo(dir.path());
+    let (commit_hash, receipt_digest) =
+        fully_closed_unit(&git, dir.path(), "eqgame.exe", "game_loop");
+    stage_scenario_verdict(dir.path(), "eqgame.exe", "main", true);
+    let verdict_path = scenario_verdict_path(dir.path(), &BinaryIdentity::new("eqgame.exe"), "main");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&verdict_path).expect("read the verdict"))
+            .expect("parse the verdict");
+    document["left_capture_sha256"] = serde_json::json!("sha256:tampered");
+    std::fs::write(&verdict_path, document.to_string()).expect("tamper the filed verdict");
+    stage_unknown_ledger(dir.path(), "eqgame.exe", Vec::new());
+    let ledger = ObligationLedger::file(
+        "eqgame.exe",
+        vec![claimed_entry("game_loop", 1, &commit_hash, &receipt_digest)],
+        1_700_000_000,
+    )
+    .expect("file the ledger");
+    save_json(&obligation_ledger_path(dir.path(), &ledger.binary), &ledger).expect("save");
+
+    let dashboard = DashboardBuilder::new(&git)
+        .build()
+        .expect("dashboard builds");
+    let row = find_conformance(&dashboard, "eqgame.exe");
+    assert_eq!(
+        row.verdict,
+        ConformanceVerdict::Incomplete,
+        "a verdict edited after filing claims nothing"
+    );
+    let open = row.first_open.as_ref().expect("the open lane is named");
+    assert!(
+        open.link.contains("scenario verdict"),
+        "the first open link still names the scenario verdict lane: {}",
+        open.link
+    );
+}
+

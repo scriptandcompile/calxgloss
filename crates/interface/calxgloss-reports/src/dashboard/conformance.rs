@@ -26,9 +26,10 @@ use calxgloss_git::GitManager;
 use calxgloss_types::{
     BinaryConformance, BinaryIdentity, BinaryUnknownLedger, ConformanceOpenObligation,
     ConformanceTally, ConformanceUnknownCause, ConformanceVerdict, GitBranch,
-    ObligationDisposition, ObligationEntry, OverrideControl, PersistError, UnknownSeverity,
-    VerificationReceipt, VerificationVerdict, dashboard::ReviewSkips, obligation_ledger_dir,
-    override_records_path, read_obligation_ledger, verification_receipt_path,
+    ObligationDisposition, ObligationEntry, OverrideControl, PersistError, ScenarioVerdictDocument,
+    UnknownSeverity, VerificationReceipt, VerificationVerdict, dashboard::ReviewSkips,
+    obligation_ledger_dir, override_records_path, read_obligation_ledger, scenario_file_key,
+    scenario_verdicts_dir, verification_receipt_path,
 };
 
 use super::render::{green_bold, yellow_bold};
@@ -416,8 +417,10 @@ fn disposition_words(disposition: &ObligationDisposition) -> String {
 
 /// Check one green claim against the evidence the entry pins: its owner
 /// digest against the attempt branch's tip, its citation against the
-/// receipt pair committed there, the Accept review action, and the
-/// merged state.
+/// receipt pair committed there, the suite's coverage of the case kinds
+/// the obligation requires, the Accept review action, and the merged
+/// state. For an exe target a filed scenario verdict claiming complete
+/// equivalence must also stand (issue #421).
 fn close_claim(
     git: &GitManager,
     identity: &BinaryIdentity,
@@ -508,6 +511,41 @@ fn close_claim(
         ));
     }
 
+    // The coverage check (issue #421, AC 3): every case kind the
+    // obligation requires must stand among the kinds the filed suite
+    // exercised. The citation just sealed this exact document, so the
+    // covered kinds stated on the receipt's face are the honest record
+    // of what the run tried — a suite document re-resolved after filing
+    // could decide coverage, and a case that declared no kind never
+    // exercised one. A green run that never tried a required class keeps
+    // the obligation open.
+    let missing_kinds: Vec<String> = entry
+        .required_case_kinds
+        .iter()
+        .filter(|kind| !receipt.covered_case_kinds.contains(kind))
+        .map(|kind| kind.to_string())
+        .collect();
+    if !missing_kinds.is_empty() {
+        return ClaimReading::Open(format!(
+            "the filed suite never exercised the required case kinds: {}",
+            missing_kinds.join(", ")
+        ));
+    }
+
+    // For an exe target, unit evidence alone never closes the claim: the
+    // scenario lane is what shows the translated unit actually runs and
+    // behaves, and only a filed scenario verdict claiming complete
+    // equivalence speaks for it. The FFI gate never closes an entry on its
+    // own — the row says the lane lacks an assessment, naming
+    // it as the first open link (issue #421, AC 6).
+    if identity.as_str().to_ascii_lowercase().ends_with(".exe")
+        && !scenario_verdict_claims_complete(git.repo_path(), identity)
+    {
+        return ClaimReading::Open(
+            "no filed scenario verdict claims complete equivalence for this binary".to_string(),
+        );
+    }
+
     // Review is the only door into verified: a merged branch with no
     // standing Accept action never closes an obligation, and the unit
     // reads un-reviewed — its own tally, never verified (issue #392,
@@ -524,6 +562,55 @@ fn close_claim(
         return ClaimReading::Open(format!("branch `{}` is not merged into main", branch.name));
     }
     ClaimReading::Closed
+}
+
+/// Whether a filed *scenario verdict* document under
+/// `re/scenarios/verdicts/` claims complete equivalence for this binary
+/// (issue #421, AC 6): the file stem must spell `{binary}-{scenario key}`
+/// the way the filing site spells it, the document must parse and name
+/// this binary, and the complete-equivalence claim must stand on its
+/// face. A missing directory, an unreadable document, or a stale
+/// envelope claims nothing — fail-closed.
+fn scenario_verdict_claims_complete(workspace: &Path, identity: &BinaryIdentity) -> bool {
+    let Ok(entries) = std::fs::read_dir(scenario_verdicts_dir(workspace)) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(document) = serde_json::from_str::<ScenarioVerdictDocument>(&text) else {
+            continue;
+        };
+        if document.binary != *identity {
+            continue;
+        }
+        // the stamped digest must match the filed bytes: a document edited
+        // after filing names no verdict at all, exactly like a receipt whose
+        // citation digest no longer computes
+        let Ok(recomputed) = document.content_digest() else {
+            continue;
+        };
+        if recomputed != document.digest {
+            continue;
+        }
+        if !document.claims_complete_equivalence {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        if stem != format!("{}-{}", identity.as_str(), scenario_file_key(&document.scenario)) {
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 /// Read one attempt's *verification receipt* from the branch tip's own

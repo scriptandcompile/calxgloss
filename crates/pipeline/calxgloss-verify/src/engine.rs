@@ -543,6 +543,17 @@ impl Verifier {
             attempt_path: context.attempt_path.to_string(),
             verifier_command,
             baseline_suite_digest,
+            // The kinds the suite as fed actually exercised: every kind a
+            // baseline case declared. A case with no declared kind adds
+            // nothing — coverage of a class only ever comes from cases
+            // that named it (issue #421, AC 3).
+            // a failed baseline gate built nothing to exercise — no case ran,
+            // so the suite covers no kind, even when the harness listed one
+            covered_case_kinds: if verdict == VerificationVerdict::CompileFailed {
+                Default::default()
+            } else {
+                baseline_tests.iter().filter_map(|case| case.case_kind).collect()
+            },
             dimensions,
             compile_ms,
             test_run_ms,
@@ -689,6 +700,10 @@ impl Verifier {
             // command is compile-only, whatever the run meant to do.
             verifier_command: VerifierCommand::CompileOnly,
             baseline_suite_digest: suite_digest.to_string(),
+            // No case ever ran through a runner, so no kind was ever
+            // exercised: the empty set claims nothing (issue #421's
+            // fail-closed half).
+            covered_case_kinds: std::collections::BTreeSet::new(),
             dimensions: BTreeMap::new(),
             compile_ms,
             test_run_ms,

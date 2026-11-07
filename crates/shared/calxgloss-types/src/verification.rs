@@ -7,9 +7,10 @@
 //! digest that makes its verdict citable.
 
 use crate::identity::BinaryIdentity;
+use crate::obligations::CaseKind;
 use crate::test::SideEffect;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Detailed information about a single test failure.
 ///
@@ -236,6 +237,18 @@ pub struct VerificationReceipt {
     /// missing field.
     pub baseline_suite_digest: String,
 
+    /// The case-kind classes the filed suite actually exercised — every
+    /// declared kind the baseline cases as fed carried, collected. A kind
+    /// the suite never exercised stays missing here, so an obligation
+    /// requiring it never reads covered (issue #421's coverage check);
+    /// a case declaring no kind adds nothing to this set.
+    /// `#[serde(default)]` keeps receipts saved before the field existed
+    /// readable, per this record's serde discipline — their empty set
+    /// claims no kind, so a required kind reads uncovered, never
+    /// silently satisfied.
+    #[serde(default)]
+    pub covered_case_kinds: BTreeSet<CaseKind>,
+
     /// Per-dimension counts keyed by dimension name — today `values`
     /// and `api_trace`. The map shape is deliberate: P23's mined-input
     /// and P24's scenario dimensions join additively, no receipt
@@ -319,6 +332,16 @@ pub fn verification_receipt_markdown(receipt: &VerificationReceipt) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let covered_kinds = if receipt.covered_case_kinds.is_empty() {
+        "none".to_string()
+    } else {
+        receipt
+            .covered_case_kinds
+            .iter()
+            .map(|kind| kind.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let dimensions = receipt
         .dimensions
         .iter()
@@ -336,6 +359,7 @@ pub fn verification_receipt_markdown(receipt: &VerificationReceipt) -> String {
          Verdict: `{verdict}` · attempt {attempt} · strategy `{strategy}` · path `{path}`\n\n\
          - Gate: `{gate}`\n\
          - Baseline suite digest: `{suite}`\n\
+         - Suite covered kinds: {covered}\n\
          {dimensions}\n\
          - Timings: compile {compile} ms, test run {test} ms, total {total} ms\n\
          - Failed baseline cases: {failed}\n\n\
@@ -351,6 +375,7 @@ pub fn verification_receipt_markdown(receipt: &VerificationReceipt) -> String {
         path = receipt.attempt_path,
         gate = label(&receipt.verifier_command),
         suite = receipt.baseline_suite_digest,
+        covered = covered_kinds,
         compile = receipt.compile_ms,
         test = receipt.test_run_ms,
         total = receipt.total_ms,
@@ -578,6 +603,7 @@ mod tests {
             attempt_path: "strategy_prompt".to_string(),
             verifier_command: VerifierCommand::CompileAndBaselineTest,
             baseline_suite_digest: "sha256:aaa0".to_string(),
+            covered_case_kinds: CaseKind::ALL.iter().copied().collect(),
             dimensions,
             compile_ms: 4200,
             test_run_ms: 1300,
