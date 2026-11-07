@@ -74,7 +74,9 @@ use crate::batch;
 use crate::error::{Result, TranslatorError};
 use crate::retry;
 use crate::scan_job::ScanJob;
-use crate::scan_registry::{ScanDescriptor, ScanLatches, arm_completion_latches, scan_rows};
+use crate::scan_registry::{
+    ScanDescriptor, ScanLatches, ScanRunOutcome, arm_completion_latches, scan_rows,
+};
 
 // The pipeline's own seams. Each names the part of the pipeline it owns;
 // they see this module through `use super::*;`, and the tests below see

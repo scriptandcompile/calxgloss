@@ -1401,9 +1401,10 @@ async fn test_progress_enhanced_reports_live_records() {
 /// answers `finished: false` with a measurable elapsed. A finished row
 /// carries the pass's elapsed and the finding count the evidence engine
 /// reported, and omits the count entirely when the row names no single
-/// count. A second pass over the same binary keeps the other records
-/// until that row's next events replace them. A pass for the NEXT
-/// binary retires the previous binary's rows.
+/// count. A failed row is finished with its error words on it and no
+/// finding count at all (issue #429). A second pass over the same binary
+/// keeps the other records until that row's next events replace them. A
+/// pass for the NEXT binary retires the previous binary's rows.
 #[tokio::test]
 async fn test_progress_enhanced_serves_live_scan_records() {
     let fixture = TestFixture::new();
@@ -1430,6 +1431,7 @@ async fn test_progress_enhanced_serves_live_scan_records() {
             scan: "control-flow".into(),
             elapsed_secs: 2.5,
             findings: Some(9),
+            error: None,
         },
         // Started only — still running when the payload is served.
         ProgressEvent::EvidenceScanStarted {
@@ -1446,6 +1448,20 @@ async fn test_progress_enhanced_serves_live_scan_records() {
             scan: "type-database".into(),
             elapsed_secs: 1.5,
             findings: None,
+            error: None,
+        },
+        // Finished failed: the completed event carries the error and the
+        // finding count stays unknown (issue #429).
+        ProgressEvent::EvidenceScanStarted {
+            binary: "eqmain.dll".into(),
+            scan: "sync".into(),
+        },
+        ProgressEvent::EvidenceScanCompleted {
+            binary: "eqmain.dll".into(),
+            scan: "sync".into(),
+            elapsed_secs: 6.0,
+            findings: None,
+            error: Some("the sync evidence engine refused the scan".into()),
         },
     ] {
         events.emit(event);
@@ -1469,7 +1485,7 @@ async fn test_progress_enhanced_serves_live_scan_records() {
         .collect();
     assert_eq!(
         names,
-        vec!["callback-detection", "control-flow", "type-database"],
+        vec!["callback-detection", "control-flow", "sync", "type-database"],
         "scan rows are served in stable scan-name order"
     );
 
@@ -1486,6 +1502,10 @@ async fn test_progress_enhanced_serves_live_scan_records() {
     assert_eq!(flow["elapsed_secs"].as_f64(), Some(2.5));
     assert_eq!(flow["findings"].as_u64(), Some(9));
     assert_eq!(flow["binary"].as_str(), Some("eqmain.dll"));
+    assert!(
+        flow.get("error").is_none(),
+        "a scan that did not fail carries no error field: {flow}"
+    );
 
     let running = scan("callback-detection");
     assert_eq!(
@@ -1510,6 +1530,25 @@ async fn test_progress_enhanced_serves_live_scan_records() {
         "a scan with no single count omits the field, never a zero: {db}"
     );
 
+    // The failed row: finished, with the failure's words on it and the
+    // finding count still unknown — the payload never turns a failure
+    // into a zero (issue #429).
+    let failed = scan("sync");
+    assert_eq!(
+        failed["finished"].as_bool(),
+        Some(true),
+        "a failed scan's completed event lands like any other: {failed}"
+    );
+    assert_eq!(
+        failed["error"].as_str(),
+        Some("the sync evidence engine refused the scan"),
+        "the payload carries the failure's own words: {failed}"
+    );
+    assert!(
+        failed.get("findings").is_none(),
+        "a failed scan serves no count, never a zero: {failed}"
+    );
+
     // A second pass over the SAME binary keeps the records standing
     // until that row's next events replace it.
     events.emit(ProgressEvent::BatchStarted {
@@ -1532,7 +1571,7 @@ async fn test_progress_enhanced_serves_live_scan_records() {
     let scans = body["scans"].as_array().expect("scans is an array");
     assert_eq!(
         scans.len(),
-        3,
+        4,
         "the same binary's re-run pass keeps the previous records: {scans:?}"
     );
     let flow = scans

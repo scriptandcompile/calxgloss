@@ -34,14 +34,15 @@ pub(super) const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 
 /// One evidence scan as the fan-out's unit of work: takes its owned
 /// [`ScanJob`] and hands back the scan's boxed future, whose answer is
-/// the finding count from the evidence engine when the row names a
-/// single one. It is `None` when the row names no count or the scan
-/// degraded. Each scan's future is a distinct type, so the window boxes
-/// them to move them onto tasks (issue #240). Registered rows arrive as
-/// closures that capture their row, hence the boxed `FnOnce` rather than
-/// the plain `fn` pointer (issue #302).
+/// the [`ScanRunOutcome`] the row reported — filed flag, finding count
+/// when the row names a single one, and the failure's own words when
+/// the row failed (issues #428, #429). Each scan's future is a
+/// distinct type, so the window boxes them to move them onto tasks
+/// (issue #240). Registered rows arrive as closures that capture their
+/// row, hence the boxed `FnOnce` rather than the plain `fn` pointer
+/// (issue #302).
 pub(super) type EvidenceScanTask = Box<
-    dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = Option<usize>> + Send>>
+    dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = ScanRunOutcome> + Send>>
         + Send
         + 'static,
 >;
@@ -52,9 +53,15 @@ pub(super) type EvidenceScanTask = Box<
 /// than only a comment (issue #241). A named async fn again, so that the
 /// spawned future is `'static` (issue #240). The window carries the row's
 /// name and its spawn instant back to the phase loop. The phase uses
-/// them to emit the row's completed event, naming the wall-clock seconds
-/// and the row's finding count when the row names a single one, or no
-/// count at all (issue #428).
+/// them to emit the row's completed event, naming the wall-clock seconds,
+/// the row's finding count when the row names a single one, and the row's
+/// error words when the row failed (issues #428, #429).
+///
+/// The row's future runs on its own task. A scan that panics inside
+/// that task leaves the join with an error. The window answers for the
+/// dead task, sending the row back with a failed outcome that names the
+/// panic. The phase loop marks that row's completed event failed, so
+/// continue-on-failure never hides a dead scan (issue #429).
 pub(super) async fn run_scan_in_window(
     name: &'static str,
     started: std::time::Instant,
@@ -62,29 +69,48 @@ pub(super) async fn run_scan_in_window(
     job: ScanJob,
     in_flight: Arc<AtomicUsize>,
     high_water: Arc<AtomicUsize>,
-) -> (&'static str, f64, Option<usize>) {
+) -> (&'static str, f64, ScanRunOutcome) {
     let entered = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
     high_water.fetch_max(entered, Ordering::SeqCst);
-    let findings = scan(job).await;
+    let outcome = match tokio::spawn(scan(job)).await {
+        Ok(outcome) => outcome,
+        Err(join_error) => {
+            warn!(
+                scan = name,
+                error = %join_error,
+                "An evidence scan task did not finish; its completed event reports the row as failed"
+            );
+            let words = if join_error.is_panic() {
+                format!("the scan task panicked — {join_error}")
+            } else {
+                join_error.to_string()
+            };
+            ScanRunOutcome {
+                filed: false,
+                findings: None,
+                error: Some(words),
+            }
+        }
+    };
     in_flight.fetch_sub(1, Ordering::SeqCst);
-    (name, started.elapsed().as_secs_f64(), findings)
+    (name, started.elapsed().as_secs_f64(), outcome)
 }
 
 /// One registered row as the phase runs it: the row reads the batch
 /// through the job's owned context, carries the completion latches the
 /// phase armed for its declared dependency edge, and reports its own
 /// outcome; the phase's window, progress reporting, and joins wrap it
-/// from outside (issues #302, #305). The phase keeps only the row's
-/// finding count from that outcome — its event pair names the row, and
-/// the filed flag needs no second witness (issue #428).
+/// from outside (issues #302, #305). The phase keeps that whole outcome —
+/// the completed event names the row, its finding count, and its failure
+/// (issues #428, #429).
 pub(super) async fn run_registered_scan(
     row: ScanDescriptor,
     job: ScanJob,
     latches: ScanLatches,
-) -> Option<usize> {
+) -> ScanRunOutcome {
     let mut ctx = job.scan_context();
     ctx.latches = latches;
-    row.run(ctx).await.findings
+    row.run(ctx).await
 }
 
 /// The registered rows as ready-to-run tasks: each row moves into its own
@@ -306,7 +332,48 @@ impl TranslationPipeline {
             self.end_scan_pass();
             return;
         };
-        let mut scans = registered_scan_tasks().into_iter();
+        self.run_scan_window(binary, job, registered_scan_tasks())
+            .await;
+        self.end_scan_pass();
+
+        // P18's version-change trigger (issue #298): the scan step has just
+        // written this version's scan documents. Compare this scan against
+        // any surviving scan of the same identity — the sibling hash
+        // directories under `re/cache/{identity}/` — exactly once per
+        // (old, new) hash pair; a later run reuses the saved document.
+        // Documents only: no engine reads (ADR-0026), no LLM, milliseconds.
+        // With no sibling directory it writes nothing, leaving the queue's
+        // behavior exactly as it is today.
+        if let (Some(workspace), Some(binary_path)) =
+            (self.workspace.as_deref(), self.binary_path.as_deref())
+        {
+            crate::version_pairing::pair_previous_versions(workspace, binary, binary_path);
+        }
+    }
+
+    /// The fan-out window itself, over tasks already armed as ready to
+    /// run: admits rows at most [`MAX_CONCURRENT_EVIDENCE_SCANS`] at a
+    /// time, emits one named started event per admitted row (issue #428),
+    /// and emits each row's completed twin from its join. The completed
+    /// event carries the wall-clock seconds from spawn, the row's finding
+    /// count when the evidence engine reported a single one or no count at
+    /// all, and the row's error words when the row failed or panicked
+    /// (issues #428, #429).
+    ///
+    /// A row that panics answers the join through `run_scan_in_window`'s
+    /// catch, so every admitted row ends with its pair. The join arm that
+    /// only warns stands for a window task itself cancelled or aborted —
+    /// the phase never cancels its window, and a scan panic no longer
+    /// lands there (issue #429). The suite drives this method directly
+    /// with a failing and a panicking synthetic row beside the whole
+    /// registry table.
+    pub(super) async fn run_scan_window(
+        &self,
+        binary: &str,
+        job: ScanJob,
+        tasks: Vec<(&'static str, EvidenceScanTask)>,
+    ) {
+        let mut scans = tasks.into_iter();
         let mut set = JoinSet::new();
         self.scan_window_high_water.store(0, Ordering::SeqCst);
         let in_flight = Arc::new(AtomicUsize::new(0));
@@ -338,20 +405,19 @@ impl TranslationPipeline {
         // and the group joins all fifteen — a failing or panicking scan
         // never cancels its siblings (issue #240). The join also names the
         // row it just finished: its completed event carries the wall-clock
-        // seconds from spawn and the row's finding count when the row
-        // reports a single one, or no count at all (issue #428). A task
-        // that never completed keeps its warning from issue #240. Its
-        // scan keeps only a started event, so the live view shows that
-        // scan as unfinished.
+        // seconds from spawn, the row's finding count when the evidence
+        // engine reports a single one or no count at all, and the row's
+        // error words when the row failed (issues #428, #429).
         while let Some(outcome) = set.join_next().await {
             match outcome {
-                Ok((name, elapsed_secs, findings)) => {
+                Ok((name, elapsed_secs, run)) => {
                     if let Some(events) = &self.events {
                         events.emit(ProgressEvent::EvidenceScanCompleted {
                             binary: binary_id.clone(),
                             scan: name.to_string(),
                             elapsed_secs,
-                            findings,
+                            findings: run.findings,
+                            error: run.error,
                         });
                     }
                 }
@@ -374,21 +440,6 @@ impl TranslationPipeline {
                     Arc::clone(&high_water),
                 ));
             }
-        }
-        self.end_scan_pass();
-
-        // P18's version-change trigger (issue #298): the scan step has just
-        // written this version's scan documents. Compare this scan against
-        // any surviving scan of the same identity — the sibling hash
-        // directories under `re/cache/{identity}/` — exactly once per
-        // (old, new) hash pair; a later run reuses the saved document.
-        // Documents only: no engine reads (ADR-0026), no LLM, milliseconds.
-        // With no sibling directory it writes nothing, leaving the queue's
-        // behavior exactly as it is today.
-        if let (Some(workspace), Some(binary_path)) =
-            (self.workspace.as_deref(), self.binary_path.as_deref())
-        {
-            crate::version_pairing::pair_previous_versions(workspace, binary, binary_path);
         }
     }
 

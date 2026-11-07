@@ -287,6 +287,9 @@ pub struct ScanRunOptions {
 /// and the row interprets the rest inside its own engine build. The
 /// answer reports whether the document is in place and, when the scan
 /// ran its evidence engine and saved, the row's finding count (issue #428).
+/// On a scan or save failure the answer carries the failure's words in
+/// `error`, so the phase can mark the row's completed event failed
+/// (issue #429).
 type RunStep = Box<
     dyn Fn(ScanContext, ScanRunOptions) -> OwnedFuture<ScanRunOutcome> + Send + Sync + 'static,
 >;
@@ -302,13 +305,21 @@ type RunStep = Box<
 /// separate counts. The scan phase's completed event carries this
 /// straight through, so an unreported count stays unreported there
 /// (issue #428).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `error` carries the failure's own words — the same text the row's
+/// warning logs — when the evidence engine scan or the save failed. It
+/// is `None` on every other path, so a failed row reads as failed and
+/// never as a scan that completed with zero findings (issue #429).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanRunOutcome {
     /// The document is filed — by this run or already standing.
     pub filed: bool,
     /// The scan's finding count, when the evidence engine ran and the row
     /// reports a single count for what it filed.
     pub findings: Option<usize>,
+    /// The failure's own words, when the evidence engine scan or the
+    /// save failed; `None` when the run did not fail.
+    pub error: Option<String>,
 }
 
 /// The row's finding counter: how the row names the single count of
@@ -500,6 +511,7 @@ impl ScanDescriptor {
                 // deletes, so a failed forced re-scan leaves the
                 // previous document filed.
                 let mut findings = None;
+                let mut failure = None;
                 let scanned = if !options.overwrite_filed_document
                     && exists(&persistor, &ctx.binary)
                 {
@@ -532,11 +544,15 @@ impl ScanDescriptor {
                             }
                             Err(e) => {
                                 warn!(binary = %ctx.binary, error = %e, "{}", messages.save_failed);
+                                // The completed event carries the same
+                                // words the warning logged (issue #429).
+                                failure = Some(e.to_string());
                                 false
                             }
                         },
                         Err(e) => {
                             warn!(binary = %ctx.binary, error = %e, "{}", messages.scan_failed);
+                            failure = Some(e.to_string());
                             false
                         }
                     }
@@ -555,6 +571,7 @@ impl ScanDescriptor {
                 ScanRunOutcome {
                     filed: scanned,
                     findings,
+                    error: failure,
                 }
             })
         });

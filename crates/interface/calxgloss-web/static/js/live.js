@@ -189,22 +189,33 @@ function renderLiveScans() {
 /** Markup for one scan row: running rows carry the ticking clock's
  *  anchor (same pattern as the unit rows); finished rows show the pass's
  *  elapsed and the finding count the evidence engine reported, or the
- *  words `no single count` when the scan filed no single count. */
+ *  words `findings: unknown` when no count was reported (issue #429).
+ *  A failed row reads as failed at a glance: its own class, a failed
+ *  chip, and the completed event's error text. The row turns on whether
+ *  an error is present, even with blank words. A failure never shows a
+ *  count, not even a zero. */
 function scanRowHtml(s) {
     const receivedAt = s._receivedAt || lastFetchedAt;
+    const elapsedChip = `<span class="live-chip live-elapsed">${Math.round((s.elapsed_secs ?? 0) * 10) / 10}s</span>`;
+    const unknownChip = `<span class="live-chip scan-findings">findings: unknown</span>`;
     let chips;
-    if (!s.finished) {
+    if (s.error != null) {
+        chips = `<span class="live-chip scan-state-failed">failed</span>` +
+            elapsedChip +
+            `<span class="scan-error-text">${escapeHtml(s.error)}</span>` +
+            unknownChip;
+    } else if (!s.finished) {
         chips = `<span class="live-chip live-phase">running</span>` +
             `<span class="live-chip live-elapsed" data-elapsed-base="${s.elapsed_secs ?? 0}" data-received-at="${receivedAt}">${Math.floor(s.elapsed_secs ?? 0)}s</span>`;
     } else {
         const count = typeof s.findings === "number"
             ? `<span class="live-chip scan-findings">${s.findings} finding${s.findings === 1 ? "" : "s"}</span>`
-            : `<span class="live-chip scan-findings">no single count</span>`;
-        chips = `<span class="live-chip live-elapsed">${Math.round((s.elapsed_secs ?? 0) * 10) / 10}s</span>` +
-            count;
+            : unknownChip;
+        chips = elapsedChip + count;
     }
+    const state = s.error != null ? "scan-failed" : (s.finished ? "scan-finished" : "scan-running");
     return `
-        <div class="live-scan ${s.finished ? "scan-finished" : "scan-running"}" data-scan="${escapeHtml(s.scan)}">
+        <div class="live-scan ${state}" data-scan="${escapeHtml(s.scan)}">
             <span class="live-scan-name">${escapeHtml(s.scan)}</span>
             ${chips}
         </div>`;

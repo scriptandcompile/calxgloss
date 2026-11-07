@@ -110,7 +110,9 @@ pub async fn api_get_progress_enhanced(
 /// live view consumes (issue #428). A running scan's elapsed is measured
 /// at serve time from its own start. A finished scan reports the seconds
 /// recorded by its completed event. A scan that filed no single count
-/// keeps `findings` as `None`, and the payload then carries no count.
+/// keeps `findings` as `None`, and the payload then carries no count. A
+/// failed scan keeps its error words beside that unknown count
+/// (issue #429).
 pub(crate) fn live_scan_progress(r: &ScanRecord) -> LiveScanProgress {
     let elapsed = match r.elapsed_secs {
         Some(secs) => secs,
@@ -122,6 +124,7 @@ pub(crate) fn live_scan_progress(r: &ScanRecord) -> LiveScanProgress {
         finished: r.finished,
         elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
         findings: r.findings,
+        error: r.error.clone(),
     }
 }
 

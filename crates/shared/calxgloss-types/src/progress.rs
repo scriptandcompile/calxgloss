@@ -261,6 +261,9 @@ pub enum ProgressEvent {
     /// row files named types, vtables, and inferred structs separately —
     /// and on a cached-hit or failed scan. A `None` serializes to no
     /// field at all, never a zero (issue #428).
+    /// A failed scan still gets its completed event, with `error` set:
+    /// the failure is never hidden and never reads as a scan that
+    /// completed with zero findings (issue #429).
     EvidenceScanCompleted {
         binary: BinaryIdentity,
         /// The registry row's name — "control-flow", "type-database", …
@@ -272,6 +275,11 @@ pub enum ProgressEvent {
         /// the row files no single count.
         #[serde(skip_serializing_if = "Option::is_none")]
         findings: Option<usize>,
+        /// The failure's own words, as the row's warning logged them:
+        /// the evidence engine or the save failed, or the scan's task
+        /// panicked. Absent on a scan that did not fail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Batch translation for a DLL has completed (summary across all functions).
     BatchSummary {
@@ -681,15 +689,22 @@ impl std::fmt::Display for ProgressEvent {
                 scan,
                 elapsed_secs,
                 findings,
-            } => match findings {
-                Some(count) => write!(
+                error,
+            } => match error {
+                Some(reason) => write!(
                     f,
-                    "Evidence scan {scan} finished in {elapsed_secs:.1}s — {count} finding(s) ({binary})"
+                    "Evidence scan {scan} failed in {elapsed_secs:.1}s — {reason} ({binary})"
                 ),
-                None => write!(
-                    f,
-                    "Evidence scan {scan} finished in {elapsed_secs:.1}s ({binary})"
-                ),
+                None => match findings {
+                    Some(count) => write!(
+                        f,
+                        "Evidence scan {scan} finished in {elapsed_secs:.1}s — {count} finding(s) ({binary})"
+                    ),
+                    None => write!(
+                        f,
+                        "Evidence scan {scan} finished in {elapsed_secs:.1}s ({binary})"
+                    ),
+                },
             },
             ProgressEvent::BatchSummary {
                 binary,
@@ -1532,6 +1547,7 @@ mod tests {
             scan: "control-flow".into(),
             elapsed_secs: 4.25,
             findings: Some(9),
+            error: None,
         };
         assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
         assert!(
@@ -1555,6 +1571,7 @@ mod tests {
             scan: "type-database".into(),
             elapsed_secs: 1.5,
             findings: None,
+            error: None,
         };
         let json = serde_json::to_value(&event).expect("serializes");
         assert_eq!(json["event"], "evidence_scan_completed");
@@ -1567,6 +1584,54 @@ mod tests {
             !shown.contains("0"),
             "the display invents no count: {shown}"
         );
+    }
+
+    /// A scan whose evidence engine failed reports its failure and error,
+    /// and its finding count stays unknown — never a zero (issue #429).
+    #[test]
+    fn evidence_scan_completed_carries_its_error_and_keeps_the_count_unknown() {
+        let event = ProgressEvent::EvidenceScanCompleted {
+            binary: "LaunchPad.exe".into(),
+            scan: "sync".into(),
+            elapsed_secs: 3.0,
+            findings: None,
+            error: Some("the sync evidence engine refused the scan".into()),
+        };
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "evidence_scan_completed");
+        assert_eq!(
+            json["error"].as_str(),
+            Some("the sync evidence engine refused the scan"),
+            "the completed event names the failure: {json}"
+        );
+        assert!(
+            json.get("findings").is_none(),
+            "a failed scan reports no count, never a fabricated zero: {json}"
+        );
+        let shown = event.to_string();
+        assert!(shown.contains("sync"), "the display names the scan: {shown}");
+        assert!(shown.contains("failed"), "the display reads as failed: {shown}");
+        assert!(
+            shown.contains("refused the scan"),
+            "the display carries the error text: {shown}"
+        );
+
+        // A completed event written before the error field existed still
+        // reads, with no failure on it.
+        let restored: ProgressEvent = serde_json::from_value(serde_json::json!({
+            "event": "evidence_scan_completed",
+            "binary": "LaunchPad.exe",
+            "scan": "sync",
+            "elapsed_secs": 3.0,
+        }))
+        .expect("a completed event without an error field still reads");
+        match restored {
+            ProgressEvent::EvidenceScanCompleted { findings, error, .. } => {
+                assert_eq!(findings, None);
+                assert_eq!(error, None, "no error field, no failure");
+            }
+            other => panic!("the tagged json reads the completed variant, got {other}"),
+        }
     }
 
     #[test]

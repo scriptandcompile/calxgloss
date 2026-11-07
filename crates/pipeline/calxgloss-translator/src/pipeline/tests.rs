@@ -1,6 +1,6 @@
 // Tests for the module above, split out of the file they test.
 use super::*;
-use crate::scan_registry::{CompletionLatch, ScanRunOptions};
+use crate::scan_registry::{CompletionLatch, ScanDescriptor, ScanMessages, ScanRow, ScanRunOptions};
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_callback::persist::CallbackPersistor;
@@ -3926,6 +3926,148 @@ async fn every_registered_scan_gets_a_named_pair_cold_and_warm() {
             findings.is_some(),
             "the warm control-flow re-run reports the evidence engine's count: {warm_flow}"
         ),
+        other => unreachable!("completed_scan found a completed event, got {other:?}"),
+    }
+}
+
+/// Builds a scan row that fails on purpose, for the tests that drive
+/// the scan window directly (issue #429). Its engine scan either
+/// reports its own error words or panics. It names no single count and
+/// files nothing. Only the outcome the row reports back matters here.
+fn make_broken_row(name: &'static str, panic_words: Option<&'static str>) -> ScanDescriptor {
+    ScanDescriptor::new(ScanRow {
+        name,
+        waits_for: None,
+        messages: ScanMessages {
+            scan_started: "Synthetic scan started",
+            cached_hit: "Synthetic scan already cached",
+            scan_failed: "Synthetic scan failed; continuing without its context",
+            save_failed: "Synthetic scan save failed; continuing without its context",
+        },
+        persistor: Arc::new(|_workspace| ()),
+        exists: Arc::new(|_persistor, _binary| false),
+        document_path: Arc::new(|workspace, binary| workspace.join(binary)),
+        save: Arc::new(|_persistor, _result| Ok::<(), std::convert::Infallible>(())),
+        build_and_scan: Arc::new(move |_source, _binary, _options| {
+            Box::pin(async move {
+                match panic_words {
+                    Some(words) => panic!("{words}"),
+                    None => Err::<(), String>(
+                        "the synthetic evidence engine refused the scan".to_string()
+                    ),
+                }
+            })
+        }),
+        on_saved: Arc::new(|_ctx, _result| {}),
+        findings: None,
+        pre_scan: None,
+        post_scan: None,
+    })
+}
+
+/// One descriptor as a ready-to-run window task, exactly as
+/// `registered_scan_tasks` wraps the shipped rows.
+fn make_window_task(descriptor: ScanDescriptor) -> EvidenceScanTask {
+    Box::new(move |job: ScanJob| Box::pin(async move { descriptor.run(job.scan_context()).await }))
+}
+
+/// The shipped fan-out window driven with the whole registry table plus
+/// two synthetic rows: one whose evidence engine scan fails, one whose
+/// scan panics (issue #429). Both bad rows end with their own completed
+/// event — error set to the failure's words, finding count unknown, never
+/// a zero — and every registered row keeps its full started/completed
+/// pair: the window's continue-on-failure behavior never hides a dead
+/// scan and never disturbs a sibling.
+#[tokio::test]
+async fn a_failing_and_a_panicking_scan_row_complete_failed_with_their_siblings_whole() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _) = cached_pipeline(dir.path());
+    let events = TranslationEvents::new(4096);
+    let mut rx = events.subscribe();
+    let pipeline = pipeline.with_events(events);
+    pipeline.begin_cached_source(PROGRAM).await;
+
+    let mut tasks = registered_scan_tasks();
+    let mut names: Vec<&'static str> = scan_rows().iter().map(|row| row.name()).collect();
+    tasks.push((
+        "broken-scan",
+        make_window_task(make_broken_row("broken-scan", None)),
+    ));
+    names.push("broken-scan");
+    tasks.push((
+        "panicking-scan",
+        make_window_task(make_broken_row(
+            "panicking-scan",
+            Some("the synthetic scan engine caught fire"),
+        )),
+    ));
+    names.push("panicking-scan");
+
+    let job = pipeline
+        .scan_job(PROGRAM)
+        .expect("the workspace is configured, so the job exists");
+    pipeline.run_scan_window(PROGRAM, job, tasks).await;
+
+    let drained = drain_scan_events(&mut rx);
+    assert_scan_pairs(&drained, &names);
+
+    // The failed engine scan names its own error words and reports no
+    // count.
+    let broken = completed_scan(&drained, "broken-scan");
+    match broken {
+        ProgressEvent::EvidenceScanCompleted {
+            findings, error, ..
+        } => {
+            assert_eq!(
+                error.as_deref(),
+                Some("the synthetic evidence engine refused the scan"),
+                "the completed event carries the row's error words: {broken}"
+            );
+            assert!(
+                findings.is_none(),
+                "a failed scan reports no count, never a fabricated zero: {broken}"
+            );
+        }
+        other => unreachable!("completed_scan found a completed event, got {other:?}"),
+    }
+
+    // A task that panics inside the window still gets its completed
+    // event, marked failed with the panic's words.
+    let panicked = completed_scan(&drained, "panicking-scan");
+    match panicked {
+        ProgressEvent::EvidenceScanCompleted {
+            findings, error, ..
+        } => {
+            assert!(
+                error
+                    .as_deref()
+                    .is_some_and(|words| words.contains("caught fire")),
+                "the completed event names the panic: {panicked}"
+            );
+            assert!(
+                findings.is_none(),
+                "a panicked scan reports no count, never a fabricated zero: {panicked}"
+            );
+        }
+        other => unreachable!("completed_scan found a completed event, got {other:?}"),
+    }
+
+    // One bad row leaves every registered row intact: the control-flow
+    // row still ran its evidence engine and named its count.
+    let flow = completed_scan(&drained, "control-flow");
+    match flow {
+        ProgressEvent::EvidenceScanCompleted {
+            findings, error, ..
+        } => {
+            assert!(
+                findings.is_some(),
+                "the sibling's evidence engine count still lands: {flow}"
+            );
+            assert!(
+                error.is_none(),
+                "a sibling that succeeded carries no error: {flow}"
+            );
+        }
         other => unreachable!("completed_scan found a completed event, got {other:?}"),
     }
 }

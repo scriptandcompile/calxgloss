@@ -1538,8 +1538,10 @@ async fn test_headless_reload_keeps_current_tab() {
 /// pushed scan events render named rows without a reload. A running row shows
 /// its name and a ticking clock. A finished row shows its elapsed seconds and
 /// the finding count the evidence engine reported. A finished scan that filed
-/// no single count shows the words `no single count` instead of a number. A
-/// batch for the next binary clears the pass's rows.
+/// no single count shows the words `findings: unknown` instead of a number.
+/// A failed scan renders distinctly as failed, with its error text visible
+/// and no count (issue #429). A batch for the next binary clears the pass's
+/// rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_live_view_shows_scan_rows() {
     let fixture = TestFixture::new();
@@ -1578,8 +1580,9 @@ async fn test_headless_live_view_shows_scan_rows() {
     );
 
     // One pass over one binary: a finished scan with a count, one still
-    // running, and one finished whose evidence engine files no single
-    // count.
+    // running, one finished whose evidence engine files no single
+    // count, one finished failed with its error and no count, and one
+    // failed whose error words are blank (issue #429).
     events.emit(ProgressEvent::BatchStarted {
         binary: "scan_hd.dll".into(),
     });
@@ -1593,6 +1596,7 @@ async fn test_headless_live_view_shows_scan_rows() {
             scan: "control-flow".into(),
             elapsed_secs: 2.5,
             findings: Some(9),
+            error: None,
         },
         ProgressEvent::EvidenceScanStarted {
             binary: "scan_hd.dll".into(),
@@ -1607,16 +1611,39 @@ async fn test_headless_live_view_shows_scan_rows() {
             scan: "type-database".into(),
             elapsed_secs: 4.0,
             findings: None,
+            error: None,
+        },
+        ProgressEvent::EvidenceScanStarted {
+            binary: "scan_hd.dll".into(),
+            scan: "sync".into(),
+        },
+        ProgressEvent::EvidenceScanCompleted {
+            binary: "scan_hd.dll".into(),
+            scan: "sync".into(),
+            elapsed_secs: 3.0,
+            findings: None,
+            error: Some("the sync evidence engine refused the scan".into()),
+        },
+        ProgressEvent::EvidenceScanStarted {
+            binary: "scan_hd.dll".into(),
+            scan: "blank-error".into(),
+        },
+        ProgressEvent::EvidenceScanCompleted {
+            binary: "scan_hd.dll".into(),
+            scan: "blank-error".into(),
+            elapsed_secs: 1.0,
+            findings: None,
+            error: Some(String::new()),
         },
     ] {
         events.emit(event);
     }
 
-    // The pushed events re-render the panel on their own: three named rows,
-    // no reload.
+    // The pushed events re-render the panel on their own: five named
+    // rows, no reload.
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length") == 3 {
+        if eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length") == 5 {
             rendered = true;
             break;
         }
@@ -1624,7 +1651,7 @@ async fn test_headless_live_view_shows_scan_rows() {
     }
     assert!(
         rendered,
-        "the pushed scan events should produce three rows without a reload, rows: {}",
+        "the pushed scan events should produce five rows without a reload, rows: {}",
         eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length")
     );
     let row_text = |name: &str| -> String {
@@ -1635,7 +1662,8 @@ async fn test_headless_live_view_shows_scan_rows() {
     };
 
     // Finished rows: elapsed seconds with the finding count where the
-    // scan files one, and the words `no single count` where it does not.
+    // scan files one, and the words `findings: unknown` where it does
+    // not — an unreported count never shows a number (issue #429).
     let counted = row_text("control-flow");
     assert!(
         counted.contains("2.5s") && counted.contains("9 findings"),
@@ -1643,12 +1671,54 @@ async fn test_headless_live_view_shows_scan_rows() {
     );
     let uncounted = row_text("type-database");
     assert!(
-        uncounted.contains("4s") && uncounted.contains("no single count"),
+        uncounted.contains("4s") && uncounted.contains("findings: unknown"),
         "a finished scan without one reported count must not show a number, got {uncounted:?}"
     );
     assert!(
         !uncounted.contains("0 finding"),
         "a row must not invent a zero count, got {uncounted:?}"
+    );
+
+    // The failed scan reads as failed at a glance, with its error text
+    // visible in the browser, and never with a zero count (issue #429).
+    let failed = row_text("sync");
+    assert!(
+        failed.contains("failed") && failed.contains("the sync evidence engine refused the scan"),
+        "the failed scan should read as failed with its error text, got {failed:?}"
+    );
+    assert!(
+        !failed.contains("0 finding"),
+        "a failed scan must not show a zero count, got {failed:?}"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            "document.querySelector('#live-scans [data-scan=\"sync\"]')?.classList.contains('scan-failed') === true"
+        ),
+        "the failed row should carry the scan-failed class, distinct from the finished rows"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            "document.querySelector('#live-scans [data-scan=\"control-flow\"]')?.classList.contains('scan-failed') === false"
+        ),
+        "a completed row should not carry the failed class"
+    );
+
+    // A failure whose error words are blank still reads as failed: the
+    // row looks at whether the error is there, not at how long its words
+    // are (issue #429).
+    let blank_failure = row_text("blank-error");
+    assert!(
+        blank_failure.contains("failed") && !blank_failure.contains("running"),
+        "a failed scan with blank error words must still render as failed, got {blank_failure:?}"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            "document.querySelector('#live-scans [data-scan=\"blank-error\"]')?.classList.contains('scan-failed') === true"
+        ),
+        "the blank-error row should carry the scan-failed class, not read as completed"
     );
 
     // The in-flight scan stays a running row, its clock advancing on the

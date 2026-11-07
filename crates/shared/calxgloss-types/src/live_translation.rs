@@ -176,9 +176,14 @@ pub struct LiveUnitProgress {
 /// is measured at serve time from when the scan started. A finished
 /// record keeps the run's wall-clock seconds. `findings` is the scan's
 /// finding count when the evidence engine reported a single one, and
-/// `None` when the row files separate counts or the evidence engine
-/// never ran. An unreported count leaves the field out of the payload
-/// entirely — never a zero.
+/// `None` when the row files separate counts, the scan failed, or the
+/// evidence engine never ran. An unreported count leaves the field out
+/// of the payload entirely — never a zero.
+///
+/// `error` carries a failed scan's own failure words; it is absent when
+/// the scan did not fail. A failed scan is finished with its error and
+/// without its count, so it never reads as a completed scan that found
+/// nothing (issue #429).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveScanProgress {
     /// The registry row's name: "control-flow", "type-database", …
@@ -194,6 +199,9 @@ pub struct LiveScanProgress {
     /// single one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub findings: Option<usize>,
+    /// The failure's own words, when the scan failed; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// The live view payload: every unit the live pipeline is tracking.
@@ -457,6 +465,7 @@ mod tests {
                 finished: true,
                 elapsed_secs: 3.5,
                 findings: Some(7),
+                error: None,
             }],
         };
         let json = serde_json::to_value(&state).expect("serializes");
@@ -487,12 +496,40 @@ mod tests {
             finished: true,
             elapsed_secs: 12.0,
             findings: None,
+            error: None,
         };
         let json = serde_json::to_value(&no_count).expect("serializes");
         assert!(
             json.get("findings").is_none(),
             "no single count, no findings field: {json}"
         );
+        assert!(
+            json.get("error").is_none(),
+            "a scan that did not fail carries no error field: {json}"
+        );
+
+        // A failed scan serializes with its error and still no count
+        // (issue #429).
+        let failed = LiveScanProgress {
+            scan: "sync".into(),
+            binary: "eqmain.dll".into(),
+            finished: true,
+            elapsed_secs: 6.0,
+            findings: None,
+            error: Some("the sync evidence engine refused the scan".into()),
+        };
+        let json = serde_json::to_value(&failed).expect("serializes");
+        assert_eq!(
+            json["error"].as_str(),
+            Some("the sync evidence engine refused the scan"),
+            "the payload names the failure: {json}"
+        );
+        assert!(
+            json.get("findings").is_none(),
+            "a failed scan carries no count, never a zero: {json}"
+        );
+        let back: LiveScanProgress = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, failed);
 
         // A payload written before the scans field existed still reads,
         // with no scans tracked.

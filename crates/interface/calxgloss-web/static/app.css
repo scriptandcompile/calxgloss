@@ -3478,6 +3478,10 @@ td.unknowns-cell-unknown {
     border-color: var(--accent-green-dim);
 }
 
+.live-scan.scan-failed {
+    border-color: var(--accent-red);
+}
+
 .live-scan-name {
     font-weight: 600;
     color: var(--text-primary);
@@ -3485,6 +3489,15 @@ td.unknowns-cell-unknown {
 
 .scan-findings {
     color: var(--text-secondary);
+}
+
+.scan-state-failed {
+    background: var(--accent-red-dim);
+    color: var(--accent-red);
+}
+
+.scan-error-text {
+    color: var(--accent-red);
 }
 
 .pass-chip.state-passed {

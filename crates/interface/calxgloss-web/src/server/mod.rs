@@ -422,6 +422,11 @@ pub struct ProgressState {
 /// finished record keeps the run's wall-clock seconds, and keeps the
 /// row's finding count only when the evidence engine reported a single
 /// one.
+///
+/// `error` carries the failure's own words from the completed event: a
+/// failed scan is finished with its error set and its finding count left
+/// unknown, so a failure never reads as a completed scan with zero
+/// findings (issue #429).
 #[derive(Debug, Clone)]
 pub struct ScanRecord {
     /// The registry row's name.
@@ -437,6 +442,9 @@ pub struct ScanRecord {
     /// The count the evidence engine reported; `None` means the row
     /// files no single count, never a zero.
     pub findings: Option<usize>,
+    /// The completed event's error words; `None` when the scan did not
+    /// fail.
+    pub error: Option<String>,
 }
 
 /// Startup ingestion state (issue #124): whether startup ingestion has
@@ -647,6 +655,7 @@ impl ProgressState {
                         finished: false,
                         elapsed_secs: None,
                         findings: None,
+                        error: None,
                     },
                 );
             }
@@ -655,6 +664,7 @@ impl ProgressState {
                 scan,
                 elapsed_secs,
                 findings,
+                error,
             } => {
                 let mut scans = self.scans.write().await;
                 if scans.values().any(|record| record.binary != *binary) {
@@ -671,6 +681,11 @@ impl ProgressState {
                     record.finished = true;
                     record.elapsed_secs = Some(*elapsed_secs);
                     record.findings = *findings;
+                    // The completed event's error words mark the row
+                    // failed, its finding count left unknown — the panel
+                    // must never read the missing count as zero
+                    // (issue #429).
+                    record.error = error.clone();
                 }
             }
             ProgressEvent::PipelineStateChanged { .. } => {
