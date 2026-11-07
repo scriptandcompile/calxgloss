@@ -60,6 +60,21 @@ pub fn binary_unknown_ledger(
     }
 }
 
+/// The named binaries with later repeats dropped — both run-close
+/// sections walk the same verbatim-unique targets in the order the run
+/// handed them, so the two sections key the same binaries by the same
+/// words (issue #423).
+pub(crate) fn dedupe_verbatim(binaries: &[String]) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::new();
+    for binary in binaries {
+        if unique.iter().any(|landed| landed == binary) {
+            continue;
+        }
+        unique.push(binary.clone());
+    }
+    unique
+}
+
 /// Derive the audit ledgers for the named binaries straight from the
 /// documents — the run close's entry point. The readings and the
 /// degradation wording match the dashboard builder exactly: an unreadable
@@ -89,13 +104,8 @@ pub(crate) fn derive_binary_unknown_ledgers_with(
     binaries: &[String],
     resolutions: Option<&UnknownResolutions>,
 ) -> Vec<BinaryUnknownLedger> {
-    let mut seen: Vec<String> = Vec::new();
     let mut ledgers = Vec::new();
-    for binary in binaries {
-        if seen.iter().any(|landed| landed == binary) {
-            continue;
-        }
-        seen.push(binary.clone());
+    for binary in dedupe_verbatim(binaries) {
         let records = match read_unknown_ledger(workspace, &BinaryIdentity::from(binary.as_str())) {
             Ok(EffectiveLedger::Filed(records)) => Some(records),
             Ok(EffectiveLedger::Unknown) => None,
@@ -107,7 +117,7 @@ pub(crate) fn derive_binary_unknown_ledgers_with(
             }
         };
         ledgers.push(binary_unknown_ledger(
-            binary,
+            &binary,
             records.as_deref(),
             resolutions,
         ));

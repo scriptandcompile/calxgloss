@@ -749,6 +749,16 @@ pub async fn handle_auto(
     // section prints the same lines from the same derivation.
     calxgloss_reports::dashboard::print_run_audit_ledger(&workspace, &close_targets);
 
+    // Issue #423: closing a run states its closure and its gaps together.
+    // The conformance section prints beside the unknown-ledger section.
+    // The close derives its rows straight from the filed documents: the
+    // obligation ledger joined with branch state, receipts, Accept
+    // actions, and open unknowns. The terminal dashboard prints the same
+    // lines from its own copy of that model. A target with no filed
+    // obligation ledger reads as *unknown* here, never as a clean run, and
+    // a broken read never fails the close.
+    calxgloss_reports::dashboard::print_run_conformance_audit(&workspace, &close_targets);
+
     Ok(())
 }
 
@@ -1565,14 +1575,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_auto_run_reaches_its_close_and_hands_the_targets_to_the_ledger() {
-        // The whole handler runs: both binaries read as classified, the
-        // worklist never starts a pass (the stop signal is already stopped
-        // at the first queue boundary — no scan, no LLM), and the run close
-        // runs the audit-ledger derivation over both named targets. With no
-        // ledger filed the derivation degrades every binary to unknown and
-        // never fails the close; the section's own lines are pinned in the
-        // reports crate's audit tests.
+    async fn the_auto_run_reaches_its_close_and_hands_the_targets_to_the_run_close_audits() {
+        // The whole handler runs. Both binaries read as classified, and the
+        // worklist never starts a pass: the stop signal is already stopped
+        // at the first queue boundary, so no scan and no LLM call happens.
+        // The run close then hands both named targets to both audit
+        // derivations — the unknown-ledger one (issue #377) and the
+        // conformance one (issue #423). One unknown ledger is filed and no
+        // obligation ledger is filed at all, so the conformance derivation
+        // reads both targets as unknown. Git is skipped, so a green claim
+        // could only read as its own citation fault, and none is filed
+        // here. Neither derivation fails the close. The sections' own lines
+        // are pinned in the reports crate's tests.
         let ws = temp_workspace();
         stage_classification(ws.path(), "game_logic.dll");
         stage_classification(ws.path(), "no_ledger.dll");

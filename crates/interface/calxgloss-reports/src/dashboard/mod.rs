@@ -10,7 +10,7 @@
 //! - [`builder`] — [`DashboardBuilder`], [`parse_branch_name`], [`branch_matches`]
 //! - [`render`] — [`render_dashboard`], [`render_dashboard_follow`], [`render_unit_view`]
 //! - [`audit`] — [`derive_binary_unknown_ledgers`], [`binary_unknown_ledger`], [`audit_ledger_lines`]
-//! - [`conformance`] — [`derive_binary_conformance`], [`conformance_binaries`]
+//! - [`conformance`] — [`derive_binary_conformance`], [`conformance_binaries`], [`print_run_conformance_audit`]
 //! - [`scenarios`] — [`derive_scenario_statuses`], [`scenario_status_header`], [`scenario_status_lines`]
 
 pub mod audit;
@@ -25,7 +25,9 @@ pub use audit::{
     derive_binary_unknown_ledgers, print_run_audit_ledger,
 };
 pub use builder::{DashboardBuilder, branch_matches, parse_branch_name};
-pub use conformance::{conformance_binaries, derive_binary_conformance};
+pub use conformance::{
+    conformance_binaries, derive_binary_conformance, print_run_conformance_audit,
+};
 pub use render::{render_dashboard, render_dashboard_follow, render_unit_view};
 pub use scenarios::{derive_scenario_statuses, scenario_status_header, scenario_status_lines};
 pub use view::{AttemptInfo, DiffSummary, UnitViewData, ViewTarget};

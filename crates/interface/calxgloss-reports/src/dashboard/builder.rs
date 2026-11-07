@@ -168,23 +168,7 @@ impl<'a> DashboardBuilder<'a> {
         // `known_gaps` so the queue view can explain the parking.
         let classified = self.read_classification_records();
         let overrides = self.read_classification_overrides();
-        let parked: HashMap<String, Option<String>> = classified
-            .iter()
-            .filter_map(|c| {
-                let r#override = overrides.overrides.get(&c.binary);
-                let category = r#override
-                    .map(|o| o.category.clone())
-                    .or_else(|| c.category.clone())?;
-                if category != DllCategory::DotNetManaged {
-                    return None;
-                }
-                let reason = match r#override {
-                    Some(o) => Some(o.override_reason()),
-                    None => c.reason.clone(),
-                };
-                Some((c.binary.clone(), reason))
-            })
-            .collect();
+        let parked = parked_classifications(&classified, &overrides);
 
         // 3. Read baseline data
         let baselines = self.read_all_baselines()?;
@@ -490,12 +474,7 @@ impl<'a> DashboardBuilder<'a> {
     /// A missing or corrupt file degrades to an empty set — skip state is
     /// advisory review data, never a build error.
     fn read_skips(&self) -> std::collections::HashSet<String> {
-        let path = ReviewSkips::path_in(&self.repo_path);
-        let skips: ReviewSkips = match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => ReviewSkips::default(),
-        };
-        skips.skipped.into_iter().collect()
+        read_review_skips(&self.repo_path)
     }
 
     /// One binary's ledger records, read once per build and cached. The
@@ -610,55 +589,7 @@ impl<'a> DashboardBuilder<'a> {
     /// replacement are parsed leniently — a record that fails to parse
     /// still counts as classified, it just declares no shim dependency.
     fn read_classification_records(&self) -> Vec<ClassifiedDll> {
-        let classify_dir = self.repo_path.join("re").join("classify");
-        if !classify_dir.exists() {
-            return Vec::new();
-        }
-
-        let entries = match std::fs::read_dir(&classify_dir) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
-        };
-
-        let mut dlls = Vec::new();
-        for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.ends_with(".json") {
-                let dll_name = file_name.trim_end_matches(".json").to_string();
-                // The record's mtime is when the classification happened;
-                // the build clock would make it "just now" on every refresh.
-                let classified_at = entry
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(chrono::DateTime::<chrono::Utc>::from)
-                    .unwrap_or_else(chrono::Utc::now);
-                let parsed = std::fs::read_to_string(entry.path())
-                    .ok()
-                    .and_then(|content| serde_json::from_str::<ClassificationFile>(&content).ok());
-                dlls.push(match parsed {
-                    Some(p) => ClassifiedDll {
-                        binary: dll_name,
-                        category: p.category,
-                        crate_replacement: p.crate_replacement,
-                        reason: p.reason,
-                        classified_at,
-                    },
-                    None => ClassifiedDll {
-                        binary: dll_name,
-                        category: None,
-                        crate_replacement: None,
-                        reason: None,
-                        classified_at,
-                    },
-                });
-            }
-        }
-        dlls
+        read_classification_records(&self.repo_path)
     }
 
     /// Reads the operator's classification overrides from
@@ -666,11 +597,7 @@ impl<'a> DashboardBuilder<'a> {
     /// classification endpoints). A missing or corrupt file degrades to an
     /// empty map — no overrides, so the records apply exactly as written.
     fn read_classification_overrides(&self) -> ClassificationOverrides {
-        let path = classification_override_records_path(&self.repo_path);
-        match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => ClassificationOverrides::default(),
-        }
+        read_classification_overrides(&self.repo_path)
     }
 
     fn is_branch_merged(&self, key: &str) -> bool {
@@ -810,6 +737,122 @@ impl<'a> DashboardBuilder<'a> {
             unknowns: UnitUnknowns::unknown(),
         }
     }
+}
+
+/// Reads the reviewer skip set from `re/review/skips.json` (issue #75).
+/// A missing or corrupt file degrades to an empty set — skip state is
+/// advisory review data, never a build error. The builder and the run
+/// close's conformance derivation (issue #423) read through this one
+/// function so the live skip set can never decide a unit one way on the
+/// terminal and another way at the close.
+pub(crate) fn read_review_skips(workspace: &std::path::Path) -> std::collections::HashSet<String> {
+    let path = ReviewSkips::path_in(workspace);
+    let skips: ReviewSkips = match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => ReviewSkips::default(),
+    };
+    skips.skipped.into_iter().collect()
+}
+
+/// Every classification record under `re/classify/{binary}.json` (written
+/// by the `classify` command). The category and crate replacement are
+/// parsed leniently — a record that fails to parse still counts as
+/// classified, it just declares no shim dependency. Shared by the builder
+/// and the run close's conformance derivation (issue #423).
+pub(crate) fn read_classification_records(workspace: &std::path::Path) -> Vec<ClassifiedDll> {
+    let classify_dir = workspace.join("re").join("classify");
+    if !classify_dir.exists() {
+        return Vec::new();
+    }
+
+    let entries = match std::fs::read_dir(&classify_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut dlls = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name.ends_with(".json") {
+            let dll_name = file_name.trim_end_matches(".json").to_string();
+            // The record's mtime says when the classification happened. The
+            // build clock would make it "just now" on every refresh.
+            let classified_at = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(chrono::DateTime::<chrono::Utc>::from)
+                .unwrap_or_else(chrono::Utc::now);
+            let parsed = std::fs::read_to_string(entry.path())
+                .ok()
+                .and_then(|content| serde_json::from_str::<ClassificationFile>(&content).ok());
+            dlls.push(match parsed {
+                Some(p) => ClassifiedDll {
+                    binary: dll_name,
+                    category: p.category,
+                    crate_replacement: p.crate_replacement,
+                    reason: p.reason,
+                    classified_at,
+                },
+                None => ClassifiedDll {
+                    binary: dll_name,
+                    category: None,
+                    crate_replacement: None,
+                    reason: None,
+                    classified_at,
+                },
+            });
+        }
+    }
+    dlls
+}
+
+/// Reads the operator's classification overrides from
+/// `re/analysis/classification_overrides.json` (written by the web
+/// classification endpoints). A missing or corrupt file degrades to an
+/// empty map — no overrides, so the records apply exactly as written.
+/// Shared by the builder and the run close's conformance derivation
+/// (issue #423).
+pub(crate) fn read_classification_overrides(
+    workspace: &std::path::Path,
+) -> ClassificationOverrides {
+    let path = classification_override_records_path(workspace);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => ClassificationOverrides::default(),
+    }
+}
+
+/// The *parked* binaries among the classification records — those whose
+/// in-force category is `DotNetManaged` (issue #235). The override wins
+/// over the record, the same precedence every other consumer applies. The
+/// record's reason rides beside each binary. Shared by the builder's queue
+/// and both conformance readers (issue #420, issue #423).
+pub(crate) fn parked_classifications(
+    classified: &[ClassifiedDll],
+    overrides: &ClassificationOverrides,
+) -> HashMap<String, Option<String>> {
+    classified
+        .iter()
+        .filter_map(|c| {
+            let r#override = overrides.overrides.get(&c.binary);
+            let category = r#override
+                .map(|o| o.category.clone())
+                .or_else(|| c.category.clone())?;
+            if category != DllCategory::DotNetManaged {
+                return None;
+            }
+            let reason = match r#override {
+                Some(o) => Some(o.override_reason()),
+                None => c.reason.clone(),
+            };
+            Some((c.binary.clone(), reason))
+        })
+        .collect()
 }
 
 /// The unit's open unknown records, scoped by the unit's own function and
@@ -995,7 +1038,7 @@ struct ClassificationFile {
 /// the category and crate replacement decide the shim dependency edge, and
 /// the reason explains a parked (`DotNetManaged`) classification.
 #[derive(Debug)]
-struct ClassifiedDll {
+pub(crate) struct ClassifiedDll {
     binary: String,
     category: Option<DllCategory>,
     crate_replacement: Option<String>,
@@ -1793,7 +1836,7 @@ mod tests {
 
     // ─── Per-binary unknown audit ledger on the model (issue #377) ──────
 
-    use super::super::audit;
+    use super::super::{audit, conformance};
 
     fn find_ledger<'a>(
         dashboard: &'a ReviewDashboard,
@@ -1974,5 +2017,209 @@ mod tests {
                 model.binary
             );
         }
+    }
+
+    #[test]
+    fn the_model_conformance_rows_and_the_run_close_derivation_print_identically() {
+        // The conformance agreement pin (issue #423). The terminal prints
+        // the model's conformance rows with `conformance_lines`. The run
+        // close derives its own rows straight from the filed documents and
+        // prints with that same function, so the two readers must print the
+        // same lines byte for byte. The fixture reaches every join path: a
+        // reviewer skip, a reviewer unit override, a parked classification,
+        // a filed disposition, and a ledger document with only an envelope.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = one_unit_repo(dir.path());
+        write_ledger(
+            dir.path(),
+            Some(vec![unknown_record(
+                "u-b",
+                None,
+                calxgloss_types::UnknownSeverity::Material,
+            )]),
+        );
+        // The reviewer's skip set speaks for DrawPrimitive, and the
+        // reviewer's unit override record speaks for OtherFunction. The
+        // claim on DrawPrimitive cites a receipt pair, so a reader that
+        // ignored the live skip set would close that obligation and print a
+        // different line here.
+        stage_obligation_ledger(
+            dir.path(),
+            "game_logic.dll",
+            vec![
+                claimed_verified_entry("DrawPrimitive", 1, "sha256:cafe"),
+                calxgloss_types::ObligationEntry::new(
+                    "OtherFunction",
+                    1,
+                    "",
+                    calxgloss_types::ObligationDisposition::NoBaseline,
+                ),
+            ],
+        );
+        stage_skip_set(dir.path(), &["game_logic.dll/DrawPrimitive/v1"]);
+        stage_unit_override(dir.path(), "game_logic.dll", "OtherFunction");
+        // A second target whose own classification record parks every unit,
+        // so the parked join speaks before any claim is read.
+        stage_parked_classification(dir.path(), "managed_app");
+        stage_obligation_ledger(
+            dir.path(),
+            "managed_app",
+            vec![calxgloss_types::ObligationEntry::new(
+                "Main",
+                1,
+                "",
+                calxgloss_types::ObligationDisposition::NoBaseline,
+            )],
+        );
+        // A third target whose ledger document names no roster at all.
+        stage_envelope_only_ledger(dir.path(), "tampered.dll");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+        let binaries: Vec<String> = dashboard
+            .conformance
+            .iter()
+            .map(|row| row.binary.clone())
+            .collect();
+        let run_close = conformance::derive_run_conformance(dir.path(), &binaries);
+
+        assert_eq!(run_close.len(), dashboard.conformance.len());
+        for (model, close) in dashboard.conformance.iter().zip(&run_close) {
+            assert_eq!(model.binary, close.binary);
+            assert_eq!(
+                conformance::conformance_lines(model),
+                conformance::conformance_lines(close),
+                "{}: the close and the terminal must print the same conformance lines",
+                model.binary,
+            );
+        }
+
+        // A pin over rows that never joined anything proves nothing, so the
+        // fixture has to reach each live record the read seam joins with.
+        let links: Vec<&str> = dashboard
+            .conformance
+            .iter()
+            .filter_map(|row| row.first_open.as_ref())
+            .map(|open| open.link.as_str())
+            .collect();
+        assert!(
+            links
+                .iter()
+                .any(|link| link.contains("skip set names this unit")),
+            "no row names the reviewer's skip set: {links:?}"
+        );
+        assert!(
+            links
+                .iter()
+                .any(|link| link.contains("classification parks it")),
+            "no row names a parked classification: {links:?}"
+        );
+        assert!(
+            dashboard
+                .conformance
+                .iter()
+                .any(|row| row.tally.overridden > 0),
+            "no row counts a reviewer unit override"
+        );
+        assert!(
+            dashboard.conformance.iter().any(|row| row
+                .causes
+                .contains(&calxgloss_types::ConformanceUnknownCause::DigestMismatch)),
+            "no row reads the envelope-only ledger as an input error"
+        );
+    }
+
+    /// Files one target's obligation ledger at `re/obligations/{binary}.json`,
+    /// sealed through the same filing call every writer uses.
+    fn stage_obligation_ledger(
+        workspace: &std::path::Path,
+        binary: &str,
+        entries: Vec<calxgloss_types::ObligationEntry>,
+    ) {
+        let ledger = calxgloss_types::ObligationLedger::file(binary, entries, 1_700_000_000)
+            .expect("the ledger seals");
+        calxgloss_types::save_json(
+            &calxgloss_types::obligation_ledger_path(workspace, &ledger.binary),
+            &ledger,
+        )
+        .expect("file the obligation ledger");
+    }
+
+    /// One green claim as a filed ledger stores it: the claim cites the
+    /// receipt pair named by `receipt_digest`.
+    fn claimed_verified_entry(
+        function: &str,
+        attempt: u32,
+        receipt_digest: &str,
+    ) -> calxgloss_types::ObligationEntry {
+        let mut entry = calxgloss_types::ObligationEntry::new(
+            function,
+            attempt,
+            "",
+            calxgloss_types::ObligationDisposition::ClaimedVerified,
+        );
+        entry.receipt_digest = Some(receipt_digest.to_string());
+        entry
+    }
+
+    /// Files the reviewer skip set naming these unit keys, in the shape the
+    /// review surfaces write it.
+    fn stage_skip_set(workspace: &std::path::Path, units: &[&str]) {
+        std::fs::create_dir_all(workspace.join("re").join("review")).expect("review dir");
+        std::fs::write(
+            ReviewSkips::path_in(workspace),
+            serde_json::json!({ "skipped": units }).to_string(),
+        )
+        .expect("file the reviewer skip set");
+    }
+
+    /// Files the reviewer's unit override record for `{binary}/{function}` at
+    /// `re/analysis/unit_overrides.json`.
+    fn stage_unit_override(workspace: &std::path::Path, binary: &str, function: &str) {
+        std::fs::create_dir_all(workspace.join("re").join("analysis")).expect("analysis dir");
+        std::fs::write(
+            calxgloss_types::override_records_path(workspace),
+            serde_json::json!({
+                "overrides": {
+                    format!("{binary}/{function}"): { "reviewer_notes": "checked line by line" }
+                }
+            })
+            .to_string(),
+        )
+        .expect("file the unit override record");
+    }
+
+    /// Files the classification record that parks one binary's units, the
+    /// shape the `classify` command files at `re/classify/{binary}.json`.
+    fn stage_parked_classification(workspace: &std::path::Path, binary: &str) {
+        let path = workspace
+            .join("re")
+            .join("classify")
+            .join(format!("{binary}.json"));
+        std::fs::create_dir_all(path.parent().expect("classify dir")).expect("classify dir");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "category": "DotNetManaged",
+                "reason": "the plugin carries a managed runtime, so nothing here needs restitching"
+            })
+            .to_string(),
+        )
+        .expect("file the classification record");
+    }
+
+    /// Files an obligation ledger document holding only its envelope: a name
+    /// and a filing time, no roster, and no digest for a reader to check.
+    fn stage_envelope_only_ledger(workspace: &std::path::Path, binary: &str) {
+        std::fs::create_dir_all(workspace.join("re").join("obligations")).expect("obligations dir");
+        std::fs::write(
+            workspace
+                .join("re")
+                .join("obligations")
+                .join(format!("{binary}.json")),
+            format!(r#"{{"binary": "{binary}", "filed_at": 1}}"#),
+        )
+        .expect("file an envelope-only ledger");
     }
 }

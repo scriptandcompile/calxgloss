@@ -9,9 +9,14 @@
 //! joins at read time with branch state, the attempt branch's committed
 //! *verification receipt* pair, the Accept records, and the unknown
 //! ledgers. The terminal dashboard and the model's JSON render from these
-//! rows. Nothing here stores a verdict, so no second copy of the truth
-//! can drift from the first. The layer reads only: it never accepts a
-//! unit, touches a branch, or changes a review status.
+//! rows, and the live/auto run close prints the same section through
+//! [`print_run_conformance_audit`], which derives its own rows from the
+//! same documents (issue #423). The two readers print identical lines
+//! because they run the same functions on the same shape, reading the
+//! reviewer's live records through the same reader functions. Nothing
+//! here stores a verdict, so no second copy of the truth can drift from
+//! the first. The layer reads only: it never accepts a unit, touches a
+//! branch, or changes a review status.
 //!
 //! The join also carries the reviewer's live records beside the ledger
 //! (issue #420): the reviewer skip set, the Do Not Translate
@@ -32,7 +37,7 @@ use calxgloss_types::{
     scenario_verdicts_dir, verification_receipt_path,
 };
 
-use super::render::{green_bold, yellow_bold};
+use super::render::{green_bold, println_content, yellow_bold};
 
 /// Every binary the conformance rows must name: the binaries of the
 /// model's translated units (supporting shim and classification work is
@@ -104,8 +109,75 @@ pub fn derive_binary_conformance(
 ) -> Vec<BinaryConformance> {
     binaries
         .iter()
-        .map(|binary| conformance_row(git, binary, unknown_rows, join))
+        .map(|binary| conformance_row(git.repo_path(), Some(git), binary, unknown_rows, join))
         .collect()
+}
+
+/// Derive the conformance rows for the named binaries straight from the
+/// documents — the run close's entry point (issue #423). The close carries
+/// no dashboard model, so it opens its own read-only git handle over the
+/// workspace. Where no repository stands (a run with git skipped), green
+/// claims resolve to their honest citation fault and the close still never
+/// fails. Binaries are printed in the order named, deduplicated through
+/// the same verbatim-unique walk as [`derive_binary_unknown_ledgers`], so
+/// the two run-close sections key the same binaries by the same words.
+pub fn derive_run_conformance(workspace: &Path, binaries: &[String]) -> Vec<BinaryConformance> {
+    let git = calxgloss_git::GitManager::open(workspace).ok();
+    let unknown_rows = super::audit::derive_binary_unknown_ledgers(workspace, binaries);
+    // The join reads the reviewer's live records through the same reader
+    // functions the dashboard builder calls — one skip set, one
+    // classification park-list, one override handle — so the two readers
+    // cannot decide a unit's disposition differently (issue #423).
+    let classified = super::builder::read_classification_records(workspace);
+    let class_overrides = super::builder::read_classification_overrides(workspace);
+    let parked_map = super::builder::parked_classifications(&classified, &class_overrides);
+    let join = ConformanceJoin {
+        skipped: super::builder::read_review_skips(workspace)
+            .into_iter()
+            .collect(),
+        parked: parked_map
+            .iter()
+            .map(|(binary, reason)| (binary.as_str(), reason.clone()))
+            .collect(),
+        overrides: Some(calxgloss_types::OverrideControl::open(workspace)),
+    };
+    let mut rows = Vec::new();
+    for binary in super::audit::dedupe_verbatim(binaries) {
+        rows.push(conformance_row(
+            workspace,
+            git.as_ref(),
+            &binary,
+            &unknown_rows,
+            &join,
+        ));
+    }
+    rows
+}
+
+/// The run-close conformance section as lines — the header, then every
+/// named binary's row, derived from the same reading the dashboard builder
+/// carries (issue #423). A run close with no target binaries produces no
+/// lines at all — the same shape the audit-ledger section keeps.
+pub fn run_conformance_lines(workspace: &Path, binaries: &[String]) -> Vec<String> {
+    if binaries.is_empty() {
+        return Vec::new();
+    }
+    let rows = derive_run_conformance(workspace, binaries);
+    let mut lines = vec![conformance_header(), String::new()];
+    for row in &rows {
+        lines.extend(conformance_lines(row));
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// Print the run-close conformance section: the same lines
+/// [`run_conformance_lines`] derives, content-padded like every other
+/// dashboard surface (issue #423).
+pub fn print_run_conformance_audit(workspace: &Path, binaries: &[String]) {
+    for line in run_conformance_lines(workspace, binaries) {
+        println_content(line);
+    }
 }
 
 /// How one green claim (a *claimed-verified* entry) reads when its
@@ -131,13 +203,14 @@ enum ClaimReading {
 }
 
 fn conformance_row(
-    git: &GitManager,
+    workspace: &Path,
+    git: Option<&GitManager>,
     binary: &str,
     unknown_rows: &[BinaryUnknownLedger],
     join: &ConformanceJoin,
 ) -> BinaryConformance {
     let identity = BinaryIdentity::from(binary);
-    let ledger = match read_obligation_ledger(git.repo_path(), &identity) {
+    let ledger = match read_obligation_ledger(workspace, &identity) {
         Ok(ledger) => ledger,
         Err(PersistError::NotFound { .. }) => {
             // The never-filed ledger: unknown naming its cause, never a
@@ -221,50 +294,52 @@ fn conformance_row(
             continue;
         }
         match entry.disposition {
-            ObligationDisposition::ClaimedVerified => match close_claim(git, &identity, entry) {
-                ClaimReading::Closed => row.tally.verified += 1,
-                ClaimReading::Open(reason) => {
-                    obligations_open = true;
-                    first_open.get_or_insert_with(|| ConformanceOpenObligation {
-                        function: entry.function.clone(),
-                        attempt: entry.attempt,
-                        link: reason.clone(),
-                    });
-                    eprintln!(
-                        "  [conformance] {binary}: obligation `{}` attempt {} stays open — {reason}",
-                        entry.function, entry.attempt
-                    );
-                }
-                ClaimReading::UnReviewed(reason) => {
-                    // An attempt no review action ever acted on reads
-                    // un-reviewed: its own tally, counted apart from the
-                    // verified, and never a verified close (issue #420,
-                    // AC 5).
-                    obligations_open = true;
-                    row.tally.un_reviewed += 1;
-                    first_open.get_or_insert_with(|| ConformanceOpenObligation {
-                        function: entry.function.clone(),
-                        attempt: entry.attempt,
-                        link: reason.clone(),
-                    });
-                    eprintln!(
-                        "  [conformance] {binary}: obligation `{}` attempt {} reads un-reviewed — {reason}",
-                        entry.function, entry.attempt
-                    );
-                }
-                ClaimReading::CitationFault(reason) => {
-                    obligations_open = true;
-                    push_cause(
-                        &mut row,
-                        ConformanceUnknownCause::UnresolvableReceiptCitation,
-                    );
-                    eprintln!(
-                        "  [conformance] {binary}: `{}` attempt {} cites an unresolvable \
+            ObligationDisposition::ClaimedVerified => {
+                match close_claim(git, workspace, &identity, entry) {
+                    ClaimReading::Closed => row.tally.verified += 1,
+                    ClaimReading::Open(reason) => {
+                        obligations_open = true;
+                        first_open.get_or_insert_with(|| ConformanceOpenObligation {
+                            function: entry.function.clone(),
+                            attempt: entry.attempt,
+                            link: reason.clone(),
+                        });
+                        eprintln!(
+                            "  [conformance] {binary}: obligation `{}` attempt {} stays open — {reason}",
+                            entry.function, entry.attempt
+                        );
+                    }
+                    ClaimReading::UnReviewed(reason) => {
+                        // An attempt no review action ever acted on reads
+                        // un-reviewed: its own tally, counted apart from the
+                        // verified, and never a verified close (issue #420,
+                        // AC 5).
+                        obligations_open = true;
+                        row.tally.un_reviewed += 1;
+                        first_open.get_or_insert_with(|| ConformanceOpenObligation {
+                            function: entry.function.clone(),
+                            attempt: entry.attempt,
+                            link: reason.clone(),
+                        });
+                        eprintln!(
+                            "  [conformance] {binary}: obligation `{}` attempt {} reads un-reviewed — {reason}",
+                            entry.function, entry.attempt
+                        );
+                    }
+                    ClaimReading::CitationFault(reason) => {
+                        obligations_open = true;
+                        push_cause(
+                            &mut row,
+                            ConformanceUnknownCause::UnresolvableReceiptCitation,
+                        );
+                        eprintln!(
+                            "  [conformance] {binary}: `{}` attempt {} cites an unresolvable \
                          verifier receipt — {reason}",
-                        entry.function, entry.attempt
-                    );
+                            entry.function, entry.attempt
+                        );
+                    }
                 }
-            },
+            }
             disposition => {
                 // Honest dispositions never count toward closure (issue
                 // #392): every one holds its obligation open and keeps
@@ -410,9 +485,7 @@ fn tally_obligation(tally: &mut ConformanceTally, disposition: ObligationDisposi
 /// writes into the JSON — with underscores spoken as spaces. Unknowns
 /// spell their cause beside them, never a bare label.
 fn disposition_words(disposition: &ObligationDisposition) -> String {
-    disposition
-        .to_string()
-        .replace('_', " ")
+    disposition.to_string().replace('_', " ")
 }
 
 /// Check one green claim against the evidence the entry pins: its owner
@@ -422,7 +495,8 @@ fn disposition_words(disposition: &ObligationDisposition) -> String {
 /// state. For an exe target a filed scenario verdict claiming complete
 /// equivalence must also stand (issue #421).
 fn close_claim(
-    git: &GitManager,
+    git: Option<&GitManager>,
+    workspace: &Path,
     identity: &BinaryIdentity,
     entry: &ObligationEntry,
 ) -> ClaimReading {
@@ -435,6 +509,18 @@ fn close_claim(
                 "the entry's unit key does not spell an attempt branch".to_string(),
             );
         }
+    };
+    // A run closed over a workspace with no repository (a run with git
+    // skipped) carries no branch, no receipt pair, and no merge state.
+    // The claim's evidence cannot stand, so the reading names the missing
+    // repository as the reason the citation cannot resolve — never a
+    // pass, and the close keeps printing instead of failing (issue #423).
+    let Some(git) = git else {
+        return ClaimReading::CitationFault(format!(
+            "no attempt branch `{}` stands to carry the receipt pair: the workspace holds no \
+             git repository, so the citation was never consulted",
+            branch.name
+        ));
     };
     let Some(branch_ref) = git
         .repo()
@@ -539,7 +625,7 @@ fn close_claim(
     // own — the row says the lane lacks an assessment, naming
     // it as the first open link (issue #421, AC 6).
     if identity.as_str().to_ascii_lowercase().ends_with(".exe")
-        && !scenario_verdict_claims_complete(git.repo_path(), identity)
+        && !scenario_verdict_claims_complete(workspace, identity)
     {
         return ClaimReading::Open(
             "no filed scenario verdict claims complete equivalence for this binary".to_string(),
@@ -550,7 +636,7 @@ fn close_claim(
     // standing Accept action never closes an obligation, and the unit
     // reads un-reviewed — its own tally, never verified (issue #392,
     // story 6; issue #420, AC 5).
-    if !accept_record_stands(git.repo_path(), identity, &entry.function, entry.attempt) {
+    if !accept_record_stands(workspace, identity, &entry.function, entry.attempt) {
         return ClaimReading::UnReviewed(
             "no Accept review action stands for this attempt".to_string(),
         );
@@ -605,7 +691,13 @@ fn scenario_verdict_claims_complete(workspace: &Path, identity: &BinaryIdentity)
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or_default();
-        if stem != format!("{}-{}", identity.as_str(), scenario_file_key(&document.scenario)) {
+        if stem
+            != format!(
+                "{}-{}",
+                identity.as_str(),
+                scenario_file_key(&document.scenario)
+            )
+        {
             continue;
         }
         return true;
@@ -795,12 +887,18 @@ fn wrapped(text: &str) -> Vec<String> {
 }
 
 fn wrapped_within(text: &str, limit: usize) -> Vec<String> {
+    // The line's own leading indent rides the first physical line — the
+    // word split would otherwise drop it and the key would not line up
+    // with the other run-close sections (issue #423).
     let indent = text.len() - text.trim_start().len();
+    let lead = &text[..indent];
     let cont = " ".repeat(indent + 2);
     let mut lines = Vec::new();
     let mut current = String::new();
-    for word in text.split(' ') {
-        let candidate = if current.is_empty() || current == cont {
+    for word in text.trim_start().split(' ').filter(|word| !word.is_empty()) {
+        let candidate = if current.is_empty() {
+            format!("{lead}{word}")
+        } else if current == cont {
             format!("{current}{word}")
         } else {
             format!("{current} {word}")
@@ -834,6 +932,7 @@ fn styled_wrapped(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_types::ObligationLedger;
 
     /// Drop the color escapes (ESC through `m`) so an assertion can read a
     /// wrapped, colored sentence as one line again.
@@ -1016,6 +1115,105 @@ mod tests {
         assert!(joined.contains(
             "↳ first open: claim v2 attempt 2 — no Accept review action stands for this attempt"
         ));
+    }
+
+    #[test]
+    fn the_run_close_section_prints_an_unfiled_ledger_as_unknown_never_a_clean_run() {
+        // Issue #423, AC 3: the close derives its own rows from the filed
+        // documents. A target with no filed obligation ledger degrades to
+        // *unknown* in the section, and the close does not fail. This
+        // workspace is not even a git repository, so the degradation is
+        // total and quiet.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let lines = run_conformance_lines(dir.path(), &["game_logic.dll".to_string()]);
+        assert_eq!(lines[0], conformance_header());
+        let joined = lines
+            .iter()
+            .map(|line| strip_ansi(line).trim().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            joined.contains("game_logic.dll — unknown: no ledger filed — never a clean run"),
+            "{joined}"
+        );
+        assert!(
+            !joined.contains("complete"),
+            "absence never reads as closure: {joined}"
+        );
+    }
+
+    #[test]
+    fn a_green_claim_read_without_a_git_repository_never_passes_and_never_fails_the_close() {
+        // A run closed with git skipped has no attempt branch and no
+        // receipt pair. The claim cannot close, so the section names the
+        // receipt citation as unresolvable and reads the verdict as
+        // unknown. The derivation still returns its row instead of failing
+        // the close (issue #423, AC 3).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut entry = ObligationEntry::new(
+            "DrawPrimitive",
+            1,
+            "",
+            ObligationDisposition::ClaimedVerified,
+        );
+        entry.receipt_digest = Some("sha256:cafe".to_string());
+        let ledger = ObligationLedger::file("game_logic.dll", vec![entry], 1_700_000_000)
+            .expect("the ledger seals");
+        calxgloss_types::save_json(
+            &calxgloss_types::obligation_ledger_path(
+                dir.path(),
+                &BinaryIdentity::from("game_logic.dll"),
+            ),
+            &ledger,
+        )
+        .expect("file the ledger");
+        let rows = derive_run_conformance(dir.path(), &["game_logic.dll".to_string()]);
+        assert_eq!(rows.len(), 1, "the close still derives its row");
+        assert_eq!(rows[0].verdict, ConformanceVerdict::Unknown);
+        assert_eq!(
+            rows[0].causes,
+            vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
+            "the missing repository lands as an unresolvable citation, never a pass"
+        );
+    }
+
+    #[test]
+    fn the_run_close_conformance_section_keys_targets_verbatim_like_the_unknown_section() {
+        // Issue #423, AC 4: the two run-close sections key the same
+        // binaries the same way. Each key is spelled exactly as handed, in
+        // the named order, and a target named twice is named once.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let targets = vec![
+            "keyless_engine.dll".to_string(),
+            "game_logic.dll".to_string(),
+            "keyless_engine.dll".to_string(),
+        ];
+        let names = ["game_logic.dll", "keyless_engine.dll"];
+        let keys_in = |lines: &[String]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| strip_ansi(line))
+                .filter_map(|line| {
+                    names
+                        .iter()
+                        .find(|name| line.starts_with(&format!("  {name} —")))
+                        .map(|name| name.to_string())
+                })
+                .collect()
+        };
+        let unknown = super::super::audit::run_audit_ledger_lines(dir.path(), &targets);
+        let conformance = run_conformance_lines(dir.path(), &targets);
+        assert_eq!(
+            keys_in(&conformance),
+            keys_in(&unknown),
+            "the two run-close sections must name the same binaries the same way"
+        );
+        assert_eq!(
+            keys_in(&conformance),
+            vec!["keyless_engine.dll", "game_logic.dll"],
+            "named order, duplicate once"
+        );
+        assert!(run_conformance_lines(dir.path(), &[]).is_empty());
     }
 
     #[test]
