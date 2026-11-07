@@ -1634,6 +1634,151 @@ async fn test_progress_enhanced_serves_live_scan_records() {
     );
 }
 
+/// The live payload carries the working pass's latest heartbeat beside
+/// the scan records (issue #430): pass name, the function Kuna is on, and
+/// the position in the pass's work list. The heartbeat under the
+/// call-graph pass name reads the same way. It is the same event with its
+/// own name; no new variant exists. A heartbeat with no per-item
+/// granularity names its pass alone, never a fabricated `0/0`. Before the
+/// pass's first heartbeat the field is absent. The pass's batch summary or
+/// a new binary's pass start clears the record with the scan rows.
+#[tokio::test]
+async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let get_enhanced = || async {
+        reqwest::get(format!(
+            "http://127.0.0.1:{}/api/progress/enhanced",
+            fixture.port()
+        ))
+        .await
+        .expect("enhanced progress request succeeds")
+        .json::<serde_json::Value>()
+        .await
+        .expect("body is JSON")
+    };
+
+    // Before the pass's first heartbeat there is no activity record. The
+    // panel has nothing to invent a position from.
+    let body = get_enhanced().await;
+    assert!(
+        body.get("activity").is_none(),
+        "no heartbeat has landed, so no activity record: {body}"
+    );
+
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "LaunchPad.exe".into(),
+    });
+    events.emit(ProgressEvent::EvidenceScanStarted {
+        binary: "LaunchPad.exe".into(),
+        scan: "sync".into(),
+    });
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "LaunchPad.exe".into(),
+        pass: "evidence scans".into(),
+        function: "FUN_1800412a0".into(),
+        index: 1200,
+        total: 7267,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // The scan row and the heartbeat ride one payload. The panel needs
+    // both to name the running scan and Kuna's current function.
+    let body = get_enhanced().await;
+    assert_eq!(
+        body["scans"].as_array().expect("scans is an array").len(),
+        1,
+        "the running scan row is served beside the heartbeat: {body}"
+    );
+    let activity = &body["activity"];
+    assert_eq!(activity["pass"], "evidence scans");
+    assert_eq!(activity["function"], "FUN_1800412a0");
+    assert_eq!(activity["index"], 1200);
+    assert_eq!(activity["total"], 7267);
+
+    // The cold call-graph build sends its heartbeats under its own pass
+    // name. Same event, no new variant; the payload names the pass like
+    // any other.
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "LaunchPad.exe".into(),
+        pass: "call graph".into(),
+        function: "FUN_180057900".into(),
+        index: 41,
+        total: 7267,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body = get_enhanced().await;
+    assert_eq!(body["activity"]["pass"], "call graph");
+    assert_eq!(body["activity"]["function"], "FUN_180057900");
+    assert_eq!(body["activity"]["index"], 41);
+
+    // A pass with no per-item granularity records its name alone. The
+    // unknown position parts stay out of the payload, never a zero.
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "LaunchPad.exe".into(),
+        pass: "xref index".into(),
+        function: String::new(),
+        index: 0,
+        total: 0,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body = get_enhanced().await;
+    assert_eq!(body["activity"]["pass"], "xref index");
+    assert!(
+        body["activity"].get("function").is_none()
+            && body["activity"].get("index").is_none()
+            && body["activity"].get("total").is_none(),
+        "an unknown position is omitted, never fabricated: {}",
+        body["activity"]
+    );
+
+    // The pass ending clears the heartbeat record too: that DLL's batch
+    // summary means no binary is being worked on any more.
+    events.emit(ProgressEvent::BatchSummary {
+        binary: "LaunchPad.exe".into(),
+        total_functions: 2,
+        success_count: 2,
+        failure_count: 0,
+        total_attempts: 2,
+        total_tokens: 0,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body = get_enhanced().await;
+    assert!(
+        body.get("activity").is_none(),
+        "the batch summary cleared the pass's heartbeat record: {body}"
+    );
+
+    // A new binary's pass start clears a stale record exactly like the
+    // scan rows. The panel never keeps showing a finished pass as live
+    // work.
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "eqmain.dll".into(),
+        pass: "call graph".into(),
+        function: "FUN_18004a3c0".into(),
+        index: 3,
+        total: 512,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "eqmain.dll".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body = get_enhanced().await;
+    assert!(
+        body.get("activity").is_none(),
+        "the new binary's pass cleared the previous pass's heartbeat record: {body}"
+    );
+}
+
 /// Route-table contract: endpoints that read live translation state are
 /// registered **only** in the WebSocket (live) router. On the plain serve
 /// router and the actions router they must fall through to the static 404,

@@ -215,6 +215,11 @@
                  runs before any unit exists, so its panel leads. -->
             <h3 class="live-section-title">Evidence scans</h3>
             <div id="live-scans" class="live-scans"></div>
+            <!-- The worklist tick line (issue #430): the working pass's
+                 latest heartbeat beside the scan rows — pass name, Kuna's
+                 current function, and position. Hidden until the pass's
+                 first heartbeat arrives. -->
+            <div id="live-worklist-tick" class="live-worklist-tick" title="What the working pass is doing right now" style="display:none"></div>
             <div id="live-scans-empty" class="empty-state">
                 <p>The scan phase has not started for this binary yet.</p>
             </div>

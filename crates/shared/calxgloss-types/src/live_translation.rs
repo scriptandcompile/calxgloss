@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::BinaryIdentity;
 
+use crate::pipeline_phase::BinaryActivity;
 use crate::progress::{PhaseRecord, TranslationPhase};
 
 /// Honest status of one class of test evidence for an in-flight unit.
@@ -225,16 +226,27 @@ pub struct LiveTranslationState {
     /// readable.
     #[serde(default)]
     pub scans: Vec<LiveScanProgress>,
+    /// The working pass's latest heartbeat, beside the scan records
+    /// (issue #430): the function Kuna is on and its position in the
+    /// pass's work list. It is the same [`BinaryActivity`] the pipeline
+    /// payload shows on the binary's row, fed by the existing
+    /// `BatchProgress` event — no new event exists. Absent before the
+    /// pass's first heartbeat and once the pass has ended;
+    /// `serde(default)` keeps payloads written before this field
+    /// existed readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<BinaryActivity>,
 }
 
 impl LiveTranslationState {
-    /// A state with no units tracked and no scans tracked.
+    /// A state with no units tracked, no scans tracked, and no heartbeat.
     pub fn empty() -> Self {
         Self {
             units: Vec::new(),
             count: 0,
             in_flight: 0,
             scans: Vec::new(),
+            activity: None,
         }
     }
 }
@@ -467,6 +479,7 @@ mod tests {
                 findings: Some(7),
                 error: None,
             }],
+            activity: None,
         };
         let json = serde_json::to_value(&state).expect("serializes");
         assert_eq!(json["count"], 1);
@@ -532,11 +545,64 @@ mod tests {
         assert_eq!(back, failed);
 
         // A payload written before the scans field existed still reads,
-        // with no scans tracked.
+        // with no scans tracked and no activity record.
         let old: LiveTranslationState = serde_json::from_value(serde_json::json!({
             "units": [], "count": 0, "in_flight": 0,
         }))
         .expect("an old payload is still readable");
         assert!(old.scans.is_empty());
+        assert!(old.activity.is_none());
+    }
+
+    // The pipeline's worklist heartbeat rides the live payload beside the
+    // scan records (issue #430). No new event exists — this is the same
+    // `BatchProgress` record the pipeline binary row already shows.
+    #[test]
+    fn live_worklist_heartbeat_rides_the_payload_beside_the_scans() {
+        let state = LiveTranslationState {
+            units: Vec::new(),
+            count: 0,
+            in_flight: 0,
+            scans: vec![LiveScanProgress {
+                scan: "sync".into(),
+                binary: "LaunchPad.exe".into(),
+                finished: false,
+                elapsed_secs: 30.0,
+                findings: None,
+                error: None,
+            }],
+            activity: Some(BinaryActivity {
+                pass: "evidence scans".into(),
+                function: Some("FUN_1800412a0".into()),
+                index: Some(1200),
+                total: Some(7267),
+            }),
+        };
+        let json = serde_json::to_value(&state).expect("serializes");
+        assert_eq!(json["activity"]["pass"], "evidence scans");
+        assert_eq!(json["activity"]["function"], "FUN_1800412a0");
+        assert_eq!(json["activity"]["index"], 1200);
+        assert_eq!(json["activity"]["total"], 7267);
+        let back: LiveTranslationState = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, state);
+
+        // A pass with no per-item granularity records its name alone. The
+        // unknown position parts stay out, never a fabricated zero.
+        let name_only = BinaryActivity {
+            pass: "call graph".into(),
+            function: None,
+            index: None,
+            total: None,
+        };
+        let json = serde_json::to_value(&name_only).expect("serializes");
+        assert_eq!(json["pass"], "call graph");
+        assert!(
+            json.get("function").is_none()
+                && json.get("index").is_none()
+                && json.get("total").is_none(),
+            "an unknown position is omitted, never a zero: {json}"
+        );
+        let back: BinaryActivity = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, name_only);
     }
 }

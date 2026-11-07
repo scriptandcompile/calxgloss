@@ -3500,6 +3500,21 @@ td.unknowns-cell-unknown {
     color: var(--accent-red);
 }
 
+/* The worklist tick line (issue #430) — the working pass's latest
+   heartbeat standing beside the scan rows: pass name, Kuna's current
+   function, and its position in the pass's work list. */
+.live-worklist-tick {
+    margin: -8px 0 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.worklist-tick-item {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
 .pass-chip.state-passed {
     background: var(--accent-green-dim);
     color: var(--accent-green);

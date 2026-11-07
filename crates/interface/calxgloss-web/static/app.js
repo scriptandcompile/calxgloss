@@ -343,10 +343,15 @@ function handleWSMessage(event) {
     // Pre-batch evidence-scan traffic and pass boundaries (issue #428) —
     // the live view's scan panel re-renders from the enhanced-progress
     // payload: a new row appears on started, settles on completed, and a
-    // pass for the next binary clears the previous one's rows. No reload.
+    // pass for the next binary clears the previous one's rows. The
+    // working pass's heartbeat rides the same payload (issue #430). Each
+    // heartbeat moves the tick line's function and position. A summary or
+    // a new binary's pass start clears it. No reload.
     if (event.event === "evidence_scan_started" ||
         event.event === "evidence_scan_completed" ||
-        event.event === "batch_started") {
+        event.event === "batch_started" ||
+        event.event === "batch_summary" ||
+        event.event === "batch_progress") {
         scheduleLiveProgressRefresh();
     }
 

@@ -96,6 +96,19 @@ pub async fn api_get_progress_enhanced(
         .map(live_scan_progress)
         .collect();
 
+    // The working pass's latest heartbeat, beside the scan rows (issue
+    // #430): pass name, the function Kuna is on, and its position in the
+    // pass's work list. The store records it from the same
+    // `BatchProgress` event the pipeline row already shows. The store
+    // clears the record at every pass boundary, so it never outlives the
+    // pass it describes.
+    let activity = progress
+        .read()
+        .await
+        .activity()
+        .await
+        .map(|(_binary, heartbeat)| heartbeat);
+
     let count = units.len();
     let in_flight = units.iter().filter(|u| !u.finished).count();
     Json(LiveTranslationState {
@@ -103,6 +116,7 @@ pub async fn api_get_progress_enhanced(
         count,
         in_flight,
         scans,
+        activity,
     })
 }
 

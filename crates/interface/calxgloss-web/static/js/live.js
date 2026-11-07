@@ -50,6 +50,7 @@ export async function loadLiveProgress() {
         (lastState.scans || []).forEach(s => { s._receivedAt = lastFetchedAt; });
         renderLiveUnits();
         renderLiveScans();
+        renderWorklistTick();
     } catch (err) {
         lastState = null;
         list.innerHTML = "";
@@ -66,6 +67,10 @@ export async function loadLiveProgress() {
         // rather than leave stale rows or imply a count. (issue #428)
         const scansEmpty = document.getElementById("live-scans-empty");
         if (scansEmpty) scansEmpty.style.display = "";
+        // Same honesty for the tick line: no payload, so no heartbeat to
+        // show.
+        const tick = document.getElementById("live-worklist-tick");
+        if (tick) { tick.style.display = "none"; tick.textContent = ""; }
     }
 }
 
@@ -184,6 +189,35 @@ function renderLiveScans() {
     }
     if (empty) empty.style.display = "none";
     list.innerHTML = scans.map(scanRowHtml).join("");
+}
+
+/** Draw the working pass's latest heartbeat as one tick line beside the
+ *  scan rows (issue #430): pass name · function · position, e.g.
+ *  "evidence scans · FUN_1800412a0 · 1,200/7,267". The line names whatever
+ *  pass is working, so the cold call-graph build reads the same line under
+ *  its own name. Parts the heartbeat does not carry stay off the line. A
+ *  pass with no per-item granularity shows its name alone, never a
+ *  fabricated position or zero. While the payload carries no heartbeat the
+ *  line stays hidden. */
+function renderWorklistTick() {
+    const el = document.getElementById("live-worklist-tick");
+    if (!el) return;
+    const heartbeat = lastState && lastState.activity;
+    if (!heartbeat) {
+        el.style.display = "none";
+        el.textContent = "";
+        return;
+    }
+    const fmt = (n) => n.toLocaleString("en-US");
+    const parts = [escapeHtml(heartbeat.pass)];
+    if (heartbeat.function) {
+        parts.push(`<span class="worklist-tick-item">${escapeHtml(heartbeat.function)}</span>`);
+    }
+    if (heartbeat.index != null && heartbeat.total != null) {
+        parts.push(`${fmt(heartbeat.index)}/${fmt(heartbeat.total)}`);
+    }
+    el.innerHTML = parts.join(" · ");
+    el.style.display = "";
 }
 
 /** Markup for one scan row: running rows carry the ticking clock's

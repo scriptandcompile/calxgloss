@@ -1774,3 +1774,189 @@ async fn test_headless_live_view_shows_scan_rows() {
     tab.close_target().ok();
     drop(browser);
 }
+/// Headless-browser pin for the worklist tick line in the live view's scan
+/// panel (issue #430): the pipeline's existing `BatchProgress` heartbeat
+/// renders beside the scan rows as pass name · function · position. The
+/// position advances as later heartbeats arrive, with no page reload. A
+/// heartbeat under the call-graph pass name renders the same line under
+/// that name — no new event. A pass with no per-item granularity renders
+/// its name alone, never a fabricated position.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_headless_live_view_shows_worklist_tick_line() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
+    let _server = spawn_server(router, fixture.port()).await;
+
+    let Some(browser) = launch_headless_browser() else {
+        eprintln!("skipping worklist-tick test: no headless browser found");
+        return;
+    };
+    let tab = open_dashboard_tab(&browser, fixture.port());
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click live tab");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let tick_text = || -> String {
+        eval_text(
+            &tab,
+            "document.getElementById('live-worklist-tick')?.textContent || ''",
+        )
+    };
+
+    // Before the pass's first heartbeat there is no tick line to show.
+    assert!(
+        tick_text().is_empty(),
+        "no heartbeat has landed, so the tick line should be empty, got {:?}",
+        tick_text()
+    );
+
+    // A scan running with the pass's heartbeat beside it: the line names
+    // the pass, the function Kuna is on, and the position in the work list.
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "tick_hd.dll".into(),
+    });
+    events.emit(ProgressEvent::EvidenceScanStarted {
+        binary: "tick_hd.dll".into(),
+        scan: "sync".into(),
+    });
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "tick_hd.dll".into(),
+        pass: "evidence scans".into(),
+        function: "FUN_1800412a0".into(),
+        index: 1200,
+        total: 7267,
+    });
+
+    // The heartbeat re-renders the panel on its own — the tick line shows
+    // while the scan row is still running, no reload.
+    let mut rendered = false;
+    for _ in 0..25 {
+        let text = tick_text();
+        if text.contains("evidence scans")
+            && text.contains("FUN_1800412a0")
+            && text.contains("1,200/7,267")
+        {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "the heartbeat should render pass · function · position without a reload, got {:?}",
+        tick_text()
+    );
+    assert_eq!(
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#live-scans .live-scan').length"
+        ),
+        1,
+        "the running scan row stands beside the tick line"
+    );
+
+    // The next unique function sends its heartbeat and moves the counter
+    // forward. Same line, position moved, still no reload.
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "tick_hd.dll".into(),
+        pass: "evidence scans".into(),
+        function: "FUN_180057900".into(),
+        index: 1201,
+        total: 7267,
+    });
+    let mut advanced = false;
+    for _ in 0..25 {
+        let text = tick_text();
+        if text.contains("FUN_180057900") && text.contains("1,201/7,267") {
+            advanced = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        advanced,
+        "the tick line's position should advance as heartbeats arrive, got {:?}",
+        tick_text()
+    );
+
+    // The cold call-graph build sends its heartbeat under its own pass
+    // name. The same line; no new event variant.
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "tick_hd.dll".into(),
+        pass: "call graph".into(),
+        function: "FUN_180060000".into(),
+        index: 41,
+        total: 7267,
+    });
+    let mut call_graph = false;
+    for _ in 0..25 {
+        let text = tick_text();
+        if text.contains("call graph")
+            && text.contains("FUN_180060000")
+            && text.contains("41/7,267")
+        {
+            call_graph = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        call_graph,
+        "the call-graph heartbeat should render the same line under its own pass name, got {:?}",
+        tick_text()
+    );
+
+    // A pass with no per-item granularity shows its name alone — never a
+    // fabricated position or a zero.
+    events.emit(ProgressEvent::BatchProgress {
+        binary: "tick_hd.dll".into(),
+        pass: "xref index".into(),
+        function: String::new(),
+        index: 0,
+        total: 0,
+    });
+    let mut name_only = false;
+    for _ in 0..25 {
+        let text = tick_text();
+        if text.contains("xref index") && !text.contains('/') && !text.contains('0') {
+            name_only = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        name_only,
+        "a pass without per-item granularity should show its name alone, got {:?}",
+        tick_text()
+    );
+
+    // A batch for the next binary clears the heartbeat record with the
+    // scan rows. The line empties rather than outliving the pass it
+    // showed.
+    events.emit(ProgressEvent::BatchStarted {
+        binary: "next_tick_hd.dll".into(),
+    });
+    let mut cleared = false;
+    for _ in 0..25 {
+        if tick_text().is_empty() {
+            cleared = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        cleared,
+        "the next binary's pass should clear the previous pass's tick line, got {:?}",
+        tick_text()
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
