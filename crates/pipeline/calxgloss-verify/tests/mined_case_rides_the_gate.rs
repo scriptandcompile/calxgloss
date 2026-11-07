@@ -36,6 +36,7 @@ fn mined_case() -> TestCase {
             capture_id: "cap-pin-1".to_string(),
             event_sequence: 4,
         },
+        case_kind: None,
     }
 }
 

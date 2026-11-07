@@ -61,6 +61,7 @@ fn test_case(p1: i64, p2: i32) -> TestCase {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: None,
     }
 }
 
@@ -179,6 +180,7 @@ fn baseline_reaches_memory_accessing_functions() {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: None,
     };
     let report = r
         .run(
@@ -249,6 +251,7 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         },
         // Faults: a null pointer.
         TestCase {
@@ -257,6 +260,7 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         },
         // Valid again, to prove the batch continued past the fault.
         TestCase {
@@ -265,6 +269,7 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         },
     ];
 
@@ -456,6 +461,7 @@ async fn baseline_runner_reports_a_mismatch_against_the_expectation() {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: None,
     }];
 
     let results = runner
@@ -521,6 +527,7 @@ fn run_one(
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         })
         .collect();
 
@@ -718,6 +725,7 @@ async fn baseline_runner_records_fixture_tick_trace_into_the_report() {
                 expected_side_effects: Vec::new(),
                 expected_api_calls: Vec::new(),
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             }],
             &target,
         )
@@ -749,6 +757,7 @@ async fn baseline_runner_reports_a_missing_dll_without_touching_wine() {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: None,
     }];
 
     let results = runner
@@ -810,6 +819,7 @@ mod live_entry_hook {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let plain_spec = HarnessSpec::new(
@@ -931,6 +941,7 @@ mod live_entry_hook {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let spec = HarnessSpec::new(
@@ -1124,6 +1135,7 @@ mod live_recording_proxy {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: CaseOrigin::Generated,
+            case_kind: None,
         }];
         let plain = runner
             .run(&plain_spec, &dll, &cases, image.machine())
@@ -1274,6 +1286,7 @@ mod live_recording_proxy {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: CaseOrigin::Generated,
+            case_kind: None,
         }];
         let caller = runner
             .run(&spec, &proxy_dll, &cases, image.machine())

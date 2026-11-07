@@ -859,6 +859,9 @@ fn decode_case(entry: &CapturedCallEntry, parsed: &ParsedSignature) -> Option<Te
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin,
+        // Mined cases stay kind-absent until a P23 extension decides the
+        // kind a real caller's argument vector is (issue #418, out of scope).
+        case_kind: None,
     })
 }
 

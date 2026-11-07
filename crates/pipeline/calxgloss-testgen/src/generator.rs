@@ -509,6 +509,7 @@ mod tests {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         };
 
         let result = TestResult {
@@ -545,6 +546,7 @@ mod tests {
                 expected_side_effects: Vec::new(),
                 expected_api_calls: Vec::new(),
                 origin,
+                case_kind: None,
             },
             actual_return: serde_json::json!(100),
             actual_side_effects: Vec::new(),
@@ -610,6 +612,128 @@ mod tests {
             loaded[1].test_case.origin,
             calxgloss_types::CaseOrigin::Generated,
             "a pre-origin document reads as generated"
+        );
+    }
+
+    #[test]
+    fn generated_baseline_cases_carry_their_case_kind_through_the_filed_document() {
+        // Issue #418: the generator stamps every case with its kind at
+        // generation time, and the filed baseline document round-trips
+        // the kinds whole — the same closed roster the obligation
+        // ledger's entries declare.
+        let sig = "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)";
+        let disassembly = "cmp eax, 0\nje null_handler\ncmp ecx, 256\nja out_of_bounds";
+        let cases = crate::generate_test_inputs(sig, disassembly, &[]).unwrap();
+        let suite: Vec<TestResult> = cases
+            .into_iter()
+            .map(|test_case| TestResult {
+                actual_return: serde_json::json!(null),
+                actual_side_effects: Vec::new(),
+                actual_api_calls: Vec::new(),
+                passed: true,
+                error: None,
+                test_case,
+            })
+            .collect();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let generator = TestGenerator::new(temp_dir.path());
+        generator
+            .save_baseline("test.dll", "DrawSprite", &suite)
+            .unwrap();
+        let loaded = generator.load_baseline("test.dll", "DrawSprite").unwrap();
+        assert_eq!(
+            loaded, suite,
+            "the filed baseline document round-trips every stamped kind"
+        );
+
+        let mut saw_positive = false;
+        let mut saw_negative = false;
+        for case in &loaded {
+            assert_eq!(
+                case.test_case.origin,
+                calxgloss_types::CaseOrigin::Generated,
+                "the generator only produces generated cases"
+            );
+            let kind = case
+                .test_case
+                .case_kind
+                .expect("every generated case is stamped with its kind at generation time");
+            assert!(
+                calxgloss_types::CaseKind::ALL.contains(&kind),
+                "the kind comes from the one closed roster the ledger declares: {kind}"
+            );
+            match kind {
+                calxgloss_types::CaseKind::Positive => saw_positive = true,
+                calxgloss_types::CaseKind::Negative => saw_negative = true,
+                calxgloss_types::CaseKind::Malformed => {}
+            }
+        }
+        let distribution: Vec<(&'static str, usize)> = [
+            (
+                "positive",
+                loaded
+                    .iter()
+                    .filter(|c| c.test_case.case_kind == Some(calxgloss_types::CaseKind::Positive))
+                    .count(),
+            ),
+            (
+                "negative",
+                loaded
+                    .iter()
+                    .filter(|c| c.test_case.case_kind == Some(calxgloss_types::CaseKind::Negative))
+                    .count(),
+            ),
+        ]
+        .into();
+        assert!(
+            saw_positive && saw_negative,
+            "a suite built from a signature and guarded body names both ordinary tries \
+             and error-path tries, not one undifferentiated pile: {distribution:?} of \
+             {} cases",
+            loaded.len()
+        );
+    }
+
+    #[test]
+    fn a_filed_baseline_document_from_before_case_kinds_reads_the_kind_absent() {
+        // Issue #418 at the reader seam: a baseline document written
+        // before kinds existed reads back with every kind ABSENT —
+        // never a defaulted kind — and re-filing it invents no kind
+        // field, so a later required-kind check fails closed on it.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let generator = TestGenerator::new(temp_dir.path());
+        let baseline_dir = temp_dir.path().join("re/baseline/test.dll/TestFunc");
+        std::fs::create_dir_all(&baseline_dir).unwrap();
+        std::fs::write(
+            baseline_dir.join("baseline.json"),
+            r#"[
+              {"test_case": {"inputs": {"x": 1}, "expected_return": 1, "expected_side_effects": [], "origin": {"mined_hook": {"capture_id": "cap-1", "event_sequence": 3}}},
+               "actual_return": 1, "actual_side_effects": [], "passed": true, "error": null},
+              {"test_case": {"inputs": {"x": 2}, "expected_return": 2, "expected_side_effects": []},
+               "actual_return": 2, "actual_side_effects": [], "passed": true, "error": null}
+            ]"#,
+        )
+        .unwrap();
+
+        let loaded = generator
+            .load_baseline("test.dll", "TestFunc")
+            .expect("the pre-kind document loads through the existing reader");
+        assert_eq!(loaded.len(), 2);
+        for case in &loaded {
+            assert_eq!(
+                case.test_case.case_kind, None,
+                "an unkinded case reads back absent, never defaulted"
+            );
+        }
+
+        generator
+            .save_baseline("test.dll", "TestFunc", &loaded)
+            .expect("re-filing the read document");
+        let filed = std::fs::read_to_string(baseline_dir.join("baseline.json")).unwrap();
+        assert!(
+            !filed.contains("case_kind"),
+            "re-filing an unkinded document invents no kind field: {filed}"
         );
     }
 

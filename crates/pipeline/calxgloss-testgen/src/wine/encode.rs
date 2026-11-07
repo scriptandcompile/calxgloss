@@ -291,6 +291,7 @@ mod tests {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: Default::default(),
+            case_kind: None,
         };
         encode_test_case(&spec, &test)
     }

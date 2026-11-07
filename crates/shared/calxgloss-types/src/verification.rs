@@ -549,6 +549,7 @@ mod tests {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: crate::CaseOrigin::Generated,
+            case_kind: None,
         }
     }
 

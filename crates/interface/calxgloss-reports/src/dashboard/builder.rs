@@ -1088,6 +1088,7 @@ mod tests {
                     expected_side_effects: vec![],
                     expected_api_calls: vec![],
                     origin: calxgloss_types::CaseOrigin::Generated,
+                    case_kind: None,
                 },
                 actual_return: serde_json::json!(1),
                 actual_side_effects: vec![],

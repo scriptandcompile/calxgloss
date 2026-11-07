@@ -42,6 +42,7 @@ fn case(want: i64) -> TestCase {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: None,
     }
 }
 

@@ -355,6 +355,7 @@ async fn a_twin_deduplicates_upgrades_the_origin_and_is_never_replayed() {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: CaseOrigin::Generated,
+        case_kind: None,
     };
     generator
         .save_baseline(
@@ -421,6 +422,7 @@ async fn mined_rows_file_generated_first_then_in_capture_order() {
                     expected_side_effects: Vec::new(),
                     expected_api_calls: Vec::new(),
                     origin: CaseOrigin::Generated,
+                    case_kind: None,
                 },
                 actual_return: json!(1),
                 actual_side_effects: Vec::new(),
@@ -487,6 +489,7 @@ async fn mined_rows_are_exempt_from_the_generation_cap() {
                 expected_side_effects: Vec::new(),
                 expected_api_calls: Vec::new(),
                 origin: CaseOrigin::Generated,
+                case_kind: None,
             },
             actual_return: json!(i),
             actual_side_effects: Vec::new(),

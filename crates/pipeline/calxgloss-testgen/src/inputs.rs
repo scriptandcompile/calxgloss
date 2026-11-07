@@ -392,6 +392,15 @@ fn generate_signature_tests(
     let mut tests = Vec::new();
     let params = &parsed.parameters;
 
+    // Values harvested from the body's comparison guards are error-path
+    // probes even where the signature loop feeds them in: they stamp
+    // negative (issue #418).
+    let harvested: HashSet<String> = edge_cases
+        .get_boundary_values()
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect();
+
     if params.is_empty() {
         // No parameters: one case with a null input, the shape the verify
         // harness dispatches as a no-argument call. (An empty object told
@@ -403,6 +412,7 @@ fn generate_signature_tests(
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: Some(calxgloss_types::CaseKind::Positive),
         });
         return tests;
     }
@@ -433,6 +443,15 @@ fn generate_signature_tests(
                 expected_side_effects: Vec::new(),
                 expected_api_calls: Vec::new(),
                 origin: calxgloss_types::CaseOrigin::Generated,
+                // A signature-derived ordinary value is positive; a value
+                // the body's guards named is an error-path probe even
+                // through this loop (issue #418).
+                case_kind: Some(match boundary_value.as_i64() {
+                    Some(v) if harvested.contains(&v.to_string()) => {
+                        calxgloss_types::CaseKind::Negative
+                    }
+                    _ => calxgloss_types::CaseKind::Positive,
+                }),
             });
         }
     }
@@ -446,6 +465,7 @@ fn generate_signature_tests(
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: Some(calxgloss_types::CaseKind::Positive),
         });
     }
 
@@ -457,6 +477,7 @@ fn generate_signature_tests(
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: Some(calxgloss_types::CaseKind::Positive),
     });
 
     // Generate a "max value" test for the first integer param
@@ -475,6 +496,7 @@ fn generate_signature_tests(
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: Some(calxgloss_types::CaseKind::Positive),
         });
     }
 
@@ -520,6 +542,10 @@ fn generate_disassembly_tests(
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            // The value came from a comparison guard in the body: the
+            // case aims at a branch the body itself named, so the
+            // generator stamps it negative (issue #418).
+            case_kind: Some(calxgloss_types::CaseKind::Negative),
         });
     }
 
@@ -533,9 +559,20 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
 
     // Generate a few generic integer test inputs
     let generic_values = vec![0i64, -1, 1, 100, 1000];
-    let all_values: Vec<i64> = boundary_values.into_iter().chain(generic_values).collect();
+    // A value harvested from the body's comparison guards names a branch
+    // the body itself takes: negative. The plain generic values ask the
+    // unit for its normal job: positive (issue #418).
+    let all_values: Vec<(i64, calxgloss_types::CaseKind)> = boundary_values
+        .into_iter()
+        .map(|v| (v, calxgloss_types::CaseKind::Negative))
+        .chain(
+            generic_values
+                .into_iter()
+                .map(|v| (v, calxgloss_types::CaseKind::Positive)),
+        )
+        .collect();
 
-    for value in all_values {
+    for (value, kind) in all_values {
         // The generic three-slot positional shape: a value in the first
         // slot, zeros behind it. The verify harness dispatches it as a
         // three-argument call.
@@ -545,6 +582,7 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
             expected_side_effects: Vec::new(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: Some(kind),
         });
     }
 
@@ -741,6 +779,10 @@ fn branch_case_for_signature(
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        // A branch probe is built from the body's recorded guard: the
+        // case aims at the path that guard takes, so it is stamped
+        // negative (issue #418).
+        case_kind: Some(calxgloss_types::CaseKind::Negative),
     })
 }
 
@@ -778,6 +820,7 @@ fn branch_case_generic(site: &BranchSite, probe: &Probe) -> Option<TestCase> {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: Some(calxgloss_types::CaseKind::Negative),
     })
 }
 

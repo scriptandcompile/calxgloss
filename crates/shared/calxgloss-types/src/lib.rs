@@ -265,6 +265,7 @@ mod tests {
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: CaseOrigin::Generated,
+            case_kind: None,
         };
         let json = serde_json::to_string(&test_case).unwrap();
         let deserialized: TestCase = serde_json::from_str(&json).unwrap();
@@ -284,6 +285,7 @@ mod tests {
             expected_side_effects: vec![],
             expected_api_calls: vec!["GetTickCount".to_string(), "OutputDebugStringA".to_string()],
             origin: CaseOrigin::Generated,
+            case_kind: None,
         };
         let json = serde_json::to_string(&test_case).unwrap();
         let deserialized: TestCase = serde_json::from_str(&json).unwrap();
@@ -315,6 +317,7 @@ mod tests {
                 expected_side_effects: vec![],
                 expected_api_calls: vec!["GetTickCount".to_string()],
                 origin: CaseOrigin::Generated,
+                case_kind: None,
             },
             actual_return: serde_json::json!(42),
             actual_side_effects: vec![],

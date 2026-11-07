@@ -1781,6 +1781,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
         let report = parse_test_results("", &baseline);
         assert_eq!(report.passed, 0);
@@ -1804,6 +1805,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         };
         let baseline = vec![
             make_case(serde_json::json!([42]), serde_json::json!(null)),
@@ -1837,6 +1839,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
         let report = parse_test_results("SKIPPED: no baseline file", &baseline);
         assert_eq!(report.passed, 0);
@@ -1857,6 +1860,7 @@ error[E0308]: mismatched types
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
             TestCase {
                 inputs: serde_json::json!({"x": 20}),
@@ -1864,6 +1868,7 @@ error[E0308]: mismatched types
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
         ];
 
@@ -1909,6 +1914,7 @@ error[E0308]: mismatched types
             ],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let report = parse_test_results(json, &baseline);
@@ -1933,6 +1939,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec!["blit".to_string(), "present".to_string()],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let report = parse_test_results(json, &baseline);
@@ -1981,6 +1988,7 @@ error[E0308]: mismatched types
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
             TestCase {
                 inputs: serde_json::json!([0, 0]),
@@ -1988,6 +1996,7 @@ error[E0308]: mismatched types
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
         ];
 
@@ -2020,6 +2029,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
         let harness =
             verifier.generate_test_harness("MyFunc", &object_case, "pub fn MyFunc() -> u32 { 0 }");
@@ -2045,6 +2055,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let patterns = verifier.generate_input_patterns("Sum3", &tests, false);
@@ -2070,6 +2081,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let patterns = verifier.generate_input_patterns("Tick", &tests, false);
@@ -2117,6 +2129,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let patterns = verifier.generate_input_patterns("Half", &tests, false);
@@ -2223,6 +2236,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
 
         let project = verifier
@@ -2304,6 +2318,7 @@ error[E0308]: mismatched types
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
             TestCase {
                 inputs: serde_json::json!([null]),
@@ -2311,6 +2326,7 @@ error[E0308]: mismatched types
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
         ];
         // One row printed of two cases, and cargo's fatal-signal line: the
@@ -2339,6 +2355,7 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
             expected_api_calls: vec![],
             origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
         }];
         let output = "error: process didn't exit successfully: `target/debug/runner` \
                       (signal: 11, SIGSEGV: invalid memory reference)";

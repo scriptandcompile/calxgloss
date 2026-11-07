@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::obligations::CaseKind;
+
 /// The kind of side effect a function may produce.
 ///
 /// The baseline test run observes side effects and records them, so
@@ -126,6 +128,19 @@ pub struct TestCase {
     /// field can rot against the first.
     #[serde(default)]
     pub origin: CaseOrigin,
+
+    /// What kind of try this case is — *positive*, *negative*, or
+    /// *malformed*, from the one closed case-kind roster the obligation
+    /// ledger's entries also declare (issue #418).
+    ///
+    /// Unlike the origin field this one never defaults: a baseline
+    /// document filed before kinds existed reads back with the kind
+    /// **absent**, and nothing pretends the kind is known. A later ticket
+    /// fails a required-kind check closed on absent kinds; silently
+    /// defaulting here would let an old suite close an obligation it
+    /// never earned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_kind: Option<CaseKind>,
 }
 
 /// How a baseline case came to exist.
@@ -247,6 +262,46 @@ mod tests {
         );
     }
 
+    /// A baseline document filed before case kinds existed reads back
+    /// with the kind absent — never a defaulted kind (issue #418). A
+    /// later ticket fails a required-kind check closed on absent kinds;
+    /// an unkinded case writing no field keeps that fail-closed read
+    /// honest for every old suite.
+    #[test]
+    fn a_baseline_document_filed_before_case_kinds_reads_the_kind_absent() {
+        let old = r#"{"inputs": {"x": 10}, "expected_return": 42, "expected_side_effects": [], "expected_api_calls": []}"#;
+        let case: TestCase =
+            serde_json::from_str(old).expect("a pre-kind baseline document still parses");
+        assert_eq!(
+            case.case_kind, None,
+            "the kind reads absent, never defaulted"
+        );
+        let stored = serde_json::to_string(&case).expect("reserializes");
+        assert!(
+            !stored.contains("case_kind"),
+            "an unkinded case never invents a kind field: {stored}"
+        );
+    }
+
+    /// A stamped kind rides the filed bytes whole: the roster label on
+    /// disk, the same roster the obligation ledger's entries declare, and
+    /// an invented kind refuses at the deserializer.
+    #[test]
+    fn a_stamped_case_kind_round_trips_with_the_roster_label() {
+        let stamped = r#"{"inputs":[10],"expected_return":42,"expected_side_effects":[],"expected_api_calls":[],"origin":"generated","case_kind":"negative"}"#;
+        let case: TestCase = serde_json::from_str(stamped).expect("a stamped case parses");
+        assert_eq!(case.case_kind, Some(CaseKind::Negative));
+        assert_eq!(
+            serde_json::to_string(&case).expect("reserializes"),
+            stamped,
+            "the kind rides the re-filed bytes intact"
+        );
+
+        let invented = stamped.replace("\"negative\"", "\"surprising\"");
+        serde_json::from_str::<TestCase>(&invented)
+            .expect_err("an invented kind is refused — no fourth kind of try");
+    }
+
     /// Mined cases round-trip through the baseline document with their
     /// evidence payload intact: capture id plus event sequence for the hook
     /// lane, dump digest plus faulting thread for the minidump lane.
@@ -261,6 +316,7 @@ mod tests {
                 capture_id: "cap-2026-11-02-a".to_string(),
                 event_sequence: 12,
             },
+            case_kind: None,
         };
         let mined = r#"{"inputs":{"x":-5},"expected_return":0,"expected_side_effects":[],"expected_api_calls":[],"origin":{"mined_hook":{"capture_id":"cap-2026-11-02-a","event_sequence":12}}}"#;
         assert_eq!(serde_json::to_string(&hook).unwrap(), mined);
@@ -280,6 +336,7 @@ mod tests {
                 thread_id: 3812,
                 fault_address: 0x1400_1234,
             },
+            case_kind: None,
         };
         let back: TestCase =
             serde_json::from_str(&serde_json::to_string(&dump).unwrap()).expect("parses back");
@@ -326,6 +383,7 @@ mod tests {
                 capture_id: "cap-1".to_string(),
                 event_sequence: 3,
             },
+            case_kind: None,
         };
         let stored = serde_json::to_string(&case).unwrap();
         assert!(

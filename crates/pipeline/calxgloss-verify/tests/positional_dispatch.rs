@@ -52,6 +52,7 @@ fn generated_case(inputs: serde_json::Value) -> TestCase {
         expected_side_effects: Vec::new(),
         expected_api_calls: Vec::new(),
         origin: calxgloss_types::CaseOrigin::Generated,
+        case_kind: None,
     }
 }
 

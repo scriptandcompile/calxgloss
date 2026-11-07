@@ -425,6 +425,9 @@ fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
                 .unwrap_or_default(),
             expected_api_calls: Vec::new(),
             origin: calxgloss_types::CaseOrigin::Generated,
+            // Prompt-side summary: the complexity data carries no case
+            // kind to preserve, so none is invented (issue #418).
+            case_kind: None,
         })
         .collect();
 

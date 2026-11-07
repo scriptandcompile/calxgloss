@@ -29,6 +29,7 @@ fn sample_request() -> TranslationRequest {
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
             TestCase {
                 inputs: json!({"x": 0, "y": 0}),
@@ -36,6 +37,7 @@ fn sample_request() -> TranslationRequest {
                 expected_side_effects: vec![],
                 expected_api_calls: vec![],
                 origin: calxgloss_types::CaseOrigin::Generated,
+                case_kind: None,
             },
         ],
     }
