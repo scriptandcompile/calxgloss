@@ -2424,6 +2424,93 @@ MYUNIT FUN_1800014a0: mismatch, expected 7 got 8
         ));
     }
 
+    /// Fixture: the everquest workspace's actual runner output (issue
+    /// #442). Re-running `cargo run` in the scratch test project that the
+    /// 2026-11-07 live run left for `sub_401033` (workspace path
+    /// `scratch/LaunchPad_exe_sub_401033_1794053400989892`) produced this
+    /// text. It is that run's stderr and stdout combined the way
+    /// `cargo::run_test_runner` hands them to the parser. The generated
+    /// runner called the zero-argument `extern "system"` unit with one
+    /// positional argument. The test project — the harness's own file —
+    /// never built, so the runner printed no rows. The old gate read that
+    /// shape as a phantom compile failure. Each unit burned three
+    /// `compile_fix` attempts before issue #440 retired that reading, and
+    /// this fixture pins what the parser sees under it.
+    fn everquest_runner_output_fixture() -> &'static str {
+        r#"warning: function `dllmain_dispatch` is never used
+   --> /home/arthur/Programming/Personal_Projects/everquest/calxgloss/scratch/pal/src/stub_content.rs:486:20
+    |
+486 | extern "system" fn dllmain_dispatch(
+    |                    ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `calxgloss-verify-pal` (lib) generated 1 warning
+   Compiling LaunchPad_exe_verify v0.1.0 (/home/arthur/Programming/Personal_Projects/everquest/calxgloss/scratch/LaunchPad_exe_sub_401033_1794053400989892)
+error[E0061]: this function takes 0 arguments but 1 argument was supplied
+   --> src/main.rs:284:56
+    |
+284 |         Value::Array(arr) if arr.len() == 1 => to_json(sub_401033(json_arg(&arr[0], 0)?)),
+    |                                                        ^^^^^^^^^^ --------------------- unexpected argument
+    |
+note: function defined here
+   --> src/lib.rs:8:24
+    |
+  8 | pub extern "system" fn sub_401033() -> core::ffi::c_int {
+    |                        ^^^^^^^^^^
+help: remove the extra argument
+    |
+284 -         Value::Array(arr) if arr.len() == 1 => to_json(sub_401033(json_arg(&arr[0], 0)?)),
+284 +         Value::Array(arr) if arr.len() == 1 => to_json(sub_401033()),
+    |
+
+warning: unused import: `pal`
+ --> src/main.rs:2:5
+  |
+2 | use pal::*;
+  |     ^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0061`.
+warning: `LaunchPad_exe_verify` (bin "sub_401033_runner") generated 1 warning
+error: could not compile `LaunchPad_exe_verify` (bin "sub_401033_runner") due to 1 previous error; 1 warning emitted
+
+"#
+    }
+
+    #[test]
+    fn the_everquest_workspaces_runner_output_reads_as_no_rows_and_no_death_signal() {
+        let output = everquest_runner_output_fixture();
+
+        // Not JSON rows: no line carries the bracket the runner's row
+        // array starts with.
+        assert!(
+            !output.lines().any(|line| line.starts_with('[')),
+            "a line of the workspace's output reads as a JSON result row"
+        );
+        // Not a death signal: nothing in it names a fatal signal, so the
+        // unit-crash arm stays closed.
+        assert!(
+            !parse::runner_death_signal(output),
+            "the workspace's output reads as a runner death signal"
+        );
+        // No result rows: with a suite to run, the parser reports none.
+        // Issue #440 routed this shape to the harness-error outcome.
+        let report = parse_test_results(output, &one_baseline_case());
+        assert!(
+            !report.produced_results,
+            "the workspace's run printed no result rows"
+        );
+        // The cargo text names which arm broke: the test project's build.
+        // The harness-error reason can then say whose code failed to
+        // build, while the verdict still refuses to blame the unit.
+        assert!(
+            output.contains("could not compile"),
+            "the workspace's output does not name the broken build"
+        );
+    }
+
     #[test]
     fn a_partial_suite_stops_when_the_runner_died_short_of_its_cases() {
         let cases = vec![

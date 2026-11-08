@@ -8,11 +8,13 @@
 //! pipeline-driven suite can honestly earn a `passed`. An arity the
 //! unit never had breaks the harness's own build — the verifier's
 //! failure, never the unit's verdict (issue #440 amended #416's stance
-//! that it surfaced as the unit's own compile failure). A panicking
-//! unit fails its case instead of the harness. And when a suite names
-//! no expected returns, the values dimension says it assessed nothing
-//! rather than claiming a match. Like this crate's other compile-backed
-//! tests, they hide behind `#[ignore]`:
+//! that it surfaced as the unit's own compile failure). A new test pins
+//! that outcome end to end for the everquest workspace's own shape: a
+//! zero-argument `extern "system"` unit and a one-element array case
+//! (issue #442). A panicking unit fails its case instead of the harness.
+//! And when a suite names no expected returns, the values dimension says
+//! it assessed nothing rather than claiming a match. Like this crate's
+//! other compile-backed tests, they hide behind `#[ignore]`:
 //!
 //! ```text
 //! cargo test -p calxgloss-verify --test positional_dispatch -- --ignored
@@ -136,6 +138,82 @@ async fn an_arity_the_unit_never_defined_is_a_harness_error_not_a_compile_failur
     );
     let filed: VerificationReceipt = persist::load_json(&pair).expect("the filed authority reads");
     assert_eq!(filed.verdict, VerificationVerdict::HarnessError);
+}
+
+/// Pin the everquest workspace's shape end to end (issue #442).
+///
+/// All three units of the 2026-11-07 live run hit this shape. A
+/// zero-argument `extern "system"` unit meets a mined case carrying a
+/// one-element positional argument array. The mismatch breaks the
+/// generated runner's build inside the scratch test project. The real
+/// gate answers with an error naming the mismatch. It files a
+/// `harness_error` pair, and the pair's reason quotes the build error.
+/// No `compile_failed` pair stands under the run's key.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
+async fn the_everquest_workspace_shape_answers_with_a_harness_error_pair() {
+    let body = "#[no_mangle]\npub extern \"system\" fn sub_401033() -> core::ffi::c_int { 0 }";
+    let mut mined_case = generated_case(json!([0]));
+    mined_case.case_kind = Some(calxgloss_types::CaseKind::Positive);
+    let work = tempfile::tempdir().expect("temp work dir");
+    let verifier = Verifier::new(work.path()).expect("verifier");
+    let error = verifier
+        .verify(
+            "LaunchPad.exe",
+            "sub_401033",
+            body,
+            &[mined_case],
+            &VerifyContext::default(),
+        )
+        .await
+        .expect_err("the workspace's broken-gate shape answers with an error, never a verdict");
+
+    // The hand-back quotes the build error in the generated runner —
+    // the harness's own file — naming whose code did not build.
+    let handed_back = error.to_string();
+    assert!(
+        handed_back.contains("this function takes 0 arguments but 1 argument was supplied"),
+        "the reason names the mismatch: {handed_back}"
+    );
+
+    let pair = verification_receipt_path(
+        work.path(),
+        &BinaryIdentity::new("LaunchPad.exe"),
+        "sub_401033",
+        1,
+    );
+    let filed: VerificationReceipt = persist::load_json(&pair).expect("the filed authority reads");
+    assert_eq!(filed.verdict, VerificationVerdict::HarnessError);
+    let reason = filed
+        .harness_error_reason
+        .as_deref()
+        .expect("the pair names which arm of the gate broke");
+    assert!(
+        reason.contains("this function takes 0 arguments but 1 argument was supplied"),
+        "the filed reason quotes the build error: {reason}"
+    );
+
+    // Nothing else stands under this (binary, function) key: the compile
+    // leg logged success, so no pair may claim the unit did not compile.
+    let unit_key = pair
+        .parent()
+        .expect("the pair files under a unit directory");
+    let filed_verdicts: Vec<VerificationVerdict> = std::fs::read_dir(unit_key)
+        .expect("the unit's receipt directory")
+        .filter_map(|entry| {
+            let path = entry.expect("directory entry").path();
+            (path.extension() == Some(std::ffi::OsStr::new("json"))).then(|| {
+                persist::load_json::<VerificationReceipt>(&path)
+                    .expect("a filed pair reads")
+                    .verdict
+            })
+        })
+        .collect();
+    assert_eq!(
+        filed_verdicts,
+        vec![VerificationVerdict::HarnessError],
+        "exactly one pair stands under the run's key, and it is never `compile_failed`"
+    );
 }
 
 /// A suite whose generated case carries arguments dispatches them
