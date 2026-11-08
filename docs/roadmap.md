@@ -51,22 +51,38 @@ dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
 has the fail-closed ledger that finally makes "this binary is done" a
 checkable claim instead of "the pipeline stopped with nobody complaining"
 (P26, after its durable-receipt half P25). The front of the table is now
-the P55–P56 block — an explicit priority call made on 2026-11-07, whose
-run-visibility half (P53) and scan-explosion half (P54) have since
-shipped: a wrong verification verdict still stands between the operator
-and a real end-to-end restitching run, and no older track blocks this
-block or depends on it. Below it, P27's hypothesis ledger leads the older
-tracks again; P27–P33 resolve stuck functions, strengthen evidence, or
-serve operations; none of them blocks another.
+P55, then the architecture-review enablers P57–P60, then P56: a wrong
+verification verdict still stands between the operator and a real
+end-to-end restitching run, and P57–P60 make P56's surface rewrite and
+3,097-line test retarget cheap — run P56 first and it re-encodes at the
+new seam the hardcoded-conformance-unknown hazard the 2026-11-08 review
+flagged. Below P56 sit P61 and P62, the batch protocol and the retry
+settle, on which P27 otherwise builds twice. Then P27's hypothesis ledger
+leads the older tracks again, and the rest of the review's tracks sit
+just ahead of the track that would otherwise pay their duplication twice
+(P64 ahead of P28, P46 and P51; P65 ahead of P29 and P51; P63 ahead of
+P47; P66 behind P56 and ahead of P31 and P52). P27–P33 resolve stuck
+functions, strengthen evidence, or serve operations; none of them blocks
+another. P67 sits last: it is conditional, scheduled only if P61 leaves
+the pipeline header still churning.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P55 | Honest verdicts when the test runner breaks — "Compilation successful" followed by "Could not parse test results" and "tests never ran" hit every unit of one live run; a runner parse failure is never a compile failure, and the runner's output stays diagnosable from the log | pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | filed as issue, not specced | [#427](https://github.com/scriptandcompile/calxgloss/issues/427) |
+| P57 | Delete the pass-throughs and dead copies — six padding surfaces: the 131-`pub use` facade crate, a 542-line dead stub mirror in `calxgloss-verify`, `calxgloss-sync` setters and aliases nothing calls, a character-identical `landed_state` copy in web, and the hand-printed serve banner already 7 routes stale; ~1,500 lines gone, zero behaviour lost | shared (`calxgloss`, `calxgloss-types`) + pipeline (`calxgloss-verify`, `calxgloss-sync`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
+| P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
+| P59 | One review-surface reader over the record tree — shared record modules gain `path` + `read` with named faults (missing · corrupt · tampered); one web-side reader owns the record-tree reads and the live-merge fold; the 8 hardcoded `unknown()` surfaces collapse into one honest read | shared (`calxgloss-types`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
+| P60 | A deep test adapter for the review surfaces — a test-support module at the seam production uses: one world boot, a typed client and event emitter, fixtures written by the record writers, 354 fixed sleeps replaced by event-applied waits | interface (`calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and retarget the 3,097 lines of terminal-agreement tests at the model | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07, not filed, not specced | — |
+| P61 | One batch protocol, the queue source as adapter — one `run_batch(binary, plan)` owns the prologue, the four-arm unit gate, the ledger folding and the unknown-residue reset today duplicated in `batch_run.rs` and `callgraph_plan.rs` (~300 lines absorbed) | pipeline (`calxgloss-translator`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
+| P62 | One constructor settles what the retry loop consumes — `RetryRun::settle(unit, scope, seam)` returns posture + hints + residue as one value instead of `RetryLoopCtx`'s ten pub fields with the ordering carried by comments; the document reads ride the projector seam | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
+| P64 | Let each evidence engine own its descriptor row — engine crates implement a small `ScanEngineSpec` beside their own persistor and `scan_rows()` collects the specs; 15 bespoke row builders, 9 type-erasing aliases in `scan_registry.rs` and the 3 roster pins collapse to one | pipeline (`calxgloss-translator`) + evidence (scan engines) + integrations (`calxgloss-prompts`) + interface (`calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P28 | Masked byte search at the seam — `search_bytes(pattern, mask)` with wildcard hex and a bit mask, giving the `consts`/`serialize` magic-number scans real matches instead of guesses | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + evidence (`calxgloss-consts`, `calxgloss-serialize`) | — | ⬜ not started | not specced | — |
+| P65 | One call-bodies module feeds the nine cross-function readings — one module owns the kept-body call edges, the concurrent-reachability gate and the shared name rule, re-derived nine times across 7,891 lines of `cross_function.rs`; sync's 26.4M-pair nested loop indexes by lock pair | evidence (`calxgloss-sync`, `calxgloss-memory`, `calxgloss-callback`, `calxgloss-errhandling`, `calxgloss-algorithm`, `calxgloss-typeinfer`, `calxgloss-stringctx`, `calxgloss-controlflow`, `calxgloss-libmatch`, `calxgloss-globalstate`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P29 | Ad-hoc call-path / def-use primitive at the seam — trace "how does this value reach this call" over the kept bodies on demand, so `escalate` retries get targeted answers without a full re-scan | integrations (`calxgloss-decomp`, `calxgloss-kuna`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P30 | PE artifact-intelligence pass — block-entropy and debug-directory/note triage turn packing classification into measured evidence, per-subject content digests, and a before/after PE inventory diff as a restitch equivalence tripwire | evidence (`calxgloss-analysis`) + shared (`calxgloss-types`) + pipeline (`calxgloss-verify`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
+| P66 | Commands own their flag sets; `main()` shrinks to a dispatch — each command declares its own clap struct in its own module; 564 lines of untested `main()` and the 1,039-line `Command` enum become parse → fold → one dispatch, runtime written once | interface (`calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P31 | Deepen `calxgloss doctor` — read-only, scopable (`--target/--endpoint/--config`), checking LLM endpoint reachability, config validity, PE magic, cache writability, git/cargo presence; `scope_checks` vs `informational_checks`, JSON, exit codes | interface (`calxgloss-cli`, `calxgloss-reports`) + shared (`calxgloss-config`) | — | ⬜ not started | not specced | — |
 | P32 | Contributor skill for driving the harness + doctrine — a routing-shaped SKILL.md for the 23-command CLI with per-evidence-engine references, the don't-repeat / remediation-literalism rules in `AGENTS.md`, and dated doc-claim pinning for version skew | — (docs + skills, no crate) | — | ⬜ not started | not specced | — |
 | P33 | Whole-task measurement harness — benchmark pipeline tasks end to end (tokens, RSS, ms) with an oracle independent of the implementation, counting discovery, retries, and continuations in every token claim | — (dev-side experiment harness, no crate) | — | ⬜ not started | not specced | — |
@@ -77,12 +93,14 @@ serve operations; none of them blocks another.
 | P44 | Baseline capture provenance + live-oracle hybrid — stamp `baseline.json` with DLL sha256, the `preflight_wine` Wine version, the harness load base, and the target triple; on a failing test re-run the Wine capture on demand and diff against `baseline.json`, telling "translation broke" from "recording rotted" for one Wine process per case | pipeline (`calxgloss-testgen`, `calxgloss-verify`) + shared (`calxgloss-types`) | — | ⬜ not started | not specced | — |
 | P45 | Typed untrusted data on the bundle→prompt path — an `Untrusted<T>` wrapper that fails deserialization without its flag, plus a control/bidi/zero-width sanitizer with visible truncation, on the evidence-bundle sections the P36 templates render; adversarial-string e2e tests through the decomp→prompt path | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P46 | Engine-seam assurance — contract-test the seam so Kuna upgrades fail at the seam not in a pipeline run; record the fixture DLL's scan output as JSON at the pinned Kuna rev, replay it in workspace tests, and drift-check it at every pin bump; named stale-identity fields with one named repair command, a checkpoint-vs-watermark staleness probe, and a `reason:` beside every engine/capability decision | integrations (`calxgloss-kuna`, `calxgloss-decomp`, `calxgloss-testfixtures`) | — | ⬜ not started | not specced | — |
+| P63 | Commit an accepted unit once, at the git seam — one `commit_accepted_unit` operation in `calxgloss-git` replaces the 70-line callback pasted in `auto.rs` and `batch_translate.rs`, names the dependency-refusal error the git crate today hides as a name-syntax error, and pins the #413 receipt-pair invariant with a test | pipeline (`calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P47 | Staleness by content hash — stamp each accepted unit with a "made-from" digest of the decompile plus its callees and re-check against observed hashes; the engine-identity cache key (ADR-0055) and bdiff pair whole binaries, but nothing yet notices one function's decompile drifting inside a pinned version | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) | — | ⬜ not started | not specced | — |
 | P48 | Mechanical pre-refusal before the first model call — length/range/ABI sanity and FFI-harness expressibility checked by pure code; units the harness cannot express (struct-by-value exports today) are refused-and-recorded with reason instead of churning the compile+test loop | pipeline (`calxgloss-translator`, `calxgloss-testgen`) | — | ⬜ not started | not specced | — |
 | P49 | Counterexample ordering + verdict honesty rules — feed the smallest disagreeing inputs first, sorted by input size and capped; ">50% unevaluable → no verdict" and "inputs don't reach the logic" as named outcomes on `VerificationResult` | shared (`calxgloss-types`) + pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | not specced | — |
 | P50 | Cost as a first-class number — per-attempt cost metering on the attempt records, config-level budgets with a clean stop, and a pre-run estimate that pauses before each batch, built from the existing `token_usage` history | shared (`calxgloss-config`) + pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-reports`) | — | ⬜ not started | not specced | — |
 | P51 | Evidence-computed confidence, model self-assessment ignored — score name/type suggestions by counting the independent engine evidence kinds that agree, instead of parsing the model's claimed confidence out of the response | pipeline (`calxgloss-translator`, `calxgloss-llm`) + evidence (scan engines) | — | ⬜ not started | not specced | — |
 | P52 | Small discipline steals bundle — `--json` printing the result structs' serde JSON from the same definition as the help text; a generated command reference from the clap enum + ADR-0052 rows; bundle-section size/pagination caps as protocol constants; per-slot `origin+version` stamps making ADR-0021's "never overrule" a predicate; prompt-hash provenance per attempt; one exit-criterion test per specced roadmap P; "name the dependents, *then* ask" previews before destructive review actions | interface (`calxgloss-cli`, `calxgloss-web`, `calxgloss-reports`) + pipeline (`calxgloss-translator`) + docs | — | ⬜ not started | not specced | — |
+| P67 | Split the pipeline state by role, not impl blocks — the 27-field `TranslationPipeline` header (97 churns in 6 weeks) gives way to scan-phase / batch-loop / unit-path adapters owning their own fields and imports | pipeline (`calxgloss-translator`) | — | ⬜ not started | conditional — decide after P61 lands; schedule only if the header still churns | — |
 
 **P40–P41 are product gaps found by the 2026-10-28 plain-English sweep**:
 features the docs, tests, or UI promise that the code never delivers. Each
@@ -122,6 +140,25 @@ before P31 saves rework, since P31 would deepen `doctor`'s terminal
 report inside the very crate P56 strips; P30, P50 and P52 also touch
 that crate and inherit the same ordering benefit.
 
+**P57–P67 are the improvement candidates from the [2026-11-08
+architecture review](reviews/architecture-review-2026-11-08.html)** (two
+codebase walks over the 6-week churn hot spots; the review rated
+candidates 1–5 strong and 6–11 worth exploring). They are scheduled
+interleaved, each just ahead of the track that would otherwise pay its
+duplication twice: P57 first and cheapest — pure subtraction, and every
+track that adds a type stops paying a facade line; P58–P60 ahead of P56,
+which rewrites the same web surface and retargets 3,097 lines of
+conformance tests — running P56 before the shared record-read seam and
+the test adapter would ship the review's unknown-hardcoding hazard
+straight into the retargeted tests; P61 and P62 ahead of P27 (and P61
+ahead of P48 and P50, whose new gate steps land in the batch protocol);
+P64, P65 and P63 just before P28/P46/P51, P29/P51 and P47; P66 behind
+P56, which deletes the command and the accept prompt it would otherwise
+migrate. None reopens a settled decision: P58 keeps ADR-0061 exactly,
+P59 makes ADR-0060's one-derivation rule structural, P65 extends
+ADR-0062, and P63's who-drives-the-commit question is left to spec time
+under ADR-0050's assembly rule.
+
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
 ## P27 — Hypothesis ledger for the retry loop (pipeline + interface)
@@ -154,7 +191,10 @@ for ticketing: the DLL lane — declared mappings correlating the baseline
 values and the ordered API-call trace (P22) against the filed static
 evidence — is specced now; the `exit`/`filesystem` correlation and the
 blame ranking have their record side since P24 shipped (ADR-0059) and stay
-held out of the spec's scope until the DLL lane lands.
+held out of the spec's scope until the DLL lane lands. Blocked by (as
+rework, 2026-11-08 review): P61 and P62 — the ledger files evidence into
+a batch loop that exists twice today, and it extends retry-loop inputs
+whose ordering lives only in comments.
 
 ## P28 — Masked byte search at the seam (integrations + evidence)
 
@@ -167,9 +207,10 @@ coverage fields. `calxgloss-consts` and `calxgloss-serialize` then match
 their magic-number and format-sniffing candidates against real hits instead
 of statistical guesses, strengthening the bitflag, enum, and format
 evidence in every downstream prompt. The track sits off the main track
-chain: it depends on no other track and no other track depends on it — its
-value is purely evidence quality. Source:
-[31](research/rea/31-deep-native-analysis.md) steal 1, README #4.
+chain: its value is purely evidence quality. Source:
+[31](research/rea/31-deep-native-analysis.md) steal 1, README #4. Blocked
+by (as rework, 2026-11-08 review): P64 — a new scan capability otherwise
+touches five tables per engine.
 
 ## P29 — Ad-hoc call-path / def-use primitive at the seam (integrations + pipeline)
 
@@ -184,7 +225,8 @@ reached and the expansion ran out unresolved, the primitive reports
 unknown ledger names the question, and this primitive is part of how a
 retry answers it. Source:
 [31](research/rea/31-deep-native-analysis.md) steal 4. Pairs with: P21 (consumption
-side).
+side). Blocked by (as rework, 2026-11-08 review): P65 — the primitive
+traces over the kept-body call edges the shared module owns.
 
 ## P30 — PE artifact-intelligence pass (evidence + shared + pipeline + interface)
 
@@ -214,7 +256,10 @@ It splits `scope_checks` (these decide `healthy` and the exit status) from
 `informational_checks`, and adds `--json` so CI and agents can gate on the
 task's scope. It pairs with P20's seam capability report: together they
 form the operator-facing half of the same honesty surface. Source:
-[35](research/rea/35-skills-and-agent-layer.md) steal 2, README #8.
+[35](research/rea/35-skills-and-agent-layer.md) steal 2, README #8. Blocked
+by (as rework): P56 (avoiding terminal report code P56 deletes, noted in
+the block above) and P66 (2026-11-08 review) — the new `doctor` flags
+land in one command module instead of 6–7 files.
 
 ## P32 — Contributor skill for driving the harness + doctrine (docs + skills)
 
@@ -366,7 +411,8 @@ program, and a `reason:` string beside every engine/capability decision.
 Source:
 [31](research/kraken/31-analysis-engines.md) steals 1–5,
 [37](research/kraken/37-inference-corpus-eval.md) steal 3, README #5.
-Blocked by (as a runner): P42.
+Blocked by (as a runner): P42; (as rework, 2026-11-08 review): P64 — a
+per-engine contract test otherwise reads five tables per engine.
 
 ## P47 — Staleness by content hash for accepted units (shared + pipeline)
 
@@ -380,7 +426,9 @@ recompute staleness against observed hashes on the next open; a stale
 accepted unit becomes visible evidence, in P21's terms, not a silent
 assumption. Pairs with P26: a closure verdict should be able to say its
 units are still fresh. Source:
-[36](research/kraken/36-rewrite-pipeline.md) steal 4, README #6.
+[36](research/kraken/36-rewrite-pipeline.md) steal 4, README #6. Blocked
+by (as rework, 2026-11-08 review): P63 — the made-from digest gets
+stamped at the accepted-unit commit site, a callback pasted twice today.
 
 ## P48 — Mechanical pre-refusal before the first model call (pipeline)
 
@@ -395,7 +443,9 @@ ABI-fits-registers pre-check and its pure-code patch-plan `validate` are
 the model. Source:
 [35](research/kraken/35-emulation-patching.md) steal 3,
 [36](research/kraken/36-rewrite-pipeline.md) steal 6, README #7.
-Pairs with: P26 (a refusal is a recorded disposition).
+Pairs with: P26 (a refusal is a recorded disposition). Blocked by (as
+rework, 2026-11-08 review): P61 — the pre-attempt step lands in the
+batch gate, whose protocol exists twice today.
 
 ## P49 — Counterexample ordering + verdict honesty rules (shared + pipeline)
 
@@ -420,7 +470,9 @@ pauses before each batch — cheap to build from the existing
 `token_usage.json` history. Distinct from P33: P33 measures what a task
 costs; this track refuses to start runs that cannot pay. Source:
 [34](research/kraken/34-ai-assistant-agents-safety.md) steal 2,
-[36](research/kraken/36-rewrite-pipeline.md) steal 7, README #10.
+[36](research/kraken/36-rewrite-pipeline.md) steal 7, README #10. Blocked
+by (as rework, 2026-11-08 review): P61 — budget is one of the four gate
+arms pasted into each batch-loop copy.
 
 ## P51 — Evidence-computed confidence, model self-assessment ignored (pipeline + evidence)
 
@@ -432,7 +484,9 @@ counting game real: score name/type suggestions by how many independent
 engine evidence kinds agree, and stop parsing confidence claims out of the
 response. Pairs with P21: the severity on an unknown record can stand on
 the same evidence count. Source:
-[34](research/kraken/34-ai-assistant-agents-safety.md) steal 3, README #11.
+[34](research/kraken/34-ai-assistant-agents-safety.md) steal 3, README #11. Blocked
+by (as rework, 2026-11-08 review): P64 and P65 — per-engine evidence
+counting lands on the descriptor rows and the shared name rule.
 
 ## P52 — Small discipline steals bundle (interface + pipeline + docs)
 
@@ -455,7 +509,9 @@ time; nothing here changes pipeline shape. Source:
 [33](research/kraken/33-automation-command-registry.md) steals 1–3,
 [36](research/kraken/36-rewrite-pipeline.md) steal 8,
 [37](research/kraken/37-inference-corpus-eval.md) steal 4, README #12.
-Blocked by (as a runner): P42 (the exit-criterion tests).
+Blocked by (as a runner): P42 (the exit-criterion tests); (as rework,
+2026-11-08 review): P66 — the generated command reference wants each
+command's own clap struct.
 
 ## P55 — Honest verdicts when the test runner breaks (pipeline)
 
@@ -508,4 +564,215 @@ crate — doing P56 first avoids growing terminal report code P56 would
 then delete. Review done 2026-11-07; not yet filed as an issue. Blocks
 (as rework cost, not design): P30, P31, P50, P52 — each touches
 `calxgloss-reports`, and doing P56 first shrinks the surface they
-touch. Blocked by: P53 (shipped, ADR-0061, tickets #428–#431).
+touch. Blocked by: P53 (shipped, ADR-0061, tickets #428–#431); and, as
+rework cost (2026-11-08 review), by P59 and P60 — the retargeted tests
+and the web payload land on their seam, so P56 runs after them.
+
+## P57 — Delete the pass-throughs and dead copies (shared + pipeline + interface)
+
+**Six surfaces carry pure interface padding.** The facade crate
+`crates/calxgloss/src/lib.rs` (449 lines, 131 `pub use`, one consumer)
+logged 64 changes because every new type needs a line there;
+`calxgloss-verify/src/stubs.rs` (542 lines) is a dead mirror whose live
+copy is `calxgloss-pal/src/stub_content.rs`; `calxgloss-sync` exports 12
+`with_*` setters and 21 type aliases nothing calls;
+`calxgloss-web/src/server/unknown_actions.rs:144–152` duplicates
+`calxgloss-types/src/unknowns.rs:677–685` character-for-character; and
+`calxgloss-cli/src/commands/serve.rs:96–115` hand-prints an endpoint list
+already missing 7 of 71 routes. Straight subtractions: delete the dead
+mirror and the padding, call the shared `landed_state`, generate the
+banner from the route table, and shrink or drop the facade — the CLI
+already depends on the real crates, so the facade either goes or becomes
+real (one assembly entry point, ~10 names). ~1,500 lines gone, zero
+behaviour lost, and every remaining track stops paying the facade line
+for each new type. The deletion test passes at each site: removing one
+scatters nothing. Source: 2026-11-08 architecture review, candidate 5
+(strong). Blocks: nothing — the cheapest item, first.
+
+## P58 — One live-view store at a real seam (interface + shared)
+
+**One unit's live state crosses three type definitions and two crates,
+and its honesty rules are written three times.** The store —
+`ProgressState`, `ScanRecord`, `ProgressEntry`, `on_event` at
+`calxgloss-web/src/server/mod.rs:356–950` — is 570 lines buried in the
+file that also holds all 69 routes; ADR-0061's unknown-never-zero edge
+and the pass-boundary clear exist twice in Rust and again in browser JS,
+pinned by 185 e2e tests over HTTP and zero unit tests on the store, and
+`/api/progress` demands a required `retry_strategy` String where every
+other surface makes it optional. Extract it to its own module:
+`apply(&ProgressEvent)` in, the shared `LiveTranslationState` out (one
+atomic snapshot; the 8 locks become internal); delete `ProgressInfo` and
+`ScanRecord`; move the route table to its own file. Store rules then get
+direct unit tests — no router, no port, no sleeps — and `mod.rs` drops
+from 1,451 to ~880 lines. The extraction keeps ADR-0061 exactly as
+decided: scan records live in memory and are persisted nowhere. Source:
+candidate 1 (strong). Blocks (as rework, not design): P56 (it builds its
+payload in the same file), P59 (its merge fold consumes the store's
+view).
+
+## P59 — One review-surface reader over the record tree (shared + interface)
+
+**The shared crate names where records live but owns almost no reading,
+so every consumer guesses the shape.** The classification record is read
+five different ways with five corrupt-file policies (reports
+`builder.rs:1065`, `view.rs:324`, web `types.rs:2079` + `:1696`,
+`cli/utils.rs:172`); the live-merge fold is pasted twice in
+`handlers/api.rs`; and 8 of 9 web surfaces fill the conformance field
+with a hardcoded `UnitObligation::unknown()` — an honest reading would
+render unknown on 8 of 9 surfaces and no test would notice. Each shared
+record module gains `path` + `read` with named faults (missing · corrupt
+· tampered), the pattern the obligations and unknowns records already
+have; a web-side review-surface reader owns the record-tree reads and
+the single merge fold; handlers receive it instead of a repo path plus
+raw filesystem access. ADR-0060's "surfaces render; none computes a
+second derivation" becomes structural instead of a convention, a serde
+rename breaks one reader instead of six, and every record the roadmap
+adds — P27's hypothesis ledger, P47's staleness stamp — crosses the seam
+for free. This was the review's top recommendation. Source: candidate 2
+(strong). Blocks (as rework, not design): P56, P27.
+
+## P60 — A deep test adapter for the review surfaces (interface)
+
+**The e2e family is the repo's biggest test investment and every test
+rebuilds the world by hand.** 16.7k lines under `calxgloss-web/tests/`,
+185 tests, a 1,919-line harness with 0 tests in it; 186 repo boots, 167
+hand-written `json!` fixtures that describe one document three times over
+(look-alike keys beside the real producer and reader structs), and 354
+fixed sleeps — a flaky-sleep fix is one of the file's recent commits
+(ce41f1d). Build one test-support module at the seam production uses:
+the world built once, a typed client plus an event emitter handed back;
+fixtures come from the record writers, not from `json!`; sleeps become
+event-applied waits. Each ADR-0060/0061 honesty pin becomes a short
+test, the boot preamble appears zero times in test bodies, and two
+adapters justify the seam — a real server in production, the same seam
+in tests. Source: candidate 4 (strong), paired with P59. Blocks (as
+rework, not design): P56 (its 3,097-line test retarget), P42 as a runner
+(354 sleeping tests make a fresh CI green-to-red roulette).
+
+## P61 — One batch protocol, the queue source as adapter (pipeline)
+
+**The two batch bodies run the same twelve-step protocol twice.**
+`batch_translate` (`calxgloss-translator/src/pipeline/batch_run.rs:11–296`)
+and `batch_translate_from_callgraph` (`callgraph_plan.rs:278–580`) each
+carry the prologue, the four-arm unit gate (stop → budget → paused →
+control, pasted at `batch_run.rs:57–86` and `callgraph_plan.rs:332–361`),
+the ledger folding, and the unknown-residue reset documented at
+`pipeline.rs:250–266` — each loop pinned only by its own tests, so a step
+added to one passes CI while the other goes untested. One
+`run_batch(binary, plan)` holds prologue, per-unit gate and epilogue; the
+queue source (functions-list plan vs call-graph plan) becomes the only
+adapter. ~300 lines of duplicated protocol absorbed; gate order and
+ledger folding each get one pin. The deletion test points the same way:
+the second copy concentrates — a real module never factored out. Source:
+candidate 3 (strong). Blocks (as rework, not design): P27 (the ledger
+files evidence in the batch loop — twice otherwise), P48, P50.
+
+## P62 — One constructor settles what the retry loop consumes (pipeline + interface)
+
+**`RetryLoopCtx` is load-bearing but shallow.** Ten pub fields
+(`retry/retry_loop.rs:30–58`) whose real interface is the pre-call
+ordering the caller must obey — carried by comments at
+`translate_unit.rs:632–675` — plus a hand-written `Pin<Box<dyn Future +
+Send>>` spelling that leaks to `cli/translate.rs:153` and
+`web/actions.rs:690`, and `retry/helpers.rs` `load_*` helpers that
+re-open the batch's own documents beside the projector seam with a
+different corrupt-file tolerance in the same crate. A unit-scoped
+`RetryRun::settle(unit, scope, seam)` returns the settled posture —
+posture + hints + residue — as one value; the document reads ride the
+AnalysisDoc rows the batch already loads. The loop cannot be entered
+half-settled, one corrupt-file policy holds per document, and the hints
+mappers stay (they pass the deletion test). Source: candidate 10 (worth
+exploring). Blocks (as rework, not design): P27.
+
+## P63 — Commit an accepted unit once, at the git seam (pipeline + interface)
+
+**The Accept-into-codebase commit sequence is a CLI-side callback pasted
+twice.** `auto.rs:256–325` and `batch_translate.rs:192–261` run the same
+70-line block (edited together 17× in 6 weeks); both swallow refused
+branches and conflicted merges in an `if let Ok(..)`, and an unmet merge
+dependency arrives as `TypesError::InvalidBranchName`
+(`calxgloss-git/src/git_manager.rs:312–320`) — "fix the name" and "merge
+the dependency first" share one error variant. The #413 receipt-pair
+invariant is pinned by prose comments, not a test. One git-crate
+operation — `commit_accepted_unit(result, prefix)` — owns branch policy,
+receipt staging, the message, the merge outcome and a real
+dependency-refusal error; the two call sites become one line, and
+`GitManager::repo()` (handed out `&git2::Repository` 98×, 75 outside the
+git crate) shrinks toward zero. Whether the translator or the CLI drives
+it follows ADR-0050's assembly rule — a decision for spec time. Source:
+candidate 9 (worth exploring). Blocks (as rework, not design): P47.
+
+## P64 — Let each evidence engine own its descriptor row (pipeline + evidence + integrations + interface)
+
+**Understanding one evidence engine means reading five tables across
+four crates.** `calxgloss-translator/src/scan_registry.rs` (1,373 lines,
+no test module) holds 15 bespoke row builders that restate what each
+engine already exports — each even rebuilds its own persistor twice —
+beside the projector's 15 `AnalysisDoc` impls, the prompts crate's 20
+`Info` structs, and 4,301 lines of per-engine CLI files; the roster is
+pinned three times (`pipeline/tests.rs:4855`, `adapters.rs:1019`,
+`scan_command.rs:1411`). Each engine crate implements a small
+`ScanEngineSpec` (name, document path, facets, scan, save, findings
+count) beside its own persistor; `scan_rows()` collects the specs and
+stays deep where only the table decides — ordering, latches, the cap.
+The row-reader interface drops from 9 aliases + 12 fields + 4 message
+strings to one trait of ~6 members; ~480 lines of row builders collapse
+into the engines they describe; three roster tests become one; ADR-0052's
+"one CLI scan command rides the registry's rows" keeps working, cheaper.
+Source: candidate 8 (worth exploring). Blocks (as rework, not design):
+P28, P46, P51.
+
+## P65 — One call-bodies module feeds the nine cross-function readings (evidence)
+
+**"Which bodies could run at once, and which spelled name could stand
+for one object in two bodies?" has no module.** Nine `cross_function.rs`
+files (7,891 lines: sync 1,791, memory 1,332, callback 1,036, errhandling
+1,002, algorithm 845, typeinfer 748, stringctx 506, controlflow 359,
+libmatch 272) answer it nine ways: the concurrent-reachability gate
+exists once (`calxgloss-sync/src/cross_function.rs:395–467`) while the
+other engines derive their own walks (`controlflow:140–157` builds its
+own `call_edges`), three copies of `is_ident_byte` (`cscan.rs:264`,
+`algorithm:364`, `sync:690`) prove the name rule already drifted, and
+issue #433's name fixes have to be re-ported per crate. One module owns
+the kept-body call edges, the reachability gate and the shared name rule
+(`is_global_name`, today consumed cross-crate from
+`calxgloss-globalstate/detector.rs:475`); each reading takes a `Gate`
+instead of deriving one, and sync's lock-order pass indexes by lock pair
+— the nested pair loop over gated pairs (`sync/cross_function.rs:189–228`,
+26.4M pairs on LaunchPad.exe) goes away. Extends ADR-0062 rather than
+contradicting it: the ADR's rules have exactly one implementation today
+and eight divergent neighbours. Source: candidate 7 (worth exploring).
+Blocks (as rework, not design): P29, P51.
+
+## P66 — Commands own their flag sets; main() shrinks to a dispatch (interface)
+
+**The dispatcher is the repo's second-shallowest mass.** `main()` runs
+564 untested lines — 31 match arms, 19 inline runtime blocks, 14
+`resolve_workspace` calls — in front of an already-deep, well-pinned
+settings fold; the `Command` enum spans 1,039 lines, `cli_types` and
+`main` co-churned 46 commits, and one settings key fans across 6–7
+files. Each command declares its own clap struct in its own module,
+`try_parse` testable in place; `main()` becomes parse → fold → one
+dispatch, with runtime and workspace resolution written once; the
+settings fold stays untouched — it is already the deep part. The
+deletion test: 20 runtime/workspace copies → 1. Schedule it behind P56,
+which deletes the `dashboard` command and the interactive accept prompt
+— migrating them first is wasted work. Source: candidate 11 (worth
+exploring). Blocked by: P56. Blocks (as rework, not design): P31, P52.
+
+## P67 — Split the pipeline state by role, not impl blocks (pipeline) — conditional
+
+**The nine-file pipeline split is file-splitting on one 27-field
+struct.** The 406-line `pipeline.rs` header holds every import behind 9
+`use super::*` globs and an `allow(unused_imports)`, so any submodule
+needing a type edits the header — commit d00b2d0 changed it by one `use`
+line — which is how a 4-method file became the repo's hottest (97 changes
+in 6 weeks), and two submodules poke `unknown_residue` directly
+(`batch_run.rs:45`, `callgraph_plan.rs:319`). Group the fields by what a
+batch actually needs (scan phase / batch loop / unit path); each becomes
+an adapter owning its fields and imports, the residue reset becomes an
+owned operation, and 68 methods stop sharing all 27 fields by
+visibility. Conditional: P61 absorbs most of the protocol duplication
+first — re-measure the header's churn after P61 lands and schedule this
+only if it still hurts. Source: candidate 6 (worth exploring). Blocked
+by: P61 (a decision point, not a design dependency).
