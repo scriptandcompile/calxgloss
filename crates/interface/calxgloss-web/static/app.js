@@ -28,6 +28,7 @@ import {
     toggleQueueSelect,
     setAllQueueSelected,
     runBatchAction,
+    applyQueueLiveReading,
 } from "./js/queue.js";
 import { GraphRenderer } from "./js/graph.js";
 import { exportGraphSVG, exportGraphPNG } from "./js/graph-export.js";
@@ -337,6 +338,7 @@ function handleWSMessage(event) {
     // already drives everything below, so the record itself stops here.
     if (event.event === "unit_phase") {
         applyUnitPhase(event.unit);
+        applyQueueLiveReading(event.unit);
         return;
     }
 

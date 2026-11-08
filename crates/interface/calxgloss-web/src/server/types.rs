@@ -586,6 +586,20 @@ pub struct QueueEntry {
     /// zero; only `open: []` is the honest known-and-none.
     #[serde(default)]
     pub unknowns: UnitUnknowns,
+    /// The live reading the run in flight has for this unit (issue #431). An
+    /// in-flight unit reads with its current pipeline phase, as the progress
+    /// store recorded it (e.g. `llm_call`). A unit the run finished without
+    /// failing reads as `awaiting_review`; one that failed reads `failed`,
+    /// and one the run cancelled reads `cancelled`. This field rides beside
+    /// [`status`](Self::status), never inside it. Live traffic never rewrites
+    /// the review status the git-backed record says. The two fields stay two
+    /// fields so neither can take on the other's meaning — the separation
+    /// issue #363 pinned for retry strategy and batch outcome. A unit the run
+    /// never touched carries no live reading at all. An older payload without
+    /// this field still deserializes: absence reads as no live reading, never
+    /// as an idle or stuck state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_state: Option<String>,
 }
 
 impl QueueResponse {
@@ -607,6 +621,10 @@ impl QueueResponse {
                 stale: u.stale.to_string(),
                 blocked: matches!(u.status, ReviewStatus::Blocked),
                 unknowns: u.unknowns.clone(),
+                // The git-backed build carries no live reading. The queue
+                // handler adds a run's live readings only where the progress
+                // store is reachable (issue #431).
+                live_state: None,
             })
             .collect();
 
@@ -2189,5 +2207,32 @@ mod tests {
 
         let back: HealthResponse = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, health);
+    }
+
+    /// A queue payload built without the live-reading field still parses, and
+    /// its absence reads as *no live reading* — never as an idle, stuck, or
+    /// awaiting state (issue #431). A row with no live reading also never
+    /// puts the field on the wire.
+    #[test]
+    fn queue_entry_without_live_state_reads_as_no_live_reading() {
+        let pre_issue_431 = serde_json::json!({
+            "id": "game_logic.dll/DrawPrimitive/v2",
+            "name": "Translate DrawPrimitive",
+            "kind": "Function Translation",
+            "binary": "game_logic.dll",
+            "function": "DrawPrimitive",
+            "status": "pending_review",
+            "stale": "fresh",
+            "blocked": false,
+        });
+        let entry: QueueEntry =
+            serde_json::from_value(pre_issue_431).expect("an older queue entry still parses");
+        assert_eq!(entry.live_state, None, "absence is no live reading");
+
+        let json = serde_json::to_value(&entry).expect("QueueEntry serializes");
+        assert!(
+            json.get("live_state").is_none(),
+            "a row with no live reading omits the field: {json}"
+        );
     }
 }

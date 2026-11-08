@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { State } from "./state.js";
-import { renderFullQueue } from "./queue.js";
+import { renderFullQueue, loadQueueLiveReadings } from "./queue.js";
 import { loadGcCandidates } from "./gc.js";
 import { startLiveView, stopLiveView } from "./live.js";
 import { loadPipelineProgress } from "./dashboard.js";
@@ -51,6 +51,11 @@ export function switchView(viewName) {
     // Render full queue when switching to queue view
     if (viewName === "queue" && State.dashboard) {
         renderFullQueue(State.dashboard, State.selectedUnitId);
+        // Fold the run's live readings into the rows on entry, so an
+        // in-flight unit is marked without waiting for the next push
+        // (issue #431).
+        loadQueueLiveReadings().catch((err) =>
+            console.warn("[Queue] live readings load failed:", err));
     }
 
     if (viewName === "llm-log") {

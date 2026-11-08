@@ -1396,6 +1396,236 @@ async fn test_progress_enhanced_reports_live_records() {
     assert_eq!(failed["baseline"]["state"].as_str(), Some("failed"));
 }
 
+/// Issue #431 (P53.4): `/api/queue` answers "which unit is being worked" per
+/// unit with a live reading kept separate from the persisted review status.
+/// A unit in flight reads with its current pipeline phase; a unit the run
+/// finished without failing reads as awaiting-review; a unit the run failed
+/// reads as failed and one it cancelled reads as cancelled — neither may
+/// read as awaiting review. A unit the run never touched carries no live
+/// reading at all — never a blank that reads as idle or stuck. The persisted
+/// review status is exactly what the git-backed record says, before and
+/// after live traffic: two fields, never one.
+#[tokio::test]
+async fn test_queue_payload_carries_live_reading_per_unit() {
+    let fixture = TestFixture::new();
+    add_pending_translation(&fixture, "RenderHUD"); // the run will finish this unit
+    add_pending_translation(&fixture, "PlaySound"); // the run will never touch this one
+    add_pending_translation(&fixture, "PauseGame"); // the run will fail this one
+    add_pending_translation(&fixture, "StopMusic"); // the run will cancel this one
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let fetch_queue = || async {
+        let resp = reqwest::get(format!("{base}/api/queue"))
+            .await
+            .expect("queue request succeeds");
+        assert_eq!(resp.status(), 200);
+        resp.json::<serde_json::Value>().await.expect("queue body is JSON")
+    };
+    let persisted_statuses = || async {
+        fetch_queue()
+            .await["queue"]
+            .as_array()
+            .expect("queue is an array")
+            .iter()
+            .map(|e| {
+                (
+                    e["id"].as_str().expect("entry has an id").to_string(),
+                    e["status"].as_str().expect("entry has a status").to_string(),
+                )
+            })
+            .collect::<Vec<(String, String)>>()
+    };
+
+    // The git-backed review statuses before any live traffic arrives.
+    let statuses_before = persisted_statuses().await;
+    assert!(
+        statuses_before
+            .iter()
+            .any(|(id, _)| id == "game_logic.dll/DrawPrimitive/v2"),
+        "DrawPrimitive starts in the queue: {statuses_before:?}"
+    );
+
+    for event in [
+        // DrawPrimitive: in flight, currently at the LLM call.
+        ProgressEvent::TranslationStarted {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+        },
+        ProgressEvent::LlmCallStart {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 1,
+            retry_strategy: "direct".into(),
+        },
+        // RenderHUD: the run completed it — a terminal event made the record
+        // finished. It reaches review, so its live reading reads awaiting-review.
+        ProgressEvent::TranslationStarted {
+            binary: "game_logic.dll".into(),
+            function: "RenderHUD".into(),
+        },
+        ProgressEvent::TranslationCompleted {
+            binary: "game_logic.dll".into(),
+            function: "RenderHUD".into(),
+            total_attempts: 1,
+            success_strategy: Some("direct".into()),
+        },
+        // PauseGame: the run failed it. A failed unit moved no closer to
+        // review, so it must not read as awaiting-review — it reads failed.
+        ProgressEvent::TranslationStarted {
+            binary: "game_logic.dll".into(),
+            function: "PauseGame".into(),
+        },
+        ProgressEvent::TranslationFailed {
+            binary: "game_logic.dll".into(),
+            function: "PauseGame".into(),
+            total_attempts: 1,
+        },
+        // StopMusic: the operator cancelled the in-flight unit. It too moved
+        // no closer to review — it reads cancelled, the run's own word.
+        ProgressEvent::TranslationStarted {
+            binary: "game_logic.dll".into(),
+            function: "StopMusic".into(),
+        },
+        ProgressEvent::UnitCancelled {
+            binary: "game_logic.dll".into(),
+            function: "StopMusic".into(),
+        },
+    ] {
+        events.emit(event);
+    }
+    // Events flow through one ordered consumer task; give it time to land.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let body = fetch_queue().await;
+    let queue = body["queue"].as_array().expect("queue is an array");
+    let entry = |function: &str| -> serde_json::Value {
+        queue
+            .iter()
+            .find(|e| e["function"] == function)
+            .cloned()
+            .unwrap_or_else(|| panic!("{function} unit is in the queue payload"))
+    };
+
+    let draw = entry("DrawPrimitive");
+    assert_eq!(
+        draw["live_state"].as_str(),
+        Some("llm_call"),
+        "the in-flight unit's live reading names its current phase: {draw}"
+    );
+    assert_eq!(
+        draw["status"].as_str(),
+        Some("pending_review"),
+        "a translating unit's review status stays what the git record says: {draw}"
+    );
+
+    let hud = entry("RenderHUD");
+    assert_eq!(
+        hud["live_state"].as_str(),
+        Some("awaiting_review"),
+        "a finished unit's live reading reads as awaiting-review: {hud}"
+    );
+    assert_eq!(
+        hud["status"].as_str(),
+        Some("queued"),
+        "a finished unit's persisted review status stays what the git record says — \
+         the run's live traffic wrote no review record: {hud}"
+    );
+
+    let sound = entry("PlaySound");
+    assert!(
+        sound.get("live_state").is_none(),
+        "a unit the run never touched carries no live reading, never a blank that \
+         reads as idle or stuck: {sound}"
+    );
+    assert_eq!(
+        sound["status"].as_str(),
+        Some("queued"),
+        "an untouched unit's persisted status is the git record's own: {sound}"
+    );
+
+    let failed = entry("PauseGame");
+    assert_eq!(
+        failed["live_state"].as_str(),
+        Some("failed"),
+        "a unit the run failed reads as failed, never as awaiting review — \
+         it moved no closer to review: {failed}"
+    );
+    assert_eq!(
+        failed["status"].as_str(),
+        Some("queued"),
+        "a failed unit's persisted status is the git record's own: {failed}"
+    );
+
+    let cancelled = entry("StopMusic");
+    assert_eq!(
+        cancelled["live_state"].as_str(),
+        Some("cancelled"),
+        "a unit the run cancelled reads as cancelled, the run's own word, \
+         never as awaiting review: {cancelled}"
+    );
+    assert_eq!(
+        cancelled["status"].as_str(),
+        Some("queued"),
+        "a cancelled unit's persisted status is the git record's own: {cancelled}"
+    );
+
+    assert_eq!(
+        persisted_statuses().await,
+        statuses_before,
+        "live traffic rewrote no persisted review status"
+    );
+
+    // Issue #431 pins the no-actor rule at this seam: serving live readings
+    // runs no actor. The flow above writes only the `live_state` field. It
+    // merges no branch, writes no review action record, and leaves no skip
+    // state behind — and the git-derived review statuses still say exactly
+    // what git says.
+    let repo = fixture.repo_path();
+    assert!(
+        !repo.join("re/review/skips.json").exists(),
+        "the live reading created no skip state"
+    );
+    assert!(
+        !repo.join("re/actions").exists(),
+        "the live reading wrote no review action record"
+    );
+    let git = GitManager::open(&repo).expect("open fixture repo");
+    assert!(
+        !git
+            .is_branch_merged_into_main("re/game_logic.dll/DrawPrimitivev2")
+            .expect("merged check"),
+        "the live reading merged no branch"
+    );
+    let dashboard = build_dashboard(&repo).expect("dashboard builds");
+    let derived_status = |id: &str| {
+        dashboard
+            .review_queue
+            .iter()
+            .find(|u| u.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the review queue"))
+            .status
+            .clone()
+    };
+    assert_eq!(
+        derived_status("game_logic.dll/DrawPrimitive/v2"),
+        calxgloss_types::ReviewStatus::PendingReview,
+        "the git-backed record still says what it said for the in-flight unit"
+    );
+    assert_eq!(
+        derived_status("game_logic.dll/RenderHUD/v1"),
+        calxgloss_types::ReviewStatus::Queued,
+        "the run completing a unit left that unit's git-derived review status alone"
+    );
+}
+
 /// Issue #428: `/api/progress/enhanced` also serves the scan phase's
 /// records — one per scan name in stable sorted order. The running row
 /// answers `finished: false` with a measurable elapsed. A finished row

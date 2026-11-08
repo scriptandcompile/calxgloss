@@ -1302,6 +1302,169 @@ async fn test_headless_live_view_renders_and_updates() {
     drop(browser);
 }
 
+/// Headless-browser test for issue #431 (P53.4): the queue row marks the unit
+/// in flight with its live reading — the current pipeline phase — and updates
+/// that marker in place when the existing `unit_phase` WebSocket push arrives,
+/// with no page reload. A unit the run never touched carries no live marker
+/// at all, and the live marker rides as its own element beside the row's
+/// persisted status chip, never inside it. A unit the run fails reads Failed,
+/// never Awaiting Review — the push's own `succeeded` field decides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_headless_queue_row_shows_live_reading_and_updates_in_place() {
+    let fixture = TestFixture::new();
+    add_pending_translation(&fixture, "RenderHUD");
+    add_pending_translation(&fixture, "PauseGame");
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // One unit in flight at the LLM call before the browser even opens.
+    for event in [
+        ProgressEvent::TranslationStarted {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+        },
+        ProgressEvent::LlmCallStart {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 1,
+            retry_strategy: "direct".into(),
+        },
+    ] {
+        events.emit(event);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let Some(browser) = launch_headless_browser() else {
+        return;
+    };
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    let draw_row = "#full-queue-list [data-unit-id=\\\"game_logic.dll/DrawPrimitive/v2\\\"]";
+    let hud_row = "#full-queue-list [data-unit-id=\\\"game_logic.dll/RenderHUD/v1\\\"]";
+
+    // The in-flight unit's row carries a live marker naming its phase.
+    let mut marker_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const el = document.querySelector('{draw_row} .qi-live'); \
+                return !!el && el.textContent === 'LLM Call'; }})()"
+            ),
+        ) {
+            marker_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        marker_rendered,
+        "queue row should carry a live marker naming the unit's phase"
+    );
+
+    // The marker rides beside the persisted status chip as its own element —
+    // two fields, never one.
+    assert!(
+        eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const row = document.querySelector('{draw_row}'); \
+                return !!row && row.querySelector('.qi-live') !== null \
+                    && row.querySelector('.qi-status') !== null; }})()"
+            ),
+        ),
+        "the live marker and the persisted status chip are separate elements"
+    );
+
+    // A unit the run never touched carries no live marker at all.
+    assert!(
+        eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const row = document.querySelector('{hud_row}'); \
+                return !!row && row.querySelector('.qi-live') === null; }})()"
+            ),
+        ),
+        "an untouched unit's row carries no live marker — a blank never reads as a state"
+    );
+
+    // The run completes the unit. The existing unit_phase push must switch
+    // the marker to awaiting-review in place — the test never navigates or
+    // reloads the page.
+    events.emit(ProgressEvent::TranslationCompleted {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        total_attempts: 1,
+        success_strategy: Some("direct".into()),
+    });
+
+    let mut marker_updated = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const el = document.querySelector('{draw_row} .qi-live'); \
+                return !!el && el.textContent === 'Awaiting Review'; }})()"
+            ),
+        ) {
+            marker_updated = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        marker_updated,
+        "the queue row's live marker should update in place off the WS push, no reload"
+    );
+
+    // The run then fails another unit. That unit's row must read Failed,
+    // never Awaiting Review — a failed unit moved no closer to review. The
+    // same push path updates this row in place too.
+    events.emit(ProgressEvent::TranslationStarted {
+        binary: "game_logic.dll".into(),
+        function: "PauseGame".into(),
+    });
+    events.emit(ProgressEvent::TranslationFailed {
+        binary: "game_logic.dll".into(),
+        function: "PauseGame".into(),
+        total_attempts: 1,
+    });
+    let pause_row = "#full-queue-list [data-unit-id=\\\"game_logic.dll/PauseGame/v1\\\"]";
+    let mut failed_marker = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const el = document.querySelector('{pause_row} .qi-live'); \
+                return !!el && el.textContent === 'Failed'; }})()"
+            ),
+        ) {
+            failed_marker = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        failed_marker,
+        "a failed unit's row reads Failed — never Awaiting Review"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
 /// Headless-browser honesty test for the live translation view (issue #65):
 /// outside `calxgloss live` the enhanced endpoint is not routed, so the Live
 /// tab must say the live view needs a running pipeline — never render an

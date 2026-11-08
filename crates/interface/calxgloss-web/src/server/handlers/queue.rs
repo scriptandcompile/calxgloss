@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use super::super::{
-    ActionResponse, QueueEntry, QueueOverlay, QueueOverlayResponse, QueueOverlayUpdate,
-    QueuePosition, QueuePriority, QueueResponse, ServerError, ServerState,
+    ActionResponse, CombinedState, QueueEntry, QueueOverlay, QueueOverlayResponse,
+    QueueOverlayUpdate, QueuePosition, QueuePriority, QueueResponse, ServerError, ServerState,
 };
 use calxgloss_types::{DependencyGraph, ReviewSkips, ReviewStatus};
 
@@ -18,15 +18,60 @@ use tracing::info;
 // ─── GET /api/queue ──────────────────────────────────────────────────
 
 /// Returns the full review queue sorted by dependency order, with the
-/// persisted queue overlay breaking ties (issue #74).
+/// persisted queue overlay breaking ties (issue #74). Outside live mode the
+/// progress store is absent, so no live readings ride the rows (issue #431).
 pub async fn api_get_queue(
-    State(state): State<ServerState>,
+    State(combined): State<CombinedState>,
 ) -> Result<Json<QueueResponse>, ServerError> {
-    let dashboard = super::super::build_dashboard(state.repo_path())
+    let dashboard = super::super::build_dashboard(combined.server.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
-    let overlay = load_queue_overlay(state.repo_path());
+    let overlay = load_queue_overlay(combined.server.repo_path());
     let ordered = queue_order(&dashboard, &overlay);
-    Ok(Json(QueueResponse::from_ordered(&dashboard, &ordered)))
+    let mut response = QueueResponse::from_ordered(&dashboard, &ordered);
+    // The run's live readings, merged beside each row's persisted review
+    // status by unit key — the same binary + function join the live view
+    // uses. This handler only ever writes the `live_state` field. It
+    // changes no review, skip, or branch state, and leaves each row's
+    // status exactly as the git-backed record says (issue #431).
+    if let Some(progress) = &combined.progress {
+        let entries = progress.read().await.snapshot().await;
+        for entry in &mut response.queue {
+            let key = format!(
+                "{}/{}",
+                entry.binary,
+                entry.function.as_deref().unwrap_or("")
+            );
+            if let Some(record) = entries.get(&key) {
+                entry.live_state = live_reading(record);
+            }
+        }
+    }
+    Ok(Json(response))
+}
+
+/// Turn one progress-store record into that unit's live reading, or `None`
+/// when no reading can be named honestly. An unfinished record names the
+/// pipeline phase the unit is in right now. A finished record reads
+/// `awaiting_review`: the run that finished it moved it toward review. A
+/// finished record that failed reads `failed`, and one the run cancelled
+/// reads `cancelled` — neither moved toward review at all, so neither may
+/// read as awaiting review. This reading is not a review status — the
+/// status field keeps its own git-backed meaning (issue #431).
+fn live_reading(record: &super::super::ProgressEntry) -> Option<String> {
+    if record.finished {
+        if record.succeeded == Some(false) {
+            let word = if record.outcome.as_deref() == Some("cancelled") {
+                "cancelled"
+            } else {
+                "failed"
+            };
+            return Some(word.to_string());
+        }
+        return Some("awaiting_review".to_string());
+    }
+    serde_json::to_value(record.phase)
+        .ok()
+        .and_then(|phase| phase.as_str().map(str::to_string))
 }
 
 // ─── GET /api/queue/next ─────────────────────────────────────────────
@@ -54,6 +99,9 @@ pub async fn api_get_next_unit(
         stale: u.stale.to_string(),
         blocked: matches!(u.status, ReviewStatus::Blocked),
         unknowns: u.unknowns.clone(),
+        // The next-unit answer names the reviewer's next step; the run's
+        // live readings ride the queue payload itself (issue #431).
+        live_state: None,
     })))
 }
 

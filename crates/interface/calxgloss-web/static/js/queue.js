@@ -5,10 +5,108 @@
 import { API } from "./api.js";
 import { State } from "./state.js";
 import { KIND_LABELS, STATUS_LABELS } from "./constants.js";
+import { PHASE_LABELS, cssEscape } from "./live.js";
 import { fmtConfidence, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast, showModal } from "./ui.js";
 import { loadDashboard } from "./dashboard.js";
 import { loadUnitOverrides } from "./unit-overrides.js";
+
+/* ─── Live readings of the run in flight (issue #431) ──────────────────
+   The served queue payload carries a live reading for each unit, beside
+   the persisted review status. An in-flight unit reads with its current
+   pipeline phase, a unit the run finished without failing reads as
+   awaiting-review, one it failed reads as failed, one it cancelled reads
+   as cancelled, and a unit the run never touched carries no reading at
+   all. The map holds the
+   wire readings ("llm_call", "awaiting_review") keyed by unit key
+   `{binary}/{function}`. The WebSocket unit-phase push keeps the map
+   current between queue refreshes. The two fields never take on each
+   other's meaning: a live reading is never the review status the git-
+   backed record says, and nothing here writes branch, review, or skip
+   state. */
+const liveReadings = new Map();
+
+// The one unit-key shape this module shares, matching the wire key the
+// server merges readings by.
+function queueUnitKey(unit) {
+    return `${unit.binary}/${unit.function || ""}`;
+}
+
+// The reading a finished unit's pushed record carries (issue #431), the
+// mirror of the server's own terminal readings. A unit the run failed or
+// cancelled never reads as awaiting review — it moved no closer to review.
+function finishedQueueReading(unit) {
+    if (unit.succeeded === false) {
+        return unit.outcome === "cancelled" ? "cancelled" : "failed";
+    }
+    return "awaiting_review";
+}
+
+// The live vocabulary: the pipeline's phase labels, plus the readings a
+// finished unit's record carries on the queue. A live reading is never
+// spelled with a review-status word. A finished unit reads as awaiting
+// review only when the run did not fail it — a failed unit reads as
+// failed, a cancelled one as cancelled (issue #431).
+const LIVE_READING_LABELS = {
+    ...PHASE_LABELS,
+    awaiting_review: "Awaiting Review",
+    failed: "Failed",
+    cancelled: "Cancelled",
+};
+
+function liveReadingFor(unit) {
+    return liveReadings.get(queueUnitKey(unit)) || null;
+}
+
+function liveChipHtml(reading) {
+    const label = LIVE_READING_LABELS[reading] || reading;
+    return `<div class="qi-live" ` +
+        `title="Live reading from the run in flight — kept apart from the review status the git record says">${escapeHtml(label)}</div>`;
+}
+
+/**
+ * Fetch the queue payload and merge its live readings into the rendered
+ * rows (issue #431). Outside live mode the payload carries no live
+ * readings. The map then holds nothing and no row shows a marker; a row
+ * never gains a reading state of its own.
+ */
+export async function loadQueueLiveReadings() {
+    const res = await API.queue();
+    for (const e of res.queue || []) {
+        const key = queueUnitKey(e);
+        if (e.live_state == null) liveReadings.delete(key);
+        else liveReadings.set(key, e.live_state);
+    }
+    if (State.currentView === "queue" && State.dashboard) {
+        renderFullQueue(State.dashboard, State.selectedUnitId);
+    }
+}
+
+/**
+ * Merge one pushed `unit_phase` record's live reading into the map and
+ * update that row's marker in place — no reload (issue #431). A row that
+ * is not currently rendered needs no patch: the next render picks the
+ * reading up from the map.
+ */
+export function applyQueueLiveReading(unit) {
+    if (!unit || !unit.binary) return;
+    const reading = unit.finished ? finishedQueueReading(unit) : unit.phase;
+    if (!reading) return;
+    liveReadings.set(queueUnitKey(unit), reading);
+    const row = document.querySelector(
+        `#full-queue-list .queue-item-full[data-binary="${cssEscape(unit.binary)}"]` +
+        `[data-function="${cssEscape(unit.function || "")}"]`
+    );
+    if (!row) return;
+    const chip = row.querySelector(".qi-live");
+    if (chip) {
+        chip.outerHTML = liveChipHtml(reading);
+    } else {
+        const status = row.querySelector(".qi-status");
+        if (status) status.insertAdjacentHTML("beforebegin", liveChipHtml(reading));
+        else row.insertAdjacentHTML("beforeend", liveChipHtml(reading));
+    }
+}
 
 export function renderFullQueue(dashboard, selectedId = null) {
     const list = document.getElementById("full-queue-list");
@@ -84,7 +182,8 @@ export function renderFullQueue(dashboard, selectedId = null) {
                   (sevParts.length ? ` (${sevParts.join(", ")})` : "");
 
         return `
-            <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}" draggable="true">
+            <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}"
+                data-binary="${escapeHtml(u.binary)}" data-function="${escapeHtml(u.function || "")}" draggable="true">
                 <div class="queue-item-icon ${iconClass}"></div>
                 <input type="checkbox" class="qi-select" ${State.queueSelected.has(u.id) ? "checked" : ""}
                     title="Select for batch actions" aria-label="Select ${u.id} for batch actions">
@@ -96,6 +195,7 @@ export function renderFullQueue(dashboard, selectedId = null) {
                 <div class="qi-priority prio-${priority}" title="Priority: ${priority.toUpperCase()} — click to change">${priority.toUpperCase()}</div>
                 <div class="qi-unknowns ${openUnknowns === null ? "unknown" : openUnknowns > 0 ? "open" : "clear"}"
                     title="${escapeHtml(unkTitle)}">${openUnknowns === null ? "?" : openUnknowns}</div>
+                ${liveReadingFor(u) ? liveChipHtml(liveReadingFor(u)) : ""}
                 <div class="qi-status ${iconClass}"${isParked ? ` title="${escapeHtml(parkNote)}"` : ""}>${STATUS_LABELS[u.status] || u.status}</div>
                 <div class="qi-attempt">v${u.attempt}</div>
                 <div class="qi-effort" title="Estimated time per attempt">${effortText}</div>

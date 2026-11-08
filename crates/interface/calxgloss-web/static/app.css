@@ -707,6 +707,22 @@ svg {
     margin: 0 auto;
 }
 
+/* The run's live reading beside the persisted status chip (issue #431):
+   deliberately an outlined chip — filled chips are reviewer-persisted
+   states, this one belongs to the run in flight and is not review state. */
+.queue-item-full .qi-live {
+    font-size: 12px;
+    font-weight: 500;
+    text-align: center;
+    padding: 1px 7px;
+    border-radius: 10px;
+    display: inline-block;
+    width: fit-content;
+    margin: 0 auto;
+    border: 1px solid var(--status-in-progress);
+    color: var(--status-in-progress);
+}
+
 .queue-item-full .qi-attempt {
     font-size: 12px;
     color: var(--text-muted);

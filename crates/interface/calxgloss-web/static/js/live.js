@@ -12,7 +12,9 @@
 import { API } from "./api.js";
 import { escapeHtml } from "./utils.js";
 
-const PHASE_LABELS = {
+// Phase labels of the unit pipeline — shared so the queue's live marker
+// (issue #431) names the same phases the live view already renders.
+export const PHASE_LABELS = {
     scan_fetch: "Scan Fetch",
     api_tagging: "API Tagging",
     test_gen: "Test Gen",
@@ -131,7 +133,7 @@ export function applyUnitPhase(unit) {
 }
 
 /** Escape a value for use inside a CSS attribute selector. */
-function cssEscape(value) {
+export function cssEscape(value) {
     return (window.CSS && CSS.escape) ? CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&");
 }
 
