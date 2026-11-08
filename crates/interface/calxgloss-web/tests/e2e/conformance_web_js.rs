@@ -5,8 +5,8 @@
 //! renders the spelled-out unknown, never a zero and never a pass. The
 //! tests self-skip when no Chrome/Chromium is installed.
 
-use super::*;
 use super::conformance_web::stage_obligation_ledger;
+use super::*;
 
 /// The queue view's conformance strip text, empty while absent.
 fn conformance_strip_text(tab: &headless_chrome::Tab) -> String {
@@ -108,7 +108,8 @@ async fn test_headless_conformance_and_obligation_render_unknown_then_filed() {
         entry.receipt_digest = Some("sha256:cafe".to_string());
         stage_obligation_ledger(fixture.repo_path().as_path(), "game_logic.dll", vec![entry]);
     }
-    tab.reload(false, None).expect("reload after filing the ledger");
+    tab.reload(false, None)
+        .expect("reload after filing the ledger");
     tab.wait_until_navigated().expect("wait for reload");
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",

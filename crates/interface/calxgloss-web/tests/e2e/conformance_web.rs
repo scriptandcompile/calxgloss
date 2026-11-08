@@ -128,10 +128,7 @@ async fn the_unit_detail_payload_carries_the_filed_obligation_entry_whole() {
         "the merged unit reads its own attempt's entry"
     );
     assert_eq!(unit["obligation"]["entry"]["owner_commit"], "bbbb2222");
-    assert_eq!(
-        unit["obligation"]["entry"]["receipt_digest"],
-        "sha256:beef"
-    );
+    assert_eq!(unit["obligation"]["entry"]["receipt_digest"], "sha256:beef");
 }
 
 #[tokio::test]
@@ -271,11 +268,7 @@ async fn one_build_answers_the_unit_and_the_row_from_the_same_ledger_read() {
         // close walk breaks on this claim — the row cannot read
         // complete no matter what the filed entry says.
         entry.receipt_digest = Some("sha256:cafe".to_string());
-        stage_obligation_ledger(
-            fixture.repo_path().as_path(),
-            "game_logic.dll",
-            vec![entry],
-        );
+        stage_obligation_ledger(fixture.repo_path().as_path(), "game_logic.dll", vec![entry]);
     }
     let body = dashboard_body(fixture.port()).await;
     let row = conformance_row(&body, "game_logic.dll");
@@ -304,14 +297,19 @@ async fn one_build_answers_the_unit_and_the_row_from_the_same_ledger_read() {
         entry["disposition"], "claimed_verified",
         "the unit states the disposition as the read seam decides it"
     );
-    assert_eq!(entry["receipt_digest"], "sha256:cafe", "the citation rides as cited");
+    assert_eq!(
+        entry["receipt_digest"], "sha256:cafe",
+        "the citation rides as cited"
+    );
 
     // And the row says out loud where it broke — naming this unit, or
     // naming the cause when the citation resolves nowhere at all.
     let names_this_unit = row["first_open"]
         .get("function")
         .and_then(|f| f.as_str())
-        .is_some_and(|f| f == "DrawPrimitive" && row["first_open"]["attempt"] == serde_json::json!(2));
+        .is_some_and(|f| {
+            f == "DrawPrimitive" && row["first_open"]["attempt"] == serde_json::json!(2)
+        });
     let names_the_cause = row["causes"]
         .as_array()
         .map(|causes| causes.contains(&serde_json::json!("unresolvable_receipt_citation")))
@@ -363,7 +361,10 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
 
     // The row went from unknown to incomplete — real movement at the
     // per-binary seam, so the statuses pin below is not vacuous.
-    assert_eq!(conformance_row(&after, "game_logic.dll")["verdict"], "incomplete");
+    assert_eq!(
+        conformance_row(&after, "game_logic.dll")["verdict"],
+        "incomplete"
+    );
     assert_eq!(
         conformance_row(&before, "game_logic.dll")["verdict"],
         "unknown"

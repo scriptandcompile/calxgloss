@@ -3,8 +3,8 @@
 use super::super::{
     BatchInfo, BinaryFocusResponse, BinaryPauseResponse, ClassificationInfo, CombinedState,
     PipelineControl, PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse,
-    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse, ScanRecord,
-    ServerError, UnitCancelResponse,
+    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse, ScanRecord, ServerError,
+    UnitCancelResponse,
 };
 
 use super::process::binary_matches;

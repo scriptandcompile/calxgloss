@@ -1696,7 +1696,6 @@ async fn test_headless_reload_keeps_current_tab() {
     drop(browser);
 }
 
-
 /// Headless-browser pin for the live view's evidence-scan panel (issue #428):
 /// pushed scan events render named rows without a reload. A running row shows
 /// its name and a ticking clock. A finished row shows its elapsed seconds and
@@ -1736,7 +1735,10 @@ async fn test_headless_live_view_shows_scan_rows() {
         ),
         "the not-started message should show before the first scan event"
     );
-    let before = eval_text(&tab, "document.getElementById('live-scans')?.textContent || ''");
+    let before = eval_text(
+        &tab,
+        "document.getElementById('live-scans')?.textContent || ''",
+    );
     assert!(
         !before.contains("0 scan") && !before.contains("scan"),
         "no scan rows and no implied scan count before the first event, got {before:?}"
@@ -1806,7 +1808,11 @@ async fn test_headless_live_view_shows_scan_rows() {
     // rows, no reload.
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length") == 5 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#live-scans .live-scan').length",
+        ) == 5
+        {
             rendered = true;
             break;
         }
@@ -1815,12 +1821,17 @@ async fn test_headless_live_view_shows_scan_rows() {
     assert!(
         rendered,
         "the pushed scan events should produce five rows without a reload, rows: {}",
-        eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length")
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#live-scans .live-scan').length"
+        )
     );
     let row_text = |name: &str| -> String {
         eval_text(
             &tab,
-            &format!("document.querySelector('#live-scans [data-scan=\"{name}\"]')?.textContent || ''"),
+            &format!(
+                "document.querySelector('#live-scans [data-scan=\"{name}\"]')?.textContent || ''"
+            ),
         )
     };
 
@@ -1916,7 +1927,11 @@ async fn test_headless_live_view_shows_scan_rows() {
     });
     let mut cleared = false;
     for _ in 0..25 {
-        if eval_count(&tab, "document.querySelectorAll('#live-scans .live-scan').length") == 0 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#live-scans .live-scan').length",
+        ) == 0
+        {
             cleared = true;
             break;
         }

@@ -488,7 +488,10 @@ mod tests {
             json["units"].as_array().expect("units is an array").len(),
             1
         );
-        assert_eq!(json["scans"].as_array().expect("scans is an array").len(), 1);
+        assert_eq!(
+            json["scans"].as_array().expect("scans is an array").len(),
+            1
+        );
 
         let back: LiveTranslationState = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, state);

@@ -1427,18 +1427,22 @@ async fn test_queue_payload_carries_live_reading_per_unit() {
             .await
             .expect("queue request succeeds");
         assert_eq!(resp.status(), 200);
-        resp.json::<serde_json::Value>().await.expect("queue body is JSON")
+        resp.json::<serde_json::Value>()
+            .await
+            .expect("queue body is JSON")
     };
     let persisted_statuses = || async {
-        fetch_queue()
-            .await["queue"]
+        fetch_queue().await["queue"]
             .as_array()
             .expect("queue is an array")
             .iter()
             .map(|e| {
                 (
                     e["id"].as_str().expect("entry has an id").to_string(),
-                    e["status"].as_str().expect("entry has a status").to_string(),
+                    e["status"]
+                        .as_str()
+                        .expect("entry has a status")
+                        .to_string(),
                 )
             })
             .collect::<Vec<(String, String)>>()
@@ -1599,8 +1603,7 @@ async fn test_queue_payload_carries_live_reading_per_unit() {
     );
     let git = GitManager::open(&repo).expect("open fixture repo");
     assert!(
-        !git
-            .is_branch_merged_into_main("re/game_logic.dll/DrawPrimitivev2")
+        !git.is_branch_merged_into_main("re/game_logic.dll/DrawPrimitivev2")
             .expect("merged check"),
         "the live reading merged no branch"
     );
@@ -1715,7 +1718,12 @@ async fn test_progress_enhanced_serves_live_scan_records() {
         .collect();
     assert_eq!(
         names,
-        vec!["callback-detection", "control-flow", "sync", "type-database"],
+        vec![
+            "callback-detection",
+            "control-flow",
+            "sync",
+            "type-database"
+        ],
         "scan rows are served in stable scan-name order"
     );
 

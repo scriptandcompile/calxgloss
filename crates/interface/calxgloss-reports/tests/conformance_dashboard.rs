@@ -68,7 +68,16 @@ fn stage_receipt_pair_verdicted(
     attempt: u32,
     verdict: VerificationVerdict,
 ) -> String {
-    stage_receipt_pair_core(git, binary, function, attempt, verdict, &CaseKind::ALL, None, None)
+    stage_receipt_pair_core(
+        git,
+        binary,
+        function,
+        attempt,
+        verdict,
+        &CaseKind::ALL,
+        None,
+        None,
+    )
 }
 
 /// Files a digest-paired receipt pair whose suite exercised exactly the
@@ -82,7 +91,16 @@ fn stage_receipt_pair_covering(
     attempt: u32,
     covered: &[CaseKind],
 ) -> String {
-    stage_receipt_pair_core(git, binary, function, attempt, VerificationVerdict::Passed, covered, None, None)
+    stage_receipt_pair_core(
+        git,
+        binary,
+        function,
+        attempt,
+        VerificationVerdict::Passed,
+        covered,
+        None,
+        None,
+    )
 }
 
 /// The fixture core: the pair is filed at the path for
@@ -234,17 +252,16 @@ fn claimed_entry(function: &str, attempt: u32, owner: &str, receipt: &str) -> Ob
 fn stage_skip_set(dir_path: &std::path::Path, keys: &[&str]) {
     let path = dir_path.join("re").join("review").join("skips.json");
     std::fs::create_dir_all(path.parent().expect("review dir")).expect("review dir");
-    std::fs::write(
-        &path,
-        serde_json::json!({"skipped": keys}).to_string(),
-    )
-    .expect("file skip set");
+    std::fs::write(&path, serde_json::json!({"skipped": keys}).to_string()).expect("file skip set");
 }
 
 /// Files a classification record at `re/classify/{binary}.json` with the
 /// given category and reason — the shape the `classify` command files.
 fn stage_classification(dir_path: &std::path::Path, binary: &str, category: &str, reason: &str) {
-    let path = dir_path.join("re").join("classify").join(format!("{binary}.json"));
+    let path = dir_path
+        .join("re")
+        .join("classify")
+        .join(format!("{binary}.json"));
     std::fs::create_dir_all(path.parent().expect("classify dir")).expect("classify dir");
     std::fs::write(
         &path,
@@ -468,7 +485,10 @@ fn branch_merged_with_no_accept_review_action_reads_un_reviewed_and_never_verifi
         row.tally.verified, 0,
         "a merge with no Accept review action is never verified"
     );
-    let open = row.first_open.as_ref().expect("the honest reading is named");
+    let open = row
+        .first_open
+        .as_ref()
+        .expect("the honest reading is named");
     assert!(
         open.link.contains("Accept"),
         "the reading names the missing review action: {}",
@@ -1455,7 +1475,12 @@ fn a_reviewer_skip_holds_its_unit_out_and_names_the_skip_set_as_provenance() {
     stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawSprite", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawSprite",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -1479,7 +1504,10 @@ fn a_reviewer_skip_holds_its_unit_out_and_names_the_skip_set_as_provenance() {
         row.tally.verified, 0,
         "a unit the reviewer took out of work never reads verified"
     );
-    let open = row.first_open.as_ref().expect("the honest reading is named");
+    let open = row
+        .first_open
+        .as_ref()
+        .expect("the honest reading is named");
     assert!(
         open.link.contains("skips.json"),
         "the provenance names the skip-set document: {}",
@@ -1523,7 +1551,12 @@ fn a_do_not_translate_classification_parks_every_unit_under_the_binary() {
     );
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawSprite", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawSprite",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -1547,7 +1580,10 @@ fn a_do_not_translate_classification_parks_every_unit_under_the_binary() {
         row.tally.verified, 0,
         "a parked unit is not verified, however green its claim"
     );
-    let open = row.first_open.as_ref().expect("the honest reading is named");
+    let open = row
+        .first_open
+        .as_ref()
+        .expect("the honest reading is named");
     assert!(
         open.link.contains("we do not yet decompile .NET programs"),
         "the classification's reason rides beside the disposition: {}",
@@ -1594,7 +1630,12 @@ fn a_classification_override_releases_the_parked_obligation_to_its_evidence() {
     stage_classification_override(dir.path(), "game_logic.dll", "ProjectSpecific");
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawSprite", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawSprite",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -1610,8 +1651,14 @@ fn a_classification_override_releases_the_parked_obligation_to_its_evidence() {
         ConformanceVerdict::Complete,
         "the released obligation closes on its evidence"
     );
-    assert_eq!(row.tally.verified, 1, "the released unit reads verified again");
-    assert_eq!(row.tally.parked, 0, "the override releases the park outright");
+    assert_eq!(
+        row.tally.verified, 1,
+        "the released unit reads verified again"
+    );
+    assert_eq!(
+        row.tally.parked, 0,
+        "the override releases the park outright"
+    );
 }
 
 #[test]
@@ -1650,7 +1697,12 @@ fn a_reviewer_unit_override_record_tallies_overridden_and_never_reads_verified()
     );
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -1674,7 +1726,10 @@ fn a_reviewer_unit_override_record_tallies_overridden_and_never_reads_verified()
         row.tally.verified, 0,
         "an overridden unit never counts as verified, however green its evidence"
     );
-    let open = row.first_open.as_ref().expect("the honest reading is named");
+    let open = row
+        .first_open
+        .as_ref()
+        .expect("the honest reading is named");
     assert!(
         open.link.contains("unit_overrides.json"),
         "the provenance names the override document: {}",
@@ -1703,9 +1758,7 @@ fn fully_closed_unit(
         .create_branch(binary, function, 1, None)
         .expect("translation branch")
         .branch;
-    let source = dir
-        .join("src")
-        .join(format!("{binary}_{function}_v1.rs"));
+    let source = dir.join("src").join(format!("{binary}_{function}_v1.rs"));
     std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
     std::fs::write(&source, "// translated").expect("write source");
     let receipt_digest = stage_receipt_pair(git, binary, function, 1);
@@ -1736,9 +1789,7 @@ fn a_green_claim_whose_pair_was_never_committed_is_an_input_error_that_names_its
         .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
         .expect("translation branch")
         .branch;
-    let source = dir
-        .path()
-        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    let source = dir.path().join("src/game_logic.dll_DrawPrimitive_v1.rs");
     std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
     std::fs::write(&source, "// translated").expect("write source");
     let commit = git
@@ -1777,7 +1828,10 @@ fn a_green_claim_whose_pair_was_never_committed_is_an_input_error_that_names_its
         vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
         "the unknown names the unresolvable receipt citation as its cause"
     );
-    assert_eq!(row.tally.verified, 0, "an unresolvable citation never counts verified");
+    assert_eq!(
+        row.tally.verified, 0,
+        "an unresolvable citation never counts verified"
+    );
 }
 
 #[test]
@@ -1828,9 +1882,7 @@ fn a_half_committed_pair_never_closes_a_green_claim() {
         .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
         .expect("translation branch")
         .branch;
-    let source = dir
-        .path()
-        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    let source = dir.path().join("src/game_logic.dll_DrawPrimitive_v1.rs");
     std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
     std::fs::write(&source, "// translated").expect("write source");
     let receipt_digest = stage_receipt_pair(&git, "game_logic.dll", "DrawPrimitive", 1);
@@ -1848,7 +1900,12 @@ fn a_half_committed_pair_never_closes_a_green_claim() {
     stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -1921,9 +1978,7 @@ fn a_pair_naming_another_attempt_than_the_entry_never_closes_it() {
         .create_branch("game_logic.dll", "DrawPrimitive", 2, None)
         .expect("attempt 2 branch")
         .branch;
-    let source = dir
-        .path()
-        .join("src/game_logic.dll_DrawPrimitive_v2.rs");
+    let source = dir.path().join("src/game_logic.dll_DrawPrimitive_v2.rs");
     std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
     std::fs::write(&source, "// translated").expect("write source");
     let receipt_digest = stage_receipt_pair_core(
@@ -1951,7 +2006,12 @@ fn a_pair_naming_another_attempt_than_the_entry_never_closes_it() {
     stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawPrimitive", 2, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawPrimitive",
+            2,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -1985,9 +2045,7 @@ fn a_pair_naming_another_unit_than_the_entry_never_closes_it() {
         .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
         .expect("translation branch")
         .branch;
-    let source = dir
-        .path()
-        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    let source = dir.path().join("src/game_logic.dll_DrawPrimitive_v1.rs");
     std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
     std::fs::write(&source, "// translated").expect("write source");
     let receipt_digest = stage_receipt_pair_core(
@@ -2015,7 +2073,12 @@ fn a_pair_naming_another_unit_than_the_entry_never_closes_it() {
     stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -2087,9 +2150,7 @@ fn a_suite_missing_a_required_case_kind_holds_the_obligation_open() {
         .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
         .expect("translation branch")
         .branch;
-    let source = dir
-        .path()
-        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    let source = dir.path().join("src/game_logic.dll_DrawPrimitive_v1.rs");
     std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
     std::fs::write(&source, "// translated").expect("write source");
     let receipt_digest = stage_receipt_pair_covering(
@@ -2114,7 +2175,12 @@ fn a_suite_missing_a_required_case_kind_holds_the_obligation_open() {
     stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -2129,7 +2195,10 @@ fn a_suite_missing_a_required_case_kind_holds_the_obligation_open() {
         ConformanceVerdict::Incomplete,
         "a green run that never tried the malformed class never seals the binary complete"
     );
-    assert_eq!(row.tally.verified, 0, "the unsealed claim never counts verified");
+    assert_eq!(
+        row.tally.verified, 0,
+        "the unsealed claim never counts verified"
+    );
     let open = row.first_open.as_ref().expect("the broken link is named");
     assert!(
         open.link.contains("malformed"),
@@ -2155,12 +2224,11 @@ fn an_old_filed_receipt_that_stamps_no_covered_kinds_keeps_a_green_claim_open() 
         .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
         .expect("translation branch")
         .branch;
-    let source = dir
-        .path()
-        .join("src/game_logic.dll_DrawPrimitive_v1.rs");
+    let source = dir.path().join("src/game_logic.dll_DrawPrimitive_v1.rs");
     std::fs::create_dir_all(source.parent().expect("src dir")).expect("src dir");
     std::fs::write(&source, "// translated").expect("write source");
-    let receipt_digest = stage_receipt_pair_covering(&git, "game_logic.dll", "DrawPrimitive", 1, &[]);
+    let receipt_digest =
+        stage_receipt_pair_covering(&git, "game_logic.dll", "DrawPrimitive", 1, &[]);
     let commit = git
         .commit(
             &branch,
@@ -2176,7 +2244,12 @@ fn an_old_filed_receipt_that_stamps_no_covered_kinds_keeps_a_green_claim_open() 
     stage_unknown_ledger(dir.path(), "game_logic.dll", Vec::new());
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawPrimitive", 1, &commit.hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit.hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -2241,11 +2314,19 @@ fn a_settled_blocking_unknown_backed_by_its_resolution_document_stays_out_of_the
     );
     stage_unknown_resolutions(
         dir.path(),
-        &[("unknown-a-mystery", "resolved"), ("unknown-b-mystery", "dismissed")],
+        &[
+            ("unknown-a-mystery", "resolved"),
+            ("unknown-b-mystery", "dismissed"),
+        ],
     );
     let ledger = ObligationLedger::file(
         "game_logic.dll",
-        vec![claimed_entry("DrawPrimitive", 1, &commit_hash, &receipt_digest)],
+        vec![claimed_entry(
+            "DrawPrimitive",
+            1,
+            &commit_hash,
+            &receipt_digest,
+        )],
         1_700_000_000,
     )
     .expect("file the ledger");
@@ -2298,7 +2379,10 @@ fn a_fully_closed_exe_unit_waits_on_its_scenario_verdict_lane() {
         "a closed exe unit without a filed scenario verdict is honest work awaiting \
          scenario assessment — never complete"
     );
-    assert_eq!(row.tally.verified, 0, "the exe claim never counts verified on unit links alone");
+    assert_eq!(
+        row.tally.verified, 0,
+        "the exe claim never counts verified on unit links alone"
+    );
     let open = row.first_open.as_ref().expect("the missing lane is named");
     assert!(
         open.link.contains("scenario verdict"),
@@ -2401,7 +2485,7 @@ fn a_scenario_verdict_document_outside_its_filing_envelope_is_not_a_filed_verdic
             "claims_complete_equivalence": true,
             "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         })
-            .to_string(),
+        .to_string(),
     )
     .expect("file the stray verdict");
     stage_unknown_ledger(dir.path(), "eqgame.exe", Vec::new());
@@ -2436,7 +2520,8 @@ fn a_tampered_scenario_verdict_never_closes_the_exe_row() {
     let (commit_hash, receipt_digest) =
         fully_closed_unit(&git, dir.path(), "eqgame.exe", "game_loop");
     stage_scenario_verdict(dir.path(), "eqgame.exe", "main", true);
-    let verdict_path = scenario_verdict_path(dir.path(), &BinaryIdentity::new("eqgame.exe"), "main");
+    let verdict_path =
+        scenario_verdict_path(dir.path(), &BinaryIdentity::new("eqgame.exe"), "main");
     let mut document: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&verdict_path).expect("read the verdict"))
             .expect("parse the verdict");
@@ -2467,4 +2552,3 @@ fn a_tampered_scenario_verdict_never_closes_the_exe_row() {
         open.link
     );
 }
-

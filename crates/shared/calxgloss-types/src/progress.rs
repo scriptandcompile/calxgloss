@@ -1537,7 +1537,10 @@ mod tests {
         assert_eq!(json["scan"], "control-flow");
         assert_eq!(json["binary"], "LaunchPad.exe");
         let shown = event.to_string();
-        assert!(shown.contains("control-flow"), "display names the scan: {shown}");
+        assert!(
+            shown.contains("control-flow"),
+            "display names the scan: {shown}"
+        );
     }
 
     #[test]
@@ -1560,7 +1563,10 @@ mod tests {
         assert_eq!(json["elapsed_secs"], 4.25);
         assert_eq!(json["findings"], 9);
         let shown = event.to_string();
-        assert!(shown.contains("control-flow"), "display names the scan: {shown}");
+        assert!(
+            shown.contains("control-flow"),
+            "display names the scan: {shown}"
+        );
         assert!(shown.contains("9"), "display reports the count: {shown}");
     }
 
@@ -1609,8 +1615,14 @@ mod tests {
             "a failed scan reports no count, never a fabricated zero: {json}"
         );
         let shown = event.to_string();
-        assert!(shown.contains("sync"), "the display names the scan: {shown}");
-        assert!(shown.contains("failed"), "the display reads as failed: {shown}");
+        assert!(
+            shown.contains("sync"),
+            "the display names the scan: {shown}"
+        );
+        assert!(
+            shown.contains("failed"),
+            "the display reads as failed: {shown}"
+        );
         assert!(
             shown.contains("refused the scan"),
             "the display carries the error text: {shown}"
@@ -1626,7 +1638,9 @@ mod tests {
         }))
         .expect("a completed event without an error field still reads");
         match restored {
-            ProgressEvent::EvidenceScanCompleted { findings, error, .. } => {
+            ProgressEvent::EvidenceScanCompleted {
+                findings, error, ..
+            } => {
                 assert_eq!(findings, None);
                 assert_eq!(error, None, "no error field, no failure");
             }

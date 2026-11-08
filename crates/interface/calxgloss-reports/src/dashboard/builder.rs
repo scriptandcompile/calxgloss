@@ -443,8 +443,11 @@ impl<'a> DashboardBuilder<'a> {
         // never disagree. A binary whose ledger was never filed yields no
         // entry: every unit of that binary keeps the unknown reading,
         // never a closed obligation.
-        let unit_obligations =
-            super::conformance::derive_unit_obligations(&self.repo_path, &conformance_set, &conformance_join);
+        let unit_obligations = super::conformance::derive_unit_obligations(
+            &self.repo_path,
+            &conformance_set,
+            &conformance_join,
+        );
         for unit in dashboard
             .review_queue
             .iter_mut()

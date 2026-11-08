@@ -593,7 +593,12 @@ async fn the_filed_pair_stamps_the_kinds_the_suite_declared_and_a_kindless_case_
     let mut negative = case(7);
     negative.case_kind = Some(calxgloss_types::CaseKind::Negative);
     // `case(7)` itself declares no kind: an honest unclassified try.
-    let (_run, work) = scratch_run(&VerifyContext::default(), BODY, &[positive, negative, case(7)]).await;
+    let (_run, work) = scratch_run(
+        &VerifyContext::default(),
+        BODY,
+        &[positive, negative, case(7)],
+    )
+    .await;
 
     let filed = pair_verifies(&unit_dir(work.path()));
     assert_eq!(

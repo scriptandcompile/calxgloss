@@ -552,7 +552,10 @@ impl Verifier {
             covered_case_kinds: if verdict == VerificationVerdict::CompileFailed {
                 Default::default()
             } else {
-                baseline_tests.iter().filter_map(|case| case.case_kind).collect()
+                baseline_tests
+                    .iter()
+                    .filter_map(|case| case.case_kind)
+                    .collect()
             },
             dimensions,
             compile_ms,

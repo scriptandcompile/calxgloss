@@ -321,7 +321,10 @@ fn declared_subject_end(body: &str, open: usize) -> usize {
         while bytes.get(at) == Some(&b'*') {
             at = skip_line_ws(bytes, at + 1);
         }
-        if !bytes.get(at).is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') {
+        if !bytes
+            .get(at)
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        {
             return at;
         }
         let word_end = name_end(bytes, at);
