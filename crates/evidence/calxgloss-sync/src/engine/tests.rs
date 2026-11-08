@@ -741,6 +741,63 @@ async fn data_race_findings_append_after_the_per_function_findings() {
 }
 
 #[tokio::test]
+async fn many_bodies_sharing_a_decompiler_junk_name_form_no_cross_function_finding() {
+    // The LaunchPad case shape, pinned small: several bodies that
+    // share only the decompiler's own slot names — `v1` written in
+    // one body and read in another, `a0`, `eax`, `stack` — pair into
+    // no race finding, because the shared global reading rejects
+    // those names outright. The one real global in the program still
+    // pairs, so the rule removes the junk and not the scan.
+    let mut program = FakeProgram::empty();
+    let junk = [
+        ("FUN_180010000", "  v1 = 5;\n"),
+        ("FUN_180010010", "  iVar1 = v1;\n"),
+        ("FUN_180010020", "  v1 = a0;\n"),
+        ("FUN_180010030", "  uVar1 = v1 + a0;\n"),
+        ("FUN_180010040", "  stack = eax;\n"),
+        ("FUN_180010050", "  ebx = stack;\n"),
+    ];
+    program.listing = junk
+        .iter()
+        .map(|(name, _)| summary(name))
+        .chain([summary("FUN_18003ab00"), summary("FUN_18003e750")])
+        .collect();
+    for (name, body) in junk {
+        program
+            .bodies
+            .insert(name.into(), function(name, "undefined {name}(void)", body));
+    }
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  DAT_counter = iVar1 + 1;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  uVar1 = DAT_counter;\n",
+        ),
+    );
+    let result = scan(program).await;
+
+    let order: Vec<(&str, &str)> = result
+        .findings
+        .iter()
+        .map(|finding| (finding.function(), finding.kind()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![("FUN_18003ab00", "data_race")],
+        "eight bodies sharing junk names, and only the real global pairs into one finding"
+    );
+}
+
+#[tokio::test]
 async fn scan_decompiles_each_function_exactly_once() {
     // The six per-body detectors share one decompile call per
     // function; a scan that asked each detector for its own copy

@@ -189,6 +189,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Evidence scans
+
+- **Decompiler junk names stop posing as shared globals (issue #433)** — the shared global-identification reading behind the global-state scan and the concurrency scan now rejects the decompiler's own bookkeeping: stack slots (`v1`), parameter slots (`a0`), register names (`eax`), and `stack`-prefixed pseudo-words never record a global access. A local's declaration line (`unsigned int v1;`) records no access at all, even when the declared name does not carry a decompiler-local spelling. The LaunchPad.exe measurement carried twelve such names in 69% of the global-state scan's rows, and `v1` alone showed 5,136 readers and 4,737 writers in the shared-globals index. Bodies that share a junk name now record no accesses, no rollup entries, and no cross-function race pairings. Real globals keep their records unchanged.
+
 #### Scratch verification harness
 
 - **The scratch project's test runner now compiles and actually runs its cases (P22, issue #385)** — the runner the verify crate generates into each scratch project never built: its input-dispatch arms matched on bare `Null`/`Number`/`Array` names, which compile as catch-all bindings rather than `serde_json::Value` variants, and a duplicated unmatched arm with stray closing braces followed them. The compile gate missed it because it only checks the lib scaffold, so a non-empty baseline never executed a single behavioral test and every suite fell through as zero-passing with no per-case lines — the hole the retry-loop entry (#334) recorded as an honest caveat is now closed at its root: the generated runner defines its own case-input and result types, compiles, and executes every baseline case through the real verdict seam, values and ordered traces alike.

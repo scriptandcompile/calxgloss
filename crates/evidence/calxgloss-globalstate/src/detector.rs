@@ -10,16 +10,20 @@
 //! about the same identifier:
 //!
 //! - A **global** is a plain identifier the decompiler did not name as
-//!   one of its own locals — `param_*`, `local_*`, and the typed
-//!   variable families (`iVar1`, `uVar2`, `pcVar3`, …) name stack
-//!   slots, never program data.
+//!   one of its own locals — `param_*`, `local_*`, the typed variable
+//!   families (`iVar1`, `uVar2`, `pcVar3`, …), `v<digits>` stack slots
+//!   and `a<digits>` parameter slots, register names (`eax` and kin),
+//!   and `stack`-prefixed pseudo-words all name stack slots or machine
+//!   state, never program data.
 //! - An **access site** is an identifier outside string and char
 //!   literals, outside whole calls (a call's entire argument list is
 //!   skipped, so a lock object or constant passed to a call names no
 //!   access), not the tail or head of a qualified or member name, not
 //!   a type word in cast position (`(HANDLE)x`) or in front of a
-//!   declared name (`HANDLE handle;`), and not a control keyword —
-//!   though a control keyword's *condition* still names its accesses.
+//!   declared name (`HANDLE handle;`), not a name the line's type word
+//!   declares (`unsigned int v1;` names storage, never an access), and
+//!   not a control keyword — though a control keyword's *condition*
+//!   still names its accesses.
 //!
 //! The body itself decides the kind. If the bytes after the name open
 //! an assignment (`=`, never `==`, or a compound `+=`-style store), or
@@ -99,8 +103,9 @@ impl GlobalStateDetector {
     ///
     /// A name the rule rejects — a decompiler local, a literal's
     /// contents, a call's arguments, a qualified or member spelling, a
-    /// type word, a control keyword — contributes no record, so a
-    /// body of nothing but rejected names yields nothing.
+    /// type word, a control keyword, a declaration and its declared
+    /// name — contributes no record, so a body of nothing but rejected
+    /// names yields nothing.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<GlobalStateFinding> {
         let mut findings = Vec::new();
         for site in global_sites(&func.body) {
@@ -182,8 +187,12 @@ fn is_exact_spelling(name: &str) -> bool {
 /// reading can see. Control keywords keep their parens scanned —
 /// `if (DAT_flag)` still names an access — while type words in cast
 /// position (`(HANDLE)x`) or in front of a declared name
-/// (`HANDLE handle;`) name nothing. [`is_decompiler_local`] then
-/// decides whether a surviving name is a global rather than a local.
+/// (`HANDLE handle;`) name nothing, and a line that opens with a
+/// vocabulary type word declares its names rather than accessing
+/// them (`unsigned int v1;`). [`is_decompiler_local`] then decides
+/// whether a surviving name is a global rather than a decompiler
+/// spelling of stack slots, machine registers, or its own
+/// bookkeeping.
 fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
     let bytes = body.as_bytes();
     let mut sites = Vec::new();
@@ -223,7 +232,24 @@ fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
                     }
                     continue;
                 }
-                if is_cast_word(bytes, i, end) || declares_a_name(bytes, open) {
+                if is_cast_word(bytes, i, end) {
+                    i = end;
+                    continue;
+                }
+                if is_type_word(name) && !bytes[end..open].contains(&b'\n') {
+                    // A type word opens a declaration when a name
+                    // follows it on the same line — `unsigned int v1;`,
+                    // `int *my_ptr;`. The reading records no name from
+                    // that line: the type words, the pointer stars,
+                    // and every subject the statement declares.
+                    let subject = declared_subject_end(body, open);
+                    i = if subject > open { subject } else { end };
+                    continue;
+                }
+                if declares_a_name(bytes, open) {
+                    // A word that is not a type word — `return
+                    // DAT_flag;` — is skipped alone; the reading judges
+                    // the name behind it like any other.
                     i = end;
                     continue;
                 }
@@ -264,14 +290,71 @@ fn is_cast_word(bytes: &[u8], start: usize, end: usize) -> bool {
 
 /// Whether the name is followed by another name — a declaration's
 /// `TYPE name;` or a compound type spelling — where the first word
-/// is a type and the second is what it names. The type word is
-/// skipped here; the declared name is then judged like any other
-/// name, and in decompiler bodies it is one of the decompiler's local
-/// spellings, rejected by [`is_decompiler_local`].
+/// is a type and the second is what it names. When the first word is
+/// one of the type vocabulary words, [`declared_subject_end`] skips
+/// the whole declaration: the type words and the declared subject
+/// contribute no access. Otherwise the word alone is skipped — a
+/// `return` or `else` in front of a name leaves that name to be
+/// judged like any other.
 fn declares_a_name(bytes: &[u8], open: usize) -> bool {
     bytes
         .get(open)
         .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+}
+
+/// Where a declaration that opens at `open` — the first name after a
+/// type word — leaves the body scan: past its last subject. The
+/// reading calls off one line at a time: a type word at the end of a
+/// line opens no declaration, and the next line's names are accesses
+/// it must judge on their own. Within the line the chain is the
+/// further type words a compound spelling carries (`unsigned int
+/// v1;`), the pointer stars that bind a subject to its type
+/// (`int *my_ptr;`), a subject's array brackets (`char my_buf[4];`),
+/// and the later subjects a comma declarator adds (`int handle1,
+/// handle2;`). An initializer stays outside the skip: in `int my_p =
+/// DAT_x;` the reading records no `my_p` but still reads the store
+/// into `DAT_x`.
+fn declared_subject_end(body: &str, open: usize) -> usize {
+    let bytes = body.as_bytes();
+    let mut at = skip_line_ws(bytes, open);
+    loop {
+        while bytes.get(at) == Some(&b'*') {
+            at = skip_line_ws(bytes, at + 1);
+        }
+        if !bytes.get(at).is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') {
+            return at;
+        }
+        let word_end = name_end(bytes, at);
+        if is_type_word(&body[at..word_end]) {
+            at = skip_line_ws(bytes, word_end);
+            continue;
+        }
+        // The subject itself. Past its array brackets, a comma opens
+        // the statement's next declarator; anything else — an `=`, a
+        // `;` — closes the declaration this reading skips.
+        at = skip_line_ws(bytes, word_end);
+        while bytes.get(at) == Some(&b'[') {
+            let Some(close) = bytes[at..].iter().position(|b| *b == b']') else {
+                break;
+            };
+            at = skip_line_ws(bytes, at + close + 1);
+        }
+        if bytes.get(at) == Some(&b',') {
+            at = skip_line_ws(bytes, at + 1);
+            continue;
+        }
+        return word_end;
+    }
+}
+
+/// The next byte that is not in-line space — a tab, a carriage
+/// return, or a space, but never a newline. The declaration skip
+/// stays on its own line this way.
+fn skip_line_ws(bytes: &[u8], mut at: usize) -> usize {
+    while matches!(bytes.get(at), Some(b' ' | b'\t' | b'\r')) {
+        at += 1;
+    }
+    at
 }
 
 /// Words a body contains that are not program data: the C control
@@ -344,18 +427,36 @@ fn is_type_word(word: &str) -> bool {
     )
 }
 
+/// The general-purpose x86 and x64 register names a decompile can
+/// restate as a variable — the same family the type-inference crate's
+/// `stack_discipline` reading keys on, widened to the 64-bit and
+/// high-byte spellings. None of them names program data.
+const REGISTERS: &[&str] = &[
+    "eax", "ebx", "ecx", "edx", "esi", "edi", "esp", "ebp", "ax", "bx", "cx", "dx", "si", "di",
+    "bp", "sp", "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "rax", "rbx", "rcx", "rdx", "rsi",
+    "rdi", "rsp", "rbp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+];
+
 /// Whether a name is one of the decompiler's own local spellings: a
 /// parameter, a stack slot, or one of the typed-variable families
 /// (`iVar1`, `uVar2`, `pcVar3`, …) — a `Var` followed by digits and
-/// nothing else. Any other name in a body is treated as a program
-/// symbol, and that is what makes it a global.
+/// nothing else — or one of the other junk families decompilers leave
+/// in bodies: a `v<digits>` stack slot or `a<digits>` parameter slot,
+/// a register name, or a name that starts with `stack`. Any other
+/// name in a body
+/// is treated as a program symbol, and that is what makes it a global.
 fn is_decompiler_local(name: &str) -> bool {
     name.starts_with("param_")
         || name.starts_with("local_")
+        || name.starts_with("stack")
+        || REGISTERS.contains(&name)
         || name.find("Var").is_some_and(|at| {
             let suffix = &name[at + 3..];
             !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
         })
+        || (name.starts_with('v') || name.starts_with('a'))
+            && name.len() > 1
+            && name[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Whether the global whose name starts at `offset` and ends at
@@ -589,10 +690,16 @@ mod tests {
             readings(
                 "  param_1 = local_20;\n\
              iVar1 = uVar2;\n\
-             pcVar3 = DAT_180064e80;\n",
+             pcVar3 = DAT_180064e80;\n\
+             v1 = a0;\n\
+             v2 = v1;\n\
+             uVar1 = a1;\n\
+             stack = eax;\n\
+             uVar2 = stack[4];\n",
             ),
             vec![("DAT_180064e80".to_string(), AccessKind::Read, 85)],
-            "parameters, stack slots, and the Var families name stack slots, never program data"
+            "parameters, stack slots, the Var families, `v<digits>` and `a<digits>` slots, \
+             register names, and `stack` pseudo-words name stack slots, never program data"
         );
     }
 
@@ -642,6 +749,48 @@ mod tests {
             ),
             Vec::new(),
             "cast-position type words and declaration types name no access"
+        );
+    }
+
+    #[test]
+    fn a_name_standing_as_a_declarations_subject_records_no_access() {
+        // The rule does not wait for the declared name to carry a
+        // decompiler local spelling: whatever a declaration declares,
+        // it declares a local of that body, never program data.
+        assert_eq!(
+            readings(
+                "  unsigned int my_thing;\n\
+             uint my_flag;\n\
+             char my_buf[4];\n\
+             int *my_ptr;\n",
+            ),
+            Vec::new(),
+            "a declaration line records no access at all"
+        );
+    }
+
+    #[test]
+    fn a_declaration_with_several_comma_separated_names_records_no_access() {
+        // Every name in the statement is a subject of the same
+        // declaration — plain pointers and arrays included.
+        assert_eq!(
+            readings(
+                "  int handle1, handle2;\n\
+             undefined8 uVar1, *puVar2, auVar3[4];\n",
+            ),
+            Vec::new(),
+            "a comma declarator's later names are subjects too, not trailing accesses"
+        );
+    }
+
+    #[test]
+    fn a_type_word_alone_on_a_line_never_eats_the_next_lines_access() {
+        // The declaration reading stays on its line: a dangling type
+        // word cannot pull the next line's store into its skip.
+        assert_eq!(
+            readings("  int\n  DAT_flag = 5;\n"),
+            vec![("DAT_flag".to_string(), AccessKind::Write, 85)],
+            "the store on the following line is a real access, not a declaration subject"
         );
     }
 

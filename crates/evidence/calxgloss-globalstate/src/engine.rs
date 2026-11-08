@@ -564,6 +564,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_scan_records_no_access_for_the_decompiler_junk_families() {
+        // The LaunchPad case shape at the scan seam: a body whose
+        // identifiers are all the decompiler's own bookkeeping —
+        // stack slots, parameter slots, register names, a `stack`
+        // pseudo-word, and a local's declaration line — records
+        // nothing at all, and only the one real load behind them
+        // contributes a finding.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "  v1 = 5;\n\
+             unsigned int v2;\n\
+             a0 = v2;\n\
+             uVar1 = v1 + a0;\n\
+             stack = eax;\n\
+             v3 = DAT_180064e80;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "  v1 = a0;\n\
+             char my_buf[4];\n\
+             ebx = stack;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let globals: Vec<&str> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.access_kind().is_some())
+            .map(|finding| finding.global())
+            .collect();
+        assert_eq!(
+            globals,
+            ["DAT_180064e80"],
+            "one real load, and no junk family — including a declared subject — records an access"
+        );
+        assert_eq!(
+            result.purity,
+            vec![
+                FunctionPurity {
+                    function: "FUN_18003ab00".into(),
+                    is_pure: false,
+                    reads: 1,
+                    writes: 0,
+                },
+                FunctionPurity {
+                    function: "FUN_18003e750".into(),
+                    is_pure: true,
+                    reads: 0,
+                    writes: 0,
+                },
+            ],
+            "a body of nothing but junk reads as pure — its corrected counts, not old junk rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_shared_globals_index_carries_no_entry_for_a_decompiler_junk_name() {
+        // Three bodies sharing one stack slot name — the shape that
+        // gave `v1` 5,136 readers and 4,737 writers on LaunchPad —
+        // keep the index honest: one entry, for the one real global,
+        // and no junk name ever appears with reader or writer lists.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_18003e750"),
+            summary("FUN_180041230"),
+        ];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function("FUN_18003ab00", "  v1 = 5;\n  DAT_180064e80 = v1;\n"),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function("FUN_18003e750", "  uVar1 = v1;\n  uVar1 = DAT_180064e80;\n"),
+        );
+        program.bodies.insert(
+            "FUN_180041230".into(),
+            function("FUN_180041230", "  a0 = v1;\n  v2 = a0;\n"),
+        );
+        let result = scan(program).await;
+
+        let entries: Vec<&crate::types::SharedGlobalRecord> = result
+            .findings
+            .iter()
+            .filter_map(|finding| finding.shared_global())
+            .collect();
+        assert_eq!(entries.len(), 1, "only the real global reaches the index");
+        assert_eq!(entries[0].global, "DAT_180064e80");
+        assert_eq!(entries[0].writers, vec!["FUN_18003ab00"]);
+        assert_eq!(entries[0].readers, vec!["FUN_18003e750"]);
+    }
+
+    #[tokio::test]
     async fn the_purity_summary_covers_every_kept_function_in_listing_order() {
         // The derived summary states what the scan already knows: the
         // impure function records its read and write counts, and the
