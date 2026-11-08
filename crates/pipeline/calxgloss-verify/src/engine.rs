@@ -1797,6 +1797,7 @@ error[E0308]: mismatched types
     }
 
     #[test]
+    #[tracing_test::traced_test]
     fn test_parse_test_results_empty() {
         let baseline = vec![TestCase {
             inputs: serde_json::json!({}),
@@ -1814,6 +1815,97 @@ error[E0308]: mismatched types
         assert!(
             !report.produced_results,
             "a runner that printed no rows produced no verdicts to fold"
+        );
+        assert!(
+            logs_contain("Test runner produced no output")
+                && !logs_contain("Could not parse test results from runner output"),
+            "empty output keeps its own warning line, so the log says the runner printed \
+             nothing instead of blaming a format the parser could not read"
+        );
+    }
+
+    /// The parse fixtures' usual one-case baseline suite.
+    fn one_baseline_case() -> Vec<TestCase> {
+        vec![TestCase {
+            inputs: serde_json::json!({}),
+            expected_return: serde_json::json!(0),
+            expected_side_effects: vec![],
+            expected_api_calls: vec![],
+            origin: calxgloss_types::CaseOrigin::Generated,
+            case_kind: None,
+        }]
+    }
+
+    /// Issue #441: a format mismatch between a workspace's runner output
+    /// and this parser must be diagnosable from the run log alone. So the
+    /// parse-failure warning quotes the raw output it could not read.
+    #[test]
+    #[tracing_test::traced_test]
+    fn unrecognised_runner_output_warns_with_its_raw_excerpt() {
+        let baseline = one_baseline_case();
+        // A near-miss fixture: cargo's stderr preamble plus a runner that
+        // prints verdict prose instead of JSON rows.
+        let output = "\
+warning: unused import: `std::io`
+ --> src/main.rs:2:5
+  |
+2 | use std::io;
+  |     ^^^^^^^
+
+MYUNIT FUN_1800014a0: mismatch, expected 7 got 8
+";
+        let report = parse_test_results(output, &baseline);
+        assert!(
+            !report.produced_results,
+            "a runner that prints prose yields no result rows"
+        );
+        assert!(
+            logs_contain("Could not parse test results from runner output")
+                && logs_contain("MYUNIT FUN_1800014a0: mismatch"),
+            "the warning quotes the output it could not read, so the run log shows \
+             what the runner printed"
+        );
+    }
+
+    /// Issue #441: a chatty or huge runner can never flood the run log —
+    /// the parse-failure excerpt stops after the first twenty lines.
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_chatty_runners_excerpt_stays_bounded_in_the_log() {
+        let baseline = one_baseline_case();
+        let chatty = (1..=200)
+            .map(|i| format!("chatter {i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let report = parse_test_results(&chatty, &baseline);
+        assert!(!report.produced_results);
+        assert!(
+            logs_contain("chatter 020"),
+            "the first twenty lines reach the log"
+        );
+        assert!(
+            !logs_contain("chatter 021"),
+            "the twenty-first line never reaches the log: the excerpt is bounded"
+        );
+    }
+
+    /// Issue #441: one enormous line floods the log as surely as two
+    /// hundred small ones, so the quoted excerpt also stops at a
+    /// character budget.
+    #[test]
+    #[tracing_test::traced_test]
+    fn one_enormous_line_cannot_flood_the_log_either() {
+        let baseline = one_baseline_case();
+        let huge = format!("{}end_of_the_enormous_line", "x".repeat(100_000));
+        let report = parse_test_results(&huge, &baseline);
+        assert!(!report.produced_results);
+        assert!(
+            logs_contain("Could not parse test results from runner output"),
+            "the warning still fires on a huge single line"
+        );
+        assert!(
+            !logs_contain("end_of_the_enormous_line"),
+            "the excerpt stops at its character budget instead of quoting the whole line"
         );
     }
 

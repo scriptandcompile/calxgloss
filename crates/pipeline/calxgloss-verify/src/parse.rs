@@ -73,6 +73,32 @@ pub struct TestRunReport {
     pub incomplete: bool,
 }
 
+/// How many raw output lines, and how many characters all told, a
+/// parse-failure warning quotes. Enough of a chatty runner's first word
+/// to spot a format mismatch; small enough that no runner floods the log.
+const MAX_EXCERPT_LINES: usize = 20;
+const MAX_EXCERPT_CHARS: usize = 2_000;
+
+/// The raw runner output a parse failure quotes, cut to the line and
+/// character budgets above. An ellipsis admits when the quote was cut.
+fn bounded_runner_excerpt(output: &str) -> String {
+    let lines = output.lines().collect::<Vec<_>>();
+    let mut excerpt = lines
+        .iter()
+        .take(MAX_EXCERPT_LINES)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let chars_cut = excerpt.chars().count() > MAX_EXCERPT_CHARS;
+    if chars_cut {
+        excerpt = excerpt.chars().take(MAX_EXCERPT_CHARS).collect();
+    }
+    if lines.len() > MAX_EXCERPT_LINES || chars_cut {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
 /// Parse test runner output for pass/fail results.
 ///
 /// Counts each dimension honestly: `trace_assessed` counts the cases
@@ -209,7 +235,15 @@ pub fn parse_test_results(
     if trimmed.is_empty() {
         warn!("Test runner produced no output");
     } else {
-        warn!("Could not parse test results from runner output");
+        // The warning line quotes what the runner printed (issue #441), so
+        // a format mismatch is diagnosable from the run log alone. The
+        // quote is bounded, so a chatty or huge runner can never flood the
+        // log; tracing keeps a &str field on the warning's own line.
+        let excerpt = bounded_runner_excerpt(trimmed);
+        warn!(
+            runner_output = excerpt.as_str(),
+            "Could not parse test results from runner output"
+        );
     }
     TestRunReport {
         total: baseline_tests.len(),
