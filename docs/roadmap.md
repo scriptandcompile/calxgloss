@@ -51,11 +51,11 @@ dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
 has the fail-closed ledger that finally makes "this binary is done" a
 checkable claim instead of "the pipeline stopped with nobody complaining"
 (P26, after its durable-receipt half P25). The front of the table is now
-P55, then the architecture-review enablers P57–P60, then P56: a wrong
-verification verdict still stands between the operator and a real
-end-to-end restitching run, and P57–P60 make P56's surface rewrite and
-3,097-line test retarget cheap — run P56 first and it re-encodes at the
-new seam the hardcoded-conformance-unknown hazard the 2026-11-08 review
+the architecture-review enablers P57–P60, then P56: the honest
+verification verdict (P55) has shipped, and P57–P60 make P56's surface
+rewrite and 3,097-line test retarget cheap — run P56 first and it
+re-encodes at the new seam the hardcoded-conformance-unknown hazard the
+2026-11-08 review
 flagged. Below P56 sit P61 and P62, the batch protocol and the retry
 settle, on which P27 otherwise builds twice. Then P27's hypothesis ledger
 leads the older tracks again, and the rest of the review's tracks sit
@@ -68,7 +68,6 @@ the pipeline header still churning.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P55 | Honest verdicts when the test runner breaks — "Compilation successful" followed by "Could not parse test results" and "tests never ran" hit every unit of one live run; a runner parse failure is never a compile failure, and the runner's output stays diagnosable from the log | pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | filed as issue, not specced | [#427](https://github.com/scriptandcompile/calxgloss/issues/427) |
 | P57 | Delete the pass-throughs and dead copies — six padding surfaces: the 131-`pub use` facade crate, a 542-line dead stub mirror in `calxgloss-verify`, `calxgloss-sync` setters and aliases nothing calls, a character-identical `landed_state` copy in web, and the hand-printed serve banner already 7 routes stale; ~1,500 lines gone, zero behaviour lost | shared (`calxgloss`, `calxgloss-types`) + pipeline (`calxgloss-verify`, `calxgloss-sync`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P59 | One review-surface reader over the record tree — shared record modules gain `path` + `read` with named faults (missing · corrupt · tampered); one web-side reader owns the record-tree reads and the live-merge fold; the 8 hardcoded `unknown()` surfaces collapse into one honest read | shared (`calxgloss-types`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
@@ -126,7 +125,10 @@ run that read as 17 minutes of silence — has since shipped: spec #425,
 tickets #428–#431, decisions closed in ADR-0061. P54 — the sync scan that
 logged 43,547,588 findings and wrote a 14 GB document — has since shipped
 too: spec #432, tickets #433–#439, decisions closed in ADR-0062, which
-supersedes ADR-0034 and amends ADR-0033; P55–P56 remain open. Of
+supersedes ADR-0034 and amends ADR-0033. P55 — the gate that logged a
+compile failure the compiler had just denied — has since shipped too:
+spec #427, tickets #440–#442, and the everquest workspace's real runner
+output now sits pinned in the parse fixture set; P56 remains open. Of
 the original four, three were failures that run witnessed firsthand, each
 filed as an issue before landing here, and the fourth is the surface
 decision the review raised —
@@ -134,8 +136,7 @@ terminal-visible reports are not wanted ("17 min of 'it's running' is
 unacceptable"), so the visibility work landed at the web view and the
 terminal report half gets removed behind it. The block deliberately
 sits at the front of the table: only P56 waits on anything (P53, inside
-the block — now shipped, so P56 stands unblocked), P55 need not wait for P49's named-outcome vocabulary — the
-parse fix stands alone and P49 folds it in afterward — and doing P56
+the block — now shipped, so P56 stands unblocked), and doing P56
 before P31 saves rework, since P31 would deepen `doctor`'s terminal
 report inside the very crate P56 strips; P30, P50 and P52 also touch
 that crate and inherit the same ordering benefit.
@@ -456,7 +457,10 @@ first, cap the set — so the cheapest counterexample leads every repair
 attempt. Adopt the two honesty rules as named outcomes on
 `VerificationResult`: more than half the cases unevaluable means **no
 verdict**, and "inputs don't reach the logic" is its own outcome, never a
-silent pass. Pairs with P25: the receipt records what the verdict stood
+silent pass. The gate seam already records a broken test project as the
+verifier's own `harness_error` receipt outcome (P55, shipped: spec #427,
+tickets #440–#442); this track's named-outcome vocabulary folds that case
+in. Pairs with P25: the receipt records what the verdict stood
 on. Source:
 [36](research/kraken/36-rewrite-pipeline.md) steal 5, README #8.
 
@@ -512,29 +516,6 @@ time; nothing here changes pipeline shape. Source:
 Blocked by (as a runner): P42 (the exit-criterion tests); (as rework,
 2026-11-08 review): P66 — the generated command reference wants each
 command's own clap struct.
-
-## P55 — Honest verdicts when the test runner breaks (pipeline)
-
-**The gate reported a compile failure the compiler had just denied.**
-Every unit that reached verification in the 2026-11-07 diagnosis — three
-of three — logged `Compilation successful`, then WARN "Could not parse
-test results from runner output"
-(`crates/pipeline/calxgloss-verify/src/parse.rs:212`), then INFO "Test
-project did not compile — tests never ran"
-(`crates/pipeline/calxgloss-verify/src/engine.rs:349`) two seconds
-later. The parse failure folds into the compile-failure branch no matter
-what the compile step said, so clean units burned three `compile_fix`
-LLM retries each against a failure that was not a compile failure, and
-the P25 receipt filed the wrong failure class. The fix: name the
-harness-parse failure as its own outcome, never claim "did not compile"
-after the compile step reported success, log the first ~20 lines of raw
-runner output at WARN on parse failure so the format mismatch is
-diagnosable from the log alone, and add the workspace's actual runner
-output to the parse fixture set. Pairs with: P49 — that track's verdict
-honesty rules give `VerificationResult` the named-outcome vocabulary
-this outcome belongs to. Filed as
-[#427](https://github.com/scriptandcompile/calxgloss/issues/427) during
-the 2026-11-07 live-run diagnosis.
 
 ## P56 — The web view as the only report surface (interface)
 
