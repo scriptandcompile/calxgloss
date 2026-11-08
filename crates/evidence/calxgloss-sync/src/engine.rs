@@ -50,6 +50,17 @@ pub use calxgloss_decomp::ScanSource;
 /// beside the counts, not a dump (the P19-5 admitted-semantics track).
 const MAX_NAMED_UNREACHED: usize = 5;
 
+/// The cap on cross-function findings, a protocol constant: how many
+/// one scan may file (issue #438). Aggregation already bounds a normal
+/// program's cross-function output — one race per shared global, one
+/// conflict per reversed lock pair. A scan past this cap is therefore
+/// a pathological one. Past the cap the scan keeps the first findings
+/// in scan order and keeps the whole count, and the coverage record
+/// stamps the truncation, so the scan never cuts silently. The
+/// precedent is the constants engine's inline-table value cap: the
+/// list truncates while the count stays whole.
+const MAX_CROSS_FUNCTION_FINDINGS: usize = 512;
+
 /// The facets a concurrency scan declares, in order — the roster the
 /// record must name exactly once each. The concurrency scan reads two:
 /// the decompiled bodies every per-body detector shares, and the
@@ -74,14 +85,24 @@ pub const DECLARED_FACETS: &[&str] = &["function-bodies", "cross-function-pairs"
 /// pairing. When the gate excluded any body, that facet is `partial`
 /// and its admission line names the excluded count — function names up
 /// to [`MAX_NAMED_UNREACHED`], a count beyond. A gated findings list
-/// then never renders alike with a full-coverage one.
+/// then never renders alike with a full-coverage one. An engaged
+/// findings cap (issue #438) stamps its own admission line through this
+/// same facet. The line names the whole cross-function count beside the
+/// cap and states that the first findings in scan order stand, so a
+/// truncated list never reads as a scan that saw everything and found
+/// nothing.
 ///
 /// With nothing skipped and nothing excluded, both facets are
 /// `complete`. That is the admission's point: a function no finding
 /// mentions was examined and clean, never silently unchecked. With any
 /// skips or any exclusions the record is `partial`, so silence and
 /// never-reaching are distinguishable in the filed record itself.
-fn coverage_stamp(unreached: &[String], nameless: usize, gate_excluded: &[String]) -> ScanCoverage {
+fn coverage_stamp(
+    unreached: &[String],
+    nameless: usize,
+    gate_excluded: &[String],
+    findings_truncated: Option<usize>,
+) -> ScanCoverage {
     // One bounded name list per facet: names up to the cap inline,
     // everything else — counted leftovers and nameless entries
     // alike — folded into a trailing count.
@@ -115,29 +136,39 @@ fn coverage_stamp(unreached: &[String], nameless: usize, gate_excluded: &[String
             )),
         }
     };
-    let pairs = if gate_excluded.is_empty() {
+    let mut pair_admissions: Vec<String> = Vec::new();
+    if !gate_excluded.is_empty() {
+        let noun = if gate_excluded.len() == 1 {
+            "function"
+        } else {
+            "functions"
+        };
+        pair_admissions.push(format!(
+            "{} {noun} excluded from cross-function pairing: {}",
+            gate_excluded.len(),
+            bounded(gate_excluded, 0)
+        ));
+    }
+    if let Some(total_findings) = findings_truncated {
+        pair_admissions.push(format!(
+            "{total_findings} cross-function findings truncated at the cap of \
+             {MAX_CROSS_FUNCTION_FINDINGS}: first {MAX_CROSS_FUNCTION_FINDINGS} kept in scan order"
+        ));
+    }
+    let pairs = if pair_admissions.is_empty() {
         FacetCoverage {
             id: "cross-function-pairs".to_string(),
             status: CoverageStatus::Complete,
             limitation: None,
         }
     } else {
-        let noun = if gate_excluded.len() == 1 {
-            "function"
-        } else {
-            "functions"
-        };
         FacetCoverage {
             id: "cross-function-pairs".to_string(),
             status: CoverageStatus::Partial,
-            limitation: Some(format!(
-                "{} {noun} excluded from cross-function pairing: {}",
-                gate_excluded.len(),
-                bounded(gate_excluded, 0)
-            )),
+            limitation: Some(pair_admissions.join("; ")),
         }
     };
-    let status = if total == 0 && gate_excluded.is_empty() {
+    let status = if total == 0 && pair_admissions.is_empty() {
         CoverageStatus::Complete
     } else {
         CoverageStatus::Partial
@@ -437,7 +468,18 @@ impl<S> SyncEngine<S> {
             &self.tls,
             &exports,
         );
-        findings.extend(cross.findings);
+        // The last-resort cap (issue #438): aggregation bounds a normal
+        // program's cross-function output, so a scan past the cap is a
+        // pathological one. The scan then keeps the first findings in
+        // scan order, keeps the whole count, and lets the coverage
+        // record below admit the truncation instead of cutting silently.
+        let cross_total = cross.findings.len();
+        let cross_truncated = cross_total > MAX_CROSS_FUNCTION_FINDINGS;
+        let mut cross_findings = cross.findings;
+        if cross_truncated {
+            cross_findings.truncate(MAX_CROSS_FUNCTION_FINDINGS);
+        }
+        findings.extend(cross_findings);
 
         let mut metadata = ScanMetadata::new(binary);
         // The scan source names the analysis engine behind it, with
@@ -449,7 +491,12 @@ impl<S> SyncEngine<S> {
         // unless the record says which bodies the scan could not
         // reach. The batch scan phase and the CLI's force-rescan file
         // the same admission through this one definition.
-        metadata.coverage = Some(coverage_stamp(&unreached, nameless, &cross.gate_excluded));
+        metadata.coverage = Some(coverage_stamp(
+            &unreached,
+            nameless,
+            &cross.gate_excluded,
+            cross_truncated.then_some(cross_total),
+        ));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,

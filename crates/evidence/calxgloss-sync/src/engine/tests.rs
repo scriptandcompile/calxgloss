@@ -1780,9 +1780,285 @@ async fn a_gated_findings_list_and_a_full_coverage_list_never_render_alike() {
     );
 }
 
+// ============================================================
+// Last-resort cross-function findings cap (issue #438)
+// ============================================================
+
+/// Two exported bodies sharing `count` globals between them: the
+/// first stores to each once, the second reads it back — one
+/// aggregate data race per global, bucketed in first-sighting order.
+fn shared_globals_program(count: usize) -> FakeProgram {
+    let writes = (0..count)
+        .map(|index| format!("DAT_g{index:04} = 1;"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let reads = (0..count)
+        .map(|index| format!("uVar1 = DAT_g{index:04};"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            &format!("  {writes}\n"),
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            &format!("  {reads}\n"),
+        ),
+    );
+    program
+}
+
+#[tokio::test]
+async fn cross_function_findings_past_the_cap_truncate_while_the_count_stays_whole() {
+    // The last-resort cap (issue #438): past the cap the scan keeps
+    // the first findings in scan order and keeps the whole count on
+    // the coverage record. The constants engine's inline-table cap set
+    // the precedent: the list truncates while the count stays whole.
+    // Even a pathological program then files a bounded document that
+    // says what it cut.
+    let result = scan(shared_globals_program(MAX_CROSS_FUNCTION_FINDINGS + 1)).await;
+    let races: Vec<&str> = result
+        .findings
+        .iter()
+        .map(|finding| {
+            let SyncFinding::DataRace(race) = finding else {
+                unreachable!("every finding in this fixture is an aggregated race");
+            };
+            race.variable.as_str()
+        })
+        .collect();
+    assert_eq!(
+        races.len(),
+        MAX_CROSS_FUNCTION_FINDINGS,
+        "the findings list stops at the cap"
+    );
+    assert_eq!(
+        &races[..2],
+        ["DAT_g0000", "DAT_g0001"],
+        "the kept races are the first in scan order"
+    );
+    assert_eq!(
+        races.last().copied(),
+        Some("DAT_g0511"),
+        "and the 513th global is the one that falls off the end"
+    );
+    let coverage = result
+        .metadata
+        .coverage
+        .expect("a capped scan states its coverage too");
+    assert!(
+        roster_faults(&coverage).is_empty(),
+        "a capped record still names every declared facet exactly once"
+    );
+    assert_eq!(
+        coverage.status,
+        CoverageStatus::Partial,
+        "a truncated findings list never reads as a complete picture"
+    );
+    let pairs = coverage
+        .facets
+        .iter()
+        .find(|facet| facet.id == "cross-function-pairs")
+        .expect("cross-function-pairs is named");
+    assert_eq!(pairs.status, CoverageStatus::Partial);
+    assert_eq!(
+        pairs.limitation.as_deref(),
+        Some(
+            "513 cross-function findings truncated at the cap of 512: first 512 kept in scan order"
+        ),
+        "the admission stamps the truncation beside the whole count"
+    );
+}
+
+#[tokio::test]
+async fn a_scan_exactly_at_the_cap_stamps_no_truncation_admission() {
+    // The cap engages only past itself: exactly the cap's worth of
+    // findings all stand, and the record admits nothing — the same
+    // clean look an ordinary aggregated scan has (issue #438).
+    let result = scan(shared_globals_program(MAX_CROSS_FUNCTION_FINDINGS)).await;
+    assert_eq!(
+        result.findings.len(),
+        MAX_CROSS_FUNCTION_FINDINGS,
+        "the cap cuts nothing at its own boundary"
+    );
+    let coverage = result
+        .metadata
+        .coverage
+        .expect("the capped-boundary scan states its coverage");
+    assert_eq!(coverage.status, CoverageStatus::Complete);
+    let pairs = coverage
+        .facets
+        .iter()
+        .find(|facet| facet.id == "cross-function-pairs")
+        .expect("cross-function-pairs is named");
+    assert_eq!(pairs.status, CoverageStatus::Complete);
+    assert_eq!(
+        pairs.limitation, None,
+        "a scan under the cap admits no truncation"
+    );
+    assert_eq!(
+        coverage.admission(),
+        None,
+        "and the whole record says nothing that reads like a cut"
+    );
+}
+
+#[tokio::test]
+async fn the_cap_cuts_at_the_tail_of_the_scan_order_across_both_cross_function_shapes() {
+    // The scan-order contract under the cap (issue #438): lock-order
+    // conflicts stand before races, so past the cap the kept findings
+    // are every conflict and the first races — the races fall off the
+    // tail, never something from the middle. The per-body mutex
+    // findings the same bodies file stand before them and count
+    // nothing toward the cap.
+    let locks: Vec<String> = (0..28).map(|index| format!("DAT_l{index:02}")).collect();
+    let acquire_forward = locks
+        .iter()
+        .map(|lock| format!("EnterCriticalSection(&{lock});"))
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    let acquire_reversed = locks
+        .iter()
+        .rev()
+        .map(|lock| format!("EnterCriticalSection(&{lock});"))
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    let write_all = (0..200)
+        .map(|index| format!("DAT_c{index:03} = 1;"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let read_all = (0..200)
+        .map(|index| format!("uVar1 = DAT_c{index:03};"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            &format!("  {acquire_forward}\n  {write_all}\n"),
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            &format!("  {read_all}\n  {acquire_reversed}\n"),
+        ),
+    );
+    let result = scan(program).await;
+
+    // 378 reversed lock pairs (28 locks, every pair inverted) plus
+    // 200 shared globals — 578 cross-function claims against a cap of 512.
+    let cross: Vec<(&str, &str)> = result
+        .findings
+        .iter()
+        .filter_map(|finding| match finding {
+            SyncFinding::LockOrder(conflict) => {
+                Some((finding.kind(), conflict.first_lock.as_str()))
+            }
+            SyncFinding::DataRace(race) => Some((finding.kind(), race.variable.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cross.len(),
+        MAX_CROSS_FUNCTION_FINDINGS,
+        "the per-body mutex findings before them count nothing toward the cap"
+    );
+    let conflicts = cross.iter().take_while(|(kind, _)| *kind == "lock_order");
+    assert_eq!(conflicts.count(), 378, "every lock-order conflict stands");
+    let races: Vec<&str> = cross
+        .iter()
+        .filter(|(kind, _)| *kind == "data_race")
+        .map(|(_, name)| *name)
+        .collect();
+    assert_eq!(
+        (&races[..2], races.last().copied()),
+        (&["DAT_c000", "DAT_c001"][..], Some("DAT_c133")),
+        "the kept races are the first 134 in first-sighting order — the tail is what goes"
+    );
+    assert_eq!(
+        cross
+            .iter()
+            .find(|(kind, _)| *kind == "lock_order")
+            .map(|(_, name)| *name),
+        Some("DAT_l00"),
+        "the kept conflicts keep their own scan order from the front"
+    );
+    let pairs = result
+        .metadata
+        .coverage
+        .expect("a capped scan states its coverage too")
+        .facets
+        .into_iter()
+        .find(|facet| facet.id == "cross-function-pairs")
+        .expect("cross-function-pairs is named");
+    assert_eq!(
+        pairs.limitation.as_deref(),
+        Some(
+            "578 cross-function findings truncated at the cap of 512: first 512 kept in scan order"
+        ),
+        "the whole 578 stands on the record while the list stops at 512"
+    );
+}
+
+#[tokio::test]
+async fn an_engaged_gate_and_an_engaged_cap_admit_side_by_side_in_one_facet() {
+    // Both admissions ride the same record (issue #438): the gate
+    // excluded seven bodies from pairing, and what the pairable
+    // bodies filed still ran past the cap. One facet prints both
+    // sentences, and each keeps its own count whole.
+    let mut program = shared_globals_program(MAX_CROSS_FUNCTION_FINDINGS + 1);
+    for index in 0..7 {
+        let name = format!("FUN_body_{index:04}");
+        program.listing.push(FunctionSummary {
+            name: name.clone(),
+            address: 0x1800_0000 + index,
+        });
+        program.bodies.insert(
+            name.clone(),
+            function(&name, "undefined FUN_body_x(void)", "  return;\n"),
+        );
+    }
+    let result = scan(program).await;
+    let pairs = result
+        .metadata
+        .coverage
+        .expect("a gated capped scan states its coverage")
+        .facets
+        .into_iter()
+        .find(|facet| facet.id == "cross-function-pairs")
+        .expect("cross-function-pairs is named");
+    assert_eq!(pairs.status, CoverageStatus::Partial);
+    assert_eq!(
+        pairs.limitation.as_deref(),
+        Some(
+            "7 functions excluded from cross-function pairing: FUN_body_0000, \
+             FUN_body_0001, FUN_body_0002, FUN_body_0003, FUN_body_0004, +2 more; \
+             513 cross-function findings truncated at the cap of 512: first 512 kept in scan order"
+        ),
+        "the gate line keeps its exact wording and the cap line joins it"
+    );
+}
+
 #[test]
 fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
-    let mut coverage = coverage_stamp(&[], 0, &[]);
+    let mut coverage = coverage_stamp(&[], 0, &[], None);
     coverage
         .facets
         .retain(|facet| facet.id != "function-bodies");
@@ -1795,7 +2071,7 @@ fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
 
 #[test]
 fn the_roster_pin_fails_when_a_facet_is_doubled() {
-    let mut coverage = coverage_stamp(&["FUN_18003e750".to_string()], 0, &[]);
+    let mut coverage = coverage_stamp(&["FUN_18003e750".to_string()], 0, &[], None);
     coverage.facets.push(coverage.facets[0].clone());
     assert_eq!(
         roster_faults(&coverage),
@@ -1806,7 +2082,7 @@ fn the_roster_pin_fails_when_a_facet_is_doubled() {
 
 #[test]
 fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
-    let mut coverage = coverage_stamp(&[], 0, &[]);
+    let mut coverage = coverage_stamp(&[], 0, &[], None);
     coverage.facets.push(FacetCoverage {
         id: "lock-ordering".to_string(),
         status: CoverageStatus::Unexamined,

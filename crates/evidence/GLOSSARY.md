@@ -102,6 +102,10 @@ _Avoid_: post-loop pass.
 The sync cross-function pass's input rule: pair only functions that could run at the same moment. Entries are the export listing and kept bodies' thread-start arguments; from them the walk follows call edges forward through kept bodies. A kept body the walk never reaches pairs nothing, and the `cross-function-pairs` coverage facet admits the exclusion by name and count.
 _Avoid_: reachability filter — it drops findings from the scan record, not just from display.
 
+**Cross-function findings cap**:
+One protocol constant caps a sync scan's cross-function findings, as its last resort. Past the cap the document keeps the first findings in scan order while the `cross-function-pairs` coverage facet stamps an explicit truncation admission carrying the scan's whole cross-function count. Aggregation bounds a normal program's output first, so the admission stays a rare red flag.
+_Avoid_: silent cut — the record always names the count it truncated.
+
 **Post-inline pass**:
 A pass that runs after inline resolution. Its inputs are therefore surviving readings, not raw detector output.
 
