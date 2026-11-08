@@ -334,22 +334,22 @@ impl Verifier {
             let report = parse::parse_test_results(&test_output, baseline_tests);
             if !report.produced_results && !baseline_tests.is_empty() {
                 // The suite had cases and the runner printed no result
-                // rows at all. Three honest readings: the *test project* —
-                // the unit beside the generated runner — never built,
-                // which is where a unit that does not match the harness's
-                // calling shape surfaces as its own compile failure; the
-                // unit itself crashed the runner before it printed, which
-                // is a test that failed with an unobserved return; or the
-                // runner broke without a word, which is the verifier's
-                // failure, never the unit's (#415's rule).
-                if test_output.contains("could not compile") {
-                    let (_, errors, _) = parse::parse_cargo_output(&test_output);
-                    info!(
-                        binary,
-                        function, "Test project did not compile — tests never ran"
-                    );
-                    unrun_suite_result(errors)
-                } else if parse::runner_death_signal(&test_output) {
+                // rows at all. Two honest readings remain, down from
+                // three (issue #440): the unit itself crashed the runner
+                // before it printed, which is a test that failed with an
+                // unobserved return; or the harness broke — its test
+                // project never built, or its runner broke without a
+                // word — which is the verifier's failure, never the
+                // unit's (#415's rule). The retired reading claimed a
+                // test-project build failure was the unit's own compile
+                // failure (#416's stance, amended): once the compile leg
+                // has logged success, nothing downstream may claim the
+                // unit did not compile. The only file left in the
+                // scratch project that can fail to build is the
+                // generated runner, the harness's own file, and its
+                // build-error text still rides the harness-error
+                // reason so a human can read whose code broke.
+                if parse::runner_death_signal(&test_output) {
                     warn!(
                         binary,
                         function, "Unit crashed the runner before it printed a result"
@@ -368,31 +368,30 @@ impl Verifier {
                         values_matched_tests: 0,
                     }
                 } else {
+                    // The reason names which arm of the gate broke.
+                    let reason = if test_output.contains("could not compile") {
+                        let (_, errors, _) = parse::parse_cargo_output(&test_output);
+                        format!("the test project failed to build: {}", errors.join("\n"))
+                    } else {
+                        "the test runner produced no result rows".to_string()
+                    };
+                    // The harness failure itself travels back, with the
+                    // reason naming the broken arm beside it.
+                    let fault = anyhow::anyhow!(
+                        "the verification gate broke for {function} in {binary}: {reason}"
+                    );
                     match self.file_harness_error_receipt(
                         binary,
                         function,
                         context,
                         &suite_digest,
-                        "the test runner produced no result rows",
+                        &reason,
                         compile_ms,
                         test_started.elapsed().as_millis() as u64,
                     ) {
-                        Ok(()) => {
-                            return Err(anyhow::anyhow!(
-                                "the test runner produced no result rows for {function} \
-                                 in {binary}"
-                            ));
-                        }
+                        Ok(()) => return Err(fault),
                         // Chain both failures; the harness error is never lost.
-                        Err(honesty) => {
-                            return Err(harness_fault(
-                                anyhow::anyhow!(
-                                    "the test runner produced no result rows for {function} \
-                                     in {binary}"
-                                ),
-                                honesty,
-                            ));
-                        }
+                        Err(honesty) => return Err(harness_fault(fault, honesty)),
                     }
                 }
             } else if report.incomplete {
@@ -563,6 +562,9 @@ impl Verifier {
             total_ms: compile_ms + test_run_ms,
             verdict,
             failed_cases: result.failed_tests.iter().map(|f| f.test_index).collect(),
+            // Only the harness-error filing names a broken arm; this run
+            // judged the unit, so there is no verifier fault to carry.
+            harness_error_reason: None,
             digest: String::new(),
         };
         receipt.digest = receipt
@@ -714,6 +716,9 @@ impl Verifier {
             verdict: VerificationVerdict::HarnessError,
             // No unit verdict means no case to name.
             failed_cases: Vec::new(),
+            // Which arm of the verifier broke, with the build error text:
+            // the filed pair itself names it, not just the log line.
+            harness_error_reason: Some(reason.to_string()),
             digest: String::new(),
         };
         // Nothing was assessed, so nothing passed — on either dimension.

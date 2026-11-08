@@ -280,6 +280,17 @@ pub struct VerificationReceipt {
     #[serde(default)]
     pub failed_cases: Vec<usize>,
 
+    /// A `harness-error` pair only: which arm of the verifier's own run
+    /// broke — its test project failed to build, or its runner produced
+    /// no result rows — with the build error text riding along, so a
+    /// human reading the filed pair can read whose code broke and whose
+    /// did not. Never carried by any other verdict: `skip_serializing_if`
+    /// keeps those pairs' folded bytes identical to pairs filed before
+    /// the field existed, and `#[serde(default)]` keeps the older filed
+    /// receipts readable, per this record's serde discipline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_error_reason: Option<String>,
+
     /// The digest of this document's own content (see
     /// [`Self::content_digest`]); the handle P26's ledger will cite a
     /// verified unit by.
@@ -353,6 +364,14 @@ pub fn verification_receipt_markdown(receipt: &VerificationReceipt) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // A harness-error pair names which arm of the verifier broke, with the
+    // build error text — the fact a reviewer of the human side came here to
+    // read. Any other verdict carries no reason and shows no such line.
+    let harness_reason = receipt
+        .harness_error_reason
+        .as_ref()
+        .map(|reason| format!("- Harness error: {reason}\n"))
+        .unwrap_or_default();
 
     format!(
         "# Verification receipt — {function} ({binary})\n\n\
@@ -362,7 +381,8 @@ pub fn verification_receipt_markdown(receipt: &VerificationReceipt) -> String {
          - Suite covered kinds: {covered}\n\
          {dimensions}\n\
          - Timings: compile {compile} ms, test run {test} ms, total {total} ms\n\
-         - Failed baseline cases: {failed}\n\n\
+         - Failed baseline cases: {failed}\n\
+         {harness_reason}\n\
          ## Pairing\n\n\
          The JSON document beside this rendering is the authority. Recompute the\n\
          digest over it with its `digest` field blanked and it must equal:\n\n\
@@ -610,6 +630,7 @@ mod tests {
             total_ms: 6100,
             verdict: VerificationVerdict::TestsFailed,
             failed_cases: Vec::new(),
+            harness_error_reason: None,
             digest: String::new(),
         }
     }

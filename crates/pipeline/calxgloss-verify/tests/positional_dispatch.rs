@@ -6,7 +6,9 @@
 //! function named by the verify request. These pins drive that contract
 //! through a real scaffolded project and a real `cargo run`. A
 //! pipeline-driven suite can honestly earn a `passed`. An arity the
-//! unit never had fails as the unit's own compile failure. A panicking
+//! unit never had breaks the harness's own build — the verifier's
+//! failure, never the unit's verdict (issue #440 amended #416's stance
+//! that it surfaced as the unit's own compile failure). A panicking
 //! unit fails its case instead of the harness. And when a suite names
 //! no expected returns, the values dimension says it assessed nothing
 //! rather than claiming a match. Like this crate's other compile-backed
@@ -16,8 +18,8 @@
 //! cargo test -p calxgloss-verify --test positional_dispatch -- --ignored
 //! ```
 
-use calxgloss_types::{TestCase, VerifierCommand};
-use calxgloss_types::{VerificationReceipt, VerificationVerdict};
+use calxgloss_types::{BinaryIdentity, TestCase, VerifierCommand};
+use calxgloss_types::{VerificationReceipt, VerificationVerdict, persist, verification_receipt_path};
 use calxgloss_verify::{Verifier, VerifyContext};
 use serde_json::json;
 
@@ -91,31 +93,49 @@ async fn a_pipeline_shaped_suite_honestly_passes_the_generated_unit() {
     );
 }
 
-/// An arity the unit never defined is the unit's own compile failure:
-/// the null-input arm calls the named unit with no arguments, rustc
-/// rejects the call, and the run reads `compile_failed` — never the old
-/// vacuous `passed` that a never-called unit used to earn.
+/// An arity the unit never defined is the harness's own build failure,
+/// not the unit's (issue #440, amending #416): the unit passes the
+/// compile leg, the null-input arm's zero-argument call is rejected
+/// inside the scratch test project — in the generated runner, the
+/// harness's own file — and the run hands back an `Err` carrying the
+/// mismatch text, never a `VerificationResult`. The pair it files is
+/// verdicted `harness_error`; no `compile_failed` pair stands under
+/// the run's key.
 #[tokio::test]
 #[ignore = "scaffolds and cargo-runs a real scratch project + runner"]
-async fn an_arity_the_unit_never_defined_fails_as_compile_failed() {
+async fn an_arity_the_unit_never_defined_is_a_harness_error_not_a_compile_failure() {
     let body = "pub fn fixture_gate(code: u32) -> u32 { code }";
-    let (result, receipt) = gate("fixture_gate", body, &[generated_case(json!(null))]).await;
+    let work = tempfile::tempdir().expect("temp work dir");
+    let verifier = Verifier::new(work.path()).expect("verifier");
+    let error = verifier
+        .verify(
+            "positional_dispatch.dll",
+            "fixture_gate",
+            body,
+            &[generated_case(json!(null))],
+            &VerifyContext::default(),
+        )
+        .await
+        .expect_err("a test project that never built is the verifier's error, never a unit verdict");
 
+    // The build-error text still rides the hand-back, so a human can
+    // read whose code broke — and whose did not.
+    let handed_back = error.to_string();
     assert!(
-        !result.compiled,
-        "the runner's call to the named unit must not build: {:?}",
-        result.compilation_errors
+        handed_back.contains("this function takes 1 argument but 0 arguments were supplied"),
+        "the reason names the mismatch: {handed_back}"
     );
-    assert!(
-        result
-            .compilation_errors
-            .iter()
-            .any(|e| e.contains("this function takes 1 argument but 0 arguments were supplied")),
-        "the compile error names the mismatch: {:?}",
-        result.compilation_errors
+
+    // What travels under the run's key: a harness-error pair, and never
+    // a compile-failed one — the compile leg logged success.
+    let pair = verification_receipt_path(
+        work.path(),
+        &BinaryIdentity::new("positional_dispatch.dll"),
+        "fixture_gate",
+        1,
     );
-    assert_eq!(receipt.verdict, VerificationVerdict::CompileFailed);
-    assert_eq!(result.tests_total, 0, "no case ever ran");
+    let filed: VerificationReceipt = persist::load_json(&pair).expect("the filed authority reads");
+    assert_eq!(filed.verdict, VerificationVerdict::HarnessError);
 }
 
 /// A suite whose generated case carries arguments dispatches them

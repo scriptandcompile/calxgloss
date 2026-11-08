@@ -40,6 +40,7 @@ fn sample_receipt() -> VerificationReceipt {
         total_ms: 6100,
         verdict: VerificationVerdict::TestsFailed,
         failed_cases: vec![1],
+        harness_error_reason: None,
         digest: String::new(),
     };
     receipt.digest = receipt.content_digest().expect("the fold");

@@ -104,6 +104,7 @@ fn fully_evidenced_workspace(extra_entries: Vec<ObligationEntry>) -> tempfile::T
         total_ms: 15,
         verdict: VerificationVerdict::Passed,
         failed_cases: Vec::new(),
+        harness_error_reason: None,
         digest: String::new(),
     };
     receipt.digest = receipt.content_digest().expect("digests");

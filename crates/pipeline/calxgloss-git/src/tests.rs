@@ -278,6 +278,7 @@ fn file_receipt_pair(
         total_ms: 5500,
         verdict: calxgloss_types::VerificationVerdict::Passed,
         failed_cases: Vec::new(),
+        harness_error_reason: None,
         digest: String::new(),
     };
     receipt.digest = receipt

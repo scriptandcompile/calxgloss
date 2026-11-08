@@ -148,6 +148,7 @@ fn stage_receipt_pair_core(
         total_ms: 15,
         verdict,
         failed_cases: Vec::new(),
+        harness_error_reason: None,
         digest: String::new(),
     };
     receipt.digest = receipt.content_digest().expect("digests");
