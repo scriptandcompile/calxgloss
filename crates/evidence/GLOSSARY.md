@@ -237,6 +237,10 @@ Two functions acquiring the same two locks in opposite relative orders. This mak
 **Protected span** *(sync)*:
 A recognized acquire→release pairing over one lock. The *same-lock rule* is the data race's false-positive gate: if one lock covers every access in both bodies, the claim is suppressed.
 
+**Direct guard** *(sync)*:
+Guard evidence sitting on the access itself, beside the lock spans: a recognized atomic call naming that global, or a recognized TLS call reaching it through a TLS index. When every cross-body access of a qualifying global carries the same kind of direct guard, the aggregate race claim is dropped while the per-body atomic and TLS findings stay filed. A guarded call inside a protected span carries that span's lock too.
+_Avoid_: guard honesty (the spec label), mint/minted — creations create, guards guard.
+
 **Divergence reading** *(apidetect)*:
 A binary-level portability claim that requires imports from both platform families before it can be made. Platform-neutral categories count toward neither side.
 

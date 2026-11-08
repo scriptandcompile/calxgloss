@@ -41,16 +41,34 @@
 //! false-positive gate in its generalized shape: one lock object
 //! whose span covers every access of the global across every accessor
 //! claims nothing, so properly locked data stays silent (issue #113).
+//!
+//! A guard that covers every access drops the claim the same way
+//! (issue #437). The shared reading skips a call's arguments whole,
+//! so an interlocked or TLS call names no access at all. This reading
+//! adds those accesses back, annotated the way it annotates lock
+//! spans. A recognized atomic call on the global itself —
+//! `Interlocked*` and the configured names, read from the
+//! [`AtomicDetector`] whose per-body findings the call already
+//! carries — guards its target atomically, and a global reached only
+//! through a TLS index is guarded the same way, through the
+//! configured names of [`TlsDetector`]. A guarded call sitting inside
+//! a lock span carries that span's protection too. When every access
+//! of a qualifying global carries one kind of guard, the reading
+//! drops the race claim while the atomic and TLS findings stay
+//! filed. A body that also touches the global outside a guard keeps
+//! the claim, and only the unguarded accesses count.
 
 use std::collections::HashMap;
 
+use crate::atomic::AtomicDetector;
 use crate::mutex::{MutexDetector, lock_object};
 use crate::threading::ThreadingDetector;
+use crate::tls::{KeyBinding, TlsDetector, assigned_variable, key_object};
 use crate::types::{DataRace, LockOrder, RaceSide, SyncFinding};
 use calxgloss_decomp::DecompiledFunction;
 use calxgloss_globalstate::{AccessKind, global_sites, is_global_name, statement_at};
 
-use calxgloss_types::{NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites};
+use calxgloss_types::{CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites};
 
 /// The scan: plain-identifier callees, member accesses skipped, and C
 /// keywords not calls. The mutex detector's own scan configuration is
@@ -89,11 +107,11 @@ const DATA_RACE_SUGGESTION: &str = "guard the shared global with one lock held b
 /// Cross-function concurrency readings over the bodies one scan holds.
 ///
 /// The analyzer is stateless: every reading comes from the bodies it
-/// is handed and the mutex detector's configured name sets it is
-/// given, so one analyzer serves an entire scan. It fetches nothing
-/// itself — the scan hands it the same [`DecompiledFunction`] values
-/// the per-function pass already decompiled, so the scan stays at one
-/// decompile per function.
+/// is handed and the configured name sets of the mutex, atomic, and
+/// TLS detectors it is given, so one analyzer serves an entire scan.
+/// It fetches nothing itself — the scan hands it the same
+/// [`DecompiledFunction`] values the per-function pass already
+/// decompiled, so the scan stays at one decompile per function.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CrossFunctionAnalyzer;
 
@@ -118,7 +136,9 @@ impl CrossFunctionAnalyzer {
     /// races: every global named by two or more accessor functions
     /// lands one [`SyncFinding::DataRace`] — one per shared global
     /// (issue #434) — unless one lock object's span covers every
-    /// access on every side.
+    /// access on every side, or every cross-body access sits under
+    /// recognized atomic calls naming the global, or the global is
+    /// reached only through a TLS index (issue #437).
     ///
     /// The pass pairs only functions that could run at the same
     /// moment (issue #436). `exports` names the program's exported
@@ -138,10 +158,12 @@ impl CrossFunctionAnalyzer {
         &self,
         functions: &[DecompiledFunction],
         mutex: &MutexDetector,
+        atomic: &AtomicDetector,
         threads: &ThreadingDetector,
+        tls: &TlsDetector,
         exports: &[String],
     ) -> Vec<SyncFinding> {
-        self.analyze_report(functions, mutex, threads, exports)
+        self.analyze_report(functions, mutex, atomic, threads, tls, exports)
             .findings
     }
 
@@ -152,7 +174,9 @@ impl CrossFunctionAnalyzer {
         &self,
         functions: &[DecompiledFunction],
         mutex: &MutexDetector,
+        atomic: &AtomicDetector,
         threads: &ThreadingDetector,
+        tls: &TlsDetector,
         exports: &[String],
     ) -> CrossFunctionReport {
         let gate = pair_gate(functions, threads, exports);
@@ -214,7 +238,7 @@ impl CrossFunctionAnalyzer {
         // several functions claims its race once.
         let accesses: Vec<Vec<GlobalAccess>> = functions
             .iter()
-            .map(|func| global_accesses(func, mutex))
+            .map(|func| global_accesses(func, mutex, atomic, tls))
             .collect();
         let mut buckets: Vec<GlobalSites> = Vec::new();
         let mut bucket_of: HashMap<String, usize> = HashMap::new();
@@ -265,7 +289,16 @@ impl CrossFunctionAnalyzer {
             // the data with the same lock, and properly locked data
             // is not a race. Any unprotected access, or accessors
             // guarded by different locks, leaves the claim standing.
-            if one_lock_covers_every_access(&bucket.sites) {
+            // Beside it, the direct-guard rule (issue #437): every
+            // access made inside a recognized atomic call on the
+            // global, or every access of a global reached through a
+            // TLS index, is guarded data the per-body detectors
+            // already report — the reading never claims it as a race
+            // on top.
+            if one_lock_covers_every_access(&bucket.sites)
+                || every_access_guarded_by(&bucket.sites, Guard::Atomic)
+                || every_access_guarded_by(&bucket.sites, Guard::Tls)
+            {
                 continue;
             }
             let mut readers: Vec<String> = Vec::new();
@@ -307,12 +340,16 @@ impl CrossFunctionAnalyzer {
                 unguarded_reads: bucket
                     .sites
                     .iter()
-                    .filter(|a| a.kind == AccessKind::Read && a.locks.is_empty())
+                    .filter(|a| {
+                        a.kind == AccessKind::Read && a.locks.is_empty() && a.guard.is_none()
+                    })
                     .count(),
                 unguarded_writes: bucket
                     .sites
                     .iter()
-                    .filter(|a| a.kind == AccessKind::Write && a.locks.is_empty())
+                    .filter(|a| {
+                        a.kind == AccessKind::Write && a.locks.is_empty() && a.guard.is_none()
+                    })
                     .count(),
                 sides,
                 suggestion: DATA_RACE_SUGGESTION.to_string(),
@@ -462,14 +499,29 @@ fn lock_sequence(func: &DecompiledFunction, mutex: &MutexDetector) -> Vec<String
 /// name, position, and kind the global-state crate's shared reading
 /// produced ([`calxgloss_globalstate::GlobalSite`]), annotated with
 /// the lock objects whose recognized acquire→release spans cover the
-/// site. An empty `locks` means the access stands outside every
-/// pairing — unprotected as far as this reading can see.
+/// site, and with the direct guard a recognized atomic or TLS call
+/// puts on the access itself. An empty `locks` and no `guard` mean
+/// the access stands outside every pairing — unprotected as far as
+/// this reading can see.
 #[derive(Clone)]
 struct GlobalAccess {
     name: String,
     offset: usize,
     kind: AccessKind,
     locks: Vec<String>,
+    guard: Option<Guard>,
+}
+
+/// Direct guard evidence on the access itself, beside the lock spans:
+/// a recognized atomic call naming that very global, or a recognized
+/// TLS call reaching it through a TLS index. Both spellings the
+/// per-body detectors already file as their own findings (issue
+/// #437) — the guard annotation keeps that data from being claimed
+/// as a race on top.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Guard {
+    Atomic,
+    Tls,
 }
 
 /// Every access one scan's bodies make to one global, kept as the
@@ -493,26 +545,150 @@ struct LockSpan {
     end: usize,
 }
 
-/// The global accesses one body makes, in body order: every site the
-/// shared global-identification reading produces, annotated with the
-/// lock objects whose spans cover it. An access inside a span is
-/// protected by that span's lock; one inside nested spans is
-/// protected by each of them.
-fn global_accesses(func: &DecompiledFunction, mutex: &MutexDetector) -> Vec<GlobalAccess> {
+/// Every access one scan's bodies make to one global, in body order:
+/// every site the shared global-identification reading produces,
+/// annotated with the lock objects whose spans cover it, plus the
+/// guarded accesses that reading cannot see. The shared reading skips
+/// a call's arguments whole — a lock object passed to a call is no
+/// access (issue #433) — so `InterlockedIncrement(&DAT_counter)`
+/// names no site on `DAT_counter` at all. For this one reading the
+/// call *is* the access: it names the global, and a recognized
+/// interlocked call atomically reads and rewrites its target. The
+/// reading adds those target sites back, annotated with the guard
+/// covering them (issue #437), drawing the call names from the
+/// configured [`AtomicDetector`] and [`TlsDetector`] sets so a
+/// configured name guards exactly as it is filed.
+fn global_accesses(
+    func: &DecompiledFunction,
+    mutex: &MutexDetector,
+    atomic: &AtomicDetector,
+    tls: &TlsDetector,
+) -> Vec<GlobalAccess> {
     let spans = lock_spans(&func.body, mutex);
-    global_sites(&func.body)
+    let mut sites: Vec<GlobalAccess> = global_sites(&func.body)
         .into_iter()
         .map(|site| GlobalAccess {
-            locks: spans
-                .iter()
-                .filter(|span| span.start < site.offset && site.offset < span.end)
-                .map(|span| span.lock.clone())
-                .collect(),
+            locks: covering_spans(&spans, site.offset),
+            guard: None,
             name: site.name,
             offset: site.offset,
             kind: site.kind,
         })
-        .collect()
+        .collect();
+    // Sites the shared reading saw for an index a TLS creation
+    // returned: name and position, to mark guarded after the walk.
+    let mut created_slots: Vec<(String, usize)> = Vec::new();
+    for call in call_sites(&func.body, &CALL_SCAN) {
+        if atomic
+            .names()
+            .iter()
+            .any(|signature| signature.name == call.callee)
+            && let Some((global, offset)) = arg_global(&func.body, &call, lock_object)
+        {
+            // The interlocked call is an atomic read-and-rewrite of
+            // the global at its argument: the access stands on both
+            // sides of the read/write split, guarded either way.
+            for kind in [AccessKind::Read, AccessKind::Write] {
+                sites.push(GlobalAccess {
+                    locks: covering_spans(&spans, offset),
+                    guard: Some(Guard::Atomic),
+                    name: global.clone(),
+                    offset,
+                    kind,
+                });
+            }
+        } else if let Some(signature) = tls.creations().iter().find(|c| c.name == call.callee) {
+            // A key creation reaches its index one of two ways, the
+            // TLS detector's own bindings: `TlsAlloc` returns it and
+            // the assignment stores it, `pthread_key_create` writes
+            // it through the first argument. Either way the global
+            // holding the index is created by TLS plumbing the TLS
+            // detector already files, not by a shared-data store.
+            match signature.binding {
+                KeyBinding::ReturnValue => {
+                    if let Some((name, offset)) = assigned_variable(&func.body, call.offset)
+                        && is_global_name(&name)
+                    {
+                        created_slots.push((name, offset));
+                    }
+                }
+                KeyBinding::FirstArg => {
+                    if let Some((global, offset)) = arg_global(&func.body, &call, key_object) {
+                        sites.push(GlobalAccess {
+                            locks: covering_spans(&spans, offset),
+                            guard: Some(Guard::Tls),
+                            name: global,
+                            offset,
+                            kind: AccessKind::Write,
+                        });
+                    }
+                }
+            }
+        } else if tls.accesses().iter().any(|name| name == call.callee)
+            && let Some((global, offset)) = arg_global(&func.body, &call, key_object)
+        {
+            // A TLS access call reads the index value to name its
+            // per-thread slot: the index global is reached through
+            // the TLS call, and its value never crosses threads.
+            sites.push(GlobalAccess {
+                locks: covering_spans(&spans, offset),
+                guard: Some(Guard::Tls),
+                name: global,
+                offset,
+                kind: AccessKind::Read,
+            });
+        }
+    }
+    // The index a creation returned and the body stored into is a
+    // site the shared reading did see — the `TlsAlloc` assignment's
+    // left side — so it takes its guard from that creation record.
+    for site in &mut sites {
+        if created_slots
+            .iter()
+            .any(|(name, offset)| *name == site.name && *offset == site.offset)
+        {
+            site.guard = Some(Guard::Tls);
+        }
+    }
+    sites.sort_by_key(|site| site.offset);
+    sites
+}
+
+/// The global a guard call's first argument names, and where that
+/// name starts inside the call: the object the call acts through,
+/// seen through any cast and a leading `&` by the same extraction the
+/// pairing detector reads. The name must stand as a whole word within
+/// the call, past the callee's own spelling, and the shared rule must
+/// admit it as program data. A call that names no such global guards
+/// nothing.
+fn arg_global(
+    body: &str,
+    call: &CallSite<'_>,
+    extract: impl Fn(&str) -> Option<String>,
+) -> Option<(String, usize)> {
+    let name = call.args.first().and_then(|arg| extract(arg))?;
+    if !is_global_name(&name) {
+        return None;
+    }
+    let span = &body[call.offset..=call.close];
+    let mut search = call.callee.len() + 1;
+    while let Some(at) = span[search..].find(&name) {
+        let at = search + at;
+        let end = at + name.len();
+        let whole_before = at == 0 || !is_name_byte(span.as_bytes()[at - 1]);
+        let whole_after = end == span.len() || !is_name_byte(span.as_bytes()[end]);
+        if whole_before && whole_after {
+            return Some((name, call.offset + at));
+        }
+        search = end;
+    }
+    None
+}
+
+/// A byte that continues a name: a whole-word lookup never lands
+/// inside a longer spelling.
+fn is_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 /// The recognized acquire→release spans in a body: every direct call
@@ -546,6 +722,18 @@ fn lock_spans(body: &str, mutex: &MutexDetector) -> Vec<LockSpan> {
     spans
 }
 
+/// The lock objects whose recognized acquire→release spans cover a
+/// site offset. A guard call sitting inside a critical section
+/// carries that span's protection on top of its own guard, so the
+/// same-lock rule still sees one lock over every access (issue #113).
+fn covering_spans(spans: &[LockSpan], offset: usize) -> Vec<String> {
+    spans
+        .iter()
+        .filter(|span| span.start < offset && offset < span.end)
+        .map(|span| span.lock.clone())
+        .collect()
+}
+
 /// Whether one lock object's spans cover every access of the global
 /// across every accessor: the accessors guard the data with the same
 /// lock, which is the false-positive gate — properly locked data is
@@ -569,16 +757,31 @@ fn one_lock_covers_every_access(sites: &[GlobalAccess]) -> bool {
     !covering.is_empty()
 }
 
+/// Whether every access in the bucket carries one kind of direct
+/// guard: each accessor reached the global only inside a recognized
+/// guard call — an atomic call on the global itself, or a TLS call
+/// through the index. No single guard object spans the accesses the
+/// way one lock does. The safety is each guard call itself, so the
+/// question is only whether any accessor touched the global outside
+/// a guard of that kind. The per-body atomic and TLS detectors
+/// already report guarded data — claiming it as a race on top is the
+/// false positive this rule keeps off the list (issue #437). An
+/// access guarded by a different mechanism — a lock here, an atomic
+/// call there — answers to neither rule, and the claim stands.
+fn every_access_guarded_by(sites: &[GlobalAccess], guard: Guard) -> bool {
+    !sites.is_empty() && sites.iter().all(|access| access.guard == Some(guard))
+}
+
 /// The access statement the evidence names for one body's side of the
-/// race: the first access standing outside every span when there is
-/// one — the unprotected side is the claim — and the first access
-/// otherwise. The statement, not the whole line: a locked body writes
-/// its acquire and release around the access, and the claim is the
-/// access itself.
+/// race: the first access standing outside every span and every
+/// direct guard when there is one — the unprotected side is the
+/// claim — and the first access otherwise. The statement, not the
+/// whole line: a locked body writes its acquire and release around
+/// the access, and the claim is the access itself.
 fn access_statement(body: &str, accesses: &[GlobalAccess], name: &str) -> String {
     let mut first: Option<usize> = None;
     for access in accesses.iter().filter(|a| a.name == name) {
-        if access.locks.is_empty() {
+        if access.locks.is_empty() && access.guard.is_none() {
             return statement_at(body, access.offset);
         }
         if first.is_none() {
@@ -619,7 +822,9 @@ mod tests {
         CrossFunctionAnalyzer::new().analyze(
             &functions,
             &MutexDetector::with_default_names(),
+            &AtomicDetector::with_default_names(),
             &ThreadingDetector::with_default_names(),
+            &TlsDetector::with_default_names(),
             &exports,
         )
     }
@@ -915,7 +1120,9 @@ mod tests {
         let findings = CrossFunctionAnalyzer::new().analyze(
             &functions,
             &custom,
+            &AtomicDetector::with_default_names(),
             &ThreadingDetector::with_default_names(),
+            &TlsDetector::with_default_names(),
             &all_exports(&functions),
         );
         assert_eq!(findings.len(), 1);
@@ -935,7 +1142,9 @@ mod tests {
                 .analyze(
                     &standard_only,
                     &custom,
+                    &AtomicDetector::with_default_names(),
                     &ThreadingDetector::with_default_names(),
+                    &TlsDetector::with_default_names(),
                     &all_exports(&standard_only),
                 )
                 .is_empty(),
@@ -958,7 +1167,9 @@ mod tests {
         let findings = CrossFunctionAnalyzer::new().analyze(
             &functions,
             &MutexDetector::new(),
+            &AtomicDetector::with_default_names(),
             &ThreadingDetector::with_default_names(),
+            &TlsDetector::with_default_names(),
             &all_exports(&functions),
         );
         assert!(findings.is_empty());
@@ -1099,6 +1310,31 @@ mod tests {
             ("FUN_18003e750", "uVar1 = DAT_counter;"),
         ]);
         assert_eq!(findings.len(), 1, "the acquire guards nothing on its own");
+    }
+
+    #[test]
+    fn an_atomic_call_inside_a_lock_span_keeps_the_same_lock_silence() {
+        // The two guard readings stack on one access: the interlocked
+        // call also sits inside a recognized critical section, so its
+        // site carries the span's lock like any other access. Both
+        // bodies hold one lock over the data, and the same-lock rule
+        // has kept this pair silent since issue #113 — the added
+        // guarded site must not change that (issue #437).
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "EnterCriticalSection(&guard); uVar1 = InterlockedIncrement(&DAT_counter); \
+                 LeaveCriticalSection(&guard);",
+            ),
+            (
+                "FUN_18003e750",
+                "EnterCriticalSection(&guard); uVar2 = DAT_counter; LeaveCriticalSection(&guard);",
+            ),
+        ]);
+        assert!(
+            findings.is_empty(),
+            "both sides hold one lock over the data, guard call or not"
+        );
     }
 
     #[test]
@@ -1258,6 +1494,191 @@ mod tests {
     }
 
     #[test]
+    fn an_atomic_guarded_access_and_unguarded_ones_keep_the_claim_with_split_counts() {
+        // The guard split (issue #437): one body reaches the global only
+        // through a recognized interlocked call, the other reads and
+        // writes it under nothing. The claim stands — the unguarded
+        // half is the race — and the unguarded counts carry only that
+        // half, the atomic call's own accesses never counted.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "uVar1 = InterlockedIncrement(&DAT_counter);",
+            ),
+            ("FUN_18003e750", "iVar1 = DAT_counter; DAT_counter = 2;"),
+        ]);
+        assert_eq!(findings.len(), 1, "the unguarded half still claims");
+        let SyncFinding::DataRace(record) = &findings[0] else {
+            unreachable!("the shared global reads as a data race");
+        };
+        assert_eq!(record.variable, "DAT_counter");
+        // The interlocked call reads and rewrites its target global,
+        // so the guarded accessor names itself on each side once.
+        assert_eq!(
+            record.readers,
+            ["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+        );
+        assert_eq!(
+            record.writers,
+            ["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+        );
+        assert_eq!(
+            record.unguarded_reads, 1,
+            "only the second body's load stands unguarded"
+        );
+        assert_eq!(
+            record.unguarded_writes, 1,
+            "only the second body's store stands unguarded"
+        );
+        // The guarded side has no unguarded access to quote, so its
+        // side quotes its atomic call's statement.
+        let guarded_side = record
+            .sides
+            .iter()
+            .find(|side| side.function == "FUN_18003ab00")
+            .expect("the atomic accessor carries a side");
+        assert_eq!(
+            guarded_side.statement,
+            "uVar1 = InterlockedIncrement(&DAT_counter)"
+        );
+    }
+
+    #[test]
+    fn every_cross_body_access_under_a_recognized_atomic_call_on_the_global_claims_no_race() {
+        // Both bodies touch the global only inside recognized
+        // interlocked calls naming it, under no lock at all: the
+        // per-body detectors already file an atomic record per call,
+        // so a race claim here would report the same data twice
+        // (issue #437).
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "uVar1 = InterlockedIncrement(&DAT_counter);",
+            ),
+            (
+                "FUN_18003e750",
+                "uVar2 = InterlockedDecrement(&DAT_counter);",
+            ),
+        ]);
+        assert!(
+            findings.is_empty(),
+            "the global's every access sits under an atomic call on it"
+        );
+    }
+
+    #[test]
+    fn configured_atomic_names_reach_the_guard() {
+        // The guard reads the atomic detector's configured set, not a
+        // private default (issue #437): a configured name's call names
+        // the global as a guarded access and suppresses an all-guarded
+        // bucket, and in a mixed body the same call stands as a
+        // guarded accessor while the bare store keeps the claim.
+        let custom =
+            AtomicDetector::with_names([crate::atomic::AtomicSignature::new("my_cas", 32)]);
+        let analyze_with = |bodies: [(&str, &str); 2]| -> Vec<SyncFinding> {
+            let functions: Vec<DecompiledFunction> = bodies
+                .iter()
+                .map(|(name, body)| function(name, body))
+                .collect();
+            CrossFunctionAnalyzer::new().analyze(
+                &functions,
+                &MutexDetector::with_default_names(),
+                &custom,
+                &ThreadingDetector::with_default_names(),
+                &TlsDetector::with_default_names(),
+                &all_exports(&functions),
+            )
+        };
+        let guarded = analyze_with([
+            ("FUN_18003ab00", "iVar1 = my_cas(&DAT_counter, 0, 1);"),
+            ("FUN_18003e750", "iVar2 = my_cas(&DAT_counter, 0, 2);"),
+        ]);
+        assert!(
+            guarded.is_empty(),
+            "the configured spelling guards the global it names"
+        );
+
+        let mixed = analyze_with([
+            ("FUN_18003ab00", "iVar1 = my_cas(&DAT_counter, 0, 1);"),
+            ("FUN_18003e750", "iVar2 = DAT_counter; DAT_counter = 7;"),
+        ]);
+        assert_eq!(mixed.len(), 1, "the bare store keeps the claim");
+        let SyncFinding::DataRace(record) = &mixed[0] else {
+            unreachable!("the shared global reads as a data race");
+        };
+        assert_eq!(
+            record.writers,
+            ["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()],
+            "the configured call reads and rewrites the global, so its accessor names itself a writer"
+        );
+        assert_eq!(
+            record.unguarded_writes, 1,
+            "only the bare store stands unguarded"
+        );
+    }
+
+    #[test]
+    fn a_tls_indexed_access_and_unguarded_ones_keep_the_claim_with_split_counts() {
+        // The same split in TLS shape (issue #437): one body creates
+        // the slot index with `TlsAlloc` and reaches it through
+        // `TlsSetValue` — TLS plumbing the TLS detector already files
+        // — while the other body loads and stores the slot under
+        // nothing. The TLS-side accesses never count as unguarded;
+        // the bare pair carries the claim.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "DAT_tls_slot = TlsAlloc(); TlsSetValue(DAT_tls_slot, pvVar1);",
+            ),
+            ("FUN_18003e750", "iVar1 = DAT_tls_slot; DAT_tls_slot = 4;"),
+        ]);
+        assert_eq!(findings.len(), 1, "the bare pair still claims");
+        let SyncFinding::DataRace(record) = &findings[0] else {
+            unreachable!("the shared global reads as a data race");
+        };
+        assert_eq!(record.variable, "DAT_tls_slot");
+        // The creation stores the index and the TLS call reads it, so
+        // the guarded accessor names itself on both sides.
+        assert_eq!(
+            record.readers,
+            ["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+        );
+        assert_eq!(
+            record.writers,
+            ["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+        );
+        assert_eq!(
+            record.unguarded_reads, 1,
+            "the second body's load is the only unguarded read"
+        );
+        assert_eq!(
+            record.unguarded_writes, 1,
+            "the creation is TLS evidence, so only the second body's store stands unguarded"
+        );
+    }
+
+    #[test]
+    fn a_global_reached_only_through_a_tls_index_claims_no_race() {
+        // One body creates the slot index and stores per-thread data
+        // through it; the other only ever reads through `TlsGetValue`.
+        // Every access of the global is TLS plumbing the per-body TLS
+        // detector already files — the index's value never crosses
+        // threads — so the aggregate race claim must not report the
+        // same data again (issue #437).
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "DAT_tls_slot = TlsAlloc(); TlsSetValue(DAT_tls_slot, pvVar1);",
+            ),
+            ("FUN_18003e750", "pvVar2 = TlsGetValue(DAT_tls_slot);"),
+        ]);
+        assert!(
+            findings.is_empty(),
+            "a TLS-indexed global is per-thread plumbing, not shared data"
+        );
+    }
+
+    #[test]
     fn the_lock_order_findings_come_before_the_race_findings() {
         // One function pair produces both cross-function shapes: the
         // persisted list runs the conflicts first, then the races, so
@@ -1344,7 +1765,9 @@ mod tests {
                 .analyze(
                     &bodies,
                     &custom,
+                    &AtomicDetector::with_default_names(),
                     &ThreadingDetector::with_default_names(),
+                    &TlsDetector::with_default_names(),
                     &all_exports(&bodies),
                 )
                 .is_empty(),
@@ -1355,7 +1778,9 @@ mod tests {
                 .analyze(
                     &bodies,
                     &MutexDetector::with_default_names(),
+                    &AtomicDetector::with_default_names(),
                     &ThreadingDetector::with_default_names(),
+                    &TlsDetector::with_default_names(),
                     &all_exports(&bodies),
                 )
                 .len(),

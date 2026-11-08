@@ -211,7 +211,9 @@ impl TlsDetector {
         for call in direct_calls(&func.body) {
             if let Some(signature) = self.creations.iter().find(|c| c.name == call.callee) {
                 let key = match signature.binding {
-                    KeyBinding::ReturnValue => assigned_variable(&func.body, call.offset),
+                    KeyBinding::ReturnValue => {
+                        assigned_variable(&func.body, call.offset).map(|(name, _)| name)
+                    }
                     KeyBinding::FirstArg => call.args.first().and_then(|arg| key_object(arg)),
                 };
                 keys.push(OpenKey {
@@ -319,8 +321,10 @@ struct OpenKey {
 /// (`+=` and friends) assigns no result, and a target that is not a
 /// plain variable — a dereference, an indexed element, a field —
 /// stores the key somewhere the pairing cannot key on, so neither
-/// binds anything.
-fn assigned_variable(body: &str, callee_offset: usize) -> Option<String> {
+/// binds anything. The answer carries the target's own offset in the
+/// body, which the sync crate's race reading matches its sites
+/// against.
+pub(crate) fn assigned_variable(body: &str, callee_offset: usize) -> Option<(String, usize)> {
     let line_start = body[..callee_offset]
         .rfind('\n')
         .map(|p| p + 1)
@@ -374,15 +378,16 @@ fn assigned_variable(body: &str, callee_offset: usize) -> Option<String> {
     if start > 0 && matches!(bytes[start - 1], b'*' | b'&' | b'.' | b')' | b']') {
         return None;
     }
-    Some(line[start..end].to_string())
+    Some((line[start..end].to_string(), line_start + start))
 }
 
 /// The key a call's first argument names: a plain variable, seen
 /// through any cast and a leading `&` — the decompiler writes
 /// `pthread_key_create(&local_8,...)` for the key's address and
 /// `pthread_getspecific(local_8)` for the key itself. Anything else
-/// names no local key the pairing can key on.
-fn key_object(arg: &str) -> Option<String> {
+/// names no local key the pairing can key on. The sync crate's race
+/// reading reaches through this same extraction (issue #437).
+pub(crate) fn key_object(arg: &str) -> Option<String> {
     let stripped = strip_casts(arg, is_type_word);
     let name = stripped.strip_prefix('&').unwrap_or(&stripped);
     plain_variable(name).map(str::to_string)

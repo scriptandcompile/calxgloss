@@ -743,6 +743,97 @@ async fn the_same_lock_object_held_by_both_functions_suppresses_the_race() {
 }
 
 #[tokio::test]
+async fn an_atomic_guarded_global_files_its_atomic_records_and_claims_no_race() {
+    // The guard suppression through the scan (issue #437): both bodies
+    // touch the global only inside recognized interlocked calls naming
+    // it. The atomic records the per-body detector files for those
+    // calls stand on; the race claim is what must not join them.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  uVar1 = InterlockedIncrement(&DAT_counter);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  uVar2 = InterlockedDecrement(&DAT_counter);\n",
+        ),
+    );
+    let result = scan(program).await;
+
+    assert_eq!(
+        result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "atomic")
+            .count(),
+        2,
+        "one atomic record per recognized call"
+    );
+    assert!(
+        result
+            .findings
+            .iter()
+            .all(|finding| finding.kind() != "data_race"),
+        "the guarded global is not also filed as racing"
+    );
+}
+
+#[tokio::test]
+async fn a_tls_indexed_global_files_its_tls_records_and_claims_no_race() {
+    // The TLS half of the scan-seam suppression (issue #437): one
+    // body creates the slot index and writes per-thread data through
+    // it, the other reaches the index only through `TlsGetValue`. The
+    // TLS records — the creation pairing and the lone-access
+    // fragment — stand; no race claim joins them.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  DAT_tls_slot = TlsAlloc();\n  TlsSetValue(DAT_tls_slot, pvVar1);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  pvVar2 = TlsGetValue(DAT_tls_slot);\n",
+        ),
+    );
+    let result = scan(program).await;
+
+    assert_eq!(
+        result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "tls")
+            .count(),
+        2,
+        "the pairing and the fragment stay filed on their own"
+    );
+    assert!(
+        result
+            .findings
+            .iter()
+            .all(|finding| finding.kind() != "data_race"),
+        "the TLS-indexed global is not also filed as racing"
+    );
+}
+
+#[tokio::test]
 async fn a_function_that_will_not_decompile_contributes_no_race() {
     // The pass reads only the bodies the scan kept: the surviving
     // function's store has no partner to pair with, so the scan

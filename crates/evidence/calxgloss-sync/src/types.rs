@@ -361,10 +361,12 @@ pub type CrossFunctionLockOrder = LockOrder;
 /// A record says the functions named in its [`sides`](Self::sides) all
 /// access [`variable`](Self::variable) in their bodies, somewhere
 /// among them reading the value and somewhere storing through it, and
-/// no single lock object covers every access: at least one access
-/// stands outside every recognized acquire→release span, or the
-/// accesses are guarded by locks no one object holds across them all.
-/// That is the shape a data race takes when the accessors run at once
+/// no guard covers every access: at least one access stands outside
+/// every recognized acquire→release span, atomic call on the global,
+/// and TLS index — or the guards differ in a way that leaves the
+/// accesses able to overlap (different locks, some sites guarded and
+/// some not). That is the shape a data race takes when the accessors
+/// run at once
 /// — no single body reveals it on its own. The claim is about the
 /// global, not about one pair of functions: any number of accessors
 /// yields exactly one record, and each accessor is named once no
@@ -384,15 +386,15 @@ pub struct DataRace {
     /// The functions whose bodies stored through the global, in
     /// listing order, each named once however often it wrote.
     pub writers: Vec<String>,
-    /// How many read accesses to the global no recognized acquire→
-    /// release span covers.
+    /// How many read accesses to the global no recognized guard
+    /// covers — an acquire→release span, an atomic call naming the
+    /// global, or TLS-indexed access.
     pub unguarded_reads: usize,
-    /// How many write accesses to the global no recognized acquire→
-    /// release span covers.
+    /// How many write accesses to the global no such guard covers.
     pub unguarded_writes: usize,
     /// One entry per accessor function, in listing order: the
     /// function, and one example access statement from its body — an
-    /// access outside every span when there is one, since the
+    /// access outside every guard when there is one, since the
     /// unprotected access is the claim, and the first access
     /// otherwise.
     pub sides: Vec<RaceSide>,

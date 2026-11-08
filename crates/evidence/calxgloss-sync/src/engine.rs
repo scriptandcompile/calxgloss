@@ -429,9 +429,14 @@ impl<S> SyncEngine<S> {
         // calls to the analysis engine. It pairs only bodies that
         // could run at the same moment (issue #436), and its findings
         // append in listing order, after the per-function findings.
-        let cross =
-            self.cross_function
-                .analyze_report(&bodies, &self.mutex, &self.threads, &exports);
+        let cross = self.cross_function.analyze_report(
+            &bodies,
+            &self.mutex,
+            &self.atomics,
+            &self.threads,
+            &self.tls,
+            &exports,
+        );
         findings.extend(cross.findings);
 
         let mut metadata = ScanMetadata::new(binary);
